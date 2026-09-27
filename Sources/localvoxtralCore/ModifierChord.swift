@@ -205,26 +205,44 @@ package struct ModifierChordDetector: Sendable {
 }
 
 /// Records a modifier-only chord in a shortcut field (#831): press the keys
-/// together and let go. It reports the chord once every key is up, when two
-/// keys or more were down at once and no other key was pressed. One modifier
-/// on its own reports nothing, so the field keeps listening for a
-/// modifier+key shortcut.
+/// together and let go. It answers once every key is up, when two keys or
+/// more were down at once and no other key was pressed. One modifier on its
+/// own answers nothing, so the field keeps listening for a modifier+key
+/// shortcut. Keys that went down further apart than the detector's window
+/// answer `tooSlow`: that chord would be stored and never fire.
 package struct ModifierChordRecorder: Sendable {
+    package enum Outcome: Equatable, Sendable {
+        case none
+        case chord(ModifierChord)
+        case tooSlow
+    }
+
+    private let window: TimeInterval
     private var mostHeld = Set<SidedModifier>()
     private var anyHeld = false
     private var spoiled = false
+    private var firstDown: TimeInterval?
+    private var lastNewKey: TimeInterval?
 
-    package init() {}
+    package init(window: TimeInterval = ModifierChordDetector.defaultWindow) {
+        self.window = window
+    }
 
     package mutating func modifiersChanged(
-        held: Set<SidedModifier>, otherModifierHeld: Bool = false
-    ) -> ModifierChord? {
+        held: Set<SidedModifier>, otherModifierHeld: Bool = false, at time: TimeInterval
+    ) -> Outcome {
         if otherModifierHeld { spoiled = true }
-        mostHeld.formUnion(held)
+        if !held.isSubset(of: mostHeld) {
+            if firstDown == nil { firstDown = time }
+            lastNewKey = time
+            mostHeld.formUnion(held)
+        }
         anyHeld = !held.isEmpty || otherModifierHeld
-        guard !anyHeld else { return nil }
+        guard !anyHeld else { return .none }
         defer { reset() }
-        return spoiled ? nil : ModifierChord(keys: mostHeld)
+        guard !spoiled, let chord = ModifierChord(keys: mostHeld) else { return .none }
+        if let firstDown, let lastNewKey, lastNewKey - firstDown > window { return .tooSlow }
+        return .chord(chord)
     }
 
     /// A key that isn't a modifier went down. With modifiers held, that is a
@@ -237,5 +255,7 @@ package struct ModifierChordRecorder: Sendable {
         mostHeld = []
         anyHeld = false
         spoiled = false
+        firstDown = nil
+        lastNewKey = nil
     }
 }

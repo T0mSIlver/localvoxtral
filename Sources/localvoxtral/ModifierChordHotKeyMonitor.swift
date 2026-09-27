@@ -48,6 +48,7 @@ final class ModifierChordHotKeyMonitor {
     private func installMonitorsIfNeeded() -> Bool {
         guard monitors.isEmpty else { return true }
         #if DEBUG
+        if Self.debugForceInstallFailure { return false }
         // Same pin as ModifierOnlyHotKeyManager: the runner's Accessibility
         // grant must not decide a unit test. Tests drive the debug entry points.
         if TerminalTargetDetector.isRunningUnderXCTest {
@@ -98,7 +99,7 @@ final class ModifierChordHotKeyMonitor {
 
     private func handleFlagsChanged(rawFlags: UInt, timestamp: TimeInterval) {
         // Recording a chord in Settings must not also fire the one it replaces.
-        if let recorder = NSApp.keyWindow?.firstResponder as? RecorderControl, recorder.isRecording {
+        if let recorder = NSApp?.keyWindow?.firstResponder as? RecorderControl, recorder.isRecording {
             for action in Array(detectors.keys) { detectors[action]!.reset() }
             return
         }
@@ -132,6 +133,8 @@ final class ModifierChordHotKeyMonitor {
 
     #if DEBUG
     private static let xctestMonitorToken = "xctest"
+    /// Stands in for a missing Accessibility grant.
+    static var debugForceInstallFailure = false
 
     func debugHandleFlagsChangedForTesting(held: Set<SidedModifier>, timestamp: TimeInterval) {
         let raw = held.reduce(UInt(0)) { $0 | $1.deviceFlag }

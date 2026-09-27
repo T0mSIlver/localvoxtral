@@ -47,6 +47,7 @@ private struct ShortcutRecorderStandIn: View {
 }
 
 private struct ShortcutRecorderControl: NSViewRepresentable {
+    static let chordTooSlowMessage = "Press the keys together."
     @Binding var shortcut: DictationShortcut?
     @Binding var validationError: String?
     var fixedWidth: CGFloat? = nil
@@ -61,6 +62,9 @@ private struct ShortcutRecorderControl: NSViewRepresentable {
         control.acceptsModifierChord = acceptsModifierChord
         control.onChordRecorded = { [weak coordinator = context.coordinator] chord in
             coordinator?.handleChordRecorded(chord)
+        }
+        control.onChordTooSlow = { [weak coordinator = context.coordinator] in
+            coordinator?.parent.validationError = Self.chordTooSlowMessage
         }
         control.setContentHuggingPriority(.defaultLow, for: .horizontal)
         control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -209,6 +213,7 @@ private struct ShortcutRecorderControl: NSViewRepresentable {
 final class ChordRecorderControl: RecorderControl {
     var acceptsModifierChord = false
     var onChordRecorded: ((ModifierChord) -> Void)?
+    var onChordTooSlow: (() -> Void)?
     var chord: ModifierChord? {
         didSet { needsDisplay = true }
     }
@@ -224,12 +229,18 @@ final class ChordRecorderControl: RecorderControl {
         super.flagsChanged(with: event)
         guard acceptsModifierChord, isRecording else { return }
         let flags = event.modifierFlags
-        let recorded = chordRecorder.modifiersChanged(
+        let outcome = chordRecorder.modifiersChanged(
             held: SidedModifier.held(inDeviceFlags: flags.rawValue),
-            otherModifierHeld: flags.contains(.function) || flags.contains(.capsLock))
-        if let recorded {
+            otherModifierHeld: flags.contains(.function) || flags.contains(.capsLock),
+            at: event.timestamp)
+        switch outcome {
+        case .none:
+            break
+        case .chord(let chord):
             endRecording()
-            onChordRecorded?(recorded)
+            onChordRecorded?(chord)
+        case .tooSlow:
+            onChordTooSlow?()
         }
     }
 

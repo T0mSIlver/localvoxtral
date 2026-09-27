@@ -66,6 +66,30 @@ final class ModifierChordShortcutTests: XCTestCase {
             shortcuts.requestQuickCaptureShortcut(bothShifts), ShortcutController.copyLastDictationConflictMessage)
     }
 
+    /// A cold launch can report no Accessibility trust with a grant on disk;
+    /// the chord registers once trust lands, and the error goes.
+    func testAChordThatFailedAtLaunchRegistersOnceTrustLands() {
+        let (shortcuts, session) = makeShortcuts()
+        shortcuts.settings.setQuickCaptureShortcut(bothShifts)
+        HotKeyManager.debugResetOverridesForTesting()
+        HotKeyManager.debugForceHandlerInstallResultForTesting(true)
+        HotKeyManager.debugForceRegisterStatusForTesting(hotKeyID: .overlay, status: noErr)
+        HotKeyManager.debugForceRegisterStatusForTesting(hotKeyID: .livePaste, status: noErr)
+        addTeardownBlock { @MainActor in HotKeyManager.debugResetOverridesForTesting() }
+        ModifierChordHotKeyMonitor.debugForceInstallFailure = true
+        addTeardownBlock { @MainActor in ModifierChordHotKeyMonitor.debugForceInstallFailure = false }
+
+        shortcuts.registerAtLaunch()
+        XCTAssertFalse(shortcuts.hotKeyManager.isQuickCaptureShortcutRegistered)
+        XCTAssertEqual(session.lastError, HotKeyManager.quickCaptureUnavailableErrorMessage)
+
+        ModifierChordHotKeyMonitor.debugForceInstallFailure = false
+        shortcuts.retryChordShortcutRegistrationIfNeeded()
+        XCTAssertTrue(shortcuts.hotKeyManager.isQuickCaptureShortcutRegistered)
+        XCTAssertNil(session.lastError)
+        XCTAssertEqual(shortcuts.settings.quickCaptureShortcut, bothShifts, "the stored chord never changed")
+    }
+
     func testTheDictationSlotsNeverStoreAChord() {
         let (shortcuts, _) = makeShortcuts()
         shortcuts.settings.setOverlayBufferShortcut(optionF13)

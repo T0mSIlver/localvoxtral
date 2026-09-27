@@ -101,23 +101,33 @@ final class ModifierChordDetectorTests: XCTestCase {
 final class ModifierChordRecorderTests: XCTestCase {
     func testPressingBothShiftsAndLettingGoRecordsTheChord() {
         var recorder = ModifierChordRecorder()
-        XCTAssertNil(recorder.modifiersChanged(held: [.leftShift]))
-        XCTAssertNil(recorder.modifiersChanged(held: [.leftShift, .rightShift]))
-        XCTAssertNil(recorder.modifiersChanged(held: [.rightShift]))
-        XCTAssertEqual(recorder.modifiersChanged(held: []), .bothShifts)
+        XCTAssertEqual(recorder.modifiersChanged(held: [.leftShift], at: 1.0), .none)
+        XCTAssertEqual(recorder.modifiersChanged(held: [.leftShift, .rightShift], at: 1.0625), .none)
+        XCTAssertEqual(recorder.modifiersChanged(held: [.rightShift], at: 1.25), .none)
+        XCTAssertEqual(recorder.modifiersChanged(held: [], at: 1.5), .chord(.bothShifts))
     }
 
     func testOneModifierOrAModifierWithAKeyRecordsNoChord() {
         var recorder = ModifierChordRecorder()
-        _ = recorder.modifiersChanged(held: [.rightOption])
-        XCTAssertNil(recorder.modifiersChanged(held: []))
+        _ = recorder.modifiersChanged(held: [.rightOption], at: 0)
+        XCTAssertEqual(recorder.modifiersChanged(held: [], at: 0.5), .none)
 
-        _ = recorder.modifiersChanged(held: [.leftShift, .leftCommand])
+        _ = recorder.modifiersChanged(held: [.leftShift, .leftCommand], at: 1)
         recorder.keyPressed()
-        XCTAssertNil(recorder.modifiersChanged(held: []), "that was ⇧⌘ plus a key")
+        XCTAssertEqual(recorder.modifiersChanged(held: [], at: 1.5), .none, "that was ⇧⌘ plus a key")
 
         recorder.keyPressed() // a bare key, refused by the field
-        _ = recorder.modifiersChanged(held: [.leftShift, .rightShift])
-        XCTAssertEqual(recorder.modifiersChanged(held: []), .bothShifts, "an earlier bare key doesn't spoil it")
+        _ = recorder.modifiersChanged(held: [.leftShift, .rightShift], at: 2)
+        XCTAssertEqual(
+            recorder.modifiersChanged(held: [], at: 2.5), .chord(.bothShifts),
+            "an earlier bare key doesn't spoil it")
+    }
+
+    /// A chord recorded this slowly would be stored and never fire.
+    func testKeysPressedFurtherApartThanTheWindowAreTooSlow() {
+        var recorder = ModifierChordRecorder(window: 0.100)
+        _ = recorder.modifiersChanged(held: [.leftShift], at: 3.0)
+        _ = recorder.modifiersChanged(held: [.leftShift, .rightShift], at: 3.25)
+        XCTAssertEqual(recorder.modifiersChanged(held: [], at: 3.5), .tooSlow)
     }
 }
