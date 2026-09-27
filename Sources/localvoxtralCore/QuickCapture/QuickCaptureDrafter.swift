@@ -74,6 +74,8 @@ package struct QuickCaptureDrafter: Sendable {
     /// Drafts on a remote project's host (#745); nil leaves a remote capture
     /// undrafted.
     private let remote: (@Sendable (String, QuickCaptureProject) async -> QuickCaptureDraft.Outcome)?
+    private let usageRecorder: (any UsageRecording)?
+    private let now: @Sendable () -> Date
 
     package init(
         runner: any QuickCaptureDraftRunning,
@@ -83,8 +85,12 @@ package struct QuickCaptureDrafter: Sendable {
             var isDirectory: ObjCBool = false
             return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
         },
-        remote: (@Sendable (String, QuickCaptureProject) async -> QuickCaptureDraft.Outcome)? = nil
+        remote: (@Sendable (String, QuickCaptureProject) async -> QuickCaptureDraft.Outcome)? = nil,
+        usageRecorder: (any UsageRecording)? = nil,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
+        self.usageRecorder = usageRecorder
+        self.now = now
         self.remote = remote
         self.runner = runner
         self.openIssues = openIssues
@@ -124,6 +130,7 @@ package struct QuickCaptureDrafter: Sendable {
             )
             Log.backends.info("Quick capture draft: asking \(agent.rawValue, privacy: .public)")
             last = await runner.run(invocation, openIssues: numbers)
+            QuickCaptureDraft.recordUsage(of: last, agent: agent, date: now(), to: usageRecorder)
             switch last {
             case .draft(let draft, let usage):
                 Log.backends.info(

@@ -637,6 +637,11 @@ final class DictationViewModel {
                 directoryURL: DictationAudioStore.defaultDirectoryURL())
             sessionStore?.removeOrphanedAudio()
             applyDictationHistoryRetention()
+            // Before everything that calls a model, so each one records to it.
+            let usageLedger = UsageLedger(fileURL: UsageLedger.defaultFileURL()) {
+                [weak self] in
+                Task { @MainActor in self?.engines.noteUsageLedgerChanged() }
+            }
             learnedTermStore = LearnedTermStore(
                 fileURL: LearnedTermStore.defaultFileURL(),
                 onChange: { [weak self] in
@@ -664,7 +669,8 @@ final class DictationViewModel {
                         userVibeDirectory: FileManager.default.homeDirectoryForCurrentUser
                             .appendingPathComponent(".vibe", isDirectory: true)
                     ),
-                    now: { Date() }
+                    now: { Date() },
+                    usageRecorder: usageLedger
                 )
             }
             installQuickCaptureInbox(
@@ -672,7 +678,8 @@ final class DictationViewModel {
                     settings: settings,
                     learnedTerms: { [weak self] in self?.learnedTermStore?.snapshot() ?? LearnedTerms() },
                     fileURL: QuickCaptureInboxViewModel.defaultFileURL(),
-                    applicationSupport: LearnedTermStore.defaultFileURL().deletingLastPathComponent()
+                    applicationSupport: LearnedTermStore.defaultFileURL().deletingLastPathComponent(),
+                    usageRecorder: usageLedger
                 )
             )
             session.termSuggestionCadence = TermSuggestionCadence(
@@ -685,12 +692,7 @@ final class DictationViewModel {
                 },
                 launchedAt: Date()
             )
-            installMistralUsageLedger(
-                MistralUsageLedger(fileURL: MistralUsageLedger.defaultFileURL()) {
-                    [weak self] in
-                    Task { @MainActor in self?.engines.noteUsageLedgerChanged() }
-                }
-            )
+            installUsageLedger(usageLedger)
             refreshMicrophoneInputs()
             registerLifecycleObservers(on: dependencies.lifecycleNotificationCenter ?? .default)
             permissions.requestStartupPermissionsIfNeeded()
@@ -722,10 +724,10 @@ final class DictationViewModel {
         }
     }
 
-    /// Points both Mistral paths — the realtime socket and the polishing
-    /// service — at `ledger`. Replaces `llmPolishingService`, so a test that
+    /// Points the realtime socket, the second pass and the polishing service
+    /// (polishes and term suggestions) at `ledger`. Replaces `llmPolishingService`, so a test that
     /// substitutes a fake does so after this.
-    func installMistralUsageLedger(_ ledger: MistralUsageLedger) {
+    func installUsageLedger(_ ledger: UsageLedger) {
         engines.installUsageLedger(ledger)
         session.mistralRealtimeClient.setUsageRecorder(ledger)
         session.secondPassUsageRecorder = ledger

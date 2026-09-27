@@ -1,13 +1,14 @@
 import Foundation
 import Synchronization
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 /// The Mistral usage ledger: prices, the Settings summary, the JSON-lines file,
 /// and the two request paths that write it (polish over HTTP, dictation over
 /// the realtime socket). No network: the HTTP path is answered by a
 /// URLProtocol stub on a reserved host, the socket path by the DEBUG seams.
-final class MistralUsageLedgerTests: XCTestCase {
+final class UsageLedgerTests: XCTestCase {
     // MARK: - Pricing
 
     func testPolishCostSplitsCachedPromptTokensAtATenthOfInput() throws {
@@ -95,16 +96,16 @@ final class MistralUsageLedgerTests: XCTestCase {
 
     func testSummaryCountsOnlyEntriesInsideTheWindow() {
         let entries = [
-            MistralUsageEntry(
+            UsageEntry(
                 date: daysAgo(0), kind: .dictation, model: "m", audioSeconds: 120, costEUR: 0.01),
-            MistralUsageEntry(
+            UsageEntry(
                 date: daysAgo(0, hour: 0), kind: .polish, model: "m", promptTokens: 10,
                 completionTokens: 5, costEUR: 0.02),
-            MistralUsageEntry(
+            UsageEntry(
                 date: daysAgo(6), kind: .polish, model: "m", promptTokens: 10,
                 completionTokens: 5, costEUR: 0.04),
-            MistralUsageEntry(date: daysAgo(7), kind: .polish, model: "unknown"),
-            MistralUsageEntry(
+            UsageEntry(date: daysAgo(7), kind: .polish, model: "unknown"),
+            UsageEntry(
                 date: daysAgo(200), kind: .dictation, model: "m", audioSeconds: 60, costEUR: 1),
         ]
         let start = { (period: MistralUsagePeriod) in period.start(now: self.now, calendar: self.calendar) }
@@ -161,7 +162,7 @@ final class MistralUsageLedgerTests: XCTestCase {
 
     private func temporaryLedgerURL() -> URL {
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MistralUsageLedgerTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("UsageLedgerTests-\(UUID().uuidString)", isDirectory: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         // A directory that does not exist yet: the first write creates it.
         return directory.appendingPathComponent("nested", isDirectory: true)
@@ -170,22 +171,22 @@ final class MistralUsageLedgerTests: XCTestCase {
 
     func testLedgerPersistsEntriesAcrossInstances() {
         let url = temporaryLedgerURL()
-        let first = MistralUsageEntry(
+        let first = UsageEntry(
             date: Date(timeIntervalSince1970: 1_800_000_000), kind: .dictation, model: "m",
             audioSeconds: 12.5, costEUR: 0.001)
-        let second = MistralUsageEntry(
+        let second = UsageEntry(
             date: Date(timeIntervalSince1970: 1_800_000_100), kind: .polish, model: "p",
             promptTokens: 100, cachedPromptTokens: 20, completionTokens: 30)
 
-        let writer = MistralUsageLedger(fileURL: url)
+        let writer = UsageLedger(fileURL: url)
         writer.record(first)
         writer.record(second)
 
-        XCTAssertEqual(MistralUsageLedger(fileURL: url).entries(), [first, second])
+        XCTAssertEqual(UsageLedger(fileURL: url).entries(), [first, second])
     }
 
     func testLedgerSkipsAnUnreadableLine() throws {
-        let entry = MistralUsageEntry(
+        let entry = UsageEntry(
             date: Date(timeIntervalSince1970: 1_800_000_000), kind: .polish, model: "p")
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -194,14 +195,14 @@ final class MistralUsageLedgerTests: XCTestCase {
         data.append(Data("\n".utf8))
         data.append(try encoder.encode(entry))
 
-        XCTAssertEqual(MistralUsageLedger.entries(fromFileContents: data), [entry, entry])
+        XCTAssertEqual(UsageLedger.entries(fromFileContents: data), [entry, entry])
     }
 
     func testLedgerNotifiesOnEveryRecord() {
         let count = LockedCounter()
-        let ledger = MistralUsageLedger(fileURL: nil) { count.increment() }
-        ledger.record(MistralUsageEntry(date: Date(), kind: .polish, model: "p"))
-        ledger.record(MistralUsageEntry(date: Date(), kind: .polish, model: "p"))
+        let ledger = UsageLedger(fileURL: nil) { count.increment() }
+        ledger.record(UsageEntry(date: Date(), kind: .polish, model: "p"))
+        ledger.record(UsageEntry(date: Date(), kind: .polish, model: "p"))
         XCTAssertEqual(count.value, 2)
         XCTAssertEqual(ledger.entries().count, 2)
     }
@@ -213,7 +214,7 @@ final class MistralUsageLedgerTests: XCTestCase {
         model: String = "mistral-medium-latest"
     ) -> LLMPolishingConfiguration {
         LLMPolishingConfiguration(
-            endpointURL: URL(string: "https://\(UsageStubProtocol.host)")!,
+            endpointURL: URL(string: "https://\(StubHTTPProtocol.host)")!,
             apiKey: "k",
             model: model,
             requestShape: shape
@@ -223,12 +224,12 @@ final class MistralUsageLedgerTests: XCTestCase {
     private let polishRequest = LLMPolishingRequest(
         inputText: "hello", systemPrompt: "s", userPrompts: ["u"])
 
-    private func withStub<T>(_ reply: UsageStubProtocol.Reply, _ body: () async throws -> T)
+    private func withStub<T>(_ reply: StubHTTPProtocol.Reply, _ body: () async throws -> T)
         async rethrows -> T
     {
-        UsageStubProtocol.reply.withLock { $0 = reply }
-        URLProtocol.registerClass(UsageStubProtocol.self)
-        defer { URLProtocol.unregisterClass(UsageStubProtocol.self) }
+        StubHTTPProtocol.reply.withLock { $0 = reply }
+        URLProtocol.registerClass(StubHTTPProtocol.self)
+        defer { URLProtocol.unregisterClass(StubHTTPProtocol.self) }
         return try await body()
     }
 
@@ -239,7 +240,7 @@ final class MistralUsageLedgerTests: XCTestCase {
         """
 
     func testMistralPolishRecordsTheUsageTheResponseReports() async throws {
-        let ledger = MistralUsageLedger(fileURL: nil)
+        let ledger = UsageLedger(fileURL: nil)
         let service = LLMPolishingService(usageRecorder: ledger)
 
         let result = try await withStub(.http(200, Self.successBody)) {
@@ -249,7 +250,7 @@ final class MistralUsageLedgerTests: XCTestCase {
         XCTAssertEqual(result.polishedText, "Hello.")
         let entry = try XCTUnwrap(ledger.entries().first)
         XCTAssertEqual(ledger.entries().count, 1)
-        XCTAssertEqual(entry.kind, .polish)
+        XCTAssertEqual(entry.feature, .polish)
         // The answering model, not the alias that was asked for.
         XCTAssertEqual(entry.model, "mistral-medium-3-5")
         XCTAssertEqual(entry.promptTokens, 1000)
@@ -260,7 +261,7 @@ final class MistralUsageLedgerTests: XCTestCase {
     }
 
     func testMistralPolishWithUnusableContentIsStillRecorded() async throws {
-        let ledger = MistralUsageLedger(fileURL: nil)
+        let ledger = UsageLedger(fileURL: nil)
         let service = LLMPolishingService(usageRecorder: ledger)
         let body = #"{"choices":[{"message":{"content":"  "}}],"usage":{"prompt_tokens":10,"completion_tokens":1}}"#
 
@@ -277,7 +278,7 @@ final class MistralUsageLedgerTests: XCTestCase {
     }
 
     func testMistralPolishTimeoutIsRecordedUnpriced() async throws {
-        let ledger = MistralUsageLedger(fileURL: nil)
+        let ledger = UsageLedger(fileURL: nil)
         let service = LLMPolishingService(usageRecorder: ledger)
 
         await withStub(.failure(URLError(.timedOut))) {
@@ -299,7 +300,7 @@ final class MistralUsageLedgerTests: XCTestCase {
     /// A polish cancelled by the next dictation, or cut off mid-flight, may
     /// already be billed: it is counted, unpriced.
     func testAbandonedMistralPolishIsRecordedUnpriced() async {
-        let ledger = MistralUsageLedger(fileURL: nil)
+        let ledger = UsageLedger(fileURL: nil)
         let service = LLMPolishingService(usageRecorder: ledger)
 
         for code in [URLError.Code.cancelled, .networkConnectionLost] {
@@ -316,18 +317,19 @@ final class MistralUsageLedgerTests: XCTestCase {
     func testUnknownAnsweringModelFallsBackToTheRequestedModelsPrice() throws {
         let usage = LLMTokenUsage(
             model: "zai-glm-9-9", promptTokens: 1_000_000, completionTokens: 0)
-        let entry = MistralUsageEntry.polish(
-            date: Date(timeIntervalSince1970: 0), requestedModel: "zai-glm-latest", usage: usage)
+        let entry = UsageEntry.chat(
+            date: Date(timeIntervalSince1970: 0), feature: .polish, backend: .mistral,
+            requestedModel: "zai-glm-latest", usage: usage)
         XCTAssertEqual(entry.model, "zai-glm-9-9")
         XCTAssertEqual(try XCTUnwrap(entry.costEUR), 1.19, accuracy: 1e-9)
     }
 
     func testRejectedAndUnreachablePolishesAreNotRecorded() async {
-        let ledger = MistralUsageLedger(fileURL: nil)
+        let ledger = UsageLedger(fileURL: nil)
         let service = LLMPolishingService(usageRecorder: ledger)
 
         for reply in [
-            UsageStubProtocol.Reply.http(401, #"{"message":"Unauthorized"}"#),
+            StubHTTPProtocol.Reply.http(401, #"{"message":"Unauthorized"}"#),
             .failure(URLError(.cannotConnectToHost)),
         ] {
             await withStub(reply) {
@@ -339,8 +341,8 @@ final class MistralUsageLedgerTests: XCTestCase {
         XCTAssertTrue(ledger.entries().isEmpty)
     }
 
-    func testSelfHostedPolishIsNeverRecorded() async throws {
-        let ledger = MistralUsageLedger(fileURL: nil)
+    func testSelfHostedPolishIsRecordedUnpricedAndOutsideTheMistralSummary() async throws {
+        let ledger = UsageLedger(fileURL: nil)
         let service = LLMPolishingService(usageRecorder: ledger)
 
         _ = try await withStub(.http(200, Self.successBody)) {
@@ -349,7 +351,42 @@ final class MistralUsageLedgerTests: XCTestCase {
                 configuration: polishConfiguration(shape: .openAICompatible))
         }
 
-        XCTAssertTrue(ledger.entries().isEmpty)
+        let entry = try XCTUnwrap(ledger.entries().first)
+        XCTAssertEqual(ledger.entries().count, 1)
+        XCTAssertEqual(entry.feature, .polish)
+        XCTAssertEqual(entry.backend, .userServer)
+        XCTAssertEqual(entry.promptTokens, 1000)
+        XCTAssertEqual(entry.completionTokens, 200)
+        XCTAssertNil(entry.costEUR)
+        XCTAssertTrue(MistralUsageSummary(entries: ledger.entries(), since: nil).isEmpty)
+    }
+
+    func testEachRequestIsChargedToItsFeatureAndBackend() async throws {
+        let ledger = UsageLedger(fileURL: nil)
+        let service = LLMPolishingService(usageRecorder: ledger)
+        let bundled = LLMPolishingConfiguration(
+            endpointURL: URL(string: "https://\(StubHTTPProtocol.host)")!,
+            apiKey: "", model: "m", usageBackend: .bundledHelper)
+        let suggestions = SpeakerTermSuggestions.request(
+            dictations: [.init(raw: "hello", final: "hello")], terms: [], dismissed: [])
+
+        _ = try await withStub(.http(200, Self.successBody)) {
+            _ = try await service.polish(request: suggestions, configuration: polishConfiguration())
+            _ = try await service.polish(request: polishRequest, configuration: bundled)
+            // The warmup's throwaway on the bundled helper is not counted.
+            _ = try await service.polish(
+                request: PolishPromptWarmup.request(templates: LLMPromptTemplates(
+                    systemContent: "s", userContent: "{{input_text}}")),
+                configuration: bundled)
+        }
+
+        XCTAssertEqual(ledger.entries().map(\.feature), [.termSuggestions, .polish])
+        XCTAssertEqual(ledger.entries().map(\.backend), [.mistral, .bundledHelper])
+        // A term suggestion is Mistral spend, and not a polish.
+        let summary = MistralUsageSummary(entries: ledger.entries(), since: nil)
+        XCTAssertEqual(summary.polishCount, 0)
+        XCTAssertEqual(summary.otherCount, 1)
+        XCTAssertEqual(summary.costEUR, try XCTUnwrap(ledger.entries().first?.costEUR), accuracy: 1e-12)
     }
 
     func testTokenUsageParsing() {
@@ -364,17 +401,17 @@ final class MistralUsageLedgerTests: XCTestCase {
 }
 
 #if DEBUG
-extension MistralUsageLedgerTests {
+extension UsageLedgerTests {
     // MARK: - Dictation sockets
 
     /// The primed task is never resumed, so its `send` completions do not
     /// fire until cleanup cancels it; a completion error mid-test would close
     /// the socket early and fail the audio-seconds assertions loudly.
     private func makePrimedClient(sessionCreated: Bool)
-        -> (MistralRealtimeWebSocketClient, MistralUsageLedger, () -> Void)
+        -> (MistralRealtimeWebSocketClient, UsageLedger, () -> Void)
     {
         let client = MistralRealtimeWebSocketClient()
-        let ledger = MistralUsageLedger(fileURL: nil)
+        let ledger = UsageLedger(fileURL: nil)
         client.setUsageRecorder(ledger)
         let session = URLSession(configuration: .ephemeral)
         let task = session.webSocketTask(with: URL(string: "ws://127.0.0.1:65535/test")!)
@@ -404,7 +441,7 @@ extension MistralUsageLedgerTests {
 
         XCTAssertEqual(ledger.entries().count, 1)
         let entry = try XCTUnwrap(ledger.entries().first)
-        XCTAssertEqual(entry.kind, .dictation)
+        XCTAssertEqual(entry.feature, .dictation)
         XCTAssertEqual(entry.model, MistralRealtimeWebSocketClient.defaultModel)
         XCTAssertEqual(entry.audioSeconds, 2)
         XCTAssertEqual(try XCTUnwrap(entry.costEUR), 2.0 / 60 * 0.0053, accuracy: 1e-12)
@@ -434,7 +471,7 @@ extension MistralUsageLedgerTests {
 
     func testSocketFailureRecordsTheAudioSentBeforeIt() {
         let client = MistralRealtimeWebSocketClient()
-        let ledger = MistralUsageLedger(fileURL: nil)
+        let ledger = UsageLedger(fileURL: nil)
         client.setUsageRecorder(ledger)
         let session = URLSession(configuration: .ephemeral)
         let task = session.webSocketTask(with: URL(string: "ws://127.0.0.1:65535/test")!)
@@ -470,38 +507,4 @@ private final class LockedCounter: @unchecked Sendable {
         defer { lock.unlock() }
         return count
     }
-}
-
-/// Answers requests to one reserved host with a canned reply; every other
-/// request passes through untouched.
-private final class UsageStubProtocol: URLProtocol, @unchecked Sendable {
-    enum Reply: Sendable {
-        case http(Int, String)
-        case failure(URLError)
-    }
-
-    static let host = "mistral-usage-stub.invalid"
-    static let reply = Mutex<Reply>(.http(500, ""))
-
-    override class func canInit(with request: URLRequest) -> Bool {
-        request.url?.host == host
-    }
-
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
-    override func startLoading() {
-        switch Self.reply.withLock({ $0 }) {
-        case .http(let status, let body):
-            let response = HTTPURLResponse(
-                url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "application/json"])!
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: Data(body.utf8))
-            client?.urlProtocolDidFinishLoading(self)
-        case .failure(let error):
-            client?.urlProtocol(self, didFailWithError: error)
-        }
-    }
-
-    override func stopLoading() {}
 }

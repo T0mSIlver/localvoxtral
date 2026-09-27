@@ -10,8 +10,8 @@ final class WidgetSnapshotAssemblerTests: XCTestCase {
         calendar.timeZone = TimeZone(identifier: "UTC")!
         let now = Date(timeIntervalSince1970: 1_790_000_000)
         let entries = [
-            MistralUsageEntry(date: now, kind: .dictation, model: "voxtral-mini-transcribe-realtime-2602", audioSeconds: 60, costEUR: 0.006),
-            MistralUsageEntry(date: now, kind: .retranscription, model: "voxtral-mini-latest", costEUR: 0.003),
+            UsageEntry(date: now, kind: .dictation, model: "voxtral-mini-transcribe-realtime-2602", audioSeconds: 60, costEUR: 0.006),
+            UsageEntry(date: now, kind: .retranscription, model: "voxtral-mini-latest", costEUR: 0.003),
         ]
 
         let spend = WidgetSnapshotAssembler.mistralSpend(entries, now: now, calendar: calendar)

@@ -147,7 +147,9 @@ final class QuickCaptureDrafterTests: XCTestCase {
         let roots = Mutex<[String]>([])
     }
 
-    private func drafter(_ runner: Runner, issuesAsked: Asked = Asked()) -> QuickCaptureDrafter {
+    private func drafter(
+        _ runner: Runner, issuesAsked: Asked = Asked(), usage: UsageLedger? = nil
+    ) -> QuickCaptureDrafter {
         QuickCaptureDrafter(
             runner: runner,
             openIssues: { root in
@@ -155,8 +157,35 @@ final class QuickCaptureDrafterTests: XCTestCase {
                 return []
             },
             trackedFiles: { _ in ["README.md"] },
-            directoryExists: { $0 == "/w/reach" }
+            directoryExists: { $0 == "/w/reach" },
+            usageRecorder: usage,
+            now: { Date(timeIntervalSince1970: 1_790_000_000) }
         )
+    }
+
+    func testEachAgentThatRanIsChargedToDraftingOnItsOwnBackend() async {
+        let reported = ProjectTermProposal.Usage(
+            turns: 7, costUSD: 0.1, inputTokens: 8, cacheWriteTokens: 18_000,
+            cacheReadTokens: 53_000, outputTokens: 1_900)
+        let moment = Date(timeIntervalSince1970: 1_790_000_000)
+        let cases: [(Runner, [UsageEntry])] = [
+            (Runner([.claude: .draft(draft, usage: reported)]), [UsageEntry(
+                date: moment, feature: .quickCaptureDrafting, backend: .claudeCode, model: "sonnet",
+                promptTokens: 71_008, cachedPromptTokens: 53_000, completionTokens: 1_900, agentCostUSD: 0.1)]),
+            // Claude is missing, so only Vibe ran, and it reports no usage.
+            (Runner([.vibe: .draft(draft, usage: nil)]), [UsageEntry(
+                date: moment, feature: .quickCaptureDrafting, backend: .vibe, model: "default")]),
+            (Runner([.claude: .failed(.timedOut)]), [UsageEntry(
+                date: moment, feature: .quickCaptureDrafting, backend: .claudeCode, model: "sonnet")]),
+            (Runner([:]), []),
+        ]
+        for (runner, expected) in cases {
+            let usage = UsageLedger(fileURL: nil)
+            _ = await drafter(runner, usage: usage).draft(
+                capture: "c", route: .project("/w/reach"), projects: projects, agents: [.claude, .vibe]
+            )
+            XCTAssertEqual(usage.entries(), expected)
+        }
     }
 
     func testTheNextAgentRunsOnlyWhenOneIsNotInstalled() async {

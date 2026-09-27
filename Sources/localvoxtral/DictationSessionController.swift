@@ -431,7 +431,7 @@ final class DictationSessionController {
     /// Where the second pass reports what it cost; the realtime client and
     /// the polishing service hold the same ledger.
     @ObservationIgnored
-    var secondPassUsageRecorder: (any MistralUsageRecording)?
+    var secondPassUsageRecorder: (any UsageRecording)?
     /// Live Auto-Paste spoken send trigger state
     /// (`DictationSessionController+SpokenSend.swift`), reset per session.
     enum LiveSpokenSendSegmentMode {
