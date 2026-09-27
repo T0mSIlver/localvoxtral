@@ -67,7 +67,7 @@ package struct QuickCaptureProject: Equatable, Sendable {
 
     /// The description filled in without the user: GitHub's, else the
     /// agent's sentence, else the README summary, cut like the user's line.
-    /// The Project descriptions sheet shows it until the user writes their
+    /// The Projects pane shows it until the user writes their
     /// own.
     package var automaticLine: String? {
         githubLine ?? agentLine

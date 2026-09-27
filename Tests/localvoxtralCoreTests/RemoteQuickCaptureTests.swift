@@ -19,11 +19,13 @@ final class RemoteQuickCaptureTests: XCTestCase {
             memory.withLock { _ = $0.recordSummary(summary, projectKey: projectKey, now: moment) }
         }
         let reports = Mutex<[String]>([])
-        func recordRemoteReport(project: LearnedTermProjectIdentity, asRepository: Bool, repository: String?) {
+        func recordRemoteReport(
+            project: LearnedTermProjectIdentity, asRepository: Bool, repository: String?, hostID: String?
+        ) {
             let moment = now()
             reports.withLock { $0.append(project.key) }
             memory.withLock {
-                _ = $0.recordRemoteReport(project: project, asRepository: asRepository, repository: repository, now: moment)
+                _ = $0.recordRemoteReport(project: project, asRepository: asRepository, repository: repository, hostID: hostID, now: moment)
             }
         }
         /// A project a dictation has shown the app.
@@ -294,6 +296,18 @@ final class RemoteQuickCaptureTests: XCTestCase {
         clock.advance(RemoteQuickCaptureRequests.reportInterval)
         try hook(session: "s1", project: "inkwell")
         XCTAssertEqual(store.reports.withLock { $0 }, ["remote:inkwell", "remote:inkwell"])
+    }
+
+    /// #939: the Projects pane names each host a repository is checked out
+    /// on, so a second host's hook is recorded within the first's interval.
+    func testEachHostThatNamesAProjectIsKeptOnIt() throws {
+        try hook("SessionStart", session: "s1", project: "inkwell")
+        try hook("SessionStart", session: "s2", project: "inkwell", token: otherToken)
+        try hook(session: "s2", project: "inkwell", token: otherToken)
+        XCTAssertEqual(store.reports.withLock { $0 }, ["remote:inkwell", "remote:inkwell"])
+        let hostIDs = try XCTUnwrap(store.snapshot().projects.first { $0.key == "remote:inkwell" }?.hostIDs)
+        XCTAssertEqual(hostIDs.count, 2)
+        XCTAssertEqual(hostIDs.first, hostID)
     }
 
     func testAnEmptyReadmeIsRecordedSoTheHostIsNotAskedAgainThisWeek() throws {

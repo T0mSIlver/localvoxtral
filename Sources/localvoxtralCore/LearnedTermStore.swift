@@ -216,11 +216,16 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     }
 
     /// A hook from a remote session named its project (#819), and its
-    /// `origin`'s GitHub repository when the host sent one (#926).
-    package func recordRemoteReport(project: LearnedTermProjectIdentity, asRepository: Bool, repository: String?) {
+    /// `origin`'s GitHub repository when the host sent one (#926), and the
+    /// host it came from.
+    package func recordRemoteReport(
+        project: LearnedTermProjectIdentity, asRepository: Bool, repository: String?, hostID: String? = nil
+    ) {
         let moment = now()
         mutate { memory in
-            if memory.recordRemoteReport(project: project, asRepository: asRepository, repository: repository, now: moment) {
+            if memory.recordRemoteReport(
+                project: project, asRepository: asRepository, repository: repository, hostID: hostID, now: moment
+            ) {
                 Log.polishing.info("Learned terms: a remote hook named a new repository")
             }
         }

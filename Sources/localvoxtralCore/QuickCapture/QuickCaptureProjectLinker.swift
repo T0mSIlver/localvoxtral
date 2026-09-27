@@ -11,8 +11,8 @@ package protocol QuickCaptureProjectLinkStoring: Sendable {
 /// Links quick capture's projects to GitHub (#926). A local checkout's
 /// repository is its `origin`, read once a launch; a remote one's comes
 /// from its host's hook (`RemoteQuickCaptureRequests.noteReport`). Then
-/// `gh api` describes each repository once a week, or whenever the Project
-/// descriptions sheet opens. Nothing here waits on the capture path: a
+/// `gh api` describes each repository once a week, or whenever the Projects
+/// pane opens. Nothing here waits on the capture path: a
 /// capture routes with what is already kept.
 @MainActor
 package final class QuickCaptureProjectLinker {
