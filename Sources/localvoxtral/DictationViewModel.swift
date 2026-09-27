@@ -657,6 +657,11 @@ final class DictationViewModel {
             // still clear recordings kept before it was turned off.
             sessionStore?.audioStore = DictationAudioStore(
                 directoryURL: DictationAudioStore.defaultDirectoryURL())
+            // One store for writes and for deletes: a record follows its
+            // History entry the way its audio does.
+            let diagnosticRecordStore = DiagnosticRecordStore()
+            session.diagnosticRecordStore = diagnosticRecordStore
+            sessionStore?.diagnosticRecordStore = diagnosticRecordStore
             sessionStore?.removeOrphanedAudio()
             applyDictationHistoryRetention()
             // Before everything that calls a model, so each one records to it.
@@ -820,12 +825,10 @@ final class DictationViewModel {
             // to run).
             MainActor.assumeIsolated {
                 guard let self else { return }
-                #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
                 // Last chance for a still-open post-commit watch to patch its
                 // record: after this the process is gone and the dictation
                 // would keep no behavior block at all.
-                self.session.dogfoodEditSignalWatcher.flushForTermination()
-                #endif
+                self.session.editSignalWatcher.flushForTermination()
                 // Inline, not in the Task below: a fade would not get to
                 // finish and the Task is not guaranteed to run at all.
                 self.audio.audioDucking.restoreImmediatelyForTermination()

@@ -195,8 +195,8 @@ final class DogfoodControlServiceTests: XCTestCase {
         // Ours begins and ends; the owner then starts one of their own. Two
         // dictation starts, so two generations, and the cap owns neither the
         // second nor anything after it.
-        DogfoodCaptureTap.shared.beginSession()
-        DogfoodCaptureTap.shared.beginSession()
+        DiagnosticCaptureTap.shared.beginSession()
+        DiagnosticCaptureTap.shared.beginSession()
         viewModel.isConnectingRealtimeSession = false
         viewModel.isDictating = true
 
@@ -371,7 +371,7 @@ final class DogfoodControlServiceTests: XCTestCase {
     // MARK: - join report
 
     func testJoinReportIsEmptyBeforeAnyDictationResolvedOne() async {
-        DogfoodCaptureTap.shared.noteResolvedJoin(
+        DiagnosticCaptureTap.shared.noteResolvedJoin(
             ClaudeSessionJoinSummary.summarize(join: nil, abstentions: [])
         )
         let service = makeService(viewModel: makeViewModel())
@@ -386,9 +386,9 @@ final class DogfoodControlServiceTests: XCTestCase {
     /// would steal the abstention chain from the capture record that is about
     /// to be written for the same dictation.
     func testJoinReportDoesNotConsumeTheCaptureRecordsAbstentions() async {
-        DogfoodCaptureTap.shared.beginSession()
-        DogfoodCaptureTap.shared.noteJoinAbstention("tty: stale")
-        DogfoodCaptureTap.shared.noteResolvedJoin(
+        DiagnosticCaptureTap.shared.beginSession()
+        DiagnosticCaptureTap.shared.noteJoinAbstention("tty: stale")
+        DiagnosticCaptureTap.shared.noteResolvedJoin(
             ClaudeSessionJoinSummary.summarize(join: nil, abstentions: ["tty: stale"])
         )
         let service = makeService(viewModel: makeViewModel())
@@ -397,13 +397,13 @@ final class DogfoodControlServiceTests: XCTestCase {
         _ = await expectSuccess(service, .joinReport)
 
         XCTAssertEqual(
-            DogfoodCaptureTap.shared.consumeJoinAbstentions(), ["tty: stale"],
+            DiagnosticCaptureTap.shared.consumeJoinAbstentions(), ["tty: stale"],
             "the record's causes must survive being reported on"
         )
     }
 
     func testJoinReportUsesTheSharedSummaryVocabulary() async {
-        DogfoodCaptureTap.shared.noteResolvedJoin(
+        DiagnosticCaptureTap.shared.noteResolvedJoin(
             ClaudeSessionJoinSummary(
                 arm: "herdrPane",
                 abstentionReason: "tty: no answer",

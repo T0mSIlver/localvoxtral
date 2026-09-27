@@ -9,7 +9,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/launch-app.sh"
 #   ./scripts/e2e-dictation.sh [dist/localvoxtral.app] [scenario-file ...]
 #
 # For each scenario (scripts/e2e/scenarios/*.scenario) it launches the dogfood
-# build with a WAV in place of the microphone (docs/dogfood-builds.md,
+# build with a WAV in place of the microphone (docs/test-harness.md,
 # "Dictating from a file"), focuses a throwaway target window, runs one
 # dictation through the control socket, and scores the text that landed in the
 # target against the phrase that was spoken. Everything between the capture

@@ -46,7 +46,7 @@ expect() {
 expect true "app source" Sources/localvoxtral/DictationViewModel.swift
 expect true "core source" Sources/localvoxtralCore/SessionClock.swift
 expect true "bundled config resource" Sources/localvoxtral/Resources/Config/default.toml
-expect true "test file" Tests/localvoxtralTests/DogfoodCaptureStoreTests.swift
+expect true "test file" Tests/localvoxtralTests/DiagnosticRecordStoreTests.swift
 expect true "manifest" Package.swift
 expect true "lockfile" Package.resolved
 expect true "one Swift file among docs" docs/dictation.md Sources/localvoxtral/SettingsStore.swift
