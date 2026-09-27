@@ -198,6 +198,11 @@ final class LearnedTermProposalTests: XCTestCase {
 
         memory.recordProposal(["Bindery"], revision: 3, agent: .claude, project: project, now: days(3))
         XCTAssertNotNil(term("Quillmark", in: memory), "an answer of the same revision replaces nothing")
+
+        memory.recordProposal(["Folio"], line: "", revision: 2, agent: .claude, project: project, now: days(4))
+        XCTAssertNotNil(term("Bindery", in: memory), "an older runner's late answer replaces nothing")
+        XCTAssertFalse(
+            memory.needsProposal(projectKey: project.key, now: days(400), revision: 3), "nor lowers the revision")
     }
 
     /// Proposals shaped like code, stored before answers were filtered, go

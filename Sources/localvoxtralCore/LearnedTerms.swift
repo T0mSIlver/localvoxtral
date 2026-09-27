@@ -555,7 +555,8 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         now: Date
     ) -> Int {
         let index = projectIndex(for: project, now: now)
-        if let revision, let answered = projects[index].answeredRevision, answered < revision,
+        let previousRevision = projects[index].answeredRevision
+        if let revision, let answered = previousRevision, answered < revision,
            let answeredAt = projects[index].proposedAt
         {
             projects[index].terms.removeAll { $0.isUntouchedProposal && $0.firstSeen == answeredAt }
@@ -571,7 +572,9 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         }
         projects[index].proposedAt = now
         projects[index].proposalAttemptedAt = nil
-        if let revision { projects[index].proposalRevision = revision }
+        // A late answer from an older runner never lowers the revision, or
+        // every newer runner would ask again.
+        if let revision { projects[index].proposalRevision = max(revision, previousRevision ?? revision) }
         if let line {
             projects[index].agentLine = ProjectTermProposal.acceptedLine(line)
             projects[index].agentLineAt = now
