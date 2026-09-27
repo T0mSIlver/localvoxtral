@@ -71,14 +71,18 @@ public enum AgentCLILogs {
     /// `log show --style ndjson` output, oldest first. Lines that are not a
     /// log entry (the closing summary, a warning) are skipped.
     public static func parse(_ output: Data) -> [AgentCLILogLine] {
-        let timestamp = DateFormatter()
-        timestamp.locale = Locale(identifier: "en_US_POSIX")
-        timestamp.dateFormat = "yyyy-MM-dd HH:mm:ss.SSSSSSZ"
+        // `log show` writes microseconds; a line without them still parses.
+        let timestamps = ["yyyy-MM-dd HH:mm:ss.SSSSSSZ", "yyyy-MM-dd HH:mm:ssZ"].map { format in
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = format
+            return formatter
+        }
         return output.split(separator: UInt8(ascii: "\n")).compactMap { line in
             guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
                   let message = object["eventMessage"] as? String,
                   let rawTime = object["timestamp"] as? String,
-                  let at = timestamp.date(from: rawTime)
+                  let at = timestamps.lazy.compactMap({ $0.date(from: rawTime) }).first
             else { return nil }
             let level = switch (object["messageType"] as? String)?.lowercased() {
             case "error": "error"

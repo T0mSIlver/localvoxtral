@@ -243,7 +243,7 @@ final class AgentCLIDoctorTests: XCTestCase {
     func testLogsParsesNdjsonAndSkipsWhatIsNotAnEntry() {
         let output = Data("""
             {"timestamp":"2026-09-21 16:13:20.000000+0200","messageType":"Default","category":"ClaudeContext","eventMessage":"Claude join outcome: arm=tty origin=local causes=none"}
-            {"timestamp":"2026-09-21 16:14:20.500000+0200","messageType":"Error","category":"Backends","eventMessage":"Speech engine failed: <private>"}
+            {"timestamp":"2026-09-21 16:14:20+0200","messageType":"Error","category":"Backends","eventMessage":"Speech engine failed: <private>"}
             {"count":2,"finished":1}
             not json
             """.utf8)
