@@ -61,9 +61,10 @@ struct localvoxtralApp: App {
                         )
                     case .agentNeedsYou:
                         return (
-                            MenuBarIconAsset.attentionIcon ?? idleIcon,
+                            MenuBarIconAsset.attentionIcon(
+                                appDelegate.settingsStore.agentAttentionMark) ?? idleIcon,
                             .original,
-                            "agent-needs-you",
+                            "agent-needs-you-\(appDelegate.settingsStore.agentAttentionMark.rawValue)",
                             "localvoxtral, an agent needs you"
                         )
                     case .failure:
@@ -1441,7 +1442,15 @@ private enum MenuBarIconAsset {
         "MicIconTemplate@2x_failure",
     ])
 
-    static let attentionIcon: NSImage? = idleIcon.map(MenuBarStatusIcon.withAttentionDot(template:))
+    private static var attentionIcons: [AgentAttentionMark: NSImage] = [:]
+
+    static func attentionIcon(_ mark: AgentAttentionMark) -> NSImage? {
+        if let icon = attentionIcons[mark] { return icon }
+        guard let template = idleIcon else { return nil }
+        let icon = MenuBarStatusIcon.withAttentionMark(template: template, mark: mark)
+        attentionIcons[mark] = icon
+        return icon
+    }
 
     private static func adaptiveIcon(coloredCandidates: [String]) -> NSImage? {
         guard let template = idleIcon,

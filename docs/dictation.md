@@ -313,10 +313,11 @@ A Mistral Vibe session tells you only when it finishes, since Vibe reports
 no waits.
 
 Each time, the app shows a macOS banner with a sound, and the menu bar icon
-gets an orange dot. The sound is your alert sound, and macOS controls it:
-turn off **Play sound for notifications** under **System Settings →
-Notifications → localvoxtral** to keep the banner without it. Focus
-silences both. The popover names the session: "payments needs you"
+gets an orange dot. Settings > Dictation > Output can make the dot a square
+or an exclamation mark instead. The sound is your alert sound, and macOS
+controls it: turn off **Play sound for notifications** under **System
+Settings → Notifications → localvoxtral** to keep the banner without it.
+Focus silences both. The popover names the session: "payments needs you"
 or "payments finished". Nothing fires for a turn that ends in the pane you
 are looking at.
 
