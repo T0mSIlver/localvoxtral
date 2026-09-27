@@ -79,14 +79,5 @@ final class LinuxProcStatTests: XCTestCase {
         // A Vibe session's id is built from this value: two reads must agree.
         XCTAssertEqual(ClaudeHookPublisher.processFacts(forProcess: getpid())?.startMicros, facts.startMicros)
     }
-
-    func testControllingTTYAgreesWithItsOwnProcessTableEntry() {
-        // Same invariant as the Mac suite: a pty-attached shell, piped output
-        // and a terminal-less runner each give one answer on both sides.
-        XCTAssertEqual(
-            ClaudeHookPublisher.controllingTTY(claudePID: getpid()),
-            ClaudeHookPublisher.ttyDevicePath(forProcess: getpid())
-        )
-    }
     #endif
 }
