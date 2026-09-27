@@ -377,7 +377,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
         host.beforeScript[3] = {
             let path = host.path(".vibe/localvoxtral/remote/post.sh")
             let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
-            try? text.replacingOccurrences(of: "Hooks-Version: 1.3.0", with: "Hooks-Version: 6.6.6")
+            try? text.replacingOccurrences(of: "Hooks-Version: 1.4.0", with: "Hooks-Version: 6.6.6")
                 .write(toFile: path, atomically: true, encoding: .utf8)
         }
         let failure = try XCTUnwrap(failure { _ = try self.setUp(host) })
