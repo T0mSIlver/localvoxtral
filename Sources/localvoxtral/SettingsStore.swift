@@ -153,6 +153,7 @@ final class SettingsStore {
         static let quickCaptureShortcutEnabled = "settings.quick_capture_shortcut_enabled"
         static let quickCaptureShortcutChord = "settings.quick_capture_shortcut_chord"
         static let quickCaptureJevEnabled = "settings.quick_capture_jev_enabled"
+        static let quickCaptureProjectLines = "settings.quick_capture_project_lines"
         static let jevAPIKeyNeverStored = "settings.jev_api_key"
     }
 
@@ -279,6 +280,21 @@ final class SettingsStore {
             defaults.set(quickCaptureJevEnabled, forKey: Keys.quickCaptureJevEnabled)
             if quickCaptureJevEnabled { ensureSecretsLoaded([.jevAPIKey]) }
         }
+    }
+
+    /// The line the user wrote about each project, by project key, which
+    /// the quick capture router reads with the README summary (#811).
+    var quickCaptureProjectLines: [String: String] {
+        didSet { defaults.set(quickCaptureProjectLines, forKey: Keys.quickCaptureProjectLines) }
+    }
+
+    /// Stores `line` for `projectKey`, cut to what the router reads; a blank
+    /// line removes it. Kept untrimmed, since it is stored as the user types
+    /// (a trailing space is the next word's); the router trims it.
+    func setQuickCaptureProjectLine(_ line: String, for projectKey: String) {
+        let cut = String(line.prefix(QuickCaptureProjects.maxUserLineCharacters))
+        quickCaptureProjectLines[projectKey] =
+            cut.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : cut
     }
 
     /// Hosted transcription model. Empty means
@@ -1044,6 +1060,8 @@ final class SettingsStore {
             secrets, .jevAPIKey, envKey: "TYPESAFE_API_KEY", environment: environment)
         quickCaptureJevEnabled = Self.loadBool(
             defaults: defaults, key: Keys.quickCaptureJevEnabled, fallback: false)
+        quickCaptureProjectLines =
+            defaults.dictionary(forKey: Keys.quickCaptureProjectLines) as? [String: String] ?? [:]
         // Empty is the stored form of "use the pinned default": the defaults
         // live in one place (the client / MistralPolishDefaults) and a user who
         // clears the field gets them back, rather than a blank model name.
