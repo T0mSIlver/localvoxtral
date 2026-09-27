@@ -9,12 +9,20 @@ package struct RealtimeSessionConfiguration: Sendable {
     /// user's own server. Nil records nothing. The Mistral client ignores it:
     /// its socket is always `.mistral`.
     package let usageBackend: UsageEntry.Backend?
+    /// Terms the speech engine may bias its decoding toward, sent as
+    /// `vocabulary` in `session.update`. Only the bundled speech helper reads
+    /// it; leave it empty for any other server.
+    package let vocabulary: [String]
 
-    package init(endpoint: URL, apiKey: String, model: String, usageBackend: UsageEntry.Backend? = nil) {
+    package init(
+        endpoint: URL, apiKey: String, model: String,
+        usageBackend: UsageEntry.Backend? = nil, vocabulary: [String] = []
+    ) {
         self.endpoint = endpoint
         self.apiKey = apiKey
         self.model = model
         self.usageBackend = usageBackend
+        self.vocabulary = vocabulary
     }
 }
 

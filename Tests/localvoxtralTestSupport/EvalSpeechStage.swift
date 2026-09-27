@@ -234,6 +234,7 @@ package enum EvalSpeechStage {
         pcm: Data,
         client: any RealtimeClient,
         endpoint: Endpoint,
+        vocabulary: [String] = [],
         timeout: TimeInterval,
         allowsEmptyTranscript: Bool = false
     ) async throws -> String {
@@ -274,7 +275,8 @@ package enum EvalSpeechStage {
             configuration: .init(
                 endpoint: endpoint.url,
                 apiKey: endpoint.apiKey,
-                model: endpoint.model
+                model: endpoint.model,
+                vocabulary: vocabulary
             )
         )
         let outcome = await XCTWaiter.fulfillment(of: [firstFinal], timeout: timeout)
