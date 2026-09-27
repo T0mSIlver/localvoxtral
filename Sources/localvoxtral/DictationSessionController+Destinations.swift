@@ -39,8 +39,8 @@ enum FrontWindow: Equatable {
 /// the dictation stops listening.
 enum DestinationCommitGuard: Equatable {
     /// The words go into the picked session: the commit target must still
-    /// be that pane's app.
-    case pickedPane(bundleID: String)
+    /// be that pane's app, and its focused pane must still show the session.
+    case pickedPane(bundleID: String, sessionID: String)
     /// A pane may have come forward over the focused app: the commit target
     /// must still be the focused app, and not the pane's app.
     case focusedApp(pid: pid_t?, notBundleID: String)
@@ -253,8 +253,10 @@ extension DictationSessionController {
         switch (state.list.selected, state.front) {
         case (.inbox, _), (.focusedApp, .origin):
             return nil
-        case (.session, .pane(let bundleID, _)):
-            return .pickedPane(bundleID: bundleID)
+        case (.session(let id), .pane(let bundleID, let paneSessionID)):
+            // A pane in front that is not the picked session's cannot take
+            // the words.
+            return paneSessionID == id ? .pickedPane(bundleID: bundleID, sessionID: id) : .unsettled
         case (.focusedApp, .pane(let bundleID, _)):
             return .focusedApp(pid: state.originPID, notBundleID: bundleID)
         case (.session, .origin):
@@ -283,47 +285,117 @@ extension DictationSessionController {
         state.list.refresh(waitingSessionIDs: waiting.map(\.sessionID), focusedSessionID: state.originSessionID)
     }
 
+    /// What the commit does about the destination when picks moved the focus.
+    enum DestinationCommitCheck: Equatable {
+        case commit
+        /// Kept in History as not inserted; the stop is finished.
+        case kept
+        /// Commit once the terminal reads back that its focused pane still
+        /// shows the picked session.
+        case readBack(sessionID: String, bundleID: String)
+    }
+
     /// When picks moved the focus, the words go in only where the overlay
     /// said: into the picked pane while its app is still the commit target
-    /// (the app in front at stop), or into the focused app while no pane
-    /// brought over it is. Otherwise they stay in History as not inserted.
-    /// Returns true when it kept them.
-    func keepInHistoryIfDestinationLeftFront(sessionMode: DictationOutputMode) -> Bool {
-        guard let commitGuard = sessionCommitGuard else { return false }
+    /// (the app in front at stop) and its focused pane still shows the
+    /// session, or into the focused app while no pane brought over it is.
+    /// Two tabs of one terminal share an app, so the pane read-back is what
+    /// tells them apart. What fails keeps the words in History as not
+    /// inserted.
+    func checkDestinationBeforeCommit(sessionMode: DictationOutputMode) -> DestinationCommitCheck {
+        guard let commitGuard = sessionCommitGuard else { return .commit }
         sessionCommitGuard = nil
         let targetPID = overlayBufferCoordinator.commitTargetAppPID
         let targetBundleID = targetPID.flatMap(dependencies.bundleIdentifier)
-        let status: String
         switch commitGuard {
-        case .pickedPane(let bundleID):
-            guard targetBundleID != bundleID else { return false }
-            status = DestinationStatus.paneLeftFront
+        case .pickedPane(let bundleID, let sessionID):
+            guard targetBundleID == bundleID else {
+                keepOverlayInHistory(sessionMode: sessionMode, status: DestinationStatus.paneLeftFront, record: nil)
+                return .kept
+            }
+            return .readBack(sessionID: sessionID, bundleID: bundleID)
         case .focusedApp(let originPID, let paneBundleID):
-            guard targetPID == nil || targetPID != originPID || targetBundleID == paneBundleID else { return false }
-            status = DestinationStatus.originLeftFront
+            guard targetPID == nil || targetPID != originPID || targetBundleID == paneBundleID else { return .commit }
+            keepOverlayInHistory(sessionMode: sessionMode, status: DestinationStatus.originLeftFront, record: nil)
+            return .kept
         case .unsettled:
-            status = DestinationStatus.stoppedWhileSwitching
+            keepOverlayInHistory(sessionMode: sessionMode, status: DestinationStatus.stoppedWhileSwitching, record: nil)
+            return .kept
         }
+    }
+
+    /// Runs `proceed`, the rest of the commit, once the focused pane reads
+    /// back as the picked session's; otherwise keeps the words in History.
+    /// A new dictation started meanwhile saves them as not inserted.
+    func commitAfterPaneReadBack(
+        sessionID: String,
+        bundleID: String,
+        sessionMode: DictationOutputMode,
+        record: StoppedSessionRecordFields,
+        proceed: @escaping @MainActor () -> Void
+    ) {
+        guard let navigator = sessionNavigator else {
+            keepOverlayInHistory(sessionMode: sessionMode, status: DestinationStatus.paneLeftFront, record: record)
+            return
+        }
+        let text = transcript.currentDictationEventText
+        saveInterruptedPolishCommit = { [weak self] in
+            self?.saveSessionRecord(
+                startedAt: record.startedAt, rawText: text, polishedText: nil, polishingDuration: nil,
+                provider: record.provider, model: record.model, outputMode: record.outputMode,
+                targetAppBundleID: nil, status: .sttCompleted, commitSucceeded: false,
+                audio: record.audio, joined: nil
+            )
+        }
+        polishAndCommitTask = Task { @MainActor [weak self] in
+            let shows = await navigator.focusedPaneShows(sessionID: sessionID, bundleID: bundleID)
+            guard let self, !Task.isCancelled else { return }
+            self.saveInterruptedPolishCommit = nil
+            guard shows else {
+                Log.dictation.notice("destination: the focused pane no longer shows the picked session")
+                self.keepOverlayInHistory(sessionMode: sessionMode, status: DestinationStatus.paneLeftFront, record: record)
+                return
+            }
+            proceed()
+        }
+    }
+
+    /// Saves the stopped overlay dictation as not inserted and finishes the
+    /// stop with `status`. `record` is the stop's sample when it was taken.
+    private func keepOverlayInHistory(
+        sessionMode: DictationOutputMode,
+        status: String,
+        record: StoppedSessionRecordFields?
+    ) {
         Log.dictation.notice("destination: the commit target is not the picked window; kept in History")
-        let sessionAudio = audio.sessionRecording.finish()
+        let fields = record ?? {
+            let sessionAudio = audio.sessionRecording.finish()
+            return StoppedSessionRecordFields(
+                startedAt: sessionStartedAt ?? Date(),
+                provider: sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue,
+                model: sessionModelName ?? settings.effectiveModelName,
+                outputMode: sessionMode.rawValue,
+                targetAppBundleID: nil,
+                audio: sessionStoresAudio ? sessionAudio : nil
+            )
+        }()
         saveSessionRecord(
-            startedAt: sessionStartedAt ?? Date(),
+            startedAt: fields.startedAt,
             rawText: transcript.currentDictationEventText,
             polishedText: nil,
             polishingDuration: nil,
-            provider: sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue,
-            model: sessionModelName ?? settings.effectiveModelName,
-            outputMode: sessionMode.rawValue,
+            provider: fields.provider,
+            model: fields.model,
+            outputMode: fields.outputMode,
             targetAppBundleID: nil,
             status: .sttCompleted,
             commitSucceeded: false,
-            audio: sessionStoresAudio ? sessionAudio : nil,
+            audio: fields.audio,
             joined: nil
         )
         overlayBufferCoordinator.reset()
         completeStoppedSessionCleanup(sessionMode: sessionMode, overlayCommitOutcome: nil, shouldCommitOverlay: true)
         statusText = status
-        return true
     }
 
     /// The needs-you queue in answer order, empty while the cue is off.

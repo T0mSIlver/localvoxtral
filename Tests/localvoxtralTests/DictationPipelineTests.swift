@@ -206,6 +206,33 @@ final class DictationPipelineTests: XCTestCase {
         sendPartials(pipeline)
         await stopAndFinalize(pipeline)
         XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
+        XCTAssertEqual(waiting.focuser.readBackSessionIDs, ["pay"], "the stop asked which session the pane shows")
+    }
+
+    /// Two sessions in two tabs of one terminal share its app. The user
+    /// switched tabs between the pick and the stop: the focused pane no
+    /// longer shows the picked session, so the words stay in History.
+    func testATabSwitchInTheSameTerminalAfterThePickKeepsTheWordsInHistory() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let waiting = installWaitingSessions(pipeline, ["pay": "/r/payments"])
+        let terminalPID: pid_t = 5151
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == terminalPID ? TerminalScreenAllowlist.ghosttyBundleID : nil
+        }
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.session.moveDestination(forward: true)
+        await pipeline.viewModel.session.destinationFocusTask?.value
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
+
+        // Same Ghostty, another tab.
+        pipeline.overlay.commitTargetAppPID = terminalPID
+        waiting.focuser.paneStillShowsSession = false
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline, finalStatus: DictationSessionController.DestinationStatus.paneLeftFront)
+
+        XCTAssertEqual(waiting.focuser.readBackSessionIDs, ["pay"])
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "the other tab's session never gets the words")
+        XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
     }
 
     /// Focus moved to another app between the pick and the stop: the words
