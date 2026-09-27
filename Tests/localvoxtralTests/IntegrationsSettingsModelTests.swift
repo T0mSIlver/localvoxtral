@@ -125,11 +125,11 @@ final class IntegrationsSettingsModelTests: XCTestCase {
         }
         let cases: [(name: String, listing: String?, bundled: String, status: ClaudePluginStatus, sentence: String?)] = [
             ("installed", "[{\"id\":\"some-other@market\",\"version\":\"2.0.0\",\"scope\":\"user\",\"enabled\":true},\(ours("1.4.0"))]", "1.4.0", .installed(version: "1.4.0"), "Installed 1.4.0."),
-            ("older than bundled", ours("1.3.0"), "1.4.0", .updateAvailable(installed: "1.3.0", bundled: "1.4.0"), "Update available."),
-            ("newer than bundled", ours("1.5.0"), "1.4.0", .installed(version: "1.5.0"), "Installed 1.5.0."),
+            ("older than bundled", "[\(ours("1.3.0"))]", "1.4.0", .updateAvailable(installed: "1.3.0", bundled: "1.4.0"), "Update available."),
+            ("newer than bundled", "[\(ours("1.5.0"))]", "1.4.0", .installed(version: "1.5.0"), "Installed 1.5.0."),
             ("absent", "[{\"id\":\"some-other@market\",\"version\":\"2.0.0\",\"scope\":\"user\",\"enabled\":true}]", "1.4.0", .notInstalled, "Not installed."),
             ("failed listing", nil, "1.4.0", .unknown, nil),
-            ("listed without a version", ours("unknown"), "1.4.0", .installed(version: nil), "Installed."),
+            ("listed without a version", "[\(ours("unknown"))]", "1.4.0", .installed(version: nil), "Installed."),
             ("another plugin's version is never ours", "[{\"id\":\"claude-tools@other\",\"version\":\"2.1.220\",\"scope\":\"user\",\"enabled\":true},\(ours("unknown"))]", "2.1.220", .installed(version: nil), nil),
         ]
         for row in cases {
