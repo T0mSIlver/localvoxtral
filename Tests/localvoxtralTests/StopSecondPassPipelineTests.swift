@@ -124,18 +124,16 @@ final class StopSecondPassPipelineTests: XCTestCase {
         return transcriber.calls.first?.contextBias
     }
 
-    func testARepositoryTermLeavesOnlyWithTheTrustedEndpointOptIn() async {
-        let untrusted = await contextBias(trusted: false, polish: false)
-        XCTAssertEqual(untrusted, ["localvoxtral", "Claude_Code"])
-        let trusted = await contextBias(trusted: true, polish: false)
-        XCTAssertEqual(trusted, ["localvoxtral", "Claude_Code", "inkwell"])
-    }
-
-    func testThePolishCaptureCarriesTheJoinToTheSecondPass() async {
-        let untrusted = await contextBias(trusted: false, polish: true)
-        XCTAssertEqual(untrusted, ["localvoxtral", "Claude_Code"])
-        let trusted = await contextBias(trusted: true, polish: true)
-        XCTAssertEqual(trusted, ["localvoxtral", "Claude_Code", "inkwell"])
+    /// The join's terms reach the second pass polished or not: a repository
+    /// term leaves only with the trusted-endpoint opt-in, and the polish
+    /// capture does not drop the join on the way.
+    func testARepositoryTermLeavesOnlyWithTheTrustedEndpointOptInPolishedOrNot() async {
+        for polish in [false, true] {
+            let untrusted = await contextBias(trusted: false, polish: polish)
+            XCTAssertEqual(untrusted, ["localvoxtral", "Claude_Code"], "polish: \(polish)")
+            let trusted = await contextBias(trusted: true, polish: polish)
+            XCTAssertEqual(trusted, ["localvoxtral", "Claude_Code", "inkwell"], "polish: \(polish)")
+        }
     }
 
     /// A joined session in a subdirectory of a linked worktree (#705): the

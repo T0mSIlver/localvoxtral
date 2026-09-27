@@ -130,9 +130,10 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         viewModel.session.handle(event: .transcriptionFinalized)
 
-        let timeoutAt = Date().addingTimeInterval(1.0)
-        while viewModel.isFinalizingStop, Date() < timeoutAt {
-            try? await Task.sleep(for: .milliseconds(10))
+        // The disconnect the handler issues comes back through the event
+        // handler's DispatchQueue.main.async hop; yield until it lands.
+        for _ in 0..<1_000 where viewModel.isFinalizingStop {
+            await Task.yield()
         }
 
         XCTAssertFalse(viewModel.isFinalizingStop)
@@ -902,39 +903,28 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(viewModel.transcript.currentDictationEventText, "postgres")
     }
 
-    func testPrepareLLMPolishingPromptAccessSkipsPromptTemplatesWhenDisabled() {
-        let settings = makeSettings(outputMode: .overlayBuffer)
-        let overlayCoordinator = MockOverlayCoordinator()
-        let configStore = MockAppConfigStore()
-        let viewModel = DictationViewModel(
-            settings: settings,
-            overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
-        )
-        viewModel.appConfigStore = configStore
-        retainForTestProcessLifetime(viewModel)
+    func testPrepareLLMPolishingPromptAccessLoadsPromptTemplatesOnlyWhenPolishingIsEnabled() {
+        for polishingEnabled in [false, true] {
+            let settings = makeSettings(outputMode: .overlayBuffer)
+            settings.llmPolishingEnabled = polishingEnabled
+            let overlayCoordinator = MockOverlayCoordinator()
+            let configStore = MockAppConfigStore()
+            let viewModel = DictationViewModel(
+                settings: settings,
+                overlayBufferCoordinator: overlayCoordinator,
+                startRuntimeServices: false
+            )
+            viewModel.appConfigStore = configStore
+            retainForTestProcessLifetime(viewModel)
 
-        viewModel.prepareLLMPolishingPromptAccessIfNeeded()
+            viewModel.prepareLLMPolishingPromptAccessIfNeeded()
 
-        XCTAssertEqual(configStore.loadLLMPromptTemplatesCallCount, 0)
-    }
-
-    func testPrepareLLMPolishingPromptAccessLoadsPromptTemplatesWhenEnabled() {
-        let settings = makeSettings(outputMode: .overlayBuffer)
-        settings.llmPolishingEnabled = true
-        let overlayCoordinator = MockOverlayCoordinator()
-        let configStore = MockAppConfigStore()
-        let viewModel = DictationViewModel(
-            settings: settings,
-            overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
-        )
-        viewModel.appConfigStore = configStore
-        retainForTestProcessLifetime(viewModel)
-
-        viewModel.prepareLLMPolishingPromptAccessIfNeeded()
-
-        XCTAssertEqual(configStore.loadLLMPromptTemplatesCallCount, 1)
+            XCTAssertEqual(
+                configStore.loadLLMPromptTemplatesCallCount,
+                polishingEnabled ? 1 : 0,
+                "polishing enabled: \(polishingEnabled)"
+            )
+        }
     }
 
     func testUnrecoverableDisconnectDuringDictationResetsEscapeCancelFlag() {
