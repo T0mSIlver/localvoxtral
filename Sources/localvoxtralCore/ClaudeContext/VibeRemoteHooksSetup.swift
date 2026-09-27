@@ -105,11 +105,12 @@ extension ClaudeRemoteEnrollmentService {
         }
     }
 
-    /// These runs move FILES: the scripts go out on stdin (about 40 KiB, plus a
-    /// `hooks.toml` of up to 256 KiB), and the probe brings that file back as
+    /// These runs move FILES: the scripts go out on stdin (the Vibe hooks
+    /// about 40 KiB plus a `hooks.toml` of up to 256 KiB, the Claude Code
+    /// marketplace about 70 KiB), and the Vibe probe brings that file back as
     /// base64, all of which the parser needs. The standard budget (8 KiB in,
     /// 2,000 characters back) would refuse the first and truncate the second.
-    package static let vibeRunnerBudget = Invocation.Budget(
+    package static let fileWritingRunnerBudget = Invocation.Budget(
         standardInputBytes: 512 * 1024, outputBytes: 512 * 1024, messageCharacters: 512 * 1024
     )
 
@@ -382,7 +383,7 @@ extension ClaudeRemoteEnrollmentService {
                 argv: ["ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--", sshHostAlias, "/bin/sh", "-s"],
                 standardInput: Data(script.utf8),
                 timeout: max(timeout, 0),
-                budget: Self.vibeRunnerBudget
+                budget: Self.fileWritingRunnerBudget
             ))
         } catch {
             throw sanitizedRunnerError(error, command: command)
