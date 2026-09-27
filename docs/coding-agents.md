@@ -173,13 +173,22 @@ that has no place in the app you are in.
 Your words never reach the focused app. They are saved in History, then shown
 on the **Inbox** page of the localvoxtral window.
 
-1. **Route.** A classifier picks one of your projects: a checkout on this
-   Mac that a dictation joined, or a repository on an ssh host where a
-   session has run (host plugin 1.13.0 or later; an older host lists a
-   project for a week after its last hook). It reads each project's name, the opening of its README (read from a
-   checkout on this Mac, or reported by a remote project's host), and its
-   learned terms. When it is unsure, or two
-   projects tie, the capture stays unplaced.
+1. **Route.** A classifier picks one of your projects:
+
+   - a checkout on this Mac that a dictation joined;
+   - a repository on an ssh host where a session has run, when the host runs
+     the remote plugin 1.13.0 or later;
+   - with an older plugin, the folder a session ran in, which is a worktree's
+     name when the session ran in one. It stays on the list for 7 days after
+     that session's last hook.
+
+   Per-worktree projects that an older plugin left in your learned terms are
+   not offered ([One project per repository](dictation.md#one-project-per-repository)).
+
+   The classifier reads each project's name, the opening of its README (read
+   from a checkout on this Mac, or reported by a remote project's host), and
+   its learned terms. When it is unsure, or two projects tie, the capture
+   stays unplaced.
 
    A README says what a project is, rarely what it has, so the classifier
    also reads a line you write per project: **Settings → Context → Quick
@@ -234,9 +243,9 @@ When you dictate into that session, polishing draws on:
 So a misheard `useAuth.ts`, the branch name you mentioned two turns ago, or
 the flag Claude just wrote into a file come out spelled right.
 
-Here it is inside a [herdr](https://herdr.dev) multiplexer. The join binds
-to the exact Claude pane and uses that pane's screen as context, while the
-neighboring pane stays out of the prompt:
+Here it is inside a [herdr](../integrations/herdr/README.md) multiplexer.
+The join binds to the exact Claude pane and uses that pane's screen as
+context, while the neighboring pane stays out of the prompt:
 
 <!-- herdr demo video: recorded by record-demo.yml (terminal_agent=herdr); regenerate via that workflow and replace the URL below. -->
 
@@ -269,9 +278,9 @@ fields and the threat model.
 > Terminal.app, and [cmux](https://github.com/manaflow-ai/cmux)
 > (opt-in).** localvoxtral asks the terminal itself for the focused
 > pane's TTY and matches it exactly against the session's. Inside a
-> [herdr](https://herdr.dev) multiplexer, the join binds to the precise pane
-> and reads its screen from herdr directly, so neighboring panes never leak
-> into your prompt.
+> [herdr](../integrations/herdr/README.md) multiplexer, the join binds to the
+> precise pane and reads its screen from herdr directly, so neighboring panes
+> never leak into your prompt.
 >
 > In cmux, the join keys on the surface id that cmux itself injects into the
 > session, including shells opened with `cmux ssh`. localvoxtral reads it
@@ -344,8 +353,9 @@ localvoxtral terms propose Featherline QuillDoc --project .
 localvoxtral status
 ```
 
-Every command takes `--json`. `--project` takes a directory, which counts
-every worktree of its repository, or a project name. `--since` takes `today`,
+Every command takes `--json`. `--project` takes a directory or a project
+name. A directory stands for its whole repository: passing any worktree gives
+the same answer as passing the main checkout. `--since` takes `today`,
 `yesterday`, `3d`, `12h`, `30m`, `2w` or a date. Under **History → Don't
 keep**, `history` answers with nothing.
 
@@ -354,8 +364,9 @@ do (see [Dictation](dictation.md)): it applies only where repo vocabulary
 may, and three dictations or a **Pin** make it yours. **Settings → Text
 Processing → Terms learned from polishing → Show** lists it as "Proposed by"
 the agent that ran the command. Claude Code, Codex and opencode are detected;
-Vibe passes `--agent vibe`. Unlike the headless run, a proposal from the
-command does not count as the project's one ask.
+Vibe passes `--agent vibe`. A proposal from the command does not use up the
+project's one ask: with **Ask the coding agent for each new project's terms**
+on, the app still asks the agent once.
 
 The command talks to the running app over the same private socket the hooks
 use. It opens no network port, and only processes running as you can reach
