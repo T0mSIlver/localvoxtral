@@ -225,8 +225,7 @@ History; the panes sit under the sidebar's Settings header.
   group). Dictation accepts an OpenAI Realtime-compatible endpoint. For
   polishing, enter either a base URL such as `http://127.0.0.1:8080` or the
   full chat completions URL; the app appends `/v1/chat/completions` to a base
-  URL. Memory limit caps the dictation helper's buffer cache (2 GB by
-  default). Nemotron never fills it, so the row appears only for Voxtral.
+  URL.
 - **Dictation**: the trigger (single modifier key with tap/hold gestures, or
   per-mode keyboard shortcuts), the menu-bar mode, copy on stop, the **Copy
   last dictation** shortcut, ducking other audio, the spoken "send it"

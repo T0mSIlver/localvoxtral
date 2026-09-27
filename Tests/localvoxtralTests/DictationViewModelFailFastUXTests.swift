@@ -814,20 +814,20 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: false, polishing: true)])
     }
 
-    func testSpeechdCacheLimitChangeRestartsDictationEngineEagerly() async {
+    func testManagedSpeechModelChangeRestartsDictationEngineEagerly() async {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .managedLocal
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.engines.applySpeechdCacheLimitChange(.gb4)
+        viewModel.engines.applyManagedSpeechModelChange(Self.nemotronRepoID)
         await viewModel.engines.dictationShutdownTask?.value
         await viewModel.engines.dictationWarmupTask?.value
 
-        // Owner rule (2026-07-17): changing the memory limit
+        // Owner rule (2026-07-17): changing a speechd launch setting
         // must not require a Managed -> External -> Managed round trip.
-        XCTAssertEqual(viewModel.settings.speechdCacheLimit, .gb4)
+        XCTAssertEqual(viewModel.settings.managedSpeechModel, Self.nemotronRepoID)
         XCTAssertEqual(backendManager.stopDictationCallCount, 1)
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: false)])
     }
@@ -839,10 +839,10 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.engines.applySpeechdCacheLimitChange(.gb4)
+        viewModel.engines.applyManagedSpeechModelChange(Self.nemotronRepoID)
 
         XCTAssertNil(viewModel.engines.dictationShutdownTask)
-        XCTAssertEqual(viewModel.settings.speechdCacheLimit, .gb4)
+        XCTAssertEqual(viewModel.settings.managedSpeechModel, Self.nemotronRepoID)
         XCTAssertEqual(backendManager.stopDictationCallCount, 0)
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
     }
@@ -854,12 +854,14 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.engines.applySpeechdCacheLimitChange(viewModel.settings.speechdCacheLimit)
+        viewModel.engines.applyManagedSpeechModelChange(viewModel.settings.managedSpeechModel)
 
         XCTAssertNil(viewModel.engines.dictationShutdownTask)
         XCTAssertEqual(backendManager.stopDictationCallCount, 0)
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
     }
+
+    private static let nemotronRepoID = "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
 
     func testDictationModeSwitchToManagedStartsDictationWarmup() async {
         let backendManager = FakeManagedBackendManager()
