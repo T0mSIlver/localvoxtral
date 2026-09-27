@@ -3,15 +3,21 @@ import Foundation
 /// One project a quick capture can be routed to (#725), as the classifier
 /// sees it. Repository names alone route badly ("sometimes it's not
 /// representative of the project"), so each goes out with a description:
-/// its README's first paragraph, its own terms, and a line about it: the
-/// user's, else the one its agent wrote (#891).
+/// the user's line, else GitHub's description (#926), else the one its
+/// agent wrote (#891); its README's first paragraphs; GitHub's topics; its
+/// own terms.
 ///
 /// The projects are the learned terms' (`LearnedTerms.listedProjects`), the
-/// same ones the learned-terms sheet shows. Nothing here comes from the
-/// screen or the clipboard.
+/// same ones the learned-terms sheet shows, except that a checkout on the
+/// Mac and one on a host of the same repository are one option here.
+/// Nothing here comes from the screen or the clipboard.
 package struct QuickCaptureProject: Equatable, Sendable {
     /// `LearnedTermProject.key`: a main checkout's path, or `remote:<label>`.
+    /// For a repository checked out in several places, the Mac's checkout
+    /// when there is one, since it drafts without waiting for a host.
     package let key: String
+    /// Every key joined under `repository`, `key` first.
+    package let keys: [String]
     package let name: String
     /// The README's opening paragraphs: read from a local checkout, or kept
     /// from the host's report for a remote project (#745). Nil when neither
@@ -21,33 +27,62 @@ package struct QuickCaptureProject: Equatable, Sendable {
     /// The project's agent's sentence about it (#891), when it answered.
     package let agentLine: String?
     /// What the user wrote about the project, when they did. It replaces
-    /// the agent's sentence.
+    /// GitHub's description and the agent's sentence.
     package let userLine: String?
+    /// `owner/name` from the project's `origin` or the user's answer.
+    package let repository: String?
+    /// Where File sends its issues (`LearnedTermProject.issueRepository`).
+    package let issueRepository: String?
+    package let github: GitHubRepositoryFacts?
 
     package init(
         key: String, name: String, summary: String?, terms: [String],
-        agentLine: String? = nil, userLine: String?
+        agentLine: String? = nil, userLine: String?,
+        keys: [String]? = nil, repository: String? = nil, issueRepository: String? = nil,
+        github: GitHubRepositoryFacts? = nil
     ) {
         self.key = key
+        self.keys = keys ?? [key]
         self.name = name
         self.summary = summary
         self.terms = terms
         self.agentLine = agentLine
         self.userLine = userLine
+        self.repository = repository
+        self.issueRepository = issueRepository ?? repository
+        self.github = github
     }
 
-    /// The description filled in without the user: the agent's sentence,
-    /// else the README summary, cut like the user's line. The Project descriptions sheet shows it
-    /// until the user writes their own.
+    /// GitHub's description, as a sentence, and the upstream a fork has.
+    package var githubLine: String? {
+        guard let github else { return nil }
+        var parts: [String] = []
+        if let description = github.description?.trimmingCharacters(in: .whitespacesAndNewlines), !description.isEmpty {
+            let clipped = QuickCaptureProjects.clipped(description, to: QuickCaptureProjects.maxUserLineCharacters)
+            parts.append(clipped.hasSuffix(".") || clipped.hasSuffix("…") ? clipped : clipped + ".")
+        }
+        if let parent = github.parent { parts.append("A fork of \(parent).") }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+
+    /// The description filled in without the user: GitHub's, else the
+    /// agent's sentence, else the README summary, cut like the user's line.
+    /// The Project descriptions sheet shows it until the user writes their
+    /// own.
     package var automaticLine: String? {
-        agentLine ?? summary.map { QuickCaptureProjects.clipped($0, to: QuickCaptureProjects.maxUserLineCharacters) }
+        githubLine ?? agentLine
+            ?? summary.map { QuickCaptureProjects.clipped($0, to: QuickCaptureProjects.maxUserLineCharacters) }
     }
 
-    /// The text the classifier reads for this option.
+    /// The text the classifier reads for this option, in the order #920
+    /// measured: the line, the README, GitHub's topics, the terms.
     package var description: String {
         var parts: [String] = ["Project \(name)."]
-        if let line = userLine ?? agentLine { parts.append(line) }
+        if let line = userLine ?? githubLine ?? agentLine { parts.append(line) }
         if let summary { parts.append(summary) }
+        if userLine == nil, let topics = github?.topics, !topics.isEmpty {
+            parts.append("Topics: " + topics.prefix(QuickCaptureProjects.maxTopics).joined(separator: ", ") + ".")
+        }
         if !terms.isEmpty { parts.append("Its names: " + terms.joined(separator: ", ") + ".") }
         return parts.joined(separator: " ")
     }
@@ -62,8 +97,13 @@ package enum QuickCaptureProjects {
     package static let summaryParagraphs = 2
     package static let maxUserLineCharacters = 200
 
+    /// GitHub allows 20 topics; the router reads this many.
+    package static let maxTopics = 12
+
     /// Every project a capture can go to (`LearnedTerms.listedProjects`),
-    /// most recent first, each with its description.
+    /// most recent first, each with its description. Projects that name one
+    /// repository are one option (#926): the Mac's checkout's key, else the
+    /// most recent, with the terms of all of them.
     ///
     /// - Parameters:
     ///   - userLines: the user's line per project key.
@@ -74,21 +114,49 @@ package enum QuickCaptureProjects {
         now: Date,
         readme: (String) -> String?
     ) -> [QuickCaptureProject] {
-        learned.listedProjects(now: now).map { project in
-            let terms = learned.confirmedTerms(projectKey: project.key)
-                + learned.unconfirmedProposals(projectKey: project.key)
-            let summary = project.key.hasPrefix("/")
-                ? readme(project.key).flatMap(summary(ofReadme:))
-                : project.summary
-            return QuickCaptureProject(
-                key: project.key,
-                name: project.name,
-                summary: summary.map { clipped($0, to: maxSummaryCharacters) },
-                terms: Array(terms.prefix(maxTerms)),
-                agentLine: project.agentLine,
-                userLine: userLines[project.key]
+        let listed = learned.listedProjects(now: now)
+        var groups: [[LearnedTermProject]] = []
+        var groupOfRepository: [String: Int] = [:]
+        for project in listed {
+            if let repository = project.repository, let index = groupOfRepository[repository] {
+                groups[index].append(project)
+            } else {
+                if let repository = project.repository { groupOfRepository[repository] = groups.count }
+                groups.append([project])
+            }
+        }
+        return groups.map { group in
+            let members = group.filter { $0.key.hasPrefix("/") } + group.filter { !$0.key.hasPrefix("/") }
+            let primary = members[0]
+            var seen = Set<String>()
+            var terms: [String] = []
+            for member in members {
+                for term in learned.confirmedTerms(projectKey: member.key) + learned.unconfirmedProposals(projectKey: member.key)
+                where seen.insert(term.caseFoldedForMatching).inserted {
+                    terms.append(term)
+                }
+            }
+            var summary: String?
+            for member in members where summary == nil {
+                summary = member.key.hasPrefix("/") ? readme(member.key).flatMap(Self.summary(ofReadme:)) : member.summary
+            }
+            let userLine = members.lazy.compactMap { member in
+                userLines[member.key]
                     .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                     .flatMap { $0.isEmpty ? nil : clipped($0, to: maxUserLineCharacters) }
+            }.first
+            let github = members.lazy.compactMap(\.github).first
+            return QuickCaptureProject(
+                key: primary.key,
+                name: primary.name,
+                summary: summary.map { clipped($0, to: maxSummaryCharacters) },
+                terms: Array(terms.prefix(maxTerms)),
+                agentLine: members.lazy.compactMap(\.agentLine).first,
+                userLine: userLine,
+                keys: members.map(\.key),
+                repository: primary.repository,
+                issueRepository: primary.issueRepository,
+                github: github
             )
         }
     }

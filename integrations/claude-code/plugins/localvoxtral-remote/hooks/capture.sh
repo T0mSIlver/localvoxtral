@@ -7,6 +7,7 @@
 #
 #   capture.sh readme <agent> <port> <session-id> <project-dir>
 #   capture.sh draft <agent> <port> <session-id> <project-dir> <draft-id> <lock-dir> [<user-vibe-dir>]
+#   capture.sh repository
 #
 # The draft's lock directory is the shim's one-draft-at-a-time lock; this
 # script removes it when it ends.
@@ -34,6 +35,46 @@ set -u
 set +a
 unset TOKEN
 umask 077
+
+# github_repo <remote-url>: its owner/name when it is a github.com URL
+# (https, ssh with or without a port, git@github.com:), with or without
+# `.git`; nothing otherwise. QuickCaptureFiling.repository(fromRemoteURL:)
+# reads the same shapes on the Mac.
+github_repo() {
+  case "$1" in
+  https://* | http://* | ssh://* | git://*)
+    rest="${1#*://}"
+    host="${rest%%/*}"
+    path="${rest#"$host"}"
+    host="${host##*@}"
+    host="${host%%:*}"
+    ;;
+  *:*)
+    host="${1%%:*}"
+    host="${host##*@}"
+    path="${1#*:}"
+    ;;
+  *) return 0 ;;
+  esac
+  [ "$(printf '%s' "$host" | tr 'A-Z' 'a-z')" = github.com ] || return 0
+  path="${path#/}"
+  path="${path%/}"
+  path="${path%.git}"
+  case "$path" in
+  */*/* | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_./-]*) ;;
+  ?*/?*) echo "$path" ;;
+  esac
+}
+
+# repository prints the owner/name of the current directory's origin when it
+# is on github.com, and nothing otherwise: the hook shim sends it as
+# X-Lvx-Env-Repository (#926), so the Mac files and describes the project
+# without asking. It reads no token and starts nothing.
+if [ "${1:-}" = repository ]; then
+  ORIGIN="$(git remote get-url origin 2>/dev/null)" || exit 0
+  github_repo "$ORIGIN"
+  exit 0
+fi
 
 MODE="${1:-}"
 AGENT="${2:-}"
@@ -142,36 +183,6 @@ watch() {
       kill -KILL "$1" 2>/dev/null
     fi
   ) &
-}
-
-# github_repo <remote-url>: its owner/name when it is a github.com URL
-# (https, ssh with or without a port, git@github.com:), with or without
-# `.git`; nothing otherwise. QuickCaptureFiling.repository(fromRemoteURL:)
-# reads the same shapes on the Mac.
-github_repo() {
-  case "$1" in
-  https://* | http://* | ssh://* | git://*)
-    rest="${1#*://}"
-    host="${rest%%/*}"
-    path="${rest#"$host"}"
-    host="${host##*@}"
-    host="${host%%:*}"
-    ;;
-  *:*)
-    host="${1%%:*}"
-    host="${host##*@}"
-    path="${1#*:}"
-    ;;
-  *) return 0 ;;
-  esac
-  [ "$(printf '%s' "$host" | tr 'A-Z' 'a-z')" = github.com ] || return 0
-  path="${path#/}"
-  path="${path%/}"
-  path="${path%.git}"
-  case "$path" in
-  */*/* | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_./-]*) ;;
-  ?*/?*) echo "$path" ;;
-  esac
 }
 
 # The repository is origin's (#919): in a fork with an `upstream` remote,

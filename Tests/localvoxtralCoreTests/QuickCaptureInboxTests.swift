@@ -11,7 +11,12 @@ final class QuickCaptureInboxTests: XCTestCase {
         let created = Mutex<[[String]]>([])
         var createResult: Result<String, QuickCaptureFiling.Failure> = .success("https://github.com/o/reach/issues/9")
         func repository(ofCheckout path: String) async -> String? { path == "/w/reach" ? "o/reach" : nil }
-        func openIssues(ofCheckout path: String) async -> [QuickCaptureDraft.OpenIssue]? { [] }
+        let issuesListed = Mutex<[String?]>([])
+        func openIssues(ofCheckout path: String, repository: String?) async -> [QuickCaptureDraft.OpenIssue]? {
+            issuesListed.withLock { $0.append(repository) }
+            return []
+        }
+        func repositoryFacts(_ repository: String) async -> GitHubRepositoryFacts? { nil }
         func createIssue(repository: String, title: String, body: String) async -> Result<String, QuickCaptureFiling.Failure> {
             created.withLock { $0.append([repository, title, body]) }
             return createResult
@@ -68,7 +73,7 @@ final class QuickCaptureInboxTests: XCTestCase {
             drafter: {
                 QuickCaptureDrafter(
                     runner: runner,
-                    openIssues: { await github.openIssues(ofCheckout: $0) },
+                    openIssues: { await github.openIssues(ofCheckout: $0, repository: $1) },
                     trackedFiles: { _ in [] },
                     directoryExists: { $0.hasPrefix("/w/") || FileManager.default.fileExists(atPath: $0) },
                     remote: remote
@@ -163,6 +168,33 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(model.items.first?.state, .ready)
         XCTAssertEqual(model.items.first?.note, "Filing failed. Check that gh is logged in.")
         XCTAssertEqual(github.created.withLock { $0.first?.last }, "Dictated:\n\n> Update the about page")
+    }
+
+    /// #926: the project's repository files and lists issues without
+    /// asking gh, a fork set to file upstream does both upstream, and an
+    /// `owner/name` typed for a project with none is kept on it.
+    func testTheProjectsRepositoryIsUsedAndATypedOneIsKept() async throws {
+        let projects = [
+            QuickCaptureProject(
+                key: "/w/tool", name: "tool", summary: nil, terms: [], userLine: nil,
+                repository: "me/tool", issueRepository: "them/tool"),
+            QuickCaptureProject(key: "remote:website", name: "website", summary: nil, terms: [], userLine: nil),
+        ]
+        let model = model(answer: ["tool": 0.95], projects: projects)
+        var answered: [[String]] = []
+        model.onRepositoryAnswered = { answered.append([$0, $1]) }
+        await model.capture(text: "Add a verbose flag", historyRecordID: nil).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        XCTAssertEqual(model.items.first?.repository, "them/tool")
+        XCTAssertEqual(github.issuesListed.withLock { $0 }, ["them/tool"])
+
+        model.setRepository("me/other", for: id)
+        XCTAssertEqual(answered, [], "the project has a repository: the edit stays on this capture")
+
+        await model.move(id, toProjectKey: "remote:website")?.value
+        XCTAssertNil(model.items.first?.repository)
+        model.setRepository("me/website", for: id)
+        XCTAssertEqual(answered, [["remote:website", "me/website"]])
     }
 
     func testARemoteDraftSaysItWaitsForASessionUntilTheHostAnswers() async throws {

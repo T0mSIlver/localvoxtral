@@ -271,7 +271,7 @@ final class QuickCaptureDrafterTests: XCTestCase {
     ) -> QuickCaptureDrafter {
         QuickCaptureDrafter(
             runner: runner,
-            openIssues: { root in
+            openIssues: { root, _ in
                 issuesAsked.roots.withLock { $0.append(root) }
                 return []
             },

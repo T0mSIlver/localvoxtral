@@ -67,8 +67,9 @@ package struct QuickCaptureDraftProcessRunner: QuickCaptureDraftRunning {
 /// issues with the user's `gh`, then asks the first installed agent.
 package struct QuickCaptureDrafter: Sendable {
     private let runner: any QuickCaptureDraftRunning
-    /// The open issues of the repository at a path; nil when `gh` failed.
-    private let openIssues: @Sendable (String) async -> [QuickCaptureDraft.OpenIssue]?
+    /// The open issues of a checkout at a path, in the repository its
+    /// captures are filed in when known; nil when `gh` failed.
+    private let openIssues: @Sendable (String, String?) async -> [QuickCaptureDraft.OpenIssue]?
     private let trackedFiles: @Sendable (String) async -> [String]
     private let directoryExists: @Sendable (String) -> Bool
     /// Drafts on a remote project's host (#745); nil leaves a remote capture
@@ -79,7 +80,7 @@ package struct QuickCaptureDrafter: Sendable {
 
     package init(
         runner: any QuickCaptureDraftRunning,
-        openIssues: @escaping @Sendable (String) async -> [QuickCaptureDraft.OpenIssue]?,
+        openIssues: @escaping @Sendable (String, String?) async -> [QuickCaptureDraft.OpenIssue]?,
         trackedFiles: @escaping @Sendable (String) async -> [String] = ProjectTermProposer.gitTrackedFiles,
         directoryExists: @escaping @Sendable (String) -> Bool = { path in
             var isDirectory: ObjCBool = false
@@ -116,7 +117,7 @@ package struct QuickCaptureDrafter: Sendable {
             return await remote(capture, project)
         }
         guard directoryExists(key) else { return .notRun(.checkoutMissing) }
-        let issues = await openIssues(key)
+        let issues = await openIssues(key, project.issueRepository)
         Log.backends.info(
             "Quick capture draft: \(issues.map { "\($0.count) open issues" } ?? "open issues not listed", privacy: .public)"
         )
@@ -152,19 +153,23 @@ package struct QuickCaptureDrafter: Sendable {
         return last
     }
 
-    /// `gh issue list` of the checkout's repository (`QuickCaptureFiling`'s
-    /// pick), as the app's user. Nil when `gh` is missing, not logged in, or
-    /// the checkout has no GitHub repository.
+    /// `gh issue list` of the repository the project files in, else of the
+    /// checkout's (`QuickCaptureFiling`'s pick), as the app's user. Nil when
+    /// `gh` is missing, not logged in, or the checkout has no GitHub
+    /// repository.
     package static func ghOpenIssues(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         isExecutable: @escaping @Sendable (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
-    ) -> @Sendable (String) async -> [QuickCaptureDraft.OpenIssue]? {
-        { root in
-            guard let gh = ghCandidates(environment: environment).first(where: isExecutable),
-                  let repository = await QuickCaptureFiling.repository(
-                      ofCheckout: root, environment: environment, isExecutable: isExecutable
-                  )
-            else { return nil }
+    ) -> @Sendable (String, String?) async -> [QuickCaptureDraft.OpenIssue]? {
+        { root, known in
+            guard let gh = ghCandidates(environment: environment).first(where: isExecutable) else { return nil }
+            var repository = known.flatMap { QuickCaptureInbox.isRepository($0) ? $0 : nil }
+            if repository == nil {
+                repository = await QuickCaptureFiling.repository(
+                    ofCheckout: root, environment: environment, isExecutable: isExecutable
+                )
+            }
+            guard let repository else { return nil }
             guard let output = await BoundedProcess.run(
                 executableURL: URL(fileURLWithPath: gh),
                 arguments: QuickCaptureDraft.ghIssueListArguments(repository: repository),

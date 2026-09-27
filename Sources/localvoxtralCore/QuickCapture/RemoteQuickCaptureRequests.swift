@@ -6,7 +6,7 @@ import Synchronization
 package protocol RemoteProjectSummaryStoring: Sendable {
     func snapshot() -> LearnedTerms
     func recordSummary(_ summary: String?, projectKey: String)
-    func recordRemoteReport(project: LearnedTermProjectIdentity, asRepository: Bool)
+    func recordRemoteReport(project: LearnedTermProjectIdentity, asRepository: Bool, repository: String?)
 }
 
 /// Quick capture for remote projects (#745), on #641's channel: the Mac
@@ -85,7 +85,7 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
         var drafts: [String: Draft] = [:]
         /// Keyed by project: when a hook's report of it was last recorded,
         /// and whether as a repository.
-        var reported: [String: (at: Date, asRepository: Bool)] = [:]
+        var reported: [String: (at: Date, asRepository: Bool, repository: String?)] = [:]
     }
 
     private let state = Mutex(State())
@@ -174,6 +174,10 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
               project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix)
         else { return }
         let asRepository = snapshot.remoteProject == label
+        // The host's origin names the repository only beside its name.
+        let repository = asRepository
+            ? snapshot.remoteEnvironment?.repository.flatMap { QuickCaptureInbox.isRepository($0) ? $0 : nil }
+            : nil
         // A cwd label stamps only a project a dictation already added. Until
         // then this hook records nothing, so it must not take the interval:
         // the hook right after that dictation is the one to stamp (#891).
@@ -182,15 +186,16 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
         let due = state.withLock { state -> Bool in
             if let last = state.reported[project.key],
                moment.timeIntervalSince(last.at) < Self.reportInterval,
-               last.asRepository || !asRepository
+               last.asRepository || !asRepository,
+               repository == nil || last.repository == repository
             {
                 return false
             }
-            state.reported[project.key] = (moment, asRepository)
+            state.reported[project.key] = (moment, asRepository, repository ?? state.reported[project.key]?.repository)
             return true
         }
         guard due else { return }
-        store.recordRemoteReport(project: project, asRepository: asRepository)
+        store.recordRemoteReport(project: project, asRepository: asRepository, repository: repository)
     }
 
     // MARK: The asks, on an accepted hook's reply
