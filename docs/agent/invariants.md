@@ -2273,7 +2273,12 @@ there is not.
   (`--permission-mode dontAsk --allowedTools Read(./**)`; without it Read
   opens any file, measured 2026-09-27; Vibe's tools are workspace-bound) and
   the shim allows one draft at a time and 20 a day. `capture.sh` never runs
-  `gh` for anything but `issue list`.
+  `gh` for anything but `issue list`. Which remote projects the router sees
+  (#819): a hook adds a project only for a name its host sent as
+  `X-Lvx-Env-Project`; a cwd label only stamps a project already held,
+  because each worktree has its own, and a label no hook has named since is
+  not listed, since no session will report it again. Nothing guesses which
+  repository an old label belonged to.
 - **The SendEnv probe uses a random value that is never logged and never
   interpreted beyond equality.** `probeRemoteEnvironment` mints a fresh nonce
   per call (a UUID by default, injected in tests), exports it into that one

@@ -5,9 +5,10 @@ import Foundation
 /// representative of the project"), so each goes out with a description:
 /// its README's first paragraph, its own terms, and a line the user wrote.
 ///
-/// The projects are the ones the learned-terms file holds, which is every
-/// project a joined dictation has shown the app (#609 stamps each one).
-/// Nothing here comes from the screen or the clipboard.
+/// The projects are the ones the learned-terms file holds: every local
+/// checkout a joined dictation has shown the app (#609 stamps each one), and
+/// every remote repository a hook has named (#819). Nothing here comes from
+/// the screen or the clipboard.
 package struct QuickCaptureProject: Equatable, Sendable {
     /// `LearnedTermProject.key`: a main checkout's path, or `remote:<label>`.
     package let key: String
@@ -46,8 +47,18 @@ package enum QuickCaptureProjects {
     package static let maxSummaryCharacters = 400
     package static let summaryParagraphs = 2
     package static let maxUserLineCharacters = 200
+    /// A remote cwd label is listed this long after a hook last named it.
+    /// Only a host older than plugin 1.13.0 (#652) sends one for a session
+    /// in a repository, and there each worktree has its own label: listed
+    /// while its sessions run, gone a week after.
+    package static let remoteLabelListedDays = 7
 
-    /// Every project in `learned`, most recently dictated first.
+    /// Every project in `learned` a capture can go to, most recent first: a
+    /// local checkout, or a remote project a hook has named since #819 (a
+    /// repository at any time, a cwd label within `remoteLabelListedDays`).
+    /// A remote project no hook has named is a label no session reports any
+    /// more, such as a worktree's from before #652, and the shared bucket is
+    /// no project; neither is listed.
     ///
     /// - Parameters:
     ///   - userLines: the user's line per project key.
@@ -55,11 +66,15 @@ package enum QuickCaptureProjects {
     package static func projects(
         from learned: LearnedTerms,
         userLines: [String: String],
+        now: Date,
         readme: (String) -> String?
     ) -> [QuickCaptureProject] {
-        learned.projects
-            .filter { !$0.key.isEmpty && !$0.name.isEmpty }
-            .sorted { $0.lastSeen > $1.lastSeen }
+        func recency(_ project: LearnedTermProject) -> Date {
+            max(project.lastSeen, project.reportedAt ?? project.lastSeen)
+        }
+        return learned.projects
+            .filter { !$0.key.isEmpty && !$0.name.isEmpty && isListed($0, now: now) }
+            .sorted { recency($0) > recency($1) }
             .map { project in
                 let terms = learned.confirmedTerms(projectKey: project.key)
                     + learned.unconfirmedProposals(projectKey: project.key)
@@ -76,6 +91,15 @@ package enum QuickCaptureProjects {
                         .flatMap { $0.isEmpty ? nil : clipped($0, to: maxUserLineCharacters) }
                 )
             }
+    }
+
+    private static func isListed(_ project: LearnedTermProject, now: Date) -> Bool {
+        if project.key.hasPrefix("/") { return true }
+        guard project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix),
+              let reported = project.reportedAt
+        else { return false }
+        return project.reportedAsRepository == true
+            || now.timeIntervalSince(reported) < Double(remoteLabelListedDays) * 86_400
     }
 
     /// The summary kept for a remote project from the README opening its

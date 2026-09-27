@@ -106,7 +106,7 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     /// Terms, then projects — what the Settings row states.
     package func summary() -> (terms: Int, projects: Int) {
         let terms = snapshot()
-        return (terms.termCount, terms.projects.count)
+        return (terms.termCount, terms.projects.filter { !$0.terms.isEmpty }.count)
     }
 
     // MARK: Writing
@@ -206,6 +206,16 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
             Log.polishing.info(
                 "Learned terms: remote README summary \(kept ? (summary == nil ? "empty" : "kept") : "dropped, project gone", privacy: .public)"
             )
+        }
+    }
+
+    /// A hook from a remote session named its project (#819).
+    package func recordRemoteReport(project: LearnedTermProjectIdentity, asRepository: Bool) {
+        let moment = now()
+        mutate { memory in
+            if memory.recordRemoteReport(project: project, asRepository: asRepository, now: moment) {
+                Log.polishing.info("Learned terms: a remote hook named a new repository")
+            }
         }
     }
 
