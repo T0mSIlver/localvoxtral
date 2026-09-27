@@ -13,6 +13,10 @@ polishing endpoint on loopback. A non-local endpoint receives context only if
 you also turn on **Send context to non-local polishing servers**, which is off
 by default.
 
+What the app keeps on this Mac (your dictations, optionally their audio, and
+diagnostic records of how each was polished) is described under
+[History](dictation.md#history), where each can be turned off and deleted.
+
 If you point localvoxtral at your own External URL server or at the Mistral
 API instead, your audio and transcripts go where you send them. Neither is a
 local endpoint, so the context features still need that setting there.

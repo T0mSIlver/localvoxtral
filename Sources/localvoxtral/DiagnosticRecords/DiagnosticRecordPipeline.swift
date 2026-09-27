@@ -1,5 +1,3 @@
-#if DEBUG || LOCALVOXTRAL_E2E_HARNESS
-
 import Foundation
 import Synchronization
 
@@ -11,8 +9,8 @@ import Synchronization
 /// the resolver returns `nil` for every abstention cause, and the vocabulary
 /// pipeline returns a `GroundingOutcome` that no longer carries its term pool.
 /// Threading them through the return types would fork the production signatures
-/// for a capture that shipped builds do not even compile, so a dogfood build
-/// taps them here instead: producers note, the commit path consumes.
+/// for the record alone, so they are tapped here instead: producers note, the
+/// commit path consumes.
 ///
 /// One dictation at a time by design (the commit path is serialized on the main
 /// actor), so a single slot per fact is enough. `beginSession()` clears both
@@ -23,8 +21,8 @@ import Synchronization
 /// `Mutex` rather than an actor because the producers are on different
 /// isolation domains: the resolver runs on the main actor, the repo-vocabulary
 /// pipeline in a detached utility task.
-final class DogfoodCaptureTap: Sendable {
-    static let shared = DogfoodCaptureTap()
+final class DiagnosticCaptureTap: Sendable {
+    static let shared = DiagnosticCaptureTap()
 
     private struct State {
         /// Which dictation the slots belong to. Bumped by `beginSession`, so a
@@ -52,7 +50,7 @@ final class DogfoodCaptureTap: Sendable {
     /// The join resolver and the herdr panel probe live in the core, which
     /// can't see this tap, so they note abstentions through this sink.
     private init() {
-        ClaudeJoinAbstentionTap.dogfoodSink.withLock {
+        ClaudeJoinAbstentionTap.diagnosticSink.withLock {
             $0 = { [self] cause in noteJoinAbstention(cause) }
         }
     }
@@ -149,14 +147,14 @@ final class DogfoodCaptureTap: Sendable {
     }
 }
 
-/// Assembles a `DogfoodCaptureRecord` from the values the commit path already
+/// Assembles a `DiagnosticRecord` from the values the commit path already
 /// holds, and derives the few record fields that are not literally one of them.
 ///
 /// Pure and `nonisolated`: the harvest re-derivations walk complete retained
 /// buffers (a clipboard can retain 2M characters), and the commit path is
 /// `@MainActor` — so `build` is awaited off-actor exactly like the preparations
 /// whose inputs it mirrors.
-enum DogfoodCaptureBuilder {
+enum DiagnosticRecordBuilder {
     /// Harvest lists are capped in the RECORD, never in matching (which already
     /// ran). 500 terms is comfortably past where scanning a record stops being
     /// how anyone reviews it; `harvestTruncated` says the cap fired so a review
@@ -203,12 +201,12 @@ enum DogfoodCaptureBuilder {
     static func join(
         from join: ClaudeSessionJoin?,
         abstentions: [String]
-    ) -> DogfoodCaptureRecord.Join {
+    ) -> DiagnosticRecord.Join {
         // A resolved join can still have earlier arms' abstentions (tty
         // abstained, the herdr pane arm answered) — kept, because "the tty arm
         // never answers" is invisible in a record that only names the winner.
         let summary = ClaudeSessionJoinSummary.summarize(join: join, abstentions: abstentions)
-        return DogfoodCaptureRecord.Join(
+        return DiagnosticRecord.Join(
             arm: summary.arm,
             abstentionReason: summary.abstentionReason,
             origin: summary.origin,
@@ -222,7 +220,7 @@ enum DogfoodCaptureBuilder {
         from decision: TerminalScreenContextDecision,
         targetBundleID: String?,
         socketPaneSwapApplied: Bool
-    ) -> DogfoodCaptureRecord.Screen {
+    ) -> DiagnosticRecord.Screen {
         let route: String?
         if socketPaneSwapApplied {
             // The swap only ever comes from the joined pane's own socket, so
@@ -271,9 +269,9 @@ enum DogfoodCaptureBuilder {
         decision: String,
         cause: String?,
         sanitizedText: String?
-    ) -> DogfoodCaptureRecord.Screen {
+    ) -> DiagnosticRecord.Screen {
         let truncated = (sanitizedText?.count ?? 0) > sanitizedScreenTextCap
-        return DogfoodCaptureRecord.Screen(
+        return DiagnosticRecord.Screen(
             route: route,
             decision: decision,
             cause: cause,
@@ -285,9 +283,9 @@ enum DogfoodCaptureBuilder {
         )
     }
 
-    static func source(_ inputs: SourceInputs) -> DogfoodCaptureRecord.Source {
+    static func source(_ inputs: SourceInputs) -> DiagnosticRecord.Source {
         let truncated = inputs.harvest.count > harvestTermCap
-        return DogfoodCaptureRecord.Source(
+        return DiagnosticRecord.Source(
             source: inputs.source.rawValue,
             harvest: truncated
                 ? Array(inputs.harvest.prefix(harvestTermCap)) : inputs.harvest,
@@ -303,7 +301,7 @@ enum DogfoodCaptureBuilder {
 
     private static func entries(
         _ entries: [ReplacementEntry]
-    ) -> [DogfoodCaptureRecord.Source.Entry] {
+    ) -> [DiagnosticRecord.Source.Entry] {
         entries.map { .init(term: $0.replaceWith, heard: $0.matches) }
     }
 
@@ -311,14 +309,14 @@ enum DogfoodCaptureBuilder {
         demands: [PolishContextSource: Int],
         grants: [PolishContextSource: Int],
         rendered: [PolishContextSource: Int]
-    ) -> [DogfoodCaptureRecord.Allocation] {
+    ) -> [DiagnosticRecord.Allocation] {
         // Every source that DEMANDED, in allocation-rank order — a source
         // granted zero is the whole of bucket 4 and it leaves no other trace.
         PolishContextSource.allCases.compactMap { source in
             let demand = demands[source] ?? 0
             guard demand > 0 else { return nil }
             let grant = grants[source] ?? 0
-            return DogfoodCaptureRecord.Allocation(
+            return DiagnosticRecord.Allocation(
                 source: source.rawValue,
                 demandedCharacters: demand,
                 grantedCharacters: grant,
@@ -330,9 +328,8 @@ enum DogfoodCaptureBuilder {
 
     /// The candidate term pool for a flat text source — the same derivation
     /// `ClipboardVocabulary.candidateOutcome` starts from, re-run here because
-    /// the outcome discards it. Runs off-actor (this whole type does); a
-    /// dogfood build pays this once per armed dictation and records the cost in
-    /// `Timings.captureMilliseconds`.
+    /// the outcome discards it. Runs off-actor (this whole type does), once per
+    /// recorded dictation, and the cost lands in `Timings.captureMilliseconds`.
     static func textSourceHarvest(_ text: String) -> [String] {
         guard !text.isEmpty else { return [] }
         return ClipboardVocabulary.entities(inExcerpt: text)
@@ -354,8 +351,8 @@ enum DogfoodCaptureBuilder {
 /// A nil text/snapshot means that source never ran this dictation and gets no
 /// `Source` row; an empty-but-present one ran and harvested nothing, which is
 /// exactly the retrieval evidence (bucket 1) the record exists to keep.
-struct DogfoodCaptureInputs: Sendable {
-    var session: DogfoodCaptureRecord.Session
+struct DiagnosticRecordInputs: Sendable {
+    var session: DiagnosticRecord.Session
     var join: ClaudeSessionJoin?
     var joinAbstentions: [String]
     var screenDecision: TerminalScreenContextDecision
@@ -382,11 +379,15 @@ struct DogfoodCaptureInputs: Sendable {
     var screenOutcome: RepoVocabularyMatcher.GroundingOutcome
     var screenRenderedExcerpt: String?
 
-    var text: DogfoodCaptureRecord.Text
+    var text: DiagnosticRecord.Text
     var polishSeconds: Double?
+    /// The prompt the user last sent to the joined agent, which the context
+    /// carried. Only used to take it back out
+    /// (`DiagnosticRecordRedaction.withholdPrompt`); never written.
+    var withheldPrompt: String? = nil
 }
 
-extension DogfoodCaptureBuilder {
+extension DiagnosticRecordBuilder {
     /// The full record, minus timings the caller measures around this call.
     ///
     /// Two `.repository` budget candidates exist (terminal-cwd vocabulary and
@@ -397,9 +398,9 @@ extension DogfoodCaptureBuilder {
     nonisolated static func build(
         id: String,
         capturedAt: Date,
-        inputs: DogfoodCaptureInputs
-    ) -> DogfoodCaptureRecord {
-        var sources: [DogfoodCaptureRecord.Source] = []
+        inputs: DiagnosticRecordInputs
+    ) -> DiagnosticRecord {
+        var sources: [DiagnosticRecord.Source] = []
 
         if inputs.repoVocabularyHarvest != nil || !inputs.repoVocabularyOutcome.entries.isEmpty {
             var row = source(SourceInputs(
@@ -446,7 +447,7 @@ extension DogfoodCaptureBuilder {
             )))
         }
 
-        return DogfoodCaptureRecord(
+        var record = DiagnosticRecord(
             id: id,
             capturedAt: capturedAt,
             session: inputs.session,
@@ -463,11 +464,13 @@ extension DogfoodCaptureBuilder {
             ),
             sources: sources,
             text: inputs.text,
-            timings: DogfoodCaptureRecord.Timings(
+            timings: DiagnosticRecord.Timings(
                 polishSeconds: inputs.polishSeconds,
                 captureMilliseconds: nil
             )
         )
+        DiagnosticRecordRedaction.withholdPrompt(inputs.withheldPrompt, from: &record)
+        return record
     }
 }
 
@@ -477,24 +480,37 @@ extension DogfoodCaptureBuilder {
 /// directory owner, or an encoding surprise costs the RECORD (loudly), never
 /// the commit. The write itself is synchronous file IO on the generic executor
 /// — the user's text was already committed before the capture is assembled.
-enum DogfoodCaptureWriter {
+enum DiagnosticRecordWriter {
     /// Where the record landed, or nil when the write failed (loudly).
     @discardableResult
     nonisolated static func write(
-        _ record: DogfoodCaptureRecord,
-        store: DogfoodCaptureStore
+        _ record: DiagnosticRecord,
+        store: DiagnosticRecordStore,
+        unlessDeletedSince epoch: UInt64? = nil
     ) async -> URL? {
+        writeSynchronously(record, store: store, unlessDeletedSince: epoch)
+    }
+
+    /// The same write, for a caller already off the main actor.
+    nonisolated static func writeSynchronously(
+        _ record: DiagnosticRecord,
+        store: DiagnosticRecordStore,
+        unlessDeletedSince epoch: UInt64? = nil
+    ) -> URL? {
         do {
-            let url = try store.write(record)
-            Log.polishing.info(
-                "Dogfood capture written: \(url.lastPathComponent, privacy: .public)"
+            let url = try store.write(record, unlessDeletedSince: epoch)
+            Log.backends.info(
+                "Diagnostic record written: \(url.lastPathComponent, privacy: .public)"
             )
             return url
+        } catch DiagnosticRecordStore.StoreError.deletedSinceDecision {
+            Log.backends.info("Diagnostic record dropped: records were deleted while it was built")
+            return nil
         } catch {
             // Loud by convention (AGENTS.md): a silent failure path here means
-            // dogfooding quietly collects nothing.
-            Log.polishing.error(
-                "Dogfood capture write failed: \(error.localizedDescription, privacy: .public)"
+            // the records quietly stop.
+            Log.backends.error(
+                "Diagnostic record write failed: \(error.localizedDescription, privacy: .public)"
             )
             return nil
         }
@@ -505,33 +521,32 @@ enum DogfoodCaptureWriter {
     /// been finished for seconds — and, like `write`, it can only ever cost the
     /// record.
     nonisolated static func attach(
-        _ behavior: DogfoodCaptureRecord.Behavior,
+        _ behavior: DiagnosticRecord.Behavior,
         toRecordAt url: URL,
-        store: DogfoodCaptureStore
+        store: DiagnosticRecordStore
     ) async {
         attachSynchronously(behavior, toRecordAt: url, store: store)
     }
 
     /// The same patch, without the hop. Used at app termination, where a `Task`
     /// is not guaranteed to run — see
-    /// `DogfoodEditSignalWatcher.flushForTermination`. The work is one small
+    /// `EditSignalWatcher.flushForTermination`. The work is one small
     /// JSON rewrite either way; only the caller's urgency differs.
     nonisolated static func attachSynchronously(
-        _ behavior: DogfoodCaptureRecord.Behavior,
+        _ behavior: DiagnosticRecord.Behavior,
         toRecordAt url: URL,
-        store: DogfoodCaptureStore
+        store: DiagnosticRecordStore
     ) {
         do {
             try store.attachBehavior(behavior, toRecordAt: url)
-            Log.polishing.info(
-                "Dogfood capture behavior: \(behavior.outcome.rawValue, privacy: .public) (\(behavior.signal?.rawValue ?? "none", privacy: .public), window \(behavior.watchWindowSeconds, privacy: .public)s) -> \(url.lastPathComponent, privacy: .public)"
+            Log.backends.info(
+                "Diagnostic record behavior: \(behavior.outcome.rawValue, privacy: .public) (\(behavior.signal?.rawValue ?? "none", privacy: .public), window \(behavior.watchWindowSeconds, privacy: .public)s) -> \(url.lastPathComponent, privacy: .public)"
             )
         } catch {
-            Log.polishing.error(
-                "Dogfood capture behavior patch failed: \(error.localizedDescription, privacy: .public)"
+            Log.backends.error(
+                "Diagnostic record behavior patch failed: \(error.localizedDescription, privacy: .public)"
             )
         }
     }
 }
 
-#endif

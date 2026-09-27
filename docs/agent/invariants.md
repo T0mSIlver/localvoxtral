@@ -1030,7 +1030,7 @@ there is not.
     ProxyCommand's grandchild stays a root and abstains — conservative on
     purpose. Probe abstentions carry a content-free cause category
     (`SSHProbeIndeterminacy` — never a host, path, or option letter) into the
-    log and the dogfood record, because three field dictations were diagnosed
+    log and the diagnostic record, because three field dictations were diagnosed
     blind without one;
     It then requires that ssh session to BE a plain whole-view herdr client — classified, not
     boolean (`HerdrInvocation`): the remote command's first argv token has
@@ -1308,7 +1308,7 @@ there is not.
     arm's Accessibility read, which switches Electron's accessibility tree on
     and is therefore never a default.
     What the verb PRINTS is bounded by `ClaudeSessionJoinSummary`, the single
-    mapper the dogfood record also uses: an arm name, the resolver's own
+    mapper the diagnostic record also uses: an arm name, the resolver's own
     content-free abstention categories, an origin CLASS, a terminal NAME, and
     two Bools — never a session id, pane id, socket path, host, nonce, or
     workspace path. The live registry is in the app, so the verb restores the
@@ -2379,18 +2379,19 @@ there is not.
     (`scripts/packaging/check-harness-symbols.sh`): a release build fails if
     one is there, a harness build fails if one is missing. Within a build that
     has the socket there is a SECOND runtime gate,
-    `debug.dogfood_control_socket_enabled`, kept separate from the capture's:
-    writing records and accepting commands are different consents.
+    `debug.dogfood_control_socket_enabled`, kept separate from the diagnostic
+    records switch: writing records and accepting commands are different
+    consents.
   - **0700 directory, 0600 socket, and `getpeereid` before the first read.**
     The permissions should already make another uid unable to reach the path.
     The credential check is there because "should" is a claim about the
     filesystem, not about this process.
   - **Every value that crosses is a bool, a count, or a closed enum name.**
     `ClaudeSessionJoinSummary` is reused rather than re-mapped (its third
-    consumer, after the dogfood record and `--probe-surface`), abstention
+    consumer, after the diagnostic record and `--probe-surface`), abstention
     causes are the resolver's own content-free categories, and `registry list`
     reports session SHAPES — never a session id, marker, workspace, tty, pane
-    id, socket path or host. Replies pass through `DogfoodCaptureRedaction` as
+    id, socket path or host. Replies pass through `DiagnosticRecordRedaction` as
     a backstop, not as the strategy.
   - **`session start` reaches `handleModifierOnlyTap`, the gesture's own
     handler.** It is subject to the Secure Keyboard Entry refusal, the

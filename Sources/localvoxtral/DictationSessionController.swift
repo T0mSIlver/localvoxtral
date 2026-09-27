@@ -210,17 +210,16 @@ final class DictationSessionController {
     var llmPolishingService: any LLMPolishingServicing = LLMPolishingService()
     @ObservationIgnored
     var appConfigStore: any AppConfigServing = AppConfigStore()
-    #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
-    /// `var` for the same reason `llmPolishingService` is: tests point it at a
-    /// temp directory. Production uses the Application Support default.
+    /// Where diagnostic records go. Nil without runtime services (tests), so
+    /// a unit test never writes the user's folder; the tests that want one
+    /// point it at a temp directory.
     @ObservationIgnored
-    var dogfoodCaptureStore = DogfoodCaptureStore()
+    var diagnosticRecordStore: DiagnosticRecordStore?
     /// Watches the seconds after a commit for an immediate erase, and patches
     /// that dictation's record with what it saw. `var` for the same reason as
     /// the store: tests inject the clock and the event source.
     @ObservationIgnored
-    var dogfoodEditSignalWatcher = DogfoodEditSignalWatcher()
-    #endif
+    var editSignalWatcher = EditSignalWatcher()
 
     @ObservationIgnored
     var sessionStore: DictationSessionStore?
@@ -1053,12 +1052,10 @@ extension DictationSessionController {
     /// describes the one resolved join, so the overlay cannot disagree with
     /// the context that ships.
     func captureTerminalScreenContextForSession() async {
-        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         // The previous dictation's post-commit edit watch closes here rather
         // than reading this session's keys. It still flushes its own record,
         // as `superseded`.
-        dogfoodEditSignalWatcher.supersede()
-        #endif
+        editSignalWatcher.supersede()
         sessionClaudeJoinBadge = await context.captureAtStart()
         noteDictationJoinedAgentSession(context.claudeSessionJoin?.snapshot.sessionID)
         await context.resolveAgentPromptRoute()

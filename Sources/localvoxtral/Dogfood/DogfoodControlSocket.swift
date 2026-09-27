@@ -41,7 +41,7 @@ import Darwin
 ///   a closed enum name (`DogfoodControlProtocol`); no field is ever built from
 ///   a token, nonce, marker, host, path, tty or pane id. Replies are passed
 ///   through the same shape-matched token scrub the capture records use
-///   (`DogfoodCaptureRedaction`) as a backstop, not as the strategy.
+///   (`DiagnosticRecordRedaction`) as a backstop, not as the strategy.
 /// * **A started session is bounded.** `DogfoodControlService` auto-stops it,
 ///   so a client that disconnects mid-dictation cannot leave the app
 ///   recording.
@@ -58,11 +58,12 @@ import Darwin
 /// serializes commands without a second lock, and a debug socket has exactly
 /// one client.
 final class DogfoodControlSocket: Sendable {
-    /// Deliberately under the app's existing dogfood directory, whose 0700-ness
-    /// the store already depends on — one private place for everything this
-    /// build adds, rather than a second one to audit.
+    /// Under Application Support, in a folder of its own that the scripts
+    /// driving it (`scripts/e2e-dictation.sh`, the UI gate) name literally.
     static func defaultSocketPath() -> String {
-        DogfoodCaptureStore.defaultDirectoryURL()
+        DiagnosticRecordStore.defaultDirectoryURL()
+            .deletingLastPathComponent()
+            .appendingPathComponent("dogfood")
             .appendingPathComponent("control")
             .appendingPathComponent("control.sock")
             .path
@@ -368,7 +369,7 @@ final class DogfoodControlSocket: Sendable {
         // renders a token into a reply, and this catches a future field that
         // forgets.
         var count = 0
-        let scrubbed = DogfoodCaptureRedaction.redacting(reply, count: &count)
+        let scrubbed = DiagnosticRecordRedaction.redacting(reply, count: &count)
         if count > 0 {
             Log.claudeContext.error(
                 "Dogfood control: redacted \(count, privacy: .public) token-shaped run(s) from a reply"
