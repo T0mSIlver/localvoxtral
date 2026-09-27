@@ -1004,7 +1004,7 @@ final class DictationPipelineTests: XCTestCase {
     ) async {
         await pipeline.server.awaitFrame("the final commit", file: file, line: line) { $0.isFinalCommit }
         pipeline.server.send(["type": "transcription.done", "text": finalText])
-        let recorded = await pipeline.records.written.value(failAfter: 10)
+        let recorded = await pipeline.records.waitForCount(1)
         XCTAssertTrue(recorded, "the session never finished and wrote its record", file: file, line: line)
         await pipeline.server.awaitClose(file: file, line: line)
         XCTAssertFalse(pipeline.viewModel.isFinalizingStop, file: file, line: line)
