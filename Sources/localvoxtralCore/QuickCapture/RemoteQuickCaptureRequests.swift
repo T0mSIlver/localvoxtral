@@ -166,7 +166,8 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
     /// reports any more (#819). Every shim version counts: an old one names
     /// its cwd label, which only stamps a project already held.
     package func noteReport(for snapshot: ClaudeSessionSnapshot) {
-        guard case .remote(let hostID) = snapshot.origin,
+        guard case .remote(let channel) = snapshot.origin,
+              let hostID = ClaudeRemoteSessionScope.hostID(fromChannel: channel),
               case .remoteOpaque(let label)? = snapshot.learnedTermWorkspace,
               let project = LearnedTermProjectResolver.resolve(
                   repositoryRoot: .unknown, workspace: snapshot.learnedTermWorkspace

@@ -297,7 +297,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// A remote README summary is asked for again after this long.
     package static let summaryRefreshDays = 7
     /// GitHub's description and topics are fetched again after this long,
-    /// or when the Project descriptions sheet opens.
+    /// or when the Projects pane opens.
     package static let githubRefreshDays = 7
 
     /// Longest spelling remembered. Matches `SpeakerTerms.maxTermCharacters`,

@@ -110,7 +110,7 @@ final class ProjectsPaneTests: XCTestCase {
         let local = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
         let sessions = [
             session("a", cwd: "/w/quill/.claude/worktrees/x", origin: local, agent: .opencode),
-            session("b", cwd: "/elsewhere/quill", origin: .remote(channel: "h1"), agent: .claude),
+            session("b", cwd: "/elsewhere/quill", origin: .remote(channel: "ssh:h1"), agent: .claude),
             session("c", cwd: "/w/quill-other", origin: local, agent: .claude),
             session("d", cwd: "/w/ink", origin: local, agent: .vibe),
         ]

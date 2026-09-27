@@ -298,6 +298,18 @@ final class RemoteQuickCaptureTests: XCTestCase {
         XCTAssertEqual(store.reports.withLock { $0 }, ["remote:inkwell", "remote:inkwell"])
     }
 
+    /// #939: the Projects pane names each host a repository is checked out
+    /// on, so a second host's hook is recorded within the first's interval.
+    func testEachHostThatNamesAProjectIsKeptOnIt() throws {
+        try hook("SessionStart", session: "s1", project: "inkwell")
+        try hook("SessionStart", session: "s2", project: "inkwell", token: otherToken)
+        try hook(session: "s2", project: "inkwell", token: otherToken)
+        XCTAssertEqual(store.reports.withLock { $0 }, ["remote:inkwell", "remote:inkwell"])
+        let hostIDs = try XCTUnwrap(store.snapshot().projects.first { $0.key == "remote:inkwell" }?.hostIDs)
+        XCTAssertEqual(hostIDs.count, 2)
+        XCTAssertEqual(hostIDs.first, hostID)
+    }
+
     func testAnEmptyReadmeIsRecordedSoTheHostIsNotAskedAgainThisWeek() throws {
         XCTAssertEqual(try hook("SessionStart", session: "v1", agent: .vibe).headers[readmeHeader], "wanted")
         XCTAssertEqual(try answer(RemoteQuickCaptureRequests.readmePath, session: "v1", agent: .vibe, body: "").status, 200)

@@ -20,20 +20,6 @@ import SwiftUI
 struct IntegrationsContextSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
-    @State private var isShowingProjectLines = false
-
-    /// The projects the router lists now that have a description: the
-    /// user's, the agent's, or a remote host's README summary (#891).
-    /// Read from memory, never a checkout's README, and re-read on the
-    /// learned terms' revision.
-    private var projectLineCount: Int {
-        _ = viewModel.learnedTermRevision
-        let learned = viewModel.learnedTermStore?.snapshot() ?? LearnedTerms()
-        return learned.listedProjects(now: Date())
-            .filter { settings.quickCaptureProjectLines[$0.key] != nil || $0.agentLine != nil || $0.summary != nil }
-            .count
-    }
-
     /// Where the group's Learn more link lands.
     private enum LearnMore {
         static let polishContext = DocsLink.page("docs/coding-agents/#polish-context-what-each-toggle-sends")
@@ -113,24 +99,6 @@ struct IntegrationsContextSettingsPane: View {
                     SecureField("TypeSafe or Vercel AI Gateway key", text: $settings.jevAPIKey)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: SettingsLayout.textFieldWidth)
-                }
-
-                // Routing reads these lines with or without Jev, so the row
-                // stays whatever the toggle says.
-                SettingsFieldRow(
-                    title: "Project descriptions",
-                    status: "\(projectLineCount)"
-                ) {
-                    Button("Edit…") { isShowingProjectLines = true }
-                        .accessibilityIdentifier("settings.quickCaptureProjectLines.edit")
-                }
-                .sheet(isPresented: $isShowingProjectLines) {
-                    QuickCaptureProjectLinesSheet(
-                        settings: settings,
-                        inbox: viewModel.quickCapture
-                    ) {
-                        isShowingProjectLines = false
-                    }
                 }
             }
             .onAppear {

@@ -1,3 +1,4 @@
+import ClaudeContextWire
 import Foundation
 import Observation
 import Synchronization
@@ -10,10 +11,15 @@ import Synchronization
 final class QuickCaptureInboxViewModel {
     private(set) var items: [QuickCaptureItem] = []
     /// Bumped when a project's repository, GitHub description or filing
-    /// choice lands, so the Project descriptions sheet reads them again.
+    /// choice lands, so the Projects pane reads them again.
     private(set) var projectsRevision = 0
+    /// The agent sessions running now and the enrolled hosts, for the
+    /// Projects pane (#939). The app sets them; empty in tests and previews.
+    @ObservationIgnored var liveSessions: @MainActor () -> [ClaudeSessionSnapshot] = { [] }
+    @ObservationIgnored var enrolledHosts: @MainActor () -> [(id: String, name: String)] = { [] }
     @ObservationIgnored let model: QuickCaptureInboxModel
     @ObservationIgnored private let store: LearnedTermStore?
+    @ObservationIgnored private let learnedTerms: @MainActor () -> LearnedTerms
     @ObservationIgnored private let linker: QuickCaptureProjectLinker?
 
     init(
@@ -56,6 +62,7 @@ final class QuickCaptureInboxViewModel {
             github: github
         )
         store = learnedTermStore
+        self.learnedTerms = learnedTerms
         linker = learnedTermStore.map { QuickCaptureProjectLinker(store: $0, github: github) }
         items = model.items
         model.onChange = { [weak self] in
@@ -70,7 +77,7 @@ final class QuickCaptureInboxViewModel {
 
     /// Links the projects to their repositories and GitHub's descriptions
     /// (#926): at launch and after each capture for what is missing or a
-    /// week old, everything when the Project descriptions sheet opens.
+    /// week old, everything when the Projects pane opens.
     func refreshProjects(force: Bool = false) async {
         guard let store, let linker else { return }
         _ = await store.loadedSnapshot()
@@ -91,6 +98,30 @@ final class QuickCaptureInboxViewModel {
         store.setFilesUpstream(upstream, repository: repository)
         _ = await store.loadedSnapshot()
         projectsRevision += 1
+    }
+
+    /// The `owner/name` the user gave a project with no GitHub `origin`,
+    /// then GitHub's description of it.
+    func setTypedRepository(_ repository: String, projectKey: String) async {
+        guard let store else { return }
+        store.recordTypedRepository(repository, projectKey: projectKey)
+        await refreshProjects()
+    }
+
+    /// The Projects pane's rows (#939).
+    ///
+    /// - Parameter dictationProjectKeys: the project key of each dictation
+    ///   in the last seven days.
+    func projectRows(dictationProjectKeys: [String?]) -> [ProjectsPaneRow] {
+        _ = projectsRevision
+        return ProjectsPane.rows(
+            projects: model.projectChoices,
+            learned: learnedTerms(),
+            captures: items,
+            hostNames: enrolledHosts(),
+            liveSessions: liveSessions(),
+            dictationProjectKeys: dictationProjectKeys
+        )
     }
 
     @ObservationIgnored private var remoteSlot: RemoteDraftsSlot?

@@ -213,7 +213,7 @@ struct SettingsView: View {
         // Context sits among them since PR #310, so its consents are shown
         // by the pane's toggles, not by the row.
         case .general, .dictation, .endpoints, .textProcessing, .integrationsContext, .about,
-            .history, .insights, .inbox:
+            .history, .insights, .inbox, .projects:
             return nil
         }
     }
@@ -325,6 +325,10 @@ struct SettingsView: View {
                     viewModel: viewModel, model: insightsModel, navigator: navigator)
             case .inbox:
                 InboxSettingsPane(inbox: viewModel.quickCapture)
+            case .projects:
+                ProjectsSettingsPane(
+                    settings: settings, viewModel: viewModel, inbox: viewModel.quickCapture,
+                    openInbox: { navigator.selectedTab = .inbox })
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
