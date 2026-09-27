@@ -14,7 +14,10 @@ on:
     # Sundays only (owner decision 2026-09-25): at ~29 min a run it was the
     # largest scheduled load on the Mac, and prompts and model pins change
     # far less often than nightly. Overnight because this lane needs no GUI
-    # session and the machine is idle then.
+    # session and the machine is idle then. GitHub fires it late, often after
+    # the night window, so the dev box's scheduler dispatches it at 04:45
+    # UTC and this cron is the fallback. The guard step below skips a
+    # scheduled run outside the window or after a run that already covered it.
     - cron: "45 4 * * 0"
 
 concurrency:
@@ -23,6 +26,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read # recent-run-guard.sh lists this workflow's runs
 
 jobs:
   eval-e2e:
@@ -39,26 +43,42 @@ jobs:
           # would force a cold MLX C++ + Metal helper rebuild every night).
           clean: false
 
-      - name: Decide whether this scheduled run proceeds (AC power probe)
+      - name: Decide whether this scheduled run proceeds (night window, AC power)
         # Enforced for schedule events only: workflow_dispatch is explicit
         # operator intent and always runs. The runner is the owner's personal
-        # MacBook — the nightly must not drain the battery when the machine
-        # is unplugged (owner request, 2026-07-24). The decision logic lives
-        # in scripts/ci/ac-power-guard.sh (kept out of the workflow so it is
-        # testable — test-ac-power-guard.sh runs in ci.yml's shell-test
-        # step); it fails OPEN on probe errors so a broken probe can never
-        # silently disable the lane.
+        # MacBook, so a scheduled run needs three things:
+        #  * the night window (night-window-guard.sh): GitHub fires the cron
+        #    hours late (#822), and a run that starts after 06:30 UTC would
+        #    still be polishing when the owner starts work at 07:00. 30 is the
+        #    job's ~29 min, rounded up;
+        #  * no other run on main that succeeded or is running in the last
+        #    20 h (recent-run-guard.sh): the dev box's scheduler dispatches
+        #    this eval at 04:45 UTC and the cron is only its fallback, so a
+        #    cron after a dispatch would measure the same thing twice;
+        #  * AC power (ac-power-guard.sh, owner request 2026-07-24): never
+        #    drain the battery. It fails OPEN on probe errors so a broken
+        #    probe can never silently disable the lane.
+        # All three scripts are tested in ci.yml's shell-test step.
         id: guard
         if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          DECISION="$(./scripts/ci/ac-power-guard.sh)"
+          proceeds() { [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" == "true" ]]; }
+          DECISION="$(./scripts/ci/night-window-guard.sh 30)"
+          if proceeds; then
+            DECISION="$(./scripts/ci/recent-run-guard.sh eval-e2e.yml 20)"
+          fi
+          if proceeds; then
+            DECISION="$(./scripts/ci/ac-power-guard.sh)"
+          fi
           echo "$DECISION" >> "$GITHUB_OUTPUT"
           REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
           if [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" == "true" ]]; then
-            echo "E2E eval nightly: RUNNING ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "E2E eval (scheduled): RUNNING ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           else
-            echo "E2E eval nightly: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "E2E eval (scheduled): SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Clean stale outputs (keep build caches)

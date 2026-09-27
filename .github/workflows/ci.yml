@@ -247,6 +247,8 @@ jobs:
             ./scripts/ci/test-e2e-dictation-preconditions.sh \
             ./scripts/ci/test-speech-service-probe.sh \
             ./scripts/ci/test-ac-power-guard.sh \
+            ./scripts/ci/test-night-window-guard.sh \
+            ./scripts/ci/test-recent-run-guard.sh \
             ./scripts/ci/test-llm-lane-filter.sh \
             ./scripts/ci/test-herdr-lane-filter.sh \
             ./scripts/ci/test-helper-lane-filter.sh \
