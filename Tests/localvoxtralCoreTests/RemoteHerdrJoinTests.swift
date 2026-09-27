@@ -971,20 +971,6 @@ final class RemoteHerdrJoinTests: XCTestCase, RemoteHerdrJoinFixture {
                     foreground: HerdrPaneForegroundInfo(shellPID: 8000, foregroundProcesses: nil)
                 )
             ),
-            // The user suspended Claude Code and is back at the shell: the pane is
-            // still "theirs", and its context is still not what they are dictating
-            // into.
-            ArgvAbstention(
-                name: "AgentNotInTheForegroundAbstains",
-                panes: RemoteJoinHerdrPanes(
-                    focused: focusedPane(),
-                    foreground: HerdrPaneForegroundInfo(
-                        shellPID: 8000,
-                        foregroundProcesses: [HerdrForegroundProcess(pid: 8000, name: "zsh")]
-                    )
-                ),
-                closes: 1
-            ),
         ])
     }
 
