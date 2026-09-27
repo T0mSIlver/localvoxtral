@@ -704,6 +704,7 @@ final class DictationViewModel {
                 QuickCaptureInboxViewModel(
                     settings: settings,
                     learnedTerms: { [weak self] in self?.learnedTermStore?.snapshot() ?? LearnedTerms() },
+                    learnedTermStore: learnedTermStore,
                     fileURL: QuickCaptureInboxViewModel.defaultFileURL(),
                     applicationSupport: LearnedTermStore.defaultFileURL().deletingLastPathComponent(),
                     usageRecorder: usageLedger
@@ -936,7 +937,7 @@ extension DictationViewModel {
     func installQuickCaptureInbox(_ inbox: QuickCaptureInboxViewModel) {
         quickCapture = inbox
         session.onQuickCapture = { [weak inbox] text, historyRecordID in
-            _ = inbox?.model.capture(text: text, historyRecordID: historyRecordID)
+            inbox?.capture(text: text, historyRecordID: historyRecordID)
         }
         inbox.model.onStatus = { [weak self] sentence in
             // Mid-session the status line belongs to the session.
@@ -945,6 +946,24 @@ extension DictationViewModel {
         }
         inbox.model.onRouted = { [weak self] recordID, destination in
             self?.sessionStore?.setQuickCaptureDestination(destination, id: recordID)
+        }
+        installDraftCue(for: inbox.model)
+    }
+
+    /// Ready drafts join the needs-you cue (#927), leave it when the Inbox no
+    /// longer holds them as ready drafts, and the answer shortcut reviews
+    /// them against this Inbox.
+    func installDraftCue(for model: QuickCaptureInboxModel) {
+        session.quickCaptureInbox = model
+        model.onDraftReady = { [weak self] item in
+            guard let self, self.settings.agentAttentionEnabled, let projectName = item.projectName else { return }
+            self.agentAttention?.draftReady(id: item.id, projectName: projectName, at: Date())
+        }
+        let observeItems = model.onChange
+        model.onChange = { [weak self, weak model] in
+            observeItems?()
+            guard let self, let model else { return }
+            self.agentAttention?.retainDrafts(in: model.items)
         }
     }
 }

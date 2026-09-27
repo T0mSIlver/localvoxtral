@@ -4,7 +4,8 @@ import os
 
 /// The answer shortcut (#717): brings forward the pane of the session that
 /// needs you (the oldest wait, else the oldest finished turn) and starts an
-/// Overlay Buffer dictation there, so you answer by voice. During an Overlay
+/// Overlay Buffer dictation there, so you answer by voice. With no session
+/// queued it opens the oldest ready draft for review (#927). During an Overlay
 /// Buffer dictation it picks that session as the destination, as Tab would
 /// (#840); pressed on it, or with nobody waiting, it stops the dictation. The pane comes forward through the go-to
 /// primitive (`SessionNavigator`), and the dictation starts only when the
@@ -28,13 +29,18 @@ extension DictationSessionController {
                 : StatusStrings.finalizingPreviousDictation
             return
         }
-        guard let attention = agentAttention, let navigator = sessionNavigator else {
+        guard let attention = agentAttention else {
             Log.dictation.error("answer shortcut: the needs-you queue is not installed; nothing done")
             return
         }
         guard let entry = attention.tracker.next() else {
+            if openOldestReadyDraft() { return }
             Log.dictation.notice("answer shortcut: no session needs you")
             statusText = AnswerAgentStatus.nobodyWaiting
+            return
+        }
+        guard let navigator = sessionNavigator else {
+            Log.dictation.error("answer shortcut: no session navigator; nothing done")
             return
         }
         // Out of the queue whatever the focus comes to: the status line says

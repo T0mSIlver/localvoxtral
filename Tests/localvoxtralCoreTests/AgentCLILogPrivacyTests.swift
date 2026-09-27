@@ -70,15 +70,20 @@ final class AgentCLILogPrivacyTests: XCTestCase {
             Log.polishing.notice("length: \(result.polishedText.count, privacy: .public) mode \(mode.rawValue, privacy: .public)")
             Log.backends.error("inserted \(String(describing: session.insertedText), privacy: .public) ok")
             Log.backends.error("failed: \(error.localizedDescription, privacy: .public)")
+            Log.backends.notice("mode \(drafts ? "first draft" : "agent only", privacy: .public)")
             """#
         let expressions = Self.publicExpressions(in: source)
         XCTAssertEqual(expressions, [
             "result.polishedText", "result.polishedText.count", "mode.rawValue",
             "String(describing: session.insertedText)", "error.localizedDescription",
+            #"drafts ? "first draft" : "agent only""#,
         ])
         XCTAssertEqual(expressions.filter(Self.holdsText), [
             "result.polishedText", "String(describing: session.insertedText)",
         ])
+        // A literal's words are constants; a value interpolated into one is not.
+        XCTAssertTrue(Self.holdsText(#""\(prefix) " + draft + " \(suffix)""#))
+        XCTAssertTrue(Self.holdsText(#""quoted: \(draft)""#))
     }
 
     /// A polish backend's error body can quote the request, so the three
@@ -124,8 +129,53 @@ final class AgentCLILogPrivacyTests: XCTestCase {
         return expressions
     }
 
+    /// The expression with the constant text of its string literals blanked,
+    /// since in `flag ? "draft" : "agent only"` the words are not values. An
+    /// interpolation inside a literal stays: it names one. A literal nested
+    /// in an interpolation also stays, which errs toward a finding.
+    static func withoutLiteralText(_ expression: String) -> String {
+        var output = ""
+        var inLiteral = false
+        var escaped = false
+        var parenDepth = 0
+        var openInterpolations: [Int] = []  // paren depth each `\(` opened at
+        for character in expression {
+            if inLiteral, openInterpolations.isEmpty {
+                if escaped, character == "(" {
+                    openInterpolations.append(parenDepth)
+                    parenDepth += 1
+                    output.append(" ")
+                } else if !escaped, character == "\"" {
+                    inLiteral = false
+                    output.append(" ")
+                }
+                escaped = !escaped && character == "\\"
+                continue
+            }
+            switch character {
+            case "\"":
+                inLiteral = true
+                output.append(" ")
+                continue
+            case "(":
+                parenDepth += 1
+            case ")":
+                parenDepth -= 1
+                if openInterpolations.last == parenDepth {
+                    openInterpolations.removeLast()
+                    output.append(" ")
+                    continue
+                }
+            default:
+                break
+            }
+            output.append(character)
+        }
+        return output
+    }
+
     static func holdsText(_ expression: String) -> Bool {
-        let identifiers = expression.split { !($0.isLetter || $0.isNumber || $0 == "_") }.map(String.init)
+        let identifiers = withoutLiteralText(expression).split { !($0.isLetter || $0.isNumber || $0 == "_") }.map(String.init)
         guard identifiers.contains(where: textNames.contains) else { return false }
         return !safeEndings.contains(identifiers.last ?? "")
     }

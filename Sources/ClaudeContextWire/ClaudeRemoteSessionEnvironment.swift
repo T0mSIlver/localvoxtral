@@ -60,6 +60,11 @@ public enum ClaudeRemoteEnvironmentField: String, CaseIterable, Sendable {
     /// read it through `ClaudeSessionSnapshot.learnedTermWorkspace`, which
     /// re-applies `ClaudeWorkspaceReference`'s label rule.
     case project
+    /// `owner/name` of the session's repository's `origin` when it is on
+    /// github.com (#926), parsed by the shim with `capture.sh repository`.
+    /// A label like `project`: quick capture's filing target, shown to the
+    /// user before File, never a path.
+    case repository
 
     /// The header the shim writes, in its canonical spelling.
     ///
@@ -84,6 +89,7 @@ public enum ClaudeRemoteEnvironmentField: String, CaseIterable, Sendable {
         case .sshConnection: return "X-Lvx-Env-Ssh-Connection"
         case .hookParentPID: return "X-Lvx-Env-Hook-Parent-Pid"
         case .project: return "X-Lvx-Env-Project"
+        case .repository: return "X-Lvx-Env-Repository"
         }
     }
 
@@ -111,6 +117,7 @@ public enum ClaudeRemoteEnvironmentField: String, CaseIterable, Sendable {
         case .sshConnection: return "$SSH_CONNECTION"
         case .hookParentPID: return "$PPID"
         case .project: return "$LVX_PROJECT"
+        case .repository: return "$LVX_REPOSITORY"
         }
     }
 }
@@ -205,6 +212,8 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
     public var hookParentPID: String?
     /// The host's name for the session's repository (`X-Lvx-Env-Project`).
     public var project: String?
+    /// The host's `origin` on GitHub, `owner/name` (`X-Lvx-Env-Repository`).
+    public var repository: String?
 
     public init(
         herdrPaneID: String? = nil,
@@ -222,7 +231,8 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
         localTTY: String? = nil,
         sshConnection: String? = nil,
         hookParentPID: String? = nil,
-        project: String? = nil
+        project: String? = nil,
+        repository: String? = nil
     ) {
         self.herdrPaneID = herdrPaneID
         self.herdrSocketPath = herdrSocketPath
@@ -240,6 +250,7 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
         self.sshConnection = sshConnection
         self.hookParentPID = hookParentPID
         self.project = project
+        self.repository = repository
     }
 
     public var isEmpty: Bool {
@@ -267,6 +278,7 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
             case .sshConnection: return sshConnection
             case .hookParentPID: return hookParentPID
             case .project: return project
+            case .repository: return repository
             }
         }
         set {
@@ -287,6 +299,7 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
             case .sshConnection: sshConnection = newValue
             case .hookParentPID: hookParentPID = newValue
             case .project: project = newValue
+            case .repository: repository = newValue
             }
         }
     }

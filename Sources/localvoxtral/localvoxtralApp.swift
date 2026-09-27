@@ -972,6 +972,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         viewModel.quickCapture?.attachRemote(quickCapture)
+        viewModel.quickCapture?.enrolledHosts = {
+            registry?.hosts().filter { $0.revokedAt == nil }.map { (id: $0.id, name: $0.label) } ?? []
+        }
+        viewModel.quickCapture?.liveSessions = { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() }
 
         let coordinator = registry.map { hosts in
             ClaudeRemoteListenerCoordinator(

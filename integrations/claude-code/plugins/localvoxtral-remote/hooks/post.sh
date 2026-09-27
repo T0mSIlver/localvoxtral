@@ -376,6 +376,16 @@ lvx_project() {
 }
 LVX_PROJECT="$(lvx_project 2>/dev/null)" || LVX_PROJECT=""
 
+# --- Repository (#926) --------------------------------------------------------
+# The owner/name of the repository's origin when it is on github.com, from
+# capture.sh's parser, the one the draft run lists issues with. Asked only
+# inside a repository; anything else, or an origin off GitHub, sends no
+# header. The Mac keeps it on the project as its filing repository.
+LVX_REPOSITORY=""
+if [ -n "$LVX_PROJECT" ] && [ -r "${0%/*}/capture.sh" ]; then
+  LVX_REPOSITORY="$(sh "${0%/*}/capture.sh" repository </dev/null 2>/dev/null)" || LVX_REPOSITORY=""
+fi
+
 # --- Claude Desktop session id ------------------------------------------------
 # Claude Desktop runs each Code-tab session it opens on this host as a direct
 # child of its daemon, ~/.claude/remote/srv/<hash>/server, and exports
@@ -492,6 +502,7 @@ lvx_claude_is_desktop_session() {
   # is a pid in this machine's namespace and the Mac treats it as a label only.
   lvx_env_header 'X-Lvx-Env-Hook-Parent-Pid' "${PPID:-}"
   lvx_env_header 'X-Lvx-Env-Project' "${LVX_PROJECT:-}"
+  lvx_env_header 'X-Lvx-Env-Repository' "${LVX_REPOSITORY:-}"
 ) 2>/dev/null || :
 
 # --- Project terms (#641) ----------------------------------------------------

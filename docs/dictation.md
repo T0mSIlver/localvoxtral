@@ -329,7 +329,9 @@ Press Tab during a dictation until the overlay shows the session, as in
 The optional **Answer the agent that needs you** shortcut does it in one
 press. It brings forward the pane of the session that has waited longest, or
 else the one that finished first, and starts a dictation there. Press it
-again to stop; the next press goes to the next session.
+again to stop; the next press goes to the next session. With no session
+waiting, it opens the oldest ready quick capture draft instead
+([Review a draft by voice](coding-agents.md#review-a-draft-by-voice)).
 
 Like "go to", both reach sessions in Ghostty, iTerm2 and Terminal.app on
 this Mac, and Claude Desktop Code-tab sessions, local or over ssh. For a
@@ -521,13 +523,16 @@ These terms also show as tags in **Suggestions**, with no API credits. The
 app keeps terms per project, and a project is a git repository (see
 [One project per repository](#one-project-per-repository)).
 
-**Advanced → Terms learned from polishing → Show** lists them by project,
-with how often each was applied and when it last was:
+A project's terms are in **Settings → Projects**: click the project, then
+**Show all** beside its terms. **Advanced → Terms learned from polishing →
+Show** lists the rest: terms learned outside any project, and those of
+projects no longer listed. Both lists show how often each term was applied
+and when it last was:
 
 - **Pin** a term to keep it. The app uses it at once and it never expires.
-- **Forget** one, or all of them.
-- **Export…** and **Import…** at the bottom of the list move the terms to
-  another Mac as a JSON file. An import adds to what is there. A term still
+- **Forget** one, or all of them with **Forget** beside **Show**.
+- **Export…** and **Import…** at the bottom of the **Show** list move every
+  term to another Mac as a JSON file. An import adds to what is there. A term still
   being learned stays that way until you have said it in three dictations.
 
 When you say a learned name as ordinary words in a sentence ("we should use
@@ -573,9 +578,9 @@ asked with an older version of the request is asked once more, and its new
 answer replaces the old names you never used or pinned. The app retries a run
 that fails a day later.
 
-The names show in **Terms learned from polishing → Show** as "Proposed by
-Claude Code", "Proposed by Mistral Vibe" or "Proposed by opencode". They are
-suggestions:
+The names show in the project's **Show all** (**Settings → Projects**) as
+"Proposed by Claude Code", "Proposed by Mistral Vibe" or "Proposed by
+opencode". They are suggestions:
 
 - Polishing applies one only where you allow repo vocabulary, and only where
   the transcript spells it out.
@@ -630,7 +635,7 @@ are all kept per project. A project is a git repository, and its worktrees
 belong to it:
 
 - **On this Mac**, a session in any worktree of a repository counts toward
-  that repository. The Learned terms list shows one entry, under the
+  that repository. **Settings → Projects** shows one entry, under the
   repository's name.
 - **On an ssh host**, the same holds once the host runs the remote plugin
   1.13.0 or later. An older plugin sends only the worktree's folder name, so
