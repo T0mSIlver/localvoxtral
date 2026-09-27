@@ -1,4 +1,4 @@
-#if LOCALVOXTRAL_DOGFOOD
+#if DEBUG || LOCALVOXTRAL_E2E_HARNESS
 
 import Foundation
 import Synchronization
@@ -26,12 +26,12 @@ import Darwin
 /// pipeline. It is a deliberate, owner-approved tradeoff, and every bound on it
 /// is load-bearing:
 ///
-/// * **`#if LOCALVOXTRAL_DOGFOOD` and nothing else.** A release build contains
-///   no listener, no path, and no code that could create one. There is no
-///   setting, no environment variable and no argument that turns this on in a
-///   shipped binary — the file is not compiled.
-///   `DogfoodControlBuildBoundaryTests` runs in BOTH configurations and fails
-///   if any of this becomes reachable outside the flag.
+/// * **`#if DEBUG || LOCALVOXTRAL_E2E_HARNESS` and nothing else.** A release
+///   build contains no listener, no path, and no code that could create one.
+///   There is no setting, no environment variable and no argument that turns
+///   this on in a shipped binary — the file is not compiled.
+///   `package_app.sh` searches every release binary for this type and fails
+///   the build if it is there (`scripts/packaging/check-harness-symbols.sh`).
 /// * **0700 directory, 0600 socket, and a peer-UID check anyway.** The
 ///   permissions should already make another uid unable to reach the path;
 ///   `getpeereid` is checked before a single byte is read, so that "should" is
@@ -41,7 +41,7 @@ import Darwin
 ///   a closed enum name (`DogfoodControlProtocol`); no field is ever built from
 ///   a token, nonce, marker, host, path, tty or pane id. Replies are passed
 ///   through the same shape-matched token scrub the capture records use
-///   (`DogfoodCaptureRedaction`) as a backstop, not as the strategy.
+///   (`DiagnosticRecordRedaction`) as a backstop, not as the strategy.
 /// * **A started session is bounded.** `DogfoodControlService` auto-stops it,
 ///   so a client that disconnects mid-dictation cannot leave the app
 ///   recording.
@@ -58,11 +58,12 @@ import Darwin
 /// serializes commands without a second lock, and a debug socket has exactly
 /// one client.
 final class DogfoodControlSocket: Sendable {
-    /// Deliberately under the app's existing dogfood directory, whose 0700-ness
-    /// the store already depends on — one private place for everything this
-    /// build adds, rather than a second one to audit.
+    /// Under Application Support, in a folder of its own that the scripts
+    /// driving it (`scripts/e2e-dictation.sh`, the UI gate) name literally.
     static func defaultSocketPath() -> String {
-        DogfoodCaptureStore.defaultDirectoryURL()
+        DiagnosticRecordStore.defaultDirectoryURL()
+            .deletingLastPathComponent()
+            .appendingPathComponent("dogfood")
             .appendingPathComponent("control")
             .appendingPathComponent("control.sock")
             .path
@@ -368,7 +369,7 @@ final class DogfoodControlSocket: Sendable {
         // renders a token into a reply, and this catches a future field that
         // forgets.
         var count = 0
-        let scrubbed = DogfoodCaptureRedaction.redacting(reply, count: &count)
+        let scrubbed = DiagnosticRecordRedaction.redacting(reply, count: &count)
         if count > 0 {
             Log.claudeContext.error(
                 "Dogfood control: redacted \(count, privacy: .public) token-shaped run(s) from a reply"

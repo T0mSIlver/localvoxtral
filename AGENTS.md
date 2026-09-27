@@ -191,6 +191,10 @@ from your issue and say so in your report. Don't ask whether to file it.
 - Never read a child process pipe with `FileHandle.availableData`. It raises an
   uncatchable ObjC exception on a descriptor error and aborts the app (#60).
   Use `POSIXPipeRead.nextChunk(fromDescriptor:)`.
+- GLM (`zai-glm-*`) on the Mistral API bills the Vibe plan key
+  (`VIBE_MISTRAL_API_KEY`, else `MISTRAL_API_KEY=` in `~/.vibe/.env`), never
+  `MISTRAL_API_KEY` or `~/.config/localvoxtral/mistral_api_key`: that is the
+  pay-per-call Studio key, for Voxtral and the other Mistral models.
 - Backend and lifecycle paths log requests, completions and failures to
   `Log.backends`. Keep new paths loud; silent failures have cost hours of
   remote probing.
@@ -216,6 +220,9 @@ from your issue and say so in your report. Don't ask whether to file it.
   `docs/agent/field-debugging.md`. Dispatch `mac-crashlog.yml` before
   theorizing; install builds with `./scripts/try-pr.sh`.
 - CI lanes and evals: `docs/agent/test-tiers.md`.
+- The diagnostic record (`Sources/localvoxtral/DiagnosticRecords`): its
+  privacy rules in `docs/agent/diagnostic-records.md`. It ships on by
+  default; never add a field that holds the prompt sent to the agent.
 - Showing the owner what a view looks like: `docs/agent/view-snapshots.md`
   (hosted runner, no Mac).
 - Either MLX helper: `PolishHelper/AGENTS.md`, `SpeechHelper/AGENTS.md`.

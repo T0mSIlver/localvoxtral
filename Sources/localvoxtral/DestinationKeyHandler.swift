@@ -2,22 +2,40 @@ import Carbon.HIToolbox
 import Foundation
 import os
 
-/// Tab and ⇧Tab while an Overlay Buffer dictation runs (#840): they move the
-/// overlay to the next or previous destination and never reach the focused
-/// app. Registered as Carbon hotkeys only for the running overlay, the way
-/// `EscapeCancelHandler` registers Escape, so no Input Monitoring is needed
-/// and Live Auto-Paste never takes the keys.
+/// Tab and ⇧Tab, → and ←, while an Overlay Buffer dictation runs (#840,
+/// #880): they move the overlay to the next or previous destination and
+/// never reach the focused app. Registered as Carbon hotkeys only for the
+/// running overlay, the way `EscapeCancelHandler` registers Escape, so no
+/// Input Monitoring is needed and Live Auto-Paste never takes the keys.
 @MainActor
 final class DestinationKeyHandler {
-    /// `true` for Tab, `false` for ⇧Tab.
+    /// The keys that move, each with its hotkey ID.
+    enum Key: UInt32, CaseIterable {
+        case tab = 1
+        case shiftTab = 2
+        case rightArrow = 3
+        case leftArrow = 4
+
+        var forward: Bool { self == .tab || self == .rightArrow }
+
+        fileprivate var keyCode: UInt32 {
+            switch self {
+            case .tab, .shiftTab: UInt32(kVK_Tab)
+            case .rightArrow: UInt32(kVK_RightArrow)
+            case .leftArrow: UInt32(kVK_LeftArrow)
+            }
+        }
+
+        fileprivate var modifiers: UInt32 { self == .shiftTab ? UInt32(shiftKey) : 0 }
+    }
+
+    /// `true` for Tab and →, `false` for ⇧Tab and ←.
     var onMove: ((_ forward: Bool) -> Void)?
 
     private var hotKeyRefs: [EventHotKeyRef] = []
     private var hotKeyHandlerRef: EventHandlerRef?
 
     private static let hotKeySignature = OSType(0x4C564474) // LVDt
-    private static let forwardID = UInt32(1)
-    private static let backwardID = UInt32(2)
     private nonisolated(unsafe) static weak var hotKeyTarget: DestinationKeyHandler?
 
     #if DEBUG
@@ -30,7 +48,7 @@ final class DestinationKeyHandler {
         guard !isRegistered else { return }
         #if DEBUG
         // Under XCTest no real hotkey is taken from the machine running the
-        // suite; tests drive `onMove` through the controller directly.
+        // suite; tests press the keys through `handle(_:)`.
         if TerminalTargetDetector.isRunningUnderXCTest {
             Self.isRegisteredForTesting = true
             return
@@ -43,7 +61,7 @@ final class DestinationKeyHandler {
             GetApplicationEventTarget(),
             { _, eventRef, _ in
                 // Another hotkey on this shared target is passed on, or the
-                // dictation shortcut and Escape go dead while Tab is armed.
+                // dictation shortcut and Escape go dead while these keys are armed.
                 guard let eventRef else { return OSStatus(eventNotHandledErr) }
                 var hotKeyID = EventHotKeyID()
                 let status = GetEventParameter(
@@ -58,9 +76,9 @@ final class DestinationKeyHandler {
                 guard status == noErr, hotKeyID.signature == DestinationKeyHandler.hotKeySignature else {
                     return OSStatus(eventNotHandledErr)
                 }
-                let forward = hotKeyID.id == DestinationKeyHandler.forwardID
+                guard let key = Key(rawValue: hotKeyID.id) else { return OSStatus(eventNotHandledErr) }
                 DispatchQueue.main.async {
-                    DestinationKeyHandler.hotKeyTarget?.onMove?(forward)
+                    DestinationKeyHandler.hotKeyTarget?.handle(key)
                 }
                 return noErr
             },
@@ -70,17 +88,17 @@ final class DestinationKeyHandler {
             &hotKeyHandlerRef
         )
         guard installStatus == noErr else {
-            Log.escape.error("Tab destination hotkey handler install failed with OSStatus \(installStatus, privacy: .public)")
+            Log.escape.error("Destination hotkey handler install failed with OSStatus \(installStatus, privacy: .public)")
             stop()
             return
         }
         Self.hotKeyTarget = self
-        for (id, modifiers) in [(Self.forwardID, UInt32(0)), (Self.backwardID, UInt32(shiftKey))] {
+        for key in Key.allCases {
             var ref: EventHotKeyRef?
             let status = RegisterEventHotKey(
-                UInt32(kVK_Tab),
-                modifiers,
-                EventHotKeyID(signature: Self.hotKeySignature, id: id),
+                key.keyCode,
+                key.modifiers,
+                EventHotKeyID(signature: Self.hotKeySignature, id: key.rawValue),
                 GetApplicationEventTarget(),
                 0,
                 &ref
@@ -88,10 +106,17 @@ final class DestinationKeyHandler {
             if status == noErr, let ref {
                 hotKeyRefs.append(ref)
             } else {
-                Log.escape.error("RegisterEventHotKey for Tab failed with OSStatus \(status, privacy: .public)")
+                Log.escape.error(
+                    "RegisterEventHotKey for destination key \(String(describing: key), privacy: .public) failed with OSStatus \(status, privacy: .public)"
+                )
             }
         }
-        Log.escape.notice("Tab destination hotkeys registered: \(self.hotKeyRefs.count, privacy: .public)")
+        Log.escape.notice("Destination hotkeys registered: \(self.hotKeyRefs.count, privacy: .public)")
+    }
+
+    /// One of the keys was pressed.
+    func handle(_ key: Key) {
+        onMove?(key.forward)
     }
 
     func stop() {

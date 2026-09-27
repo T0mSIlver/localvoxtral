@@ -179,6 +179,26 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
+    /// Context → Quick capture → Project descriptions → Edit… (#811, #891):
+    /// the user's line, the agent's line, a README summary where the agent
+    /// has not answered yet, and a project with none.
+    func testQuickCaptureProjectLinesSheet() throws {
+        let (settings, _) = makeViewModel()
+        settings.setQuickCaptureProjectLine("Dictation app; shortcuts, quick capture, Inbox, polish", for: "remote:demo")
+        let projects = [
+            QuickCaptureProject(key: "remote:demo", name: "demo", summary: "Realtime dictation for the menu bar.", terms: [], userLine: nil),
+            QuickCaptureProject(
+                key: "remote:quill", name: "quill", summary: "Quill typesets Markdown.", terms: [],
+                agentLine: "Markdown to PDF renderer: the qmk CLI, page sizes, fonts, the glyph cache.", userLine: nil),
+            QuickCaptureProject(key: "/work/site", name: "site", summary: "A personal site and blog built with Astro.", terms: [], userLine: nil),
+            QuickCaptureProject(key: "remote:notes", name: "notes", summary: nil, terms: [], userLine: nil),
+        ]
+        try record(
+            QuickCaptureProjectLinesSheet(settings: settings, projects: projects, onDone: {}),
+            name: "quick-capture-project-lines",
+            width: 620, height: 420, growToFit: false)
+    }
+
     /// Dictation → Output → Phrases that press Return (#839): the saved
     /// list, and a refused one with its reason under the row.
     func testSendPhrasesRow() throws {
@@ -229,6 +249,65 @@ final class ViewSnapshotTests: XCTestCase {
                 .padding(12)
                 .background(Color(nsColor: .windowBackgroundColor))
             try record(view, name: "popover-\(state.name)", width: 304, height: 420, growToFit: false)
+        }
+    }
+
+    // MARK: - Menu bar icon
+
+    /// The needs-you marks beside the idle mic, on a light and a dark menu
+    /// bar: at the size the menu bar draws them, and enlarged to 4 pt a
+    /// cell without smoothing, so the pixel grid shows.
+    func testMenuBarAttentionMarks() throws {
+        let template = try MenuBarIconFixture.template()
+        let icons: [(name: String, image: NSImage)] =
+            [("idle", Self.tinted(template))]
+            + AgentAttentionMark.allCases.map {
+                ($0.displayName, MenuBarStatusIcon.withAttentionMark(template: template, mark: $0))
+            }
+        for (theme, appearance, bar) in [
+            ("light", NSAppearance.Name.aqua, Color(white: 0.9)),
+            ("dark", NSAppearance.Name.darkAqua, Color(white: 0.15)),
+        ] {
+            let renders = try icons.map { icon in
+                let rep = try MenuBarIconFixture.render(icon.image, appearance: appearance)
+                let image = NSImage(size: rep.size)
+                image.addRepresentation(rep)
+                return (name: icon.name, image: image)
+            }
+            let view = HStack(alignment: .top, spacing: 20) {
+                ForEach(renders.indices, id: \.self) { index in
+                    let icon = renders[index]
+                    VStack(spacing: 8) {
+                        // The label's frame in `localvoxtralApp`.
+                        Image(nsImage: icon.image)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 13, height: 16)
+                            .frame(height: 24)
+                        Image(nsImage: icon.image)
+                            .resizable()
+                            .interpolation(.none)
+                            .frame(width: 88, height: 88)
+                        Text(icon.name)
+                            .font(.caption)
+                    }
+                }
+            }
+            .padding(16)
+            .background(bar)
+            .environment(\.colorScheme, theme == "light" ? .light : .dark)
+            try record(view, name: "menu-bar-marks-\(theme)", width: 520, height: 200, growToFit: false)
+        }
+    }
+
+    /// The template as the menu bar tints it: in the text color of the
+    /// appearance it is drawn under.
+    private static func tinted(_ template: NSImage) -> NSImage {
+        NSImage(size: template.size, flipped: false) { rect in
+            template.draw(in: rect)
+            NSColor.labelColor.set()
+            rect.fill(using: .sourceAtop)
+            return true
         }
     }
 

@@ -161,7 +161,7 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
 
     static func note(for failure: ProjectTermProposal.Failure) -> String {
         switch failure {
-        case .agentNotFound: "No Claude Code or Mistral Vibe found to draft it."
+        case .agentNotFound: "No Claude Code, Mistral Vibe or opencode found to draft it."
         case .timedOut: "The draft took too long."
         case .budgetExceeded, .turnLimit: "The draft hit its cost or turn limit."
         default: "The draft failed."

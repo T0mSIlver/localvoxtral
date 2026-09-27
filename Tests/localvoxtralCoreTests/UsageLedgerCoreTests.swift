@@ -272,6 +272,36 @@ final class UsageLedgerCoreTests: XCTestCase {
             [UsageEntry(date: moment, feature: .quickCaptureRouting, backend: .jev, model: "jev-latest")])
     }
 
+    /// The Vercel gateway reports Jev's token counts (JevClassifierTests'
+    /// recorded answer); the call is priced at Jev's per-token list price.
+    func testAJevAnswerWithTokenCountsIsPricedPerInputToken() async throws {
+        let ledger = UsageLedger(fileURL: nil)
+        let classifier = JevClassifier(
+            host: .vercelGateway, apiKey: "k", session: StubHTTPProtocol.session(), sleep: { _ in },
+            usageRecorder: ledger, now: { [moment] in moment })
+        StubHTTPProtocol.reply.withLock {
+            $0 = .http(200, #"{"answers":{"project":{"type":"choice","choice":"quill","probabilities":{"quill":0.95,"inbox":0.05}}},"usage":{"inputTokens":358,"outputTokens":45}}"#)
+        }
+        _ = try await classifier.classify(capture: "c", options: Self.options)
+
+        let entry = try XCTUnwrap(ledger.entries().first)
+        XCTAssertEqual(entry.backend, .jev)
+        XCTAssertEqual(entry.model, "typesafe-ai/jev")
+        XCTAssertEqual(entry.promptTokens, 358)
+        XCTAssertEqual(entry.completionTokens, 45)
+        XCTAssertEqual(try XCTUnwrap(entry.costUSD), 358 * 0.042 / 1_000_000, accuracy: 1e-15)
+        let row = try XCTUnwrap(FeatureUsage.summarize(ledger.entries(), since: nil).first)
+        XCTAssertEqual(row.unpricedPaidCalls, 0)
+        XCTAssertEqual(row.line(locale: Locale(identifier: "en_US")), "1 · < $0.01 on Jev")
+        XCTAssertEqual(
+            FeatureUsage.summarize(
+                Array(repeating: entry, count: 1_000) + [UsageEntry(date: moment, feature: .quickCaptureRouting, backend: .jev, model: "jev-latest")],
+                since: nil
+            ).first?.line(locale: Locale(identifier: "en_US")),
+            "1,001 · $0.02 on Jev + 1 unpriced", "an answer without counts stays unpriced"
+        )
+    }
+
     // MARK: -
 
     private func temporaryFile() -> URL {

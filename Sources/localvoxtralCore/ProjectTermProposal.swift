@@ -109,22 +109,30 @@ package enum ProjectTermProposal {
         }
     }
 
+    /// The project's sentence is capped like the user's own line.
+    package static let maxLineCharacters = QuickCaptureProjects.maxUserLineCharacters
+
+    /// The terms, and since #891 one sentence quick capture's router reads:
+    /// a README says what a project is, rarely what it has.
     package static let prompt = """
         List the names someone dictating about this project would say that a \
         speech recognizer is likely to misspell: this project's own modules, \
         types, functions, files, commands, flags, environment variables and \
         product names. Leave out common English words and well-known names. \
-        Read at most six files. Spell each name exactly as the code does. \
-        Reply with JSON only: {"terms": [...]}, at most \(maxTerms) terms.
+        Also describe the project in one sentence of at most \(maxLineCharacters) \
+        characters: what it is, then the features and parts someone would name \
+        when filing an idea for it. Read at most six files. Spell each name \
+        exactly as the code does. Reply with JSON only: \
+        {"terms": [...], "description": "..."}, at most \(maxTerms) terms.
         """
 
     /// Replaces Claude Code's default system prompt, which costs a third more
     /// tokens and asks nothing this run needs (#609 spec measurements).
     package static let claudeSystemPrompt =
-        "You list a code project's own vocabulary for a dictation app. Reply only with the requested JSON."
+        "You list a code project's own vocabulary and describe it for a dictation app. Reply only with the requested JSON."
 
     package static let claudeJSONSchema =
-        #"{"type":"object","properties":{"terms":{"type":"array","items":{"type":"string"},"maxItems":40}},"required":["terms"],"additionalProperties":false}"#
+        #"{"type":"object","properties":{"terms":{"type":"array","items":{"type":"string"},"maxItems":40},"description":{"type":"string"}},"required":["terms","description"],"additionalProperties":false}"#
 
     /// Read, Glob and Grep only: no Bash, no MCP, no hooks. `disableAllHooks`
     /// is what keeps a project's `SessionStart` hook, and our own plugin's,
@@ -182,13 +190,15 @@ package enum ProjectTermProposal {
     /// 2026-09-26, opencode 1.18.31). `--dir` and the working directory are
     /// the same project. No `--model`: the run uses the user's own default,
     /// as Vibe's does.
-    package static func opencodeArguments(workingDirectory: String) -> [String] {
+    package static func opencodeArguments(
+        workingDirectory: String, agentName: String = opencodeAgentName, prompt: String = ProjectTermProposal.prompt
+    ) -> [String] {
         [
             "run",
             "--pure",
             "--format", "json",
             "--dir", workingDirectory,
-            "--agent", opencodeAgentName,
+            "--agent", agentName,
             prompt,
         ]
     }
@@ -216,14 +226,14 @@ package enum ProjectTermProposal {
     /// The run's own agent and permissions, passed as
     /// `OPENCODE_CONFIG_CONTENT`, which opencode merges last. `steps` caps
     /// the tool turns; at the cap opencode forces a text-only answer.
-    package static var opencodeConfig: String {
+    package static func opencodeConfig(agentName: String, steps: Int, systemPrompt: String) -> String {
         let config: [String: Any] = [
             "permission": opencodePermission,
             "agent": [
-                opencodeAgentName: [
+                agentName: [
                     "mode": "primary",
-                    "steps": 12,
-                    "prompt": claudeSystemPrompt,
+                    "steps": steps,
+                    "prompt": systemPrompt,
                     "permission": opencodePermission,
                 ] as [String: Any],
             ],
@@ -235,22 +245,33 @@ package enum ProjectTermProposal {
         return String(decoding: data, as: UTF8.self)
     }
 
-    /// opencode has no price cap, so the run is bounded by 12 steps, 4096
-    /// output tokens per step and `timeoutSeconds`. The rest keeps the run
-    /// out of everything the user owns: an in-memory database, so the run
-    /// never shows in their session list; no project config, so the repo's
-    /// `opencode.json` starts no MCP server and changes no permission; no
-    /// Claude Code or external skills; no update or LSP download.
-    package static let opencodeEnvironment: [String: String] = [
-        "OPENCODE_CONFIG_CONTENT": opencodeConfig,
-        "OPENCODE_DB": ":memory:",
-        "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
-        "OPENCODE_DISABLE_CLAUDE_CODE": "1",
-        "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1",
-        "OPENCODE_DISABLE_AUTOUPDATE": "1",
-        "OPENCODE_DISABLE_LSP_DOWNLOAD": "1",
-        "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX": "4096",
-    ]
+    package static let opencodeSteps = 12
+
+    package static var opencodeConfig: String {
+        opencodeConfig(agentName: opencodeAgentName, steps: opencodeSteps, systemPrompt: claudeSystemPrompt)
+    }
+
+    /// opencode has no price cap, so a run is bounded by its agent's steps,
+    /// `outputTokens` per step, reasoning included, and the caller's timeout. The rest keeps
+    /// the run out of everything the user owns: an in-memory database, so
+    /// the run never shows in their session list; no project config, so the
+    /// repo's `opencode.json` starts no MCP server and changes no
+    /// permission; no Claude Code or external skills; no update or LSP
+    /// download.
+    package static func opencodeEnvironment(config: String, outputTokens: Int = 4096) -> [String: String] {
+        [
+            "OPENCODE_CONFIG_CONTENT": config,
+            "OPENCODE_DB": ":memory:",
+            "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
+            "OPENCODE_DISABLE_CLAUDE_CODE": "1",
+            "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1",
+            "OPENCODE_DISABLE_AUTOUPDATE": "1",
+            "OPENCODE_DISABLE_LSP_DOWNLOAD": "1",
+            "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX": String(outputTokens),
+        ]
+    }
+
+    package static var opencodeEnvironment: [String: String] { opencodeEnvironment(config: opencodeConfig) }
 
     package static func invocation(
         agent: Agent,
@@ -276,7 +297,7 @@ package enum ProjectTermProposal {
 
     // MARK: Answer
 
-    package enum Failure: Equatable, Sendable {
+    package enum Failure: Error, Equatable, Sendable {
         case agentNotFound
         case launchFailed
         case timedOut
@@ -330,9 +351,17 @@ package enum ProjectTermProposal {
     }
 
     package enum Outcome: Equatable, Sendable {
-        /// The agent's list, as it answered. `acceptedTerms` filters it.
-        case terms([String], usage: Usage? = nil)
+        /// The agent's list and sentence, as it answered: `acceptedTerms`
+        /// and `acceptedLine` filter them. The line is nil when the answer
+        /// had no `description`.
+        case terms([String], usage: Usage? = nil, line: String? = nil)
         case failed(Failure)
+    }
+
+    /// An answer object: `{"terms": [...], "description": "..."}`.
+    package struct Answer: Equatable, Sendable {
+        package let terms: [String]
+        package let line: String?
     }
 
     /// `claude -p --output-format json`: one result object. With
@@ -352,12 +381,12 @@ package enum ProjectTermProposal {
         }
         let usage = claudeUsage(object)
         if let structured = object["structured_output"] as? [String: Any],
-           let terms = structured["terms"] as? [Any]
+           let answer = answer(in: structured)
         {
-            return .terms(terms.compactMap { $0 as? String }, usage: usage)
+            return .terms(answer.terms, usage: usage, line: answer.line)
         }
-        if let text = object["result"] as? String, let terms = termsObject(in: text) {
-            return .terms(terms, usage: usage)
+        if let text = object["result"] as? String, let answer = answerObject(in: text) {
+            return .terms(answer.terms, usage: usage, line: answer.line)
         }
         return .failed(.malformedOutput)
     }
@@ -393,8 +422,8 @@ package enum ProjectTermProposal {
         }
         let parts = entries[lastIndex]["content"] as? [[String: Any]] ?? []
         let text = parts.compactMap { $0["text"] as? String }.joined()
-        guard let terms = termsObject(in: text) else { return .failed(.malformedOutput) }
-        return .terms(terms)
+        guard let answer = answerObject(in: text) else { return .failed(.malformedOutput) }
+        return .terms(answer.terms, line: answer.line)
     }
 
     /// `opencode run --format json`: one JSON event per line. The answer is
@@ -403,17 +432,30 @@ package enum ProjectTermProposal {
     /// quota) fails the run whatever came before it. At the step cap
     /// opencode forces a text-only answer, so there is no turn-limit case.
     package static func parseOpencode(stdout: Data, exitCode: Int32) -> Outcome {
+        switch opencodeAnswer(stdout: stdout, exitCode: exitCode) {
+        case .failure(let failure): return .failed(failure)
+        case .success(let answer):
+            guard let object = answerObject(in: answer.text) else { return .failed(.malformedOutput) }
+            return .terms(object.terms, usage: answer.usage, line: object.line)
+        }
+    }
+
+    /// The last text message and the run's usage, or why there is none. The
+    /// terms run and quick-capture drafting (#812) both read this.
+    package static func opencodeAnswer(
+        stdout: Data, exitCode: Int32
+    ) -> Result<(text: String, usage: Usage), Failure> {
         var events: [[String: Any]] = []
         for line in stdout.split(separator: UInt8(ascii: "\n")) where !line.isEmpty {
             guard let event = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else {
-                return .failed(exitCode == 0 ? .malformedOutput : .exit(exitCode))
+                return .failure(exitCode == 0 ? .malformedOutput : .exit(exitCode))
             }
             events.append(event)
         }
         if let error = events.last(where: { $0["type"] as? String == "error" })?["error"] as? [String: Any] {
-            return .failed(.agentError(error["name"] as? String ?? "unknown"))
+            return .failure(.agentError(error["name"] as? String ?? "unknown"))
         }
-        guard exitCode == 0 else { return .failed(.exit(exitCode)) }
+        guard exitCode == 0 else { return .failure(.exit(exitCode)) }
         let texts = events.compactMap { event -> (message: String, text: String)? in
             guard event["type"] as? String == "text",
                   let part = event["part"] as? [String: Any],
@@ -422,10 +464,9 @@ package enum ProjectTermProposal {
             else { return nil }
             return (message, text)
         }
-        guard let lastMessage = texts.last?.message,
-              let terms = termsObject(in: texts.filter { $0.message == lastMessage }.map(\.text).joined())
-        else { return .failed(.malformedOutput) }
-        return .terms(terms, usage: opencodeUsage(events))
+        guard let lastMessage = texts.last?.message else { return .failure(.malformedOutput) }
+        let text = texts.filter { $0.message == lastMessage }.map(\.text).joined()
+        return .success((text, opencodeUsage(events)))
     }
 
     private static func opencodeUsage(_ events: [[String: Any]]) -> Usage {
@@ -451,16 +492,16 @@ package enum ProjectTermProposal {
     /// `{"terms": [...]}`, bare or inside one Markdown code fence, or ending
     /// a text that opens with a sentence or two: a model without a schema
     /// flag sometimes says what it did first (opencode, 2026-09-26).
-    static func termsObject(in text: String) -> [String]? {
-        if let terms = wholeTermsObject(in: text) { return terms }
+    package static func answerObject(in text: String) -> Answer? {
+        if let answer = wholeAnswerObject(in: text) { return answer }
         guard let key = text.range(of: #""terms""#, options: .backwards),
               let open = text[..<key.lowerBound].lastIndex(of: "{"),
               let close = text.lastIndex(of: "}"), close > key.upperBound
         else { return nil }
-        return wholeTermsObject(in: String(text[open...close]))
+        return wholeAnswerObject(in: String(text[open...close]))
     }
 
-    private static func wholeTermsObject(in text: String) -> [String]? {
+    private static func wholeAnswerObject(in text: String) -> Answer? {
         var body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if body.hasPrefix("```") {
             guard let firstNewline = body.firstIndex(of: "\n"),
@@ -470,10 +511,30 @@ package enum ProjectTermProposal {
             body = String(body[body.index(after: firstNewline)..<closing.lowerBound])
         }
         guard let data = body.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let terms = object["terms"] as? [Any]
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
-        return terms.compactMap { $0 as? String }
+        return answer(in: object)
+    }
+
+    private static func answer(in object: [String: Any]) -> Answer? {
+        guard let terms = object["terms"] as? [Any] else { return nil }
+        return Answer(terms: terms.compactMap { $0 as? String }, line: object["description"] as? String)
+    }
+
+    /// The project's sentence is untrusted text too, and the router reads
+    /// it: one line with no control character, no link, and at most
+    /// `maxLineCharacters`. Nil when nothing is left.
+    package static func acceptedLine(_ raw: String) -> String? {
+        let scalars = raw.unicodeScalars.map { scalar -> Character in
+            scalar.properties.generalCategory == .control ? " " : Character(scalar)
+        }
+        let line = String(scalars)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        guard !line.isEmpty,
+              line.range(of: #"https?://|www\.|\]\("#, options: [.regularExpression, .caseInsensitive]) == nil
+        else { return nil }
+        return QuickCaptureProjects.clipped(line, to: maxLineCharacters)
     }
 
     /// The agent's answer is untrusted text that repo contents can steer, so

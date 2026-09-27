@@ -236,10 +236,15 @@ extension LearnedTermProject {
     /// An agent's answer on either side is an answer: a project asked on one
     /// machine, or in one worktree, is not asked again after an import or a
     /// fold. A failed attempt carries only when neither side has an answer.
+    /// The project's sentence (#891) is the newer answer's.
     mutating func carryProposalStamp(from other: LearnedTermProject) {
         proposedAt = [proposedAt, other.proposedAt].compactMap { $0 }.max()
         proposalAttemptedAt = proposedAt == nil
             ? [proposalAttemptedAt, other.proposalAttemptedAt].compactMap { $0 }.max()
             : nil
+        if let theirs = other.agentLineAt, theirs > (agentLineAt ?? .distantPast) {
+            agentLine = other.agentLine
+            agentLineAt = theirs
+        }
     }
 }

@@ -1,5 +1,3 @@
-#if LOCALVOXTRAL_DOGFOOD
-
 import AppKit
 import Carbon.HIToolbox
 import Foundation
@@ -7,7 +5,7 @@ import Synchronization
 import XCTest
 @testable import localvoxtral
 
-// MARK: - Shared doubles (also used by DogfoodCaptureWiringTests)
+// MARK: - Shared doubles (also used by DiagnosticRecordWiringTests)
 
 /// A key source the watcher can be driven from without an event stream, an
 /// Accessibility grant, or the host's keyboard.
@@ -16,16 +14,16 @@ import XCTest
 /// guard is what must reject a late signal, and a double that forgot the handler
 /// would pass those tests without the guard existing.
 @MainActor
-final class DogfoodEditSignalTestMonitor: DogfoodEditKeyMonitoring {
+final class EditSignalTestMonitor: EditKeyMonitoring {
     private(set) var startCount = 0
     private(set) var stopCount = 0
     private(set) var isInstalled = false
     /// Set false to stand in for the untrusted-Accessibility case, where the
     /// real monitor never goes up.
     var canInstall = true
-    private var handler: (@MainActor (DogfoodEditSignal) -> Void)?
+    private var handler: (@MainActor (EditSignal) -> Void)?
 
-    func start(_ handler: @escaping @MainActor (DogfoodEditSignal) -> Void) -> Bool {
+    func start(_ handler: @escaping @MainActor (EditSignal) -> Void) -> Bool {
         startCount += 1
         guard canInstall else { return false }
         isInstalled = true
@@ -38,7 +36,7 @@ final class DogfoodEditSignalTestMonitor: DogfoodEditKeyMonitoring {
         isInstalled = false
     }
 
-    func send(_ signal: DogfoodEditSignal) {
+    func send(_ signal: EditSignal) {
         handler?(signal)
     }
 }
@@ -50,7 +48,7 @@ final class DogfoodEditSignalTestMonitor: DogfoodEditKeyMonitoring {
 /// does not necessarily reach the sleep before the test's next statement runs —
 /// an un-latched fire would resume nobody and the window would then wait
 /// forever, hanging the suite rather than failing it.
-final class DogfoodManualSleeper: Sendable {
+final class EditSignalManualSleeper: Sendable {
     private struct State {
         var requested: [Duration] = []
         var waiters: [CheckedContinuation<Void, Never>] = []
@@ -110,7 +108,7 @@ final class DogfoodManualSleeper: Sendable {
 }
 
 /// Injected clock, mirroring `CaptureTestClock` in the store suite.
-final class DogfoodTestClock: Sendable {
+final class EditSignalTestClock: Sendable {
     private let value = Mutex(Date(timeIntervalSince1970: 1_800_000_000))
 
     func now() -> Date { value.withLock { $0 } }
@@ -124,7 +122,7 @@ final class DogfoodTestClock: Sendable {
 /// The post-commit behavioral signal: the ladder, the key mapping, and the
 /// watch window's lifecycle.
 @MainActor
-final class DogfoodEditSignalTests: XCTestCase {
+final class EditSignalTests: XCTestCase {
     // MARK: Policy
 
     func testWindowLadderBoundaries() {
@@ -136,7 +134,7 @@ final class DogfoodEditSignalTests: XCTestCase {
         ]
         for (words, expected) in cases {
             XCTAssertEqual(
-                DogfoodEditSignalPolicy.windowSeconds(wordCount: words), expected,
+                EditSignalPolicy.windowSeconds(wordCount: words), expected,
                 "\(words) words"
             )
         }
@@ -151,7 +149,7 @@ final class DogfoodEditSignalTests: XCTestCase {
         ]
         for (words, expected) in cases {
             XCTAssertEqual(
-                DogfoodEditSignalPolicy.wordCountBucket(words), expected, "\(words) words"
+                EditSignalPolicy.wordCountBucket(words), expected, "\(words) words"
             )
         }
     }
@@ -165,15 +163,15 @@ final class DogfoodEditSignalTests: XCTestCase {
         ]
         for (seconds, expected) in cases {
             XCTAssertEqual(
-                DogfoodEditSignalPolicy.secondsSinceCommitBucket(seconds), expected,
+                EditSignalPolicy.secondsSinceCommitBucket(seconds), expected,
                 "\(seconds)s"
             )
         }
     }
 
     func testWordCountIgnoresWhitespaceRuns() {
-        XCTAssertEqual(DogfoodEditSignalPolicy.wordCount(of: "  run   the tests\n"), 3)
-        XCTAssertEqual(DogfoodEditSignalPolicy.wordCount(of: "   "), 0)
+        XCTAssertEqual(EditSignalPolicy.wordCount(of: "  run   the tests\n"), 3)
+        XCTAssertEqual(EditSignalPolicy.wordCount(of: "   "), 0)
     }
 
     // MARK: Key mapping
@@ -182,35 +180,35 @@ final class DogfoodEditSignalTests: XCTestCase {
     /// is the property that keeps the watch from being a keylogger.
     func testOnlyTwoGesturesAreRecognized() {
         XCTAssertEqual(
-            DogfoodEditSignal.from(keyCode: UInt16(kVK_Delete), modifiers: []), .backspace
+            EditSignal.from(keyCode: UInt16(kVK_Delete), modifiers: []), .backspace
         )
         XCTAssertEqual(
-            DogfoodEditSignal.from(keyCode: UInt16(kVK_ForwardDelete), modifiers: []), .backspace
+            EditSignal.from(keyCode: UInt16(kVK_ForwardDelete), modifiers: []), .backspace
         )
         // A word/line delete is still the user erasing the insertion.
         XCTAssertEqual(
-            DogfoodEditSignal.from(keyCode: UInt16(kVK_Delete), modifiers: [.option]), .backspace
+            EditSignal.from(keyCode: UInt16(kVK_Delete), modifiers: [.option]), .backspace
         )
         XCTAssertEqual(
-            DogfoodEditSignal.from(keyCode: UInt16(kVK_ANSI_A), modifiers: [.command]), .selectAll
+            EditSignal.from(keyCode: UInt16(kVK_ANSI_A), modifiers: [.command]), .selectAll
         )
 
         // Plain "a" is typing, not selecting.
-        XCTAssertNil(DogfoodEditSignal.from(keyCode: UInt16(kVK_ANSI_A), modifiers: []))
+        XCTAssertNil(EditSignal.from(keyCode: UInt16(kVK_ANSI_A), modifiers: []))
         // ⌥⌘A / ⌃⌘A / ⇧⌘A are app shortcuts, not select-all.
         XCTAssertNil(
-            DogfoodEditSignal.from(keyCode: UInt16(kVK_ANSI_A), modifiers: [.command, .option])
+            EditSignal.from(keyCode: UInt16(kVK_ANSI_A), modifiers: [.command, .option])
         )
         XCTAssertNil(
-            DogfoodEditSignal.from(keyCode: UInt16(kVK_ANSI_A), modifiers: [.command, .control])
+            EditSignal.from(keyCode: UInt16(kVK_ANSI_A), modifiers: [.command, .control])
         )
         XCTAssertNil(
-            DogfoodEditSignal.from(keyCode: UInt16(kVK_ANSI_A), modifiers: [.command, .shift])
+            EditSignal.from(keyCode: UInt16(kVK_ANSI_A), modifiers: [.command, .shift])
         )
         // Every other key, modified or not.
-        XCTAssertNil(DogfoodEditSignal.from(keyCode: UInt16(kVK_ANSI_B), modifiers: [.command]))
-        XCTAssertNil(DogfoodEditSignal.from(keyCode: UInt16(kVK_Return), modifiers: []))
-        XCTAssertNil(DogfoodEditSignal.from(keyCode: UInt16(kVK_Escape), modifiers: []))
+        XCTAssertNil(EditSignal.from(keyCode: UInt16(kVK_ANSI_B), modifiers: [.command]))
+        XCTAssertNil(EditSignal.from(keyCode: UInt16(kVK_Return), modifiers: []))
+        XCTAssertNil(EditSignal.from(keyCode: UInt16(kVK_Escape), modifiers: []))
     }
 
     // MARK: Watch window
@@ -388,95 +386,6 @@ final class DogfoodEditSignalTests: XCTestCase {
         XCTAssertNil(harness.readBack())
     }
 
-    /// Flagging renames the file; a record flagged during the watch window
-    /// still receives its signal.
-    func testBehaviorPatchFollowsAFlagRename() async throws {
-        let harness = makeWatcher()
-
-        let token = try XCTUnwrap(
-            harness.watcher.arm(committedText: "run the tests", outputMode: "overlay_buffer")
-        )
-        harness.watcher.attachRecord(url: harness.recordURL, store: harness.store, token: token)
-
-        let flaggedURL = try XCTUnwrap(harness.store.flagMostRecentRecord())
-        harness.monitor.send(.backspace)
-        await harness.watcher.flushTask?.value
-
-        let record = try XCTUnwrap(harness.readBack(at: flaggedURL))
-        XCTAssertTrue(record.flagged, "flagging must survive the patch")
-        XCTAssertEqual(record.behavior?.outcome, .edited)
-        XCTAssertNil(harness.readBack(), "the patch must not resurrect the unflagged name")
-        XCTAssertEqual(
-            try harness.store.listRecords().count, 1,
-            "one dictation keeps exactly one record file"
-        )
-    }
-
-    /// The other order: the patch lands first and flagging follows. The flagged
-    /// copy must carry the behavior, and the plain name must be gone — the
-    /// review-queue file is the one with the whole story in it.
-    func testFlagAfterBehaviorPatchKeepsBothFacts() async throws {
-        let harness = makeWatcher()
-
-        let token = try XCTUnwrap(
-            harness.watcher.arm(committedText: "run the tests", outputMode: "overlay_buffer")
-        )
-        harness.watcher.attachRecord(url: harness.recordURL, store: harness.store, token: token)
-        harness.monitor.send(.backspace)
-        await harness.watcher.flushTask?.value
-
-        let flaggedURL = try XCTUnwrap(harness.store.flagMostRecentRecord())
-        let record = try XCTUnwrap(harness.readBack(at: flaggedURL))
-        XCTAssertTrue(record.flagged)
-        XCTAssertEqual(record.behavior?.outcome, .edited)
-        XCTAssertNil(harness.readBack(), "the plain name must not survive the flag")
-        XCTAssertEqual(try harness.store.listRecords().count, 1)
-    }
-
-    /// The race itself, run for real: a flag and a behavior patch issued
-    /// concurrently over the SAME record.
-    ///
-    /// Flagging renames (write flagged, remove plain), so an unserialized patch
-    /// that read the plain file and lost the race would write it back and leave
-    /// TWO files for one dictation — a stale unflagged copy beside the flagged
-    /// one. The store's single-flight lock is what makes both orders end in one
-    /// file that carries both facts.
-    func testConcurrentFlagAndPatchLeaveExactlyOneRecord() async throws {
-        let harness = makeWatcher()
-        let store = harness.store
-        let behavior = DogfoodCaptureRecord.Behavior(
-            outcome: .edited,
-            signal: .backspace,
-            secondsSinceCommitBucket: "0-1",
-            wordCountBucket: "1-5",
-            watchWindowSeconds: 2,
-            outputMode: "overlay_buffer"
-        )
-        let recordURL = harness.recordURL
-
-        // Both are running before either is awaited — the interleaving is real,
-        // not simulated.
-        let flagging = Task.detached { _ = try? store.flagMostRecentRecord() }
-        let patching = Task.detached {
-            _ = try? store.attachBehavior(behavior, toRecordAt: recordURL)
-        }
-        await flagging.value
-        await patching.value
-
-        let records = try store.listRecords()
-        XCTAssertEqual(
-            records.count, 1,
-            "a lost race must never resurrect the pre-rename copy: \(records.map(\.fileName))"
-        )
-        XCTAssertTrue(records[0].flagged, "the flag is the user's, and it wins either way")
-        let record = try XCTUnwrap(harness.readBack(at: records[0].url))
-        XCTAssertTrue(record.flagged, "the name and the JSON must agree")
-        XCTAssertEqual(
-            record.behavior?.outcome, .edited,
-            "whichever order ran, the behavior belongs in the surviving record"
-        )
-    }
-
     /// The supersede-before-attach race: a second dictation arms while the
     /// first's record write is still in flight. The first watch's verdict must
     /// SURVIVE the supersede (parked, keyed by its token) and land in its own
@@ -631,10 +540,10 @@ final class DogfoodEditSignalTests: XCTestCase {
     /// deinit` cleanup claim says cannot happen. Releasing the last owner
     /// mid-window must deallocate the watcher and tear the monitor down.
     func testReleasingTheWatcherMidWindowTearsDownTheMonitor() async throws {
-        let monitor = DogfoodEditSignalTestMonitor()
-        let sleeper = DogfoodManualSleeper()
-        let clock = DogfoodTestClock()
-        var watcher: DogfoodEditSignalWatcher? = DogfoodEditSignalWatcher(
+        let monitor = EditSignalTestMonitor()
+        let sleeper = EditSignalManualSleeper()
+        let clock = EditSignalTestClock()
+        var watcher: EditSignalWatcher? = EditSignalWatcher(
             monitor: monitor,
             now: { clock.now() },
             sleepFor: { await sleeper.sleep($0) }
@@ -665,35 +574,35 @@ final class DogfoodEditSignalTests: XCTestCase {
     // MARK: Harness
 
     private struct WatcherHarness {
-        let watcher: DogfoodEditSignalWatcher
-        let monitor: DogfoodEditSignalTestMonitor
-        let sleeper: DogfoodManualSleeper
-        let clock: DogfoodTestClock
-        let store: DogfoodCaptureStore
+        let watcher: EditSignalWatcher
+        let monitor: EditSignalTestMonitor
+        let sleeper: EditSignalManualSleeper
+        let clock: EditSignalTestClock
+        let store: DiagnosticRecordStore
         let directory: URL
         let recordURL: URL
 
         /// A second record in the same store, for the tests that need two.
         func writeExtraRecord() throws -> URL {
             try store.write(
-                DogfoodEditSignalTests.makeRecord(capturedAt: clock.now().addingTimeInterval(1))
+                EditSignalTests.makeRecord(capturedAt: clock.now().addingTimeInterval(1))
             )
         }
 
-        func readBack(at url: URL? = nil) -> DogfoodCaptureRecord? {
+        func readBack(at url: URL? = nil) -> DiagnosticRecord? {
             let target = url ?? recordURL
             guard let data = try? Data(contentsOf: target) else { return nil }
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
-            return try? decoder.decode(DogfoodCaptureRecord.self, from: data)
+            return try? decoder.decode(DiagnosticRecord.self, from: data)
         }
     }
 
     private func makeWatcher(writeRecord: Bool = true) -> WatcherHarness {
-        let monitor = DogfoodEditSignalTestMonitor()
-        let sleeper = DogfoodManualSleeper()
-        let clock = DogfoodTestClock()
-        let watcher = DogfoodEditSignalWatcher(
+        let monitor = EditSignalTestMonitor()
+        let sleeper = EditSignalManualSleeper()
+        let clock = EditSignalTestClock()
+        let watcher = EditSignalWatcher(
             monitor: monitor,
             now: { clock.now() },
             sleepFor: { await sleeper.sleep($0) }
@@ -707,7 +616,7 @@ final class DogfoodEditSignalTests: XCTestCase {
             sleeper.fireAll()
             try? FileManager.default.removeItem(at: directory)
         }
-        let store = DogfoodCaptureStore(directoryURL: directory, now: { clock.now() })
+        let store = DiagnosticRecordStore(directoryURL: directory, now: { clock.now() })
 
         var recordURL = directory.appendingPathComponent("missing.json", isDirectory: false)
         if writeRecord {
@@ -727,8 +636,8 @@ final class DogfoodEditSignalTests: XCTestCase {
 
     /// `nonisolated`: a pure factory, and the harness that writes a second
     /// record is a plain struct off the test class's actor.
-    nonisolated fileprivate static func makeRecord(capturedAt: Date) -> DogfoodCaptureRecord {
-        DogfoodCaptureRecord(
+    nonisolated fileprivate static func makeRecord(capturedAt: Date) -> DiagnosticRecord {
+        DiagnosticRecord(
             id: UUID().uuidString,
             capturedAt: capturedAt,
             session: .init(
@@ -757,4 +666,3 @@ final class DogfoodEditSignalTests: XCTestCase {
     }
 }
 
-#endif

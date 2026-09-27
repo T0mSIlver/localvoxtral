@@ -7,7 +7,9 @@
 # and nothing else. It runs the session's own agent headless in the project,
 # read-only and with hooks off, exactly as the app does for a local project
 # (ProjectTermProposal.swift), and posts the agent's answer to the Mac's
-# `/v1/terms` route. Nothing but that answer crosses the tunnel.
+# `/v1/terms` route. Nothing but that answer crosses the tunnel: Claude Code's
+# result object (the terms and the run's usage), or Vibe's text with its
+# token counts in a header.
 #
 # It ships in this plugin, and the app installs the same file next to the Vibe
 # hooks' shim on an enrolled host (VibeRemoteHooksFiles).
@@ -66,26 +68,40 @@ trap 'rm -rf "$WORK"; exit 0' HUP INT TERM
 
 cd "$PROJECT" || exit 0
 
+# vibe_usage <vibe-home>: the newest run's token counts under that home, as
+# "<input> <cached input> <output>", or nothing. Vibe's unified harness keeps
+# them in the session log (VibeSessionUsage.swift); the same file holds the
+# prompt, so only the three numbers are read out of it.
+vibe_usage() {
+  current="$(ls -t "$1"/logs/session/unified/*/CURRENT 2>/dev/null | head -n 1)"
+  [ -n "$current" ] || return 0
+  generation="$(sed -n 's/.*"generation":"\([0-9]\{1,20\}\)".*/\1/p' "$current" 2>/dev/null | head -n 1)"
+  [ -n "$generation" ] || return 0
+  sed -n 's/.*"tokenUsage":{"cachedInputTokens":\([0-9]\{1,10\}\),"inputTokens":\([0-9]\{1,10\}\),"outputTokens":\([0-9]\{1,10\}\)[,}].*/\2 \1 \3/p' \
+    "${current%/CURRENT}/generations/$generation/projection-state.json" 2>/dev/null | head -n 1
+}
+
 # ProjectTermProposal.prompt, word for word (ProjectTermRunnerScriptTests).
 prompt() {
   cat <<'PROMPT'
-List the names someone dictating about this project would say that a speech recognizer is likely to misspell: this project's own modules, types, functions, files, commands, flags, environment variables and product names. Leave out common English words and well-known names. Read at most six files. Spell each name exactly as the code does. Reply with JSON only: {"terms": [...]}, at most 40 terms.
+List the names someone dictating about this project would say that a speech recognizer is likely to misspell: this project's own modules, types, functions, files, commands, flags, environment variables and product names. Leave out common English words and well-known names. Also describe the project in one sentence of at most 200 characters: what it is, then the features and parts someone would name when filing an idea for it. Read at most six files. Spell each name exactly as the code does. Reply with JSON only: {"terms": [...], "description": "..."}, at most 40 terms.
 PROMPT
 }
 
 if [ "$AGENT" = claude ]; then
-  # `--output-format text` with a schema prints the answer object alone.
+  # The result object: the answer in `structured_output`, beside the run's
+  # usage and cost, parsed on the Mac as a local run's is.
   "$BIN" -p "$(prompt)" \
     --model sonnet \
-    --system-prompt 'You list a code project'"'"'s own vocabulary for a dictation app. Reply only with the requested JSON.' \
+    --system-prompt 'You list a code project'"'"'s own vocabulary and describe it for a dictation app. Reply only with the requested JSON.' \
     --tools 'Read,Glob,Grep' \
     --settings '{"disableAllHooks":true}' \
     --strict-mcp-config \
     --no-session-persistence \
     --max-turns 12 \
     --max-budget-usd 0.50 \
-    --output-format text \
-    --json-schema '{"type":"object","properties":{"terms":{"type":"array","items":{"type":"string"},"maxItems":40}},"required":["terms"],"additionalProperties":false}' \
+    --output-format json \
+    --json-schema '{"type":"object","properties":{"terms":{"type":"array","items":{"type":"string"},"maxItems":40},"description":{"type":"string"}},"required":["terms","description"],"additionalProperties":false}' \
     </dev/null >"$WORK/out" 2>/dev/null &
 else
   # Vibe has no flag to skip hooks: a home of its own, holding only links to
@@ -144,7 +160,7 @@ RUN=$!
 wait "$RUN" || exit 0
 
 # The answer alone, capped. Whether it is one is the Mac's call.
-head -c 8192 "$WORK/out" >"$WORK/answer" 2>/dev/null || exit 0
+head -c 16384 "$WORK/out" >"$WORK/answer" 2>/dev/null || exit 0
 [ -s "$WORK/answer" ] || exit 0
 
 # Heredoc through a redirected `cat`, not printf/echo: an external printf
@@ -155,6 +171,10 @@ X-Lvx-Terms-Session: $SESSION_ID
 HEADER
 if [ "$AGENT" = vibe ]; then
   echo 'X-Lvx-Agent: vibe' >>"$WORK/header" || exit 0
+  USAGE="$(vibe_usage "$VIBE_RUN_HOME")"
+  case "$USAGE" in
+  [0-9]*" "[0-9]*" "[0-9]*) echo "X-Lvx-Usage: $USAGE" >>"$WORK/header" || exit 0 ;;
+  esac
 fi
 STATUS="$(curl --silent --output /dev/null --write-out '%{http_code}' \
   --max-time 5 --request POST \

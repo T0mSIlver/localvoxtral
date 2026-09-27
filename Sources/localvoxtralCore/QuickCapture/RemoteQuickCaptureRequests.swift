@@ -174,6 +174,10 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
               project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix)
         else { return }
         let asRepository = snapshot.remoteSessionEnvironment?.project == label
+        // A cwd label stamps only a project a dictation already added. Until
+        // then this hook records nothing, so it must not take the interval:
+        // the hook right after that dictation is the one to stamp (#891).
+        guard asRepository || store.snapshot().projects.contains(where: { $0.key == project.key }) else { return }
         let moment = now()
         let due = state.withLock { state -> Bool in
             if let last = state.reported[project.key],
@@ -346,9 +350,11 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
 
     /// The host's run, for the draft whose prompt this session fetched.
     /// False when it did not, or `exit` is not one the runner sends; the
-    /// draft keeps waiting then.
+    /// draft keeps waiting then. `reportedUsage` is a Vibe run's
+    /// `X-Lvx-Usage`; Claude Code's usage is in its output.
     package func acceptDraft(
-        draftID: String, sessionID: String, agent: ProjectTermProposal.Agent, exit: String?, output: Data
+        draftID: String, sessionID: String, agent: ProjectTermProposal.Agent, exit: String?, output: Data,
+        reportedUsage: ProjectTermProposal.Usage? = nil
     ) -> Bool {
         let taken = state.withLock { state -> Draft? in
             guard let draft = state.drafts[draftID], draft.sessionID == sessionID, draft.agent == agent,
@@ -356,7 +362,9 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
             else { return nil }
             return draft
         }
-        guard let taken, let outcome = Self.outcome(exit: exit, output: output, agent: agent, openIssues: taken.openIssues ?? [])
+        guard let taken,
+              let outcome = Self.outcome(exit: exit, output: output, agent: agent, openIssues: taken.openIssues ?? [])?
+                  .reporting(reportedUsage)
         else { return false }
         guard let draft = state.withLock({ $0.drafts.removeValue(forKey: draftID) }) else { return false }
         QuickCaptureDraft.recordUsage(of: outcome, agent: agent, date: now(), to: usageRecorder)

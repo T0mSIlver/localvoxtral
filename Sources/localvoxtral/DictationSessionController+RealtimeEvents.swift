@@ -84,8 +84,9 @@ extension DictationSessionController {
                 statusText = "Ready"
                 return
             }
+            sessionCaptureTimeline?.markSocketOpen()
             setRealtimeIndicatorConnected()
-            startAudioCaptureAfterConnection()
+            beginListeningAfterConnection()
             return
         }
         setRealtimeIndicatorConnected()

@@ -123,9 +123,15 @@ How it works (`scripts/mac/lv-test-servers.sh` is the single source of truth):
   server just bumps the trigger mtime, resetting the idle window, so a burst of
   runs reuses one warm process (no cold reload every few seconds).
 - **Reaping:** a third LaunchAgent (`com.localvoxtral.testservers-reaper`) runs
-  `lv-test-servers.sh reap` on a `StartInterval`. For any service idle longer
-  than the window (default 20 min, `LV_TEST_SERVER_IDLE_SECONDS`) it removes the
-  trigger (so launchd won't relaunch it) **and** sends the job an explicit
+  `lv-test-servers.sh reap` on a `StartInterval`. A client connection counts as
+  use: an open connection at a reaper run, or one that opens while the reaper
+  watches the port (60 s, `LV_TEST_SERVER_USE_WATCH_SECONDS`) before stopping a
+  server, refreshes the reaper's own stamp. So a consumer that runs `ensure`
+  once and then sends a request at least once a minute keeps its server; one
+  silent for longer than that past the window loses it. A client that hangs
+  with its connection open keeps the server up until it exits. For any service
+  idle longer than the window (default 20 min, `LV_TEST_SERVER_IDLE_SECONDS`)
+  with no client, it removes the trigger (so launchd won't relaunch it) **and** sends the job an explicit
   `launchctl kill SIGTERM` — because launchd does not reliably terminate an
   already-running process when a `KeepAlive` `PathState` condition flips false,
   removing the trigger alone would leave the weights resident. The reaper runs
@@ -138,6 +144,21 @@ How it works (`scripts/mac/lv-test-servers.sh` is the single source of truth):
   target is `all`. Stop signals BOTH the new (`testspeechd`/`testpolishd`) and
   retired (`voxmlx`/`mlxlm`) labels plus a port-bound fallback, so it works
   whichever generation is loaded.
+- **Diagnosis:** `lv-test-servers.sh diagnose [<service>]` says in its first
+  line whether the service is `up`, `GONE` (nothing listens and the trigger is
+  gone: reaped or stopped), `DOWN` (trigger present, nothing listens: loading
+  or crash-looping) or `TAKEN` (another process holds its port, or its last
+  start failed with `Address already in use`), then prints the listener, the
+  client count, the reaper's last lines for it and the service log's tail. The
+  release gate and eval-e2e run it when their live step fails. Reaper lines
+  carry a UTC timestamp to match against a run's clock.
+- **Ports:** the test services own 8000-8080. The app's managed speechd and
+  polishd bind 8471 and 8472 (`BackendCatalog`), and speechd's own default is
+  8471, so the owner's app never takes a test port. The app does default its
+  External URL endpoint to `ws://127.0.0.1:8000`; in that mode it is a client
+  of the test service, which counts as use. 8000 is also the default of many
+  dev servers (`python -m http.server`, Django, mkdocs); `diagnose` names such
+  a holder.
 - **Robustness:** an interrupted run or a sleeping Mac just leaves the trigger
   behind; the server stays warm and the reaper collects it later. There is no
   lock to get stuck and no orphan process (launchd owns each server; the reaper
@@ -281,7 +302,7 @@ cat > ~/Library/LaunchAgents/com.localvoxtral.testservers-reaper.plist <<'PLIST'
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>/Users/REPLACE_ME/work/localvoxtral/scripts/mac/lv-test-servers.sh</string>
+    <string>/Users/Shared/localvoxtral/lv-test-servers.sh</string>
     <string>reap</string>
   </array>
   <!-- Every 5 min: finer than the 20-min idle window, so RAM is reclaimed
@@ -297,14 +318,15 @@ PLIST
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.localvoxtral.testservers-reaper.plist
 ```
 
-(Point the script path at a stable checkout of this repo, or copy
-`lv-test-servers.sh` to a fixed location. A copy without
+(The reaper runs a copy of the script, so a change to `reap` reaches it only
+when the copy is refreshed:
+`install -m 0755 scripts/mac/lv-test-servers.sh /Users/Shared/localvoxtral/`. A copy without
 `test-speech-models.tsv` beside it reads the list `install-speech-models`
 installed; with neither, the reaper sees only Voxtral and polishd and never
 frees another speech model. Override the idle window by adding an
 `EnvironmentVariables` dict with `LV_TEST_SERVER_IDLE_SECONDS`. During the
-migration, `git pull` that stable checkout so the reaper runs the new script —
-though an OLD reaper still reaps the new services via its port-bound fallback,
+migration, refresh that copy so the reaper runs the new script, though an OLD
+reaper still reaps the new services via its port-bound fallback,
 since it keeps reading the same `run/voxmlx.want` / `run/mlxlm.want` triggers.)
 
 ### Verify (owner-side proof)
@@ -1012,7 +1034,7 @@ registry.
 
 A dogfood build answers both, over a local AF_UNIX socket it binds only when
 `debug.dogfood_control_socket_enabled` is armed
-(`docs/dogfood-builds.md`). `app` forwards one line to it:
+(`docs/test-harness.md`). `app` forwards one line to it:
 
 ```bash
 ssh lv-ui 'app registry list'         # is the registry empty, or the surface unidentified?

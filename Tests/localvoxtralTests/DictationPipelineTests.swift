@@ -171,7 +171,7 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.session.toggleQuickCapture()
         XCTAssertFalse(pipeline.viewModel.isDictating, "pressed on the Inbox, it stops")
         pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
-        _ = await pipeline.records.written.value(failAfter: 10)
+        _ = await pipeline.records.waitForCount(1)
         XCTAssertEqual(pipeline.overlay.commitCallCount, 0)
     }
 
@@ -361,6 +361,129 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "the unconfirmed pane never gets the words")
     }
 
+    /// ← and → move as ⇧Tab and Tab do (#880), each through the key
+    /// handler the overlay registers: back to the Inbox at once, back again
+    /// to the waiting session once its pane is confirmed, then forward to
+    /// the Inbox and on to the focused app, brought back over the pane.
+    func testTheArrowsMoveBetweenDestinationsAsTabDoes() async throws {
+        let expected: [OverlayDestinationStrip.Kind?] = [.inbox, .session, .inbox, .focusedApp(joined: nil)]
+        for (back, forward) in [(DestinationKeyHandler.Key.shiftTab, DestinationKeyHandler.Key.tab), (.leftArrow, .rightArrow)] {
+            let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+            let waiting = installWaitingSessions(pipeline, ["pay": "/r/payments"])
+            let originPID: pid_t = 8080
+            pipeline.overlay.commitTargetAppPID = originPID
+            pipeline.viewModel.dependencies.bundleIdentifier = {
+                $0 == originPID ? "com.apple.Safari" : TerminalScreenAllowlist.ghosttyBundleID
+            }
+            var activated: [pid_t] = []
+            pipeline.viewModel.dependencies.activateApp = {
+                activated.append($0)
+                return true
+            }
+            await startAndSpeak(pipeline)
+
+            var picked: [OverlayDestinationStrip.Kind?] = []
+            for key in [back, back, forward, forward] {
+                pipeline.viewModel.session.destinationKeyHandler.handle(key)
+                await pipeline.viewModel.session.destinationFocusTask?.value
+                picked.append(pipeline.overlay.shownDestinations.last??.selectedKind)
+            }
+            XCTAssertEqual(picked, expected, "\(back) and \(forward)")
+            XCTAssertEqual(waiting.focuser.focusedSessionIDs, ["pay"], "\(back) and \(forward)")
+            XCTAssertEqual(activated, [originPID], "\(back) and \(forward)")
+            pipeline.viewModel.session.cancelDictation()
+        }
+    }
+
+    /// A click on a waiting session (#880) picks it through the path Tab
+    /// takes: its pane comes forward, the overlay moves only once the
+    /// terminal confirmed it, and the stop reads back that the pane still
+    /// shows the session before the words go in.
+    func testAClickOnAWaitingSessionBringsItsPaneForwardAndCommitsThere() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let waiting = installWaitingSessions(pipeline, ["pay": "/r/payments"])
+        let terminalPID: pid_t = 5151
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == terminalPID ? TerminalScreenAllowlist.ghosttyBundleID : nil
+        }
+        await startAndSpeak(pipeline)
+
+        pipeline.viewModel.session.clickDestination(.session(id: "pay"))
+        XCTAssertEqual(
+            pipeline.overlay.shownDestinations.last??.selectedKind, .focusedApp(joined: nil),
+            "the overlay waits for the pane"
+        )
+        await pipeline.viewModel.session.destinationFocusTask?.value
+        XCTAssertEqual(waiting.focuser.focusedSessionIDs, ["pay"])
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
+
+        pipeline.viewModel.session.clickDestination(.session(id: "pay"))
+        await pipeline.viewModel.session.destinationFocusTask?.value
+        XCTAssertEqual(waiting.focuser.focusedSessionIDs, ["pay"], "a click on the picked session does nothing")
+
+        pipeline.overlay.commitTargetAppPID = terminalPID
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline)
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
+        XCTAssertEqual(waiting.focuser.readBackSessionIDs, ["pay"], "the stop asked which session the pane shows")
+    }
+
+    /// A click on a session the terminal does not confirm leaves the overlay
+    /// on the focused app, as Tab does.
+    func testAClickOnAnUnconfirmedPaneLeavesTheWordsOnTheFocusedApp() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let waiting = installWaitingSessions(
+            pipeline, ["pay": "/r/payments"],
+            outcome: .unverified(bundleID: TerminalScreenAllowlist.ghosttyBundleID)
+        )
+        await startAndSpeak(pipeline)
+
+        pipeline.viewModel.session.clickDestination(.session(id: "pay"))
+        await pipeline.viewModel.session.destinationFocusTask?.value
+
+        XCTAssertEqual(waiting.focuser.focusedSessionIDs, ["pay"])
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .focusedApp(joined: nil))
+        XCTAssertEqual(pipeline.viewModel.statusText, DictationSessionController.AnswerAgentStatus.unconfirmed)
+        pipeline.viewModel.session.cancelDictation()
+    }
+
+    /// A stop while a clicked session's pane is still coming forward keeps
+    /// the words in History, as after a Tab.
+    func testAStopWhileAClickedPaneIsComingForwardKeepsTheWordsInHistory() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        _ = installWaitingSessions(pipeline, ["pay": "/r/payments"])
+        await startAndSpeak(pipeline)
+        sendPartials(pipeline)
+
+        pipeline.viewModel.session.clickDestination(.session(id: "pay"))
+        await stopAndFinalize(pipeline, finalStatus: DictationSessionController.DestinationStatus.stoppedWhileSwitching)
+
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0)
+        XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
+    }
+
+    /// A click on the Inbox picks it at once: the stop saves a quick capture
+    /// and nothing reaches the focused app. A click on a session that is not
+    /// listed does nothing.
+    func testAClickOnTheInboxSavesTheDictationThere() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let captured = QuickCaptures()
+        pipeline.viewModel.session.onQuickCapture = { text, _ in captured.all.append((text, 0)) }
+        await startAndSpeak(pipeline)
+
+        pipeline.viewModel.session.clickDestination(.session(id: "gone"))
+        XCTAssertNil(pipeline.viewModel.session.destinationFocusTask)
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .focusedApp(joined: nil))
+
+        pipeline.viewModel.session.clickDestination(.inbox)
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .inbox)
+
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline, finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved)
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing reaches the focused app")
+        XCTAssertEqual(captured.all.map(\.text), [Self.phrase])
+    }
+
     /// The answer shortcut during a dictation picks the oldest session that
     /// needs you, as Tab would; pressed on it, it stops.
     func testTheAnswerKeyDuringADictationPicksTheWaitingSessionThenStops() async throws {
@@ -377,7 +500,7 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.session.answerAgentThatNeedsYou()
         XCTAssertFalse(pipeline.viewModel.isDictating, "pressed on the picked session, it stops")
         pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
-        _ = await pipeline.records.written.value(failAfter: 10)
+        _ = await pipeline.records.waitForCount(1)
     }
 
     /// Claude Desktop (#660): a text field whose prompt sends on Return. The
@@ -810,6 +933,122 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(herdr.writes.count, 1, "the first refusal ends the route")
     }
 
+    // MARK: - Commits into one unsent prompt (#802)
+
+    /// Two Overlay Buffer dictations into the same unsent prompt of a joined
+    /// Claude Code session are one sentence after another, not
+    /// `doing.Usually`. Once the session submits, the next commit starts a
+    /// fresh prompt with no space, so a slash command stays a command.
+    func testOverlayBufferSpacesACommitThatContinuesTheUnsentPrompt() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.overlay.insertsThroughCommitter = true
+        pipeline.overlay.commitTargetAppPID = 4343
+        pipeline.overlay.passesTargetPIDToCommitter = false
+        let registry = joinClaudeCodeTerminal(pipeline)
+        let typed = recordTypedText(pipeline)
+
+        await dictate(pipeline, "that's what I was doing.")
+        await dictate(pipeline, "Usually it works.")
+        XCTAssertEqual(typed.text, "that's what I was doing. Usually it works.")
+
+        XCTAssertNotNil(registry.ingest(
+            ClaudeHookRecord(
+                event: .userPromptSubmit, sessionID: "s1", timestamp: 0, rawCwd: "/repo",
+                prompt: typed.text, files: []
+            ),
+            origin: .localAuthenticated(peerUID: 501)
+        ))
+        await dictate(pipeline, "/compact")
+        XCTAssertEqual(typed.text, "that's what I was doing. Usually it works./compact")
+    }
+
+    /// A submit while the next dictation runs is seen at its commit, not
+    /// only at its start (Vibe review of #806).
+    func testOverlayBufferAddsNoSpaceAfterASubmitDuringTheDictation() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.overlay.insertsThroughCommitter = true
+        pipeline.overlay.commitTargetAppPID = 4343
+        pipeline.overlay.passesTargetPIDToCommitter = false
+        let registry = joinClaudeCodeTerminal(pipeline)
+        let typed = recordTypedText(pipeline)
+
+        await dictate(pipeline, "run the tests.")
+        await dictate(pipeline, "/compact") {
+            XCTAssertNotNil(registry.ingest(
+                ClaudeHookRecord(
+                    event: .userPromptSubmit, sessionID: "s1", timestamp: 0, rawCwd: "/repo",
+                    prompt: nil, files: []
+                ),
+                origin: .localAuthenticated(peerUID: 501)
+            ))
+        }
+        XCTAssertEqual(typed.text, "run the tests./compact")
+    }
+
+    /// Without a joined session nothing proves the prompt is unsent, so the
+    /// commits stay as they are.
+    func testOverlayBufferAddsNoSpaceWithoutAJoin() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.overlay.insertsThroughCommitter = true
+        pipeline.overlay.commitTargetAppPID = 4343
+        pipeline.overlay.passesTargetPIDToCommitter = false
+        let typed = recordTypedText(pipeline)
+
+        await dictate(pipeline, "that's what I was doing.")
+        await dictate(pipeline, "Usually it works.")
+        XCTAssertEqual(typed.text, "that's what I was doing.Usually it works.")
+    }
+
+    /// One whole Overlay Buffer dictation of `text`; `whileDictating` runs
+    /// between its start and its stop.
+    private func dictate(
+        _ pipeline: Pipeline, _ text: String, file: StaticString = #filePath, line: UInt = #line,
+        whileDictating: () -> Void = {}
+    ) async {
+        pipeline.server.forgetFrames()
+        await startAndSpeak(pipeline, file: file, line: line)
+        whileDictating()
+        pipeline.server.send(["type": "transcription.delta", "delta": text])
+        await stopAndFinalize(pipeline, finalText: text, file: file, line: line)
+    }
+
+    /// Joins the dictation to Claude Code session `s1` in a Ghostty surface
+    /// by its tty, with polishing on (a fake polisher, so nothing leaves the
+    /// process). Returns the registry, for the session's later hooks.
+    private func joinClaudeCodeTerminal(_ pipeline: Pipeline) -> ClaudeSessionRegistry {
+        let settings = pipeline.viewModel.settings
+        settings.llmPolishingEnabled = true
+        settings.llmPolishingEndpointURL = "http://127.0.0.1:8080/v1/chat/completions"
+        settings.terminalScreenContextEnabled = true
+        pipeline.viewModel.llmPolishingService = FakePolishingService()
+        let tty = "/dev/ttys042"
+        let epoch = Date(timeIntervalSince1970: 3_000_000)
+        let registry = ClaudeSessionRegistry(now: { epoch }, isProcessAlive: { _ in true })
+        XCTAssertNotNil(registry.ingest(
+            ClaudeHookRecord(
+                event: .sessionStart, sessionID: "s1", timestamp: 0, rawCwd: "/repo", prompt: nil, files: [],
+                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001, tty: tty)
+            ),
+            origin: .localAuthenticated(peerUID: 501)
+        ))
+        pipeline.viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            focusedTerminalTTY: { _ in tty }
+        )
+        let ghostty = TerminalScreenAllowlist.ghosttyBundleID
+        TerminalScreenContextSource.debugFrontmostTargetOverride = {
+            TerminalScreenTarget(pid: 4343, bundleID: ghostty)
+        }
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { ghostty }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        addTeardownBlock { @MainActor in
+            TerminalScreenContextSource.debugFrontmostTargetOverride = nil
+            TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
+            TerminalTargetDetector.debugSecureEventInputOverride = nil
+        }
+        return registry
+    }
+
     /// Joins the dictation to a Claude Code session in herdr pane `w1:p2`
     /// the way the app does: polishing on (a fake polisher, so nothing leaves
     /// the process) with screen context, a Ghostty surface bound to a herdr
@@ -1200,7 +1439,7 @@ final class DictationPipelineTests: XCTestCase {
     ) async {
         await pipeline.server.awaitFrame("the final commit", file: file, line: line) { $0.isFinalCommit }
         pipeline.server.send(["type": "transcription.done", "text": finalText])
-        let recorded = await pipeline.records.written.value(failAfter: 10)
+        let recorded = await pipeline.records.waitForCount(1)
         XCTAssertTrue(recorded, "the session never finished and wrote its record", file: file, line: line)
         await pipeline.server.awaitClose(file: file, line: line)
         XCTAssertFalse(pipeline.viewModel.isFinalizingStop, file: file, line: line)
@@ -1259,9 +1498,38 @@ final class DictationPipelineTests: XCTestCase {
         return typed
     }
 
+    // MARK: - The first words (#527)
+
+    /// People speak as they press. The microphone runs while the socket is
+    /// still opening, and what it heard then reaches the backend first.
+    func testWordsSpokenWhileTheSocketOpensReachTheBackendFirst() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.server.holdConnections()
+
+        pipeline.viewModel.startDictation()
+        await pipeline.server.awaitHeldConnection()
+        XCTAssertTrue(pipeline.viewModel.isConnectingRealtimeSession)
+        let firstWord = Self.speech(seed: 4)
+        XCTAssertTrue(
+            pipeline.microphone.deliver(firstWord),
+            "the microphone runs before the socket opens"
+        )
+
+        pipeline.server.releaseHeldConnections()
+        await pipeline.server.awaitFrame("session.update") { $0.type == "session.update" }
+        let rest = Self.speech(seed: 5)
+        XCTAssertTrue(pipeline.microphone.deliver(rest))
+        await pipeline.clock.waitForSleepers(2)
+        pipeline.clock.advance(by: TimingConstants.audioSendInterval)
+        let sent = await pipeline.server.awaitFrame("the captured audio") { $0.audio != nil }
+        XCTAssertEqual(sent?.audio, firstWord + rest, "the first word leads the audio, whole")
+
+        await stopAndFinalize(pipeline)
+    }
+
     // MARK: - The two halves every scenario shares
 
-    /// Start, connect, open the microphone, and get one captured chunk to the
+    /// Start, open the microphone, connect, and get one captured chunk to the
     /// server through the chunk buffer and the send loop.
     private func startAndSpeak(
         _ pipeline: Pipeline,
@@ -1270,19 +1538,20 @@ final class DictationPipelineTests: XCTestCase {
     ) async {
         if let start { start(pipeline.viewModel) } else { pipeline.viewModel.startDictation() }
         await pipeline.microphone.waitUntilCapturing(file: file, line: line)
-        XCTAssertTrue(pipeline.viewModel.isDictating, file: file, line: line)
-        XCTAssertEqual(pipeline.viewModel.statusText, "Listening...", file: file, line: line)
 
         let update = await pipeline.server.awaitFrame("session.update", file: file, line: line) {
             $0.type == "session.update"
         }
         XCTAssertEqual(update?.json["model"] as? String, Self.model, file: file, line: line)
+        // The send loop and the periodic commit start at connect, and sleep
+        // on the clock: armed, they say the session is listening.
+        await pipeline.clock.waitForSleepers(2, file: file, line: line)
+        XCTAssertTrue(pipeline.viewModel.isDictating, file: file, line: line)
+        XCTAssertEqual(pipeline.viewModel.statusText, "Listening...", file: file, line: line)
 
         let spoken = Self.speech(seed: 1)
         XCTAssertTrue(pipeline.microphone.deliver(spoken), file: file, line: line)
-        // The send loop and the periodic commit sleep on the clock. One send
-        // interval later the loop drains what the capture buffered.
-        await pipeline.clock.waitForSleepers(2, file: file, line: line)
+        // One send interval later the loop drains what the capture buffered.
         pipeline.clock.advance(by: TimingConstants.audioSendInterval)
         await pipeline.server.awaitFrame("the captured audio", file: file, line: line) {
             $0.audio == spoken
@@ -1307,6 +1576,7 @@ final class DictationPipelineTests: XCTestCase {
         file: StaticString = #filePath, line: UInt = #line
     ) async {
         let viewModel = pipeline.viewModel
+        let recordsBefore = pipeline.records.all.count
         let unsent = Self.speech(seed: 2)
         XCTAssertTrue(pipeline.microphone.deliver(unsent), file: file, line: line)
 
@@ -1329,7 +1599,7 @@ final class DictationPipelineTests: XCTestCase {
         }
 
         pipeline.server.send(["type": "transcription.done", "text": finalText])
-        let recorded = await pipeline.records.written.value(failAfter: 10)
+        let recorded = await pipeline.records.waitForCount(recordsBefore + 1)
         XCTAssertTrue(recorded, "the session never finished and wrote its record", file: file, line: line)
         await pipeline.server.awaitClose(file: file, line: line)
 
@@ -1481,15 +1751,27 @@ private final class QuickCaptures {
     var all: [(text: String, recordsWritten: Int)] = []
 }
 
-/// Every record a session wrote; `written` resolves on the first.
+/// Every record the sessions wrote, in order.
 @MainActor
 private final class SessionRecords {
     private(set) var all: [DictationSessionRecord] = []
-    let written = BoundedWait()
+    private var waits: [(count: Int, wait: BoundedWait)] = []
 
     func append(_ record: DictationSessionRecord) {
         all.append(record)
-        written.resolve()
+        for watch in waits where watch.count <= all.count {
+            watch.wait.resolve()
+        }
+        waits.removeAll { $0.count <= all.count }
+    }
+
+    /// True once `count` records were written; false if they are not within
+    /// `failAfter` seconds of wall time.
+    func waitForCount(_ count: Int, failAfter: TimeInterval = 10) async -> Bool {
+        if all.count >= count { return true }
+        let wait = BoundedWait()
+        waits.append((count, wait))
+        return await wait.value(failAfter: failAfter)
     }
 }
 #endif

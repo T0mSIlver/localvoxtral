@@ -707,6 +707,7 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         let record = try XCTUnwrap(ledger.records()["herdr-local:host"])
         XCTAssertEqual(record.pid, 4_242)
         XCTAssertEqual(record.processGroupID, 4_242)
+        XCTAssertEqual(record.owner, .current, "the reaper tells this copy's forwards from another's by it")
     }
 
     func testReadinessTimeoutTearsEverythingDown() async throws {

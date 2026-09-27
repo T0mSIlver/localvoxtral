@@ -29,21 +29,29 @@ enum MenuBarStatusIcon {
         return image
     }
 
-    /// The mic in the menu bar's text color with an orange dot at its top
-    /// right: an agent needs you (#717). Drawn per appearance, like the
-    /// others.
-    static func withAttentionDot(template: NSImage) -> NSImage {
+    /// The session-active orange, which the colored PNGs carry.
+    static let accentColor = NSColor(srgbRed: 255 / 255, green: 130 / 255, blue: 4 / 255, alpha: 1)
+
+    /// The mic in the menu bar's text color with an orange mark right of its
+    /// head: an agent needs you (#717). Drawn per appearance, like the others.
+    ///
+    /// The mark's cells sit on the mic's pixel grid: 1 pt each, which the
+    /// @2x art offsets by half a point.
+    static func withAttentionMark(template: NSImage, mark: AgentAttentionMark) -> NSImage {
         let size = template.size
         let image = NSImage(size: size, flipped: false) { rect in
             template.draw(in: rect)
             NSColor.labelColor.set()
             rect.fill(using: .sourceAtop)
-            let diameter = min(rect.width, rect.height) * 0.45
-            let dot = NSRect(
-                x: rect.maxX - diameter, y: rect.maxY - diameter, width: diameter, height: diameter
-            )
-            NSColor.systemOrange.setFill()
-            NSBezierPath(ovalIn: dot).fill()
+            let cell = rect.width / 22
+            accentColor.setFill()
+            for (x, y) in mark.cells {
+                NSRect(
+                    x: rect.minX + (0.5 + CGFloat(x)) * cell,
+                    y: rect.maxY - (1.5 + CGFloat(y)) * cell,
+                    width: cell, height: cell
+                ).fill()
+            }
             return true
         }
         image.isTemplate = false

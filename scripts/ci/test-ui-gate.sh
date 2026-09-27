@@ -2362,7 +2362,7 @@ assert_allowed 'log' 'log masks token-shaped runs' STUB_LOG_OUTPUT_FILE="$LOG_FI
 [[ "$GATE_STDOUT" != *"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"* ]] \
   || fail "log emitted a token-shaped run verbatim"
 [[ "$GATE_STDOUT" == *"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"* ]] \
-  || fail "log masked a run that is not the token shape — the rule must match DogfoodCaptureRedaction exactly"
+  || fail "log masked a run that is not the token shape — the rule must match DiagnosticRecordRedaction exactly"
 pass "log applies the same token-shaped scrub as the dogfood records"
 
 # A cap that silently truncated would make a missing line look like a missing

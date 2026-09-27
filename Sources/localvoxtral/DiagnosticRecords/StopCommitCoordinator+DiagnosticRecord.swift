@@ -1,10 +1,9 @@
-#if LOCALVOXTRAL_DOGFOOD
 import Foundation
 
 extension StopCommitCoordinator {
     /// The capture record's inputs for one polished stop-commit, assembled
     /// from the gathered material, the built request and the prologue's
-    /// sample. Construction only: `writeDogfoodCaptureIfArmed` is what checks
+    /// sample. Construction only: `writeDiagnosticRecordIfEnabled` is what checks
     /// the runtime opt-in, and the caller runs this AFTER the commit and the
     /// session record so capture latency lands on the tail of the task, never
     /// on the user's paste.
@@ -12,7 +11,7 @@ extension StopCommitCoordinator {
     /// `committedText` and `polishedOutput` are the placeholder-bearing
     /// strings on purpose: the clipboard PAYLOAD follows the session-record
     /// rule and never enters a persisted record.
-    static func dogfoodCaptureInputs(
+    static func diagnosticRecordInputs(
         material: PolishContextMaterial,
         assembly: PolishRequestAssembler.Assembly,
         capture: Capture,
@@ -27,20 +26,20 @@ extension StopCommitCoordinator {
         polishedOutput: String?,
         committedText: String?,
         polishSeconds: Double?
-    ) -> DogfoodCaptureInputs {
-        DogfoodCaptureInputs(
-            session: DogfoodCaptureRecord.Session(
+    ) -> DiagnosticRecordInputs {
+        DiagnosticRecordInputs(
+            session: DiagnosticRecord.Session(
                 targetBundleID: targetBundleID,
                 targetKind: targetIsTerminalLike ? "terminal-like" : "other",
                 outputMode: outputMode,
                 promptProfile: promptProfile,
                 endpointClass: polishingEndpointURL.map {
-                    DogfoodCaptureBuilder.endpointClass(of: $0)
+                    DiagnosticRecordBuilder.endpointClass(of: $0)
                 },
                 polishModel: polishModel
             ),
             join: capture.claudeJoin,
-            // Filled from the tap inside writeDogfoodCaptureIfArmed.
+            // Filled from the tap inside writeDiagnosticRecordIfEnabled.
             joinAbstentions: [],
             screenDecision: material.screenDecision,
             // Value inequality is the swap signal: only the herdr reconcile in
@@ -86,7 +85,7 @@ extension StopCommitCoordinator {
             screenOutcome: material.screenVocabularyOutcome,
             screenRenderedExcerpt: assembly.screenBlock != nil
                 ? material.screenPreparation.excerpt : nil,
-            text: DogfoodCaptureRecord.Text(
+            text: DiagnosticRecord.Text(
                 rawTranscript: rawTranscript,
                 workingText: workingText,
                 groundedText: assembly.groundedWorkingText,
@@ -95,8 +94,8 @@ extension StopCommitCoordinator {
                 polishedOutput: polishedOutput,
                 committedText: committedText
             ),
-            polishSeconds: polishSeconds
+            polishSeconds: polishSeconds,
+            withheldPrompt: capture.claudeJoin?.snapshot.latestPriorUserPrompt
         )
     }
 }
-#endif

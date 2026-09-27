@@ -40,12 +40,12 @@ final class QuickCaptureInboxViewModel {
             projects: {
                 QuickCaptureProjects.projects(
                     from: learnedTerms(),
-                    userLines: [:],
+                    userLines: settings.quickCaptureProjectLines,
                     now: Date(),
                     readme: { QuickCaptureProjects.readme(atRoot: $0) }
                 )
             },
-            agents: { [.claude, .vibe] },
+            agents: { [.claude, .vibe, .opencode] },
             drafter: { drafter },
             github: github
         )

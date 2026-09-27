@@ -18,7 +18,7 @@ struct LearnedTermsSheet: View {
 
     private var projects: [LearnedTermProject] {
         _ = viewModel.learnedTermRevision
-        return LearnedTermsSheet.displayOrder(viewModel.learnedTermStore?.snapshot() ?? LearnedTerms())
+        return LearnedTermsSheet.displayOrder(viewModel.learnedTermStore?.snapshot() ?? LearnedTerms(), now: Date())
     }
 
     var body: some View {
@@ -33,6 +33,10 @@ struct LearnedTermsSheet: View {
                 List {
                     ForEach(projects, id: \.key) { project in
                         Section(project.name) {
+                            if project.terms.isEmpty {
+                                Text("No terms yet.")
+                                    .foregroundStyle(.secondary)
+                            }
                             ForEach(project.terms, id: \.term) { term in
                                 row(term, projectKey: project.key)
                             }
@@ -178,16 +182,15 @@ struct LearnedTermsSheet: View {
 
     // MARK: Pure parts, unit-tested
 
-    /// Projects most recently dictated first, the shared bucket last; terms
-    /// strongest evidence first, the order the prompt ranks them in.
-    nonisolated static func displayOrder(_ terms: LearnedTerms) -> [LearnedTermProject] {
-        terms.projects
-            .filter { !$0.terms.isEmpty }
-            .map { project in
-                var sorted = project
-                sorted.terms.sort(by: LearnedTerms.isStrongerEvidence)
-                return sorted
-            }
+    /// Quick capture's projects first, in its order (`listedProjects`,
+    /// #891), with or without terms; then any other bucket that holds terms,
+    /// such as a worktree name from before #652; the shared bucket last.
+    /// Terms strongest evidence first, the order the prompt ranks them in.
+    nonisolated static func displayOrder(_ terms: LearnedTerms, now: Date) -> [LearnedTermProject] {
+        let listed = terms.listedProjects(now: now)
+        let listedKeys = Set(listed.map(\.key))
+        let others = terms.projects
+            .filter { !listedKeys.contains($0.key) && !$0.terms.isEmpty }
             .sorted { lhs, rhs in
                 let lhsShared = lhs.key == LearnedTermProjectResolver.shared.key
                 let rhsShared = rhs.key == LearnedTermProjectResolver.shared.key
@@ -195,6 +198,11 @@ struct LearnedTermsSheet: View {
                 if lhs.lastSeen != rhs.lastSeen { return lhs.lastSeen > rhs.lastSeen }
                 return lhs.key < rhs.key
             }
+        return (listed + others).map { project in
+            var sorted = project
+            sorted.terms.sort(by: LearnedTerms.isStrongerEvidence)
+            return sorted
+        }
     }
 
     /// The line under a term. A term below the bar is still being learned,

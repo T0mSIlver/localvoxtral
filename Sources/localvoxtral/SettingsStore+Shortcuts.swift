@@ -17,6 +17,8 @@ extension SettingsStore {
     }
 
     func setDictationShortcut(_ shortcut: DictationShortcut?) {
+        // A chord has no hold to end push to talk with (#831).
+        guard shortcut?.modifierChord == nil else { return }
         guard let shortcut else {
             dictationShortcutEnabled = false
             return
@@ -58,7 +60,16 @@ extension SettingsStore {
     /// the popover still polishes via the session-time ensureReady backstop,
     /// paying the polishd cold start.
     var isOverlayBufferSessionReachable: Bool {
-        modifierOnlyHotKeyEnabled || overlayBufferShortcut != nil
+        (modifierOnlyHotKeyEnabled && (modifierOnlyHotKeyModifier != .chord || dictationChord != nil))
+            || overlayBufferShortcut != nil
+    }
+
+    /// The dictation key when it is a chord (#863): the modifier-key trigger
+    /// set to Chord, with one recorded. A tap toggles and a hold is push to
+    /// talk, as with a single modifier key.
+    var dictationChord: ModifierChord? {
+        guard modifierOnlyHotKeyEnabled, modifierOnlyHotKeyModifier == .chord else { return nil }
+        return ModifierChord(storageValue: modifierOnlyHotKeyChord)
     }
 
     var livePasteShortcut: DictationShortcut? {
@@ -112,6 +123,8 @@ extension SettingsStore {
     }
 
     func setOverlayBufferShortcut(_ shortcut: DictationShortcut?) {
+        // A chord has no hold to end push to talk with (#831).
+        guard shortcut?.modifierChord == nil else { return }
         guard let shortcut else {
             overlayBufferShortcutEnabled = false
             return
@@ -128,6 +141,8 @@ extension SettingsStore {
     }
 
     func setLivePasteShortcut(_ shortcut: DictationShortcut?) {
+        // A chord has no hold to end push to talk with (#831).
+        guard shortcut?.modifierChord == nil else { return }
         guard let shortcut else {
             livePasteShortcutEnabled = false
             return
@@ -147,6 +162,9 @@ extension SettingsStore {
     /// The global shortcut for "Copy last dictation", nil when none is set.
     var copyLastDictationShortcut: DictationShortcut? {
         guard copyLastDictationShortcutEnabled else { return nil }
+        if let chord = ModifierChord(storageValue: copyLastDictationShortcutChord) {
+            return DictationShortcut(chord: chord)
+        }
         let candidate = DictationShortcut(
             keyCode: copyLastDictationShortcutKeyCode,
             carbonModifierFlags: copyLastDictationShortcutCarbonModifierFlags
@@ -164,12 +182,18 @@ extension SettingsStore {
             copyLastDictationShortcutEnabled = false
             return
         }
+        if let chord = shortcut.modifierChord {
+            copyLastDictationShortcutChord = chord.storageValue
+            copyLastDictationShortcutEnabled = true
+            return
+        }
         let normalizedShortcut = shortcut.normalized
         guard DictationShortcutValidation.persistenceErrorMessage(for: normalizedShortcut) == nil else {
             return
         }
         copyLastDictationShortcutKeyCode = normalizedShortcut.keyCode
         copyLastDictationShortcutCarbonModifierFlags = normalizedShortcut.carbonModifierFlags
+        copyLastDictationShortcutChord = ""
         copyLastDictationShortcutEnabled = true
     }
 
@@ -179,6 +203,9 @@ extension SettingsStore {
     /// nil when none is set. Nil also turns the needs-you cue off.
     var answerAgentShortcut: DictationShortcut? {
         guard answerAgentShortcutEnabled else { return nil }
+        if let chord = ModifierChord(storageValue: answerAgentShortcutChord) {
+            return DictationShortcut(chord: chord)
+        }
         let candidate = DictationShortcut(
             keyCode: answerAgentShortcutKeyCode,
             carbonModifierFlags: answerAgentShortcutCarbonModifierFlags
@@ -194,12 +221,18 @@ extension SettingsStore {
             answerAgentShortcutEnabled = false
             return
         }
+        if let chord = shortcut.modifierChord {
+            answerAgentShortcutChord = chord.storageValue
+            answerAgentShortcutEnabled = true
+            return
+        }
         let normalizedShortcut = shortcut.normalized
         guard DictationShortcutValidation.persistenceErrorMessage(for: normalizedShortcut) == nil else {
             return
         }
         answerAgentShortcutKeyCode = normalizedShortcut.keyCode
         answerAgentShortcutCarbonModifierFlags = normalizedShortcut.carbonModifierFlags
+        answerAgentShortcutChord = ""
         answerAgentShortcutEnabled = true
     }
 
@@ -209,6 +242,9 @@ extension SettingsStore {
     /// none is set. Optional like the copy shortcut.
     var quickCaptureShortcut: DictationShortcut? {
         guard quickCaptureShortcutEnabled else { return nil }
+        if let chord = ModifierChord(storageValue: quickCaptureShortcutChord) {
+            return DictationShortcut(chord: chord)
+        }
         let candidate = DictationShortcut(
             keyCode: quickCaptureShortcutKeyCode,
             carbonModifierFlags: quickCaptureShortcutCarbonModifierFlags
@@ -224,12 +260,18 @@ extension SettingsStore {
             quickCaptureShortcutEnabled = false
             return
         }
+        if let chord = shortcut.modifierChord {
+            quickCaptureShortcutChord = chord.storageValue
+            quickCaptureShortcutEnabled = true
+            return
+        }
         let normalizedShortcut = shortcut.normalized
         guard DictationShortcutValidation.persistenceErrorMessage(for: normalizedShortcut) == nil else {
             return
         }
         quickCaptureShortcutKeyCode = normalizedShortcut.keyCode
         quickCaptureShortcutCarbonModifierFlags = normalizedShortcut.carbonModifierFlags
+        quickCaptureShortcutChord = ""
         quickCaptureShortcutEnabled = true
     }
 }

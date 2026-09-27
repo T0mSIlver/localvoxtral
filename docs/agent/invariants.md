@@ -23,6 +23,15 @@ there is not.
   `testPrePopulatedFieldTextCannotRescueTheTrailingSpace`). Single-component
   tokens naming an EXISTING absolute path (`/tmp `) abstain via a
   filesystem-existence seam; non-existing ones (`/compact`) stay commands.
+- **An Overlay Buffer commit starts with a space only when it continues
+  the unsent prompt** (#802, owner ruling). The commit text is trimmed and
+  the app cannot read the field, so the evidence is the join: the previous
+  commit went to the same app pid and joined session, and that session's
+  submit count (`ClaudeSessionSnapshot.promptsSubmitted`, every
+  `UserPromptSubmit` with or without text) has not moved since. A failed
+  commit, one the spoken trigger sent, one with no join, or a Live Auto-Paste
+  dictation clears it. Anything looser puts a space in front of `/compact`
+  in a fresh prompt. No trailing space after a commit.
 - **A mid-dictation reconnect resumes the session; it never replays it.**
   When the realtime socket drops without the user asking
   (`DictationSessionController+Reconnect.swift`, #380), the mic keeps recording and the
@@ -1021,7 +1030,7 @@ there is not.
     ProxyCommand's grandchild stays a root and abstains — conservative on
     purpose. Probe abstentions carry a content-free cause category
     (`SSHProbeIndeterminacy` — never a host, path, or option letter) into the
-    log and the dogfood record, because three field dictations were diagnosed
+    log and the diagnostic record, because three field dictations were diagnosed
     blind without one;
     It then requires that ssh session to BE a plain whole-view herdr client — classified, not
     boolean (`HerdrInvocation`): the remote command's first argv token has
@@ -1299,7 +1308,7 @@ there is not.
     arm's Accessibility read, which switches Electron's accessibility tree on
     and is therefore never a default.
     What the verb PRINTS is bounded by `ClaudeSessionJoinSummary`, the single
-    mapper the dogfood record also uses: an arm name, the resolver's own
+    mapper the diagnostic record also uses: an arm name, the resolver's own
     content-free abstention categories, an origin CLASS, a terminal NAME, and
     two Bools — never a session id, pane id, socket path, host, nonce, or
     workspace path. The live registry is in the app, so the verb restores the
@@ -2249,6 +2258,27 @@ there is not.
   that could put a byte on a terminal, so there is no variable part left for a
   squatter to aim at. The fixed `X-Lvx-Session: joined|unknown` response header
   only selects a private per-session status stamp and never reaches stdout.
+  A second copy of the app (a `try-pr.sh` build) loses this port and the
+  broker socket to the running copy, and then waits:
+  `ClaudeHookSocketTakeover` retries only the binds it lost, each time
+  another process with the app's bundle id exits (a kqueue exit watch). The
+  broker never retries on a timer, because its liveness check connects to
+  the holder's socket; the listener's port also retries every ten seconds,
+  since a failed bind touches no one and the holder may be no copy of the
+  app (#892). A retry that still finds the socket held waits. MEASURED
+  2026-09-27 (#655): without it, the survivor of two copies kept dictating
+  with no hook reaching it, and every Claude Desktop join abstained until a
+  relaunch.
+  The CI launch smoke never binds either socket nor starts or reaps a
+  forward (`StartupPermissionSuppression.leavesHookSocketsAlone`), and the
+  forward orphan reaper kills a forward only when the copy that spawned it
+  (`ClaudeRemoteForwardOwner`, recorded in the pid ledger) is dead and ran
+  from this copy's executable. Holding the listener is not proof of being
+  the only copy: a copy that lost the port keeps running without it.
+  MEASURED 2026-09-27 (#892): three launch smokes on the owner's Mac bound
+  the port his copy had lost, each SIGTERMed the forward the shared ledger
+  named, dialed his dev box with a forward of its own, and left it behind
+  when the smoke killed the app two seconds later.
   The shim's request-side `X-Lvx-Plugin-Version` header (its own version, a
   constant in `post.sh`) is the same shape of rule: validated to a strict
   numeric shape on arrival (`ClaudeRemotePluginVersionCodec`), recorded on the
@@ -2299,7 +2329,8 @@ there is not.
   the host that authenticated it, and accepts one answer per ask, for a live
   session of the asked agent; the project key is the one the Mac recorded at
   the ask, never anything the host sends. The body is untrusted text that repo
-  contents can steer: 8 KiB at most, `{"terms": [...]}` only, through the #609
+  contents can steer: 16 KiB at most, `{"terms": [...]}` or Claude Code's
+  result object, read for its answer and usage only (#854), through the #609
   term filter, stored only as unconfirmed proposals. A refusal logs its reason,
   never a byte of the body. What stays as it was: the stdout gate, the hook's
   fail-open exit, the forward, and what is sent to herdr.
@@ -2322,7 +2353,11 @@ there is not.
   (`--permission-mode dontAsk --allowedTools Read(./**)`; without it Read
   opens any file, measured 2026-09-27; Vibe's tools are workspace-bound) and
   the shim allows one draft at a time and 20 a day. `capture.sh` never runs
-  `gh` for anything but `issue list`. Which remote projects the router sees
+  `gh` for anything but `issue list`. A Vibe run's usage rides in
+  `X-Lvx-Usage` on `/v1/terms` and `/v1/draft` (#854): three decimal
+  counts, anything else read as none, used for the usage log alone. The
+  shims pull the numbers out of Vibe's session log with `sed` and never send
+  the file, which holds the prompt. Which remote projects the router sees
   (#819): a hook adds a project only for a name its host sent as
   `X-Lvx-Env-Project`; a cwd label only stamps a project already held,
   because each worktree has its own, and a label no hook has named since is
@@ -2343,32 +2378,37 @@ there is not.
   refused it. Do not "improve" the diagnosis by quoting what came back: the
   echo is remote output, and remote output never travels.
 - **The dogfood control socket is an accepted tradeoff, and the acceptance was
-  bounded.** An instrumented build can expose a local AF_UNIX socket that
-  starts dictations and reports what the context pipeline resolved
+  bounded.** A debug or e2e-harness build can expose a local AF_UNIX socket
+  that starts dictations and reports what the context pipeline resolved
   (`DogfoodControlSocket`), because two things are unobservable from outside
   the process: a dictation has no deterministic trigger, and
   `ClaudeSessionRegistry` is per-process, so `--probe-surface` sees only the
   sessions the app last saved to disk. What makes that acceptable is a set of
   bounds, each of which is the whole argument for the one above it:
-  - **`#if LOCALVOXTRAL_DOGFOOD` and nothing else.** A shipped build compiles
-    none of it — no listener, no path, no code that could create one, and no
-    setting or argument that turns it on.
-    `DogfoodControlBuildBoundaryTests` runs in BOTH configurations (it is
-    deliberately not itself gated) and fails when any reference escapes the
-    flag; that is the only kind of test that can notice this leaking into a
-    release. Within an instrumented build there is a SECOND runtime gate,
-    `debug.dogfood_control_socket_enabled`, kept separate from the capture's:
-    writing records and accepting commands are different consents.
+  - **`#if DEBUG || LOCALVOXTRAL_E2E_HARNESS` and nothing else**, for the
+    socket and for the WAV file that stands in for the microphone
+    (`DogfoodAudioFileSource`). A release build compiles none of it: no
+    listener, no path, no code that could create one, and no setting or
+    argument that turns it on. Only the UI smoke workflow's package sets
+    `LOCALVOXTRAL_E2E_HARNESS=1` (a dogfood package implies it, until the
+    dogfood build is removed in #792). `package_app.sh` searches every
+    bundle's binary for the harness types
+    (`scripts/packaging/check-harness-symbols.sh`): a release build fails if
+    one is there, a harness build fails if one is missing. Within a build that
+    has the socket there is a SECOND runtime gate,
+    `debug.dogfood_control_socket_enabled`, kept separate from the diagnostic
+    records switch: writing records and accepting commands are different
+    consents.
   - **0700 directory, 0600 socket, and `getpeereid` before the first read.**
     The permissions should already make another uid unable to reach the path.
     The credential check is there because "should" is a claim about the
     filesystem, not about this process.
   - **Every value that crosses is a bool, a count, or a closed enum name.**
     `ClaudeSessionJoinSummary` is reused rather than re-mapped (its third
-    consumer, after the dogfood record and `--probe-surface`), abstention
+    consumer, after the diagnostic record and `--probe-surface`), abstention
     causes are the resolver's own content-free categories, and `registry list`
     reports session SHAPES — never a session id, marker, workspace, tty, pane
-    id, socket path or host. Replies pass through `DogfoodCaptureRedaction` as
+    id, socket path or host. Replies pass through `DiagnosticRecordRedaction` as
     a backstop, not as the strategy.
   - **`session start` reaches `handleModifierOnlyTap`, the gesture's own
     handler.** It is subject to the Secure Keyboard Entry refusal, the

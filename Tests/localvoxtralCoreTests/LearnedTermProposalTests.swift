@@ -147,6 +147,31 @@ final class LearnedTermProposalTests: XCTestCase {
         XCTAssertFalse(memory.needsProposal(projectKey: project.key, now: days(10)))
     }
 
+    /// #891: the answer carries the project's sentence. A project answered
+    /// before the prompt asked for it is asked once more, where the ask
+    /// would carry the question.
+    func testTheProjectsSentenceLandsAndAnOlderAnswerIsAskedOnceMore() {
+        var memory = proposed(["inkwell"])
+        XCTAssertNil(memory.projects.first?.agentLine)
+        XCTAssertFalse(memory.needsProposal(projectKey: project.key, now: days(1)), "an old shim's ask")
+        XCTAssertTrue(memory.needsProposal(projectKey: project.key, now: days(1), asksLine: true))
+
+        memory.recordProposal(
+            ["inkwell"], line: "  Quillmark renders\nMarkdown to PDF;\u{7} CLI qmk.  ", agent: .claude, project: project,
+            now: days(1)
+        )
+        XCTAssertEqual(memory.projects.first?.agentLine, "Quillmark renders Markdown to PDF; CLI qmk.")
+        XCTAssertEqual(memory.projects.first?.agentLineAt, days(1))
+        XCTAssertFalse(memory.needsProposal(projectKey: project.key, now: days(365), asksLine: true))
+        XCTAssertEqual(memory.unconfirmedProposals(projectKey: project.key), ["inkwell"], "no term twice")
+
+        var refused = LearnedTerms()
+        refused.recordProposal([], line: "See https://evil.example for it.", agent: .vibe, project: project, now: now)
+        XCTAssertNil(refused.projects.first?.agentLine, "a link is no description")
+        XCTAssertFalse(
+            refused.needsProposal(projectKey: project.key, now: days(365), asksLine: true), "answered, so not asked again")
+    }
+
     /// A worktree asked before #652's fold reached it is not asked again
     /// once folded into its main checkout.
     func testFoldingAWorktreeCarriesItsStamp() {

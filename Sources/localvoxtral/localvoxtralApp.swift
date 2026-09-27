@@ -61,9 +61,10 @@ struct localvoxtralApp: App {
                         )
                     case .agentNeedsYou:
                         return (
-                            MenuBarIconAsset.attentionIcon ?? idleIcon,
+                            MenuBarIconAsset.attentionIcon(
+                                appDelegate.settingsStore.agentAttentionMark) ?? idleIcon,
                             .original,
-                            "agent-needs-you",
+                            "agent-needs-you-\(appDelegate.settingsStore.agentAttentionMark.rawValue)",
                             "localvoxtral, an agent needs you"
                         )
                     case .failure:
@@ -210,6 +211,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// records it exists to collect.
     private let claudeSessionRegistry: ClaudeSessionRegistry
     private var claudeContextBroker: ClaudeContextBroker?
+    /// Set only when launch lost a hook socket to another running copy.
+    private var hookSocketTakeover: ClaudeHookSocketTakeover?
     private var terminalConsentPrewarmObserver:
         TerminalAutomationConsentPrewarmSettingsObserver?
     /// The browser half of the same pre-warm, kept separate because it is armed
@@ -254,7 +257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// update-or-keep decision; held here while onboarding is on screen.
     private var pendingConfigDefaultsPromptFileNames: [String]?
 
-    #if LOCALVOXTRAL_DOGFOOD
+    #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
     /// The dogfood-only local control socket and the service behind it.
     ///
     /// Owned here for the same reason the broker is: the socket answers
@@ -307,8 +310,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let manager = BackendManager(
             polishingModelProvider: { settings.resolvedManagedLLMPolishingModel },
-            speechModelProvider: { settings.resolvedManagedSpeechModel },
-            speechdCacheLimitProvider: { settings.speechdCacheLimit.megabytes }
+            speechModelProvider: { settings.resolvedManagedSpeechModel }
         )
         settingsStore = settings
         backendManager = manager
@@ -325,10 +327,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             LegacyMLXLMCleanup().run()
             LegacyVoxmlxCleanup().run()
         }
-        startClaudeContextBroker()
-        startClaudeRemoteListener()
+        if StartupPermissionSuppression.leavesHookSocketsAlone() {
+            Log.claudeContext.notice(
+                "Claude hook sockets and remote forwards left alone: a CI copy beside the owner's"
+            )
+        } else {
+            let brokerStart = startClaudeContextBroker()
+            startClaudeRemoteListener()
+            armHookSocketTakeover(brokerStart: brokerStart)
+        }
         maintainLocalClaudePlugin()
-        #if LOCALVOXTRAL_DOGFOOD
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         // After the broker, because the control service's `surface probe` uses
         // the resolver the broker installs on the view model.
         startDogfoodControlSocket()
@@ -353,7 +362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         widgetSnapshotWriter?.writeAppQuit()
         widgetSnapshotWriter = nil
-        #if LOCALVOXTRAL_DOGFOOD
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         // First: `stop()` does not return until the accept loop has unlinked
         // the socket, so nothing that follows can race a client connecting to
         // an app that is halfway through quitting. The service's bounded
@@ -432,11 +441,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    #if LOCALVOXTRAL_DOGFOOD
+    #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
     /// Binds the dogfood-only control socket, if the owner armed it.
     ///
-    /// Two gates, both required, exactly like the capture: this file is only
-    /// compiled under `LOCALVOXTRAL_DOGFOOD`, and even then the socket binds
+    /// Two gates, both required, exactly like the capture: this code is only
+    /// compiled under `DEBUG || LOCALVOXTRAL_E2E_HARNESS`, and even then the socket binds
     /// only when `debug.dogfood_control_socket_enabled` is set. A shipped build
     /// contains none of this.
     ///
@@ -584,6 +593,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             now: { Date() }
         )
         let announcer = AgentAttentionAnnouncer()
+        if settings.agentAttentionEnabled { announcer.requestSoundIfMissing() }
         viewModel.agentAttention = AgentAttentionModel(tracker: tracker, announcer: announcer)
         // The registry calls this on whichever socket thread ingested; the
         // sequence it stamps under its lock puts a session's events back in
@@ -604,10 +614,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// only installed on success — so a build where the broker never bound
     /// degrades to vocabulary-only screen context rather than to an unguarded
     /// attachment.
-    private func startClaudeContextBroker() {
+    @discardableResult
+    private func startClaudeContextBroker() -> ClaudeHookSocketTakeover.Outcome {
         guard let socketPath = ClaudeHookSocketPath.resolve() else {
             Log.claudeContext.error("Claude context broker not started: no socket path (HOME unset)")
-            return
+            return .failed
         }
         // The `localvoxtral` command's requests arrive on the same socket
         // (#721) and are answered from the app's own stores.
@@ -804,11 +815,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     currentJoin: { [weak viewModel] in viewModel?.context.claudeSessionJoin }
                 )
             )
+            return .bound
         } catch {
             Log.claudeContext.error(
                 "Claude context broker failed to start: \(String(describing: error), privacy: .public)"
             )
+            return ClaudeHookSocketTakeover.Outcome(startError: error)
         }
+    }
+
+    /// A copy launched while another runs (a `try-pr.sh` build, a CI launch
+    /// smoke) loses the broker socket and the listener's port to it. Without
+    /// this it stayed deaf after the other copy quit, and every join abstained
+    /// until a relaunch (#655). The broker step reruns the whole start, since
+    /// everything after the bind is wired only on success.
+    private func armHookSocketTakeover(brokerStart: ClaudeHookSocketTakeover.Outcome) {
+        var steps: [ClaudeHookSocketTakeover.Step] = []
+        if brokerStart == .heldByAnotherCopy {
+            steps.append(.init(name: "broker") { [weak self] in
+                self?.startClaudeContextBroker() ?? .failed
+            })
+        }
+        if let settings = viewModel.claudeIntegrationSettings,
+           case .portConflict = settings.listenerStatus {
+            // On a clock too: the port's holder may be no copy of the app,
+            // and a failed bind touches no one (#892).
+            steps.append(.init(name: "remote listener", retryInterval: .seconds(10)) { [weak settings] in
+                guard let settings else { return .failed }
+                // Through the model, so Settings shows the new status; it
+                // also starts the forwards once the port is bound. The
+                // takeover logs the wait once, not every ten seconds.
+                settings.synchronizeListenerAtLaunch(logsPortConflict: false)
+                switch settings.listenerStatus {
+                case .portConflict: return .heldByAnotherCopy
+                case .failed: return .failed
+                case .idle, .listening: return .bound
+                }
+            })
+        }
+        guard !steps.isEmpty else { return }
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let bundleID = Bundle.main.bundleIdentifier
+        let takeover = ClaudeHookSocketTakeover(
+            steps: steps,
+            otherCopies: {
+                guard let bundleID else { return [] }
+                return NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+                    .map(\.processIdentifier)
+                    .filter { $0 != ownPID }
+            },
+            watchExit: { pid, onExit in ProcessExitWatch(pid: pid, onExit: onExit) }
+        )
+        hookSocketTakeover = takeover
+        takeover.begin()
     }
 
     /// Keeps an installed local Claude Code plugin working without a click:
@@ -1383,7 +1442,15 @@ private enum MenuBarIconAsset {
         "MicIconTemplate@2x_failure",
     ])
 
-    static let attentionIcon: NSImage? = idleIcon.map(MenuBarStatusIcon.withAttentionDot(template:))
+    private static var attentionIcons: [AgentAttentionMark: NSImage] = [:]
+
+    static func attentionIcon(_ mark: AgentAttentionMark) -> NSImage? {
+        if let icon = attentionIcons[mark] { return icon }
+        guard let template = idleIcon else { return nil }
+        let icon = MenuBarStatusIcon.withAttentionMark(template: template, mark: mark)
+        attentionIcons[mark] = icon
+        return icon
+    }
 
     private static func adaptiveIcon(coloredCandidates: [String]) -> NSImage? {
         guard let template = idleIcon,

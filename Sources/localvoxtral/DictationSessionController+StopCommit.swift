@@ -202,7 +202,7 @@ extension DictationSessionController {
             // A value, not the join: the closure outlives the stop.
             let historyJoin = capture.claudeJoin.map(AgentCLIJoin.init)
             saveInterruptedPolishCommit = { [weak self] in
-                self?.saveSessionRecord(
+                _ = self?.saveSessionRecord(
                     startedAt: capturedSessionStartedAt,
                     rawText: originalText,
                     polishedText: workingText != originalText ? workingText : nil,
@@ -297,10 +297,16 @@ extension DictationSessionController {
         // Read before the cleanup below discards the join; a capture taken
         // for a polish that could not run holds it instead.
         let historyJoin = (sample.capture?.claudeJoin ?? context.claudeSessionJoin).map(AgentCLIJoin.init)
+        let commitJoin = context.claudeSessionJoin
+        let commitTargetPID = overlayBufferCoordinator.commitTargetAppPID
         let overlayCommit = StopCommitCoordinator.commit(
             overlay: overlayBufferCoordinator,
-            textInsertion: overlayTextCommitter,
+            textInsertion: overlayCommitter(join: commitJoin, targetPID: commitTargetPID),
             autoCopyEnabled: settings.autoCopyEnabled
+        )
+        noteOverlayCommit(
+            overlayCommit, committedText: displayWorkingText,
+            join: commitJoin, targetPID: commitTargetPID, spokenSend: spokenSend
         )
         if let failureMessage = overlayCommit.failureMessage {
             lastError = failureMessage
@@ -390,15 +396,13 @@ extension DictationSessionController {
         var polishingDuration: Double? = nil
         var sessionStatus: DictationSessionStatus = .completed
         var llmConnectionFailure: PolishOutcomeClassifier.Failure?
-        #if LOCALVOXTRAL_DOGFOOD
         // The model's raw reply and the (placeholder-bearing)
-        // committed text, for the capture record below.
+        // committed text, for the diagnostic record below.
         // Placeholder-bearing on purpose: the clipboard PAYLOAD
         // follows the session-record rule and never enters a
         // persisted record.
-        var dogfoodPolishedOutput: String?
-        var dogfoodCommittedText: String?
-        #endif
+        var recordPolishedOutput: String?
+        var recordCommittedText: String?
 
         switch outcome.reply {
         case .notSent:
@@ -413,10 +417,8 @@ extension DictationSessionController {
             // commit copy below.
             processedTextForPersistence =
                 committedText != originalText ? committedText : nil
-            #if LOCALVOXTRAL_DOGFOOD
-            dogfoodPolishedOutput = polished.polishedText
-            dogfoodCommittedText = committedText
-            #endif
+            recordPolishedOutput = polished.polishedText
+            recordCommittedText = committedText
 
             showPolishedText(polished, preparation: preparation)
         case .failed(let failure):
@@ -426,13 +428,30 @@ extension DictationSessionController {
 
         guard !Task.isCancelled else { return }
 
+        let recordInputs = StopCommitCoordinator.diagnosticRecordInputs(
+            material: outcome.material,
+            assembly: assembly,
+            capture: capture,
+            targetBundleID: capturedTargetBundleID,
+            targetIsTerminalLike: self.sessionTargetIsTerminalLike,
+            outputMode: capturedOutputMode,
+            promptProfile: capturedPolishProfile,
+            polishingEndpointURL: polishingConfig.endpointURL,
+            polishModel: polishingConfig.model,
+            rawTranscript: originalText,
+            workingText: workingText,
+            polishedOutput: recordPolishedOutput,
+            committedText: recordCommittedText,
+            polishSeconds: polishingDuration
+        )
+
         let insertedText = self.transcript.currentDictationEventText
         let overlayCommit: StopCommitCoordinator.CommitResult
         if let addressedTo {
             // Clears the interrupted-save once the text is handed over.
             guard let addressed = await self.commitOverlayAddressed(to: addressedTo) else { return }
             self.finishAddressedCommit(addressed, sessionMode: sessionMode)
-            self.saveSessionRecord(
+            let historyID = self.saveSessionRecord(
                 startedAt: capturedSessionStartedAt,
                 rawText: originalText,
                 polishedText: processedTextForPersistence,
@@ -456,6 +475,18 @@ extension DictationSessionController {
                 audio: record.audio,
                 joined: capture.claudeJoin.map(AgentCLIJoin.init)
             )
+            // The text went to the named session, not the focused app, so
+            // no edit watch: nil outcome. Superseded, the capture tap already
+            // belongs to the new dictation, and consuming it here would take
+            // that dictation's facts.
+            if !addressed.superseded {
+                await self.writeDiagnosticRecordIfEnabled(
+                    recordInputs,
+                    historyID: historyID,
+                    commitOutcome: nil,
+                    committedTextForWatch: ""
+                )
+            }
             if let llmConnectionFailure, !addressed.superseded {
                 self.handleLLMPolishingConnectionFailure(
                     title: llmConnectionFailure.title,
@@ -467,10 +498,15 @@ extension DictationSessionController {
         }
         // From here the task commits and saves the dictation itself.
         self.saveInterruptedPolishCommit = nil
+        let commitTargetPID = self.overlayBufferCoordinator.commitTargetAppPID
         overlayCommit = StopCommitCoordinator.commit(
             overlay: self.overlayBufferCoordinator,
-            textInsertion: self.overlayTextCommitter,
+            textInsertion: self.overlayCommitter(join: capture.claudeJoin, targetPID: commitTargetPID),
             autoCopyEnabled: self.settings.autoCopyEnabled
+        )
+        self.noteOverlayCommit(
+            overlayCommit, committedText: insertedText,
+            join: capture.claudeJoin, targetPID: commitTargetPID, spokenSend: spokenSend
         )
         if let failureMessage = overlayCommit.failureMessage {
             self.lastError = failureMessage
@@ -491,7 +527,7 @@ extension DictationSessionController {
             shouldCommitOverlay: true
         )
 
-        self.saveSessionRecord(
+        let historyID = self.saveSessionRecord(
             startedAt: capturedSessionStartedAt,
             rawText: originalText,
             polishedText: processedTextForPersistence,
@@ -516,38 +552,22 @@ extension DictationSessionController {
             joined: capture.claudeJoin.map(AgentCLIJoin.init)
         )
 
-        #if LOCALVOXTRAL_DOGFOOD
-        // AFTER the commit and the session record: capture latency
+        // AFTER the commit and the session record: record latency
         // can only ever land on the tail of this task, never on the
-        // user's paste. `writeDogfoodCaptureIfArmed` checks the
-        // runtime opt-in before doing any work.
-        await self.writeDogfoodCaptureIfArmed(
-            StopCommitCoordinator.dogfoodCaptureInputs(
-                material: outcome.material,
-                assembly: assembly,
-                capture: capture,
-                targetBundleID: capturedTargetBundleID,
-                targetIsTerminalLike: self.sessionTargetIsTerminalLike,
-                outputMode: capturedOutputMode,
-                promptProfile: capturedPolishProfile,
-                polishingEndpointURL: polishingConfig.endpointURL,
-                polishModel: polishingConfig.model,
-                rawTranscript: originalText,
-                workingText: workingText,
-                polishedOutput: dogfoodPolishedOutput,
-                committedText: dogfoodCommittedText,
-                polishSeconds: polishingDuration
-            ),
+        // user's paste. `writeDiagnosticRecordIfEnabled` checks the
+        // switch before doing any work.
+        await self.writeDiagnosticRecordIfEnabled(
+            recordInputs,
+            historyID: historyID,
             commitOutcome: overlayCommit.outcome,
             // Substituted for MEASUREMENT only (the watch window
             // scales with what was inserted); the record keeps the
             // placeholder-bearing text above.
             committedTextForWatch: StopCommitCoordinator.substitutingPayload(
-                dogfoodCommittedText ?? assembly.groundedWorkingText,
+                recordCommittedText ?? assembly.groundedWorkingText,
                 payload: preparation.clipboardPayload
             )
         )
-        #endif
 
         if let llmConnectionFailure {
             self.handleLLMPolishingConnectionFailure(
@@ -607,6 +627,8 @@ extension DictationSessionController {
         let sessionAudio = finishedAudio ?? audio.sessionRecording.finish()
         let capturedAudio = sessionStoresAudio ? sessionAudio : nil
         textInsertion.flushFinalLiveReplacementCorrections()
+        // Typed text may sit after the last commit, ending in a space.
+        lastOverlayCommitLanding = nil
         let historyJoin = context.claudeSessionJoin.map(AgentCLIJoin.init)
         // Read before the cleanup below discards the join.
         if liveDictationCanTeachACorrection {
@@ -822,6 +844,8 @@ extension DictationSessionController {
         onQuickCapture?(text, keptInHistory ? recordID : nil)
     }
 
+    /// Returns the saved entry's id, or nil when nothing was saved.
+    @discardableResult
     func saveSessionRecord(
         id: UUID = UUID(),
         startedAt: Date,
@@ -840,12 +864,12 @@ extension DictationSessionController {
         quickCaptureDestination: String? = nil,
         audio: Data? = nil,
         joined: AgentCLIJoin?
-    ) {
+    ) -> UUID? {
         let trimmedRawText = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedRawText.isEmpty else {
             // Intentionally skip empty sessions: they produce no useful transcript payload.
             Log.persistence.debug("Skipping persistence for empty dictation session")
-            return
+            return nil
         }
         let record = DictationSessionRecord(
             id: id,
@@ -888,7 +912,7 @@ extension DictationSessionController {
             // Turning history off deleted what was there. If that write
             // failed, this is what tries again.
             applyDictationHistoryRetention(now: record.finishedAt)
-            return
+            return nil
         }
         // Checked again here: the setting was latched at start, and turning
         // it off since has deleted the folder this would write into.
@@ -897,6 +921,7 @@ extension DictationSessionController {
             sessionStore?.trim(olderThan: cutoff)
         }
         termSuggestionCadence?.dictationSaved()
+        return record.id
     }
 
     /// Brings the store in line with the retention setting: at launch, and
@@ -907,6 +932,9 @@ extension DictationSessionController {
             // A pass already reading the history would send it to the hosted
             // model after the user said not to keep it.
             termSuggestions.stop()
+            // The trim below sweeps them too; this one also stops a record
+            // already on its way to disk.
+            sessionStore?.deleteAllDiagnosticRecords()
         }
         guard let cutoff = retention.cutoff(now: now) else { return }
         sessionStore?.trim(olderThan: cutoff)
@@ -1111,7 +1139,7 @@ extension DictationSessionController {
         // join can hold an ssh forward open.
         let historyJoin = (sample.capture?.claudeJoin ?? context.claudeSessionJoin).map(AgentCLIJoin.init)
         saveInterruptedPolishCommit = { [weak self] in
-            self?.saveSessionRecord(
+            _ = self?.saveSessionRecord(
                 startedAt: sample.record.startedAt,
                 rawText: realtimeText,
                 polishedText: nil,

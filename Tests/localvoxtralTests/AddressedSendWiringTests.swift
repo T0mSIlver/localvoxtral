@@ -213,6 +213,31 @@ final class AddressedSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.returns.value, [Self.namedTerminalPID])
     }
 
+    /// A polished addressed send writes its diagnostic record like any other
+    /// polished dictation, under its History id, and arms no edit watch: the
+    /// text went to the named session, not the focused app.
+    func testAPolishedAddressedSendWritesItsRecordAndWatchesNothing() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("addressed-records-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let monitor = EditSignalTestMonitor()
+        let harness = makeHarness(
+            text: "run the tests send that to payments",
+            sessions: [session("pay", cwd: "/r/payments")],
+            polishingService: FakePolishingService(returning: "Run the tests."),
+            recordDirectory: directory,
+            editMonitor: monitor
+        )
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.returns.value, [Self.namedTerminalPID], "the send itself went through")
+        let historyID = try XCTUnwrap(harness.records.value.first?.id)
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        XCTAssertEqual(names.compactMap { DiagnosticRecordFileName.parse($0)?.id }, [historyID])
+        XCTAssertEqual(monitor.startCount, 0, "no Backspace watch on the focused app")
+    }
+
     // MARK: - herdr
 
     func testAHerdrPaneGetsTheTextAndEnterThroughItsSocketAndNoKeyIsPosted() async throws {
@@ -308,7 +333,9 @@ final class AddressedSendWiringTests: XCTestCase {
         sessions: [ClaudeSessionSnapshot],
         outcome: SessionPaneFocusOutcome = .focused(bundleID: TerminalScreenAllowlist.ghosttyBundleID),
         polishingService: FakePolishingService? = nil,
-        registry: ClaudeSessionRegistry? = nil
+        registry: ClaudeSessionRegistry? = nil,
+        recordDirectory: URL? = nil,
+        editMonitor: EditSignalTestMonitor? = nil
     ) -> Harness {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.overlaySpokenSendEnabled = true
@@ -373,6 +400,19 @@ final class AddressedSendWiringTests: XCTestCase {
             herdrPanes: herdrClient,
             herdrPaneWriter: herdrClient
         )
+        if let recordDirectory {
+            viewModel.session.diagnosticRecordStore = DiagnosticRecordStore(directoryURL: recordDirectory)
+        }
+        if let editMonitor {
+            let sleeper = EditSignalManualSleeper()
+            let clock = EditSignalTestClock()
+            viewModel.session.editSignalWatcher = EditSignalWatcher(
+                monitor: editMonitor,
+                now: { clock.now() },
+                sleepFor: { await sleeper.sleep($0) }
+            )
+            addTeardownBlock { sleeper.fireAll() }
+        }
         viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.transcript.currentDictationEventText = text
         return Harness(

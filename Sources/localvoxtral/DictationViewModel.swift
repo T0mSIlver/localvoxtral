@@ -478,8 +478,7 @@ final class DictationViewModel {
             backendManager
             ?? BackendManager(
                 polishingModelProvider: { settings.resolvedManagedLLMPolishingModel },
-                speechModelProvider: { settings.resolvedManagedSpeechModel },
-                speechdCacheLimitProvider: { settings.speechdCacheLimit.megabytes }
+                speechModelProvider: { settings.resolvedManagedSpeechModel }
             )
         self.managesRuntimeServices = startRuntimeServices
         let context = SessionContextResolver(settings: settings, textInsertion: textInsertion)
@@ -510,22 +509,25 @@ final class DictationViewModel {
             ducksRealOutput: ducksRealOutput
         )
         let overlay: OverlayBufferSessionCoordinating
+        var overlayPanel: DictationOverlayController?
         if let overlayBufferCoordinator {
             overlay = overlayBufferCoordinator
         } else {
             let anchorResolver = OverlayAnchorResolver()
+            let panel = DictationOverlayController(
+                metricsProvider: {
+                    OverlayLayoutMetrics(
+                        bodyFontSize: settings.overlayBufferFontSize,
+                        visibleLines: settings.overlayBufferVisibleLines,
+                        wordHold: settings.overlayBufferWordHold)
+                },
+                storedPlacementProvider: { settings.overlayBufferPlacement },
+                placementWriter: { settings.overlayBufferPlacement = $0 }
+            )
+            overlayPanel = panel
             overlay = OverlayBufferSessionCoordinator(
                 stateMachine: OverlayBufferStateMachine(),
-                renderer: DictationOverlayController(
-                    metricsProvider: {
-                        OverlayLayoutMetrics(
-                            bodyFontSize: settings.overlayBufferFontSize,
-                            visibleLines: settings.overlayBufferVisibleLines,
-                            wordHold: settings.overlayBufferWordHold)
-                    },
-                    storedPlacementProvider: { settings.overlayBufferPlacement },
-                    placementWriter: { settings.overlayBufferPlacement = $0 }
-                ),
+                renderer: panel,
                 anchorResolver: anchorResolver
             )
         }
@@ -602,6 +604,7 @@ final class DictationViewModel {
         textInsertion.onAccessibilityTrustChanged = { [weak self] in
             guard let self else { return }
             self.shortcuts.retryModifierOnlyHotKeyRegistrationIfNeeded()
+            self.shortcuts.retryChordShortcutRegistrationIfNeeded()
             if self.currentErrorToken == .accessibilityPermissionRequired {
                 self.lastError = nil
             }
@@ -638,6 +641,9 @@ final class DictationViewModel {
         session.destinationKeyHandler.onMove = { [weak session] forward in
             session?.moveDestination(forward: forward)
         }
+        overlayPanel?.onDestinationClick = { [weak session] destination in
+            session?.clickDestination(destination)
+        }
 
         textInsertion.refreshAccessibilityTrustState()
         if startRuntimeServices {
@@ -651,6 +657,11 @@ final class DictationViewModel {
             // still clear recordings kept before it was turned off.
             sessionStore?.audioStore = DictationAudioStore(
                 directoryURL: DictationAudioStore.defaultDirectoryURL())
+            // One store for writes and for deletes: a record follows its
+            // History entry the way its audio does.
+            let diagnosticRecordStore = DiagnosticRecordStore()
+            session.diagnosticRecordStore = diagnosticRecordStore
+            sessionStore?.diagnosticRecordStore = diagnosticRecordStore
             sessionStore?.removeOrphanedAudio()
             applyDictationHistoryRetention()
             // Before everything that calls a model, so each one records to it.
@@ -740,12 +751,13 @@ final class DictationViewModel {
         }
     }
 
-    /// Points the realtime socket, the second pass and the polishing service
+    /// Points both realtime clients, the second pass and the polishing service
     /// (polishes and term suggestions) at `ledger`. Replaces `llmPolishingService`, so a test that
     /// substitutes a fake does so after this.
     func installUsageLedger(_ ledger: UsageLedger) {
         engines.installUsageLedger(ledger)
         session.mistralRealtimeClient.setUsageRecorder(ledger)
+        session.realtimeAPIClient.setUsageRecorder(ledger)
         session.secondPassUsageRecorder = ledger
         llmPolishingService = LLMPolishingService(usageRecorder: ledger)
     }
@@ -813,12 +825,10 @@ final class DictationViewModel {
             // to run).
             MainActor.assumeIsolated {
                 guard let self else { return }
-                #if LOCALVOXTRAL_DOGFOOD
                 // Last chance for a still-open post-commit watch to patch its
                 // record: after this the process is gone and the dictation
                 // would keep no behavior block at all.
-                self.session.dogfoodEditSignalWatcher.flushForTermination()
-                #endif
+                self.session.editSignalWatcher.flushForTermination()
                 // Inline, not in the Task below: a fade would not get to
                 // finish and the Task is not guaranteed to run at all.
                 self.audio.audioDucking.restoreImmediatelyForTermination()
@@ -902,7 +912,7 @@ final class DictationViewModel {
 
 }
 
-#if LOCALVOXTRAL_DOGFOOD
+#if DEBUG || LOCALVOXTRAL_E2E_HARNESS
 extension DictationViewModel {
     /// The dogfood control socket's entry into the dictation trigger.
     ///

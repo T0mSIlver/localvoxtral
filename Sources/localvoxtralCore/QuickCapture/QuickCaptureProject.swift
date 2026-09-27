@@ -3,12 +3,12 @@ import Foundation
 /// One project a quick capture can be routed to (#725), as the classifier
 /// sees it. Repository names alone route badly ("sometimes it's not
 /// representative of the project"), so each goes out with a description:
-/// its README's first paragraph, its own terms, and a line the user wrote.
+/// its README's first paragraph, its own terms, and a line about it: the
+/// user's, else the one its agent wrote (#891).
 ///
-/// The projects are the ones the learned-terms file holds: every local
-/// checkout a joined dictation has shown the app (#609 stamps each one), and
-/// every remote repository a hook has named (#819). Nothing here comes from
-/// the screen or the clipboard.
+/// The projects are the learned terms' (`LearnedTerms.listedProjects`), the
+/// same ones the learned-terms sheet shows. Nothing here comes from the
+/// screen or the clipboard.
 package struct QuickCaptureProject: Equatable, Sendable {
     /// `LearnedTermProject.key`: a main checkout's path, or `remote:<label>`.
     package let key: String
@@ -18,21 +18,35 @@ package struct QuickCaptureProject: Equatable, Sendable {
     /// has one.
     package let summary: String?
     package let terms: [String]
-    /// What the user wrote about the project, when they did.
+    /// The project's agent's sentence about it (#891), when it answered.
+    package let agentLine: String?
+    /// What the user wrote about the project, when they did. It replaces
+    /// the agent's sentence.
     package let userLine: String?
 
-    package init(key: String, name: String, summary: String?, terms: [String], userLine: String?) {
+    package init(
+        key: String, name: String, summary: String?, terms: [String],
+        agentLine: String? = nil, userLine: String?
+    ) {
         self.key = key
         self.name = name
         self.summary = summary
         self.terms = terms
+        self.agentLine = agentLine
         self.userLine = userLine
+    }
+
+    /// The description filled in without the user: the agent's sentence,
+    /// else the README summary, cut like the user's line. The Project descriptions sheet shows it
+    /// until the user writes their own.
+    package var automaticLine: String? {
+        agentLine ?? summary.map { QuickCaptureProjects.clipped($0, to: QuickCaptureProjects.maxUserLineCharacters) }
     }
 
     /// The text the classifier reads for this option.
     package var description: String {
         var parts: [String] = ["Project \(name)."]
-        if let userLine { parts.append(userLine) }
+        if let line = userLine ?? agentLine { parts.append(line) }
         if let summary { parts.append(summary) }
         if !terms.isEmpty { parts.append("Its names: " + terms.joined(separator: ", ") + ".") }
         return parts.joined(separator: " ")
@@ -47,18 +61,9 @@ package enum QuickCaptureProjects {
     package static let maxSummaryCharacters = 400
     package static let summaryParagraphs = 2
     package static let maxUserLineCharacters = 200
-    /// A remote cwd label is listed this long after a hook last named it.
-    /// Only a host older than plugin 1.13.0 (#652) sends one for a session
-    /// in a repository, and there each worktree has its own label: listed
-    /// while its sessions run, gone a week after.
-    package static let remoteLabelListedDays = 7
 
-    /// Every project in `learned` a capture can go to, most recent first: a
-    /// local checkout, or a remote project a hook has named since #819 (a
-    /// repository at any time, a cwd label within `remoteLabelListedDays`).
-    /// A remote project no hook has named is a label no session reports any
-    /// more, such as a worktree's from before #652, and the shared bucket is
-    /// no project; neither is listed.
+    /// Every project a capture can go to (`LearnedTerms.listedProjects`),
+    /// most recent first, each with its description.
     ///
     /// - Parameters:
     ///   - userLines: the user's line per project key.
@@ -69,37 +74,23 @@ package enum QuickCaptureProjects {
         now: Date,
         readme: (String) -> String?
     ) -> [QuickCaptureProject] {
-        func recency(_ project: LearnedTermProject) -> Date {
-            max(project.lastSeen, project.reportedAt ?? project.lastSeen)
+        learned.listedProjects(now: now).map { project in
+            let terms = learned.confirmedTerms(projectKey: project.key)
+                + learned.unconfirmedProposals(projectKey: project.key)
+            let summary = project.key.hasPrefix("/")
+                ? readme(project.key).flatMap(summary(ofReadme:))
+                : project.summary
+            return QuickCaptureProject(
+                key: project.key,
+                name: project.name,
+                summary: summary.map { clipped($0, to: maxSummaryCharacters) },
+                terms: Array(terms.prefix(maxTerms)),
+                agentLine: project.agentLine,
+                userLine: userLines[project.key]
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .flatMap { $0.isEmpty ? nil : clipped($0, to: maxUserLineCharacters) }
+            )
         }
-        return learned.projects
-            .filter { !$0.key.isEmpty && !$0.name.isEmpty && isListed($0, now: now) }
-            .sorted { recency($0) > recency($1) }
-            .map { project in
-                let terms = learned.confirmedTerms(projectKey: project.key)
-                    + learned.unconfirmedProposals(projectKey: project.key)
-                let summary = project.key.hasPrefix("/")
-                    ? readme(project.key).flatMap(summary(ofReadme:))
-                    : project.summary
-                return QuickCaptureProject(
-                    key: project.key,
-                    name: project.name,
-                    summary: summary.map { clipped($0, to: maxSummaryCharacters) },
-                    terms: Array(terms.prefix(maxTerms)),
-                    userLine: userLines[project.key]
-                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                        .flatMap { $0.isEmpty ? nil : clipped($0, to: maxUserLineCharacters) }
-                )
-            }
-    }
-
-    private static func isListed(_ project: LearnedTermProject, now: Date) -> Bool {
-        if project.key.hasPrefix("/") { return true }
-        guard project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix),
-              let reported = project.reportedAt
-        else { return false }
-        return project.reportedAsRepository == true
-            || now.timeIntervalSince(reported) < Double(remoteLabelListedDays) * 86_400
     }
 
     /// The summary kept for a remote project from the README opening its
@@ -207,7 +198,7 @@ package enum QuickCaptureProjects {
             .trimmingCharacters(in: .whitespaces)
     }
 
-    private static func clipped(_ text: String, to limit: Int) -> String {
+    package static func clipped(_ text: String, to limit: Int) -> String {
         guard text.count > limit else { return text }
         return String(text.prefix(limit - 1)) + "…"
     }
