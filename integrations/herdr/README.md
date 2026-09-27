@@ -48,22 +48,6 @@ dictation with "send that to" and a session's name sends it to that session
 and presses Enter there. A session in a local herdr pane receives it without
 its pane coming forward.
 
-## Safety rules
-
-herdr's socket gives full control over every pane, so localvoxtral limits
-itself to two actions on the joined pane: add text, and press Enter.
-
-- **No stray Enter.** Text that holds a line break or another control
-  character never goes through herdr, since herdr would pass a line break
-  to the pane as Enter.
-- **No Enter at a shell.** Before pressing Enter, the app checks that the
-  agent still runs in the pane's foreground. If the pane is back at its shell
-  prompt, no Enter is pressed and the dictation stays in History.
-- **Never typed twice.** When herdr refuses a write, the app types the text
-  only if your keystrokes would reach the same pane: its terminal in front and
-  herdr's focus on that pane. Otherwise, and whenever a write may already have
-  landed, the text stays in History.
-
 ## Set up on this Mac
 
 1. Install the plugin or hooks for your agent from its pane in Settings.
@@ -101,7 +85,7 @@ an ssh session where you typed herdr afterwards, since neither proves what
 the window shows. The [integration matrix](../../docs/integration-matrix.md)
 has the details.
 
-## Federated herdr machines
+## Set up a federated herdr machine
 
 herdr 0.9 can show a machine from another host in your local herdr client.
 localvoxtral joins the Claude Code session on that machine with no ssh process
@@ -117,6 +101,22 @@ in your terminal.
 Step 4 matters because a federated view holds no ssh session of yours to
 carry the session's hooks back to your Mac. Details:
 [Federated herdr machines](../../docs/remote-claude-context.md#federated-herdr-machines).
+
+## Safety rules
+
+herdr's socket gives full control over every pane, so localvoxtral limits
+itself to two actions on the joined pane: add text, and press Enter.
+
+- **No stray Enter.** Text that holds a line break or another control
+  character never goes through herdr, since herdr would pass a line break
+  to the pane as Enter.
+- **No Enter at a shell.** Before pressing Enter, the app checks that the
+  agent still runs in the pane's foreground. If the pane is back at its shell
+  prompt, no Enter is pressed and the dictation stays in History.
+- **Never typed twice.** When herdr refuses a write, the app types the text
+  only if your keystrokes would reach the same pane: its terminal in front and
+  herdr's focus on that pane. Otherwise, and whenever a write may already have
+  landed, the text stays in History.
 
 ## What doesn't work
 

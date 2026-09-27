@@ -1,14 +1,17 @@
 # Documentation
 
+Guides for using localvoxtral, its coding-agent integrations, and working on
+its code.
+
 ## Using localvoxtral
 
-- [Install](install.md): one-line install, requirements, Gatekeeper notes
+- [Install](install.md): install, update, Gatekeeper fixes, nightly builds
 - [Dictating](dictation.md): shortcuts, output modes, settings reference,
   screenshots
 - [Terminals & coding agents](coding-agents.md): dictating into Claude Code
   and other CLI agents, session joins, the SSH remote plugin
-- [Integration matrix](integration-matrix.md): for each harness and terminal,
-  what joins, what context is attached, and why the gaps exist
+- [Integration matrix](integration-matrix.md): for each coding agent and
+  terminal, what joins, what context is attached, and why the gaps exist
 - [Under the hood](under-the-hood.md): privacy, the managed local engines
   and their pinned models, bring-your-own-server
 - [Roadmap](roadmap.md)
@@ -34,10 +37,10 @@
   a host, what the token does and does not authorize, the per-Mac forward
   port, manual checks, and uninstalling
 
-## Agent-facing deep guides (`docs/agent/`)
+## Guides for agents that work on localvoxtral
 
-Agents load these on demand from [AGENTS.md](../AGENTS.md). People can read
-them too:
+These live in the agent folder of the docs. Agents load them on demand from
+[AGENTS.md](../AGENTS.md), and people can read them too.
 
 - [Invariants & deliberate tradeoffs](agent/invariants.md): trust
   boundaries, session-join arms, fail-closed rules. Read before touching the
@@ -48,4 +51,4 @@ them too:
   signing/TCC, dogfood capture
 
 Machine-local scratch (setup runbooks, handoff notes, drafts) goes in the
-gitignored `local-notes/` directory, never in `docs/`.
+gitignored `local-notes/` directory, never in the docs folder.
