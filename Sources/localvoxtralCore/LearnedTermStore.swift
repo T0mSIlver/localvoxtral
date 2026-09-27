@@ -163,13 +163,15 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     /// `record`.
     package func recordProposal(
         _ terms: [String],
+        line: String? = nil,
         agent: ProjectTermProposal.Agent,
         project: LearnedTermProjectIdentity,
         excluding: [String]
     ) {
         let moment = now()
         mutate { memory in
-            let added = memory.recordProposal(terms, agent: agent, project: project, excluding: excluding, now: moment)
+            let added = memory.recordProposal(
+                terms, line: line, agent: agent, project: project, excluding: excluding, now: moment)
             Log.polishing.info(
                 "Learned terms: \(added, privacy: .public) proposed by \(agent.rawValue, privacy: .public) kept for a new project"
             )

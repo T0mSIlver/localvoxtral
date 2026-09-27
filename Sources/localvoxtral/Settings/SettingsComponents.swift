@@ -215,9 +215,6 @@ struct SettingsFieldRow<Content: View, Footer: View>: View {
     /// used before the horizontal rework.
     var statusAccessibilityIdentifier: String?
     var layout: SettingsFieldRowLayout
-    /// How the label sits against the control in an `.inline` row. See
-    /// `inlineRow` for why the default is `.center`.
-    var controlAlignment: VerticalAlignment
     @ViewBuilder var content: Content
     /// Dynamic per-row status, rendered full-width and LEADING-aligned on its
     /// own line under the control. Not a member of `content`: the control column
@@ -235,7 +232,6 @@ struct SettingsFieldRow<Content: View, Footer: View>: View {
         status: String? = nil,
         statusAccessibilityIdentifier: String? = nil,
         layout: SettingsFieldRowLayout = .inline,
-        controlAlignment: VerticalAlignment = .center,
         @ViewBuilder content: () -> Content,
         @ViewBuilder footer: () -> Footer
     ) {
@@ -243,7 +239,6 @@ struct SettingsFieldRow<Content: View, Footer: View>: View {
         self.status = status
         self.statusAccessibilityIdentifier = statusAccessibilityIdentifier
         self.layout = layout
-        self.controlAlignment = controlAlignment
         self.content = content()
         self.footer = footer()
         self.hasFooter = true
@@ -254,14 +249,12 @@ struct SettingsFieldRow<Content: View, Footer: View>: View {
         status: String? = nil,
         statusAccessibilityIdentifier: String? = nil,
         layout: SettingsFieldRowLayout = .inline,
-        controlAlignment: VerticalAlignment = .center,
         @ViewBuilder content: () -> Content
     ) where Footer == EmptyView {
         self.title = title
         self.status = status
         self.statusAccessibilityIdentifier = statusAccessibilityIdentifier
         self.layout = layout
-        self.controlAlignment = controlAlignment
         self.content = content()
         self.footer = EmptyView()
         self.hasFooter = false
@@ -309,13 +302,11 @@ struct SettingsFieldRow<Content: View, Footer: View>: View {
     }
 
     private var inlineRow: some View {
-        // Centered by default, top-aligned only where a row asks for it. The
-        // default used to be `.top`, which is right for a tall composite control
-        // but wrong for the ~10 rows whose control is a lone switch or picker:
-        // the 13pt label's cap then sits above the switch's centerline and reads
-        // misaligned against System Settings (PR #201 review). A row with a
-        // genuinely tall control passes `controlAlignment: .top`.
-        HStack(alignment: controlAlignment, spacing: SettingsLayout.rowSpacing) {
+        // Centered, as System Settings does. `.top` pinned the 13pt label
+        // above the centerline of a switch (PR #201 review) and of a 24pt
+        // shortcut recorder or text field (#887); a control taller than one
+        // line belongs in a `.stacked` row.
+        HStack(alignment: .center, spacing: SettingsLayout.rowSpacing) {
             // "Label + one-line status" on the left (owner review, 2026-09-07):
             // baselines aligned, the status truncates rather than wrapping so a
             // row with buttons stays one line tall.

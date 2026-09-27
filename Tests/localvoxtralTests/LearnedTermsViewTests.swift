@@ -156,9 +156,30 @@ final class LearnedTermsViewTests: XCTestCase {
         record("Voxtral", in: &terms, at: start + day)
 
         XCTAssertEqual(
-            LearnedTermsSheet.displayOrder(terms).map(\.name),
+            LearnedTermsSheet.displayOrder(terms, now: start + 10 * day).map(\.name),
             ["localvoxtral", "herdr", LearnedTermProjectResolver.shared.name]
         )
+    }
+
+    /// #891: the sheet's projects are quick capture's, in its order, even
+    /// one no term was learned in yet; a remote name no hook has named, and
+    /// the shared bucket, follow with their terms.
+    func testSheetListsQuickCapturesProjectsThenTheOtherBuckets() {
+        let now = start + 2 * day
+        var terms = LearnedTerms()
+        record("Voxtral", in: &terms, at: start)
+        record("ScreenPipe", in: &terms, at: start + day, project: .init(key: "remote:modest-lewin-c92780", name: "modest-lewin-c92780"))
+        record("Qwen", in: &terms, at: start, project: LearnedTermProjectResolver.shared)
+        terms.recordRemoteReport(project: .init(key: "remote:quillmark", name: "quillmark"), asRepository: true, now: now)
+
+        let routed = QuickCaptureProjects.projects(from: terms, userLines: [:], now: now, readme: { _ in nil }).map(\.key)
+        XCTAssertEqual(routed, ["remote:quillmark", project.key])
+        let sheet = LearnedTermsSheet.displayOrder(terms, now: now)
+        XCTAssertEqual(
+            sheet.map(\.key),
+            routed + ["remote:modest-lewin-c92780", LearnedTermProjectResolver.shared.key]
+        )
+        XCTAssertEqual(sheet.first?.terms, [])
     }
 
     func testSheetListsPinnedTermsFirst() {
@@ -169,7 +190,7 @@ final class LearnedTermsViewTests: XCTestCase {
         record("Mistral", in: &terms, at: start)
         terms.setPinned(true, term: "Mistral", projectKey: project.key)
 
-        XCTAssertEqual(LearnedTermsSheet.displayOrder(terms).first?.terms.map(\.term), ["Mistral", "Voxtral"])
+        XCTAssertEqual(LearnedTermsSheet.displayOrder(terms, now: start + 3 * day).first?.terms.map(\.term), ["Mistral", "Voxtral"])
     }
 
     func testSheetDetailLine() {

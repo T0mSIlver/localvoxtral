@@ -241,8 +241,8 @@ package enum VibeSessionUsage {
 extension ProjectTermProposal.Outcome {
     /// An answer with `usage` beside it, when it has none of its own.
     package func reporting(_ usage: ProjectTermProposal.Usage?) -> Self {
-        guard let usage, case .terms(let terms, nil) = self else { return self }
-        return .terms(terms, usage: usage)
+        guard let usage, case .terms(let terms, nil, let line) = self else { return self }
+        return .terms(terms, usage: usage, line: line)
     }
 }
 

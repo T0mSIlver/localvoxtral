@@ -2258,15 +2258,27 @@ there is not.
   that could put a byte on a terminal, so there is no variable part left for a
   squatter to aim at. The fixed `X-Lvx-Session: joined|unknown` response header
   only selects a private per-session status stamp and never reaches stdout.
-  A second copy of the app (a `try-pr.sh` build, a CI launch smoke) loses
-  this port and the broker socket to the running copy, and then waits:
+  A second copy of the app (a `try-pr.sh` build) loses this port and the
+  broker socket to the running copy, and then waits:
   `ClaudeHookSocketTakeover` retries only the binds it lost, each time
-  another process with the app's bundle id exits (a kqueue exit watch), and
-  never on a timer, because the broker's liveness check connects to the
-  holder's socket. A retry that still finds the socket held waits for the
-  next exit. MEASURED 2026-09-27 (#655): without it, the survivor of two
-  copies kept dictating with no hook reaching it, and every Claude Desktop
-  join abstained until a relaunch.
+  another process with the app's bundle id exits (a kqueue exit watch). The
+  broker never retries on a timer, because its liveness check connects to
+  the holder's socket; the listener's port also retries every ten seconds,
+  since a failed bind touches no one and the holder may be no copy of the
+  app (#892). A retry that still finds the socket held waits. MEASURED
+  2026-09-27 (#655): without it, the survivor of two copies kept dictating
+  with no hook reaching it, and every Claude Desktop join abstained until a
+  relaunch.
+  The CI launch smoke never binds either socket nor starts or reaps a
+  forward (`StartupPermissionSuppression.leavesHookSocketsAlone`), and the
+  forward orphan reaper kills a forward only when the copy that spawned it
+  (`ClaudeRemoteForwardOwner`, recorded in the pid ledger) is dead and ran
+  from this copy's executable. Holding the listener is not proof of being
+  the only copy: a copy that lost the port keeps running without it.
+  MEASURED 2026-09-27 (#892): three launch smokes on the owner's Mac bound
+  the port his copy had lost, each SIGTERMed the forward the shared ledger
+  named, dialed his dev box with a forward of its own, and left it behind
+  when the smoke killed the app two seconds later.
   The shim's request-side `X-Lvx-Plugin-Version` header (its own version, a
   constant in `post.sh`) is the same shape of rule: validated to a strict
   numeric shape on arrival (`ClaudeRemotePluginVersionCodec`), recorded on the

@@ -75,11 +75,13 @@ extension ClaudeIntegrationSettingsModel {
     /// Reconcile during app launch without queueing a modal alert for a window
     /// that does not exist yet. The status row and log still retain the exact
     /// failure; opening Settings later shows the remedy and Retry in context.
-    public func synchronizeListenerAtLaunch() {
-        reconcileListener(presentAlert: false)
+    /// - Parameter logsPortConflict: false for a retry that already logged
+    ///   the port as held; any other failure is still logged.
+    public func synchronizeListenerAtLaunch(logsPortConflict: Bool = true) {
+        reconcileListener(presentAlert: false, logsPortConflict: logsPortConflict)
     }
 
-    func reconcileListener(presentAlert: Bool = true) {
+    func reconcileListener(presentAlert: Bool = true, logsPortConflict: Bool = true) {
         guard let listener else { return }
         // Shutdown is the MIRROR of startup, and this is the shutdown case:
         // revoking the last host is about to close the port, so the forwards
@@ -114,6 +116,7 @@ extension ClaudeIntegrationSettingsModel {
                     detail: Self.listenerFailureDetail(error, port: listener.boundPort)
                 )
             }
+            if case .portConflict = listenerStatus, !logsPortConflict { return }
             Log.claudeContext.error(
                 "Claude remote listener reconcile failed: \(String(describing: error), privacy: .public)"
             )

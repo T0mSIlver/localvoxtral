@@ -6,10 +6,7 @@ import XCTest
 /// menu bar while the idle template icon turned white. The mic must follow
 /// the appearance it is drawn under; the colored pixels must not.
 final class MenuBarStatusIconTests: XCTestCase {
-    private static let iconDirectory = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .appendingPathComponent("../../assets/icons/menubar")
-        .standardizedFileURL
+    private static let iconDirectory = MenuBarIconFixture.iconDirectory
 
     // In the 44 px @2x assets, from the top-left: a mic-body pixel, and one
     // of the colored pixels inside the mic head.
@@ -19,8 +16,8 @@ final class MenuBarStatusIconTests: XCTestCase {
     func testMicIsDarkOnLightMenuBarAndLightOnDarkMenuBar() throws {
         let icon = try makeIcon(colored: "MicIconTemplate@2x_connected.png")
 
-        let light = try XCTUnwrap(render(icon, appearance: .aqua).colorAt(x: micPixel.x, y: micPixel.y))
-        let dark = try XCTUnwrap(render(icon, appearance: .darkAqua).colorAt(x: micPixel.x, y: micPixel.y))
+        let light = try XCTUnwrap(MenuBarIconFixture.render(icon, appearance: .aqua).colorAt(x: micPixel.x, y: micPixel.y))
+        let dark = try XCTUnwrap(MenuBarIconFixture.render(icon, appearance: .darkAqua).colorAt(x: micPixel.x, y: micPixel.y))
 
         XCTAssertGreaterThan(light.alphaComponent, 0.5)
         XCTAssertGreaterThan(dark.alphaComponent, 0.5)
@@ -36,7 +33,7 @@ final class MenuBarStatusIconTests: XCTestCase {
             let icon = try makeIcon(colored: file)
             for appearance in [NSAppearance.Name.aqua, .vibrantLight, .darkAqua, .vibrantDark] {
                 let color = try XCTUnwrap(
-                    render(icon, appearance: appearance).colorAt(x: accentPixel.x, y: accentPixel.y)
+                    MenuBarIconFixture.render(icon, appearance: appearance).colorAt(x: accentPixel.x, y: accentPixel.y)
                 )
                 let context = "\(file) \(appearance.rawValue)"
                 XCTAssertEqual(color.redComponent * 255, expected.r, accuracy: 3, context)
@@ -46,34 +43,42 @@ final class MenuBarStatusIconTests: XCTestCase {
         }
     }
 
+    /// The needs-you mark sits beside the mic head, on its pixel grid: every
+    /// cell is orange in every appearance, lands on a pixel the mic leaves
+    /// empty, and the mic head keeps the menu bar's text color. The circle
+    /// it replaced covered the head's top right.
+    func testAttentionMarksStayOrangeAndOffTheMic() throws {
+        let template = try MenuBarIconFixture.template()
+        let mic = try XCTUnwrap(template.representations.first as? NSBitmapImageRep)
+        let headTopRight = (x: 27, y: 7)
+        for mark in AgentAttentionMark.allCases {
+            let icon = MenuBarStatusIcon.withAttentionMark(template: template, mark: mark)
+            for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+                let rep = try MenuBarIconFixture.render(icon, appearance: appearance)
+                let context = "\(mark) \(appearance.rawValue)"
+                for cell in mark.cells {
+                    let pixel = (x: 1 + 2 * cell.x, y: 1 + 2 * cell.y)
+                    XCTAssertEqual(
+                        mic.colorAt(x: pixel.x, y: pixel.y)?.alphaComponent ?? 0, 0,
+                        "\(context): cell \(cell) covers the mic")
+                    let color = try XCTUnwrap(rep.colorAt(x: pixel.x, y: pixel.y))
+                    XCTAssertEqual(color.redComponent * 255, 255, accuracy: 3, context)
+                    XCTAssertEqual(color.greenComponent * 255, 130, accuracy: 3, context)
+                    XCTAssertEqual(color.blueComponent * 255, 4, accuracy: 3, context)
+                }
+                let head = try XCTUnwrap(rep.colorAt(x: headTopRight.x, y: headTopRight.y))
+                XCTAssertEqual(
+                    brightness(head), appearance == .aqua ? 0 : 1, accuracy: 0.2,
+                    "\(context): mic head \(head)")
+            }
+        }
+    }
+
     private func makeIcon(colored file: String) throws -> NSImage {
-        let template = try XCTUnwrap(
-            NSImage(contentsOf: Self.iconDirectory.appendingPathComponent("MicIconTemplate@2x.png"))
-        )
-        template.isTemplate = true
+        let template = try MenuBarIconFixture.template()
         let colored = try XCTUnwrap(NSImage(contentsOf: Self.iconDirectory.appendingPathComponent(file)))
         colored.size = template.size
         return MenuBarStatusIcon.appearanceAdaptive(template: template, colored: colored)
-    }
-
-    private func render(_ image: NSImage, appearance: NSAppearance.Name) throws -> NSBitmapImageRep {
-        let rep = try XCTUnwrap(
-            NSBitmapImageRep(
-                bitmapDataPlanes: nil, pixelsWide: 44, pixelsHigh: 44,
-                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
-            )
-        )
-        rep.size = image.size
-        let appearance = try XCTUnwrap(NSAppearance(named: appearance))
-        NSGraphicsContext.saveGraphicsState()
-        defer { NSGraphicsContext.restoreGraphicsState() }
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        appearance.performAsCurrentDrawingAppearance {
-            image.draw(in: NSRect(origin: .zero, size: image.size))
-        }
-        NSGraphicsContext.current?.flushGraphics()
-        return rep
     }
 
     private func brightness(_ color: NSColor) -> CGFloat {

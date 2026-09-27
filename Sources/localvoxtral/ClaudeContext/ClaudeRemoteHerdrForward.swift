@@ -306,6 +306,7 @@ final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
                 if let pidLedger,
                    var record = processIdentity(process.processIdentifier) {
                     record.processGroupID = process.processIdentifier
+                    record.owner = .current
                     pidLedger.remember(hostID: ledgerKey, record: record)
                 }
                 return process
