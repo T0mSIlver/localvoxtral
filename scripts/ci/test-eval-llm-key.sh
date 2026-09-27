@@ -45,6 +45,8 @@ common_env=(
   "LOCALVOXTRAL_REMOTE_LOG=$TMP_DIR/remote-build.log"
   "LOCALVOXTRAL_GC_LOG=$TMP_DIR/last-gc.log"
   "MISTRAL_API_KEY=studio-key-STDO"
+  # Empty reads as unset, so a key the caller's shell exports stays out.
+  "VIBE_MISTRAL_API_KEY="
 )
 
 # $1 = model alias, $2 = expected last four characters, rest = extra env.

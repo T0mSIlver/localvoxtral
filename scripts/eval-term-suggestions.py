@@ -232,9 +232,10 @@ def api_key(model: str, env: dict[str, str] = os.environ) -> str:
     if "glm" in model:
         if value := env.get("VIBE_MISTRAL_API_KEY"):
             return value.strip()
-        for line in (Path.home() / ".vibe/.env").read_text().splitlines():
-            if line.startswith("MISTRAL_API_KEY="):
-                return line.split("=", 1)[1].strip().strip("\"'")
+        env_file = Path.home() / ".vibe/.env"
+        for line in env_file.read_text().splitlines() if env_file.is_file() else []:
+            if line.startswith("MISTRAL_API_KEY=") and (value := line.split("=", 1)[1].strip().strip("\"'")):
+                return value
         sys.exit("no Vibe key: log in with vibe --setup or set VIBE_MISTRAL_API_KEY")
     if value := env.get("MISTRAL_API_KEY"):
         return value.strip()
