@@ -325,8 +325,8 @@ when the copy is refreshed:
 installed; with neither, the reaper sees only Voxtral and polishd and never
 frees another speech model. Override the idle window by adding an
 `EnvironmentVariables` dict with `LV_TEST_SERVER_IDLE_SECONDS`. During the
-migration, `git pull` that stable checkout so the reaper runs the new script —
-though an OLD reaper still reaps the new services via its port-bound fallback,
+migration, refresh that copy so the reaper runs the new script, though an OLD
+reaper still reaps the new services via its port-bound fallback,
 since it keeps reading the same `run/voxmlx.want` / `run/mlxlm.want` triggers.)
 
 ### Verify (owner-side proof)
