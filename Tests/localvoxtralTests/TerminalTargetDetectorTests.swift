@@ -292,9 +292,9 @@ final class TerminalTargetDetectorTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         await viewModel.session.beginDictationSession(outputMode: .overlayBuffer)
-        XCTAssertFalse(
-            viewModel.audio.hasInitializedMicrophone,
-            "connecting must not eagerly initialize CoreAudio"
+        XCTAssertTrue(
+            viewModel.fakeMicrophone.isCapturing(),
+            "the dial opens the microphone, so speech during the connect is kept (#527)"
         )
 
         XCTAssertEqual(
@@ -307,8 +307,8 @@ final class TerminalTargetDetectorTests: XCTestCase {
 
         viewModel.session.abortConnectingSession()
         XCTAssertFalse(
-            viewModel.audio.hasInitializedMicrophone,
-            "aborting before audio starts must not register CoreAudio listeners"
+            viewModel.fakeMicrophone.isCapturing(),
+            "aborting the connect stops the microphone"
         )
     }
 
@@ -816,10 +816,12 @@ final class TerminalTargetDetectorTests: XCTestCase {
         // the mode that actually consults it.
         settings.dictationBackendMode = .externalURL
         settings.realtimeAPIEndpointURL = "ws://127.0.0.1:1/realtime"
+        // The dial opens the microphone (#527): never the host's.
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: coordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(microphone: { FakeMicrophoneCaptureService() })
         )
         viewModel.session.realtimeAPIClient.debugSkipSocketCreationForTesting()
         // Keep tests hermetic: capture reads the terminal-apps config through
