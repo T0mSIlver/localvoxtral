@@ -118,6 +118,10 @@ While you dictate, the top of the overlay lists where the words can go.
 - **Inbox**: a [quick capture](coding-agents.md#quick-capture). The words are
   saved there and never typed anywhere.
 
+**→** and **←** move the same way, and a click on a destination picks it.
+None of these keys reach the app you are dictating into while the overlay is
+open.
+
 With nobody waiting, one Tab therefore sends the dictation to the Inbox.
 
 The overlay moves to a session only once its terminal confirms the pane is
