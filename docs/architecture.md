@@ -79,7 +79,9 @@ AppKit:
 - quick capture routing (`QuickCapture/`, #725): the project descriptions a
   classifier reads, the Jev client, the polishing model's routing mode as
   its fallback, and the rule that sends a low or tied answer to the
-  catch-all
+  catch-all; the voice memo folder watcher and its ledger (#925), and
+  `RealtimeFileTranscriber`, which streams a recorded file through a
+  realtime client. Decoding the memo (AVFoundation) stays in the app
 - the Claude socket guard (`ClaudeSocketGuard`: `getpeereid` and
   `LOCAL_PEERPID` on Darwin, `SO_PEERCRED` on Linux), with the SHA-256 and
   HMAC helpers the Claude code hashes through
