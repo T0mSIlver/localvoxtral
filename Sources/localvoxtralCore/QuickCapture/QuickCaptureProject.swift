@@ -14,7 +14,7 @@ import Foundation
 package struct QuickCaptureProject: Equatable, Sendable {
     /// `LearnedTermProject.key`: a main checkout's path, or `remote:<label>`.
     /// For a repository checked out in several places, the Mac's checkout
-    /// when there is one, since it drafts without waiting for a host.
+    /// when its folder is there, since it drafts without waiting for a host.
     package let key: String
     /// Every key joined under `repository`, `key` first.
     package let keys: [String]
@@ -103,16 +103,22 @@ package enum QuickCaptureProjects {
     /// Every project a capture can go to (`LearnedTerms.listedProjects`),
     /// most recent first, each with its description. Projects that name one
     /// repository are one option (#926): the Mac's checkout's key, else the
-    /// most recent, with the terms of all of them.
+    /// most recent, with the terms of all of them. A Mac checkout whose
+    /// folder is gone leads only when no host has the repository.
     ///
     /// - Parameters:
     ///   - userLines: the user's line per project key.
     ///   - readme: the README text of a local project root, nil when none.
+    ///   - checkoutExists: whether a local project root is still a folder.
     package static func projects(
         from learned: LearnedTerms,
         userLines: [String: String],
         now: Date,
-        readme: (String) -> String?
+        readme: (String) -> String?,
+        checkoutExists: (String) -> Bool = { path in
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
+        }
     ) -> [QuickCaptureProject] {
         let listed = learned.listedProjects(now: now)
         var groups: [[LearnedTermProject]] = []
@@ -126,7 +132,10 @@ package enum QuickCaptureProjects {
             }
         }
         return groups.map { group in
-            let members = group.filter { $0.key.hasPrefix("/") } + group.filter { !$0.key.hasPrefix("/") }
+            var members = group.filter { $0.key.hasPrefix("/") } + group.filter { !$0.key.hasPrefix("/") }
+            if group.count > 1, let lead = members.firstIndex(where: { !$0.key.hasPrefix("/") || checkoutExists($0.key) }) {
+                members.insert(members.remove(at: lead), at: 0)
+            }
             let primary = members[0]
             var seen = Set<String>()
             var terms: [String] = []

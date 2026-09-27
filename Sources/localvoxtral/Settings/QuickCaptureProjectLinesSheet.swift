@@ -72,9 +72,16 @@ struct QuickCaptureProjectLinesSheet: View {
 
     private func line(for project: QuickCaptureProject) -> Binding<String> {
         Binding(
-            get: { settings.quickCaptureProjectLines[project.key] ?? project.automaticLine ?? "" },
+            // A repository checked out in several places has one line, kept
+            // under its leading key; one written on another checkout before
+            // they joined shows here and moves there on the first edit.
+            get: {
+                project.keys.lazy.compactMap { settings.quickCaptureProjectLines[$0] }.first
+                    ?? project.automaticLine ?? ""
+            },
             set: { text in
                 let isAutomatic = text.trimmingCharacters(in: .whitespacesAndNewlines) == project.automaticLine
+                for key in project.keys.dropFirst() { settings.setQuickCaptureProjectLine("", for: key) }
                 settings.setQuickCaptureProjectLine(isAutomatic ? "" : text, for: project.key)
             }
         )

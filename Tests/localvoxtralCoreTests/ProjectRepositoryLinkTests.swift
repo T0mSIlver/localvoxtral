@@ -77,7 +77,8 @@ final class ProjectRepositoryLinkTests: XCTestCase {
         let learned = LearnedTerms(projects: [local, host, other])
 
         let projects = QuickCaptureProjects.projects(
-            from: learned, userLines: ["remote:quill": "Markdown to PDF."], now: now, readme: { _ in nil })
+            from: learned, userLines: ["remote:quill": "Markdown to PDF."], now: now, readme: { _ in nil },
+            checkoutExists: { $0 == "/w/quill" })
 
         XCTAssertEqual(projects.map(\.key), ["/w/quill", "remote:ink"])
         XCTAssertEqual(projects[0].keys, ["/w/quill", "remote:quill"])
@@ -85,6 +86,12 @@ final class ProjectRepositoryLinkTests: XCTestCase {
         XCTAssertEqual(projects[0].summary, "Quill typesets Markdown.", "the host's README when the Mac's has none")
         XCTAssertEqual(projects[0].userLine, "Markdown to PDF.", "the line the user wrote on either")
         XCTAssertEqual(learned.listedProjects(now: now).count, 3)
+
+        // The Mac's checkout is gone: the host's leads, so it still drafts.
+        let moved = QuickCaptureProjects.projects(
+            from: learned, userLines: [:], now: now, readme: { _ in nil }, checkoutExists: { _ in false })
+        XCTAssertEqual(moved.map(\.key), ["remote:quill", "remote:ink"])
+        XCTAssertEqual(moved[0].keys, ["remote:quill", "/w/quill"])
     }
 
     /// #920's order: the user's line, else GitHub's, else the agent's; the
