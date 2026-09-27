@@ -77,6 +77,32 @@ it or use **Re-anchor** in **Settings → Dictation → Overlay Buffer**.
 If you unplug the display the overlay sits on, the app keeps the position.
 Until that display is back, it shows the overlay at the anchor.
 
+### Stop after silence
+
+**Stop dictating after silence** (**Settings → Dictation → Overlay
+Buffer**) ends a dictation once no new words have appeared for a set time.
+It offers **Never**, the default, and **After 5 s**, **8 s**, **15 s** or
+**30 s**. The stop is the same as pressing the key, so polishing and the
+commit run as usual.
+
+It applies only to Overlay Buffer dictations started by a tap: a tap of the
+modifier keys, a keyboard shortcut set to **Toggle**, or a destination
+shortcut. A held dictation stops on release, and Live Auto-Paste has typed
+its words already, so neither stops on silence.
+
+- The time counts from the last new words, not from the last sound you
+  made.
+- A dropped connection pauses the count. It restarts from zero once the
+  app reconnects.
+- A change to the setting applies from the next dictation.
+
+**With "send it".** A dictation that ends in a send phrase stops three
+seconds after the last new word, sooner than the shortest silence setting
+(see [Press Return with "send it"](#press-return-with-send-it)). A silence
+stop presses Return only when that send-phrase stop would have. Code:
+[silence stop](../Sources/localvoxtral/DictationSessionController+SilenceAutoStop.swift),
+[send-phrase stop](../Sources/localvoxtral/DictationSessionController+SpokenStop.swift).
+
 ### Live Auto-Paste
 
 Words land in the focused app while you talk. The app applies dictionary
@@ -671,8 +697,9 @@ History; the panes sit under the sidebar's Settings header.
   Buffer "send it" switch, the [needs-you cue](#when-a-coding-agent-needs-you)
   and the [two destination shortcuts](#open-the-overlay-on-a-destination),
   [ducking other audio](#lower-other-audio-while-dictating), and the
-  overlay's font size, lines before scrolling and
-  [word wrapping](#keeping-words-on-their-line). **Advanced** holds
+  overlay's font size, lines before scrolling,
+  [word wrapping](#keeping-words-on-their-line) and
+  [stop after silence](#stop-after-silence). **Advanced** holds
   [Live Auto-Paste](#live-auto-paste) and its own "send it" switch, the menu
   bar mode and the [Copy last dictation](#recover-a-dictation) shortcut.
 - **Text Processing**: [About you](#add-your-names-and-terms),
