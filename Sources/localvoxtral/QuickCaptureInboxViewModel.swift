@@ -39,6 +39,7 @@ final class QuickCaptureInboxViewModel {
                 QuickCaptureProjects.projects(
                     from: learnedTerms(),
                     userLines: [:],
+                    now: Date(),
                     readme: { QuickCaptureProjects.readme(atRoot: $0) }
                 )
             },
