@@ -26,24 +26,75 @@ public struct ClaudeRemoteForwardPidRecord: Codable, Equatable, Sendable {
     /// group leader. Nil for Foundation-spawned forwards and legacy records.
     /// This is teardown metadata, not part of process identity.
     public var processGroupID: Int32?
+    /// The copy of the app that spawned the forward. Nil in records written
+    /// before #892. Not part of process identity either.
+    public var owner: ClaudeRemoteForwardOwner?
 
     public init(
         pid: Int32,
         startSeconds: UInt64,
         startMicroseconds: UInt64,
         executablePath: String,
-        processGroupID: Int32? = nil
+        processGroupID: Int32? = nil,
+        owner: ClaudeRemoteForwardOwner? = nil
     ) {
         self.pid = pid
         self.startSeconds = startSeconds
         self.startMicroseconds = startMicroseconds
         self.executablePath = executablePath
         self.processGroupID = processGroupID
+        self.owner = owner
     }
 
     /// Group ownership does not come from `proc_pidinfo`, so compare only the
     /// kernel identity fields when re-validating a ledger record.
     package func matchesProcessIdentity(_ current: ClaudeRemoteForwardPidRecord?) -> Bool {
+        guard let current else { return false }
+        return pid == current.pid
+            && startSeconds == current.startSeconds
+            && startMicroseconds == current.startMicroseconds
+            && executablePath == current.executablePath
+    }
+}
+
+/// The copy of the app that spawned a forward, by the same kernel identity.
+///
+/// Every copy on the Mac shares the ledger, since it lives in Application
+/// Support. On 2026-09-27 three CI launch smokes, each a temporary copy of the
+/// app, bound the listener port the owner's copy had lost and SIGTERMed the
+/// forward the ledger named (#892). The reaper now kills a forward only when
+/// the copy that spawned it is dead AND ran from this copy's executable: the
+/// same install, relaunched after a crash or a force-quit.
+public struct ClaudeRemoteForwardOwner: Codable, Equatable, Sendable {
+    public var pid: Int32
+    public var startSeconds: UInt64
+    public var startMicroseconds: UInt64
+    public var executablePath: String
+
+    public init(pid: Int32, startSeconds: UInt64, startMicroseconds: UInt64, executablePath: String) {
+        self.pid = pid
+        self.startSeconds = startSeconds
+        self.startMicroseconds = startMicroseconds
+        self.executablePath = executablePath
+    }
+
+    public init(_ process: ClaudeRemoteForwardPidRecord) {
+        self.init(
+            pid: process.pid,
+            startSeconds: process.startSeconds,
+            startMicroseconds: process.startMicroseconds,
+            executablePath: process.executablePath
+        )
+    }
+
+    /// This process, read once. Nil where the kernel cannot be asked (Linux).
+    public static let current: ClaudeRemoteForwardOwner? = ClaudeRemoteForwardProcessIdentity
+        .snapshot(pid: getpid())
+        .map(ClaudeRemoteForwardOwner.init)
+
+    /// True when `current`, what the kernel answers for `pid` now, is this
+    /// owner still running.
+    package func isRunning(as current: ClaudeRemoteForwardPidRecord?) -> Bool {
         guard let current else { return false }
         return pid == current.pid
             && startSeconds == current.startSeconds

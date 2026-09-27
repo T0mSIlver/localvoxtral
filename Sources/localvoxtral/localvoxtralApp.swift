@@ -326,9 +326,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             LegacyMLXLMCleanup().run()
             LegacyVoxmlxCleanup().run()
         }
-        let brokerStart = startClaudeContextBroker()
-        startClaudeRemoteListener()
-        armHookSocketTakeover(brokerStart: brokerStart)
+        if StartupPermissionSuppression.leavesHookSocketsAlone() {
+            Log.claudeContext.notice(
+                "Claude hook sockets and remote forwards left alone: a CI copy beside the owner's"
+            )
+        } else {
+            let brokerStart = startClaudeContextBroker()
+            startClaudeRemoteListener()
+            armHookSocketTakeover(brokerStart: brokerStart)
+        }
         maintainLocalClaudePlugin()
         #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         // After the broker, because the control service's `surface probe` uses
@@ -830,11 +836,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let settings = viewModel.claudeIntegrationSettings,
            case .portConflict = settings.listenerStatus {
-            steps.append(.init(name: "remote listener") { [weak settings] in
+            // On a clock too: the port's holder may be no copy of the app,
+            // and a failed bind touches no one (#892).
+            steps.append(.init(name: "remote listener", retryInterval: .seconds(10)) { [weak settings] in
                 guard let settings else { return .failed }
                 // Through the model, so Settings shows the new status; it
-                // also starts the forwards once the port is bound.
-                settings.synchronizeListenerAtLaunch()
+                // also starts the forwards once the port is bound. The
+                // takeover logs the wait once, not every ten seconds.
+                settings.synchronizeListenerAtLaunch(logsPortConflict: false)
                 switch settings.listenerStatus {
                 case .portConflict: return .heldByAnotherCopy
                 case .failed: return .failed
