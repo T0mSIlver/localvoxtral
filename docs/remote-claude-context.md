@@ -197,8 +197,10 @@ host posts into a port nothing forwards. The hooks fail open, so this looks
 exactly like nothing happening.
 
 The remote plugin, localvoxtral-remote, is separate from the local localvoxtral
-plugin, not a mode of it. It declares only hooks, with no skill, command, agent
-or status line, so it never spends your tokens.
+plugin, not a mode of it. It declares hooks and one executable,
+`localvoxtral`, which Claude Code puts on its sessions' PATH and which runs
+only `localvoxtral doctor` (see [Checking the setup](#checking-the-setup)).
+It adds no skill, agent or status line, so it never spends your tokens.
 
 Its [hook script](../integrations/claude-code/plugins/localvoxtral-remote/hooks/post.sh)
 needs only POSIX sh and curl. The host needs no localvoxtral binary, no jq and
@@ -267,6 +269,16 @@ arguments while it runs (see above).
 
 Use **Check Setup** in the enrollment sheet. It runs two read-only checks and
 explains the results. The checks below run them by hand.
+
+On the host, `localvoxtral doctor` runs them all from there: the forward
+port, the 401 without the token and the 200 with it, the plugin version each
+running session loaded, the Vibe hooks and the last hook's outcome. It then
+prints the Mac's own checks for this host. It reads the token from
+`~/.claude/.credentials.json` or `~/.vibe/localvoxtral/remote/token` and
+never prints it. On a macOS host, Claude Code keeps the token in the
+Keychain, and the token check says so. Without the Claude Code plugin, run
+`sh ~/.vibe/localvoxtral/remote/doctor.sh`. It needs plugin 1.22.0 or Vibe
+hooks 1.7.0 on the host.
 
 ### Is the tunnel live, and is localvoxtral behind it?
 

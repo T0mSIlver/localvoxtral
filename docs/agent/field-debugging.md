@@ -2,6 +2,14 @@
 
 Learned the hard way (2026-07-04) — use these instead of manual steps:
 
+- **First, ask the install itself**: `localvoxtral doctor --json` on the
+  Mac (permissions, engines, every agent's hooks and note, the command link,
+  remote hosts, the last five join lines) and on an enrolled host (tunnel,
+  token, the plugin version each running session loaded). `localvoxtral logs
+  --join --since 3h` prints the persisted join lines without a predicate to
+  remember. Their fixes name Settings panes; `AgentCLIDoctorSettingsPaneTests`
+  keeps those names real.
+
 - **Trying a PR build on the Mac**: `./scripts/try-pr.sh <pr-number|main>`
   downloads the exact CI-built artifact and launches it. No checkout, no
   build. Push → CI (~1.5 min) → try-pr.sh is the whole owner iteration loop.

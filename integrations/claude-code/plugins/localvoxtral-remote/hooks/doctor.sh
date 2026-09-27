@@ -163,7 +163,7 @@ else
       "No ssh session from the Mac holds the forward. On the Mac: Settings > Remote hosts > Keep the tunnel open, or open an ssh session to this host from the Mac's terminal."
   elif [ "$CURL_EXIT" -eq 52 ] || [ "$CURL_EXIT" -eq 56 ]; then
     check tunnel failed "Tunnel" "Port $PORT is forwarded, but nothing answers behind it on the Mac." \
-      "Open localvoxtral on the Mac. If it is running, its remote listener failed: Settings > Remote hosts shows why."
+      "Open localvoxtral on the Mac. If it is running, its remote listener failed; the reason is in Settings > Remote hosts."
   elif [ "$CODE" = "401" ]; then
     check tunnel ok "Tunnel" "127.0.0.1:$PORT reaches localvoxtral (port from $PORT_FROM)."
   else

@@ -418,7 +418,7 @@ package enum AgentCLIDoctorChecks {
         case .conflictingHooks:
             return AgentCLICheck(
                 id: id, title: title, state: .failed, detail: detail,
-                fix: "Settings > Mistral Vibe names the line to fix in ~/.vibe/hooks.toml."
+                fix: "Settings > Mistral Vibe: its row names the line to fix in ~/.vibe/hooks.toml."
             )
         case .hooksWithoutShim, .shimWithoutHooks, .unknown:
             return AgentCLICheck(

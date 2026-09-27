@@ -316,7 +316,8 @@ user-level instructions file, saying your prompts come from speech-to-text.
 The note asks the agent to fix an obvious transcription error itself, and to
 ask before acting when a likely error changes the request. It also asks the
 agent to propose what it creates or renames with
-[the localvoxtral command](#the-localvoxtral-command).
+[the localvoxtral command](#the-localvoxtral-command), and names
+`localvoxtral doctor` for when dictation misbehaves.
 
 **Remove** takes the note out. A note added by an older version reads as
 another version, with an **Update** button.
@@ -347,8 +348,9 @@ copy the note by hand.
 
 ## The localvoxtral command
 
-A coding agent can read your dictation history and your terms, and propose
-terms of its own, with the localvoxtral command.
+A coding agent can read your dictation history and your terms, propose
+terms of its own, and find out why dictation misbehaves, with the
+localvoxtral command.
 
 ### Install the command
 
@@ -367,6 +369,7 @@ localvoxtral terms list --project .
 localvoxtral terms propose Featherline QuillDoc --project .
 localvoxtral status
 localvoxtral doctor
+localvoxtral logs --join --since 3h
 ```
 
 - Every command takes `--json`.
@@ -377,14 +380,41 @@ localvoxtral doctor
 
 Under **History → Don't keep**, `history` answers with nothing.
 
-`doctor` checks the microphone and Accessibility permissions, the speech and
-polish engines, the Claude Code plugin, each remote host and the session the
-last dictation joined. Each problem comes with the step that fixes it. It
-prints no dictated text and no key, but it names your remote hosts.
-
 The command talks to the running app over the same private socket the hooks
 use. It opens no network port, and only processes running as you can reach
 it. It needs the app running, and exits with status 3 when it is not.
+
+### Find out what is wrong
+
+`doctor` prints numbered checks: which copy of the app runs and where
+/usr/local/bin/localvoxtral points, the microphone and Accessibility
+permissions, the speech and polish engines, the Claude Code and Codex
+plugins, the opencode plugin, the Vibe hooks, the note in each agent's file,
+each remote host, and the sessions the last five dictations joined. Each
+problem comes with the step that fixes it, and `--json` gives each check a
+stable `id`. It changes nothing. It prints no dictated text and no key, but
+it names your remote hosts. It exits with status 4 when a check failed.
+
+`logs` reads the app's lines from the macOS unified log, and works while the
+app is not running: one line per dictation saying which session it joined
+and why (`--join`), and without `--join`, the app's errors too. It covers the
+last hour unless `--since` says otherwise. It prints what `log show` prints,
+so a value the app logs as private stays `<private>`, and the app never logs
+dictated text in the clear.
+
+### On a remote host
+
+The remote Claude Code plugin puts a `localvoxtral` command on the PATH of
+Claude Code sessions on the host, and only `localvoxtral doctor` runs there.
+It checks the host's end of the tunnel: the port the Mac's forward should
+bind, that the Mac refuses a request without the host's token and takes one
+with it, the plugin version each running session loaded, the Vibe hooks, and
+the last hook's outcome. Then it prints the Mac's own checks, fetched through
+the tunnel with the host's token, without local paths and without your other
+hosts. It never prints the token.
+
+With the Vibe hooks only, the same check is
+`sh ~/.vibe/localvoxtral/remote/doctor.sh`.
 
 ### Proposed terms
 
@@ -406,7 +436,8 @@ the agent once.
 
 Add the note from the **Tell … you dictate** row (see
 [Telling the agent you dictate](#telling-the-agent-you-dictate)). It tells
-your agents to propose what they create or rename.
+your agents to propose what they create or rename, and to run
+`localvoxtral doctor` when dictation misbehaves.
 
 Vibe is not detected, so its proposals read "Proposed by a coding agent". To
 have them name Vibe, ask it to add `--agent vibe` in a line of
