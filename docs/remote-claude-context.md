@@ -277,8 +277,8 @@ prints the Mac's own checks for this host. It reads the token from
 `~/.claude/.credentials.json` or `~/.vibe/localvoxtral/remote/token` and
 never prints it. On a macOS host, Claude Code keeps the token in the
 Keychain, and the token check says so. Without the Claude Code plugin, run
-`sh ~/.vibe/localvoxtral/remote/doctor.sh`. It needs plugin 1.22.0 or Vibe
-hooks 1.7.0 on the host.
+`sh ~/.vibe/localvoxtral/remote/doctor.sh`. It needs plugin 1.25.0 or Vibe
+hooks 1.10.0 on the host.
 
 ### Is the tunnel live, and is localvoxtral behind it?
 
