@@ -29,6 +29,8 @@ final class QuickCaptureProjectsTests: XCTestCase {
             ("One.\n\nTwo.\n\nThree.", "One. Two."),
             ("# Title\n\n- a list\n- only\n\n| a | b |", nil),
             ("Plain first line\nwraps here\n\nnext", "Plain first line wraps here next"),
+            ("Speak.&nbsp;\n\nTom &amp; Jerry.", "Speak. Tom & Jerry."),
+            ("Speak.\n\nhttps://github.com/user-attachments/assets/81a3\n\nThen type.", "Speak. Then type."),
         ]
         for (readme, expected) in cases {
             XCTAssertEqual(QuickCaptureProjects.summary(ofReadme: readme), expected, readme)

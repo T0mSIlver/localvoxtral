@@ -12,8 +12,10 @@ import XCTest
 /// - `QC_CAPTURES`: JSON lines `{"id", "expected", "text"}`; `expected` is a
 ///   project name, or `inbox` for the catch-all. A name missing from the
 ///   project set expects the catch-all.
-/// - `QC_PROJECTS`: `[{"key", "name", "terms", "userLine"?}]`; a key that is
-///   a path gets its README read, as the app does for a local checkout.
+/// - `QC_PROJECTS`: `[{"key", "name", "terms", "userLine"?, "hostReadme"?}]`;
+///   a key that is a path gets its README read, as the app does for a local
+///   checkout, and `hostReadme` is the README a remote project's host would
+///   report (#745), summarized as the Mac summarizes that report.
 /// - `QC_JEV_HOST` + `QC_JEV_KEY_FILE`, and/or `QC_CHAT_URL` + `QC_CHAT_MODEL`
 ///   (+ `QC_CHAT_KEY_FILE`, `QC_CHAT_EXTRA` as a JSON object), in router order.
 final class QuickCaptureReplayLiveTests: XCTestCase {
@@ -28,6 +30,7 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
         let name: String
         let terms: [String]
         let userLine: String?
+        let hostReadme: String?
     }
 
     /// Prints a classifier's error (`Log` is silent on Linux), and retries a
@@ -72,7 +75,9 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
                 name: entry.name,
                 summary: entry.key.hasPrefix("/")
                     ? QuickCaptureProjects.readme(atRoot: entry.key).flatMap(QuickCaptureProjects.summary(ofReadme:))
-                    : nil,
+                    : entry.hostReadme
+                        .flatMap { FileManager.default.contents(atPath: $0) }
+                        .flatMap(QuickCaptureProjects.summary(ofRemoteReadme:)),
                 terms: entry.terms,
                 userLine: entry.userLine
             )

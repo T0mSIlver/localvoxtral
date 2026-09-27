@@ -173,6 +173,8 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
         case .catchAll: "Not routed to a project. Move it to one."
         case .remoteProject: "No draft for a project on another machine."
         case .checkoutMissing: "The project's folder is gone."
+        case .noHostSession: "No session of this project answered on its host."
+        case .hostNeedsUpdate: "Update the host to draft there."
         }
     }
 }

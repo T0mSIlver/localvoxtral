@@ -215,7 +215,11 @@ Key subsystems:
     to run. `RemoteProjectTermRequests` marks a joined session, the next
     hook's reply carries `X-Lvx-Terms: wanted`, and the shim starts
     `hooks/terms.sh` detached. Its answer comes back on `POST /v1/terms` and
-    is filed under the project the Mac recorded.
+    is filed under the project the Mac recorded. Quick capture (#745) asks
+    the same way (`RemoteQuickCaptureRequests`): `X-Lvx-Readme` for a
+    project's README summary and `X-Lvx-Draft` for a routed capture's draft,
+    both run by `hooks/capture.sh` and answered on `/v1/readme`,
+    `/v1/draft/prompt` and `/v1/draft`.
 
     A per-host opt-in (`ClaudeRemoteForwardSupervisor` +
     `ClaudeRemoteForwardCoordinator`, default off) lets the app hold that

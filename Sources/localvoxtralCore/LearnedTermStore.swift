@@ -15,7 +15,7 @@ import os
 /// pipeline already resolved — a file name, a product, a model — and the
 /// counters beside it, which is exactly what `SpeakerTerms` keeps for the
 /// hand-written list.
-package final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
+package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectSummaryStoring, @unchecked Sendable {
     private struct State {
         var terms: LearnedTerms?
     }
@@ -195,6 +195,17 @@ package final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sen
                 )
                 continuation.resume(returning: added)
             }
+        }
+    }
+
+    /// A remote host reported its project's README summary (#745).
+    package func recordSummary(_ summary: String?, projectKey: String) {
+        let moment = now()
+        mutate { memory in
+            let kept = memory.recordSummary(summary, projectKey: projectKey, now: moment)
+            Log.polishing.info(
+                "Learned terms: remote README summary \(kept ? (summary == nil ? "empty" : "kept") : "dropped, project gone", privacy: .public)"
+            )
         }
     }
 
