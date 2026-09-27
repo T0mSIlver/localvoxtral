@@ -167,6 +167,7 @@ final class TermRecallEvalTests: XCTestCase {
         let endpoint = EvalSpeechStage.Endpoint(url: endpointURL, apiKey: "", model: model)
         var scores: [TermRecallCaseScore] = []
         var unscored = 0
+        var sttWatch = EvalSpeechStage.ServiceWatch(endpoint: endpointURL)
         for (index, evalCase) in cases.enumerated() {
             let hypothesis: String
             do {
@@ -194,7 +195,9 @@ final class TermRecallEvalTests: XCTestCase {
                     endpoint: endpoint,
                     timeout: Self.asrTimeout
                 )
+                sttWatch.recordAnswer()
             } catch {
+                try sttWatch.record(error)
                 // Infrastructure, not a score: the case id and the error, no
                 // case text.
                 progress("term-recall: [\(index + 1)/\(cases.count)] \(evalCase.id) FAILED: \(error)")
