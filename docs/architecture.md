@@ -78,8 +78,8 @@ AppKit:
   stays in the app
 - quick capture routing (`QuickCapture/`, #725): the project descriptions a
   classifier reads, the Jev client, the polishing model's routing mode as
-  its fallback, and the rule that sends a low or tied answer to the
-  catch-all
+  its fallback, and the rule that makes a low or tied answer a suggestion
+  the user confirms
 - the Claude socket guard (`ClaudeSocketGuard`: `getpeereid` and
   `LOCAL_PEERPID` on Darwin, `SO_PEERCRED` on Linux), with the SHA-256 and
   HMAC helpers the Claude code hashes through

@@ -2471,10 +2471,13 @@ there is not.
   or clipboard sample, or insertion: the History record is written first,
   the overlay closes as a cancelled one does, and the words go to
   `QuickCaptureInboxModel`, which writes them to its 0600 file before
-  routing. The router sends a low or tied answer to the catch-all, never a
-  guessed project. Jev and the chat model both need 0.9: on the replay
-  (#741, #744) every right project came at 0.95 or more, and nearly every
-  wrong one under 0.9. The drafting agent has
+  routing. A project answer under the bar, or tied, is a suggestion (#938):
+  the capture drafts in that project, but `canFile` stays false until the
+  user confirms it or moves the capture, and agents' `capture list` shows it
+  unplaced. Only the classifier's own catch-all pick stays in the Inbox.
+  Jev and the chat model both need 0.9: on the replay (#741, #744) every
+  right project came at 0.95 or more, and nearly every wrong one under 0.9.
+  The drafting agent has
   read-only tools and no shell, so it cannot run `gh`; the open issues reach
   it through the prompt, from the app's own `gh issue list`. Its answer is
   untrusted text: a one-line capped title, a body without control
