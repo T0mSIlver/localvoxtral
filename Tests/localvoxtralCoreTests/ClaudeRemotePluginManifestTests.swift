@@ -121,16 +121,21 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         }
     }
 
-    func testPluginShipsExactlyFourExecutablesAllPOSIXSh() throws {
+    func testPluginShipsExactlySixExecutablesAllPOSIXSh() throws {
         // The premise, updated for the command-hook shape: nothing to install
-        // on the remote but the manifests and FOUR POSIX-sh scripts — the curl
+        // on the remote but the manifests and SIX POSIX-sh scripts — the curl
         // shim every hook runs, the status-line renderer the user may point
-        // their own `statusLine` setting at, and the project-terms (#641) and
-        // quick capture (#745) runners the shim starts when the Mac asks. No
+        // their own `statusLine` setting at, the project-terms (#641) and
+        // quick capture (#745) runners the shim starts when the Mac asks, and
+        // `localvoxtral doctor` (#910) with the `bin/` entry Claude Code puts
+        // on the agent's PATH. No
         // Python, no jq, no nc,
         // no Node, no publisher binary. If any other runnable file ever
         // appears here, the premise is gone.
-        let shellScripts: Set<String> = ["hooks/post.sh", "hooks/statusline.sh", "hooks/terms.sh", "hooks/capture.sh"]
+        let shellScripts: Set<String> = [
+            "hooks/post.sh", "hooks/statusline.sh", "hooks/terms.sh", "hooks/capture.sh", "hooks/doctor.sh",
+            "bin/localvoxtral",
+        ]
         let contents = try FileManager.default.subpathsOfDirectory(atPath: pluginRoot.path)
         for path in contents {
             let full = pluginRoot.appendingPathComponent(path)
@@ -154,11 +159,11 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             }
             XCTAssertFalse(
                 FileManager.default.isExecutableFile(atPath: full.path),
-                "the remote plugin must ship no executable but its four sh scripts, found \(path)"
+                "the remote plugin must ship no executable but its six sh scripts, found \(path)"
             )
             XCTAssertTrue(
                 path.hasSuffix(".json"),
-                "the remote plugin must ship JSON manifests and its four sh scripts only, found \(path)"
+                "the remote plugin must ship JSON manifests and its six sh scripts only, found \(path)"
             )
         }
         for script in shellScripts {

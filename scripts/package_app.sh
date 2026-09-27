@@ -297,9 +297,10 @@ if [[ ! -x "$CLAUDE_HOOK_SHIM" ]]; then
 fi
 # The remote plugin's shims ship in the same marketplace copy. Claude Code
 # execs post.sh directly; statusline.sh is run by the user's statusLine
-# setting. Same assert-not-hope rule as publish.sh above.
-for REMOTE_SHIM in post.sh statusline.sh; do
-  REMOTE_SHIM_PATH="$APP_DIR/Contents/Resources/claude-code-marketplace/plugins/localvoxtral-remote/hooks/$REMOTE_SHIM"
+# setting; bin/localvoxtral is on the agent's PATH and runs hooks/doctor.sh.
+# Same assert-not-hope rule as publish.sh above.
+for REMOTE_SHIM in hooks/post.sh hooks/statusline.sh hooks/doctor.sh bin/localvoxtral; do
+  REMOTE_SHIM_PATH="$APP_DIR/Contents/Resources/claude-code-marketplace/plugins/localvoxtral-remote/$REMOTE_SHIM"
   chmod +x "$REMOTE_SHIM_PATH"
   if [[ ! -x "$REMOTE_SHIM_PATH" ]]; then
     echo "Claude Code remote shim is not executable: $REMOTE_SHIM_PATH"
