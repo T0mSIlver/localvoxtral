@@ -15,7 +15,7 @@
 | 2 | `AgentDictationE2EEvalTests` (`eval-e2e.yml`): wide agent-dictation eval — human WAVs or TTS(`say`) → live speechd ASR → bundled polishd through the production stop-commit path, scored against `EvalCorpus/agent-dictation/` (7 migrated required cases asserted; the rest XFAIL; WER informational; raw-model pre-safety diagnostic column) | weekly, Sundays 04:45 UTC (skips green when the Mac is on battery — `ac-power-guard.sh`, owner rule 2026-07-24: scheduled lanes never run unplugged; manual dispatch always runs) + manual, NEVER per-PR (owner decision 2026-07-11); locally via `remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]` (run `package` first) | many minutes (live ASR/4B polish over ~160 cases; TTS WAVs cached on the host) |
 | 2 | `TermRecallEvalTests`: the speech engine alone on the owner's technical terms — `say` or human WAVs → one live speech test service, scored by `TermRecallScorer` for term recall, false insertions of listed terms and non-term WER, English and French apart; also scores a file of hypotheses and pairs two runs. In the core suite, so it also runs on Linux against the dev box's vLLM with a recorded set (`EvalCorpus/term-recall/README.md`). PRIVATE cases | by hand only, never in CI (the cases never leave the owner's machines): `remote-build.sh eval-term-recall [--asr <name>]`. Required proof for engine term biasing (#316, #521) and a second pass on stop (#524) | 260 cases: ~10 min on Nemotron, ~35 min on Voxtral (measured 2026-09-25; TTS WAVs cached on the host) |
 | 2 | `AgentDictationASREvalTests`: the speech stage of the agent-dictation eval alone — a recorded set → one live speech service through the production client, no polish; word accuracy and the ASR-only stratum's tokens. For the dev box's vLLM (BF16, not the shipped engine) | by hand only, on Linux: marker `.agent-eval-asr-enable.json` (`EvalCorpus/agent-dictation/README.md`, "ASR-only runs on Linux"). Direction only; `eval-e2e` stays the proof | 146 cases: 8 min on the dev box's vLLM (measured 2026-09-26) |
-| 2 | `release.yml` DAILY channel: the whole release pipeline (unit suite, live STT integration, packaging, launch smoke) on the newest `main` commit whose UI Smoke run scored the e2e dictation (`scripts/ci/daily-release-plan.sh`), published as a stable minor release (`v0.9.x` → `v0.10.0` → `v0.11.0`). The on-demand NIGHTLY channel runs the same pipeline on `main`'s head without the e2e gate, as a `vX.Y.Z-nightly.YYYYMMDD` prerelease that never touches `/releases/latest`; nightlies beyond the newest 7 are pruned | cron 03:15 UTC (daily) + `./scripts/release.sh daily` or `nightly`; a scheduled run skips green on battery (`ac-power-guard.sh`), and a daily run skips green when no commit since the newest stable tag passed the e2e dictation. To exercise the pipeline without releasing anything: `./scripts/release.sh rehearse [target] [ref]` (every gate, artifacts on the run, no tag, any ref). That rehearsal is the proof a change to release.yml carries | ~10-20 min |
+| 2 | `release.yml` DAILY channel: the whole release pipeline (unit suite, live STT integration, packaging, launch smoke) on the newest `main` commit whose UI Smoke run scored the e2e dictation (`scripts/ci/daily-release-plan.sh`), published as a stable minor release (`v0.9.x` → `v0.10.0` → `v0.11.0`). The on-demand NIGHTLY channel runs the same pipeline on `main`'s head without the e2e gate, as a `vX.Y.Z-nightly.YYYYMMDD` prerelease that never touches `/releases/latest`; nightlies beyond the newest 7 are pruned | dispatched at 03:15 UTC by the dev box's scheduler (`./scripts/release.sh daily`), with the 03:15 UTC cron as fallback, + `./scripts/release.sh daily` or `nightly` by hand; a scheduled run skips green outside the night window, after a covering run or on battery (`scheduled-run-guard.sh`, see "Scheduled Mac inference stays in the night window"), and a daily run skips green when no commit since the newest stable tag passed the e2e dictation. To exercise the pipeline without releasing anything: `./scripts/release.sh rehearse [target] [ref]` (every gate, artifacts on the run, no tag, any ref). That rehearsal is the proof a change to release.yml carries | ~10-20 min |
 
 Tier 1 details: the suite is env-gated (`VLLM_REALTIME_TEST_ENABLE=1`) and
 expects an STT server at `ws://127.0.0.1:8000/v1/realtime` — on the build host it
@@ -284,17 +284,21 @@ merge made with the repo token starts no workflow on main. The board's
 Scheduled inference on the Mac runs 00:00–07:00 UTC; after that the owner
 works on the machine. GitHub fires `schedule:` events hours late (#822: the
 04:45 UTC Sunday `eval-e2e` was created at 09:33 and 09:48 UTC), so a cron
-inside the window does not keep the run there. So `eval-e2e` runs two ways:
+inside the window does not keep the run there. So `eval-e2e` and the daily
+release (`release.yml`) run two ways:
 
-- The dev box's scheduler dispatches it on main on Sundays at about 04:45 UTC.
+- The dev box's scheduler dispatches them on main: `eval-e2e` on Sundays at
+  about 04:45 UTC, the release daily at 03:15 UTC with `release.sh daily`.
   A dispatch always runs.
 - The cron stays as the fallback, for a night the scheduler's timers miss. A
-  scheduled run skips green, with the reason under "E2E eval (scheduled):
-  SKIPPED" in the step summary, when it cannot finish by 07:00 UTC
-  (`scripts/ci/night-window-guard.sh 30`) or when another `eval-e2e` run on
-  main succeeded, or is queued or running, in the last 20 hours
-  (`scripts/ci/recent-run-guard.sh`), which is what keeps the dispatch and the
-  cron from both running.
+  scheduled run skips green, with the reason in the step summary ("E2E eval
+  (scheduled): SKIPPED", "Release skipped"), when it cannot finish by 07:00
+  UTC (`scripts/ci/night-window-guard.sh`, 30 minutes for `eval-e2e`, 20 for
+  the release) or when another run of the same workflow on main succeeded, or
+  is queued or running, in the last 20 hours (`scripts/ci/recent-run-guard.sh`),
+  which is what keeps the dispatch and the cron from both running. The
+  release chains both with the AC power guard in
+  `scripts/ci/scheduled-run-guard.sh`.
 
 A new scheduled workflow that runs inference on the Mac takes both guards.
 
