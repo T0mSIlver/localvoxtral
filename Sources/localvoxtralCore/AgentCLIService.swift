@@ -300,6 +300,7 @@ package struct AgentCLIService: Sendable {
             case .notReady(let state): "still \(state.rawValue); mark it filed once it is ready"
             case .notAnIssue: "\(url) is not a GitHub issue URL (https://github.com/<owner>/<name>/issues/<n>)"
             case .otherRepository(let repository): "this capture files in \(repository)"
+            case .notAnIssueKind(let kind): "a \(kind.rawValue) is never filed"
             }
             return .failure(refusal == .notFound ? .unknownCapture : .notFileable, message)
         }

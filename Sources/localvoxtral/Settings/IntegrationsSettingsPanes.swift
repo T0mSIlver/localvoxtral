@@ -87,12 +87,16 @@ struct IntegrationsContextSettingsPane: View {
             }
 
             // Its own group: a capture is not polish context. The key row
-            // stays whatever the toggle says, so the group never changes
+            // stays whatever the picker says, so the group never changes
             // shape (owner rule, 2026-07-04).
             SettingsGroup(title: "Quick capture", learnMoreURL: LearnMore.quickCapture) {
-                SettingsFieldRow(title: "Send quick captures to Jev for routing") {
-                    Toggle("", isOn: $settings.quickCaptureJevEnabled)
-                        .labelsHidden()
+                SettingsFieldRow(title: "Route quick captures with") {
+                    Picker("", selection: $settings.quickCaptureRouter) {
+                        Text("Polishing model").tag(SettingsStore.QuickCaptureRouterChoice.polishingModel)
+                        Text("Jev").tag(SettingsStore.QuickCaptureRouterChoice.jev)
+                    }
+                    .labelsHidden()
+                    .fixedSize()
                 }
 
                 SettingsFieldRow(title: "Jev API key") {

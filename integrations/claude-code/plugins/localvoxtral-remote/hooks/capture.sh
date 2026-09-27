@@ -15,13 +15,20 @@
 # readme posts the first 16 KiB of the project's README to `/v1/readme`; the
 # Mac keeps a summary of it for quick capture's router.
 #
-# draft posts the project's open issues (`gh issue list`, when gh works here)
-# to `/v1/draft/prompt` and gets the drafting prompt back, with the dictated
-# idea in it. It runs the session's own agent headless in the project with
-# the Mac's local drafting flags (QuickCaptureDraft.swift): read-only tools
-# confined to the checkout, hooks and MCP off, 20 turns, a cost cap and a
-# 240 s watchdog. The agent's output goes to `/v1/draft`. Nothing is filed:
-# gh only lists issues, and the agent has no shell.
+# draft first asks `/v1/draft/words` for the capture's search words, then
+# posts the project's context to `/v1/draft/context` (#918): the README and
+# AGENTS.md (or CLAUDE.md) openings, `git grep` hits for those words, and the
+# open issues, recent closed issues and merged PRs when gh works here. The
+# Mac writes the first draft from it; `/v1/draft/check` answers 202 while it
+# does, 204 when no check is due (not an issue), or the check's prompt. A Mac
+# from before #918 answers the words with an error, and the script falls back
+# to posting the open issues to `/v1/draft/prompt` for the prompt to draft
+# from scratch. Either way it runs the session's own agent headless in the
+# project with the Mac's local drafting flags (QuickCaptureDraft.swift):
+# read-only tools confined to the checkout, hooks and MCP off, 20 turns, a
+# cost cap and a 360 s watchdog. The agent's output goes to `/v1/draft`.
+# Nothing is filed: gh only lists issues and PRs, git only greps, and the
+# agent has no shell.
 #
 # The prompt comes from whatever answers on the port, which is normally the
 # Mac but can be another local user who bound it first. That is why the
@@ -194,23 +201,95 @@ if ORIGIN="$(git remote get-url origin 2>/dev/null)"; then
   [ -n "$REPO" ] || REPO="-"
 fi
 
+# bounded <seconds> <out-file> <command...>: runs the command into the file
+# under the watchdog; an error, a timeout or no output leaves the file empty.
+bounded() {
+  seconds="$1"
+  out="$2"
+  shift 2
+  "$@" >"$out" 2>/dev/null &
+  BOUNDED=$!
+  watch "$BOUNDED" "$seconds"
+  if ! wait "$BOUNDED" || [ -e "$WORK/timedout" ]; then : >"$out"; fi
+  rm -f "$WORK/timedout"
+}
+
 # Open issues, trimmed to what the prompt quotes: 60 issues, 200-character
 # titles, 240-character bodies (QuickCaptureDraft.prompt). No gh, no login,
 # no GitHub remote: an empty list, and the prompt says it could not be read.
 : >"$WORK/issues"
 if [ "$REPO" != - ] && command -v gh >/dev/null 2>&1; then
-  gh issue list ${REPO:+--repo "$REPO"} --state open --limit 60 --json number,title,body \
-    --jq '[.[] | {number, title: .title[0:200], body: (.body // "")[0:240]}]' \
-    >"$WORK/issues.raw" 2>/dev/null &
-  GH=$!
-  watch "$GH" 20
-  if wait "$GH" && [ ! -e "$WORK/timedout" ]; then
-    head -c 49152 "$WORK/issues.raw" >"$WORK/issues" 2>/dev/null || : >"$WORK/issues"
-  fi
-  rm -f "$WORK/timedout"
+  bounded 20 "$WORK/issues.raw" gh issue list ${REPO:+--repo "$REPO"} --state open --limit 60 --json number,title,body \
+    --jq '[.[] | {number, title: .title[0:200], body: (.body // "")[0:240]}]'
+  head -c 49152 "$WORK/issues.raw" >"$WORK/issues" 2>/dev/null || : >"$WORK/issues"
 fi
 
-STATUS="$(post /v1/draft/prompt "$WORK/issues" "$WORK/prompt")" || STATUS=""
+: >"$WORK/empty"
+STATUS="$(post /v1/draft/words "$WORK/empty" "$WORK/words")" || STATUS=""
+if [ "$STATUS" = 200 ]; then
+  # The context bundle (QuickCaptureContext.parse): sections opened by an
+  # `@@lvx <name>` line, each capped, the whole at 96 KiB.
+  {
+    echo '@@lvx readme'
+    for name in README.md README readme.md README.markdown Readme.md; do
+      if [ -f "$name" ] && [ -r "$name" ]; then
+        head -c 16384 "$name" 2>/dev/null
+        break
+      fi
+    done
+    echo
+    echo '@@lvx guide'
+    for name in AGENTS.md CLAUDE.md; do
+      if [ -f "$name" ] && [ -r "$name" ] && [ "$(wc -c <"$name" 2>/dev/null | tr -d '[:space:]')" -gt 200 ]; then
+        head -c 32768 "$name" 2>/dev/null
+        break
+      fi
+    done
+    echo
+  } >"$WORK/bundle" 2>/dev/null
+  echo '@@lvx grep' >>"$WORK/bundle"
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    # The Mac's words: 8 at most, each a lowercase letter or digit, then
+    # letters, digits, `_`, `.` or `-`, so none reads as an option.
+    head -n 8 "$WORK/words" 2>/dev/null | while IFS= read -r word || [ -n "$word" ]; do
+      case "$word" in
+      [abcdefghijklmnopqrstuvwxyz0123456789]*) ;;
+      *) continue ;;
+      esac
+      case "$word" in
+      *[!abcdefghijklmnopqrstuvwxyz0123456789_.-]*) continue ;;
+      esac
+      [ "${#word}" -le 40 ] || continue
+      bounded 20 "$WORK/hits" git grep -n -I -i -F --max-count 2 -e "$word" --
+      head -n 4 "$WORK/hits" 2>/dev/null | cut -c 1-400
+    done >>"$WORK/bundle" 2>/dev/null
+  fi
+  echo '@@lvx open' >>"$WORK/bundle"
+  cat "$WORK/issues" >>"$WORK/bundle" 2>/dev/null
+  echo >>"$WORK/bundle"
+  if [ "$REPO" != - ] && command -v gh >/dev/null 2>&1; then
+    bounded 20 "$WORK/closed" gh issue list ${REPO:+--repo "$REPO"} --state closed --limit 40 --json number,title \
+      --jq '[.[] | {number, title: .title[0:200]}]'
+    bounded 20 "$WORK/merged" gh pr list ${REPO:+--repo "$REPO"} --state merged --limit 20 --json number,title \
+      --jq '[.[] | {number, title: .title[0:200]}]'
+    { echo '@@lvx closed'; head -c 16384 "$WORK/closed"; echo; echo '@@lvx merged'; head -c 8192 "$WORK/merged"; echo; } \
+      >>"$WORK/bundle" 2>/dev/null
+  fi
+  head -c 98304 "$WORK/bundle" >"$WORK/bundle.capped" 2>/dev/null || exit 0
+  STATUS="$(post /v1/draft/context "$WORK/bundle.capped" /dev/null)" || STATUS=""
+  [ "$STATUS" = 200 ] || exit 0
+  # The first draft takes up to 120 s on the Mac: poll every 3 s, 3 minutes.
+  i=0
+  while :; do
+    STATUS="$(post /v1/draft/check "$WORK/empty" "$WORK/prompt")" || STATUS=""
+    [ "$STATUS" = 202 ] || break
+    i=$((i + 1))
+    [ "$i" -lt 60 ] || exit 0
+    sleep 3
+  done
+else
+  STATUS="$(post /v1/draft/prompt "$WORK/issues" "$WORK/prompt")" || STATUS=""
+fi
 [ "$STATUS" = 200 ] && [ -s "$WORK/prompt" ] || exit 0
 
 # answer <exit>: posts the capped output with how the run ended, and a Vibe
@@ -250,7 +329,7 @@ if [ "$AGENT" = claude ]; then
     --max-turns 20 \
     --max-budget-usd 0.50 \
     --output-format json \
-    --json-schema '{"type":"object","properties":{"title":{"type":"string"},"body":{"type":"string"},"relation":{"type":"string","enum":["none","duplicate","extends"]},"issue":{"type":["integer","null"]}},"required":["title","body","relation","issue"],"additionalProperties":false}' \
+    --json-schema '{"type":"object","properties":{"title":{"type":"string"},"body":{"type":"string"},"relation":{"type":"string","enum":["none","duplicate","extends"]},"issue":{"type":["integer","null"]},"files":{"type":"array","items":{"type":"string"}}},"required":["title","body","relation","issue","files"],"additionalProperties":false}' \
     </dev/null >"$WORK/out" 2>/dev/null &
 else
   # Vibe has no flag to skip hooks: a home of its own, holding only links to
@@ -294,7 +373,7 @@ $(cat "$WORK/files")"
     </dev/null >"$WORK/out" 2>/dev/null &
 fi
 RUN=$!
-watch "$RUN" 240
+watch "$RUN" 360
 wait "$RUN"
 CODE=$?
 [ ! -e "$WORK/timedout" ] || answer timeout

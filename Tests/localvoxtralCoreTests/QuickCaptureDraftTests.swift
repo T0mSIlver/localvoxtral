@@ -316,7 +316,7 @@ final class QuickCaptureDrafterTests: XCTestCase {
         let outcome = await drafter(runner).draft(
             capture: "c", route: .project("/w/reach"), projects: projects, agents: [.claude, .vibe, .opencode]
         )
-        XCTAssertEqual(outcome, .draft(draft, usage: nil))
+        XCTAssertEqual(outcome, .draft(draft.keepingFiles(nil, agent: .opencode), usage: nil), "named after the agent that ran")
         XCTAssertEqual(runner.invocations.withLock { $0.map(\.agent) }, [.claude, .vibe, .opencode])
         XCTAssertEqual(runner.invocations.withLock { $0.map(\.workingDirectory) }, ["/w/reach", "/w/reach", "/w/reach"])
         XCTAssertEqual(

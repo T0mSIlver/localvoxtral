@@ -184,7 +184,7 @@ final class RemoteQuickCaptureTests: XCTestCase {
         """#
 
     /// Starts a draft of the idea and returns once it waits for its hook.
-    private func startDraft(_ text: String = "for quill, italic kerning is still wrong") async -> Task<QuickCaptureDraft.Outcome, Never> {
+    private func startDraft(_ text: String = "for quill, italic kerning is still wrong") async -> Task<QuickCaptureDraft.Outcome?, Never> {
         let requests = requests!
         let project = quill
         let task = Task { await requests.draft(capture: text, project: project) }
@@ -586,12 +586,125 @@ final class RemoteQuickCaptureTests: XCTestCase {
         )
     }
 
+    /// Polls `/v1/draft/check` as the host does, without a clock: each 202
+    /// yields to the first draft's task.
+    private func pollCheck(session: String) async throws -> RemoteListenerResponse {
+        for _ in 0..<1_000 {
+            let reply = try answer(RemoteQuickCaptureRequests.draftCheckPath, session: session, draftID: draftID, body: "")
+            if reply.status != 202 { return reply }
+            await Task.yield()
+        }
+        throw XCTSkip("the first draft never finished")
+    }
+
+    func testAHostsContextGivesTheFirstDraftThenTheCheckStartsFromIt() async throws {
+        try hook("SessionStart", session: "s1")
+        let first = QuickCaptureDraft.Draft(
+            kind: .issue, title: "Fix italic kerning", body: "## Problem\nTe pairs.", relation: .none, issue: nil
+        )
+        let firstDrafter = FakeQuickCaptureFirstDrafter([.draft(first, usage: nil)], gated: true)
+        let shown = Mutex<[QuickCaptureDraft.Outcome]>([])
+        let requests = requests!
+        let project = quill
+        let task = Task {
+            await requests.draft(
+                capture: "for quill, italic kerning is still wrong", project: project, firstDrafter: firstDrafter,
+                onFirstDraft: { outcome in
+                    shown.withLock { $0.append(outcome) }
+                    return true
+                }
+            )
+        }
+        await sleeper.waitForSleepers(1)
+        XCTAssertEqual(try hook(session: "s1").headers[draftHeader], draftID)
+
+        XCTAssertEqual(
+            try answer(RemoteQuickCaptureRequests.draftCheckPath, session: "s1", draftID: draftID, body: "").status,
+            409, "no check before the context"
+        )
+        let words = try answer(RemoteQuickCaptureRequests.draftWordsPath, session: "s1", draftID: draftID, body: "")
+        XCTAssertEqual(words.status, 200)
+        XCTAssertEqual(String(decoding: words.body, as: UTF8.self), "kerning\nitalic\nquill\nwrong\n")
+        XCTAssertEqual(
+            try answer(RemoteQuickCaptureRequests.draftWordsPath, session: "s2", draftID: draftID, body: "").status,
+            409, "only the session asked"
+        )
+        let bundle = "@@lvx readme\n# Quill\n@@lvx grep\nSources/Kern.swift:3:kern\n@@lvx open\n\(Self.issues)\n"
+        XCTAssertEqual(
+            try answer(RemoteQuickCaptureRequests.draftContextPath, session: "s1", draftID: draftID, body: bundle).status, 200
+        )
+        XCTAssertEqual(
+            try answer(RemoteQuickCaptureRequests.draftContextPath, session: "s1", draftID: draftID, body: bundle).status,
+            409, "one context per draft"
+        )
+        await firstDrafter.gate!.waitForSleepers(1)
+        XCTAssertEqual(
+            try answer(RemoteQuickCaptureRequests.draftCheckPath, session: "s1", draftID: draftID, body: "").status,
+            202, "the first draft is still being written"
+        )
+        XCTAssertEqual(firstDrafter.contexts.withLock { $0.first?.codeHits }, ["Sources/Kern.swift:3:kern"])
+        XCTAssertEqual(firstDrafter.contexts.withLock { $0.first?.readme }, "# Quill")
+        firstDrafter.gate!.wakeAll()
+
+        let check = try await pollCheck(session: "s1")
+        XCTAssertEqual(check.status, 200)
+        XCTAssertEqual(shown.withLock { $0 }, [.draft(first, usage: nil)], "the Inbox has the first draft before the check runs")
+        XCTAssertEqual(
+            String(decoding: check.body, as: UTF8.self),
+            QuickCaptureDraft.prompt(
+                capture: "for quill, italic kerning is still wrong", projectName: "quill",
+                issues: [
+                    .init(number: 12, title: "Kerning is off in italics", body: "Pairs like Te."),
+                    .init(number: 14, title: "Page numbers", body: ""),
+                ],
+                firstDraft: first
+            )
+        )
+        XCTAssertEqual(
+            try answer(RemoteQuickCaptureRequests.draftPromptPath, session: "s1", draftID: draftID, body: Self.issues).status,
+            409, "no second prompt by the old path"
+        )
+        XCTAssertEqual(
+            try answer(RemoteQuickCaptureRequests.draftAnswerPath, session: "s1", draftID: draftID, exit: "0", body: Self.claudeAnswer).status,
+            200
+        )
+        guard case .draft(let checked, _)? = await task.value else { return XCTFail("no check") }
+        XCTAssertEqual(checked.relation, .extends, "a listed issue from the host's bundle")
+        XCTAssertEqual(checked.agent, .claude)
+    }
+
+    func testANoteFromTheHostsContextEndsWithNoCheck() async throws {
+        try hook("SessionStart", session: "s1")
+        let note = QuickCaptureDraft.Draft(kind: .note, title: "Kerning thought", body: "B", relation: .none, issue: nil)
+        let firstDrafter = FakeQuickCaptureFirstDrafter([.draft(note, usage: nil)], gated: true)
+        firstDrafter.gate!.wakeAll()
+        let requests = requests!
+        let project = quill
+        let task = Task { await requests.draft(capture: "kerning", project: project, firstDrafter: firstDrafter) }
+        await sleeper.waitForSleepers(1)
+        XCTAssertEqual(try hook(session: "s1").headers[draftHeader], draftID)
+        XCTAssertEqual(
+            try answer(RemoteQuickCaptureRequests.draftContextPath, session: "s1", draftID: draftID, body: "").status, 200
+        )
+        await firstDrafter.gate!.waitForSleepers(1)
+        firstDrafter.gate!.wakeAll()
+        let outcome = await task.value
+        XCTAssertNil(outcome, "no check due")
+        let done = try await pollCheck(session: "s1")
+        XCTAssertEqual(done.status, 204, "the host hears it is done")
+        XCTAssertEqual(
+            try answer(RemoteQuickCaptureRequests.draftCheckPath, session: "s1", draftID: draftID, body: "").status,
+            409, "once"
+        )
+        XCTAssertTrue(usage.entries().isEmpty, "no agent ran")
+    }
+
     func testTheDrafterHandsOnlyARemoteProjectToTheHost() async {
         let handed = Mutex<[String]>([])
         let drafter = QuickCaptureDrafter(
             runner: RefusingRunner(),
             openIssues: { _, _ in XCTFail("the Mac lists no issues for a remote project"); return nil },
-            remote: { capture, project in
+            remote: { capture, project, _, _ in
                 handed.withLock { $0.append("\(project.key): \(capture)") }
                 return .notRun(.noHostSession)
             }
@@ -649,12 +762,21 @@ final class RemoteQuickCaptureTests: XCTestCase {
         }
         for path in [
             RemoteQuickCaptureRequests.readmePath, RemoteQuickCaptureRequests.draftPromptPath,
-            RemoteQuickCaptureRequests.draftAnswerPath,
+            RemoteQuickCaptureRequests.draftAnswerPath, RemoteQuickCaptureRequests.draftWordsPath,
+            RemoteQuickCaptureRequests.draftContextPath, RemoteQuickCaptureRequests.draftCheckPath,
         ] {
             XCTAssertTrue(runner.contains("post \(path) "), path)
         }
         XCTAssertTrue(runner.contains("head -c \(RemoteQuickCaptureRequests.maxReadmeBytes) "))
         XCTAssertTrue(runner.contains("head -c \(RemoteQuickCaptureRequests.maxIssueListBytes) "))
+        XCTAssertTrue(runner.contains("head -c \(QuickCaptureContext.maxBundleBytes) "))
+        XCTAssertTrue(runner.contains("head -n \(QuickCaptureContext.maxSearchWords) "))
+        XCTAssertTrue(runner.contains("head -n \(QuickCaptureContext.hitsPerWord) "))
+        XCTAssertTrue(runner.contains("git grep -n -I -i -F --max-count 2 -e \"$word\" --"),
+                      "the Mac's local grep, flag for flag")
+        XCTAssertEqual(QuickCaptureContext.grepArguments(word: "w"), ["grep", "-n", "-I", "-i", "-F", "--max-count", "2", "-e", "w", "--"])
+        XCTAssertTrue(runner.contains("--limit \(QuickCaptureContext.maxClosedIssues) "))
+        XCTAssertTrue(runner.contains("--limit \(QuickCaptureContext.maxMergedPullRequests) "))
         XCTAssertTrue(runner.contains("-le \(RemoteQuickCaptureRequests.maxDraftAnswerBytes) "))
         XCTAssertTrue(runner.contains("--limit \(QuickCaptureDraft.maxListedIssues) "))
         XCTAssertTrue(runner.contains("[0:\(QuickCaptureDraft.maxIssueExcerptCharacters)]"))
