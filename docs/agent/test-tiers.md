@@ -245,6 +245,38 @@ is right: the lanes must pass on the final diff. CI cannot see an eval-e2e
 scoreboard, a replay, or a lane waived in an earlier commit's message, so the
 worker adds or removes those labels by hand.
 
+## Merging on the owner's OK: the board pass
+
+The owner approves an open PR by moving its card on the project board from
+Needs human review to Done. GitHub sends no event for a card move on a
+personal board, so the scheduler runs `scripts/board/merge-approved.sh`
+every 10 minutes, from a checkout of main it pulls first. One pass spends one
+GraphQL query (cost 1): the board's open PRs in Done, with labels,
+mergeability and checks. For each PR it prints one line:
+
+| Verdict | When | What the pass does |
+|---|---|---|
+| `wait` | stacked, a `waits:` label, a draft, a check still running, or `build-test`, `linux` or `mac-lanes` not green yet; also a head that moved since the query, or main changed a file the PR changes, or a check, since its CI run | nothing; the card stays in Done because the OK still holds |
+| `back` | a failed or cancelled check (the newest run of each counts), a conflict with main, a fork PR, a dependency pinned to a fork | moves the card to Needs human review, then comments the reason and the failed job's log tail |
+| `merge` | everything else | squash-merges at the checked sha, retargets PRs stacked on it to main, then deletes the branch |
+
+A `waits:` label holds a PR even with a red check: someone is on it. The
+pre-merge check is the one in the orchestrate-sessions skill, in git: CI
+tested the merge with main as it was when the run was created, so only what
+landed since counts. When that touches a file the PR changes, `.github/` or
+`scripts/ci/`, the line says so, and the scheduler runs the combined check (a
+hosted combo PR) and merges by hand. Deleting a merged branch would close
+the PRs based on it, so when listing or retargeting them fails, the branch
+stays and the pass exits 1. A merged PR with a hand check (the `needs-human-review` label
+and Hand check steps in its body) goes back to Needs human review on the next
+pass, once GitHub's "Pull request merged" workflow has set it to Done.
+
+Why not a scheduled workflow: the repo token can neither read nor move cards
+on a user-owned board, so it would need the owner's token as a secret, and a
+merge made with the repo token starts no workflow on main. The board's
+"Auto-close issue" workflow leaves an open PR in Done alone (checked on
+2026-09-26 with a throwaway PR).
+
 ## Dispatching a run without deepening the queue
 
 There is ONE self-hosted runner (the owner's MacBook), so CI concurrency is 1
