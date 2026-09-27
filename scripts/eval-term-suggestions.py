@@ -56,7 +56,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = "Sources/localvoxtral/SpeakerTermSuggestions.swift"
 TEST = "Tests/localvoxtralTests/SpeakerTermSuggestionsTests.swift"
 ENDPOINT = "https://api.mistral.ai/v1/chat/completions"
-# EUR per million tokens, from MistralUsageLedger's GLM 5.3 row.
+# EUR per million tokens, from MistralPricing's GLM 5.3 row (UsageLedger.swift).
 PRICE_IN, PRICE_OUT = 1.19, 3.74
 MAX_DICTATIONS = 120
 

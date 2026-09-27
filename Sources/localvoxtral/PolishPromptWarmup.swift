@@ -33,7 +33,8 @@ enum PolishPromptWarmup {
                 inputText: warmupInputText,
                 replacementDictionary: ""
             ),
-            maxTokens: 1
+            maxTokens: 1,
+            usageFeature: nil
         )
     }
 

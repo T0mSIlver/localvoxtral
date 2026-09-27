@@ -16,7 +16,8 @@ final class QuickCaptureInboxViewModel {
         learnedTerms: @escaping @MainActor () -> LearnedTerms,
         fileURL: URL?,
         applicationSupport: URL,
-        github: any QuickCaptureGitHub = QuickCaptureGHClient()
+        github: any QuickCaptureGitHub = QuickCaptureGHClient(),
+        usageRecorder: (any UsageRecording)? = nil
     ) {
         let remote = RemoteDraftsSlot()
         let drafter = QuickCaptureDrafter(
@@ -29,12 +30,13 @@ final class QuickCaptureInboxViewModel {
             remote: { capture, project in
                 guard let requests = remote.value.withLock({ $0 }) else { return .notRun(.remoteProject) }
                 return await requests.draft(capture: capture, project: project)
-            }
+            },
+            usageRecorder: usageRecorder
         )
         remoteSlot = remote
         model = QuickCaptureInboxModel(
             fileURL: fileURL,
-            makeRouter: { QuickCaptureRouter(classifiers: Self.classifiers(settings: settings)) },
+            makeRouter: { QuickCaptureRouter(classifiers: Self.classifiers(settings: settings, usageRecorder: usageRecorder)) },
             projects: {
                 QuickCaptureProjects.projects(
                     from: learnedTerms(),
@@ -77,19 +79,24 @@ final class QuickCaptureInboxViewModel {
     /// Jev only when the user allowed it and a key is set; the polishing
     /// model next, when polishing has a configuration. With neither, every
     /// capture waits in the Inbox for the user to place it.
-    static func classifiers(settings: SettingsStore) -> [any QuickCaptureClassifying] {
+    static func classifiers(
+        settings: SettingsStore, usageRecorder: (any UsageRecording)? = nil
+    ) -> [any QuickCaptureClassifying] {
         var classifiers: [any QuickCaptureClassifying] = []
         if settings.quickCaptureJevEnabled { settings.ensureSecretsLoaded([.jevAPIKey]) }
         let jevKey = settings.jevAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if settings.quickCaptureJevEnabled, !jevKey.isEmpty {
-            classifiers.append(JevClassifier(host: jevHost(forKey: jevKey), apiKey: jevKey))
+            classifiers.append(JevClassifier(
+                host: jevHost(forKey: jevKey), apiKey: jevKey, usageRecorder: usageRecorder))
         }
         if let polishing = settings.llmPolishingConfiguration {
             classifiers.append(QuickCaptureChatClassifier(
                 endpoint: LLMPolishingService.normalizedChatCompletionsURL(polishing.endpointURL),
                 apiKey: polishing.apiKey,
                 model: polishing.model,
-                extraBody: chatExtraBody(polishing)
+                extraBody: chatExtraBody(polishing),
+                usageBackend: polishing.usageBackend,
+                usageRecorder: usageRecorder
             ))
         }
         return classifiers

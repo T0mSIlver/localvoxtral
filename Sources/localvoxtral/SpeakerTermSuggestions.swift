@@ -94,7 +94,8 @@ enum SpeakerTermSuggestions {
             systemPrompt: "",
             userPrompts: [message],
             timeoutSeconds: timeoutSeconds,
-            prefersDeepReasoning: true
+            prefersDeepReasoning: true,
+            usageFeature: .termSuggestions
         )
     }
 

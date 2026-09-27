@@ -157,17 +157,23 @@ package struct JevClassifier: QuickCaptureClassifying {
     private let apiKey: String
     private let session: URLSession
     private let sleep: @Sendable (TimeInterval) async throws -> Void
+    private let usageRecorder: (any UsageRecording)?
+    private let now: @Sendable () -> Date
 
     package init(
         host: Jev.Host,
         apiKey: String,
         session: URLSession = .shared,
-        sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }
+        sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) },
+        usageRecorder: (any UsageRecording)? = nil,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.host = host
         self.apiKey = apiKey
         self.session = session
         self.sleep = sleep
+        self.usageRecorder = usageRecorder
+        self.now = now
     }
 
     package var kind: QuickCaptureRoute.Classifier { .jev }
@@ -177,6 +183,12 @@ package struct JevClassifier: QuickCaptureClassifying {
         return try await Jev.withRetries(sleep: sleep) {
             let (data, response) = try await session.data(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            // Jev reports no token counts: the ledger gets the call, unpriced.
+            // A 429 or 503 did no work and is not counted.
+            if (200..<300).contains(status) {
+                usageRecorder?.record(UsageEntry(
+                    date: now(), feature: .quickCaptureRouting, backend: .jev, model: host.model))
+            }
             return try Jev.probabilities(status: status, body: data)
         }
     }
