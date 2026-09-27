@@ -90,7 +90,7 @@ package struct WidgetSnapshot: Codable, Equatable, Sendable {
         }
     }
 
-    /// Spend on the Mistral API, from `MistralUsageLedger`.
+    /// Spend on the Mistral API, from `UsageLedger`.
     package struct MistralSpend: Codable, Equatable, Sendable {
         package var speechTodayEUR: Double
         package var polishTodayEUR: Double

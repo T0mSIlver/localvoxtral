@@ -107,20 +107,31 @@ package struct QuickCaptureChatClassifier: QuickCaptureClassifying {
     private let model: String
     private let extraBody: [String: any Sendable]
     private let session: URLSession
+    private let usageBackend: UsageEntry.Backend
+    private let usageRecorder: (any UsageRecording)?
+    private let now: @Sendable () -> Date
 
     /// - Parameter endpoint: the full `chat/completions` URL.
+    /// - Parameter usageBackend: who answers, for the usage ledger: the
+    ///   polishing backend this classifier borrows.
     package init(
         endpoint: URL,
         apiKey: String,
         model: String,
         extraBody: [String: any Sendable] = [:],
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        usageBackend: UsageEntry.Backend = .userServer,
+        usageRecorder: (any UsageRecording)? = nil,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.endpoint = endpoint
         self.apiKey = apiKey
         self.model = model
         self.extraBody = extraBody
         self.session = session
+        self.usageBackend = usageBackend
+        self.usageRecorder = usageRecorder
+        self.now = now
     }
 
     package var kind: QuickCaptureRoute.Classifier { .chatModel }
@@ -137,6 +148,18 @@ package struct QuickCaptureChatClassifier: QuickCaptureClassifying {
         )
         let (data, response) = try await session.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        // A 2xx is billed whether or not its answer is usable, so it is
+        // recorded before the answer is judged.
+        if (200..<300).contains(status), let usageRecorder {
+            let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            usageRecorder.record(UsageEntry.chat(
+                date: now(),
+                feature: .quickCaptureRouting,
+                backend: usageBackend,
+                requestedModel: model,
+                usage: json.flatMap(LLMTokenUsage.init(responseObject:))
+            ))
+        }
         return try QuickCaptureChatRouting.probabilities(status: status, body: data, options: options)
     }
 }

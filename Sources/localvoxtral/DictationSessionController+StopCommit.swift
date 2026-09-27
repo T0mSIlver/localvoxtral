@@ -1127,9 +1127,10 @@ extension DictationSessionController {
                 // Here, off the main actor: the ledger appends to its file
                 // synchronously. Recorded as the request goes out, whatever
                 // comes back: one the deadline cuts off may still be billed.
-                usageRecorder?.record(MistralUsageEntry(
+                usageRecorder?.record(UsageEntry(
                     date: Date(),
-                    kind: .retranscription,
+                    feature: .secondPass,
+                    backend: .mistral,
                     model: MistralBatchTranscription.model,
                     audioSeconds: request.audioSeconds,
                     costEUR: MistralPricing.dictationCost(
