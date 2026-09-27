@@ -55,9 +55,11 @@ final class QuickCaptureInboxTests: XCTestCase {
 
     private func model(
         answer: [String: Double],
+        github: (any QuickCaptureGitHub)? = nil,
+        projects: [QuickCaptureProject]? = nil,
         remote: (@Sendable (String, QuickCaptureProject) async -> QuickCaptureDraft.Outcome)? = nil
     ) -> QuickCaptureInboxModel {
-        let github = github, runner = runner, projects = projects
+        let github = github ?? self.github, runner = runner, projects = projects ?? self.projects
         let model = QuickCaptureInboxModel(
             fileURL: fileURL,
             makeRouter: { QuickCaptureRouter(classifiers: [Classifier(answer)]) },
@@ -68,7 +70,7 @@ final class QuickCaptureInboxTests: XCTestCase {
                     runner: runner,
                     openIssues: { await github.openIssues(ofCheckout: $0) },
                     trackedFiles: { _ in [] },
-                    directoryExists: { $0.hasPrefix("/w/") },
+                    directoryExists: { $0.hasPrefix("/w/") || FileManager.default.fileExists(atPath: $0) },
                     remote: remote
                 )
             },
@@ -180,6 +182,43 @@ final class QuickCaptureInboxTests: XCTestCase {
         sleeper.wakeAll()
         await task.value
         XCTAssertEqual(model.items.first?.note, "No session of this project answered on its host.")
+    }
+
+    /// A fork with an `upstream` remote: gh's own pick is the upstream (#919),
+    /// so the repository comes from `origin`, for filing and for the
+    /// duplicate check alike.
+    func testAForkCheckoutFilesInTheForkNotItsUpstream() async throws {
+        let root = fileURL.deletingLastPathComponent()
+        let checkout = root.appendingPathComponent("tool").path
+        let bin = root.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(atPath: checkout, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        for arguments in [
+            ["init", "-q"],
+            ["remote", "add", "origin", "git@github.com:me/tool.git"],
+            ["remote", "add", "upstream", "https://github.com/upstream/tool.git"],
+        ] {
+            let output = await RepoGitRunner.run(arguments: arguments, root: checkout)
+            XCTAssertEqual(output?.exitCode, 0, arguments.joined(separator: " "))
+        }
+        let log = root.appendingPathComponent("gh-argv").path
+        let gh = bin.appendingPathComponent("gh")
+        try """
+        #!/bin/sh
+        echo "$*" >>'\(log)'
+        case "$1" in repo) echo upstream/tool ;; issue) echo '[]' ;; esac
+        """.write(to: gh, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: gh.path)
+        let project = QuickCaptureProject(key: checkout, name: "tool", summary: nil, terms: [], userLine: nil)
+
+        let model = model(
+            answer: ["tool": 0.9], github: QuickCaptureGHClient(environment: ["PATH": bin.path]), projects: [project]
+        )
+        await model.capture(text: "Add a verbose flag", historyRecordID: nil).value
+
+        XCTAssertEqual(model.items.first?.repository, "me/tool")
+        let calls = try String(contentsOfFile: log, encoding: .utf8).split(separator: "\n")
+        XCTAssertEqual(calls.filter { $0.hasPrefix("issue list") }.map { $0.contains("--repo me/tool ") }, [true])
     }
 
     func testACaptureInterruptedByAQuitWaitsWithItsWords() throws {
