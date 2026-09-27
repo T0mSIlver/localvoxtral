@@ -3,6 +3,7 @@ import Synchronization
 import XCTest
 
 @testable import localvoxtralCore
+import localvoxtralTestSupport
 
 @MainActor
 final class QuickCaptureInboxTests: XCTestCase {
@@ -52,7 +53,10 @@ final class QuickCaptureInboxTests: XCTestCase {
         try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent())
     }
 
-    private func model(answer: [String: Double]) -> QuickCaptureInboxModel {
+    private func model(
+        answer: [String: Double],
+        remote: (@Sendable (String, QuickCaptureProject) async -> QuickCaptureDraft.Outcome)? = nil
+    ) -> QuickCaptureInboxModel {
         let github = github, runner = runner, projects = projects
         let model = QuickCaptureInboxModel(
             fileURL: fileURL,
@@ -64,7 +68,8 @@ final class QuickCaptureInboxTests: XCTestCase {
                     runner: runner,
                     openIssues: { await github.openIssues(ofCheckout: $0) },
                     trackedFiles: { _ in [] },
-                    directoryExists: { $0.hasPrefix("/w/") }
+                    directoryExists: { $0.hasPrefix("/w/") },
+                    remote: remote
                 )
             },
             github: github,
@@ -137,6 +142,25 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(model.items.first?.state, .ready)
         XCTAssertEqual(model.items.first?.note, "Filing failed. Check that gh is logged in.")
         XCTAssertEqual(github.created.withLock { $0.first?.last }, "Dictated:\n\n> Update the about page")
+    }
+
+    func testARemoteDraftSaysItWaitsForASessionUntilTheHostAnswers() async throws {
+        let sleeper = ManualSleeper()
+        let model = model(answer: ["website": 0.9]) { _, _ in
+            await sleeper.sleep(0)
+            return .notRun(.noHostSession)
+        }
+        let task = model.capture(text: "Update the about page", historyRecordID: nil)
+        await sleeper.waitForSleepers(1)
+        XCTAssertEqual(model.items.first?.state, .drafting)
+        XCTAssertEqual(model.items.first?.note, QuickCaptureInbox.waitingForHostNote)
+        XCTAssertEqual(
+            QuickCaptureInboxFile.load(from: fileURL).items.first?.note, "Interrupted before a draft.",
+            "a quit while it waits does not leave it claiming to wait"
+        )
+        sleeper.wakeAll()
+        await task.value
+        XCTAssertEqual(model.items.first?.note, "No session of this project answered on its host.")
     }
 
     func testACaptureInterruptedByAQuitWaitsWithItsWords() throws {
