@@ -174,6 +174,10 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
               project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix)
         else { return }
         let asRepository = snapshot.remoteSessionEnvironment?.project == label
+        // A cwd label stamps only a project a dictation already added. Until
+        // then this hook records nothing, so it must not take the interval:
+        // the hook right after that dictation is the one to stamp (#891).
+        guard asRepository || store.snapshot().projects.contains(where: { $0.key == project.key }) else { return }
         let moment = now()
         let due = state.withLock { state -> Bool in
             if let last = state.reported[project.key],

@@ -179,14 +179,17 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
-    /// Context → Quick capture → Project descriptions → Edit… (#811): one
-    /// line written, one project showing its README summary as the
-    /// placeholder, one with neither.
+    /// Context → Quick capture → Project descriptions → Edit… (#811, #891):
+    /// the user's line, the agent's line, a README summary where the agent
+    /// has not answered yet, and a project with none.
     func testQuickCaptureProjectLinesSheet() throws {
         let (settings, _) = makeViewModel()
         settings.setQuickCaptureProjectLine("Dictation app; shortcuts, quick capture, Inbox, polish", for: "remote:demo")
         let projects = [
             QuickCaptureProject(key: "remote:demo", name: "demo", summary: "Realtime dictation for the menu bar.", terms: [], userLine: nil),
+            QuickCaptureProject(
+                key: "remote:quill", name: "quill", summary: "Quill typesets Markdown.", terms: [],
+                agentLine: "Markdown to PDF renderer: the qmk CLI, page sizes, fonts, the glyph cache.", userLine: nil),
             QuickCaptureProject(key: "/work/site", name: "site", summary: "A personal site and blog built with Astro.", terms: [], userLine: nil),
             QuickCaptureProject(key: "remote:notes", name: "notes", summary: nil, terms: [], userLine: nil),
         ]

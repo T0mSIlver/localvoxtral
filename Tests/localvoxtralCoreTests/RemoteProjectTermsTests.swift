@@ -26,13 +26,13 @@ final class RemoteProjectTermsTests: XCTestCase {
         init(now: @escaping @Sendable () -> Date) { self.now = now }
         func snapshot() -> LearnedTerms { memory.withLock { $0 } }
         func recordProposal(
-            _ terms: [String],
+            _ terms: [String], line: String?,
             agent: ProjectTermProposal.Agent,
             project: LearnedTermProjectIdentity,
             excluding: [String]
         ) {
             let moment = now()
-            memory.withLock { $0.recordProposal(terms, agent: agent, project: project, excluding: excluding, now: moment) }
+            memory.withLock { $0.recordProposal(terms, line: line, agent: agent, project: project, excluding: excluding, now: moment) }
         }
         func recordProposalFailure(project: LearnedTermProjectIdentity) {
             let moment = now()
@@ -273,6 +273,45 @@ final class RemoteProjectTermsTests: XCTestCase {
         XCTAssertEqual(try answer(session: "s1").status, 409, "one answer per ask")
     }
 
+    /// #891: the answer's sentence lands on the project. A project answered
+    /// before is asked again only through a runner that asks for it.
+    func testTheProjectsSentenceLandsAndAnOldAnswerIsAskedAgainOnlyByANewShim() throws {
+        let old = RemoteProjectTermRequests.minimumPluginVersion
+        try hook("SessionStart", session: "s1", version: old, project: "quillmark")
+        try dictate(into: "s1")
+        try hook("UserPromptSubmit", session: "s1", version: old, project: "quillmark")
+        XCTAssertEqual(try answer(session: "s1").status, 200)
+        XCTAssertNil(store.snapshot().projects.first { $0.key == "remote:quillmark" }?.agentLineAt)
+
+        clock.advance(ProjectTermProposal.retryAfter)
+        try hook("SessionStart", session: "s1b", version: old, project: "quillmark")
+        XCTAssertFalse(try dictate(into: "s1b"), "the host's runner does not ask for the sentence")
+
+        let new = RemoteProjectTermRequests.minimumLinePluginVersion
+        try hook("SessionStart", session: "s2", version: new, project: "quillmark")
+        XCTAssertTrue(try dictate(into: "s2"))
+        try hook("UserPromptSubmit", session: "s2", version: new, project: "quillmark")
+        let body = #"{"terms":["Quillmark","qmk"],"description":"Quillmark renders Markdown to PDF: the qmk CLI, page sizes, fonts."}"#
+        XCTAssertEqual(try answer(session: "s2", body: body).status, 200)
+        let project = try XCTUnwrap(store.snapshot().projects.first { $0.key == "remote:quillmark" })
+        XCTAssertEqual(project.agentLine, "Quillmark renders Markdown to PDF: the qmk CLI, page sizes, fonts.")
+        XCTAssertEqual(project.terms.map(\.term), ["Quillmark", "GlyphAtlasCache", "qmk"])
+
+        clock.advance(ProjectTermProposal.retryAfter)
+        try hook("SessionStart", session: "s3", version: new, project: "quillmark")
+        XCTAssertFalse(try dictate(into: "s3"), "answered with the sentence: not asked again")
+
+        // Vibe's runner has no schema flag: an answer without the sentence
+        // still counts, or the host's done stamp leaves the Mac asking daily.
+        try hook("SessionStart", session: "v1", agent: .vibe, version: RemoteProjectTermRequests.minimumLineVibeHooksVersion, project: "inkwell")
+        XCTAssertTrue(try dictate(into: "v1", agent: .vibe))
+        try hook("UserPromptSubmit", session: "v1", agent: .vibe, version: RemoteProjectTermRequests.minimumLineVibeHooksVersion, project: "inkwell")
+        XCTAssertEqual(try answer(session: "v1", agent: .vibe, body: #"{"terms":["inkwell"]}"#).status, 200)
+        let inkwell = try XCTUnwrap(store.snapshot().projects.first { $0.key == "remote:inkwell" })
+        XCTAssertNil(inkwell.agentLine)
+        XCTAssertNotNil(inkwell.agentLineAt)
+    }
+
     func testEachAnswerCountsOneHostRunWithoutUsage() throws {
         try hook("SessionStart", session: "s1", project: "quillmark")
         try dictate(into: "s1")
@@ -459,6 +498,13 @@ final class RemoteProjectTermsTests: XCTestCase {
         ).version)
         XCTAssertFalse(ClaudeRemotePluginVersionCodec.isVersion(
             vibeVersion, olderThan: RemoteProjectTermRequests.minimumVibeHooksVersion
+        ))
+        // The shipped runner asks for the project's sentence (#891).
+        XCTAssertFalse(ClaudeRemotePluginVersionCodec.isVersion(
+            shipped, olderThan: RemoteProjectTermRequests.minimumLinePluginVersion
+        ))
+        XCTAssertFalse(ClaudeRemotePluginVersionCodec.isVersion(
+            vibeVersion, olderThan: RemoteProjectTermRequests.minimumLineVibeHooksVersion
         ))
         for shim in [claudeShim, vibeShim] {
             XCTAssertTrue(shim.contains("[Xx]-[Ll][Vv][Xx]-[Tt][Ee][Rr][Mm][Ss]: \(wanted)$"))

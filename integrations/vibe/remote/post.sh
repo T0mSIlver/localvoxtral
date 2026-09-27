@@ -182,7 +182,7 @@ write_header() {
   cat 2>/dev/null >"$1" <<HEADERS
 Authorization: Bearer $2
 X-Lvx-Agent: vibe
-X-Lvx-Vibe-Hooks-Version: 1.4.0
+X-Lvx-Vibe-Hooks-Version: 1.5.0
 HEADERS
 }
 write_header "$WORK/header" "$TOKEN" || exit 0
@@ -305,7 +305,9 @@ LVX_PROJECT="$(lvx_project 2>/dev/null)" || LVX_PROJECT=""
 # included: a per-project stamp directory, taken by an atomic mkdir, holds the
 # attempt time, and terms.sh writes `done` there after the Mac accepts the
 # answer. The project is the git toplevel of this hook's cwd, or the cwd
-# outside git; its stamp is named by the cksum of that path.
+# outside git; its stamp is named by the cksum of that path. The stamps live
+# in `terms-2` since the answer carries the project's sentence (#891): a
+# project answered under the old prompt is asked once more.
 lvx_terms_start() {
   _lvx_agent="$1"
   _lvx_session="$2"
@@ -320,7 +322,7 @@ lvx_terms_start() {
   _lvx_crc="${_lvx_sum%% *}"
   _lvx_len="${_lvx_sum##* }"
   case "$_lvx_crc$_lvx_len" in "" | *[!0-9]*) return 0 ;; esac
-  _lvx_terms="$STAMP_DIR/terms"
+  _lvx_terms="$STAMP_DIR/terms-2"
   { mkdir -p "$_lvx_terms" && chmod 700 "$STAMP_DIR" "$_lvx_terms"; } 2>/dev/null || return 0
   _lvx_stamp="$_lvx_terms/$_lvx_crc-$_lvx_len"
   if ! mkdir "$_lvx_stamp" 2>/dev/null; then

@@ -15,10 +15,10 @@ final class ProjectTermProposalLiveTests: XCTestCase {
         let memory = Mutex(LearnedTerms())
         func snapshot() -> LearnedTerms { memory.withLock { $0 } }
         func recordProposal(
-            _ terms: [String], agent: ProjectTermProposal.Agent,
+            _ terms: [String], line: String?, agent: ProjectTermProposal.Agent,
             project: LearnedTermProjectIdentity, excluding: [String]
         ) {
-            memory.withLock { $0.recordProposal(terms, agent: agent, project: project, excluding: excluding, now: Date()) }
+            memory.withLock { $0.recordProposal(terms, line: line, agent: agent, project: project, excluding: excluding, now: Date()) }
         }
         func recordProposalFailure(project: LearnedTermProjectIdentity) {
             memory.withLock { $0.recordProposalFailure(project: project, now: Date()) }
@@ -136,7 +136,7 @@ final class ProjectTermProposalLiveTests: XCTestCase {
     func testClaudeProposesTheFixturesTermsWithoutFiringItsHooks() async throws {
         let (outcome, store) = await propose(.claude)
         report("claude", outcome, store)
-        guard case .terms(_, let usage)? = outcome else { return XCTFail("claude run failed") }
+        guard case .terms(_, let usage, _)? = outcome else { return XCTFail("claude run failed") }
         print("[claude] usage: \(usage?.summary ?? "none")")
         XCTAssertFalse(store.snapshot().unconfirmedProposals(projectKey: repo).isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: claudeMarker), "the SessionStart hook fired")
@@ -213,7 +213,7 @@ final class ProjectTermProposalLiveTests: XCTestCase {
         await proposer.dictationCommitted(join: join(.opencode), enabled: true, excluding: [])?.value
         let outcome = runner.outcomes.withLock { $0.first }
         report("opencode, \(model)", outcome, store)
-        guard case .terms(_, let usage)? = outcome else { return XCTFail("opencode run failed") }
+        guard case .terms(_, let usage, _)? = outcome else { return XCTFail("opencode run failed") }
         print("[opencode] usage: \(usage?.summary ?? "none")")
         XCTAssertFalse(store.snapshot().unconfirmedProposals(projectKey: repo).isEmpty)
         print("[opencode] global plugin marker present: \(fm.fileExists(atPath: opencodeGlobalMarker))")
