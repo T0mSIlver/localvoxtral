@@ -171,8 +171,10 @@ Overlay Buffer dictation for an idea that has no place in the app you are in.
 Your words never reach the focused app. They are saved in History, then shown
 on the **Inbox** page of the localvoxtral window.
 
-1. **Route.** A classifier picks one of the projects localvoxtral has joined.
-   It reads each project's name, the opening of its README (read from a
+1. **Route.** A classifier picks one of your projects: a checkout on this
+   Mac that a dictation joined, or a repository on an ssh host where a
+   session has run (host plugin 1.13.0 or later; an older host lists a
+   project for a week after its last hook). It reads each project's name, the opening of its README (read from a
    checkout on this Mac, or reported by a remote project's host), and its
    learned terms. When it is unsure, or two
    projects tie, the capture stays unplaced.

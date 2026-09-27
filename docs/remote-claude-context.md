@@ -437,8 +437,13 @@ there. The host also reports the project's README, which the router reads to
 tell projects apart. Both need `localvoxtral-remote` 1.17.0 or Vibe hooks
 1.3.0 on the host.
 
+- **Projects.** A hook that names its repository (`X-Lvx-Env-Project`, plugin
+  1.13.0) adds that repository to the Mac's projects, so the router offers
+  every repository a session runs in. An older shim names only the session's
+  directory, which adds nothing and keeps an existing project listed for a
+  week. A project no hook names for 90 days is dropped.
 - **README.** The reply to a hook from a session in a remote project the Mac
-  has learned terms for, with no README summary or one a week old, carries
+  holds, with no README summary or one a week old, carries
   `X-Lvx-Readme: wanted`. The shim starts `capture.sh readme` detached, at most
   once per project per 24 hours, and it posts the first 16 KiB of the
   project's `README.md` to `POST /v1/readme`. The Mac keeps the first two prose
