@@ -372,6 +372,27 @@ final class RemoteQuickCaptureTests: XCTestCase {
         let silentOutcome = await silent.value
         XCTAssertEqual(silentOutcome, .failed(.timedOut))
         XCTAssertEqual(try answer(RemoteQuickCaptureRequests.draftPromptPath, session: "s1", draftID: draftID, body: "").status, 409)
+        XCTAssertTrue(usage.entries().isEmpty, "no host fetched a prompt, so no agent ran")
+    }
+
+    func testAPromptedDraftThatNeverAnswersIsCountedAsARunWithoutUsage() async throws {
+        try hook("SessionStart", session: "s1")
+        let task = await startDraft()
+        XCTAssertEqual(try hook(session: "s1").headers[draftHeader], draftID)
+        XCTAssertEqual(
+            try answer(RemoteQuickCaptureRequests.draftPromptPath, session: "s1", draftID: draftID, body: Self.issues).status,
+            200
+        )
+        sleeper.wakeAll()
+        await sleeper.waitForSleepers(1)
+        sleeper.wakeAll()
+
+        let outcome = await task.value
+        XCTAssertEqual(outcome, .failed(.timedOut))
+        XCTAssertEqual(
+            usage.entries(),
+            [UsageEntry(date: clock.now(), feature: .quickCaptureDrafting, backend: .claudeCode, model: "sonnet")]
+        )
     }
 
     func testTheDrafterHandsOnlyARemoteProjectToTheHost() async {
