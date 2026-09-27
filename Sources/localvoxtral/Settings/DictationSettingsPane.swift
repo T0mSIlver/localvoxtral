@@ -195,7 +195,9 @@ struct DictationSettingsPane: View {
                 }
 
                 if settings.modifierOnlyHotKeyEnabled {
-                    SettingsFieldRow(title: "Modifier key") {
+                    // Stacked: beside the four-segment picker the inline
+                    // label was squeezed to a letter or two per line (#890).
+                    SettingsFieldRow(title: "Modifier key", layout: .stacked) {
                         Picker("", selection: Binding(
                             get: { settings.modifierOnlyHotKeyModifier },
                             set: { newValue in
