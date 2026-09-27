@@ -556,16 +556,21 @@ terms** is off by default. When it is on, the first dictation that joins a
 local Claude Code, Mistral Vibe or opencode session in a new project starts
 that agent once, headless, in the project's repository.
 
-The agent reads a few files and answers with up to 40 of the project's own
-names (modules, types, commands, environment variables) and one sentence on
-what the project is and has, which quick capture's classifier reads
-([Quick capture](coding-agents.md#quick-capture)). Your session never sees
-the request, so it cannot interrupt a turn.
+The agent reads a few files and answers with up to 40 names you would say
+about the project, and one sentence on what the project is and has, which
+quick capture's classifier reads
+([Quick capture](coding-agents.md#quick-capture)). The names are the
+project's and its parts', the products, tools, services and models it uses,
+people, and words of its domain. The app drops any name written like code: a
+type or function name, a file name, a path, a flag or an environment
+variable. Your session never sees the request, so it cannot interrupt a
+turn.
 
 The app asks once per repository, whichever agent joins first. Joining a
 session in another worktree of the same repository does not ask again (see
 [One project per repository](#one-project-per-repository)). A repository
-asked before that sentence existed is asked once more. The app retries a run
+asked with an older version of the request is asked once more, and its new
+answer replaces the old names you never used or pinned. The app retries a run
 that fails a day later.
 
 The names show in **Terms learned from polishing → Show** as "Proposed by
