@@ -417,6 +417,15 @@ final class RemoteQuickCaptureTests: XCTestCase {
         let arguments = ["draft", "vibe", "\(port)", "v1", host.project.path, draftID, lock.path, host.userVibe.path]
         let token = token
         try await Task.detached { try host.run("capture.sh", arguments, token: token) }.value
+        // The runner has exited, so its answer was either taken already or
+        // never sent; end a draft still waiting rather than wait forever.
+        if usage.entries().isEmpty {
+            sleeper.wakeAll()
+            await sleeper.waitForSleepers(1)
+            sleeper.wakeAll()
+            _ = await task.value
+            return XCTFail("the runner posted no draft")
+        }
 
         guard case .draft(let draft, let usage) = await task.value else { return XCTFail() }
         XCTAssertEqual(draft.title, "Page numbers in the footer")

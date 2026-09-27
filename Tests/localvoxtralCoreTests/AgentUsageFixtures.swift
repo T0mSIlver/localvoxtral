@@ -92,6 +92,12 @@ enum AgentUsageFixtures {
 
     /// A clean host home with `agents` installed in `$HOME/.local/bin`, the
     /// user's Vibe directory, and a project checkout.
+    /// Fails the test, with the tool's name, on a machine that lacks it.
+    struct MissingTool: Error, CustomStringConvertible {
+        let name: String
+        var description: String { "the shipped runners need \(name) on PATH" }
+    }
+
     struct Host {
         let home: URL
         let userVibe: URL
@@ -99,6 +105,11 @@ enum AgentUsageFixtures {
         let path: String
 
         init(agents: [String: String], testCase: XCTestCase) throws {
+            // Without curl the runners exit silently, and a test waiting on
+            // their answer would wait for nothing.
+            guard ["/usr/bin/curl", "/bin/curl"].contains(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+                throw MissingTool(name: "curl")
+            }
             let root = FileManager.default.temporaryDirectory
                 .appendingPathComponent("lvx-usage-host-\(UUID().uuidString)", isDirectory: true)
             testCase.addTeardownBlock { try? FileManager.default.removeItem(at: root) }
