@@ -3,18 +3,16 @@
 import PackageDescription
 import Foundation
 
-/// Opt-in dogfooding instrumentation (`Sources/localvoxtral/Dogfood`), compiled
-/// ONLY when the environment asks for it: `LOCALVOXTRAL_DOGFOOD=1 swift build`.
+/// Opt-in dogfooding instrumentation (`Sources/localvoxtral/Dogfood`). Its
+/// source is gated `#if DEBUG || LOCALVOXTRAL_E2E_HARNESS`, so the unit tests
+/// build it and a release build does not. `LOCALVOXTRAL_DOGFOOD=1` packages a
+/// release build that carries it and stamps `LVXDogfoodCapture` into Info.plist.
 ///
-/// It is a compile gate rather than a settings-only feature on purpose. The
-/// capture writes repository contents, terminal screen text, clipboard text, and
-/// fully rendered prompts to disk — exactly the material the shipped app refuses
-/// to log. Keeping it out of the released binary makes "this build cannot record
-/// your context" a property of the artifact instead of a promise about a
-/// default, and leaves the README's privacy section literally true.
+/// The capture writes repository contents, terminal screen text and fully
+/// rendered prompts to disk, the material the shipped app refuses to log, so
+/// inside an instrumented build it is still off until the runtime opt-in is
+/// armed.
 ///
-/// Inside such a build the capture is still off until the runtime opt-in is
-/// armed. Two locks, and the outer one is not a checkbox.
 /// Enablement travels EITHER as the environment variable (local builds, CI)
 /// OR as a gitignored marker file in the package root — the same dual form the
 /// LLM eval lanes use, and for the same reason: the Mac build gate allowlists
@@ -24,15 +22,26 @@ import Foundation
 ///
 /// The marker cannot leak into a release: `release.yml` builds from a clean
 /// checkout, the file is gitignored, and `package_app.sh` prints which mode it
-/// built in and stamps `LVXDogfoodCapture` into the bundle's Info.plist.
+/// built in, stamps the plist and checks the binary for harness symbols.
 let dogfoodMarkerURL = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()
     .appendingPathComponent(".dogfood-capture-enable")
 let dogfoodCaptureEnabled =
     ProcessInfo.processInfo.environment["LOCALVOXTRAL_DOGFOOD"] == "1"
     || FileManager.default.fileExists(atPath: dogfoodMarkerURL.path)
+/// The e2e test harness: the control socket (`DogfoodControlSocket`) and the
+/// WAV file that stands in for the microphone (`DogfoodAudioFileSource`).
+/// Source gates it as `#if DEBUG || LOCALVOXTRAL_E2E_HARNESS`, so the unit
+/// tests build it and a release build contains neither unless the UI smoke
+/// workflow asks with `LOCALVOXTRAL_E2E_HARNESS=1`. `package_app.sh` checks the
+/// binary either way (`scripts/packaging/check-harness-symbols.sh`). A dogfood
+/// build implies the harness: the owner's UI gate drives it through the socket.
+let e2eHarnessEnabled =
+    ProcessInfo.processInfo.environment["LOCALVOXTRAL_E2E_HARNESS"] == "1"
+    || dogfoodCaptureEnabled
 let dogfoodSwiftSettings: [SwiftSetting] =
-    dogfoodCaptureEnabled ? [.define("LOCALVOXTRAL_DOGFOOD")] : []
+    (dogfoodCaptureEnabled ? [.define("LOCALVOXTRAL_DOGFOOD")] : [])
+    + (e2eHarnessEnabled ? [.define("LOCALVOXTRAL_E2E_HARNESS")] : [])
 
 /// The widget extension's App Intents need metadata that only Xcode's build
 /// asks the compiler for: the const values `appintentsmetadataprocessor`

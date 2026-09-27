@@ -1,4 +1,4 @@
-#if LOCALVOXTRAL_DOGFOOD
+#if DEBUG || LOCALVOXTRAL_E2E_HARNESS
 
 import Foundation
 import Synchronization
@@ -26,12 +26,12 @@ import Darwin
 /// pipeline. It is a deliberate, owner-approved tradeoff, and every bound on it
 /// is load-bearing:
 ///
-/// * **`#if LOCALVOXTRAL_DOGFOOD` and nothing else.** A release build contains
-///   no listener, no path, and no code that could create one. There is no
-///   setting, no environment variable and no argument that turns this on in a
-///   shipped binary — the file is not compiled.
-///   `DogfoodControlBuildBoundaryTests` runs in BOTH configurations and fails
-///   if any of this becomes reachable outside the flag.
+/// * **`#if DEBUG || LOCALVOXTRAL_E2E_HARNESS` and nothing else.** A release
+///   build contains no listener, no path, and no code that could create one.
+///   There is no setting, no environment variable and no argument that turns
+///   this on in a shipped binary — the file is not compiled.
+///   `package_app.sh` searches every release binary for this type and fails
+///   the build if it is there (`scripts/packaging/check-harness-symbols.sh`).
 /// * **0700 directory, 0600 socket, and a peer-UID check anyway.** The
 ///   permissions should already make another uid unable to reach the path;
 ///   `getpeereid` is checked before a single byte is read, so that "should" is

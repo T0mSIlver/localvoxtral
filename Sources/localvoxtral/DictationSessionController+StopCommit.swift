@@ -396,7 +396,7 @@ extension DictationSessionController {
         var polishingDuration: Double? = nil
         var sessionStatus: DictationSessionStatus = .completed
         var llmConnectionFailure: PolishOutcomeClassifier.Failure?
-        #if LOCALVOXTRAL_DOGFOOD
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         // The model's raw reply and the (placeholder-bearing)
         // committed text, for the capture record below.
         // Placeholder-bearing on purpose: the clipboard PAYLOAD
@@ -419,7 +419,7 @@ extension DictationSessionController {
             // commit copy below.
             processedTextForPersistence =
                 committedText != originalText ? committedText : nil
-            #if LOCALVOXTRAL_DOGFOOD
+            #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
             dogfoodPolishedOutput = polished.polishedText
             dogfoodCommittedText = committedText
             #endif
@@ -527,7 +527,7 @@ extension DictationSessionController {
             joined: capture.claudeJoin.map(AgentCLIJoin.init)
         )
 
-        #if LOCALVOXTRAL_DOGFOOD
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         // AFTER the commit and the session record: capture latency
         // can only ever land on the tail of this task, never on the
         // user's paste. `writeDogfoodCaptureIfArmed` checks the
