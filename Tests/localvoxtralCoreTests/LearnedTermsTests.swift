@@ -175,6 +175,44 @@ final class LearnedTermsTests: XCTestCase {
         )
     }
 
+    // MARK: - Remote reports (#819)
+
+    /// A repository a hook named is kept with no terms until the report is
+    /// as old as a stale term; forgetting another project's term keeps it,
+    /// and a cwd label adds nothing.
+    func testAReportedRepositoryIsKeptUntilItsReportGoesStale() {
+        var terms = LearnedTerms()
+        let quill = LearnedTermProjectResolver.Identity(key: "remote:quill", name: "quill")
+        terms.recordRemoteReport(project: quill, asRepository: true, now: start)
+        terms.recordRemoteReport(project: .init(key: "remote:quill-fix", name: "quill-fix"), asRepository: false, now: start)
+        terms.record([observation("Qwen")], project: project, now: start)
+        terms.forget("Qwen", projectKey: project.key)
+        XCTAssertEqual(terms.projects.map(\.key), ["remote:quill"])
+
+        terms.prune(now: start + Double(LearnedTerms.staleAfterDays) * day)
+        XCTAssertEqual(terms.projects.map(\.key), ["remote:quill"], "not stale yet")
+        terms.prune(now: start + Double(LearnedTerms.staleAfterDays) * day + 1)
+        XCTAssertTrue(terms.projects.isEmpty)
+    }
+
+    /// At the cap, a project kept only for a report goes before any project
+    /// holding terms, however recent the report.
+    func testAReportOnlyProjectIsEvictedFirstAtTheCap() {
+        var terms = LearnedTerms()
+        for index in 0..<LearnedTerms.maxProjects {
+            terms.record(
+                [observation("term")],
+                project: LearnedTermProjectResolver.Identity(key: "/p\(index)", name: "p\(index)"),
+                now: start
+            )
+        }
+        terms.recordRemoteReport(
+            project: .init(key: "remote:quill", name: "quill"), asRepository: true, now: start + day
+        )
+        XCTAssertEqual(terms.projects.count, LearnedTerms.maxProjects)
+        XCTAssertFalse(terms.projects.contains { $0.key == "remote:quill" })
+    }
+
     // MARK: - Sanitizing
 
     func testUnusableSpellingsAreNotRemembered() {

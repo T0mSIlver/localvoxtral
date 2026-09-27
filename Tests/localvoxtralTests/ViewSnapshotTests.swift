@@ -45,8 +45,44 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
-    private func recordSettings(pane: SettingsTab, name: String, setUp: Bool) async throws {
+    /// Insights with the usage ledger holding a call of every feature, on
+    /// every kind of backend: the Usage by feature group at the end (#837).
+    func testInsightsUsageByFeature() async throws {
+        var insights: DictationInsightsModel?
+        try await recordSettings(pane: .insights, name: "settings-insights-usage", setUp: false) { viewModel in
+            let ledger = UsageLedger(fileURL: nil)
+            let now = Date()
+            func add(_ count: Int, _ entry: UsageEntry) {
+                for _ in 0..<count { ledger.record(entry) }
+            }
+            add(40, UsageEntry(date: now, feature: .dictation, backend: .mistral,
+                               model: "voxtral-mini-realtime-latest", audioSeconds: 37, costEUR: 0.0033))
+            add(30, UsageEntry(date: now, feature: .polish, backend: .mistral, model: "zai-glm-5-3", costEUR: 0.001))
+            add(12, UsageEntry(date: now, feature: .polish, backend: .bundledHelper, model: "local"))
+            add(31, UsageEntry(date: now, feature: .secondPass, backend: .mistral,
+                               model: "voxtral-mini-latest", audioSeconds: 37, costEUR: 0.0016))
+            add(1, UsageEntry(date: now, feature: .termSuggestions, backend: .mistral, model: "zai-glm-5-3",
+                              costEUR: 0.08))
+            add(2, UsageEntry(date: now, feature: .projectTerms, backend: .claudeCode, model: "sonnet",
+                              agentCostUSD: 0.1))
+            add(5, UsageEntry(date: now, feature: .quickCaptureRouting, backend: .jev, model: "jev-latest"))
+            add(5, UsageEntry(date: now, feature: .quickCaptureDrafting, backend: .claudeCode, model: "sonnet",
+                              agentCostUSD: 0.099))
+            add(1, UsageEntry(date: now, feature: .quickCaptureDrafting, backend: .vibe, model: "default"))
+            viewModel.installUsageLedger(ledger)
+            let model = DictationInsightsModel(viewModel: viewModel)
+            model.reloadUsage(now: now)
+            insights = model
+        } insightsModel: { insights }
+    }
+
+    private func recordSettings(
+        pane: SettingsTab, name: String, setUp: Bool,
+        configure: ((DictationViewModel) throws -> Void)? = nil,
+        insightsModel: (() -> DictationInsightsModel?)? = nil
+    ) async throws {
         let (settings, viewModel) = makeViewModel()
+        try configure?(viewModel)
         let claude = try makeClaudeIntegrationModel(setUp: setUp)
         // What the pane's onAppear starts, finished before the render so the
         // first frame is not "Checking…".
@@ -59,12 +95,52 @@ final class ViewSnapshotTests: XCTestCase {
             viewModel: viewModel,
             backendManager: BackendManager(),
             navigator: navigator,
-            loginItem: LoginItemController(registrar: FakeLoginItemRegistrar(state: .disabled))
+            loginItem: LoginItemController(registrar: FakeLoginItemRegistrar(state: .disabled)),
+            insightsModel: insightsModel?()
         )
         .environment(\.shortcutRecorderStandIn, true)
         try record(
             view, name: name,
             width: Self.settingsSize.width, height: Self.settingsSize.height, growToFit: true)
+    }
+
+    /// The Inbox with a drafted capture, one no project took, and one filed
+    /// (#725). Made-up words: the artifacts are public.
+    func testInboxWithCaptures() async throws {
+        try await recordSettings(pane: .inbox, name: "settings-inbox-captures", setUp: false) { viewModel in
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("inbox-snapshot-\(UUID().uuidString)")
+            let fileURL = directory.appendingPathComponent("quick-captures.json")
+            let now = Date()
+            var drafted = QuickCaptureItem(
+                capturedAt: now.addingTimeInterval(-300),
+                text: "the overlay should remember its size per display, not just its position")
+            drafted.state = .ready
+            drafted.projectKey = "/work/demo"
+            drafted.projectName = "demo"
+            drafted.repository = "example/demo"
+            drafted.title = "Remember the overlay's size per display"
+            drafted.body = "## Scope\nStore the overlay's size with its position, per display.\n\n## Proof\nA test that restores both."
+            var unplaced = QuickCaptureItem(capturedAt: now.addingTimeInterval(-3_600), text: "renew the passport before December")
+            unplaced.state = .ready
+            unplaced.note = "Not routed to a project. Move it to one."
+            var filed = QuickCaptureItem(capturedAt: now.addingTimeInterval(-7_200), text: "add a dark mode to the settings window")
+            filed.state = .filed
+            filed.title = "Dark mode for the settings window"
+            filed.repository = "example/demo"
+            filed.filedURL = "https://github.com/example/demo/issues/12"
+            try QuickCaptureInboxFile.save(QuickCaptureInbox(items: [drafted, unplaced, filed]), to: fileURL)
+            self.addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+            let learned = LearnedTerms(projects: [
+                LearnedTermProject(key: "/work/demo", name: "demo", terms: [], lastSeen: now),
+            ])
+            viewModel.installQuickCaptureInbox(QuickCaptureInboxViewModel(
+                settings: viewModel.settings,
+                learnedTerms: { learned },
+                fileURL: fileURL,
+                applicationSupport: directory
+            ))
+        }
     }
 
     /// Advanced → Terms learned from polishing → Show: empty, which is where
@@ -100,6 +176,40 @@ final class ViewSnapshotTests: XCTestCase {
                 LearnedTermsSheet(viewModel: viewModel, onDone: {}),
                 name: "learned-terms-\(filled ? "filled" : "empty")",
                 width: 520, height: 440, growToFit: false)
+        }
+    }
+
+    /// Context → Quick capture → Project descriptions → Edit… (#811): one
+    /// line written, one project showing its README summary as the
+    /// placeholder, one with neither.
+    func testQuickCaptureProjectLinesSheet() throws {
+        let (settings, _) = makeViewModel()
+        settings.setQuickCaptureProjectLine("Dictation app; shortcuts, quick capture, Inbox, polish", for: "remote:demo")
+        let projects = [
+            QuickCaptureProject(key: "remote:demo", name: "demo", summary: "Realtime dictation for the menu bar.", terms: [], userLine: nil),
+            QuickCaptureProject(key: "/work/site", name: "site", summary: "A personal site and blog built with Astro.", terms: [], userLine: nil),
+            QuickCaptureProject(key: "remote:notes", name: "notes", summary: nil, terms: [], userLine: nil),
+        ]
+        try record(
+            QuickCaptureProjectLinesSheet(settings: settings, projects: projects, onDone: {}),
+            name: "quick-capture-project-lines",
+            width: 620, height: 420, growToFit: false)
+    }
+
+    /// Dictation → Output → Phrases that press Return (#839): the saved
+    /// list, and a refused one with its reason under the row.
+    func testSendPhrasesRow() throws {
+        let (settings, _) = makeViewModel()
+        settings.spokenSendTriggerPhrases = ["ship it", "over and out"]
+        let refusal = SendTriggerPhrases.Refusal.commonWord("done").message
+        for (name, draft, message) in [("saved", nil, nil), ("refused", "ship it, done", refusal)] as [(String, String?, String?)] {
+            try record(
+                SettingsGroup(title: "Output") {
+                    SendPhrasesRow(settings: settings, draft: draft, refusal: message)
+                }
+                .padding(20),
+                name: "settings-send-phrases-\(name)",
+                width: 600, height: 160, growToFit: false)
         }
     }
 
@@ -157,6 +267,15 @@ final class ViewSnapshotTests: XCTestCase {
             ("listening-unjoined", DictationOverlayView(
                 phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
                 metrics: metrics, claudeJoin: .unjoined)),
+            ("destinations-here", DictationOverlayView(
+                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, destinations: Self.strip(selected: .focusedApp))),
+            ("destinations-session", DictationOverlayView(
+                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, destinations: Self.strip(selected: .session(id: "pay")))),
+            ("destinations-inbox", DictationOverlayView(
+                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, destinations: Self.strip(selected: .inbox))),
             ("secure-input", DictationOverlayView(
                 phase: .buffering, text: sample, errorMessage: nil, secureInputActive: true,
                 metrics: metrics)),
@@ -183,6 +302,16 @@ final class ViewSnapshotTests: XCTestCase {
                 view, name: "overlay-\(state.name)",
                 width: metrics.panelWidth + 2 * inset, height: height + 2 * inset, growToFit: false)
         }
+    }
+
+    /// The overlay's destinations (#840) with one session waiting.
+    private static func strip(selected: DictationDestination) -> OverlayDestinationStrip {
+        OverlayDestinationStrip(
+            list: DictationDestinationList(waitingSessionIDs: ["pay"], focusedSessionID: nil, selected: selected),
+            focusedAppLabel: "localvoxtral",
+            focusedAppJoined: true,
+            sessionName: { _ in "payments" }
+        )
     }
 
     // MARK: - Support

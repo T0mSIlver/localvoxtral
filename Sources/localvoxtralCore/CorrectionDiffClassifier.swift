@@ -152,8 +152,18 @@ package enum CorrectionDiffClassifier {
     ) -> Reason? {
         guard !term.isEmpty, !replaced.isEmpty, term != replaced else { return .unchanged }
         guard soundsAlike(replaced, term) else { return .notSoundAlike }
+        // Two dictations sent in one prompt arrive glued (`doing.Usually`)
+        // while the learner joins them with a space (#801).
+        guard withoutSentenceSpacing(replaced) != withoutSentenceSpacing(term) else {
+            return .notTermShaped
+        }
+        // Capitals alone are not a recognizer mistake (#612); on a word this
+        // short (`i` → `I`, `ok` → `OK`) they are ordinary casing (#803).
+        let isShortCaseFix = term.count <= 2
+            && term.caseFoldedForMatching == replaced.caseFoldedForMatching
         guard knownTerms.contains(term.caseFoldedForMatching)
-            || isTermShaped(term, atSentenceStart: atSentenceStart)
+            || (!isShortCaseFix && !isDottedShorthand(term, of: replaced)
+                && isTermShaped(term, atSentenceStart: atSentenceStart))
         else { return .notTermShaped }
         return nil
     }
@@ -179,11 +189,20 @@ package enum CorrectionDiffClassifier {
         return editDistance(left, right) <= max(1, longest / 4)
     }
 
+    /// `eg` → `e.g`: dots put between the letters of the same word. A path
+    /// spoken as `a dot b` is not this and stays an identifier (#803).
+    static func isDottedShorthand(_ term: String, of replaced: String) -> Bool {
+        term.range(of: #"^(\p{Ll}\.)+\p{Ll}$"#, options: .regularExpression) != nil
+            && term.replacingOccurrences(of: ".", with: "") == replaced
+    }
+
     /// Looks like a name or identifier rather than an ordinary word: a digit,
     /// a joiner inside it, or a capital that is not just the capital every
     /// sentence starts with. `their` → `there` is a real fix, but a word
-    /// every sentence may hold is not vocabulary.
+    /// every sentence may hold is not vocabulary, and neither is a span with
+    /// a sentence end inside it (`doing. Usually`).
     package static func isTermShaped(_ term: String, atSentenceStart: Bool) -> Bool {
+        if term.range(of: #"[.!?]\s"#, options: .regularExpression) != nil { return false }
         if term.contains(where: \.isNumber) { return true }
         let inner = term.dropFirst().dropLast()
         if inner.contains(where: { "._-/:@#+".contains($0) }) { return true }
@@ -194,6 +213,18 @@ package enum CorrectionDiffClassifier {
     }
 
     // MARK: Text
+
+    /// `text` without the spaces between a sentence end, comma or semicolon
+    /// and the capital after it: none of them joins an identifier.
+    /// `package. json` keeps its space, a lowercase word after a dot not
+    /// opening a sentence, and so does `https: //`.
+    static func withoutSentenceSpacing(_ text: String) -> String {
+        text.replacingOccurrences(
+            of: #"([.!?,;])\s+(?=\p{Lu})"#,
+            with: "$1",
+            options: .regularExpression
+        )
+    }
 
     /// Claude Code hands a long paste to its hook wrapped in
     /// `<pasted_content id="…">…</pasted_content id="…">` (2.1.280, measured

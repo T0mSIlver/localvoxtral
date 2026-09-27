@@ -40,8 +40,12 @@ package enum Jev {
     }
 
     package static let questionID = "project"
+    /// Measured on the replay (2026-09-26): naming the speaker a developer
+    /// and asking for the catch-all "unless the note clearly concerns one
+    /// project" took wrong-project routes on the owner's joined list from 2
+    /// to 0 at the 0.9 bar, with no right one lost.
     package static let instructions =
-        "Someone spoke this idea, task or note aloud while working. Which of their projects is it about?"
+        "A developer dictated this note. Which of their software projects is it about? Choose inbox unless the note clearly concerns one project."
     package static let maxOptions = 255
     /// Jev answers in well under a second (liteLLM measured a 127 ms
     /// median). A capture waits on this, so a slow answer falls back.
@@ -118,23 +122,74 @@ package enum Jev {
     }
 }
 
+extension Jev {
+    /// Waits before the second, third and fourth attempt. The gateway
+    /// answered 429 "high demand" to most calls on the evening of the replay
+    /// (2026-09-26), and most succeeded within a few retries. A capture routes
+    /// in the background, so seven seconds of waiting costs the user nothing,
+    /// and the chat model takes over after the last.
+    package static let retryDelays: [TimeInterval] = [1, 2, 4]
+
+    /// Runs `attempt`, again after each delay while the answer is a 429 or a
+    /// 503. Any other failure, and the last one, is thrown.
+    package static func withRetries<Value>(
+        delays: [TimeInterval] = retryDelays,
+        sleep: (TimeInterval) async throws -> Void,
+        _ attempt: () async throws -> Value
+    ) async throws -> Value {
+        var remaining = delays[...]
+        while true {
+            do {
+                return try await attempt()
+            } catch Failure.http(let status, _) where (status == 429 || status == 503) && !remaining.isEmpty {
+                let delay = remaining.removeFirst()
+                Log.backends.info(
+                    "Quick capture: Jev answered \(status, privacy: .public), retrying in \(delay, privacy: .public) s"
+                )
+                try await sleep(delay)
+            }
+        }
+    }
+}
+
 package struct JevClassifier: QuickCaptureClassifying {
     private let host: Jev.Host
     private let apiKey: String
     private let session: URLSession
+    private let sleep: @Sendable (TimeInterval) async throws -> Void
+    private let usageRecorder: (any UsageRecording)?
+    private let now: @Sendable () -> Date
 
-    package init(host: Jev.Host, apiKey: String, session: URLSession = .shared) {
+    package init(
+        host: Jev.Host,
+        apiKey: String,
+        session: URLSession = .shared,
+        sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) },
+        usageRecorder: (any UsageRecording)? = nil,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
         self.host = host
         self.apiKey = apiKey
         self.session = session
+        self.sleep = sleep
+        self.usageRecorder = usageRecorder
+        self.now = now
     }
 
     package var kind: QuickCaptureRoute.Classifier { .jev }
 
     package func classify(capture: String, options: [QuickCaptureOption]) async throws -> [String: Double] {
         let request = Jev.request(host: host, apiKey: apiKey, capture: capture, options: options)
-        let (data, response) = try await session.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        return try Jev.probabilities(status: status, body: data)
+        return try await Jev.withRetries(sleep: sleep) {
+            let (data, response) = try await session.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            // Jev reports no token counts: the ledger gets the call, unpriced.
+            // A 429 or 503 did no work and is not counted.
+            if (200..<300).contains(status) {
+                usageRecorder?.record(UsageEntry(
+                    date: now(), feature: .quickCaptureRouting, backend: .jev, model: host.model))
+            }
+            return try Jev.probabilities(status: status, body: data)
+        }
     }
 }

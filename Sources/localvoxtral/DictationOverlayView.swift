@@ -88,6 +88,9 @@ struct DictationOverlayView: View {
     /// What this dictation's Claude Code session join resolved to. `.hidden`
     /// renders nothing — see `OverlayClaudeJoinBadge`.
     var claudeJoin: OverlayClaudeJoinBadge = .hidden
+    /// Where the words go at stop (#840). When shown, it takes the join
+    /// badge's place: the first pill carries the join.
+    var destinations: OverlayDestinationStrip? = nil
     private let cornerRadius: CGFloat = 12
 
     /// Warning text needs explicit light/dark variants: system `.red` over
@@ -188,6 +191,66 @@ struct DictationOverlayView: View {
         }
     }
 
+    /// One pill per destination, the picked one filled in its own color:
+    /// the Inbox never inserts, and a session is another pane, so neither
+    /// may look like the focused app. The trailing ⇥ says how to move.
+    private func destinationPills(_ strip: OverlayDestinationStrip) -> some View {
+        HStack(spacing: 4) {
+            ForEach(Array(strip.items.enumerated()), id: \.offset) { _, item in
+                destinationPill(item)
+            }
+            Text("\u{21E5}")
+                .font(.system(size: metrics.badgeFontSize, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .accessibilityLabel("Tab changes where the words go")
+        }
+        .layoutPriority(-1)
+    }
+
+    private func destinationPill(_ item: OverlayDestinationStrip.Item) -> some View {
+        let tint: Color
+        let systemImage: String?
+        let accessibility: String
+        switch item.kind {
+        case .focusedApp(let joined):
+            tint = .accentColor
+            systemImage = joined.map { $0 ? "link" : "link.slash" }
+            accessibility = "Into \(item.label)"
+        case .session:
+            tint = .orange
+            systemImage = "circle.fill"
+            accessibility = "Answer \(item.label), which needs you"
+        case .inbox:
+            tint = .purple
+            systemImage = "tray"
+            accessibility = "Save to the Inbox"
+        }
+        return HStack(spacing: 3) {
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.system(size: metrics.badgeFontSize * (item.kind == .session ? 0.6 : 0.9)))
+                    .foregroundStyle(item.isSelected ? Color.white : (item.kind == .session ? tint : Color.secondary))
+            }
+            Text(item.label)
+                .font(.system(size: metrics.badgeFontSize, weight: .semibold))
+                .foregroundStyle(item.isSelected ? Color.white : Color.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .padding(.horizontal, metrics.badgeHorizontalPadding)
+        .padding(.vertical, metrics.badgeVerticalPadding)
+        .background(
+            Capsule(style: .continuous).fill(item.isSelected ? tint : Color.primary.opacity(0.08))
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .strokeBorder(Color.primary.opacity(item.isSelected ? 0 : 0.15), lineWidth: 0.5)
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibility)
+        .accessibilityAddTraits(item.isSelected ? .isSelected : [])
+    }
+
     private func joinPill(
         systemImage: String,
         title: String,
@@ -226,7 +289,11 @@ struct DictationOverlayView: View {
                         .controlSize(.small)
                 }
                 Spacer(minLength: 0)
-                claudeJoinBadge
+                if let destinations {
+                    destinationPills(destinations)
+                } else {
+                    claudeJoinBadge
+                }
                 if polished {
                     polishedBadge
                 }

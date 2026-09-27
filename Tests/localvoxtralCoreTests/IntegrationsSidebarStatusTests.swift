@@ -1,6 +1,7 @@
 import XCTest
 
-@testable import localvoxtral
+@testable import localvoxtralCore
+import localvoxtralTestSupport
 
 /// The Integrations section's status dots (owner decision, 2026-09-07):
 /// green = detected and set up, yellow = detected with a setup step pending,

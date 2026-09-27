@@ -31,32 +31,34 @@ enum WidgetSnapshotAssembler {
         }
     }
 
-    static func mistralSpend(_ entries: [MistralUsageEntry], now: Date, calendar: Calendar) -> WidgetSnapshot.MistralSpend {
+    static func mistralSpend(_ entries: [UsageEntry], now: Date, calendar: Calendar) -> WidgetSnapshot.MistralSpend {
         let today = calendar.startOfDay(for: now)
         let month = now.addingTimeInterval(-30 * 86_400)
         var spend = WidgetSnapshot.MistralSpend()
-        for entry in entries where entry.date >= month {
+        for entry in entries where entry.backend == .mistral && entry.date >= month {
             let cost = entry.costEUR ?? 0
             let isToday = entry.date >= today
-            switch entry.kind {
+            switch entry.feature {
             case .dictation:
                 spend.speechLast30DaysEUR += cost
                 if isToday {
                     spend.speechTodayEUR += cost
                     spend.audioSecondsToday += entry.audioSeconds ?? 0
                 }
-            case .retranscription:
+            case .secondPass:
                 // Speech spend; its audio was already counted by the realtime
-                // socket (MistralUsageEntry.Kind.retranscription).
+                // socket (UsageEntry.Feature.secondPass).
                 spend.speechLast30DaysEUR += cost
                 if isToday {
                     spend.speechTodayEUR += cost
                 }
-            case .polish:
+            case .polish, .termSuggestions, .projectTerms, .quickCaptureRouting, .quickCaptureDrafting:
+                // The other chat requests were recorded as polishes before
+                // #837 and stay in this share.
                 spend.polishLast30DaysEUR += cost
                 if isToday {
                     spend.polishTodayEUR += cost
-                    spend.polishesToday += 1
+                    if entry.feature == .polish { spend.polishesToday += 1 }
                 }
             }
         }

@@ -23,6 +23,8 @@ struct DictationHistoryEntry: Identifiable, Equatable, Sendable {
     var projectKey: String? = nil
     var projectName: String? = nil
     var joinedAgent: String? = nil
+    /// Where a quick capture went; nil for every other dictation.
+    var quickCaptureDestination: String? = nil
     /// `EditSignalOutcome`'s raw value, nil when nothing was watched.
     var editOutcome: String? = nil
 
@@ -53,7 +55,8 @@ struct DictationHistoryEntry: Identifiable, Equatable, Sendable {
             targetAppBundleID: targetAppBundleID, status: status,
             commitSucceeded: commitSucceeded, polishProfile: polishProfile,
             polishContextSummary: polishContextSummary, projectKey: projectKey,
-            projectName: projectName, joinedAgent: joinedAgent, editOutcome: editOutcome)
+            projectName: projectName, joinedAgent: joinedAgent,
+            quickCaptureDestination: quickCaptureDestination, editOutcome: editOutcome)
     }
 
     /// What "Copy last dictation" copies, nil when there is no text.
@@ -83,6 +86,7 @@ extension DictationHistoryEntry {
             projectKey: record.projectKey,
             projectName: record.projectName,
             joinedAgent: record.joinedAgent,
+            quickCaptureDestination: record.quickCaptureDestination,
             editOutcome: record.editOutcome
         )
     }
@@ -106,6 +110,7 @@ extension DictationHistoryEntry {
             projectKey: projectKey,
             projectName: projectName,
             joinedAgent: joinedAgent,
+            quickCaptureDestination: quickCaptureDestination,
             editOutcome: editOutcome
         )
     }
@@ -207,6 +212,19 @@ final class DictationSessionStore {
                 }
             }
             return 1
+        }
+    }
+
+    /// Marks where a quick capture went (#725). A record History no longer
+    /// holds changes nothing.
+    @discardableResult
+    func setQuickCaptureDestination(_ destination: String, id: UUID) -> Task<Void, Never> {
+        enqueueWrite("mark quick capture \(id)") { context in
+            let records = try context.fetch(
+                FetchDescriptor<DictationSessionRecord>(
+                    predicate: #Predicate<DictationSessionRecord> { $0.id == id }))
+            for record in records { record.quickCaptureDestination = destination }
+            return records.count
         }
     }
 

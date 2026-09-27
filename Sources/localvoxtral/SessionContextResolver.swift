@@ -35,7 +35,8 @@ final class SessionContextResolver {
     /// pane did not positively join. Cleared on every session exit.
     var claudeSessionJoin: ClaudeSessionJoin?
     /// The route into the joined agent's prompt, resolved once at start
-    /// next to the join: opencode's prompt relay (#719). Nil unless one
+    /// next to the join: opencode's prompt relay (#719) or the joined cmux
+    /// surface (#727). Nil unless one
     /// resolved. Cleared with the join.
     var agentPromptRoute: (any AgentPromptRoute)?
     /// Whether this dictation's context join asked the terminal arms, even
@@ -188,6 +189,27 @@ final class SessionContextResolver {
         return await resolver.localHerdrPromptRoute(target: target, frontmostPID: frontmostPID)
     }
 
+    /// The joined cmux surface's route (#727). Only for a cmux join, which
+    /// proves the surface and the socket's peer. Writing needs none of the
+    /// context join's gates (context settings, polishing endpoint,
+    /// Accessibility), so with no context join it asks the cmux arm alone,
+    /// behind the cmux opt-in. That join reads the focused surface's id and
+    /// tty, never its text, and is used for the route only: no context
+    /// ships from it.
+    private func resolveCmuxSurfaceRoute() async -> CmuxSurfaceRoute? {
+        guard let resolver = claudeSessionJoinResolver else { return nil }
+        var join = claudeSessionJoin
+        if join == nil, !contextJoinAskedTheArms, resolver.cmuxJoinEnabled(),
+           let target = TerminalScreenContextSource.frontmostTarget(),
+           target.bundleID == TerminalScreenAllowlist.cmuxBundleID {
+            join = await resolver.resolveViaCmux(target: target)
+        }
+        guard let join else { return nil }
+        return resolver.cmuxSurfaceRoute(for: join) {
+            TerminalScreenContextSource.frontmostTarget()?.pid
+        }
+    }
+
     /// This dictation's route into the joined agent, if any. Runs after the
     /// join.
     func resolveAgentPromptRoute() async {
@@ -195,6 +217,9 @@ final class SessionContextResolver {
             agentPromptRoute = opencode
         } else {
             agentPromptRoute = await resolveHerdrPaneRoute()
+            if agentPromptRoute == nil {
+                agentPromptRoute = await resolveCmuxSurfaceRoute()
+            }
         }
         if let route = agentPromptRoute {
             Log.claudeContext.notice("\(route.name, privacy: .public): resolved; dictation writes through it")

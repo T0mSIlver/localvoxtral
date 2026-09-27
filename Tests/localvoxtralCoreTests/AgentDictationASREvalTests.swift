@@ -106,6 +106,7 @@ final class AgentDictationASREvalTests: XCTestCase {
 
         let endpoint = EvalSpeechStage.Endpoint(url: endpointURL, apiKey: "", model: config.asrModel)
         var records: [CaseRecord] = []
+        var sttWatch = EvalSpeechStage.ServiceWatch(endpoint: endpointURL)
         for (index, item) in speechCases.enumerated() {
             let evalCase = item.evalCase
             var record = CaseRecord(
@@ -120,6 +121,7 @@ final class AgentDictationASREvalTests: XCTestCase {
                     timeout: Self.asrTimeout,
                     allowsEmptyTranscript: true
                 ).trimmingCharacters(in: .whitespacesAndNewlines)
+                sttWatch.recordAnswer()
                 record.transcript = transcript
                 record.wordAccuracySpoken = IntegrationTestSupport.wordAccuracy(
                     expected: evalCase.spokenForm, actual: transcript)
@@ -131,6 +133,7 @@ final class AgentDictationASREvalTests: XCTestCase {
                     record.tokensStatus = status.rawValue
                 }
             } catch {
+                try sttWatch.record(error)
                 // Infrastructure, not a score: the case id and the error only.
                 record.infraFailure = "\(error)"
             }

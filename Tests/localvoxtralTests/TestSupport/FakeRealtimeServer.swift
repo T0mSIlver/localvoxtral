@@ -105,6 +105,12 @@ final class FakeRealtimeServer: @unchecked Sendable {
     /// Every frame received so far.
     var frames: [Frame] { state.withLock { $0.frames } }
 
+    /// Drops the frames received so far, so the next dictation's waits
+    /// match only what its own socket sends.
+    func forgetFrames() {
+        state.withLock { $0.frames.removeAll() }
+    }
+
     /// Returns the first frame, received already or later, that `matches`.
     /// Nil, and a test failure, if none arrives within `failAfter` seconds of
     /// wall time; a passing test never waits that long.

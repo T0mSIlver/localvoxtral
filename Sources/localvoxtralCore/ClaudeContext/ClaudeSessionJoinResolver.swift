@@ -303,6 +303,30 @@ package struct ClaudeSessionJoinResolver {
         return registry.opencodePromptRelay(sessionID: snapshot.sessionID)
     }
 
+    /// The id of the live session `target`'s focused pane shows, or nil (#717:
+    /// a finished turn cues only when the user was not looking at it). The
+    /// relay's local questions (the focused TTY, then a local herdr's focused
+    /// pane) plus Claude Desktop's focused session view. Never the remote,
+    /// federated, ssh or cmux arms: this runs on every turn's end, with no
+    /// dictation to justify a forward or a socket. A nil makes the cue fire,
+    /// so an answer this cannot give costs a cue, never a missed one.
+    package func sessionShown(target: TerminalScreenTarget) async -> String? {
+        if ClaudeDesktopAllowlist.isSupported(target.bundleID) {
+            guard let address = await focusedDesktopSessionURL(target.pid),
+                  let desktopSessionID = ClaudeDesktopSessionURL.sessionID(inWebAreaURL: address),
+                  case .resolved(let snapshot) = registry.resolve(desktopSessionID: desktopSessionID)
+            else { return nil }
+            return snapshot.sessionID
+        }
+        guard TerminalScreenAllowlist.isSupported(target.bundleID),
+              let tty = await focusedTerminalTTY(target.bundleID)
+        else { return nil }
+        if case .resolved(let snapshot) = registry.resolve(tty: tty) {
+            return snapshot.sessionID
+        }
+        return await focusedLocalHerdrPane(surfaceTTY: tty, purpose: "needs-you pane check")?.snapshot.sessionID
+    }
+
     /// The herdr pane route for the focused pane of a LOCAL herdr, found
     /// without a context join (#759): for a dictation with polishing off,
     /// which resolves no join. The same local question as the relay lookup,

@@ -83,7 +83,8 @@ public final class ClaudeRemoteListenerCoordinator: ClaudeRemoteListenerControll
         sessions: ClaudeSessionRegistry,
         forwardProbes: ClaudeRemoteForwardProbeWitness = ClaudeRemoteForwardProbeWitness(),
         onRemoteHerdrActivity: @escaping @Sendable (String, String) -> Void = { _, _ in },
-        projectTerms: RemoteProjectTermRequests? = nil
+        projectTerms: RemoteProjectTermRequests? = nil,
+        quickCapture: RemoteQuickCaptureRequests? = nil
     ) {
         self.init(hosts: hosts, sessions: sessions) { registry, rejections in
             ClaudeRemoteContextListener(
@@ -92,7 +93,8 @@ public final class ClaudeRemoteListenerCoordinator: ClaudeRemoteListenerControll
                 rejections: rejections,
                 forwardProbes: forwardProbes,
                 onRemoteHerdrActivity: onRemoteHerdrActivity,
-                projectTerms: projectTerms
+                projectTerms: projectTerms,
+                quickCapture: quickCapture
             )
         }
     }

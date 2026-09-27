@@ -3,12 +3,12 @@
 # based on the runner's power source.
 #
 # The self-hosted runner is the owner's personal MacBook (owner request,
-# 2026-07-24): scheduled lanes — the eval-e2e nightly and the ui-smoke
-# evening ladder — must not drain the battery when the machine is unplugged.
-# Manual dispatches and label-triggered runs are explicit operator intent and
-# never consult this guard; that enforcement is the caller's
-# `github.event_name == 'schedule'` condition (or ui-smoke-guard.sh, which is
-# itself schedule-only), not this script.
+# 2026-07-24): scheduled lanes — the eval-e2e run and the daily release —
+# must not drain the battery when the machine is unplugged, and neither does
+# the owner's UI Smoke dispatch on main (through ui-smoke-guard.sh). Other
+# manual dispatches and label-triggered runs are explicit operator intent and
+# never consult this guard; that enforcement is the caller's condition, not
+# this script.
 #
 #   skip — the Mac is drawing from battery (or a UPS: also a battery)
 #   run  — on AC power, or the probe is unavailable/unparseable. Probe

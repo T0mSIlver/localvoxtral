@@ -398,14 +398,14 @@ private struct FinishPage: View {
                     .fill(Color(nsColor: .quaternarySystemFill))
             }
 
-            Text("Escape cancels a dictation.")
+            Text("Tab changes where the words go. Escape cancels a dictation.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             if !summary.isModifierOnly {
                 Text(
-                    "For one-key control, choose Fn / Globe in Settings > Dictation. Tap for the overlay or hold to type live."
+                    "For one-key control, choose Fn / Globe in Settings > Dictation. Tap to dictate, or hold and let go when done."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
