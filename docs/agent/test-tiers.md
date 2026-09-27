@@ -282,12 +282,19 @@ merge made with the repo token starts no workflow on main. The board's
 Scheduled inference on the Mac runs 00:00–07:00 UTC; after that the owner
 works on the machine. GitHub fires `schedule:` events hours late (#822: the
 04:45 UTC Sunday `eval-e2e` was created at 09:33 and 09:48 UTC), so a cron
-inside the window does not keep the run there. A scheduled `eval-e2e` therefore
-calls `scripts/ci/night-window-guard.sh 30` first, and skips green, with
-"E2E eval (scheduled): SKIPPED (started at … UTC, outside the night window …)"
-in the step summary, unless it can finish by 07:00. A new scheduled workflow
-that runs inference on the Mac takes the same guard with its own run length.
-Dispatches never consult it.
+inside the window does not keep the run there. So `eval-e2e` runs two ways:
+
+- The dev box's scheduler dispatches it on main on Sundays at about 04:45 UTC.
+  A dispatch always runs.
+- The cron stays as the fallback, for a night the scheduler's timers miss. A
+  scheduled run skips green, with the reason under "E2E eval (scheduled):
+  SKIPPED" in the step summary, when it cannot finish by 07:00 UTC
+  (`scripts/ci/night-window-guard.sh 30`) or when another `eval-e2e` run on
+  main succeeded, or is queued or running, in the last 20 hours
+  (`scripts/ci/recent-run-guard.sh`), which is what keeps the dispatch and the
+  cron from both running.
+
+A new scheduled workflow that runs inference on the Mac takes both guards.
 
 ## Dispatching a run without deepening the queue
 
