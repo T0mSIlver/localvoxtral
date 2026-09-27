@@ -70,6 +70,10 @@ final class AnswerAgentTests: XCTestCase {
         for sentence in [
             DictationSessionController.AnswerAgentStatus.nobodyWaiting,
             DictationSessionController.AnswerAgentStatus.unconfirmed,
+            DictationSessionController.DestinationStatus.cantGoBack,
+            DictationSessionController.DestinationStatus.paneLeftFront,
+            DictationSessionController.DestinationStatus.originLeftFront,
+            DictationSessionController.DestinationStatus.stoppedWhileSwitching,
         ] {
             XCTAssertLessThanOrEqual(sentence.count, 44, sentence)
         }
@@ -77,7 +81,7 @@ final class AnswerAgentTests: XCTestCase {
 
     // MARK: - The cue's surfaces
 
-    func testTheIconAndThePopoverLineShowOnlyWhileTheShortcutIsSet() {
+    func testTheIconAndThePopoverLineShowOnlyWhileTheCueIsOn() {
         let h = makeHarness(sessions: ["pay": "/r/payments"])
         // External modes: no managed backend decides the icon.
         h.viewModel.settings.dictationBackendMode = .externalURL
@@ -88,7 +92,11 @@ final class AnswerAgentTests: XCTestCase {
         XCTAssertEqual(h.viewModel.menuBarIndicatorState, .agentNeedsYou)
         XCTAssertEqual(h.announcer.announced.map(\.sessionID), ["pay"])
 
+        // The shortcut no longer switches the cue (#840): clearing it
+        // leaves the line, turning the cue off takes it away.
         h.viewModel.settings.setAnswerAgentShortcut(nil)
+        XCTAssertEqual(h.viewModel.agentAttentionLine, "payments needs you")
+        h.viewModel.settings.agentAttentionEnabled = false
         XCTAssertNil(h.viewModel.agentAttentionLine)
         XCTAssertEqual(h.viewModel.menuBarIndicatorState, .idle)
     }
@@ -166,6 +174,7 @@ final class AnswerAgentTests: XCTestCase {
     ) -> Harness {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.setAnswerAgentShortcut(bareF16)
+        settings.agentAttentionEnabled = true
         let viewModel = DictationViewModel(settings: settings, startRuntimeServices: false)
         viewModel.appConfigStore = MockAppConfigStore()
         retainForTestProcessLifetime(viewModel)
@@ -187,7 +196,7 @@ final class AnswerAgentTests: XCTestCase {
         )
         var tick = 0.0
         let tracker = AgentAttentionTracker(
-            isEnabled: { settings.answerAgentShortcut != nil },
+            isEnabled: { settings.agentAttentionEnabled },
             isWatching: { _ in false },
             liveSessionIDs: { Set(live.keys) },
             now: {

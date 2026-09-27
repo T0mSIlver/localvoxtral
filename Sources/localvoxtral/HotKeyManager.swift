@@ -49,7 +49,7 @@ final class HotKeyManager {
     var onPressWithMode: ((DictationOutputMode) -> Void)?
 
     /// Fired when modifier-only hold gesture starts (past threshold).
-    /// Signals push-to-talk semantics with liveAutoPaste mode.
+    /// Signals push-to-talk semantics; the output mode is the setting's.
     var onHoldStart: (() -> Void)?
 
     /// Fired for a modifier-only TAP. Distinct from onPress/onPressWithMode
@@ -126,7 +126,7 @@ final class HotKeyManager {
 
     /// Register a modifier-only key (Fn, Right Command, etc.) as the hotkey.
     /// This bypasses the Carbon RegisterEventHotKey path entirely.
-    /// Tap triggers overlay buffer (toggle), hold triggers live auto-paste (push-to-talk).
+    /// Tap triggers overlay buffer (toggle), hold is push to talk.
     @discardableResult
     func registerModifierOnly(
         _ modifier: ModifierOnlyHotKeyManager.ModifierKey,

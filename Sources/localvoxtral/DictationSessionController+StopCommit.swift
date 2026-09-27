@@ -85,6 +85,8 @@ extension DictationSessionController {
             commitQuickCapture(sessionMode: sessionMode)
             return
         }
+        let destinationCheck = checkDestinationBeforeCommit(sessionMode: sessionMode)
+        if destinationCheck == .kept { return }
         let sessionAudio = audio.sessionRecording.finish()
         let polishingConfig = settings.llmPolishingConfiguration
         let sample = OverlayStopSample(
@@ -108,11 +110,22 @@ extension DictationSessionController {
                 )
             }
         )
-        if let secondPass = stopSecondPassRequest(audio: sessionAudio, capture: sample.capture) {
-            startStopSecondPass(secondPass, sessionMode: sessionMode, sample: sample)
+        let proceed: @MainActor () -> Void = { [weak self] in
+            guard let self else { return }
+            if let secondPass = self.stopSecondPassRequest(audio: sessionAudio, capture: sample.capture) {
+                self.startStopSecondPass(secondPass, sessionMode: sessionMode, sample: sample)
+                return
+            }
+            self.commitOverlayBufferText(sessionMode: sessionMode, sample: sample)
+        }
+        if case .readBack(let sessionID, let bundleID) = destinationCheck {
+            commitAfterPaneReadBack(
+                sessionID: sessionID, bundleID: bundleID, sessionMode: sessionMode,
+                record: sample.record, proceed: proceed
+            )
             return
         }
-        commitOverlayBufferText(sessionMode: sessionMode, sample: sample)
+        proceed()
     }
 
     /// Polished and committed by a task when polishing has a configuration,

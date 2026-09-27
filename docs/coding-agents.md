@@ -166,8 +166,10 @@ removes it.
 
 ## Quick capture
 
-The **Quick capture to Inbox** shortcut (**Settings → Dictation**) records an
-Overlay Buffer dictation for an idea that has no place in the app you are in.
+Press Tab during a dictation until the overlay shows **Inbox**
+([Where the words go](dictation.md#where-the-words-go)), or use the optional
+**Quick capture to Inbox** shortcut (**Settings → Dictation**), for an idea
+that has no place in the app you are in.
 Your words never reach the focused app. They are saved in History, then shown
 on the **Inbox** page of the localvoxtral window.
 
