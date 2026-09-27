@@ -403,8 +403,8 @@ public struct AgentCLICapture: Sendable, Equatable, Codable {
     public var capturedAt: Date
     /// Nil while the capture belongs to no project.
     public var project: AgentCLIProject?
-    /// What the draft is: `issue` for every draft today. Nil without a
-    /// draft.
+    /// What the draft is: `issue`, `question`, `task` or `note` (#918).
+    /// Only an issue is filed. Nil without a draft.
     public var kind: String?
     /// The draft's title, or the capture's first words while it has none.
     public var title: String

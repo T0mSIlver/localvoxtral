@@ -157,3 +157,34 @@ The speech stage of the agent-dictation eval runs here too, over a recording
 set (`AgentDictationASREvalTests`; `EvalCorpus/agent-dictation/README.md`,
 "ASR-only runs on Linux"). Its polish stage stays on the Mac.
 `SpeechdStreamingBenchTests` drives the MLX helper itself and stays there.
+
+## Kyutai STT beside it (#907)
+
+`kyutai_realtime_shim.py` serves `kyutai/stt-1b-en_fr` at
+`ws://127.0.0.1:8020/v1/realtime` with the same Realtime subset, so the Swift
+suites above run against it unchanged. It runs the model in process through
+Kyutai's `moshi` PyTorch package: their Rust server builds CUDA kernels with
+`nvcc`, which this box lacks. It takes about 3 GB of GPU memory and steps an
+80 ms frame in about 10 ms.
+
+```bash
+uv venv -p 3.12 ~/work/kyutai-stt/.venv
+VIRTUAL_ENV=~/work/kyutai-stt/.venv uv pip install torch==2.13.0 --torch-backend=cu129
+VIRTUAL_ENV=~/work/kyutai-stt/.venv uv pip install --no-deps moshi==0.2.13
+VIRTUAL_ENV=~/work/kyutai-stt/.venv uv pip install 'numpy<2.3' 'safetensors<0.8' 'huggingface-hub<1.0' einops sentencepiece 'sphn<0.3' soxr websockets
+~/work/kyutai-stt/.venv/bin/python scripts/linux/kyutai_realtime_shim.py
+```
+
+`moshi` pins torch below 2.10; `--no-deps` lets it share the cu129 torch that
+vLLM's venv already cached, and it runs on it. Two traps:
+
+- The model needs silence before speech. With none, it drops or mishears the
+  first word, and the `say` recordings start on it. The shim runs 1 s of
+  silence before each session (`--lead-silence`).
+- `prompt_terms` in `session.update` forces the terms into the text stream
+  before the audio. It left some transcripts empty or echoed terms into
+  them; results in #932.
+
+`realtime_term_bench.py` streams a recording set through either server and
+writes `{"id", "text"}` rows for hypotheses mode. With `--paced` it sends the
+audio at 1x and prints time from speech onset to first text, by language.

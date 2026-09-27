@@ -1,3 +1,4 @@
+import ClaudeContextWire
 import Foundation
 import Observation
 import Synchronization
@@ -10,10 +11,15 @@ import Synchronization
 final class QuickCaptureInboxViewModel {
     private(set) var items: [QuickCaptureItem] = []
     /// Bumped when a project's repository, GitHub description or filing
-    /// choice lands, so the Project descriptions sheet reads them again.
+    /// choice lands, so the Projects pane reads them again.
     private(set) var projectsRevision = 0
+    /// The agent sessions running now and the enrolled hosts, for the
+    /// Projects pane (#939). The app sets them; empty in tests and previews.
+    @ObservationIgnored var liveSessions: @MainActor () -> [ClaudeSessionSnapshot] = { [] }
+    @ObservationIgnored var enrolledHosts: @MainActor () -> [(id: String, name: String)] = { [] }
     @ObservationIgnored let model: QuickCaptureInboxModel
     @ObservationIgnored private let store: LearnedTermStore?
+    @ObservationIgnored private let learnedTerms: @MainActor () -> LearnedTerms
     @ObservationIgnored private let linker: QuickCaptureProjectLinker?
 
     init(
@@ -33,9 +39,18 @@ final class QuickCaptureInboxViewModel {
                     .appendingPathComponent(".vibe", isDirectory: true)
             ),
             openIssues: { await github.openIssues(ofCheckout: $0, repository: $1) },
-            remote: { capture, project in
+            context: { root, repository, capture in
+                await QuickCaptureContextGatherer(
+                    run: QuickCaptureContextGatherer.processRun(),
+                    openIssues: { await github.openIssues(ofCheckout: $0, repository: $1) },
+                    checkoutRepository: { await github.repository(ofCheckout: $0) }
+                ).gather(root: root, repository: repository, capture: capture)
+            },
+            remote: { capture, project, firstDrafter, onFirstDraft in
                 guard let requests = remote.value.withLock({ $0 }) else { return .notRun(.remoteProject) }
-                return await requests.draft(capture: capture, project: project)
+                return await requests.draft(
+                    capture: capture, project: project, firstDrafter: firstDrafter, onFirstDraft: onFirstDraft
+                )
             },
             usageRecorder: usageRecorder
         )
@@ -52,10 +67,11 @@ final class QuickCaptureInboxViewModel {
                 )
             },
             agents: { [.claude, .vibe, .opencode] },
-            drafter: { drafter },
+            drafter: { drafter.withFirstDrafter(Self.firstDrafter(settings: settings, usageRecorder: usageRecorder)) },
             github: github
         )
         store = learnedTermStore
+        self.learnedTerms = learnedTerms
         linker = learnedTermStore.map { QuickCaptureProjectLinker(store: $0, github: github) }
         items = model.items
         model.onChange = { [weak self] in
@@ -70,7 +86,7 @@ final class QuickCaptureInboxViewModel {
 
     /// Links the projects to their repositories and GitHub's descriptions
     /// (#926): at launch and after each capture for what is missing or a
-    /// week old, everything when the Project descriptions sheet opens.
+    /// week old, everything when the Projects pane opens.
     func refreshProjects(force: Bool = false) async {
         guard let store, let linker else { return }
         _ = await store.loadedSnapshot()
@@ -93,6 +109,30 @@ final class QuickCaptureInboxViewModel {
         projectsRevision += 1
     }
 
+    /// The `owner/name` the user gave a project with no GitHub `origin`,
+    /// then GitHub's description of it.
+    func setTypedRepository(_ repository: String, projectKey: String) async {
+        guard let store else { return }
+        store.recordTypedRepository(repository, projectKey: projectKey)
+        await refreshProjects()
+    }
+
+    /// The Projects pane's rows (#939).
+    ///
+    /// - Parameter dictationProjectKeys: the project key of each dictation
+    ///   in the last seven days.
+    func projectRows(dictationProjectKeys: [String?]) -> [ProjectsPaneRow] {
+        _ = projectsRevision
+        return ProjectsPane.rows(
+            projects: model.projectChoices,
+            learned: learnedTerms(),
+            captures: items,
+            hostNames: enrolledHosts(),
+            liveSessions: liveSessions(),
+            dictationProjectKeys: dictationProjectKeys
+        )
+    }
+
     @ObservationIgnored private var remoteSlot: RemoteDraftsSlot?
 
     /// Lets a remote project's host draft its captures (#745). Nil, as
@@ -113,16 +153,18 @@ final class QuickCaptureInboxViewModel {
 
     var waitingCount: Int { items.filter { $0.state != .filed }.count }
 
-    /// Jev only when the user allowed it and a key is set; the polishing
-    /// model next, when polishing has a configuration. With neither, every
-    /// capture waits in the Inbox for the user to place it.
+    /// The router Settings picked (#918): the polishing model by default,
+    /// Jev first when chosen and a key is set, with the polishing model as
+    /// its fallback. With neither, every capture waits in the Inbox for the
+    /// user to place it.
     static func classifiers(
         settings: SettingsStore, usageRecorder: (any UsageRecording)? = nil
     ) -> [any QuickCaptureClassifying] {
         var classifiers: [any QuickCaptureClassifying] = []
-        if settings.quickCaptureJevEnabled { settings.ensureSecretsLoaded([.jevAPIKey]) }
+        let useJev = settings.quickCaptureRouter == .jev
+        if useJev { settings.ensureSecretsLoaded([.jevAPIKey]) }
         let jevKey = settings.jevAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        if settings.quickCaptureJevEnabled, !jevKey.isEmpty {
+        if useJev, !jevKey.isEmpty {
             classifiers.append(JevClassifier(
                 host: jevHost(forKey: jevKey), apiKey: jevKey, usageRecorder: usageRecorder))
         }
@@ -137,6 +179,33 @@ final class QuickCaptureInboxViewModel {
             ))
         }
         return classifiers
+    }
+
+    /// The first draft's writer (#918): the polishing model, at low
+    /// reasoning effort on the Mistral shape. Nil without a polishing
+    /// configuration; the agent then drafts alone.
+    static func firstDrafter(
+        settings: SettingsStore, usageRecorder: (any UsageRecording)? = nil
+    ) -> (any QuickCaptureFirstDrafting)? {
+        guard let polishing = settings.llmPolishingConfiguration else { return nil }
+        return QuickCaptureFirstDrafter(
+            endpoint: LLMPolishingService.normalizedChatCompletionsURL(polishing.endpointURL),
+            apiKey: polishing.apiKey,
+            model: polishing.model,
+            extraBody: firstDraftExtraBody(polishing),
+            usageBackend: polishing.usageBackend,
+            usageRecorder: usageRecorder
+        )
+    }
+
+    /// The model's lowest reasoning effort on the Mistral shape, whatever
+    /// polish uses: GLM's `low`, Mistral's own `none` (it rejects `low`).
+    /// At a higher effort GLM 5.3's reasoning once used the whole token cap
+    /// (#918). A self-hosted server keeps its polish switches.
+    static func firstDraftExtraBody(_ configuration: LLMPolishingConfiguration) -> [String: any Sendable] {
+        guard configuration.requestShape == .mistral else { return chatExtraBody(configuration) }
+        guard let wireValue = MistralReasoningEffort.forModel(configuration.model).wireValue else { return [:] }
+        return ["reasoning_effort": wireValue]
     }
 
     /// Vercel AI Gateway keys start `vck_`; any other key is TypeSafe's.

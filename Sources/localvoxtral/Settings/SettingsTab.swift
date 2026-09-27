@@ -32,6 +32,8 @@ struct SettingsTab: Hashable, Sendable {
         case insights
         /// Quick captures waiting for review (#725).
         case inbox
+        /// Every project quick capture lists, and each one's details (#939).
+        case projects
     }
 
     let kind: Kind
@@ -88,7 +90,8 @@ extension SettingsTab {
     /// dictations first, then the settings. History and Insights sit above
     /// the Settings section, and the menu bar opens the window on History.
     /// The Inbox leads: it is the one pane that waits on the user (#725).
-    static let historySidebarItems: [SettingsTab] = [.inbox, .history, .insights]
+    /// Projects closes the section, right above Settings (#939).
+    static let historySidebarItems: [SettingsTab] = [.inbox, .history, .insights, .projects]
 
     /// The Settings section. Context sits with the app's own panes: it is a
     /// polishing feature that every harness feeds, not a harness. Its raw
@@ -126,4 +129,5 @@ extension SettingsTab {
     static let history = SettingsTab(.history)
     static let insights = SettingsTab(.insights)
     static let inbox = SettingsTab(.inbox)
+    static let projects = SettingsTab(.projects)
 }

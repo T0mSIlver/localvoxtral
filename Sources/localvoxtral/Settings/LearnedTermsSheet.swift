@@ -2,43 +2,48 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Every learned term, one row each, grouped by project: how often the memory
+/// Learned terms, one row each, grouped by project: how often the memory
 /// applied it, when it last did, and a pin and a forget button (#522). A
 /// coding agent's proposal (#609) is a row like any other: Pin accepts it,
-/// Forget removes it. The footer exports and imports them, to move them
-/// between machines (#523).
+/// Forget removes it.
+///
+/// Opened from Text Processing, it lists the terms outside the projects
+/// quick capture lists, and its footer exports and imports every term, to
+/// move them between machines (#523). Opened from a project's sheet in
+/// Projects (#939), it lists that project's terms.
 ///
 /// Reads the store's in-memory snapshot like the Settings row does, and
 /// re-renders on the same revision counter, so a dictation that lands while
 /// the sheet is open shows up in it.
 struct LearnedTermsSheet: View {
     let viewModel: DictationViewModel
+    /// One project's checkouts, from its sheet in Projects; nil for the
+    /// terms outside every project.
+    var project: (name: String, keys: [String])? = nil
     let onDone: () -> Void
     @State private var fileMessage: String?
 
     private var projects: [LearnedTermProject] {
         _ = viewModel.learnedTermRevision
-        return LearnedTermsSheet.displayOrder(viewModel.learnedTermStore?.snapshot() ?? LearnedTerms(), now: Date())
+        return LearnedTermsSheet.displayOrder(
+            viewModel.learnedTermStore?.snapshot() ?? LearnedTerms(), now: Date(), projectKeys: project?.keys
+        )
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Learned terms")
+            Text(project.map { "\($0.name) terms" } ?? "Learned terms")
                 .font(.headline)
-            if projects.isEmpty {
-                Text("No learned terms.")
+            if projects.allSatisfy(\.terms.isEmpty) {
+                Text(project == nil ? "No terms outside projects. A project's terms are in Projects." : "No terms yet.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List {
-                    ForEach(projects, id: \.key) { project in
-                        Section(project.name) {
-                            if project.terms.isEmpty {
-                                Text("No terms yet.")
-                                    .foregroundStyle(.secondary)
-                            }
-                            ForEach(project.terms, id: \.term) { term in
-                                row(term, projectKey: project.key)
+                    ForEach(projects.filter { !$0.terms.isEmpty }, id: \.key) { bucket in
+                        Section(bucket.name) {
+                            ForEach(bucket.terms, id: \.term) { term in
+                                row(term, projectKey: bucket.key)
                             }
                         }
                     }
@@ -52,11 +57,13 @@ struct LearnedTermsSheet: View {
                     .lineLimit(1)
             }
             HStack {
-                Button("Import…", action: importTerms)
-                    .accessibilityIdentifier("settings.learnedTerms.import")
-                if !projects.isEmpty {
-                    Button("Export…", action: exportTerms)
-                        .accessibilityIdentifier("settings.learnedTerms.export")
+                if project == nil {
+                    Button("Import…", action: importTerms)
+                        .accessibilityIdentifier("settings.learnedTerms.import")
+                    if !(viewModel.learnedTermStore?.snapshot().projects.isEmpty ?? true) {
+                        Button("Export…", action: exportTerms)
+                            .accessibilityIdentifier("settings.learnedTerms.export")
+                    }
                 }
                 Spacer()
                 Button("Done", action: onDone)
@@ -182,23 +189,31 @@ struct LearnedTermsSheet: View {
 
     // MARK: Pure parts, unit-tested
 
-    /// Quick capture's projects first, in its order (`listedProjects`,
-    /// #891), with or without terms; then any other bucket that holds terms,
-    /// such as a worktree name from before #652; the shared bucket last.
-    /// Terms strongest evidence first, the order the prompt ranks them in.
-    nonisolated static func displayOrder(_ terms: LearnedTerms, now: Date) -> [LearnedTermProject] {
-        let listed = terms.listedProjects(now: now)
-        let listedKeys = Set(listed.map(\.key))
-        let others = terms.projects
-            .filter { !listedKeys.contains($0.key) && !$0.terms.isEmpty }
-            .sorted { lhs, rhs in
-                let lhsShared = lhs.key == LearnedTermProjectResolver.shared.key
-                let rhsShared = rhs.key == LearnedTermProjectResolver.shared.key
-                if lhsShared != rhsShared { return rhsShared }
-                if lhs.lastSeen != rhs.lastSeen { return lhs.lastSeen > rhs.lastSeen }
-                return lhs.key < rhs.key
-            }
-        return (listed + others).map { project in
+    /// With `projectKeys`, those buckets in that order: one project's
+    /// checkouts. Without, the buckets outside quick capture's projects
+    /// (`listedProjects`, #891) that hold terms, such as a worktree name from
+    /// before #652, most recent first and the shared bucket last; the
+    /// listed projects' terms are in Projects (#939). Terms strongest
+    /// evidence first, the order the prompt ranks them in.
+    nonisolated static func displayOrder(
+        _ terms: LearnedTerms, now: Date, projectKeys: [String]? = nil
+    ) -> [LearnedTermProject] {
+        let buckets: [LearnedTermProject]
+        if let projectKeys {
+            buckets = projectKeys.compactMap { key in terms.projects.first { $0.key == key } }
+        } else {
+            let listedKeys = Set(terms.listedProjects(now: now).map(\.key))
+            buckets = terms.projects
+                .filter { !listedKeys.contains($0.key) && !$0.terms.isEmpty }
+                .sorted { lhs, rhs in
+                    let lhsShared = lhs.key == LearnedTermProjectResolver.shared.key
+                    let rhsShared = rhs.key == LearnedTermProjectResolver.shared.key
+                    if lhsShared != rhsShared { return rhsShared }
+                    if lhs.lastSeen != rhs.lastSeen { return lhs.lastSeen > rhs.lastSeen }
+                    return lhs.key < rhs.key
+                }
+        }
+        return buckets.map { project in
             var sorted = project
             sorted.terms.sort(by: LearnedTerms.isStrongerEvidence)
             return sorted

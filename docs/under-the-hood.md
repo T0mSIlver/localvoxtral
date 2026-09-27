@@ -18,6 +18,11 @@ endpoint on loopback.
 A non-local endpoint receives that context only if you also turn on **Send
 context to non-local polishing servers**, which is off by default.
 
+[Quick capture](coding-agents.md#quick-capture) is the exception you trigger
+yourself: a capture goes to your polishing model with its project's context
+(README and AGENTS.md openings, code search hits, issue and pull request
+titles), wherever polishing runs, to be routed and drafted.
+
 What the app keeps on this Mac (your dictations, optionally their audio, and
 diagnostic records of how each was polished) is described under
 [History](dictation.md#history), where each can be turned off and deleted.

@@ -410,7 +410,7 @@ may, and three dictations or a **Pin** make it yours. A name written like
 code (a type or function name, a file name, a path, a flag or an environment
 variable) is refused as not a term.
 
-**Settings → Text Processing → Terms learned from polishing → Show** lists it
+**Show all** under the project's terms in **Settings → Projects** lists it
 as "Proposed by" the agent that ran the command. Claude Code, Codex and
 opencode are detected; Vibe passes `--agent vibe`.
 
@@ -432,36 +432,67 @@ offer **Update**, which undoes it.
 ## Quick capture
 
 Quick capture saves an idea that has no place in the app you are in, and
-turns it into a draft issue for one of your projects. Your words never reach
-the focused app. They are saved in History, then shown on the **Inbox** page
-of the localvoxtral window.
+drafts it for one of your projects. Your words never reach the focused app.
+They are saved in History, then shown on the **Inbox** page of the
+localvoxtral window.
 
 To capture, press Tab during a dictation until the overlay shows **Inbox**
 ([Where the words go](dictation.md#where-the-words-go)). You can also set the
 optional **Quick capture to Inbox** shortcut in **Settings → Dictation**.
 
-A capture then goes through three steps.
+A capture then goes through four steps.
 
 1. **Route.** A classifier picks one of your projects (see
    [Which projects a capture can go to](#which-projects-a-capture-can-go-to)).
    When it is unsure, or two projects tie, the capture stays unplaced with
    a **Move to** button for its best guess; nothing is drafted until you
    click it or move the capture yourself.
-2. **Draft.** An agent drafts an issue: title, scope, constraints and proof,
-   following the repository's AGENTS.md, and naming any open issue it
-   duplicates (see [How the draft is written](#how-the-draft-is-written)).
-3. **Review.** On the Inbox page you edit the draft, move the capture to
+2. **First draft.** Your polishing model sorts the capture as an **Issue**, a
+   **Question**, a **Task** or a **Note** and writes a draft within
+   seconds (see [How the draft is written](#how-the-draft-is-written)). A
+   question shows its answer. A task or a note is restated and stays in the
+   Inbox; it is never filed.
+3. **Check against the code**, issues only. An agent reads the code the issue
+   touches, corrects the draft, and lists the files it read. The row says
+   **Checked against the code** when it is done. You don't have to wait for
+   it.
+4. **Review.** On the Inbox page you edit the draft, move the capture to
    another project, or discard it. **File** creates the issue with your
    GitHub CLI, with your dictated words quoted under the draft. The Inbox
    fills in the project's repository (see
    [Each project's repository](#each-projects-repository)). Your coding
    agent can also file it with its own `gh` ([Quick captures](#quick-captures)).
-   Nothing else files.
+   You can also [review it by voice](#review-a-draft-by-voice). Nothing
+   else files. A draft that failed has **Draft Again**.
+
+### Review a draft by voice
+
+With **Tell me when an agent needs you** on, a finished draft (for an issue,
+once it is checked against the code) lights the
+menu bar mark and the popover says "Draft ready: Inbox for localvoxtral".
+There is no banner and no sound, and the cue waits for your next break: the
+end of a dictation, or the end of a turn in the agent pane you are looking
+at. An agent that needs you keeps the popover line; drafts add to its count.
+
+When no agent waits, the **Answer the agent that needs you** shortcut opens
+the oldest ready draft in the overlay and starts a dictation. The overlay
+shows that one draft. When you stop, what you said decides:
+
+- "file it" files the draft as the overlay shows it. It files nothing if
+  the draft changed on the Inbox page in the meantime, or if it is a
+  question, a task or a note.
+- "drop it" discards it.
+- Anything else is a change, such as "make it only the popover part". The
+  agent drafts again from your first words, the draft and your change, and
+  the new draft waits for your next break.
+
+With [Press Return with "send it"](dictation.md#press-return-with-send-it)
+on, "file it" or "drop it" alone, or a change followed by "send it", stops
+the dictation after 3 seconds of silence.
 
 ### Which projects a capture can go to
 
-The classifier picks from the projects **Settings → Text Processing → Terms
-learned from polishing** lists:
+The classifier picks from the projects **Settings → Projects** lists:
 
 - a checkout on this Mac that a dictation joined;
 - a repository on an ssh host where a session has run, when the host runs
@@ -478,17 +509,32 @@ A repository checked out both on this Mac and on a host is one project
 here, drafted on this Mac. Its learned terms stay listed under each
 checkout.
 
+### Projects
+
+**Settings → Projects** lists every project a capture can go to: where
+**File** sends its issues, where it is checked out, when you last used it,
+and the drafts waiting on it. A warning replaces the repository for a fork
+you have not picked a repository for, and for a project with no GitHub
+repository.
+
+Click a project to see its repository and checkouts, its description, its
+learned terms, and its joined sessions, captures and dictations this week.
+**Open Inbox** goes to its drafts.
+
 ### Each project's repository
 
 A project's repository is the GitHub repository its `origin` remote points
 at. The app reads it from a checkout on this Mac; a host sends it from
 remote plugin 1.23.0 or Vibe hooks 1.8.0. A project whose `origin` is not on
 GitHub, or that has none, asks for `owner/repository` on its first capture
-and keeps your answer.
+and keeps your answer. **Set…** or **Change…** in the project's
+**Repository** group edits that answer; an `origin` on GitHub is changed in
+git.
 
 A fork files in your fork, since `origin` is yours. To file its captures in
-the repository it was forked from, pick that repository beside the project
-in **Project descriptions**.
+the repository it was forked from, pick that repository in the project's
+**File issues here**. Until you pick one, **Settings → Projects** marks the
+fork.
 
 ### Describe your projects
 
@@ -497,7 +543,7 @@ README, its GitHub topics, and its learned terms. It reads the README from a
 checkout on this Mac, or from what a remote project's host reports.
 
 The description is the repository's description on GitHub, which your
-GitHub CLI fetches once a week and whenever **Project descriptions** opens.
+GitHub CLI fetches once a week and whenever **Settings → Projects** opens.
 A private repository works when `gh` can read it. Without a GitHub
 description, the description is one sentence of up to 200 characters that
 the coding agent writes in the same run as the terms, when **Ask the coding
@@ -505,31 +551,51 @@ agent for each new project's terms** is on
 ([Terms from your coding agent](dictation.md#terms-from-your-coding-agent)).
 Until it answers, or with that setting off, it is the README opening.
 
-**Settings → Context → Quick capture → Project descriptions** shows each
-one. Edit a field to replace it with your own, such as "Menu bar dictation
-app: shortcuts, polishing, quick capture and its Inbox". Empty the field to
-go back to the automatic one.
+A project's sheet in **Settings → Projects** shows its description and who
+wrote it. **Edit…** replaces it with your own, such as "Menu bar dictation
+app: shortcuts, polishing, quick capture and its Inbox". Save an empty
+field to go back to the automatic one.
 
 ### Choose the classifier
 
-- **Send quick captures to Jev for routing**, when on and with a **Jev API
-  key** set, sends the capture text and the project descriptions to Jev,
-  TypeSafe's hosted classifier. The key is TypeSafe's, or a Vercel AI Gateway
-  key starting `vck_`. It is off by default.
-- Otherwise, or when Jev fails, your polishing model routes the capture,
-  wherever polishing runs. That is on this Mac for the bundled helper, and at
-  the endpoint you configured otherwise.
-- With neither, every capture waits in the Inbox for you to place it.
+**Settings → Context → Quick capture → Route quick captures with** picks it:
+
+- **Polishing model**, the default, routes the capture wherever polishing
+  runs. That is on this Mac for the bundled helper, and at the endpoint you
+  configured otherwise.
+- **Jev**, with a **Jev API key** set, sends the capture text and the project
+  descriptions to Jev, TypeSafe's hosted classifier. The key is TypeSafe's,
+  or a Vercel AI Gateway key starting `vck_`. When Jev fails, your polishing
+  model routes the capture.
+
+With no polishing model and no Jev key, every capture waits in the Inbox for
+you to place it.
 
 ### How the draft is written
 
-For a checkout on this Mac, the first of Claude Code, Mistral Vibe and
-opencode installed runs in the background with read-only tools.
+**First draft.** The app gathers the project's context in its checkout: the
+README's opening, the rules for issues, tests and proof in its AGENTS.md or
+CLAUDE.md, `git grep` hits for the capture's longer words, and, through your
+GitHub CLI, the open issues, the last 40 closed issues and the last 20 merged
+pull requests. It sends that and your words to your polishing model in one
+request, at its lowest reasoning effort. On Mistral's API with GLM 5.3 that
+is about 7,500 tokens in and 3,000 to 8,000 out.
 
-The run is capped at 20 turns and $0.50 (Claude Code) or $0.30 (Vibe) of
-your agent plan or API key. opencode has no price cap, so its run, on your
-default model, is capped at 20 steps and 8 minutes.
+An issue's draft has a title under 70 characters and the sections Problem,
+Scope, Constraints, Proof, Links and Open questions. The first draft has not
+read the code, so it can be wrong about it until the check lands.
 
-For a project on an ssh host, the host runs the agent in its own checkout,
-the next time a session there sends a hook
+**Check against the code.** For an issue, the first of Claude Code, Mistral
+Vibe and opencode installed runs in the background with read-only tools,
+starting from the first draft. Its draft replaces the first one, unless you
+edited the first one meanwhile; then yours stays and the row says so. With
+no polishing model, or when the first draft fails, the same run drafts the
+issue from your words alone.
+
+The run is capped at 20 turns, 6 minutes, and $0.50 (Claude Code) or $0.30
+(Vibe) of your agent plan or API key. opencode has no price cap, so its run,
+on your default model, is capped at 20 steps.
+
+For a project on an ssh host, the host gathers the context and runs the check
+in its own checkout, the next time a session there sends a hook
 ([Quick capture on a host](remote-claude-context.md#quick-capture-on-a-host)).

@@ -1,22 +1,38 @@
 import Foundation
 
-/// Once a quick capture has a project (#725), the app runs that project's
-/// coding agent headless in its checkout to turn the spoken idea into an
-/// issue draft (#731): title, scope, constraints, proof, the repo's own
-/// AGENTS.md conventions, and a word on any open issue it duplicates or
-/// extends. The draft only ever lands in the Inbox; nothing here files.
+/// What a quick capture is (#918), as the first draft sorts it. Only an
+/// issue is ever filed; a question shows its answer, and a task or a note
+/// stays in the Inbox as the user said it.
+package enum QuickCaptureKind: String, Codable, CaseIterable, Sendable {
+    case issue
+    case question
+    case task
+    case note
+}
+
+/// Drafting a routed quick capture happens in two stages (#918, #924):
 ///
-/// The run is #609's shape (`ProjectTermProposal`): the agent's CLI, its
-/// read-only tools and no others, no hooks, turn and cost caps, a timeout
-/// and an output cap. The open issues come from the app's own
+/// 1. **First draft** (`QuickCaptureFirstDraft`): one call to the polishing
+///    model with context the app gathers in the checkout
+///    (`QuickCaptureContext`). It sorts the capture by kind and writes a
+///    title and body in seconds, without reading code.
+/// 2. **Check against the code**, issues only: the project's coding agent,
+///    headless in its checkout, starts from the first draft, reads the code
+///    it touches, and returns the corrected draft with the files it read.
+///    With no first draft (no polishing model, or its call failed) the same
+///    run drafts from the capture alone, as before #918.
+///
+/// The draft only ever lands in the Inbox; nothing here files.
+///
+/// The agent run is #609's shape (`ProjectTermProposal`): the agent's CLI,
+/// its read-only tools and no others, no hooks, turn and cost caps, a
+/// timeout and an output cap. The open issues come from the app's own
 /// `gh issue list`, written into the prompt, so the agent needs no shell
 /// and no `gh` of its own.
 package enum QuickCaptureDraft {
-    package static let timeoutSeconds: TimeInterval = 240
-    /// opencode runs the user's default model, which may reason at length
-    /// every step: GLM 5.3 took 378 s over 14 steps to draft in this
-    /// repository (2026-09-27), where Claude Code takes under 150 s.
-    package static let opencodeTimeoutSeconds: TimeInterval = 480
+    /// The check's cap, every agent alike (#918): Claude Code took up to
+    /// 237 s to draft from scratch, and opencode on GLM 5.3 378 s.
+    package static let timeoutSeconds: TimeInterval = 360
     /// Per step, reasoning included: the answer's step carries the whole
     /// draft, up to `maxBodyCharacters`, after the model's reasoning. The
     /// terms run's 4,096 cut drafts off mid-JSON.
@@ -30,6 +46,9 @@ package enum QuickCaptureDraft {
     package static let maxIssueExcerptCharacters = 240
     package static let maxTitleCharacters = 120
     package static let maxBodyCharacters = 12_000
+    /// The files a check reports it read, each a repository path.
+    package static let maxFilesRead = 30
+    package static let maxFilePathCharacters = 200
 
     // MARK: Open issues
 
@@ -63,9 +82,26 @@ package enum QuickCaptureDraft {
 
     // MARK: Prompt
 
+    /// The sections #918 asks of an issue draft, shared by both stages.
+    package static let issueSections = """
+        The body is Markdown with these sections: Problem (one to three \
+        sentences as the owner sees it, quoting the idea), Scope (what changes \
+        and what does not), Constraints (the repository's own rules that apply: \
+        tests, lanes, UI rules), Proof (the test or command its pull request \
+        must show), Links (the issue it duplicates or extends, related closed \
+        issues and pull requests) and Open questions (anything the idea did not \
+        say; never invent it). The title is under 70 characters, in the \
+        owner's words.
+        """
+
+    /// The agent's prompt. With `firstDraft` it checks that draft against
+    /// the code; without, it drafts from the capture alone.
+    ///
     /// - Parameter issues: nil when `gh` could not list them; the prompt
     ///   says so instead of implying there are none.
-    package static func prompt(capture: String, projectName: String, issues: [OpenIssue]?) -> String {
+    package static func prompt(
+        capture: String, projectName: String, issues: [OpenIssue]?, firstDraft: Draft? = nil
+    ) -> String {
         var text = """
             The owner of \(projectName) dictated this idea while doing something else. \
             It is a quick brain dump, not an issue yet, and speech recognition may have \
@@ -75,16 +111,44 @@ package enum QuickCaptureDraft {
             \(capture)
             </capture>
 
-            Turn it into a GitHub issue for this repository. Read AGENTS.md or CLAUDE.md \
-            first if the repository has one, and follow its conventions for issues. Read \
-            the code the idea touches, at most ten files. Write a short title, then a body \
-            with the scope, the constraints and the proof its pull request must carry. \
-            Keep the owner's intent; do not add features they did not ask for. If an open \
-            issue below already covers the idea, name it as a duplicate; if the idea adds \
-            to one, name it as extended.
+
+            """
+        if let firstDraft {
+            text += """
+                A first draft of the issue was written from the README, the repository's \
+                guide, the issue list and a text search, without reading the code. It \
+                may be wrong about the code:
+
+                <first-draft>
+                \(firstDraft.title)
+
+                \(firstDraft.body)
+                </first-draft>
+
+                Check it against the code. Read AGENTS.md or CLAUDE.md first if the \
+                repository has one. Read the code the idea touches, at most ten files. \
+                Correct what the code contradicts, name the files and functions the \
+                change touches, and keep what holds. \(issueSections) Keep the owner's \
+                intent; do not add features they did not ask for. If an open issue \
+                below already covers the idea, name it as a duplicate; if the idea adds \
+                to one, name it as extended.
+                """
+        } else {
+            text += """
+                Turn it into a GitHub issue for this repository. Read AGENTS.md or \
+                CLAUDE.md first if the repository has one, and follow its conventions \
+                for issues. Read the code the idea touches, at most ten files. \
+                \(issueSections) Keep the owner's intent; do not add features they did \
+                not ask for. If an open issue below already covers the idea, name it \
+                as a duplicate; if the idea adds to one, name it as extended.
+                """
+        }
+        text += """
+
 
             Reply with JSON only: {"title": "...", "body": "...", "relation": \
-            "none" | "duplicate" | "extends", "issue": <number or null>}
+            "none" | "duplicate" | "extends", "issue": <number or null>, "files": \
+            [the repository paths of the files you read]}
             """
         text += "\n\nOpen issues:\n"
         if let issues {
@@ -103,7 +167,7 @@ package enum QuickCaptureDraft {
         "You draft GitHub issues from a developer's dictated ideas. You cannot file anything. Reply only with the requested JSON."
 
     package static let claudeJSONSchema =
-        #"{"type":"object","properties":{"title":{"type":"string"},"body":{"type":"string"},"relation":{"type":"string","enum":["none","duplicate","extends"]},"issue":{"type":["integer","null"]}},"required":["title","body","relation","issue"],"additionalProperties":false}"#
+        #"{"type":"object","properties":{"title":{"type":"string"},"body":{"type":"string"},"relation":{"type":"string","enum":["none","duplicate","extends"]},"issue":{"type":["integer","null"]},"files":{"type":"array","items":{"type":"string"}}},"required":["title","body","relation","issue","files"],"additionalProperties":false}"#
 
     /// Read, Glob and Grep only, as #609: no Bash, so no `gh` that could
     /// file; no MCP; no hooks. `dontAsk` with reads allowed under the
@@ -197,24 +261,46 @@ package enum QuickCaptureDraft {
 
     // MARK: Answer
 
-    package struct Draft: Codable, Equatable, Sendable {
+    /// One draft, from either stage.
+    package struct Draft: Equatable, Sendable {
         package enum Relation: String, Codable, Equatable, Sendable {
             case none
             case duplicate
             case extends
         }
 
+        package let kind: QuickCaptureKind
         package let title: String
+        /// An issue's body; a question's answer; a task or note restated.
         package let body: String
         package let relation: Relation
         /// The open issue `relation` names; nil for `.none`.
         package let issue: Int?
+        /// The repository paths the agent says it read; nil for a first
+        /// draft, which reads no code.
+        package let filesRead: [String]?
+        /// The agent that wrote or checked it; nil for a first draft.
+        package let agent: ProjectTermProposal.Agent?
 
-        package init(title: String, body: String, relation: Relation, issue: Int?) {
+        package init(
+            kind: QuickCaptureKind = .issue, title: String, body: String, relation: Relation, issue: Int?,
+            filesRead: [String]? = nil, agent: ProjectTermProposal.Agent? = nil
+        ) {
+            self.kind = kind
             self.title = title
             self.body = body
             self.relation = relation
             self.issue = issue
+            self.filesRead = filesRead
+            self.agent = agent
+        }
+
+        /// The same draft with the agent's file list cut to `paths`.
+        package func keepingFiles(_ paths: [String]?, agent: ProjectTermProposal.Agent? = nil) -> Draft {
+            Draft(
+                kind: kind, title: title, body: body, relation: relation, issue: issue, filesRead: paths,
+                agent: agent ?? self.agent
+            )
         }
     }
 
@@ -319,7 +405,10 @@ package enum QuickCaptureDraft {
 
     /// The answer is untrusted text repo contents can steer. The title is
     /// one line; both fields lose control characters and are capped; a
-    /// related issue counts only when it is one of the open issues listed.
+    /// related issue counts only when it is one of the open issues listed;
+    /// a file read is a relative path on one line. An agent's answer has no
+    /// kind and is an issue; a first draft's unknown kind is an issue too,
+    /// the one kind the user reviews before anything happens.
     static func draft(from answer: [String: Any], openIssues: [Int]) -> Draft? {
         guard let rawTitle = answer["title"] as? String, let rawBody = answer["body"] as? String else { return nil }
         let title = oneLine(rawTitle, limit: maxTitleCharacters)
@@ -330,13 +419,31 @@ package enum QuickCaptureDraft {
             .prefix(maxBodyCharacters)
         ).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty, !body.isEmpty else { return nil }
+        let kind = (answer["kind"] as? String).flatMap { QuickCaptureKind(rawValue: $0.lowercased()) } ?? .issue
         var relation = (answer["relation"] as? String).flatMap(Draft.Relation.init(rawValue:)) ?? .none
         var issue = (answer["issue"] as? NSNumber)?.intValue
-        if relation == .none || issue.map({ !openIssues.contains($0) }) ?? true {
+        if kind != .issue || relation == .none || issue.map({ !openIssues.contains($0) }) ?? true {
             relation = .none
             issue = nil
         }
-        return Draft(title: title, body: body, relation: relation, issue: issue)
+        let files = (answer["files"] as? [Any]).map { list in
+            var seen: Set<String> = []
+            return list.compactMap { $0 as? String }.compactMap(filePath).filter { seen.insert($0).inserted }
+                .prefix(maxFilesRead).map { $0 }
+        }
+        return Draft(kind: kind, title: title, body: body, relation: relation, issue: issue, filesRead: files)
+    }
+
+    /// A repository path an agent names: relative, on one line, no `..`,
+    /// short. A leading `./` goes.
+    static func filePath(_ raw: String) -> String? {
+        var path = raw.trimmingCharacters(in: .whitespaces)
+        if path.hasPrefix("./") { path.removeFirst(2) }
+        guard !path.isEmpty, path.count <= maxFilePathCharacters, !path.hasPrefix("/"), !path.hasPrefix("~"),
+              !path.split(separator: "/").contains(".."),
+              !path.unicodeScalars.contains(where: { $0.properties.generalCategory == .control })
+        else { return nil }
+        return path
     }
 
     /// `{…}` bare, fenced, or after prose.

@@ -21,7 +21,7 @@ extension DictationSessionController {
     /// may turn a running dictation into a capture.
     var spokenStopGesture: SpokenStopRule.Gesture {
         if isHoldGestureSession { return .held }
-        return sessionIsQuickCapture ? .quickCapture : .toggled
+        return sessionIsQuickCapture || sessionDraftReview != nil ? .quickCapture : .toggled
     }
 
     /// After every transcript change of an Overlay Buffer dictation.
@@ -71,6 +71,7 @@ extension DictationSessionController {
         guard SpokenStopRule.stopsByVoice(gesture) else { return false }
         switch gesture {
         case .quickCapture:
+            if sessionDraftReview != nil { return draftReviewStopsByVoice(text) }
             // The Inbox never presses Return, so no send gate applies.
             return settings.overlaySpokenSendEnabled
                 && SpokenStopRule.endsInSendPhrase(text, phrases: settings.spokenSendTriggerPhrases)
