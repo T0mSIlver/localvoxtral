@@ -147,6 +147,46 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
         }
     }
 
+    package enum MarkFiledRefusal: Error, Equatable, Sendable {
+        case notFound
+        /// Still routing, drafting or filing, or already filed.
+        case notReady(QuickCaptureItem.State)
+        /// Not `https://github.com/<owner>/<name>/issues/<n>`, or another
+        /// repository than the capture's.
+        case notAnIssue
+        case otherRepository(String)
+    }
+
+    /// A coding agent filed it with its own `gh` (#923): records the URL as
+    /// File's success would. A capture with no repository takes the URL's.
+    package mutating func markFiled(
+        _ id: UUID, url: String, now: Date
+    ) -> Result<QuickCaptureItem, MarkFiledRefusal> {
+        guard let item = items.first(where: { $0.id == id }) else { return .failure(.notFound) }
+        guard item.state == .ready else { return .failure(.notReady(item.state)) }
+        guard let repository = Self.issueRepository(url) else { return .failure(.notAnIssue) }
+        if let expected = item.repository, expected.caseInsensitiveCompare(repository) != .orderedSame {
+            return .failure(.otherRepository(expected))
+        }
+        var filed = item
+        update(id) { item in
+            item.state = .filed
+            item.filedURL = url
+            item.filedAt = now
+            item.note = nil
+            if item.repository == nil { item.repository = repository }
+            filed = item
+        }
+        return .success(filed)
+    }
+
+    /// `owner/name` of a GitHub issue URL, nil for anything else.
+    package static func issueRepository(_ url: String) -> String? {
+        let pattern = #"^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/[1-9][0-9]*$"#
+        guard url.range(of: pattern, options: .regularExpression) != nil else { return nil }
+        return url.dropFirst("https://github.com/".count).components(separatedBy: "/issues/").first
+    }
+
     /// Drops captures filed more than `keepFiledDays` ago.
     package mutating func prune(now: Date) {
         let cutoff = now.addingTimeInterval(-Double(Self.keepFiledDays) * 86_400)
