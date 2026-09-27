@@ -229,8 +229,8 @@ for agent in claude vibe; do
       || fail "$label: the Vibe home does not link the user's config"
     grep -qx 'Sources/Quillmark.swift' "$TMP_DIR/vibe-argv" || fail "$label: the prompt lists no files"
   else
-    grep -qx -- '--output-format' "$TMP_DIR/claude-argv" && grep -qx text "$TMP_DIR/claude-argv" \
-      || fail "$label: claude does not print text"
+    grep -qx -- '--output-format' "$TMP_DIR/claude-argv" && grep -qx json "$TMP_DIR/claude-argv" \
+      || fail "$label: claude does not print its result object"
   fi
   grep -qx 'USER=tester' "$TMP_DIR/$agent-env" || fail "$label: the run lost USER (macOS keychain logins need it)"
   pass "$label: the run saw only HOME, PATH, LANG, USER and LOGNAME"
