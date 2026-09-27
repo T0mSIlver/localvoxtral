@@ -211,7 +211,9 @@ final class BackendProcessSupervisorTests: XCTestCase {
             exit 7
             """
         )
-        let sleeps = SpawnAwareRecordingSleep(countFile: countFile, onAwaitingExit: { releaseOneReader(of: release) })
+        let sleeps = ExitGatedSleep(readinessPollInterval: .milliseconds(10)) {
+            releaseOneReader(of: release)
+        }
         let supervisor = makeSupervisor(
             executableURL: script,
             readinessPollInterval: .milliseconds(10),
@@ -219,6 +221,7 @@ final class BackendProcessSupervisorTests: XCTestCase {
             probe: { _ in false },
             sleepFor: { duration in try await sleeps.sleep(duration) }
         )
+        sleeps.attach(to: supervisor)
         let watcher = StateWatcher(stream: supervisor.stateUpdates)
         defer { watcher.cancel() }
 
@@ -647,52 +650,101 @@ private final class RecordingSleep: @unchecked Sendable {
     }
 }
 
-private final class SpawnAwareRecordingSleep: @unchecked Sendable {
-    private let durations = LockedValue<[Duration]>([])
-    private let countFile: URL
-    private let lastObservedCount = LockedValue(0)
-    private let awaitingNextSpawn = LockedValue(true)
+/// Sleeps for a crash-loop test. A readiness poll does not return until the
+/// supervisor has handled the running child's exit, so the fake clock cannot
+/// run out the readiness timeout while the child is still starting or exiting,
+/// however loaded the machine (#753). Every other sleep is recorded and
+/// returns at once. Only for children that exit on their own.
+private final class ExitGatedSleep: @unchecked Sendable {
+    private let readinessPollInterval: Duration
+    private let onAwaitingExit: @Sendable () -> Void
+    private let storage = Mutex(Storage())
+    private weak var supervisor: BackendProcessSupervisor?
 
-    init(countFile: URL, onAwaitingExit: @escaping @Sendable () -> Void) {
-        self.countFile = countFile
+    /// `onAwaitingExit` runs each time a readiness poll suspends for a child
+    /// that has not exited yet.
+    init(readinessPollInterval: Duration, onAwaitingExit: @escaping @Sendable () -> Void) {
+        self.readinessPollInterval = readinessPollInterval
+        self.onAwaitingExit = onAwaitingExit
     }
 
     var recordedDurations: [Duration] {
-        durations.value
+        storage.withLock { $0.durations }
+    }
+
+    @MainActor
+    func attach(to supervisor: BackendProcessSupervisor) {
+        self.supervisor = supervisor
+        supervisor.debugProcessExitHandled = { [self] pid in
+            recordHandledExit(of: pid)
+        }
     }
 
     func sleep(_ duration: Duration) async throws {
-        var recorded = durations.value
-        recorded.append(duration)
-        durations.value = recorded
-
-        guard duration == .milliseconds(10) else {
-            awaitingNextSpawn.value = true
+        storage.withLock { $0.durations.append(duration) }
+        guard duration == readinessPollInterval,
+              let pid = await MainActor.run(body: { supervisor?.processID })
+        else {
             await Task.yield()
             return
         }
-
-        guard awaitingNextSpawn.value else {
-            await Task.yield()
-            return
-        }
-
-        while !Task.isCancelled {
-            let count = currentCount()
-            if count > lastObservedCount.value {
-                lastObservedCount.value = count
-                awaitingNextSpawn.value = false
-                return
-            }
-            await Task.yield()
-        }
-
-        throw CancellationError()
+        try await waitForHandledExit(of: pid)
     }
 
-    private func currentCount() -> Int {
-        guard let text = try? String(contentsOf: countFile, encoding: .utf8) else { return 0 }
-        return Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    private func recordHandledExit(of pid: pid_t) {
+        let continuations = storage.withLock { storage in
+            storage.handledExits.insert(pid)
+            let released = storage.waiters.filter { $0.pid == pid }.map(\.continuation)
+            storage.waiters.removeAll { $0.pid == pid }
+            return released
+        }
+        for continuation in continuations {
+            continuation.resume()
+        }
+    }
+
+    private func waitForHandledExit(of pid: pid_t) async throws {
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                // Same cancel-before-suspend rule as StateWatcher.wait.
+                let outcome: Result<Void, Error>? = storage.withLock { storage in
+                    if storage.handledExits.contains(pid) {
+                        return .success(())
+                    }
+                    if Task.isCancelled {
+                        return .failure(CancellationError())
+                    }
+                    storage.waiters.append(Waiter(id: id, pid: pid, continuation: continuation))
+                    return nil
+                }
+                if let outcome {
+                    continuation.resume(with: outcome)
+                } else {
+                    onAwaitingExit()
+                }
+            }
+        } onCancel: {
+            let continuation = storage.withLock { storage in
+                guard let index = storage.waiters.firstIndex(where: { $0.id == id }) else {
+                    return nil as CheckedContinuation<Void, Error>?
+                }
+                return storage.waiters.remove(at: index).continuation
+            }
+            continuation?.resume(throwing: CancellationError())
+        }
+    }
+
+    private struct Waiter: Sendable {
+        var id: UUID
+        var pid: pid_t
+        var continuation: CheckedContinuation<Void, Error>
+    }
+
+    private struct Storage: Sendable {
+        var durations: [Duration] = []
+        var handledExits: Set<pid_t> = []
+        var waiters: [Waiter] = []
     }
 }
 
