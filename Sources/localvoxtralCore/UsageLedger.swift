@@ -558,6 +558,17 @@ package struct MistralUsageSummary: Equatable, Sendable {
 
 /// One feature's use over a window, for every backend it reached.
 package struct FeatureUsage: Equatable, Sendable {
+    /// What one backend took of a feature's calls, and what it cost.
+    package struct Share: Equatable, Sendable {
+        package var calls = 0
+        package var costEUR: Double = 0
+        package var agentCostUSD: Double = 0
+        /// Calls on a paid backend that carry no price.
+        package var unpricedCalls = 0
+
+        package init() {}
+    }
+
     package let feature: UsageEntry.Feature
     package var calls = 0
     package var promptTokens = 0
@@ -571,8 +582,8 @@ package struct FeatureUsage: Equatable, Sendable {
     /// missing from the table, a timed-out request, a Jev call, an agent run
     /// that reported nothing.
     package var unpricedPaidCalls = 0
-    /// Calls per backend, so a view can say who paid.
-    package var callsByBackend: [UsageEntry.Backend: Int] = [:]
+    /// Per backend, so a view can say who paid what.
+    package var backends: [UsageEntry.Backend: Share] = [:]
 
     package init(feature: UsageEntry.Feature) {
         self.feature = feature
@@ -584,20 +595,104 @@ package struct FeatureUsage: Equatable, Sendable {
         var byFeature: [UsageEntry.Feature: FeatureUsage] = [:]
         for entry in entries where start.map({ entry.date >= $0 }) ?? true {
             var usage = byFeature[entry.feature] ?? FeatureUsage(feature: entry.feature)
+            var share = usage.backends[entry.backend] ?? Share()
             usage.calls += 1
+            share.calls += 1
             usage.promptTokens += entry.promptTokens ?? 0
             usage.completionTokens += entry.completionTokens ?? 0
             usage.audioSeconds += entry.audioSeconds ?? 0
             usage.costEUR += entry.costEUR ?? 0
+            share.costEUR += entry.costEUR ?? 0
             usage.agentCostUSD += entry.agentCostUSD ?? 0
-            usage.callsByBackend[entry.backend, default: 0] += 1
+            share.agentCostUSD += entry.agentCostUSD ?? 0
             let isPaid = entry.backend != .bundledHelper && entry.backend != .userServer
             if isPaid && entry.costEUR == nil && entry.agentCostUSD == nil {
                 usage.unpricedPaidCalls += 1
+                share.unpricedCalls += 1
             }
+            usage.backends[entry.backend] = share
             byFeature[entry.feature] = usage
         }
         return UsageEntry.Feature.allCases.compactMap { byFeature[$0] }
+    }
+
+    /// The Insights row's value: the call count, then who paid what, e.g.
+    /// "1,040 · €0.62 · 610 free on this Mac" or "150 · $14.90 of Claude
+    /// usage". A backend's calls with no price say so rather than read as
+    /// free: "150 on Jev (unpriced)", "€0.42 + 2 unpriced".
+    package func line(locale: Locale = .current) -> String {
+        var parts = [WidgetFormat.count(calls, locale: locale)]
+        if audioSeconds > 0 {
+            parts.append(WidgetFormat.duration(audioSeconds))
+        }
+        if let mistral = backends[.mistral] {
+            parts.append(
+                Self.priced(mistral, cost: mistral.costEUR, format: WidgetFormat.cost, on: "Mistral", locale: locale))
+        }
+        if let jev = backends[.jev] {
+            parts.append(Self.unpriced(jev.calls, on: "Jev", locale: locale))
+        }
+        let free = (backends[.bundledHelper]?.calls ?? 0) + (backends[.userServer]?.calls ?? 0)
+        if free > 0 {
+            parts.append("\(WidgetFormat.count(free, locale: locale)) free on this Mac")
+        }
+        for backend in UsageEntry.Backend.allCases where backend.isAgent {
+            guard let share = backends[backend] else { continue }
+            let name = Self.agentName(backend)
+            parts.append(
+                Self.priced(share, cost: share.agentCostUSD, format: { "\(Self.usd($0)) of \(name) usage" },
+                            on: name, locale: locale))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// The cost, with any calls it leaves out beside it; a share with no
+    /// priced call at all is only counted.
+    private static func priced(
+        _ share: Share, cost: Double, format: (Double) -> String, on backend: String, locale: Locale
+    ) -> String {
+        guard share.unpricedCalls < share.calls else {
+            return unpriced(share.calls, on: backend, locale: locale)
+        }
+        let text = format(cost)
+        guard share.unpricedCalls > 0 else { return text }
+        return "\(text) + \(WidgetFormat.count(share.unpricedCalls, locale: locale)) unpriced"
+    }
+
+    private static func unpriced(_ calls: Int, on backend: String, locale: Locale) -> String {
+        "\(WidgetFormat.count(calls, locale: locale)) on \(backend) (unpriced)"
+    }
+
+    private static func usd(_ value: Double) -> String {
+        if value > 0, value < 0.01 { return "< $0.01" }
+        return String(format: "$%.2f", value)
+    }
+
+    /// Named for the plan that pays, not the harness: a Claude Code run
+    /// spends Claude usage.
+    private static func agentName(_ backend: UsageEntry.Backend) -> String {
+        switch backend {
+        case .claudeCode: return "Claude"
+        case .codex: return "Codex"
+        case .opencode: return "opencode"
+        case .vibe: return "Vibe"
+        case .mistral, .jev, .bundledHelper, .userServer: return backend.rawValue
+        }
+    }
+}
+
+extension UsageEntry.Feature {
+    /// The feature's row title in Insights → Usage by feature.
+    package var label: String {
+        switch self {
+        case .dictation: return "Dictation"
+        case .polish: return "Polishing"
+        case .secondPass: return "Second pass"
+        case .termSuggestions: return "Term suggestions"
+        case .projectTerms: return "Project terms"
+        case .quickCaptureRouting: return "Quick-capture routing"
+        case .quickCaptureDrafting: return "Quick-capture drafting"
+        }
     }
 }
 

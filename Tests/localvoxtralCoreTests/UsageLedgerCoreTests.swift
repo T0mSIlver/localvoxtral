@@ -165,14 +165,54 @@ final class UsageLedgerCoreTests: XCTestCase {
         XCTAssertEqual(polish.promptTokens, 1_900)
         XCTAssertEqual(polish.completionTokens, 100)
         XCTAssertEqual(polish.costEUR, 0.001, accuracy: 1e-12)
-        XCTAssertEqual(polish.callsByBackend, [.mistral: 1, .bundledHelper: 1])
+        XCTAssertEqual(polish.backends.mapValues(\.calls), [.mistral: 1, .bundledHelper: 1])
         XCTAssertEqual(polish.unpricedPaidCalls, 0, "the bundled helper is free, not unpriced")
         XCTAssertEqual(rows[1].audioSeconds, 37)
-        XCTAssertEqual(rows[2].callsByBackend, [.jev: 1, .mistral: 1])
+        XCTAssertEqual(rows[2].backends.mapValues(\.calls), [.jev: 1, .mistral: 1])
         XCTAssertEqual(rows[2].unpricedPaidCalls, 1, "Jev reports nothing to price")
         XCTAssertEqual(rows[3].agentCostUSD, 0.1, accuracy: 1e-12)
         XCTAssertEqual(rows[3].unpricedPaidCalls, 1, "Vibe reports nothing")
         XCTAssertEqual(FeatureUsage.summarize(entries, since: nil).first?.calls, 3)
+    }
+
+    /// The Insights row says who paid what: EUR on the Mistral key, free for
+    /// local calls, USD for agent runs, and a count where nothing was priced.
+    func testTheFeatureLineSaysWhoPaidWhat() {
+        let english = Locale(identifier: "en_US")
+        func line(_ entries: [UsageEntry]) -> String? {
+            FeatureUsage.summarize(entries, since: nil).first?.line(locale: english)
+        }
+        func entry(
+            _ feature: UsageEntry.Feature, _ backend: UsageEntry.Backend, audioSeconds: Double? = nil,
+            eur: Double? = nil, usd: Double? = nil
+        ) -> UsageEntry {
+            UsageEntry(date: moment, feature: feature, backend: backend, model: "m",
+                       audioSeconds: audioSeconds, costEUR: eur, agentCostUSD: usd)
+        }
+
+        XCTAssertEqual(
+            line([entry(.dictation, .mistral, audioSeconds: 1_800, eur: 0.16),
+                  entry(.dictation, .mistral, audioSeconds: 1_200, eur: 0.1)]),
+            "2 · 50 min · €0.26")
+        XCTAssertEqual(
+            line([entry(.polish, .mistral, eur: 0.62), entry(.polish, .bundledHelper),
+                  entry(.polish, .userServer)]),
+            "3 · €0.62 · 2 free on this Mac")
+        XCTAssertEqual(
+            line([entry(.polish, .mistral, eur: 0.4), entry(.polish, .mistral)]),
+            "2 · €0.40 + 1 unpriced", "a timed-out polish is not free")
+        XCTAssertEqual(line([entry(.polish, .mistral)]), "1 · 1 on Mistral (unpriced)")
+        XCTAssertEqual(
+            line([entry(.quickCaptureRouting, .jev), entry(.quickCaptureRouting, .mistral, eur: 0.0006)]),
+            "2 · < €0.01 · 1 on Jev (unpriced)")
+        XCTAssertEqual(
+            line([entry(.quickCaptureDrafting, .claudeCode, usd: 0.099),
+                  entry(.quickCaptureDrafting, .claudeCode, usd: 14.8),
+                  entry(.quickCaptureDrafting, .vibe)]),
+            "3 · $14.90 of Claude usage · 1 on Vibe (unpriced)")
+        XCTAssertEqual(
+            line(Array(repeating: entry(.projectTerms, .claudeCode, usd: 0.001), count: 1_200)),
+            "1,200 · $1.20 of Claude usage", "counts group digits")
     }
 
     // MARK: - Quick-capture routing

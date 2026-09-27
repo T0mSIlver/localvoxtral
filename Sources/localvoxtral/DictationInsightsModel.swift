@@ -22,6 +22,10 @@ final class DictationInsightsModel {
     private(set) var trend: DictationLearningTrend?
     /// LaunchServices is asked once per bundle id, not once per render.
     private(set) var appNames: [String: String] = [:]
+    /// Every feature that called a model in the selected period, from the
+    /// usage ledger. Summed apart from the dictation count: the ledger
+    /// changes on every request, and a sum of it is cheap.
+    private(set) var featureUsage: [FeatureUsage] = []
 
     /// A slow count must not overwrite the result of the one started after it.
     @ObservationIgnored private var reloadGeneration = 0
@@ -29,17 +33,20 @@ final class DictationInsightsModel {
     @ObservationIgnored private let store: @MainActor () -> DictationSessionStore?
     @ObservationIgnored private let terms: @MainActor () -> [String]
     @ObservationIgnored private let appName: @MainActor (String) -> String?
+    @ObservationIgnored private let usage: @MainActor () -> [UsageEntry]
 
     init(
         defaults: UserDefaults = .standard,
         store: @escaping @MainActor () -> DictationSessionStore?,
         terms: @escaping @MainActor () -> [String],
-        appName: @escaping @MainActor (String) -> String? = DictationHistoryModel.installedAppName
+        appName: @escaping @MainActor (String) -> String? = DictationHistoryModel.installedAppName,
+        usage: @escaping @MainActor () -> [UsageEntry] = { [] }
     ) {
         self.defaults = defaults
         self.store = store
         self.terms = terms
         self.appName = appName
+        self.usage = usage
         period = defaults.string(forKey: Self.periodDefaultsKey)
             .flatMap(DictationInsightsPeriod.init(rawValue:)) ?? .month
     }
@@ -53,7 +60,12 @@ final class DictationInsightsModel {
                 guard let viewModel else { return [] }
                 return viewModel.settings.polishSpeakerTerms
                     + (viewModel.learnedTermStore?.snapshot().confirmedEverywhere().map(\.term) ?? [])
-            })
+            },
+            usage: { [weak viewModel] in viewModel?.engines.usageLedger?.entries() ?? [] })
+    }
+
+    func reloadUsage(now: Date = Date()) {
+        featureUsage = FeatureUsage.summarize(usage(), since: period.start(now: now))
     }
 
     /// No count for the selected period yet. A zero would read as a fact.
