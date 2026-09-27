@@ -48,8 +48,8 @@ enum DestinationCommitGuard: Equatable {
     case unsettled
 }
 
-/// Tab and ⇧Tab during an Overlay Buffer dictation move its words to the
-/// focused app, a session that needs you, or the Inbox. The words go only
+/// Tab and ⇧Tab (or → and ←, or a click) during an Overlay Buffer dictation
+/// move its words to the focused app, a session that needs you, or the Inbox. The words go only
 /// where the overlay shows: a session is picked only once its terminal
 /// confirmed the pane is in front (`.focused`), the way the answer shortcut
 /// starts a dictation (#785), and the stop then commits into that pane like
@@ -104,13 +104,27 @@ extension DictationSessionController {
         destinations = nil
     }
 
-    /// Tab (`forward`) or ⇧Tab.
+    /// Tab or → (`forward`), ⇧Tab or ←.
     func moveDestination(forward: Bool) {
         guard isDictating, var state = destinations else { return }
         refreshDestinationList(&state)
         let base = state.pending ?? state.list.selected
         destinations = state
         pickDestination(state.list.moving(from: base, forward: forward))
+    }
+
+    /// A click on a destination in the overlay (#880) picks it the way Tab
+    /// would. A click on where the picks are already going does nothing, and
+    /// one on a session that left the list since the overlay drew it is
+    /// dropped.
+    func clickDestination(_ destination: DictationDestination) {
+        guard isDictating, var state = destinations else { return }
+        refreshDestinationList(&state)
+        destinations = state
+        guard state.list.entries.contains(destination),
+              destination != (state.pending ?? state.list.selected)
+        else { return }
+        pickDestination(destination)
     }
 
     /// The quick capture shortcut during an Overlay Buffer dictation picks

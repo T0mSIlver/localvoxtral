@@ -509,22 +509,25 @@ final class DictationViewModel {
             ducksRealOutput: ducksRealOutput
         )
         let overlay: OverlayBufferSessionCoordinating
+        var overlayPanel: DictationOverlayController?
         if let overlayBufferCoordinator {
             overlay = overlayBufferCoordinator
         } else {
             let anchorResolver = OverlayAnchorResolver()
+            let panel = DictationOverlayController(
+                metricsProvider: {
+                    OverlayLayoutMetrics(
+                        bodyFontSize: settings.overlayBufferFontSize,
+                        visibleLines: settings.overlayBufferVisibleLines,
+                        wordHold: settings.overlayBufferWordHold)
+                },
+                storedPlacementProvider: { settings.overlayBufferPlacement },
+                placementWriter: { settings.overlayBufferPlacement = $0 }
+            )
+            overlayPanel = panel
             overlay = OverlayBufferSessionCoordinator(
                 stateMachine: OverlayBufferStateMachine(),
-                renderer: DictationOverlayController(
-                    metricsProvider: {
-                        OverlayLayoutMetrics(
-                            bodyFontSize: settings.overlayBufferFontSize,
-                            visibleLines: settings.overlayBufferVisibleLines,
-                            wordHold: settings.overlayBufferWordHold)
-                    },
-                    storedPlacementProvider: { settings.overlayBufferPlacement },
-                    placementWriter: { settings.overlayBufferPlacement = $0 }
-                ),
+                renderer: panel,
                 anchorResolver: anchorResolver
             )
         }
@@ -637,6 +640,9 @@ final class DictationViewModel {
         session.escapeCancelHandler.onCancel = { [weak session] in session?.cancelDictation() }
         session.destinationKeyHandler.onMove = { [weak session] forward in
             session?.moveDestination(forward: forward)
+        }
+        overlayPanel?.onDestinationClick = { [weak session] destination in
+            session?.clickDestination(destination)
         }
 
         textInsertion.refreshAccessibilityTrustState()

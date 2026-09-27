@@ -1,9 +1,10 @@
 import Foundation
 
 /// Where an Overlay Buffer dictation's words go when it stops (#840). The
-/// overlay lists the choices and Tab moves between them; nothing changes
-/// the destination but Tab or a shortcut that opens the overlay on one.
-package enum DictationDestination: Equatable, Sendable {
+/// overlay lists the choices, and Tab, the arrows or a click move between
+/// them; nothing else changes the destination but a shortcut that opens the
+/// overlay on one.
+package enum DictationDestination: Hashable, Sendable {
     /// The app that was focused when the dictation started.
     case focusedApp
     /// A coding agent session that needs you. Picking it brings its pane
@@ -102,6 +103,8 @@ package struct OverlayDestinationStrip: Equatable, Sendable {
     }
 
     package struct Item: Equatable, Sendable {
+        /// What a click on this pill picks.
+        package let destination: DictationDestination
         package let label: String
         package let kind: Kind
         package let isSelected: Bool
@@ -124,11 +127,11 @@ package struct OverlayDestinationStrip: Equatable, Sendable {
             let isSelected = entry == list.selected
             switch entry {
             case .focusedApp:
-                return Item(label: focusedAppLabel, kind: .focusedApp(joined: focusedAppJoined), isSelected: isSelected)
+                return Item(destination: entry, label: focusedAppLabel, kind: .focusedApp(joined: focusedAppJoined), isSelected: isSelected)
             case .session(let id):
-                return Item(label: sessionName(id), kind: .session, isSelected: isSelected)
+                return Item(destination: entry, label: sessionName(id), kind: .session, isSelected: isSelected)
             case .inbox:
-                return Item(label: Self.inboxLabel, kind: .inbox, isSelected: isSelected)
+                return Item(destination: entry, label: Self.inboxLabel, kind: .inbox, isSelected: isSelected)
             }
         }
     }
