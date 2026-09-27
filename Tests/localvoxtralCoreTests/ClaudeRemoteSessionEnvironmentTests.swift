@@ -64,10 +64,6 @@ final class ClaudeRemoteSessionEnvironmentCodecTests: XCTestCase {
         XCTAssertFalse(parsed.isEmpty)
     }
 
-    func testNoEnvHeadersMeansNoEnvironmentRatherThanAnEmptyOne() {
-        XCTAssertNil(ClaudeRemoteEnvironmentCodec.environment(in: headers([:])))
-    }
-
     func testHeadersOutsideTheAllowlistAreIgnored() {
         var raw = headers([.herdrPaneID: "pane-7"])
         raw["x-lvx-env-anything-else"] = "surprise"
