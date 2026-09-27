@@ -478,8 +478,7 @@ final class DictationViewModel {
             backendManager
             ?? BackendManager(
                 polishingModelProvider: { settings.resolvedManagedLLMPolishingModel },
-                speechModelProvider: { settings.resolvedManagedSpeechModel },
-                speechdCacheLimitProvider: { settings.speechdCacheLimit.megabytes }
+                speechModelProvider: { settings.resolvedManagedSpeechModel }
             )
         self.managesRuntimeServices = startRuntimeServices
         let context = SessionContextResolver(settings: settings, textInsertion: textInsertion)
