@@ -165,11 +165,14 @@ public final class ProcessExitWatch: @unchecked Sendable {
         }
         source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .global())
         source.setEventHandler(handler: fire)
-        source.resume()
-        // A process that exited before the source was armed never fires it.
-        if kill(pid, 0) != 0, errno == ESRCH {
-            fire()
+        // A process that exited before the kevent was installed never fires
+        // it. `resume` only schedules the install, so check once it ran.
+        source.setRegistrationHandler {
+            if kill(pid, 0) != 0, errno == ESRCH {
+                fire()
+            }
         }
+        source.resume()
     }
 
     deinit {
