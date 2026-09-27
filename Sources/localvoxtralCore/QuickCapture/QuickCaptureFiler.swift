@@ -43,14 +43,22 @@ package enum QuickCaptureFiling {
     package static func repository(
         ofCheckout path: String, environment: [String: String], isExecutable: @Sendable (String) -> Bool
     ) async -> String? {
-        if let origin = await RepoGitRunner.run(arguments: ["remote", "get-url", "origin"], root: path, timeoutSeconds: 5, maxBytes: 4096),
-           origin.exitCode == 0, !origin.timedOut
-        {
-            let repository = Self.repository(fromRemoteURL: String(decoding: origin.data, as: UTF8.self))
-            if repository == nil {
-                Log.backends.info("Quick capture: the checkout's origin is not on GitHub")
+        // gh only when git says there is no origin (exit 2): after a timeout
+        // or any other failure, gh would answer the upstream again.
+        if let origin = await RepoGitRunner.run(
+            arguments: ["remote", "get-url", "origin"], root: path, timeoutSeconds: 20, maxBytes: 4096
+        ) {
+            guard !origin.timedOut, origin.exitCode == 0 || origin.exitCode == 2 else {
+                Log.backends.error("Quick capture: git remote get-url origin exited \(origin.exitCode, privacy: .public)")
+                return nil
             }
-            return repository
+            if origin.exitCode == 0 {
+                let repository = Self.repository(fromRemoteURL: String(decoding: origin.data, as: UTF8.self))
+                if repository == nil {
+                    Log.backends.info("Quick capture: the checkout's origin is not on GitHub")
+                }
+                return repository
+            }
         }
         guard let gh = QuickCaptureDrafter.ghCandidates(environment: environment).first(where: isExecutable),
               let output = await BoundedProcess.run(
