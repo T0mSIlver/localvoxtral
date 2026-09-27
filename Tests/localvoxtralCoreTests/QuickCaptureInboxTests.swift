@@ -144,7 +144,7 @@ final class QuickCaptureInboxTests: XCTestCase {
         var listed = projects
         let model = QuickCaptureInboxModel(
             fileURL: fileURL,
-            makeRouter: { QuickCaptureRouter(classifiers: [Classifier(["reach": 0.5])]) },
+            makeRouter: { QuickCaptureRouter(classifiers: [FixedQuickCaptureClassifier(["reach": 0.5])]) },
             projects: { listed },
             agents: { [.claude] },
             drafter: { QuickCaptureDrafter(runner: self.runner, openIssues: { _, _ in [] }, trackedFiles: { _ in [] }) },
