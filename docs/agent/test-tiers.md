@@ -277,6 +277,18 @@ merge made with the repo token starts no workflow on main. The board's
 "Auto-close issue" workflow leaves an open PR in Done alone (checked on
 2026-09-26 with a throwaway PR).
 
+## Scheduled Mac inference stays in the night window
+
+Scheduled inference on the Mac runs 00:00–07:00 UTC; after that the owner
+works on the machine. GitHub fires `schedule:` events hours late (#822: the
+04:45 UTC Sunday `eval-e2e` was created at 09:33 and 09:48 UTC), so a cron
+inside the window does not keep the run there. A scheduled `eval-e2e` therefore
+calls `scripts/ci/night-window-guard.sh 30` first, and skips green, with
+"E2E eval (scheduled): SKIPPED (started at … UTC, outside the night window …)"
+in the step summary, unless it can finish by 07:00. A new scheduled workflow
+that runs inference on the Mac takes the same guard with its own run length.
+Dispatches never consult it.
+
 ## Dispatching a run without deepening the queue
 
 There is ONE self-hosted runner (the owner's MacBook), so CI concurrency is 1
