@@ -451,9 +451,10 @@ A capture then goes through three steps.
 3. **Review.** On the Inbox page you edit the draft, move the capture to
    another project, or discard it. **File** creates the issue with your
    GitHub CLI, with your dictated words quoted under the draft. The Inbox
-   fills in the repository `origin` points at, so a fork's captures go to
-   the fork, not its upstream. Your coding agent can also file it with its
-   own `gh` ([Quick captures](#quick-captures)). Nothing else files.
+   fills in the project's repository (see
+   [Each project's repository](#each-projects-repository)). Your coding
+   agent can also file it with its own `gh` ([Quick captures](#quick-captures)).
+   Nothing else files.
 
 ### Which projects a capture can go to
 
@@ -471,19 +472,36 @@ Per-worktree projects that an older plugin left in your learned terms are
 not offered
 ([One project per repository](dictation.md#one-project-per-repository)).
 
+A repository checked out both on this Mac and on a host is one project
+here, drafted on this Mac. Its learned terms stay listed under each
+checkout.
+
+### Each project's repository
+
+A project's repository is the GitHub repository its `origin` remote points
+at. The app reads it from a checkout on this Mac; a host sends it from
+remote plugin 1.23.0 or Vibe hooks 1.8.0. A project whose `origin` is not on
+GitHub, or that has none, asks for `owner/repository` on its first capture
+and keeps your answer.
+
+A fork files in your fork, since `origin` is yours. To file its captures in
+the repository it was forked from, pick that repository beside the project
+in **Project descriptions**.
+
 ### Describe your projects
 
 The classifier reads each project's name, a description, the opening of its
-README, and its learned terms. It reads the README from a checkout on this
-Mac, or from what a remote project's host reports.
+README, its GitHub topics, and its learned terms. It reads the README from a
+checkout on this Mac, or from what a remote project's host reports.
 
-A README says what a project is, rarely what it has, so each project also
-gets a one-sentence description, up to 200 characters. With **Ask the coding
-agent for each new project's terms** on, the agent writes it in the same run
-as the terms
+The description is the repository's description on GitHub, which your
+GitHub CLI fetches once a week and whenever **Project descriptions** opens.
+A private repository works when `gh` can read it. Without a GitHub
+description, the description is one sentence of up to 200 characters that
+the coding agent writes in the same run as the terms, when **Ask the coding
+agent for each new project's terms** is on
 ([Terms from your coding agent](dictation.md#terms-from-your-coding-agent)).
-Until it answers, or with that setting off, the description is the README
-opening.
+Until it answers, or with that setting off, it is the README opening.
 
 **Settings → Context → Quick capture → Project descriptions** shows each
 one. Edit a field to replace it with your own, such as "Menu bar dictation

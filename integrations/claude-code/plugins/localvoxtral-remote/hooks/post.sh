@@ -271,7 +271,7 @@ fi
 # the app validates the shape and trusts nothing else about it.
 cat 2>/dev/null >"$WORK/header" <<EOF || fail_open
 Authorization: Bearer $TOKEN
-X-Lvx-Plugin-Version: 1.22.0
+X-Lvx-Plugin-Version: 1.23.0
 EOF
 
 # --- Allowlisted environment enrichment --------------------------------------
@@ -375,6 +375,16 @@ lvx_project() {
   echo "$_lvx_name"
 }
 LVX_PROJECT="$(lvx_project 2>/dev/null)" || LVX_PROJECT=""
+
+# --- Repository (#926) --------------------------------------------------------
+# The owner/name of the repository's origin when it is on github.com, from
+# capture.sh's parser, the one the draft run lists issues with. Asked only
+# inside a repository; anything else, or an origin off GitHub, sends no
+# header. The Mac keeps it on the project as its filing repository.
+LVX_REPOSITORY=""
+if [ -n "$LVX_PROJECT" ] && [ -r "${0%/*}/capture.sh" ]; then
+  LVX_REPOSITORY="$(sh "${0%/*}/capture.sh" repository </dev/null 2>/dev/null)" || LVX_REPOSITORY=""
+fi
 
 # --- Claude Desktop session id ------------------------------------------------
 # Claude Desktop runs each Code-tab session it opens on this host as a direct
@@ -492,6 +502,7 @@ lvx_claude_is_desktop_session() {
   # is a pid in this machine's namespace and the Mac treats it as a label only.
   lvx_env_header 'X-Lvx-Env-Hook-Parent-Pid' "${PPID:-}"
   lvx_env_header 'X-Lvx-Env-Project' "${LVX_PROJECT:-}"
+  lvx_env_header 'X-Lvx-Env-Repository' "${LVX_REPOSITORY:-}"
 ) 2>/dev/null || :
 
 # --- Project terms (#641) ----------------------------------------------------

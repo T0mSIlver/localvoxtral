@@ -179,24 +179,50 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
-    /// Context → Quick capture → Project descriptions → Edit… (#811, #891):
-    /// the user's line, the agent's line, a README summary where the agent
-    /// has not answered yet, and a project with none.
+    /// Context → Quick capture → Project descriptions → Edit… (#811, #891,
+    /// #926): the user's line, GitHub's description on a fork with its
+    /// filing picker, the agent's line, a README summary, and a project
+    /// with none.
     func testQuickCaptureProjectLinesSheet() throws {
         let (settings, _) = makeViewModel()
         settings.setQuickCaptureProjectLine("Dictation app; shortcuts, quick capture, Inbox, polish", for: "remote:demo")
-        let projects = [
-            QuickCaptureProject(key: "remote:demo", name: "demo", summary: "Realtime dictation for the menu bar.", terms: [], userLine: nil),
-            QuickCaptureProject(
-                key: "remote:quill", name: "quill", summary: "Quill typesets Markdown.", terms: [],
-                agentLine: "Markdown to PDF renderer: the qmk CLI, page sizes, fonts, the glyph cache.", userLine: nil),
-            QuickCaptureProject(key: "/work/site", name: "site", summary: "A personal site and blog built with Astro.", terms: [], userLine: nil),
-            QuickCaptureProject(key: "remote:notes", name: "notes", summary: nil, terms: [], userLine: nil),
-        ]
+        func project(
+            _ name: String, summary: String? = nil, agentLine: String? = nil,
+            repository: String? = nil, github: GitHubRepositoryFacts? = nil
+        ) -> LearnedTermProject {
+            var project = LearnedTermProject(
+                key: "remote:\(name)", name: name, terms: [], lastSeen: Date(timeIntervalSince1970: 1_800_000_000))
+            project.reportedAsRepository = true
+            project.summary = summary
+            project.agentLine = agentLine
+            project.repository = repository
+            project.github = github
+            return project
+        }
+        let learned = LearnedTerms(projects: [
+            project("demo", summary: "Realtime dictation for the menu bar."),
+            project(
+                "mlx-audio-swift", summary: "Text to speech and speech to text on Apple silicon.",
+                repository: "me/mlx-audio-swift",
+                github: GitHubRepositoryFacts(
+                    description: "A modular Swift SDK for audio processing with MLX on Apple Silicon",
+                    topics: ["mlx", "tts"], parent: "Blaizzy/mlx-audio-swift")),
+            project(
+                "quill", summary: "Quill typesets Markdown.",
+                agentLine: "Markdown to PDF renderer: the qmk CLI, page sizes, fonts, the glyph cache."),
+            project("site", summary: "A personal site and blog built with Astro."),
+            project("notes"),
+        ])
+        let inbox = QuickCaptureInboxViewModel(
+            settings: settings,
+            learnedTerms: { learned },
+            fileURL: nil,
+            applicationSupport: FileManager.default.temporaryDirectory
+        )
         try record(
-            QuickCaptureProjectLinesSheet(settings: settings, projects: projects, onDone: {}),
+            QuickCaptureProjectLinesSheet(settings: settings, inbox: inbox, onDone: {}),
             name: "quick-capture-project-lines",
-            width: 620, height: 420, growToFit: false)
+            width: 720, height: 420, growToFit: false)
     }
 
     /// Dictation → Output → Phrases that press Return (#839): the saved

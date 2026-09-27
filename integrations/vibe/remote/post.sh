@@ -182,7 +182,7 @@ write_header() {
   cat 2>/dev/null >"$1" <<HEADERS
 Authorization: Bearer $2
 X-Lvx-Agent: vibe
-X-Lvx-Vibe-Hooks-Version: 1.7.0
+X-Lvx-Vibe-Hooks-Version: 1.8.0
 HEADERS
 }
 write_header "$WORK/header" "$TOKEN" || exit 0
@@ -264,6 +264,16 @@ lvx_project() {
 }
 LVX_PROJECT="$(lvx_project 2>/dev/null)" || LVX_PROJECT=""
 
+# --- Repository (#926) --------------------------------------------------------
+# The owner/name of the repository's origin when it is on github.com, from
+# capture.sh's parser, the one the draft run lists issues with. Asked only
+# inside a repository; anything else, or an origin off GitHub, sends no
+# header. The Mac keeps it on the project as its filing repository.
+LVX_REPOSITORY=""
+if [ -n "$LVX_PROJECT" ] && [ -r "$DIR/capture.sh" ]; then
+  LVX_REPOSITORY="$(sh "$DIR/capture.sh" repository </dev/null 2>/dev/null)" || LVX_REPOSITORY=""
+fi
+
 (
   LC_ALL=C
   export LC_ALL
@@ -288,6 +298,7 @@ LVX_PROJECT="$(lvx_project 2>/dev/null)" || LVX_PROJECT=""
   set +f
   lvx_env_header 'X-Lvx-Env-Hook-Parent-Pid' "$AGENT_PID"
   lvx_env_header 'X-Lvx-Env-Project' "${LVX_PROJECT:-}"
+  lvx_env_header 'X-Lvx-Env-Repository' "${LVX_REPOSITORY:-}"
 ) 2>/dev/null || :
 
 # --- Project terms (#641) ----------------------------------------------------

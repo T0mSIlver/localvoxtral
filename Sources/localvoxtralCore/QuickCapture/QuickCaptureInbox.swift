@@ -193,10 +193,13 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
         items.removeAll { $0.state == .filed && ($0.filedAt ?? $0.capturedAt) < cutoff }
     }
 
-    /// `owner/name`, GitHub's charset.
+    /// `owner/name`, GitHub's charset. Neither part is `.` or `..`: a
+    /// host's value becomes a `gh api repos/…` path (#926).
     package static func isRepository(_ value: String?) -> Bool {
-        guard let value else { return false }
-        return value.range(of: #"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil
+        guard let value,
+              value.range(of: #"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil
+        else { return false }
+        return !value.split(separator: "/").contains { $0.allSatisfy { $0 == "." } }
     }
 
     static func note(for failure: ProjectTermProposal.Failure) -> String {

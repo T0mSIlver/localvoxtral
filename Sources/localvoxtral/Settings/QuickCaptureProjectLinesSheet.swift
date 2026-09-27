@@ -1,14 +1,23 @@
 import SwiftUI
 
 /// One line per project quick capture can route to (#811): what the project
-/// is and what it has. Each field starts filled (#891) with the line the
-/// project's agent wrote, else its README summary, which is what the router
-/// reads. An edit becomes the user's line and replaces the agent's; an
-/// emptied field, or one set back to that text, returns to it.
+/// is and what it has. Each field starts filled (#891, #926) with GitHub's
+/// description, else the line the project's agent wrote, else its README
+/// summary, which is what the router reads. An edit becomes the user's line
+/// and replaces them; an emptied field, or one set back to that text,
+/// returns to it. A fork picks where File sends its issues.
+///
+/// Opening it asks GitHub again for every project's description.
 struct QuickCaptureProjectLinesSheet: View {
     @Bindable var settings: SettingsStore
-    let projects: [QuickCaptureProject]
+    let inbox: QuickCaptureInboxViewModel?
     let onDone: () -> Void
+
+    private var projects: [QuickCaptureProject] {
+        guard let inbox else { return [] }
+        _ = inbox.projectsRevision
+        return inbox.model.projectChoices
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -31,6 +40,14 @@ struct QuickCaptureProjectLinesSheet: View {
                         )
                         .textFieldStyle(.roundedBorder)
                         .lineLimit(1...3)
+                        if let fork = project.repository, let upstream = project.github?.parent {
+                            Picker("File issues here", selection: filesUpstream(for: project, fork: fork)) {
+                                Text("Issues in \(fork)").tag(false)
+                                Text("Issues in \(upstream)").tag(true)
+                            }
+                            .labelsHidden()
+                            .fixedSize()
+                        }
                     }
                 }
                 .accessibilityIdentifier("settings.quickCaptureProjectLines.list")
@@ -42,14 +59,29 @@ struct QuickCaptureProjectLinesSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 620, height: 420)
+        .frame(width: 720, height: 420)
+        .task { await inbox?.refreshProjects(force: true) }
+    }
+
+    private func filesUpstream(for project: QuickCaptureProject, fork: String) -> Binding<Bool> {
+        Binding(
+            get: { project.issueRepository != fork },
+            set: { upstream in Task { await inbox?.setFilesUpstream(upstream, repository: fork) } }
+        )
     }
 
     private func line(for project: QuickCaptureProject) -> Binding<String> {
         Binding(
-            get: { settings.quickCaptureProjectLines[project.key] ?? project.automaticLine ?? "" },
+            // A repository checked out in several places has one line, kept
+            // under its leading key; one written on another checkout before
+            // they joined shows here and moves there on the first edit.
+            get: {
+                project.keys.lazy.compactMap { settings.quickCaptureProjectLines[$0] }.first
+                    ?? project.automaticLine ?? ""
+            },
             set: { text in
                 let isAutomatic = text.trimmingCharacters(in: .whitespacesAndNewlines) == project.automaticLine
+                for key in project.keys.dropFirst() { settings.setQuickCaptureProjectLine("", for: key) }
                 settings.setQuickCaptureProjectLine(isAutomatic ? "" : text, for: project.key)
             }
         )

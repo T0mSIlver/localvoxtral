@@ -70,6 +70,34 @@ package enum QuickCaptureFiling {
         return QuickCaptureInbox.isRepository(name) ? name : nil
     }
 
+    /// `gh api repos/<owner>/<name>`, cut to what the router reads: the
+    /// description, the topics and a fork's parent (#926). Read-only.
+    package static func repositoryFactsArguments(repository: String) -> [String] {
+        ["api", "repos/\(repository)", "--jq", "{description, topics, parent: .parent.full_name}"]
+    }
+
+    /// The facts in `repositoryFactsArguments`' output; nil when it is not
+    /// that JSON. A description is one line of at most 350 characters
+    /// (GitHub's own cap), topics are GitHub-shaped, and a parent that is no
+    /// `owner/name` is dropped.
+    package static func repositoryFacts(inOutput data: Data) -> GitHubRepositoryFacts? {
+        struct Wire: Decodable {
+            var description: String?
+            var topics: [String]?
+            var parent: String?
+        }
+        guard let wire = try? JSONDecoder().decode(Wire.self, from: data) else { return nil }
+        let description = wire.description
+            .map { $0.components(separatedBy: .controlCharacters).joined(separator: " ") }
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .flatMap { $0.isEmpty ? nil : String($0.prefix(350)) }
+        let topics = (wire.topics ?? []).filter {
+            $0.count <= 50 && $0.range(of: #"^[a-z0-9][a-z0-9-]*$"#, options: .regularExpression) != nil
+        }
+        let parent = wire.parent.flatMap { QuickCaptureInbox.isRepository($0) ? $0 : nil }
+        return GitHubRepositoryFacts(description: description, topics: Array(topics.prefix(20)), parent: parent)
+    }
+
     package enum Failure: Error, Equatable, Sendable {
         case ghNotFound
         case failed(exitCode: Int32)
@@ -89,7 +117,10 @@ package enum QuickCaptureFiling {
 package protocol QuickCaptureGitHub: Sendable {
     /// The checkout's `owner/name`, nil when it has no GitHub remote.
     func repository(ofCheckout path: String) async -> String?
-    func openIssues(ofCheckout path: String) async -> [QuickCaptureDraft.OpenIssue]?
+    /// The open issues of `repository`, else of the checkout's own.
+    func openIssues(ofCheckout path: String, repository: String?) async -> [QuickCaptureDraft.OpenIssue]?
+    /// GitHub's description, topics and parent; nil when gh failed.
+    func repositoryFacts(_ repository: String) async -> GitHubRepositoryFacts?
     func createIssue(repository: String, title: String, body: String) async -> Result<String, QuickCaptureFiling.Failure>
 }
 
@@ -113,8 +144,26 @@ package struct QuickCaptureGHClient: QuickCaptureGitHub {
         await QuickCaptureFiling.repository(ofCheckout: path, environment: environment, isExecutable: isExecutable)
     }
 
-    package func openIssues(ofCheckout path: String) async -> [QuickCaptureDraft.OpenIssue]? {
-        await QuickCaptureDrafter.ghOpenIssues(environment: environment, isExecutable: isExecutable)(path)
+    package func openIssues(ofCheckout path: String, repository: String?) async -> [QuickCaptureDraft.OpenIssue]? {
+        await QuickCaptureDrafter.ghOpenIssues(environment: environment, isExecutable: isExecutable)(path, repository)
+    }
+
+    package func repositoryFacts(_ repository: String) async -> GitHubRepositoryFacts? {
+        guard QuickCaptureInbox.isRepository(repository), let gh else { return nil }
+        guard let output = await BoundedProcess.run(
+            executableURL: gh,
+            arguments: QuickCaptureFiling.repositoryFactsArguments(repository: repository),
+            environment: environment, timeoutSeconds: 20, maxBytes: 16_384, label: "quick capture gh api repos"
+        ), output.exitCode == 0, !output.timedOut, !output.capped else {
+            Log.backends.error("Quick capture: gh api repos failed for \(repository, privacy: .public)")
+            return nil
+        }
+        guard let facts = QuickCaptureFiling.repositoryFacts(inOutput: output.data) else {
+            Log.backends.error("Quick capture: gh api repos answered no repository for \(repository, privacy: .public)")
+            return nil
+        }
+        Log.backends.info("Quick capture: GitHub described \(repository, privacy: .public)")
+        return facts
     }
 
     package func createIssue(repository: String, title: String, body: String) async -> Result<String, QuickCaptureFiling.Failure> {

@@ -19,10 +19,12 @@ final class RemoteQuickCaptureTests: XCTestCase {
             memory.withLock { _ = $0.recordSummary(summary, projectKey: projectKey, now: moment) }
         }
         let reports = Mutex<[String]>([])
-        func recordRemoteReport(project: LearnedTermProjectIdentity, asRepository: Bool) {
+        func recordRemoteReport(project: LearnedTermProjectIdentity, asRepository: Bool, repository: String?) {
             let moment = now()
             reports.withLock { $0.append(project.key) }
-            memory.withLock { _ = $0.recordRemoteReport(project: project, asRepository: asRepository, now: moment) }
+            memory.withLock {
+                _ = $0.recordRemoteReport(project: project, asRepository: asRepository, repository: repository, now: moment)
+            }
         }
         /// A project a dictation has shown the app.
         func learn(_ name: String) {
@@ -117,6 +119,7 @@ final class RemoteQuickCaptureTests: XCTestCase {
         version: String? = nil,
         project: String = "quill",
         sendsProject: Bool = true,
+        repository: String? = nil,
         cwd: String? = nil,
         token: String? = nil
     ) throws -> RemoteListenerResponse {
@@ -131,6 +134,7 @@ final class RemoteQuickCaptureTests: XCTestCase {
             preconditionFailure("opencode has no remote shim")
         }
         if sendsProject { headers["X-Lvx-Env-Project"] = project }
+        if let repository { headers["X-Lvx-Env-Repository"] = repository }
         let body = #"{"hook_event_name":"\#(event)","session_id":"\#(session)","cwd":"\#(cwd ?? "/srv/work/\(project)-fix")","prompt":"hello"}"#
         return try postToRemoteListener(port: port, path: "/v1/hook/\(event)", headers: headers, body: Data(body.utf8))
     }
@@ -234,6 +238,20 @@ final class RemoteQuickCaptureTests: XCTestCase {
                 .map(\.key),
             ["remote:inkwell"],
             "quill was only ever learned into, and no hook has named it"
+        )
+    }
+
+    /// #926: the host's origin rides beside the repository's name, and
+    /// a later origin replaces it within the report interval.
+    func testAHookKeepsItsRepositorysOriginOnTheProject() throws {
+        try hook("SessionStart", session: "s1", project: "inkwell", repository: "me/inkwell")
+        XCTAssertEqual(store.snapshot().projects.first { $0.key == "remote:inkwell" }?.repository, "me/inkwell")
+        try hook(session: "s1", project: "inkwell", repository: "me/inkwell2")
+        XCTAssertEqual(store.snapshot().projects.first { $0.key == "remote:inkwell" }?.repository, "me/inkwell2")
+        XCTAssertEqual(
+            QuickCaptureProjects.projects(from: store.snapshot(), userLines: [:], now: clock.now(), readme: { _ in nil })
+                .first { $0.key == "remote:inkwell" }?.issueRepository,
+            "me/inkwell2"
         )
     }
 
@@ -558,7 +576,7 @@ final class RemoteQuickCaptureTests: XCTestCase {
         let handed = Mutex<[String]>([])
         let drafter = QuickCaptureDrafter(
             runner: RefusingRunner(),
-            openIssues: { _ in XCTFail("the Mac lists no issues for a remote project"); return nil },
+            openIssues: { _, _ in XCTFail("the Mac lists no issues for a remote project"); return nil },
             remote: { capture, project in
                 handed.withLock { $0.append("\(project.key): \(capture)") }
                 return .notRun(.noHostSession)

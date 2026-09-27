@@ -704,6 +704,7 @@ final class DictationViewModel {
                 QuickCaptureInboxViewModel(
                     settings: settings,
                     learnedTerms: { [weak self] in self?.learnedTermStore?.snapshot() ?? LearnedTerms() },
+                    learnedTermStore: learnedTermStore,
                     fileURL: QuickCaptureInboxViewModel.defaultFileURL(),
                     applicationSupport: LearnedTermStore.defaultFileURL().deletingLastPathComponent(),
                     usageRecorder: usageLedger
@@ -936,7 +937,7 @@ extension DictationViewModel {
     func installQuickCaptureInbox(_ inbox: QuickCaptureInboxViewModel) {
         quickCapture = inbox
         session.onQuickCapture = { [weak inbox] text, historyRecordID in
-            _ = inbox?.model.capture(text: text, historyRecordID: historyRecordID)
+            inbox?.capture(text: text, historyRecordID: historyRecordID)
         }
         inbox.model.onStatus = { [weak self] sentence in
             // Mid-session the status line belongs to the session.

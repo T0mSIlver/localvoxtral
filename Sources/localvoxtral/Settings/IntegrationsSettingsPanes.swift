@@ -127,7 +127,7 @@ struct IntegrationsContextSettingsPane: View {
                 .sheet(isPresented: $isShowingProjectLines) {
                     QuickCaptureProjectLinesSheet(
                         settings: settings,
-                        projects: viewModel.quickCapture?.model.projectChoices ?? []
+                        inbox: viewModel.quickCapture
                     ) {
                         isShowingProjectLines = false
                     }

@@ -9,11 +9,17 @@ import Synchronization
 @Observable
 final class QuickCaptureInboxViewModel {
     private(set) var items: [QuickCaptureItem] = []
+    /// Bumped when a project's repository, GitHub description or filing
+    /// choice lands, so the Project descriptions sheet reads them again.
+    private(set) var projectsRevision = 0
     @ObservationIgnored let model: QuickCaptureInboxModel
+    @ObservationIgnored private let store: LearnedTermStore?
+    @ObservationIgnored private let linker: QuickCaptureProjectLinker?
 
     init(
         settings: SettingsStore,
         learnedTerms: @escaping @MainActor () -> LearnedTerms,
+        learnedTermStore: LearnedTermStore? = nil,
         fileURL: URL?,
         applicationSupport: URL,
         github: any QuickCaptureGitHub = QuickCaptureGHClient(),
@@ -26,7 +32,7 @@ final class QuickCaptureInboxViewModel {
                 userVibeDirectory: FileManager.default.homeDirectoryForCurrentUser
                     .appendingPathComponent(".vibe", isDirectory: true)
             ),
-            openIssues: { await github.openIssues(ofCheckout: $0) },
+            openIssues: { await github.openIssues(ofCheckout: $0, repository: $1) },
             remote: { capture, project in
                 guard let requests = remote.value.withLock({ $0 }) else { return .notRun(.remoteProject) }
                 return await requests.draft(capture: capture, project: project)
@@ -49,11 +55,42 @@ final class QuickCaptureInboxViewModel {
             drafter: { drafter },
             github: github
         )
+        store = learnedTermStore
+        linker = learnedTermStore.map { QuickCaptureProjectLinker(store: $0, github: github) }
         items = model.items
         model.onChange = { [weak self] in
             guard let self else { return }
             self.items = self.model.items
         }
+        model.onRepositoryAnswered = { [weak learnedTermStore] key, repository in
+            learnedTermStore?.recordTypedRepository(repository, projectKey: key)
+        }
+        Task { [weak self] in await self?.refreshProjects() }
+    }
+
+    /// Links the projects to their repositories and GitHub's descriptions
+    /// (#926): at launch and after each capture for what is missing or a
+    /// week old, everything when the Project descriptions sheet opens.
+    func refreshProjects(force: Bool = false) async {
+        guard let store, let linker else { return }
+        _ = await store.loadedSnapshot()
+        await linker.refresh(force: force).value
+        _ = await store.loadedSnapshot()
+        projectsRevision += 1
+    }
+
+    /// Takes a capture, then links any project it is the first sign of.
+    func capture(text: String, historyRecordID: UUID?) {
+        _ = model.capture(text: text, historyRecordID: historyRecordID)
+        Task { [weak self] in await self?.refreshProjects() }
+    }
+
+    /// The "File issues here" choice for a fork.
+    func setFilesUpstream(_ upstream: Bool, repository: String) async {
+        guard let store else { return }
+        store.setFilesUpstream(upstream, repository: repository)
+        _ = await store.loadedSnapshot()
+        projectsRevision += 1
     }
 
     @ObservationIgnored private var remoteSlot: RemoteDraftsSlot?
