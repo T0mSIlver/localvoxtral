@@ -144,12 +144,38 @@ watch() {
   ) &
 }
 
+# github_repo <remote-url>: its owner/name when it is a github.com URL in a
+# shape git clone writes (https, ssh, git@github.com:), with or without
+# `.git`; nothing otherwise.
+github_repo() {
+  case "$1" in
+  https://github.com/* | http://github.com/* | ssh://git@github.com/* | git://github.com/*) path="${1#*://*/}" ;;
+  git@github.com:*) path="${1#git@github.com:}" ;;
+  *) return 0 ;;
+  esac
+  path="${path%/}"
+  path="${path%.git}"
+  case "$path" in
+  */*/* | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_./-]*) ;;
+  ?*/?*) echo "$path" ;;
+  esac
+}
+
+# The repository is origin's (#919): in a fork with an `upstream` remote,
+# gh's own pick is the upstream. No origin: gh's pick. An origin off
+# GitHub: no list.
+REPO=""
+if ORIGIN="$(git remote get-url origin 2>/dev/null)"; then
+  REPO="$(github_repo "$ORIGIN")"
+  [ -n "$REPO" ] || REPO="-"
+fi
+
 # Open issues, trimmed to what the prompt quotes: 60 issues, 200-character
 # titles, 240-character bodies (QuickCaptureDraft.prompt). No gh, no login,
 # no GitHub remote: an empty list, and the prompt says it could not be read.
 : >"$WORK/issues"
-if command -v gh >/dev/null 2>&1; then
-  gh issue list --state open --limit 60 --json number,title,body \
+if [ "$REPO" != - ] && command -v gh >/dev/null 2>&1; then
+  gh issue list ${REPO:+--repo "$REPO"} --state open --limit 60 --json number,title,body \
     --jq '[.[] | {number, title: .title[0:200], body: (.body // "")[0:240]}]' \
     >"$WORK/issues.raw" 2>/dev/null &
   GH=$!

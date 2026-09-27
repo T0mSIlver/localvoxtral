@@ -152,17 +152,22 @@ package struct QuickCaptureDrafter: Sendable {
         return last
     }
 
-    /// `gh issue list` in the checkout, as the app's user. Nil when `gh` is
-    /// missing, not logged in, or the repository has no GitHub remote.
+    /// `gh issue list` of the checkout's repository (`QuickCaptureFiling`'s
+    /// pick), as the app's user. Nil when `gh` is missing, not logged in, or
+    /// the checkout has no GitHub repository.
     package static func ghOpenIssues(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         isExecutable: @escaping @Sendable (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
     ) -> @Sendable (String) async -> [QuickCaptureDraft.OpenIssue]? {
         { root in
-            guard let gh = ghCandidates(environment: environment).first(where: isExecutable) else { return nil }
+            guard let gh = ghCandidates(environment: environment).first(where: isExecutable),
+                  let repository = await QuickCaptureFiling.repository(
+                      ofCheckout: root, environment: environment, isExecutable: isExecutable
+                  )
+            else { return nil }
             guard let output = await BoundedProcess.run(
                 executableURL: URL(fileURLWithPath: gh),
-                arguments: QuickCaptureDraft.ghIssueListArguments,
+                arguments: QuickCaptureDraft.ghIssueListArguments(repository: repository),
                 environment: environment,
                 currentDirectory: root,
                 timeoutSeconds: 20,

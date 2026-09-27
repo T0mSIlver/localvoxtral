@@ -221,6 +221,23 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(calls.filter { $0.hasPrefix("issue list") }.map { $0.contains("--repo me/tool ") }, [true])
     }
 
+    func testARemoteURLNamesItsGitHubRepository() {
+        for url in [
+            "https://github.com/me/tool", "https://github.com/me/tool.git", "https://github.com/me/tool/\n",
+            "git@github.com:me/tool.git", "git@github.com:me/tool", "ssh://git@github.com/me/tool.git",
+            "ssh://git@GitHub.com:22/me/tool.git", "https://user@github.com/me/tool.git",
+        ] {
+            XCTAssertEqual(QuickCaptureFiling.repository(fromRemoteURL: url), "me/tool", url)
+        }
+        for url in [
+            "https://gitlab.com/me/tool.git", "git@gitlab.com:me/tool.git", "https://github.com.evil.io/me/tool",
+            "https://github.com/me", "https://github.com/me/tool/tree/main", "/srv/git/tool.git",
+            "file:///srv/git/tool.git", "github.com-work:me/tool.git", "",
+        ] {
+            XCTAssertNil(QuickCaptureFiling.repository(fromRemoteURL: url), url)
+        }
+    }
+
     func testACaptureInterruptedByAQuitWaitsWithItsWords() throws {
         var inbox = QuickCaptureInbox()
         inbox.add(QuickCaptureItem(capturedAt: Date(), text: "Half done"))

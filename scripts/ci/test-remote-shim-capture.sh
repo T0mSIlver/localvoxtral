@@ -56,6 +56,9 @@ echo 'enum Quillmark {}' >"$TMP_DIR/repo/Sources/Quillmark.swift"
 } >"$TMP_DIR/repo/README.md"
 git -C "$TMP_DIR/repo" add -A
 git -C "$TMP_DIR/repo" commit -q -m init
+# A fork: gh alone would list the upstream's issues (#919).
+git -C "$TMP_DIR/repo" remote add origin git@github.com:me/quill.git
+git -C "$TMP_DIR/repo" remote add upstream https://github.com/upstream/quill
 
 STUB="$TMP_DIR/stub"
 AGENTS="$TMP_DIR/agents"
@@ -222,6 +225,7 @@ for agent in claude vibe; do
   [ -d "$LOCK" ] || fail "$label: the run holds no lock"
   [ "$(cat "$TMP_DIR/gh-cwd")" = "$TMP_DIR/repo" ] || fail "$label: gh ran outside the repository root"
   grep -qx -- '--jq' "$TMP_DIR/gh-argv" && grep -qx create "$TMP_DIR/gh-argv" && fail "$label: gh was asked to create"
+  grep -A1 -x -- '--repo' "$TMP_DIR/gh-argv" | grep -qx me/quill || fail "$label: gh listed another repository than origin's"
   [ "$(cat "$TMP_DIR/prompt-body")" = '[{"number":12,"title":"Kerning","body":"Te pairs"}]' ] \
     || fail "$label: posted issues '$(cat "$TMP_DIR/prompt-body")'"
   check_request "$label" "$agent" "$TMP_DIR/prompt-header"
@@ -306,6 +310,17 @@ for agent in claude vibe; do
   [ ! -s "$TMP_DIR/prompt-body" ] || fail "$label: an issue list without gh"
   grep -qx 'X-Lvx-Draft-Exit: missing' "$TMP_DIR/answer-header" || fail "$label: a missing agent was not reported"
   pass "$label: no gh lists nothing, no agent reports missing"
+
+  # 7. An origin off GitHub: no list, though gh would pick the upstream.
+  reset_state
+  printf 'X-Lvx-Draft: %s\r\n' "$DRAFT_ID" >"$TMP_DIR/asks"
+  git -C "$TMP_DIR/repo" remote set-url origin https://gitlab.com/me/quill.git
+  run_hook "$agent" "$TMP_DIR/repo"
+  wait_for "$TMP_DIR/$agent-started" || fail "$label: an origin off GitHub started no run"
+  git -C "$TMP_DIR/repo" remote set-url origin git@github.com:me/quill.git
+  [ ! -e "$TMP_DIR/gh-argv" ] || fail "$label: gh listed issues for an origin off GitHub"
+  [ ! -s "$TMP_DIR/prompt-body" ] || fail "$label: posted issues for an origin off GitHub"
+  pass "$label: an origin off GitHub lists nothing"
 done
 done
 echo "remote shim capture: all checks passed"
