@@ -173,7 +173,7 @@ channels that share every gate:
 ```bash
 ./scripts/release.sh            # patch bump, stable channel
 ./scripts/release.sh minor      # or major, or an explicit X.Y.Z
-./scripts/release.sh daily      # what the 03:15 UTC cron does, on demand
+./scripts/release.sh daily      # the 03:15 UTC daily release, on demand
 ./scripts/release.sh nightly    # a nightly prerelease of main, on demand
 ./scripts/release.sh rehearse [target] [ref]   # all gates, no tag, no release
 ```
@@ -189,8 +189,11 @@ at, which is what `install.sh` and the Homebrew cask follow.
 `release.sh` refuses it unless the e2e dictation check passed on the release
 commit.
 
-**Daily** runs from the cron at 03:15 UTC (clear of eval-e2e at 04:45 on the
-same single runner), or on demand with `release.sh daily`. It is a stable
+**Daily** runs at 03:15 UTC (clear of eval-e2e at 04:45 on the same single
+runner): the dev box's scheduler dispatches it with `release.sh daily`, and
+the 03:15 cron is the fallback, because GitHub fires it hours late. A
+dispatch always runs; the cron skips as described in
+[test-tiers.md](../../docs/agent/test-tiers.md#scheduled-mac-inference-stays-in-the-night-window). It is a stable
 release with a minor bump (`v0.9.x` → `v0.10.0` → `v0.11.0`), from `main`
 only. Nobody is at the Mac at 03:15, so the gate is applied in the workflow:
 `scripts/ci/daily-release-plan.sh` (tested by `test-daily-release-plan.sh`)
@@ -200,8 +203,9 @@ no schedule; the owner dispatches it on main when he is at the Mac, so the
 release ships `main` as it was then, and what merged later waits for the
 next check. The run skips green, with a step-summary line, when no commit
 since the newest stable tag has passed the check, when `main` is already
-that tag, or when the Mac is on battery power
-(`scripts/ci/ac-power-guard.sh`). It fails red when it cannot read the UI
+that tag, or, for the cron only, when it cannot end by 07:00 UTC, a release
+run on main already succeeded or is running in the last 20 hours, or the Mac
+is on battery power (`scripts/ci/scheduled-run-guard.sh`). It fails red when it cannot read the UI
 Smoke runs.
 
 **Nightly** runs only on demand with `release.sh nightly`: `main`'s head,

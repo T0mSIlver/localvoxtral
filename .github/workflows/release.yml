@@ -9,8 +9,10 @@ name: Release App
 # pipeline would drift.
 #   * stable: hand-dispatched through release.sh, which refuses unless the
 #     e2e dictation check passed on the release commit.
-#   * daily: the 03:15 UTC cron. A stable minor release (v0.9.x -> v0.10.0)
-#     of the newest main commit on which a UI Smoke run scored the e2e
+#   * daily: dispatched on main at 03:15 UTC by the dev box's scheduler
+#     (release.sh daily); the 03:15 cron is only its fallback, because
+#     GitHub fires it hours late (#826). A stable minor release
+#     (v0.9.x -> v0.10.0) of the newest main commit on which a UI Smoke run scored the e2e
 #     dictation check (scripts/ci/daily-release-plan.sh). The owner starts
 #     that run on main when he is at the Mac, so the commit is main as it was
 #     then, and can be behind main's head. Nothing new, or nothing checked:
@@ -49,12 +51,16 @@ on:
   schedule:
     # 03:15 UTC daily release, while the owner is away from the Mac and clear
     # of eval-e2e at 04:45 UTC on the same single runner. A schedule event is
-    # always the daily channel.
+    # always the daily channel. GitHub fires it hours late (08:24-08:46 UTC
+    # the week of #826), so the dev box's scheduler dispatches the release at
+    # 03:15 and this cron is the fallback: the Plan step skips it outside the
+    # night window or after a release run that already covered the night.
     - cron: "15 3 * * *"
 
 permissions:
   contents: write
-  # daily-release-plan.sh reads UI Smoke runs.
+  # daily-release-plan.sh reads UI Smoke runs, recent-run-guard.sh this
+  # workflow's runs.
   actions: read
 
 concurrency:
@@ -92,10 +98,17 @@ jobs:
         # Everything that decides WHETHER this run proceeds, and for a daily
         # release WHICH commit it ships, in one place, so every step below
         # carries a single `if:`. A run stops here, green, when:
-        #   * it is scheduled and the Mac is on battery power
-        #     (ac-power-guard.sh, the same guard eval-e2e.yml and ui-smoke.yml
-        #     use; owner rule 2026-07-24: scheduled lanes never drain the
-        #     MacBook). Manual dispatches never consult it;
+        #   * it is scheduled and scheduled-run-guard.sh says skip, which
+        #     chains three guards (tested by test-scheduled-run-guard.sh):
+        #     - night-window-guard.sh 20: the run must end by 07:00 UTC, when
+        #       the owner starts work on the Mac. 20 is the longest observed
+        #       release (7-20 min);
+        #     - recent-run-guard.sh release.yml 20: a release run on main
+        #       succeeded, or is queued or running, in the last 20 h, most
+        #       often the scheduler's 03:15 dispatch;
+        #     - ac-power-guard.sh (owner rule 2026-07-24: scheduled lanes
+        #       never drain the MacBook).
+        #     Dispatches never consult them;
         #   * it is a daily release and scripts/ci/daily-release-plan.sh finds
         #     nothing to ship: main is already the newest stable tag, or no
         #     commit since that tag passed the e2e dictation check.
@@ -138,13 +151,10 @@ jobs:
           echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
 
           PROCEED=true
-          REASON="dispatched by hand"
-          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
-            DECISION="$(./scripts/ci/ac-power-guard.sh)"
-            REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
-            if [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" != "true" ]]; then
-              PROCEED=false
-            fi
+          DECISION="$(./scripts/ci/scheduled-run-guard.sh release.yml 20 20)"
+          REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
+          if [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" != "true" ]]; then
+            PROCEED=false
           fi
 
           if [[ "$PROCEED" == "true" && "$CHANNEL" == "daily" ]]; then
