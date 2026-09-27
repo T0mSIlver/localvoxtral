@@ -14,6 +14,8 @@ public struct AgentCLIInvocation: Equatable, Sendable {
 
 public enum AgentCLIParseResult: Equatable, Sendable {
     case run(AgentCLIInvocation)
+    /// `logs` reads the unified log itself; it never asks the app.
+    case logs(AgentCLILogsQuery)
     case help
     case usageError(String)
 }
@@ -61,15 +63,22 @@ public struct AgentCLIArguments: Sendable {
                                   after you opened the issue with gh, mark the
                                   capture filed. The command never files anything
           status                  whether the app runs, its engines, the last join
+          doctor                  checks the app, permissions, engines, agent hooks,
+                                  remote hosts and the last joins, with a fix for
+                                  each problem
+          logs                    the app's join lines and errors from the unified log
+              --join                only the join lines, one per dictation
+              --since <when>        as for history search (default 1h)
 
         Every command takes --json. Exit status: 0 answered, 1 the app refused,
-        2 bad arguments, 3 the app is not running.
+        2 bad arguments, 3 the app is not running, 4 a doctor check failed.
         """
 
     public func parse(_ arguments: [String]) -> AgentCLIParseResult {
         var positional: [String] = []
         var options: [String: String] = [:]
         var json = false
+        var joinOnly = false
         var index = 0
         let valued: Set<String> = ["--project", "--since", "--limit", "--agent"]
         while index < arguments.count {
@@ -79,6 +88,8 @@ public struct AgentCLIArguments: Sendable {
                 return .help
             case "--json":
                 json = true
+            case "--join":
+                joinOnly = true
             case "--":
                 positional += arguments[(index + 1)...]
                 index = arguments.count
@@ -101,11 +112,27 @@ public struct AgentCLIArguments: Sendable {
 
         guard let group = positional.first, group != "help" else { return .help }
         let rest = Array(positional.dropFirst())
+        if group == "logs" {
+            if let stray = options.keys.sorted().first(where: { $0 != "--since" }) {
+                return .usageError("\(stray) does not apply to logs")
+            }
+            if let operand = rest.first { return .usageError("unexpected argument: \(operand)") }
+            var start = now.addingTimeInterval(-AgentCLILogsQuery.defaultWindow)
+            if let value = options["--since"] {
+                guard let since = since(value) else { return .usageError(Self.sinceUsage) }
+                start = since
+            }
+            return .logs(AgentCLILogsQuery(joinOnly: joinOnly, since: start, json: json))
+        }
+        if joinOnly { return .usageError("--join applies to logs only") }
         let command: AgentCLICommand
         var operands: [String]
         switch group {
         case "status":
             command = .status
+            operands = rest
+        case "doctor":
+            command = .doctor
             operands = rest
         case "history", "terms", "capture":
             guard let verb = rest.first else { return .usageError("\(group) needs a command") }
@@ -132,7 +159,7 @@ public struct AgentCLIArguments: Sendable {
         case .captureShow: allowed = []
         case .termsList: allowed = ["--project"]
         case .termsPropose: allowed = ["--project", "--agent"]
-        case .historyLast, .status: allowed = []
+        case .historyLast, .status, .doctor: allowed = []
         }
         if let stray = options.keys.sorted().first(where: { !allowed.contains($0) }) {
             return .usageError("\(stray) does not apply to \(command.rawValue.replacingOccurrences(of: ".", with: " "))")
@@ -171,7 +198,7 @@ public struct AgentCLIArguments: Sendable {
                 return .usageError("--agent must be claude, codex, opencode or vibe")
             }
             request.caller = caller
-        case .historyLast, .termsList, .status, .captureList:
+        case .historyLast, .termsList, .status, .captureList, .doctor:
             break
         }
         guard operands.isEmpty else { return .usageError("unexpected argument: \(operands[0])") }
@@ -181,7 +208,7 @@ public struct AgentCLIArguments: Sendable {
         }
         if let value = options["--since"] {
             guard let since = since(value) else {
-                return .usageError("--since takes today, yesterday, 3d, 12h, 30m, 2w, or a date like 2026-09-25")
+                return .usageError(Self.sinceUsage)
             }
             request.since = since
         }
@@ -193,6 +220,8 @@ public struct AgentCLIArguments: Sendable {
         }
         return .run(AgentCLIInvocation(request: request, json: json))
     }
+
+    static let sinceUsage = "--since takes today, yesterday, 3d, 12h, 30m, 2w, or a date like 2026-09-25"
 
     /// `--agent`, or the agent the environment names; nil for a name that
     /// is not an agent's.

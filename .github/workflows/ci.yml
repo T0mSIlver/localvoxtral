@@ -259,6 +259,7 @@ jobs:
             ./scripts/ci/test-stt-lane-filter.sh \
             ./scripts/ci/test-mac-package-filter.sh \
             ./scripts/ci/test-lane-diff-facts.sh \
+            ./scripts/ci/test-remote-doctor.sh \
             ./scripts/ci/test-herdr-fixture-recovery.sh \
             ./scripts/ci/test-clean-stale-outputs.sh \
             ./scripts/ci/test-workflow-step-names.sh \

@@ -10,6 +10,8 @@ public struct AgentCLIRunner: Sendable {
         case refused = 1
         case usage = 2
         case notRunning = 3
+        /// `doctor` answered and at least one check failed.
+        case checkFailed = 4
     }
 
     public struct Outcome: Equatable, Sendable {
@@ -72,6 +74,8 @@ public struct AgentCLIRunner: Sendable {
         let exitCode: ExitCode
         if let error = response.error {
             exitCode = error.code == .notRunning ? .notRunning : .refused
+        } else if response.doctor?.hasFailure == true {
+            exitCode = .checkFailed
         } else {
             exitCode = .answered
         }
@@ -103,6 +107,7 @@ public struct AgentCLIText: Sendable {
         if let terms = response.terms { lines += render(terms) }
         if let proposal = response.proposal { lines += render(proposal) }
         if let status = response.status { lines += render(status) }
+        if let doctor = response.doctor { lines += render(doctor) }
         if let captures = response.captures { lines += render(captures) }
         if let capture = response.capture { lines += render(capture) }
         return lines.map { $0 + "\n" }.joined()
@@ -189,6 +194,10 @@ public struct AgentCLIText: Sendable {
             lines.append("Last dictation joined: no session")
         }
         return lines
+    }
+
+    private func render(_ doctor: AgentCLIDoctor) -> [String] {
+        doctor.textLines() + ["", doctor.summaryLine]
     }
 
     private func render(_ captures: AgentCLICaptures) -> [String] {

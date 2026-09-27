@@ -82,6 +82,118 @@ final class AgentCLIAppDataSource: AgentCLIDataSource {
         )
     }
 
+    func doctorFacts() async -> AgentCLIDoctorFacts {
+        guard let viewModel else {
+            return AgentCLIDoctorFacts(
+                microphone: .notAsked, accessibilityTrusted: false, speech: .off, polish: .off,
+                claudePlugin: nil, remoteHosts: [], recentJoins: [], now: Date()
+            )
+        }
+        let settings = viewModel.settings
+        let backends = viewModel.backendManager
+        let microphone: AgentCLIDoctorFacts.Permission = switch viewModel.session.currentMicrophoneAuthorizationStatus() {
+        case .authorized: .granted
+        case .denied: .denied
+        case .restricted: .restricted
+        case .notDetermined: .notAsked
+        }
+        // Only the key an engine in use needs, the same key a dictation
+        // would load: no Keychain prompt for one the user does not use.
+        func mistralKeySet() -> Bool {
+            settings.ensureSecretsLoaded([.mistralAPIKey])
+            return !settings.mistralAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        let speech: AgentCLIDoctorFacts.Engine = switch settings.dictationBackendMode {
+        case .managedLocal: .managed(backends.speechdStatus)
+        case .mistralAPI: .mistralAPI(keySet: mistralKeySet())
+        case .externalURL: .externalURL
+        }
+        let polish: AgentCLIDoctorFacts.Engine = if !settings.llmPolishingEnabled {
+            .off
+        } else {
+            switch settings.polishingBackendMode {
+            case .managedLocal: .managed(backends.polishdStatus)
+            case .mistralAPI: .mistralAPI(keySet: mistralKeySet())
+            case .externalURL: .externalURL
+            }
+        }
+        var facts = AgentCLIDoctorFacts(
+            appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+            appBundlePath: Bundle.main.bundlePath,
+            commandLink: Self.commandLink(),
+            microphone: microphone,
+            accessibilityTrusted: viewModel.isAccessibilityTrusted,
+            speech: speech,
+            polish: polish,
+            claudePlugin: nil,
+            remoteHosts: [],
+            recentJoins: viewModel.context.recentJoinOutcomes,
+            now: Date()
+        )
+        if let integration = viewModel.claudeIntegrationSettings {
+            // Both list plugins through their CLI (1–3 s each), so together,
+            // inside the broker's 10 s.
+            async let claude: Void = integration.refreshLocalPluginStatus()
+            async let codex: Void = integration.refreshCodexStatus()
+            _ = await (claude, codex)
+            integration.refreshOpencodeStatus()
+            integration.refreshVibeStatus()
+            integration.refreshDictationNoteStatuses()
+            integration.refreshHosts()
+            facts.claudePlugin = integration.localPluginStatus
+            facts.codexPlugin = integration.codexStatus
+            facts.codexHookHeard = integration.codexHookHeard
+            facts.opencodePlugin = integration.opencodeStatus
+            facts.vibeHooks = integration.vibeStatus
+            facts.dictationNotes = integration.dictationNoteStatuses
+            facts.remoteHosts = Self.remoteHosts(integration)
+        }
+        return facts
+    }
+
+    /// Enrolled hosts in the Remote hosts pane's order, revoked ones left out.
+    static func remoteHosts(_ integration: ClaudeIntegrationSettingsModel) -> [AgentCLIDoctorFacts.RemoteHost] {
+        let reported = Dictionary(
+            (integration.registry?.hosts() ?? []).map { ($0.id, $0.reportedPluginVersion) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return integration.hosts.filter { !$0.isRevoked }.map { row in
+            let plugin: String? = switch reported[row.id] ?? nil {
+            case nil: nil
+            case .headerAbsent: "1.9.0 or older"
+            case .version(let version): version
+            }
+            return AgentCLIDoctorFacts.RemoteHost(
+                label: row.label,
+                sshHostAlias: row.sshHostAlias,
+                lastSeenAt: row.lastSeenAt,
+                pluginNeedsUpdate: row.pluginNeedsUpdate,
+                forwardFailure: row.forwardIsFailure ? row.forwardStatusText : nil,
+                keepsTunnelOpen: row.persistentForwardEnabled,
+                reportedPluginVersion: plugin
+            )
+        }
+    }
+
+    /// Host-safe checks for the enrolled host with this id
+    /// (`AgentCLIDoctorChecks.hostChecks`), for the remote listener's
+    /// `/v1/doctor`.
+    func hostDoctorChecks(hostID: String) async -> [AgentCLICheck] {
+        let facts = await doctorFacts()
+        let rows = viewModel?.claudeIntegrationSettings?.hosts.filter { !$0.isRevoked } ?? []
+        return AgentCLIDoctorChecks.hostChecks(facts, hostIndex: rows.firstIndex { $0.id == hostID })
+    }
+
+    static func commandLink() -> AgentCLIDoctorFacts.CommandLink? {
+        guard let binary = Bundle.main.executableURL?.deletingLastPathComponent()
+            .appendingPathComponent(AgentCLIInstallState.binaryName).path
+        else { return nil }
+        return AgentCLIDoctorFacts.CommandLink(
+            state: AgentCLIInstallState.read(bundledBinary: binary),
+            target: try? FileManager.default.destinationOfSymbolicLink(atPath: AgentCLIInstallState.linkPath)
+        )
+    }
+
     func captures() async -> [QuickCaptureItem]? {
         viewModel?.quickCapture?.model.items
     }

@@ -26,6 +26,8 @@ package protocol AgentCLIDataSource: Sendable {
         excluding: [String]
     ) async -> [String]
     func status() async -> AgentCLIStatus
+    /// What `doctor` checks (`AgentCLIDoctorChecks`).
+    func doctorFacts() async -> AgentCLIDoctorFacts
     /// The quick capture Inbox, newest first; nil when the app has none.
     func captures() async -> [QuickCaptureItem]?
     /// A coding agent filed the capture with its own `gh`
@@ -76,6 +78,10 @@ package struct AgentCLIService: Sendable {
         case .termsList: response = await termsList(request)
         case .termsPropose: response = await termsPropose(request)
         case .status: response = AgentCLIResponse(status: await source.status())
+        case .doctor:
+            response = AgentCLIResponse(
+                doctor: AgentCLIDoctor(checks: AgentCLIDoctorChecks.checks(await source.doctorFacts()))
+            )
         case .captureList: response = await captureList(request)
         case .captureShow: response = await captureShow(request)
         case .captureFiled: response = await captureFiled(request)

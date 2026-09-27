@@ -316,7 +316,8 @@ user-level instructions file, saying your prompts come from speech-to-text.
 The note asks the agent to fix an obvious transcription error itself, and to
 ask before acting when a likely error changes the request. It also asks the
 agent to propose what it creates or renames with
-[the localvoxtral command](#the-localvoxtral-command).
+[the localvoxtral command](#the-localvoxtral-command), and names
+`localvoxtral doctor` for when dictation misbehaves.
 
 **Remove** takes the note out. A note added by an older version reads as
 another version, with an **Update** button.
@@ -348,7 +349,8 @@ copy the note by hand.
 ## The localvoxtral command
 
 A coding agent can read your dictation history, your terms and your quick
-captures, propose terms of its own, and mark a capture filed, with the
+captures, propose terms of its own, mark a capture filed, and find out why
+dictation misbehaves, with the
 localvoxtral command.
 
 ### Install the command
@@ -370,6 +372,8 @@ localvoxtral capture list --project .
 localvoxtral capture show "busy herdr pane"
 localvoxtral capture filed "busy herdr pane" https://github.com/you/app/issues/42
 localvoxtral status
+localvoxtral doctor
+localvoxtral logs --join --since 3h
 ```
 
 - Every command takes `--json`.
@@ -402,6 +406,38 @@ instead of searching GitHub.
   the capture's repository, and a capture that is still drafting or already
   filed is refused.
 
+### Find out what is wrong
+
+`doctor` prints numbered checks: which copy of the app runs and where
+/usr/local/bin/localvoxtral points, the microphone and Accessibility
+permissions, the speech and polish engines, the Claude Code and Codex
+plugins, the opencode plugin, the Vibe hooks, the note in each agent's file,
+each remote host, and the sessions the last five dictations joined. Each
+problem comes with the step that fixes it, and `--json` gives each check a
+stable `id`. It changes nothing. It prints no dictated text and no key, but
+it names your remote hosts. It exits with status 4 when a check failed.
+
+`logs` reads the app's lines from the macOS unified log, and works while the
+app is not running: one line per dictation saying which session it joined
+and why (`--join`), and without `--join`, the app's errors too. It covers the
+last hour unless `--since` says otherwise. It prints what `log show` prints,
+so a value the app logs as private stays `<private>`, and the app never logs
+dictated text in the clear.
+
+### On a remote host
+
+The remote Claude Code plugin puts a `localvoxtral` command on the PATH of
+Claude Code sessions on the host, and only `localvoxtral doctor` runs there.
+It checks the host's end of the tunnel: the port the Mac's forward should
+bind, that the Mac refuses a request without the host's token and takes one
+with it, the plugin version each running session loaded, the Vibe hooks, and
+the last hook's outcome. Then it prints the Mac's own checks, fetched through
+the tunnel with the host's token, without local paths and without your other
+hosts. It never prints the token.
+
+With the Vibe hooks only, the same check is
+`sh ~/.vibe/localvoxtral/remote/doctor.sh`.
+
 ### Proposed terms
 
 A proposed term joins the project's terms the way the agent's own proposals
@@ -422,7 +458,8 @@ the agent once.
 
 Add the note from the **Tell … you dictate** row (see
 [Telling the agent you dictate](#telling-the-agent-you-dictate)). It tells
-your agents to propose what they create or rename.
+your agents to propose what they create or rename, and to run
+`localvoxtral doctor` when dictation misbehaves.
 
 Vibe is not detected, so its proposals read "Proposed by a coding agent". To
 have them name Vibe, ask it to add `--agent vibe` in a line of
