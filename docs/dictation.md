@@ -50,8 +50,10 @@ While you dictate, the top of the overlay lists where the words can go, and
 So with nobody waiting, one Tab sends the dictation to the Inbox. The
 overlay only moves to a session once its terminal confirms the pane is in
 front; otherwise it stays where it was and the menu bar popover says why.
-Tab reaches back to the app you started in unless it is the same terminal
-window as the session and has no session of its own to find the pane by.
+After Tab moves to a session, Tab can bring back the app you started in. One
+case is refused: you started in the same terminal app as that session, in a
+pane with no joined session. The app has no way to find that pane again, and
+bringing the terminal forward would only show the session's pane.
 
 Two optional shortcuts under **Settings → Dictation → Output** open the
 overlay on a destination: **Answer the agent that needs you** on the session
@@ -130,6 +132,25 @@ host Desktop runs them on. When no session has that name, the dictation is typed
 when more than one does, or its pane can't be reached, nothing is typed and
 the menu bar popover says so. In Live Auto-Paste, what you say next is
 typed into the session you went to.
+
+**Say "send that to" and a session's name to send it there.** In Overlay
+Buffer, a dictation that ends with "send that to payments" goes to the
+session named payments, which gets the text and presses Enter. The app you
+are in gets nothing. The name has one to four words and answers the way "go
+to" does, your own names first.
+
+- A session in a Ghostty, iTerm2 or Terminal.app tab comes forward and gets
+  the text. Enter is pressed only if that pane is still the one in front.
+- An opencode session, or a session in a
+  [herdr](../integrations/herdr/README.md) pane on this Mac, gets the text
+  without coming forward.
+- A remote, Claude Desktop or cmux session gets nothing, and the popover
+  says "Can't send to that session yet".
+- When no session has that name, the whole dictation is inserted where you
+  are, as spoken. When more than one does, nothing is sent and the text
+  stays in History.
+- When a delivery fails, nothing reaches the app you are in: the text stays
+  in History, and the popover says whether it was typed without Enter.
 
 **Give a session a name of your own.** Say "call this session payments" (or
 "name this session payments") while dictating into a joined session, and
@@ -329,8 +350,8 @@ History; the panes sit under the sidebar's Settings header.
   the spelling for that project. After three dictations it starts correcting
   the name on its own, including in dictations where nothing on screen
   mentions it. These terms also show as tags in **Suggestions**, with no API
-  credits. A project is a repository: all its git worktrees share one list,
-  on this Mac and on a remote host whose plugin is 1.13.0 or later.
+  credits. Terms are kept per project, and a project is a git repository
+  (see [One project per repository](#one-project-per-repository)).
 
   **Advanced → Terms learned from polishing → Show** lists them by project,
   with how often each was applied and when it last was. Pin a term to keep
@@ -368,7 +389,7 @@ History; the panes sit under the sidebar's Settings header.
   means not installed. **Claude Code** and **opencode** install their
   plugins, **Mistral Vibe** installs its hooks, **Codex** installs its plugin
   and turns green once Codex has run the hooks, **herdr** shows detection and
-  herdr's saved machines, and **Remote hosts** enrolls SSH hosts for remote
+  herdr's saved machines ([herdr](../integrations/herdr/README.md)), and **Remote hosts** enrolls SSH hosts for remote
   sessions.
 - **Terminals**: one pane per terminal app (plus any you add), showing
   whether it is installed and what it supports. Dictation works in all of
@@ -381,6 +402,26 @@ History; the panes sit under the sidebar's Settings header.
 - **About**: version, link to the repository, and Export Diagnostics (writes
   a redacted local report to the Desktop).
 
+### One project per repository
+
+Learned terms, the coding agent's proposals and quick capture's project list
+are all kept per project. A project is a git repository, and its worktrees
+belong to it:
+
+- **On this Mac**, a session in any worktree of a repository counts toward
+  that repository. The Learned terms list shows one entry, under the
+  repository's name.
+- **On an ssh host**, the same holds once the host runs the remote plugin
+  1.13.0 or later. An older plugin sends only the worktree's folder name, so
+  each worktree shows up as a project of its own, with a name like
+  bold-bose-fac585. **Update Host…** in **Settings → Remote hosts** installs
+  the newer plugin.
+- **Projects left over from an older plugin** are not merged into their
+  repository. Their terms expire 90 days after last use, unless you pinned
+  one, and the list then drops the project. Quick capture no longer offers
+  them as destinations. To remove one sooner, forget its terms in
+  **Terms learned from polishing → Show**.
+
 ### Terms from your coding agent
 
 **Text Processing → Advanced → Ask the coding agent for each new project's
@@ -389,9 +430,12 @@ local Claude Code, Mistral Vibe or opencode session in a project the app has
 not asked about starts that agent once, headless, in the project's repository. The
 agent reads a few files and answers with up to 40 of the project's own names:
 modules, types, commands, environment variables. Your session never sees the
-request, so it cannot interrupt a turn. Every worktree of a repository counts
-as one project, and the app asks each project once, whichever agent joins
-first. It retries a failed run a day later.
+request, so it cannot interrupt a turn.
+
+The app asks once per repository, whichever agent joins first. Joining a
+session in another worktree of the same repository does not ask again (see
+[One project per repository](#one-project-per-repository)). A run that fails
+is retried a day later.
 
 The names show in **Terms learned from polishing → Show** as "Proposed by
 Claude Code", "Proposed by Mistral Vibe" or "Proposed by opencode". They are
