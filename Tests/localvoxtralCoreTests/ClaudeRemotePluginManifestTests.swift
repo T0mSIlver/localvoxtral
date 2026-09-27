@@ -598,6 +598,39 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         XCTAssertEqual(rendered.stderr, "")
     }
 
+    /// A Stop's reply stays on the host (#818): the body the shim posts, fed
+    /// to the listener's own parser, still names the session and its cwd.
+    func testAStopPostsItsSessionAndCwdButNotTheReply() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shim-stop-body-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let dump = directory.appendingPathComponent("body")
+        let payload = Data(
+            #"{"session_id":"6f1c2d3e-aaaa-bbbb-cccc-0123456789ab","transcript_path":"/home/u/.claude/projects/p/s.jsonl","cwd":"/srv/a\"b/caf\u00e9","permission_mode":"default","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"I ran \"rm -rf build\" and pushed."}"#.utf8
+        )
+
+        let result = try runShimWithStubCurl(
+            status: "200",
+            body: ClaudeRemoteHTTPCodec.hookResponseBody,
+            extraEnvironment: ["FAKE_CURL_BODY_DUMP": dump.path],
+            payload: payload
+        )
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stderr, "")
+        let posted = try Data(contentsOf: dump)
+        let text = String(decoding: posted, as: UTF8.self)
+        XCTAssertFalse(text.contains("last_assistant_message"), text)
+        XCTAssertFalse(text.contains("rm -rf"), text)
+        let record = try XCTUnwrap(
+            ClaudeRemoteHookPayloadParser.parse(data: posted, fallbackEvent: "Stop", timestamp: 1)?.record
+        )
+        XCTAssertEqual(record.event, .stop)
+        XCTAssertEqual(record.sessionID, "6f1c2d3e-aaaa-bbbb-cccc-0123456789ab")
+        XCTAssertEqual(record.rawCwd, "/srv/a\"b/caf\u{E9}")
+    }
+
     func testSessionStartPrunesSessionStampsOlderThanADay() throws {
         let state = FileManager.default.temporaryDirectory
             .appendingPathComponent("prune-session-state-\(UUID().uuidString)")
@@ -745,6 +778,11 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         for argument in "$@"; do
           [ "$previous" = "--output" ] && out="$argument"
           [ "$previous" = "--dump-header" ] && response_headers="$argument"
+          if [ "$previous" = "--data-binary" ] && [ -n "${FAKE_CURL_BODY_DUMP:-}" ]; then
+            case "$argument" in
+            @*) cat "${argument#@}" >"$FAKE_CURL_BODY_DUMP" 2>/dev/null ;;
+            esac
+          fi
           if [ "$previous" = "--header" ] && [ -n "${FAKE_CURL_HEADER_DUMP:-}" ]; then
             case "$argument" in
             @*) cat "${argument#@}" >>"$FAKE_CURL_HEADER_DUMP" 2>/dev/null ;;
