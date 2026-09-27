@@ -67,6 +67,9 @@ struct SettingsGroup<Content: View>: View {
     /// page (owner review, 2026-09-07): what a row's title cannot say lives in
     /// the docs, never in a line under the row.
     var learnMoreURL: URL?
+    /// A link-styled button in the header's place of Learn more, for a
+    /// group whose header opens more of its own content ("Show all 23").
+    var headerAction: (title: String, action: () -> Void)? = nil
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -78,6 +81,11 @@ struct SettingsGroup<Content: View>: View {
                 if let learnMoreURL {
                     Spacer(minLength: 12)
                     Link("Learn more", destination: learnMoreURL)
+                        .font(.callout)
+                } else if let headerAction {
+                    Spacer(minLength: 12)
+                    Button(headerAction.title, action: headerAction.action)
+                        .buttonStyle(.link)
                         .font(.callout)
                 }
             }

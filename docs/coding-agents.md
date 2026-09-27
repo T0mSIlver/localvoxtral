@@ -347,8 +347,9 @@ copy the note by hand.
 
 ## The localvoxtral command
 
-A coding agent can read your dictation history and your terms, and propose
-terms of its own, with the localvoxtral command.
+A coding agent can read your dictation history, your terms and your quick
+captures, propose terms of its own, and mark a capture filed, with the
+localvoxtral command.
 
 ### Install the command
 
@@ -365,6 +366,9 @@ localvoxtral history search "mac queue" --since yesterday --project .
 localvoxtral history last
 localvoxtral terms list --project .
 localvoxtral terms propose Featherline QuillDoc --project .
+localvoxtral capture list --project .
+localvoxtral capture show "busy herdr pane"
+localvoxtral capture filed "busy herdr pane" https://github.com/you/app/issues/42
 localvoxtral status
 ```
 
@@ -380,6 +384,24 @@ The command talks to the running app over the same private socket the hooks
 use. It opens no network port, and only processes running as you can reach
 it. It needs the app running, and exits with status 3 when it is not.
 
+### Quick captures
+
+Tell your agent "look at the capture about the busy herdr pane". The command
+calls an Inbox item a capture, not an issue, so the agent asks the command
+instead of searching GitHub.
+
+- `capture list` shows each capture's id, project, kind, age, state and
+  title. The title is the draft's, or the capture's first words until it has
+  a draft.
+- `capture show` takes the title, any unique part of it, or the id, and
+  prints the draft, your dictated words, the related issue and the
+  repository it files in, followed by the body **File** would send.
+- The command never files. The agent opens the issue with its own `gh`,
+  then runs `capture filed` with the issue's URL. The capture then shows as
+  filed on the Inbox page, as after **File**. The URL must be an issue in
+  the capture's repository, and a capture that is still drafting or already
+  filed is refused.
+
 ### Proposed terms
 
 A proposed term joins the project's terms the way the agent's own proposals
@@ -388,7 +410,7 @@ may, and three dictations or a **Pin** make it yours. A name written like
 code (a type or function name, a file name, a path, a flag or an environment
 variable) is refused as not a term.
 
-**Settings → Text Processing → Terms learned from polishing → Show** lists it
+**Show all** under the project's terms in **Settings → Projects** lists it
 as "Proposed by" the agent that ran the command. Claude Code, Codex and
 opencode are detected; Vibe passes `--agent vibe`.
 
@@ -428,9 +450,12 @@ A capture then goes through three steps.
    duplicates (see [How the draft is written](#how-the-draft-is-written)).
 3. **Review.** On the Inbox page you edit the draft, move the capture to
    another project, or discard it. **File** creates the issue with your
-   GitHub CLI, with your dictated words quoted under the draft. You can also
-   [review it by voice](#review-a-draft-by-voice). Nothing is filed any
-   other way.
+   GitHub CLI, with your dictated words quoted under the draft. The Inbox
+   fills in the project's repository (see
+   [Each project's repository](#each-projects-repository)). Your coding
+   agent can also file it with its own `gh` ([Quick captures](#quick-captures)).
+   You can also [review it by voice](#review-a-draft-by-voice). Nothing
+   else files.
 
 ### Review a draft by voice
 
@@ -457,8 +482,7 @@ the dictation after 3 seconds of silence.
 
 ### Which projects a capture can go to
 
-The classifier picks from the projects **Settings → Text Processing → Terms
-learned from polishing** lists:
+The classifier picks from the projects **Settings → Projects** lists:
 
 - a checkout on this Mac that a dictation joined;
 - a repository on an ssh host where a session has run, when the host runs
@@ -471,24 +495,56 @@ Per-worktree projects that an older plugin left in your learned terms are
 not offered
 ([One project per repository](dictation.md#one-project-per-repository)).
 
+A repository checked out both on this Mac and on a host is one project
+here, drafted on this Mac. Its learned terms stay listed under each
+checkout.
+
+### Projects
+
+**Settings → Projects** lists every project a capture can go to: where
+**File** sends its issues, where it is checked out, when you last used it,
+and the drafts waiting on it. A warning replaces the repository for a fork
+you have not picked a repository for, and for a project with no GitHub
+repository.
+
+Click a project to see its repository and checkouts, its description, its
+learned terms, and its joined sessions, captures and dictations this week.
+**Open Inbox** goes to its drafts.
+
+### Each project's repository
+
+A project's repository is the GitHub repository its `origin` remote points
+at. The app reads it from a checkout on this Mac; a host sends it from
+remote plugin 1.23.0 or Vibe hooks 1.8.0. A project whose `origin` is not on
+GitHub, or that has none, asks for `owner/repository` on its first capture
+and keeps your answer. **Set…** or **Change…** in the project's
+**Repository** group edits that answer; an `origin` on GitHub is changed in
+git.
+
+A fork files in your fork, since `origin` is yours. To file its captures in
+the repository it was forked from, pick that repository in the project's
+**File issues here**. Until you pick one, **Settings → Projects** marks the
+fork.
+
 ### Describe your projects
 
 The classifier reads each project's name, a description, the opening of its
-README, and its learned terms. It reads the README from a checkout on this
-Mac, or from what a remote project's host reports.
+README, its GitHub topics, and its learned terms. It reads the README from a
+checkout on this Mac, or from what a remote project's host reports.
 
-A README says what a project is, rarely what it has, so each project also
-gets a one-sentence description, up to 200 characters. With **Ask the coding
-agent for each new project's terms** on, the agent writes it in the same run
-as the terms
+The description is the repository's description on GitHub, which your
+GitHub CLI fetches once a week and whenever **Settings → Projects** opens.
+A private repository works when `gh` can read it. Without a GitHub
+description, the description is one sentence of up to 200 characters that
+the coding agent writes in the same run as the terms, when **Ask the coding
+agent for each new project's terms** is on
 ([Terms from your coding agent](dictation.md#terms-from-your-coding-agent)).
-Until it answers, or with that setting off, the description is the README
-opening.
+Until it answers, or with that setting off, it is the README opening.
 
-**Settings → Context → Quick capture → Project descriptions** shows each
-one. Edit a field to replace it with your own, such as "Menu bar dictation
-app: shortcuts, polishing, quick capture and its Inbox". Empty the field to
-go back to the automatic one.
+A project's sheet in **Settings → Projects** shows its description and who
+wrote it. **Edit…** replaces it with your own, such as "Menu bar dictation
+app: shortcuts, polishing, quick capture and its Inbox". Save an empty
+field to go back to the automatic one.
 
 ### Choose the classifier
 

@@ -381,7 +381,7 @@ there is not.
   sum; a remembered term never outranks a live
   source (`.learned` is LAST in `PolishContextSource`, so a contested span
   abstains); unpinned terms decay at 90 days; and Text processing →
-  Advanced → Terms learned from polishing → Forget drops the file (Show forgets one). Verification candidates are never
+  Advanced → Terms learned from polishing → Forget drops the file (Show, or a project's Show all in Projects, forgets one). Verification candidates are never
   recorded — they are questions put to the model, not answers. A dictation
   whose project cannot be established teaches nothing at all, which is not
   the same as one with no project: the latter teaches the shared bucket,
@@ -2016,6 +2016,13 @@ there is not.
   directory above a cwd's `.claude/worktrees/<name>` stands in for it
   (`claudeWorktreeRepository`), under the same rule; it is read off the cwd
   as it arrives and kept as a label, like the cwd's own.
+  `X-Lvx-Env-Repository` (#926) is the host's `origin` on github.com as
+  `owner/name`, from `capture.sh repository`. It is kept on the project only
+  beside `X-Lvx-Env-Project` and only when `QuickCaptureInbox.isRepository`
+  accepts it (no `.` or `..` part), and it is used only as `gh issue create
+  --repo`, after the Inbox shows it, and as `gh api repos/<owner>/<name>`,
+  which only reads. A squatter on the port cannot send it: it rides on the
+  host's authenticated hook.
 - **A remote request names its agent in a header, and the header buys nothing
   but a namespace.** A remote host runs no publisher of ours, so the agent
   cannot ride inside the record the way it does locally: the Vibe shim

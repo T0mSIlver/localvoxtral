@@ -6,7 +6,7 @@ import Synchronization
 package protocol RemoteProjectSummaryStoring: Sendable {
     func snapshot() -> LearnedTerms
     func recordSummary(_ summary: String?, projectKey: String)
-    func recordRemoteReport(project: LearnedTermProjectIdentity, asRepository: Bool)
+    func recordRemoteReport(project: LearnedTermProjectIdentity, asRepository: Bool, repository: String?, hostID: String?)
 }
 
 /// Quick capture for remote projects (#745), on #641's channel: the Mac
@@ -83,9 +83,9 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
         var readmeAsks: [String: ReadmeAsk] = [:]
         var readmeAsked: [String: Date] = [:]
         var drafts: [String: Draft] = [:]
-        /// Keyed by project: when a hook's report of it was last recorded,
-        /// and whether as a repository.
-        var reported: [String: (at: Date, asRepository: Bool)] = [:]
+        /// Keyed by project and host: when a hook's report of it was last
+        /// recorded, and whether as a repository.
+        var reported: [String: (at: Date, asRepository: Bool, repository: String?)] = [:]
     }
 
     private let state = Mutex(State())
@@ -166,7 +166,8 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
     /// reports any more (#819). Every shim version counts: an old one names
     /// its cwd label, which only stamps a project already held.
     package func noteReport(for snapshot: ClaudeSessionSnapshot) {
-        guard case .remote = snapshot.origin,
+        guard case .remote(let channel) = snapshot.origin,
+              let hostID = ClaudeRemoteSessionScope.hostID(fromChannel: channel),
               case .remoteOpaque(let label)? = snapshot.learnedTermWorkspace,
               let project = LearnedTermProjectResolver.resolve(
                   repositoryRoot: .unknown, workspace: snapshot.learnedTermWorkspace
@@ -174,23 +175,29 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
               project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix)
         else { return }
         let asRepository = snapshot.remoteProject == label
+        // The host's origin names the repository only beside its name.
+        let repository = asRepository
+            ? snapshot.remoteEnvironment?.repository.flatMap { QuickCaptureInbox.isRepository($0) ? $0 : nil }
+            : nil
         // A cwd label stamps only a project a dictation already added. Until
         // then this hook records nothing, so it must not take the interval:
         // the hook right after that dictation is the one to stamp (#891).
         guard asRepository || store.snapshot().projects.contains(where: { $0.key == project.key }) else { return }
         let moment = now()
+        let reportKey = project.key + "\u{0}" + hostID
         let due = state.withLock { state -> Bool in
-            if let last = state.reported[project.key],
+            if let last = state.reported[reportKey],
                moment.timeIntervalSince(last.at) < Self.reportInterval,
-               last.asRepository || !asRepository
+               last.asRepository || !asRepository,
+               repository == nil || last.repository == repository
             {
                 return false
             }
-            state.reported[project.key] = (moment, asRepository)
+            state.reported[reportKey] = (moment, asRepository, repository ?? state.reported[reportKey]?.repository)
             return true
         }
         guard due else { return }
-        store.recordRemoteReport(project: project, asRepository: asRepository)
+        store.recordRemoteReport(project: project, asRepository: asRepository, repository: repository, hostID: hostID)
     }
 
     // MARK: The asks, on an accepted hook's reply

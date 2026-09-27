@@ -3,7 +3,7 @@ import localvoxtralCore
 import Synchronization
 
 /// `gh` for the Inbox: `/w/reach` is `o/reach`, nothing else resolves, and
-/// every issue created is recorded.
+/// every issue list and issue created is recorded.
 package final class FakeQuickCaptureGitHub: QuickCaptureGitHub, @unchecked Sendable {
     package let created = Mutex<[[String]]>([])
     package var createResult: Result<String, QuickCaptureFiling.Failure> = .success("https://github.com/o/reach/issues/9")
@@ -11,7 +11,13 @@ package final class FakeQuickCaptureGitHub: QuickCaptureGitHub, @unchecked Senda
     package init() {}
 
     package func repository(ofCheckout path: String) async -> String? { path == "/w/reach" ? "o/reach" : nil }
-    package func openIssues(ofCheckout path: String) async -> [QuickCaptureDraft.OpenIssue]? { [] }
+    package let issuesListed = Mutex<[String?]>([])
+
+    package func openIssues(ofCheckout path: String, repository: String?) async -> [QuickCaptureDraft.OpenIssue]? {
+        issuesListed.withLock { $0.append(repository) }
+        return []
+    }
+    package func repositoryFacts(_ repository: String) async -> GitHubRepositoryFacts? { nil }
     package func createIssue(repository: String, title: String, body: String) async -> Result<String, QuickCaptureFiling.Failure> {
         created.withLock { $0.append([repository, title, body]) }
         return createResult
@@ -49,16 +55,17 @@ package enum QuickCaptureFixture {
         QuickCaptureProject(key: "remote:website", name: "website", summary: nil, terms: [], userLine: nil),
     ]
 
-    /// An Inbox that routes by `answer` and drafts with `runner`.
+    /// An Inbox that routes by `answer` and drafts with `runner`. A checkout
+    /// is any `/w/` path or a real directory.
     @MainActor
     package static func model(
         fileURL: URL?,
         answer: [String: Double],
-        github: FakeQuickCaptureGitHub,
+        github: any QuickCaptureGitHub,
         runner: FakeQuickCaptureDraftRunner,
+        projects: [QuickCaptureProject] = projects,
         remote: (@Sendable (String, QuickCaptureProject) async -> QuickCaptureDraft.Outcome)? = nil
     ) -> QuickCaptureInboxModel {
-        let projects = projects
         return QuickCaptureInboxModel(
             fileURL: fileURL,
             makeRouter: { QuickCaptureRouter(classifiers: [FixedQuickCaptureClassifier(answer)]) },
@@ -67,9 +74,9 @@ package enum QuickCaptureFixture {
             drafter: {
                 QuickCaptureDrafter(
                     runner: runner,
-                    openIssues: { await github.openIssues(ofCheckout: $0) },
+                    openIssues: { await github.openIssues(ofCheckout: $0, repository: $1) },
                     trackedFiles: { _ in [] },
-                    directoryExists: { $0.hasPrefix("/w/") },
+                    directoryExists: { $0.hasPrefix("/w/") || FileManager.default.fileExists(atPath: $0) },
                     remote: remote
                 )
             },

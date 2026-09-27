@@ -1250,7 +1250,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     /// repositories for it. `$CLAUDE_CODE_HOST_SESSION_ID` is sent only from a
     /// process tree the test runner is not, and has tests of its own (#657).
     private static let shimTransformedOrIntrinsicFields: Set<ClaudeRemoteEnvironmentField> =
-        [.hookParentPID, .sshConnection, .project, .desktopSessionID]
+        [.hookParentPID, .sshConnection, .project, .repository, .desktopSessionID]
 
     func testShimSendsEveryAllowlistedEnvValueUnderTheHeaderTheListenerReads() throws {
         // One distinct value per variable, so a copy-pasted header name shows
@@ -1305,22 +1305,31 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     /// The project label comes from the one part of the shim that runs only
     /// inside a repository, so it is run inside one. On macOS that is bash
     /// 3.2 as /bin/sh, which ended the first version with a syntax error that
-    /// Linux's dash never raised (#652).
+    /// Linux's dash never raised (#652). Its GitHub `origin` rides beside it
+    /// (#926), a fork's own rather than its upstream.
     func testShimNamesTheRepositoryItRunsIn() throws {
         let repo = FileManager.default.temporaryDirectory
             .appendingPathComponent("shim-repo-\(UUID().uuidString)/api")
         try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: repo.deletingLastPathComponent()) }
-        let gitInit = Process()
-        gitInit.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        gitInit.arguments = ["git", "init", "-q", repo.path]
-        try gitInit.run()
-        gitInit.waitUntilExit()
-        XCTAssertEqual(gitInit.terminationStatus, 0)
+        for arguments in [
+            ["init", "-q", repo.path],
+            ["-C", repo.path, "remote", "add", "origin", "git@github.com:me/api.git"],
+            ["-C", repo.path, "remote", "add", "upstream", "https://github.com/them/api.git"],
+        ] {
+            let git = Process()
+            git.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            git.arguments = ["git"] + arguments
+            try git.run()
+            git.waitUntilExit()
+            XCTAssertEqual(git.terminationStatus, 0, arguments.joined(separator: " "))
+        }
 
         let captured = try capturedRequestHeaders(environment: [:], workingDirectory: repo)
         let request = try parseCapturedHeaders(captured)
-        XCTAssertEqual(ClaudeRemoteEnvironmentCodec.environment(in: request.headers)?.project, "api")
+        let environment = ClaudeRemoteEnvironmentCodec.environment(in: request.headers)
+        XCTAssertEqual(environment?.project, "api")
+        XCTAssertEqual(environment?.repository, "me/api")
     }
 
     func testShimTreatsAnExportedButEmptyVariableAsAbsent() throws {

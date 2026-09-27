@@ -32,6 +32,9 @@ package final class QuickCaptureInboxModel {
     package var onDraftReady: (@MainActor (QuickCaptureItem) -> Void)?
     /// Where the capture went, for its History record.
     package var onRouted: (@MainActor (_ historyRecordID: UUID, _ destination: String) -> Void)?
+    /// The user typed `owner/name` for a project that has no repository
+    /// (#926): kept on the project, so the Inbox asks once.
+    package var onRepositoryAnswered: (@MainActor (_ projectKey: String, _ repository: String) -> Void)?
 
     package init(
         fileURL: URL?,
@@ -91,9 +94,17 @@ package final class QuickCaptureInboxModel {
                 if !key.hasPrefix("/") { $0.note = QuickCaptureInbox.waitingForHostNote }
             }
         }
-        let repository = key.hasPrefix("/") ? await github.repository(ofCheckout: key) : nil
+        let repository = await repository(of: projects.first { $0.key == key })
         let outcome = await drafter().draft(capture: text, route: destination, projects: projects, agents: agents())
         mutate { $0.applyDraft(outcome, repository: repository, to: id) }
+    }
+
+    /// The project's filing repository, else a local checkout's `origin`
+    /// read now, before the project list has it.
+    private func repository(of project: QuickCaptureProject?) async -> String? {
+        guard let project else { return nil }
+        if let repository = project.issueRepository { return repository }
+        return project.key.hasPrefix("/") ? await github.repository(ofCheckout: project.key) : nil
     }
 
     // MARK: Review
@@ -109,6 +120,11 @@ package final class QuickCaptureInboxModel {
     package func setRepository(_ repository: String, for id: UUID) {
         let trimmed = repository.trimmingCharacters(in: .whitespacesAndNewlines)
         mutate { inbox in inbox.update(id) { $0.repository = trimmed.isEmpty ? nil : trimmed } }
+        guard QuickCaptureInbox.isRepository(trimmed),
+              let key = inbox.items.first(where: { $0.id == id })?.projectKey,
+              let project = projects().first(where: { $0.key == key }), project.repository == nil
+        else { return }
+        onRepositoryAnswered?(key, trimmed)
     }
 
     /// Moves a capture to another project, or to the catch-all with nil. A
@@ -118,14 +134,14 @@ package final class QuickCaptureInboxModel {
         let projects = projects()
         let project = key.flatMap { key in projects.first { $0.key == key } }
         guard let item = inbox.items.first(where: { $0.id == id }), item.state == .ready else { return nil }
-        mutate { $0.move(id, to: project, repository: nil) }
+        mutate { $0.move(id, to: project, repository: project?.issueRepository) }
         guard let project else { return nil }
         let needsDraft = item.title.isEmpty
         return Task { @MainActor [weak self] in
             guard let self else { return }
             if needsDraft {
                 await self.draft(id, text: item.text, destination: .project(project.key), projects: projects)
-            } else if project.key.hasPrefix("/") {
+            } else if project.issueRepository == nil, project.key.hasPrefix("/") {
                 let repository = await self.github.repository(ofCheckout: project.key)
                 self.mutate { inbox in inbox.update(id) { if $0.repository == nil { $0.repository = repository } } }
             }
@@ -254,6 +270,21 @@ package final class QuickCaptureInboxModel {
         for item in inbox.items where drafting.contains(item.id) && item.isReadyDraft {
             onDraftReady(item)
         }
+    }
+
+    /// A coding agent filed the capture itself (#923). Its History record
+    /// says so, as after File.
+    package func markFiled(_ id: UUID, url: String) -> Result<QuickCaptureItem, QuickCaptureInbox.MarkFiledRefusal> {
+        var changed = inbox
+        let result = changed.markFiled(id, url: url, now: now())
+        if case .success(let item) = result {
+            mutate { $0 = changed }
+            Log.backends.info("Quick capture: a coding agent filed \(url, privacy: .public)")
+            if let recordID = item.historyRecordID, let repository = item.repository {
+                onRouted?(recordID, "Filed in \(repository)")
+            }
+        }
+        return result
     }
 
     private func mutate(_ change: (inout QuickCaptureInbox) -> Void) {
