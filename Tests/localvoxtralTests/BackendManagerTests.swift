@@ -258,6 +258,8 @@ final class BackendManagerTests: XCTestCase {
         try await manager.ensureReady(dictation: true, polishing: false)
         XCTAssertEqual(supervisorFactory.createdConfigurations.map(\.name), [BackendCatalog.speechd.displayName])
         XCTAssertEqual(modelPreparer.prepareCalls.map(\.backendID), [BackendCatalog.speechd.id])
+        XCTAssertEqual(manager.speechdStatus, .ready)
+        XCTAssertEqual(manager.polishdStatus, .stopped)
 
         try await manager.ensureReady(dictation: true, polishing: true)
         // Set + count, not positional (concurrent ensure tasks): exactly one
@@ -273,6 +275,7 @@ final class BackendManagerTests: XCTestCase {
         )
         XCTAssertEqual(modelPreparer.prepareCalls.count, 2)
         XCTAssertEqual(manager.polishdStatus, .ready)
+        XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.polishd.displayName]?.startCallCount, 1)
 
         let polishdConfiguration = try XCTUnwrap(
             supervisorFactory.createdConfigurations
