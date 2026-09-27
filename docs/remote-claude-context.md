@@ -417,9 +417,12 @@ only a label for it, never a path it could hand to ssh.
    Vibe runs under `~/.vibe/localvoxtral/remote/vibe-home/<stamp>`, one per
    project, which holds only
    links to your `config.toml` and `.env`, so no Vibe hook fires. It posts the
-   first 8 KiB of the answer to `POST /v1/terms`, with the token in a header
+   first 16 KiB of the answer to `POST /v1/terms`, with the token in a header
    file and the session id in `X-Lvx-Terms-Session`. A 200 marks the project
-   done.
+   done. From plugin 1.19.0 and Vibe hooks 1.4.0 the answer carries the run's
+   usage for the Mac's usage log: Claude Code's answer is its whole result
+   object, and a Vibe run adds `X-Lvx-Usage: <input> <cached input> <output>`,
+   the token counts read from its session log.
 5. **Mac, `/v1/terms`.** The listener authenticates the token, scopes the
    session id under that host, and accepts only an answer for a live session
    it asked, from the agent it asked, once. It files the terms under the
@@ -427,8 +430,9 @@ only a label for it, never a path it could hand to ssh.
    filter as a local answer. Anything else is refused with a status and a log
    line that names the reason, never the body.
 
-What crosses the tunnel is the answer, `{"terms": [...]}`: about 120 bytes in
-the measured runs. The run bills the host's Claude Code login or Mistral key,
+What crosses the tunnel is the answer: `{"terms": [...]}`, about 120 bytes in
+the measured runs, or Claude Code's result object around it (3.4 KiB for 40
+terms), which adds only token counts, the cost and the run's timings. The run bills the host's Claude Code login or Mistral key,
 under the same caps as the local run. A process that squats the forward port
 could send the header too; the host's stamp bounds that to one run per project
 per 24 hours.
@@ -463,7 +467,8 @@ tell projects apart. Both need `localvoxtral-remote` 1.17.0 or Vibe hooks
   Read, Glob and Grep confined to the checkout, or Vibe with its read-only
   tools, hooks and MCP off, 20 turns, $0.50 or $0.30, a 240 s watchdog. It
   posts the output, at most 60 KiB, to `POST /v1/draft` with how the run
-  ended.
+  ended and, for Vibe (hooks 1.4.0), the run's token counts in `X-Lvx-Usage`.
+  Claude Code's output already carries its usage.
 
 Each route takes one answer, only from the host, session and agent the Mac
 asked, and files it under the project the Mac recorded. Your words cross the
