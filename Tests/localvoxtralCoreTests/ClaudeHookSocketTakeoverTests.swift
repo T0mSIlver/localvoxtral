@@ -359,27 +359,29 @@ final class ClaudeHookSocketTakeoverTests: XCTestCase {
     }
 
     #if canImport(Darwin)
-    func testTheExitWatchFiresWhenTheProcessExits() async throws {
+    /// One spawn, both contracts of the exit watch. The first half pins the
+    /// kqueue event: a process that exits WHILE watched fires the callback.
+    /// The second half pins the registration handler: a process that was
+    /// already gone when the kevent was installed never fires it, and only
+    /// the handler's `kill(pid, 0)` check catches that — the same dead pid,
+    /// reaped before the second watch is created, is the cheapest
+    /// deterministic already-gone process.
+    func testTheExitWatchFiresOnExitAndForAProcessAlreadyGone() async throws {
         let child = Process()
         child.executableURL = URL(fileURLWithPath: "/bin/sleep")
         child.arguments = ["30"]
         try child.run()
-        let exited = expectation(description: "exit seen")
-        let watch = ProcessExitWatch(pid: child.processIdentifier) { exited.fulfill() }
+        let exitedWhileWatched = expectation(description: "exit of a watched process seen")
+        let watch = ProcessExitWatch(pid: child.processIdentifier) { exitedWhileWatched.fulfill() }
         child.terminate()
-        await fulfillment(of: [exited], timeout: 10)
-        withExtendedLifetime(watch) {}
-    }
+        await fulfillment(of: [exitedWhileWatched], timeout: 10)
 
-    func testTheExitWatchFiresForAProcessAlreadyGone() async throws {
-        let child = Process()
-        child.executableURL = URL(fileURLWithPath: "/usr/bin/true")
-        try child.run()
         child.waitUntilExit()
-        let exited = expectation(description: "exit seen")
-        let watch = ProcessExitWatch(pid: child.processIdentifier) { exited.fulfill() }
-        await fulfillment(of: [exited], timeout: 10)
+        let alreadyGone = expectation(description: "exit of an already-dead process seen")
+        let lateWatch = ProcessExitWatch(pid: child.processIdentifier) { alreadyGone.fulfill() }
+        await fulfillment(of: [alreadyGone], timeout: 10)
         withExtendedLifetime(watch) {}
+        withExtendedLifetime(lateWatch) {}
     }
     #endif
 }
