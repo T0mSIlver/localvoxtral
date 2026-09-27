@@ -66,16 +66,18 @@ package enum AgentCLICaptureLookup {
         return AgentCLICapture(
             id: item.id.uuidString.lowercased(),
             capturedAt: item.capturedAt,
-            project: item.projectKey.map { AgentCLIProject(key: $0, name: item.projectName ?? $0) },
+            // A suggested project is the router's guess (#938): agents see
+            // the capture unrouted until the user confirms it.
+            project: item.isSuggested ? nil : item.projectKey.map { AgentCLIProject(key: $0, name: item.projectName ?? $0) },
             // #918 adds question, task and note; every draft is an issue
             // until then.
             kind: drafted ? "issue" : nil,
             title: title(of: item),
             state: AgentCLICapture.State(rawValue: item.state.rawValue) ?? .ready,
-            repository: item.repository,
+            repository: item.isSuggested ? nil : item.repository,
             relation: item.relation == .none ? nil : item.relation.rawValue,
             relatedIssue: item.relatedIssue,
-            note: item.note,
+            note: item.isSuggested ? "Suggested for \(item.projectName ?? "a project"), not confirmed." : item.note,
             filedURL: item.filedURL,
             text: detail ? item.text : nil,
             body: detail && drafted ? item.body : nil,

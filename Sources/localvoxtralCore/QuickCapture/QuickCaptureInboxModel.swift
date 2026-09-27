@@ -71,9 +71,10 @@ package final class QuickCaptureInboxModel {
             guard let self else { return }
             self.mutate { $0.applyRoute(route, to: item.id, projects: projects) }
             let name = self.inbox.items.first { $0.id == item.id }?.projectName
-            self.onStatus?(name.map { "Sent to \($0) inbox" } ?? "Sent to inbox")
+            let suggested = route.isSuggestion && name != nil
+            self.onStatus?(name.map { suggested ? "Suggested for \($0)" : "Sent to \($0) inbox" } ?? "Sent to inbox")
             if let recordID = historyRecordID {
-                self.onRouted?(recordID, name ?? "Inbox")
+                self.onRouted?(recordID, name.map { suggested ? "\($0), suggested" : $0 } ?? "Inbox")
             }
             await self.draft(item.id, text: text, destination: route.destination, projects: projects)
         }
@@ -139,6 +140,16 @@ package final class QuickCaptureInboxModel {
                 let repository = await self.github.repository(ofCheckout: project.key)
                 self.mutate { inbox in inbox.update(id) { if $0.repository == nil { $0.repository = repository } } }
             }
+        }
+    }
+
+    /// One click on a suggested project: File no longer waits for it.
+    package func confirmSuggestion(_ id: UUID) {
+        mutate { $0.confirmSuggestion(id) }
+        if let item = inbox.items.first(where: { $0.id == id }), let recordID = item.historyRecordID,
+           let name = item.projectName
+        {
+            onRouted?(recordID, name)
         }
     }
 

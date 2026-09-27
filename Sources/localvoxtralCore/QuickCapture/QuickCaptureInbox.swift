@@ -31,6 +31,10 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
     /// the user moved it. Nil for the catch-all.
     package var projectKey: String?
     package var projectName: String?
+    /// True while the project is the router's guess under its bar (#938):
+    /// File waits for the user to confirm it or move the capture. Optional
+    /// so an inbox file written before it still reads.
+    package var suggested: Bool?
     /// `owner/name` for `gh issue create --repo`. Resolved from a local
     /// checkout's remote; typed by the user otherwise.
     package var repository: String?
@@ -55,9 +59,13 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
         self.relation = .none
     }
 
-    /// File needs a repository and a title, and never runs twice.
+    package var isSuggested: Bool { suggested == true }
+
+    /// File needs a confirmed project's repository and a title, and never
+    /// runs twice.
     package var canFile: Bool {
         state == .ready
+            && !isSuggested
             && QuickCaptureInbox.isRepository(repository)
             && !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -98,17 +106,20 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
         items.removeAll { $0.id == id }
     }
 
-    /// The router's answer. A project gets its name; the catch-all waits.
+    /// The router's answer. A project gets its name, marked when it is a
+    /// suggestion; the catch-all waits.
     package mutating func applyRoute(_ route: QuickCaptureRoute, to id: UUID, projects: [QuickCaptureProject]) {
         update(id) { item in
             item.route = route
             if case .project(let key) = route.destination, let project = projects.first(where: { $0.key == key }) {
                 item.projectKey = key
                 item.projectName = project.name
+                item.suggested = route.isSuggestion ? true : nil
                 item.state = .drafting
             } else {
                 item.projectKey = nil
                 item.projectName = nil
+                item.suggested = nil
                 item.state = .ready
                 item.note = "Not routed to a project. Move it to one."
             }
@@ -140,11 +151,17 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
         update(id) { item in
             item.projectKey = project?.key
             item.projectName = project?.name
+            item.suggested = nil
             item.repository = repository
             item.relation = .none
             item.relatedIssue = nil
             if project != nil, item.note == "Not routed to a project. Move it to one." { item.note = nil }
         }
+    }
+
+    /// The user accepts the suggested project as it is.
+    package mutating func confirmSuggestion(_ id: UUID) {
+        update(id) { $0.suggested = nil }
     }
 
     package enum MarkFiledRefusal: Error, Equatable, Sendable {
@@ -165,7 +182,9 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
         guard let item = items.first(where: { $0.id == id }) else { return .failure(.notFound) }
         guard item.state == .ready else { return .failure(.notReady(item.state)) }
         guard let repository = Self.issueRepository(url) else { return .failure(.notAnIssue) }
-        if let expected = item.repository, expected.caseInsensitiveCompare(repository) != .orderedSame {
+        // A suggested project's repository is a guess; where the agent
+        // filed is the user's answer.
+        if !item.isSuggested, let expected = item.repository, expected.caseInsensitiveCompare(repository) != .orderedSame {
             return .failure(.otherRepository(expected))
         }
         var filed = item
@@ -174,7 +193,12 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
             item.filedURL = url
             item.filedAt = now
             item.note = nil
-            if item.repository == nil { item.repository = repository }
+            if item.isSuggested {
+                item.suggested = nil
+                item.repository = repository
+            } else if item.repository == nil {
+                item.repository = repository
+            }
             filed = item
         }
         return .success(filed)

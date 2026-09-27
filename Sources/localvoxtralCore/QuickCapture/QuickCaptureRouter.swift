@@ -26,6 +26,8 @@ package struct QuickCaptureRoute: Codable, Equatable, Sendable {
         case confident
         /// The classifier picked the catch-all itself.
         case classifierChoseCatchAll
+        /// Under a bar: the project is a suggestion (#938). Records written
+        /// before #938 carry these with the catch-all.
         case lowConfidence
         case nearTie
         case noProjects
@@ -44,6 +46,13 @@ package struct QuickCaptureRoute: Codable, Equatable, Sendable {
         self.classifier = classifier
         self.reason = reason
         self.topProbability = topProbability
+    }
+
+    /// A project the classifier picked under a bar (#938): the capture goes
+    /// there, and the user confirms it before File.
+    package var isSuggestion: Bool {
+        guard case .project = destination else { return false }
+        return reason != .confident
     }
 }
 
@@ -74,8 +83,8 @@ package enum QuickCaptureRouting {
     package static let catchAllID = "inbox"
     package static let catchAllDescription =
         "None of the projects above: a personal note, a task or an idea about something else, or too vague to place."
-    /// Below this, the top option is a guess and the capture goes to the
-    /// catch-all. Measured on the owner's 36-capture replay (2026-09-26),
+    /// Below this, the top option is a guess: the capture goes to it as a
+    /// suggestion the user confirms (#938). Measured on the owner's 36-capture replay (2026-09-26),
     /// three project sets each:
     /// - GLM 5.3's self-reported confidence: all 19 wrong-project answers
     ///   said 0.85 or less, all 25 answers at 0.9 or more were right.
@@ -109,9 +118,10 @@ package enum QuickCaptureRouting {
         return options
     }
 
-    /// The decision on one answer. The catch-all wins whenever the top
-    /// option is the catch-all, below `minimumTopProbability`, or within
-    /// `minimumMargin` of the runner-up; never a guessed project.
+    /// The decision on one answer. The catch-all wins when the top option
+    /// is the catch-all or no option scored at all. A project below
+    /// `minimumTopProbability`, or within `minimumMargin` of the runner-up,
+    /// is a suggestion: the user confirms it before anything is filed.
     package static func decide(
         probabilities: [String: Double],
         options: [QuickCaptureOption],
@@ -127,10 +137,14 @@ package enum QuickCaptureRouting {
             QuickCaptureRoute(destination: .catchAll, classifier: classifier, reason: reason, topProbability: topProbability)
         }
         guard let key = top.projectKey else { return catchAll(.classifierChoseCatchAll) }
-        guard topProbability >= minimumTopProbability else { return catchAll(.lowConfidence) }
+        guard topProbability > 0 else { return catchAll(.lowConfidence) }
+        func project(_ reason: QuickCaptureRoute.Reason) -> QuickCaptureRoute {
+            QuickCaptureRoute(destination: .project(key), classifier: classifier, reason: reason, topProbability: topProbability)
+        }
+        guard topProbability >= minimumTopProbability else { return project(.lowConfidence) }
         let runnerUp = ranked.count > 1 ? ranked[1].1 : 0
-        guard topProbability - runnerUp >= minimumMargin else { return catchAll(.nearTie) }
-        return QuickCaptureRoute(destination: .project(key), classifier: classifier, reason: .confident, topProbability: topProbability)
+        guard topProbability - runnerUp >= minimumMargin else { return project(.nearTie) }
+        return project(.confident)
     }
 
     private static func slug(_ name: String) -> String {

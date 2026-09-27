@@ -155,6 +155,55 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(model.markFiled(id, url: "https://github.com/o/reach/issues/13"), .failure(.notReady(.filed)))
     }
 
+    /// #938: under the bar the capture drafts in its best project, marked,
+    /// and File waits for one click.
+    func testASuggestedCaptureDraftsInItsProjectAndFilesOnlyOnceConfirmed() async throws {
+        let recordID = UUID()
+        let model = model(answer: ["reach": 0.85])
+        await model.capture(text: "Add a dark mode", historyRecordID: recordID).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        var item = try XCTUnwrap(model.items.first)
+        XCTAssertEqual(item.projectName, "reach")
+        XCTAssertEqual(item.title, "Dark mode")
+        XCTAssertTrue(item.isSuggested)
+        XCTAssertFalse(item.canFile)
+        XCTAssertEqual(statuses, ["Suggested for reach"])
+        XCTAssertEqual(routed, ["reach, suggested"])
+        XCTAssertNil(model.file(id))
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).items.first?.isSuggested, true)
+
+        model.confirmSuggestion(id)
+        item = try XCTUnwrap(model.items.first)
+        XCTAssertFalse(item.isSuggested)
+        XCTAssertTrue(item.canFile)
+        XCTAssertEqual(routed.last, "reach")
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).items.first?.isSuggested, false)
+        await model.file(id)?.value
+        XCTAssertEqual(github.created.withLock { $0.map(\.first) }, ["o/reach"])
+    }
+
+    func testMovingASuggestedCaptureConfirmsTheNewPlace() async throws {
+        let model = model(answer: ["reach": 0.5])
+        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        await model.move(id, toProjectKey: nil)?.value
+        XCTAssertFalse(try XCTUnwrap(model.items.first).isSuggested)
+        XCTAssertNil(model.items.first?.projectKey)
+    }
+
+    /// An agent files with its own gh before it marks the capture: on a
+    /// suggestion, where it filed is the user's answer, not a refusal.
+    func testAnAgentFilingASuggestedCaptureElsewhereIsRecorded() async throws {
+        let model = model(answer: ["reach": 0.5])
+        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        XCTAssertNil(AgentCLICaptureLookup.capture(try XCTUnwrap(model.items.first), detail: false).project)
+
+        let filed = try model.markFiled(id, url: "https://github.com/o/other/issues/3").get()
+        XCTAssertEqual(filed.repository, "o/other")
+        XCTAssertFalse(filed.isSuggested)
+    }
+
     func testAFailedFilingKeepsTheCaptureAndARemoteProjectNeedsARepository() async throws {
         github.createResult = .failure(.failed(exitCode: 1))
         let model = model(answer: ["website": 0.9])
