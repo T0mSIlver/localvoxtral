@@ -536,61 +536,60 @@ final class MistralRealtimeClientTests: XCTestCase {
 
     // MARK: - Error frames
 
-    func testErrorFrameWithStringMessage() {
-        let events = collectEvents([
-            ["type": "error", "error": ["message": "audio too long"] as [String: Any]]
-        ])
-
-        XCTAssertEqual(events.count, 1)
-        guard case .error(let message) = events[0] else {
-            XCTFail("Expected .error")
-            return
-        }
-        XCTAssertEqual(message, "audio too long")
-    }
-
-    func testErrorFrameWithNestedDetailMessage() {
-        let events = collectEvents([
-            [
-                "type": "error",
-                "error": ["message": ["detail": "field required"] as [String: Any]]
-                    as [String: Any],
-            ]
-        ])
-
-        guard case .error(let message) = events[0] else {
-            XCTFail("Expected .error")
-            return
-        }
-        XCTAssertEqual(message, "field required")
-    }
-
-    func testErrorFrameAppendsCodeAndType() {
-        let message = MistralRealtimeWebSocketClient.errorMessage(
-            from: [
-                "type": "error",
-                "error": [
-                    "message": "invalid api key",
-                    "code": 401,
-                    "type": "authentication_error",
-                ] as [String: Any],
-            ]
-        )
-
-        XCTAssertEqual(message, "invalid api key [code=401, type=authentication_error]")
-    }
-
-    func testErrorFrameWithoutAUsableMessageFallsBack() {
-        XCTAssertEqual(
-            MistralRealtimeWebSocketClient.errorMessage(from: ["type": "error"]),
-            "Mistral realtime error."
-        )
-        XCTAssertEqual(
-            MistralRealtimeWebSocketClient.errorMessage(
-                from: ["type": "error", "error": ["message": "  "] as [String: Any]]
+    func testErrorFrameSurfacesTheServerMessage() {
+        let cases: [(frame: [String: Any], expectedMessage: String)] = [
+            (
+                ["type": "error", "error": ["message": "audio too long"] as [String: Any]],
+                "audio too long"
             ),
-            "Mistral realtime error."
-        )
+            (
+                [
+                    "type": "error",
+                    "error": ["message": ["detail": "field required"] as [String: Any]]
+                        as [String: Any],
+                ],
+                "field required"
+            ),
+        ]
+
+        for (frame, expectedMessage) in cases {
+            let events = collectEvents([frame])
+            XCTAssertEqual(events.count, 1, "frame \(frame)")
+            guard case .error(let message) = events[0] else {
+                XCTFail("Expected .error for frame \(frame)")
+                return
+            }
+            XCTAssertEqual(message, expectedMessage, "frame \(frame)")
+        }
+    }
+
+    func testErrorMessageAppendsCodeAndTypeAndFallsBackWhenUnusable() {
+        let cases: [(frame: [String: Any], expected: String)] = [
+            (
+                [
+                    "type": "error",
+                    "error": [
+                        "message": "invalid api key",
+                        "code": 401,
+                        "type": "authentication_error",
+                    ] as [String: Any],
+                ],
+                "invalid api key [code=401, type=authentication_error]"
+            ),
+            (["type": "error"], "Mistral realtime error."),
+            (
+                ["type": "error", "error": ["message": "  "] as [String: Any]],
+                "Mistral realtime error."
+            ),
+        ]
+
+        for (frame, expected) in cases {
+            XCTAssertEqual(
+                MistralRealtimeWebSocketClient.errorMessage(from: frame),
+                expected,
+                "frame \(frame)"
+            )
+        }
     }
 
     func testErrorFrameClearsTheFinalizationGate() {
