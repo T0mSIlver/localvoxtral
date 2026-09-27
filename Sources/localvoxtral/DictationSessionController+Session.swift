@@ -545,6 +545,7 @@ extension DictationSessionController {
             isConnectingRealtimeSession = false
             isDictating = false
             escapeCancelHandler.stop()
+            endDestinations()
             audio.healthMonitor.stop()
             audio.stopSessionAudioCapture()
             audio.audioDucking.restoreAfterSession()
@@ -693,6 +694,7 @@ extension DictationSessionController {
         // session and silently skips its overlay commit.
         wasCancelled = false
         escapeCancelHandler.stop()
+        endDestinations()
         isAwaitingMicrophonePermission = false
         isCompletingStoppedSession = false
         polishAndCommitTask = nil
@@ -1034,6 +1036,7 @@ extension DictationSessionController {
             // commit re-checks secure input and falls back to the clipboard.
             overlayBufferCoordinator.showSecureInputWarning()
         }
+        beginDestinations()
     }
 
     func beginOverlayFinalization() {

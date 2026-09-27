@@ -298,10 +298,10 @@ final class DictationViewModel {
         set { session.agentAttention = newValue }
     }
 
-    /// The popover's needs-you sentence, nil when nobody waits or no answer
-    /// shortcut is set (clearing the shortcut turns the cue off at once).
+    /// The popover's needs-you sentence, nil when nobody waits or the cue is
+    /// off (turning it off hides the line at once).
     var agentAttentionLine: String? {
-        guard settings.answerAgentShortcut != nil else { return nil }
+        guard settings.agentAttentionEnabled else { return nil }
         return agentAttention?.popoverLine
     }
 
@@ -333,6 +333,11 @@ final class DictationViewModel {
         /// The bundle identifier of a running process, for the app the
         /// overlay commits into.
         var bundleIdentifier: (pid_t) -> String?
+        /// The app's name, for the overlay's focused app entry (#840).
+        var applicationName: (pid_t) -> String?
+        /// Brings an app back to the front: ⇧Tab to the focused app after a
+        /// session pane came forward. False when it is gone.
+        var activateApp: @MainActor (pid_t) -> Bool
         /// The center the sleep and terminate observers register on. Nil is
         /// the default center, registered only when runtime services run; a
         /// private center is registered on regardless, so a test posts
@@ -368,6 +373,12 @@ final class DictationViewModel {
             bundleIdentifier: @escaping (pid_t) -> String? = {
                 NSRunningApplication(processIdentifier: $0)?.bundleIdentifier
             },
+            applicationName: @escaping (pid_t) -> String? = {
+                NSRunningApplication(processIdentifier: $0)?.localizedName
+            },
+            activateApp: @escaping @MainActor (pid_t) -> Bool = {
+                NSRunningApplication(processIdentifier: $0)?.activate(options: []) ?? false
+            },
             lifecycleNotificationCenter: NotificationCenter? = nil,
             reconnectSleep: @escaping @MainActor (TimeInterval) async -> Void =
                 DictationSessionController.sleepForReconnect,
@@ -382,6 +393,8 @@ final class DictationViewModel {
             self.pasteboardReader = pasteboardReader
             self.pasteboardWriter = pasteboardWriter
             self.bundleIdentifier = bundleIdentifier
+            self.applicationName = applicationName
+            self.activateApp = activateApp
             self.lifecycleNotificationCenter = lifecycleNotificationCenter
             self.reconnectSleep = reconnectSleep
             self.connectionFailurePresenter = connectionFailurePresenter
@@ -622,6 +635,9 @@ final class DictationViewModel {
         }
 
         session.escapeCancelHandler.onCancel = { [weak session] in session?.cancelDictation() }
+        session.destinationKeyHandler.onMove = { [weak session] forward in
+            session?.moveDestination(forward: forward)
+        }
 
         textInsertion.refreshAccessibilityTrustState()
         if startRuntimeServices {
@@ -757,6 +773,7 @@ final class DictationViewModel {
         session.overlayBufferCoordinator.reset()
         audio.healthMonitor.cancelTasks()
         session.escapeCancelHandler.stop()
+        session.destinationKeyHandler.stop()
         audio.audioDucking.restoreImmediatelyForTermination()
         if managesRuntimeServices {
             audio.stopMicrophoneIfInitialized()

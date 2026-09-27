@@ -236,6 +236,7 @@ extension DictationSessionController {
         isDictating = false
         disarmSilenceAutoStop()
         escapeCancelHandler.stop()
+        endDestinations()
         finishStoppedSession(promotePendingSegment: true)
         statusText = Self.connectionLostMessage
         lastError = Self.connectionLostMessage

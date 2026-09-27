@@ -143,6 +143,8 @@ final class SettingsStore {
         static let answerAgentShortcutKeyCode = "settings.answer_agent_shortcut_key_code"
         static let answerAgentShortcutModifiers = "settings.answer_agent_shortcut_carbon_modifiers"
         static let answerAgentShortcutEnabled = "settings.answer_agent_shortcut_enabled"
+        static let agentAttentionEnabled = "settings.agent_attention_enabled"
+        static let modifierHoldLiveAutoPaste = "settings.modifier_hold_live_auto_paste"
         static let quickCaptureShortcutKeyCode = "settings.quick_capture_shortcut_key_code"
         static let quickCaptureShortcutModifiers = "settings.quick_capture_shortcut_carbon_modifiers"
         static let quickCaptureShortcutEnabled = "settings.quick_capture_shortcut_enabled"
@@ -835,6 +837,18 @@ final class SettingsStore {
         didSet { defaults.set(answerAgentShortcutEnabled, forKey: Keys.answerAgentShortcutEnabled) }
     }
 
+    /// Advanced → "Hold the key for Live Auto-Paste" (#840). Off, a hold of
+    /// the single modifier key is an Overlay Buffer push to talk.
+    var modifierHoldLiveAutoPaste: Bool {
+        didSet { defaults.set(modifierHoldLiveAutoPaste, forKey: Keys.modifierHoldLiveAutoPaste) }
+    }
+
+    /// "Tell me when an agent needs you" (#840): the needs-you cue and the
+    /// waiting sessions in the overlay's destinations. Off by default.
+    var agentAttentionEnabled: Bool {
+        didSet { defaults.set(agentAttentionEnabled, forKey: Keys.agentAttentionEnabled) }
+    }
+
     var answerAgentShortcutKeyCode: UInt32 {
         didSet { defaults.set(answerAgentShortcutKeyCode, forKey: Keys.answerAgentShortcutKeyCode) }
     }
@@ -1245,6 +1259,10 @@ final class SettingsStore {
             (defaults.object(forKey: Keys.answerAgentShortcutModifiers) as? NSNumber)?.uint32Value ?? 0
         answerAgentShortcutEnabled = Self.loadBool(
             defaults: defaults, key: Keys.answerAgentShortcutEnabled, fallback: false)
+        agentAttentionEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.agentAttentionEnabled, fallback: false)
+        modifierHoldLiveAutoPaste = Self.loadBool(
+            defaults: defaults, key: Keys.modifierHoldLiveAutoPaste, fallback: false)
         quickCaptureShortcutKeyCode =
             (defaults.object(forKey: Keys.quickCaptureShortcutKeyCode) as? NSNumber)?.uint32Value ?? 0
         quickCaptureShortcutCarbonModifierFlags =

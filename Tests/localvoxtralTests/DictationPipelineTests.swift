@@ -104,6 +104,178 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertFalse(pipeline.viewModel.session.sessionIsQuickCapture, "the next dictation is an ordinary one")
     }
 
+    // MARK: - Destinations (#840)
+
+    /// Tab moves an ordinary dictation to the Inbox: it stops as a quick
+    /// capture, saved in History first, and nothing reaches the focused app.
+    func testTabToTheInboxSavesTheDictationThereAndNothingReachesTheFocusedApp() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let captured = QuickCaptures()
+        pipeline.viewModel.session.onQuickCapture = { text, _ in
+            captured.all.append((text, pipeline.records.all.count))
+        }
+
+        await startAndSpeak(pipeline)
+        XCTAssertEqual(
+            pipeline.overlay.shownDestinations.last??.items.map(\.kind),
+            [.focusedApp(joined: nil), .inbox],
+            "with nobody waiting the overlay offers the focused app and the Inbox"
+        )
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .focusedApp(joined: nil))
+
+        pipeline.viewModel.session.moveDestination(forward: true)
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .inbox)
+        XCTAssertTrue(pipeline.viewModel.session.sessionIsQuickCapture)
+
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline, finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved)
+
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing reaches the focused app")
+        XCTAssertEqual(captured.all.map(\.text), [Self.phrase])
+        XCTAssertEqual(captured.all.first?.recordsWritten, 1, "saved in History before the Inbox gets it")
+        XCTAssertEqual(pipeline.records.all.first?.outputMode, DictationSessionRecord.quickCaptureOutputMode)
+        XCTAssertFalse(pipeline.viewModel.session.sessionIsQuickCapture, "the next dictation is an ordinary one")
+    }
+
+    /// A quick capture opens on the Inbox; Tab from there wraps to the
+    /// focused app, and the stop commits there as any dictation does.
+    func testTabFromTheInboxBackToTheFocusedAppCommitsThere() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let captured = QuickCaptures()
+        pipeline.viewModel.session.onQuickCapture = { text, _ in captured.all.append((text, 0)) }
+
+        await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .inbox)
+        pipeline.viewModel.session.moveDestination(forward: true)
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .focusedApp(joined: nil))
+
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline)
+
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 1)
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
+        XCTAssertTrue(captured.all.isEmpty)
+    }
+
+    /// The quick capture shortcut during a dictation picks the Inbox, and
+    /// pressed again on the Inbox it stops.
+    func testTheQuickCaptureKeyDuringADictationPicksTheInboxThenStops() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.session.onQuickCapture = { _, _ in }
+        await startAndSpeak(pipeline)
+
+        pipeline.viewModel.session.toggleQuickCapture()
+        XCTAssertTrue(pipeline.viewModel.isDictating)
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .inbox)
+
+        pipeline.viewModel.session.toggleQuickCapture()
+        XCTAssertFalse(pipeline.viewModel.isDictating, "pressed on the Inbox, it stops")
+        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
+        _ = await pipeline.records.written.value(failAfter: 10)
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0)
+    }
+
+    /// Tab to a session that needs you brings its pane forward, and only
+    /// once the terminal confirmed it does the overlay switch. The stop
+    /// commits into that pane like any dictation, and answering takes the
+    /// session out of the queue.
+    func testTabToAWaitingSessionBringsItsPaneForwardAndCommitsThere() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let waiting = installWaitingSessions(pipeline, ["pay": "/r/payments"])
+
+        await startAndSpeak(pipeline)
+        let strip = try XCTUnwrap(pipeline.overlay.shownDestinations.last ?? nil)
+        XCTAssertEqual(strip.items.map(\.label).dropFirst(), ["payments", "Inbox"])
+
+        pipeline.viewModel.session.moveDestination(forward: true)
+        await pipeline.viewModel.session.destinationFocusTask?.value
+        XCTAssertEqual(waiting.focuser.focusedSessionIDs, ["pay"])
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
+        XCTAssertTrue(waiting.tracker.queue.isEmpty, "answering takes it out of the queue")
+        XCTAssertEqual(
+            pipeline.overlay.shownDestinations.last??.items.map(\.label).dropFirst(), ["payments", "Inbox"],
+            "the picked session keeps its pill after it left the queue"
+        )
+
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline)
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
+    }
+
+    /// A pane the terminal did not confirm never gets the words: the overlay
+    /// stays on the focused app and the popover says why.
+    func testAnUnconfirmedPaneLeavesTheWordsOnTheFocusedApp() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let waiting = installWaitingSessions(
+            pipeline, ["pay": "/r/payments"],
+            outcome: .unverified(bundleID: TerminalScreenAllowlist.ghosttyBundleID)
+        )
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.session.moveDestination(forward: true)
+        await pipeline.viewModel.session.destinationFocusTask?.value
+
+        XCTAssertEqual(waiting.focuser.focusedSessionIDs, ["pay"])
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .focusedApp(joined: nil))
+        XCTAssertEqual(pipeline.viewModel.statusText, DictationSessionController.AnswerAgentStatus.unconfirmed)
+        XCTAssertFalse(waiting.tracker.queue.isEmpty, "an unreached session still needs you")
+        pipeline.viewModel.session.cancelDictation()
+    }
+
+    /// Back from a session pane to a focused app in the same terminal, with
+    /// no session to find its pane by: activating the terminal would show
+    /// the session pane, so the overlay refuses and stays on the session.
+    func testShiftTabBackToTheSameTerminalWithNoSessionIsRefused() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let terminalPID: pid_t = 4343
+        pipeline.overlay.commitTargetAppPID = terminalPID
+        var activated: [pid_t] = []
+        pipeline.viewModel.dependencies.bundleIdentifier = { _ in TerminalScreenAllowlist.ghosttyBundleID }
+        pipeline.viewModel.dependencies.activateApp = {
+            activated.append($0)
+            return true
+        }
+        _ = installWaitingSessions(pipeline, ["pay": "/r/payments"])
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.session.moveDestination(forward: true)
+        await pipeline.viewModel.session.destinationFocusTask?.value
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
+
+        pipeline.viewModel.session.moveDestination(forward: false)
+        XCTAssertEqual(activated, [], "activating the terminal would bring the session pane, not the start")
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
+        XCTAssertEqual(pipeline.viewModel.statusText, DictationSessionController.DestinationStatus.cantGoBack)
+
+        // Another app comes back by activation.
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == terminalPID ? "com.apple.Safari" : TerminalScreenAllowlist.ghosttyBundleID
+        }
+        pipeline.viewModel.session.moveDestination(forward: false)
+        XCTAssertEqual(activated, [terminalPID])
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .focusedApp(joined: nil))
+        pipeline.viewModel.session.cancelDictation()
+    }
+
+    /// The answer shortcut during a dictation picks the oldest session that
+    /// needs you, as Tab would; pressed on it, it stops.
+    func testTheAnswerKeyDuringADictationPicksTheWaitingSessionThenStops() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let waiting = installWaitingSessions(pipeline, ["pay": "/r/payments"])
+        await startAndSpeak(pipeline)
+
+        pipeline.viewModel.session.answerAgentThatNeedsYou()
+        await pipeline.viewModel.session.destinationFocusTask?.value
+        XCTAssertTrue(pipeline.viewModel.isDictating)
+        XCTAssertEqual(waiting.focuser.focusedSessionIDs, ["pay"])
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
+
+        pipeline.viewModel.session.answerAgentThatNeedsYou()
+        XCTAssertFalse(pipeline.viewModel.isDictating, "pressed on the picked session, it stops")
+        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
+        _ = await pipeline.records.written.value(failAfter: 10)
+    }
+
     /// Claude Desktop (#660): a text field whose prompt sends on Return. The
     /// dictation starts before Electron has built its accessibility tree, so
     /// the AX probe finds nothing focused, which alone reads as a terminal.
@@ -877,6 +1049,48 @@ final class DictationPipelineTests: XCTestCase {
             presenter: presenter,
             records: records
         )
+    }
+
+    /// Sessions that need you, in the order given, with the cue on and a
+    /// focuser that answers `outcome`.
+    private func installWaitingSessions(
+        _ pipeline: Pipeline,
+        _ cwdByID: KeyValuePairs<String, String>,
+        outcome: SessionPaneFocusOutcome = .focused(bundleID: TerminalScreenAllowlist.ghosttyBundleID)
+    ) -> (tracker: AgentAttentionTracker, focuser: FakeSessionPaneFocuser) {
+        let settings = pipeline.viewModel.settings
+        settings.agentAttentionEnabled = true
+        let origin = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
+        var sessions: [ClaudeSessionSnapshot] = []
+        for (id, cwd) in cwdByID {
+            var snapshot = ClaudeSessionSnapshot(sessionID: id, origin: origin, firstSeen: Date(timeIntervalSince1970: 0))
+            snapshot.workspace = ClaudeWorkspaceReference.make(rawCwd: cwd, origin: origin)
+            snapshot.process = ClaudeHookProcessInfo(hookPID: 1, claudePID: 2, tty: "/dev/ttys00\(sessions.count)")
+            sessions.append(snapshot)
+        }
+        let live = sessions
+        let focuser = FakeSessionPaneFocuser(outcome: outcome)
+        pipeline.viewModel.session.sessionNavigator = SessionNavigator(
+            liveSessions: { live },
+            repositoryRoot: { _ in .unknown },
+            focuser: focuser,
+            sleep: ManualSessionClock().sleep
+        )
+        var tick = 0.0
+        let tracker = AgentAttentionTracker(
+            isEnabled: { settings.agentAttentionEnabled },
+            isWatching: { _ in false },
+            liveSessionIDs: { Set(live.map(\.sessionID)) },
+            now: {
+                tick += 1
+                return Date(timeIntervalSince1970: tick)
+            }
+        )
+        pipeline.viewModel.agentAttention = AgentAttentionModel(tracker: tracker, announcer: nil)
+        for session in sessions {
+            tracker.receive(.notification, session: session)
+        }
+        return (tracker, focuser)
     }
 
     /// 100 ms of 16 kHz mono PCM16, different for each seed, so a frame on

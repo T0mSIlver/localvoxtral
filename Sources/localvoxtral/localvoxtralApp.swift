@@ -545,7 +545,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         let settings = viewModel.settings
         let tracker = AgentAttentionTracker(
-            isEnabled: { settings.answerAgentShortcut != nil },
+            isEnabled: { settings.agentAttentionEnabled },
             isWatching: { session in
                 guard let target = TerminalScreenContextSource.frontmostTarget() else { return false }
                 return await paneResolver.sessionShown(target: target) == session.sessionID

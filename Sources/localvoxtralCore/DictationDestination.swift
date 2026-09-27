@@ -41,10 +41,17 @@ package struct DictationDestinationList: Equatable, Sendable {
     }
 
     /// The entry Tab moves to, wrapping from the Inbox to the focused app.
-    package var next: DictationDestination { neighbor(offset: 1) }
+    package var next: DictationDestination { neighbor(of: selected, offset: 1) }
 
     /// The entry ⇧Tab moves to.
-    package var previous: DictationDestination { neighbor(offset: -1) }
+    package var previous: DictationDestination { neighbor(of: selected, offset: -1) }
+
+    /// The entry after (Tab) or before (⇧Tab) `base`, which need not be the
+    /// picked one: a second Tab while a pane is still coming forward moves
+    /// on from where the first was going.
+    package func moving(from base: DictationDestination, forward: Bool) -> DictationDestination {
+        neighbor(of: entries.contains(base) ? base : selected, offset: forward ? 1 : -1)
+    }
 
     /// Picks `destination` when the list holds it; returns whether it did.
     @discardableResult
@@ -75,9 +82,56 @@ package struct DictationDestinationList: Equatable, Sendable {
         )
     }
 
-    private func neighbor(offset: Int) -> DictationDestination {
-        guard let index = entries.firstIndex(of: selected) else { return .focusedApp }
+    private func neighbor(of base: DictationDestination, offset: Int) -> DictationDestination {
+        guard let index = entries.firstIndex(of: base) else { return .focusedApp }
         let count = entries.count
         return entries[((index + offset) % count + count) % count]
     }
+}
+
+/// What the overlay header shows for a `DictationDestinationList`: one pill
+/// per entry, the picked one filled.
+package struct OverlayDestinationStrip: Equatable, Sendable {
+    package enum Kind: Equatable, Sendable {
+        /// `joined` says what the join badge said: true for a session the
+        /// dictation is grounded in, false for "no session attached", nil
+        /// when there is nothing to say.
+        case focusedApp(joined: Bool?)
+        case session
+        case inbox
+    }
+
+    package struct Item: Equatable, Sendable {
+        package let label: String
+        package let kind: Kind
+        package let isSelected: Bool
+    }
+
+    package static let inboxLabel = "Inbox"
+
+    package let items: [Item]
+
+    /// - Parameters:
+    ///   - focusedAppLabel: the joined session's name, else the app's.
+    ///   - sessionName: the name the popover line uses for a session.
+    package init(
+        list: DictationDestinationList,
+        focusedAppLabel: String,
+        focusedAppJoined: Bool?,
+        sessionName: (String) -> String
+    ) {
+        items = list.entries.map { entry in
+            let isSelected = entry == list.selected
+            switch entry {
+            case .focusedApp:
+                return Item(label: focusedAppLabel, kind: .focusedApp(joined: focusedAppJoined), isSelected: isSelected)
+            case .session(let id):
+                return Item(label: sessionName(id), kind: .session, isSelected: isSelected)
+            case .inbox:
+                return Item(label: Self.inboxLabel, kind: .inbox, isSelected: isSelected)
+            }
+        }
+    }
+
+    package var selectedKind: Kind? { items.first(where: \.isSelected)?.kind }
 }

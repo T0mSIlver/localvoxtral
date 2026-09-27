@@ -173,13 +173,14 @@ final class ShortcutController {
         clearPushToTalkShortcutSessionAttempt()
     }
 
-    /// Modifier-only hold gesture started — use push-to-talk semantics with live auto-paste.
+    /// Modifier-only hold gesture started: push to talk, in Overlay Buffer
+    /// unless Advanced → "Hold the key for Live Auto-Paste" is on (#840).
     func handleModifierOnlyHoldStart() {
         guard !session.isDictating, !session.isConnectingRealtimeSession, !session.isFinalizingStop else { return }
         isModifierOnlyHoldActive = true
         isPushToTalkShortcutHeld = true
         hasActivePushToTalkShortcutSession = true
-        session.startDictation(outputMode: .liveAutoPaste)
+        session.startDictation(outputMode: settings.modifierHoldLiveAutoPaste ? .liveAutoPaste : .overlayBuffer)
         if !session.isDictating, !session.isConnectingRealtimeSession, !session.isAwaitingMicrophonePermission {
             hasActivePushToTalkShortcutSession = false
             isModifierOnlyHoldActive = false

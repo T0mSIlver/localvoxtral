@@ -413,6 +413,17 @@ final class DictationSessionController {
     var wasCancelled = false
     @ObservationIgnored
     let escapeCancelHandler = EscapeCancelHandler()
+    /// Tab and ⇧Tab while an Overlay Buffer dictation runs (#840).
+    @ObservationIgnored
+    let destinationKeyHandler = DestinationKeyHandler()
+    /// The running overlay's destinations; nil outside an Overlay Buffer
+    /// dictation. `sessionIsQuickCapture` follows its pick: the Inbox is a
+    /// quick capture.
+    @ObservationIgnored
+    var destinations: SessionDestinations?
+    /// Brings a picked pane forward, or the focused app back.
+    @ObservationIgnored
+    var destinationFocusTask: Task<Void, Never>?
     @ObservationIgnored
     var sessionStartedAt: Date?
     @ObservationIgnored
@@ -652,15 +663,13 @@ final class DictationSessionController {
     }
 
     /// The quick capture shortcut: an Overlay Buffer capture, or the stop of
-    /// the one running. A press during an ordinary dictation does nothing,
-    /// so it can never turn that dictation into a capture.
+    /// the one running. During an Overlay Buffer dictation it picks the
+    /// Inbox, as Tab would (#840); during Live Auto-Paste it does nothing,
+    /// since words already typed cannot go to the Inbox.
     func toggleQuickCapture() {
         if isDictating {
-            guard sessionIsQuickCapture else {
-                Log.dictation.info("quick capture: pressed during a dictation; ignored")
-                return
-            }
-            stopDictation(reason: "quick capture toggle")
+            if pickInboxOrStop() { return }
+            Log.dictation.info("quick capture: pressed during a Live Auto-Paste dictation; ignored")
             return
         }
         startDictation(outputMode: .overlayBuffer, quickCapture: true)
@@ -798,6 +807,7 @@ final class DictationSessionController {
         audio.flushBufferedAudio(to: activeRealtimeClient)
         isDictating = false
         escapeCancelHandler.stop()
+        endDestinations()
 
         guard finalizeRemainingAudio else {
             activeRealtimeClient.disconnect()

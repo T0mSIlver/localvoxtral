@@ -7,7 +7,7 @@ struct DictationSettingsPane: View {
     let dictationShortcutBinding: Binding<DictationShortcut?>
     @Binding var shortcutValidationError: String?
 
-    /// The Trigger group's Learn more: what a tap and a hold do.
+    /// The Trigger group's Learn more: what a tap and a hold do, and Tab.
     private static let shortcutsDocsURL = DocsLink.page("docs/dictation/#shortcuts")
     /// The Overlay Buffer group's Learn more: what keeping words on their
     /// line trades for.
@@ -81,15 +81,24 @@ struct DictationSettingsPane: View {
         copyLastDictationValidationError = viewModel.shortcuts.requestCopyLastDictationShortcut(shortcut)
     }
 
-    /// Setting the shortcut turns the needs-you cue on (#717), so that is
-    /// when macOS is asked to allow its banner.
     private func assignAnswerAgentShortcut(_ shortcut: DictationShortcut?) {
         answerAgentValidationError = viewModel.shortcuts.requestAnswerAgentShortcut(shortcut)
-        if settings.answerAgentShortcut != nil {
-            viewModel.agentAttention?.announcer?.requestPermission()
-        } else {
-            viewModel.agentAttention?.tracker.clear()
-        }
+    }
+
+    /// Turning the needs-you cue on is when macOS is asked to allow its
+    /// banner; turning it off empties the queue at once.
+    private var agentAttentionBinding: Binding<Bool> {
+        Binding(
+            get: { settings.agentAttentionEnabled },
+            set: { isOn in
+                settings.agentAttentionEnabled = isOn
+                if isOn {
+                    viewModel.agentAttention?.announcer?.requestPermission()
+                } else {
+                    viewModel.agentAttention?.tracker.clear()
+                }
+            }
+        )
     }
 
     private var answerAgentShortcutBinding: Binding<DictationShortcut?> {
@@ -195,7 +204,7 @@ struct DictationSettingsPane: View {
                     // `.top`: the recorder is a 24pt bordered field with a button
                     // beside it, the tallest inline control in the pane.
                     SettingsFieldRow(
-                        title: "Overlay Buffer",
+                        title: "Dictation shortcut",
                         controlAlignment: .top
                     ) {
                         HStack(alignment: .center, spacing: 8) {
@@ -229,37 +238,6 @@ struct DictationSettingsPane: View {
                     }
 
                     SettingsFieldRow(
-                        title: "Live Auto-Paste",
-                        controlAlignment: .top
-                    ) {
-                        HStack(alignment: .center, spacing: 8) {
-                            ShortcutRecorderField(
-                                shortcut: livePasteShortcutBinding,
-                                validationError: $livePasteValidationError,
-                                fixedWidth: 132
-                            )
-                            .frame(height: 24, alignment: .leading)
-
-                            // Always present (disabled when empty) so both
-                            // shortcut rows keep identical heights and spacing.
-                            Button("Clear") {
-                                livePasteValidationError = nil
-                                assignLivePasteShortcut(nil)
-                            }
-                            .disabled(settings.livePasteShortcut == nil)
-                        }
-                    } footer: {
-                        if let livePasteValidationError {
-                            SettingsInlineMessage(livePasteValidationError, color: .red)
-                        } else if settings.livePasteShortcut == nil {
-                            SettingsInlineMessage(
-                                "Not set. Record one to enable.",
-                                color: .secondary
-                            )
-                        }
-                    }
-
-                    SettingsFieldRow(
                         title: "Shortcut action"
                     ) {
                         Picker("", selection: $settings.dictationShortcutMode) {
@@ -274,50 +252,21 @@ struct DictationSettingsPane: View {
             }
 
             SettingsGroup(title: "Output") {
-                SettingsFieldRow(title: "Menu bar mode") {
-                    Picker("", selection: dictationOutputModeBinding) {
-                        ForEach(DictationOutputMode.allCases) { mode in
-                            Text(mode.displayName).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                }
-
                 SettingsFieldRow(title: "Copy on stop") {
                     Toggle("", isOn: $settings.autoCopyEnabled)
                         .labelsHidden()
                 }
 
-                // In this group rather than Trigger: it works whichever
-                // trigger method is picked.
-                SettingsFieldRow(
-                    title: "Copy last dictation",
-                    controlAlignment: .top
-                ) {
-                    HStack(alignment: .center, spacing: 8) {
-                        ShortcutRecorderField(
-                            shortcut: copyLastDictationShortcutBinding,
-                            validationError: $copyLastDictationValidationError,
-                            fixedWidth: 132
-                        )
-                        .frame(height: 24, alignment: .leading)
-
-                        Button("Clear") {
-                            copyLastDictationValidationError = nil
-                            assignCopyLastDictationShortcut(nil)
-                        }
-                        .disabled(settings.copyLastDictationShortcut == nil)
-                    }
-                } footer: {
-                    if let copyLastDictationValidationError {
-                        SettingsInlineMessage(copyLastDictationValidationError, color: .red)
-                    }
+                // The needs-you cue (#717): a sound, a banner and the menu
+                // bar icon when a coding agent waits for you, and the waiting
+                // sessions among the overlay's destinations (#840).
+                SettingsFieldRow(title: "Tell me when an agent needs you") {
+                    Toggle("", isOn: agentAttentionBinding)
+                        .labelsHidden()
                 }
 
-                // The needs-you cue (#717) is on while this is set: a sound,
-                // a banner and the menu bar icon when a coding agent waits
-                // for you; the shortcut brings its pane forward to answer.
+                // Optional: opens a dictation in the pane of the session that
+                // needs you, as Tab to it would.
                 SettingsFieldRow(
                     title: "Answer the agent that needs you",
                     controlAlignment: .top
@@ -342,9 +291,8 @@ struct DictationSettingsPane: View {
                     }
                 }
 
-                // A capture's words go to the Inbox, never into the focused
-                // app (#725); like the copy shortcut, it works whichever
-                // trigger method is picked.
+                // Optional: opens a dictation with the Inbox picked, as Tab to
+                // it would (#840). Its words never reach the focused app.
                 SettingsFieldRow(
                     title: "Quick capture to Inbox",
                     controlAlignment: .top
@@ -391,13 +339,6 @@ struct DictationSettingsPane: View {
                     // Dimmed rather than hidden: the pane's row set stays put
                     // whatever the toggle says (owner rule, 2026-07-04).
                     .disabled(!settings.audioDuckingEnabled)
-                }
-            }
-
-            SettingsGroup(title: "Live Auto-Paste") {
-                SettingsFieldRow(title: "Say \u{201C}send it\u{201D} to press Return in terminals and Claude Desktop") {
-                    Toggle("", isOn: $settings.liveSpokenSendEnabled)
-                        .labelsHidden()
                 }
             }
 
@@ -470,6 +411,85 @@ struct DictationSettingsPane: View {
                 ) {
                     if settings.overlayBufferPlacement != nil {
                         Button("Re-anchor") { settings.overlayBufferPlacement = nil }
+                    }
+                }
+            }
+
+            // Live Auto-Paste (#840): off unless a key is set here. It types
+            // as you speak, so the overlay's destinations never apply to it.
+            SettingsGroup(title: "Advanced") {
+                if settings.modifierOnlyHotKeyEnabled {
+                    SettingsFieldRow(title: "Hold the key for Live Auto-Paste") {
+                        Toggle("", isOn: $settings.modifierHoldLiveAutoPaste)
+                            .labelsHidden()
+                    }
+                } else {
+                    SettingsFieldRow(
+                        title: "Live Auto-Paste shortcut",
+                        controlAlignment: .top
+                    ) {
+                        HStack(alignment: .center, spacing: 8) {
+                            ShortcutRecorderField(
+                                shortcut: livePasteShortcutBinding,
+                                validationError: $livePasteValidationError,
+                                fixedWidth: 132
+                            )
+                            .frame(height: 24, alignment: .leading)
+
+                            Button("Clear") {
+                                livePasteValidationError = nil
+                                assignLivePasteShortcut(nil)
+                            }
+                            .disabled(settings.livePasteShortcut == nil)
+                        }
+                    } footer: {
+                        if let livePasteValidationError {
+                            SettingsInlineMessage(livePasteValidationError, color: .red)
+                        } else if settings.livePasteShortcut == nil {
+                            SettingsInlineMessage(
+                                "Not set. Record one to enable.",
+                                color: .secondary
+                            )
+                        }
+                    }
+                }
+
+                SettingsFieldRow(title: "Say \u{201C}send it\u{201D} in Live Auto-Paste to press Return") {
+                    Toggle("", isOn: $settings.liveSpokenSendEnabled)
+                        .labelsHidden()
+                }
+
+                SettingsFieldRow(title: "Menu bar mode") {
+                    Picker("", selection: dictationOutputModeBinding) {
+                        ForEach(DictationOutputMode.allCases) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+
+                SettingsFieldRow(
+                    title: "Copy last dictation",
+                    controlAlignment: .top
+                ) {
+                    HStack(alignment: .center, spacing: 8) {
+                        ShortcutRecorderField(
+                            shortcut: copyLastDictationShortcutBinding,
+                            validationError: $copyLastDictationValidationError,
+                            fixedWidth: 132
+                        )
+                        .frame(height: 24, alignment: .leading)
+
+                        Button("Clear") {
+                            copyLastDictationValidationError = nil
+                            assignCopyLastDictationShortcut(nil)
+                        }
+                        .disabled(settings.copyLastDictationShortcut == nil)
+                    }
+                } footer: {
+                    if let copyLastDictationValidationError {
+                        SettingsInlineMessage(copyLastDictationValidationError, color: .red)
                     }
                 }
             }
