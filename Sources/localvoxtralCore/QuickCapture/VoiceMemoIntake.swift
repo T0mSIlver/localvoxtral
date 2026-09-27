@@ -37,7 +37,7 @@ package final class VoiceMemoIntake {
     private let ledgerURL: URL?
     private let transcriber: any VoiceMemoTranscribing
     private let clock: SessionClock
-    private let list: @MainActor (URL) throws -> [VoiceMemoFile]
+    private let list: @MainActor (URL) async throws -> [VoiceMemoFile]
     private let requestDownload: @MainActor (URL) -> Void
     private let removeTranscribed: @MainActor (URL) throws -> Void
     private let inboxHas: @MainActor (UUID) -> Bool
@@ -61,7 +61,11 @@ package final class VoiceMemoIntake {
         ledgerURL: URL?,
         transcriber: any VoiceMemoTranscribing,
         clock: SessionClock = .live,
-        list: @escaping @MainActor (URL) throws -> [VoiceMemoFile] = VoiceMemoFolder.list,
+        // Off the main thread: while iCloud Drive access is undecided, the
+        // read waits for the user to answer the prompt.
+        list: @escaping @MainActor (URL) async throws -> [VoiceMemoFile] = { url in
+            try await Task.detached { try VoiceMemoFolder.list(url) }.value
+        },
         requestDownload: @escaping @MainActor (URL) -> Void = VoiceMemoFolder.requestDownload,
         removeTranscribed: @escaping @MainActor (URL) throws -> Void = VoiceMemoFolder.removeTranscribed,
         inboxHas: @escaping @MainActor (UUID) -> Bool,
@@ -96,7 +100,7 @@ package final class VoiceMemoIntake {
 
         let files: [VoiceMemoFile]
         do {
-            files = try list(directory)
+            files = try await list(directory)
         } catch {
             // Every 30 s while the folder stays unreadable: log a change only.
             let description = error.localizedDescription

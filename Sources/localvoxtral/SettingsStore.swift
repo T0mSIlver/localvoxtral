@@ -151,6 +151,7 @@ final class SettingsStore {
         static let quickCaptureShortcutEnabled = "settings.quick_capture_shortcut_enabled"
         static let quickCaptureShortcutChord = "settings.quick_capture_shortcut_chord"
         static let quickCaptureJevEnabled = "settings.quick_capture_jev_enabled"
+        static let voiceMemosEnabled = "settings.voice_memos_enabled"
         static let quickCaptureProjectLines = "settings.quick_capture_project_lines"
         static let jevAPIKeyNeverStored = "settings.jev_api_key"
     }
@@ -270,6 +271,12 @@ final class SettingsStore {
             defaults.set(quickCaptureJevEnabled, forKey: Keys.quickCaptureJevEnabled)
             if quickCaptureJevEnabled { ensureSecretsLoaded([.jevAPIKey]) }
         }
+    }
+
+    /// "Transcribe voice memos stored in iCloud Drive" (#925): off until the
+    /// user turns it on, since the audio sits in Apple's cloud.
+    var voiceMemosEnabled: Bool {
+        didSet { defaults.set(voiceMemosEnabled, forKey: Keys.voiceMemosEnabled) }
     }
 
     /// The line the user wrote about each project, by project key, which
@@ -1043,6 +1050,8 @@ final class SettingsStore {
             secrets, .jevAPIKey, envKey: "TYPESAFE_API_KEY", environment: environment)
         quickCaptureJevEnabled = Self.loadBool(
             defaults: defaults, key: Keys.quickCaptureJevEnabled, fallback: false)
+        voiceMemosEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.voiceMemosEnabled, fallback: false)
         quickCaptureProjectLines =
             defaults.dictionary(forKey: Keys.quickCaptureProjectLines) as? [String: String] ?? [:]
         // Empty is the stored form of "use the pinned default": the defaults

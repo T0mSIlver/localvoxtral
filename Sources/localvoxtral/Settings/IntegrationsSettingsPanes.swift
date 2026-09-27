@@ -132,6 +132,15 @@ struct IntegrationsContextSettingsPane: View {
                         isShowingProjectLines = false
                     }
                 }
+
+                // Memos an iPhone or Watch Shortcut saves (#925). The title
+                // says where the audio sits; the recipe is behind Learn more.
+                SettingsFieldRow(title: "Transcribe voice memos stored in iCloud Drive") {
+                    Toggle("", isOn: $settings.voiceMemosEnabled)
+                        .labelsHidden()
+                        .accessibilityIdentifier("settings.voiceMemos.toggle")
+                }
+                .onChange(of: settings.voiceMemosEnabled) { viewModel.voiceMemos?.apply() }
             }
             .onAppear {
                 // Read from the Keychain only for someone who turned routing
