@@ -260,7 +260,7 @@ final class ViewSnapshotTests: XCTestCase {
     func testMenuBarAttentionMarks() throws {
         let template = try MenuBarIconFixture.template()
         let icons: [(name: String, image: NSImage)] =
-            [("idle", template)]
+            [("idle", Self.tinted(template))]
             + AgentAttentionMark.allCases.map {
                 ($0.displayName, MenuBarStatusIcon.withAttentionMark(template: template, mark: $0))
             }
@@ -297,6 +297,17 @@ final class ViewSnapshotTests: XCTestCase {
             .background(bar)
             .environment(\.colorScheme, theme == "light" ? .light : .dark)
             try record(view, name: "menu-bar-marks-\(theme)", width: 520, height: 200, growToFit: false)
+        }
+    }
+
+    /// The template as the menu bar tints it: in the text color of the
+    /// appearance it is drawn under.
+    private static func tinted(_ template: NSImage) -> NSImage {
+        NSImage(size: template.size, flipped: false) { rect in
+            template.draw(in: rect)
+            NSColor.labelColor.set()
+            rect.fill(using: .sourceAtop)
+            return true
         }
     }
 
