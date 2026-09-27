@@ -47,13 +47,6 @@ struct ConnectionSettingsPane: View {
         )
     }
 
-    private var speechdCacheLimitBinding: Binding<SpeechdCacheLimit> {
-        Binding(
-            get: { settings.speechdCacheLimit },
-            set: { viewModel.engines.applySpeechdCacheLimitChange($0) }
-        )
-    }
-
     private var mistralDictationModelEntries: [MistralModelPickerEntry] {
         MistralModelCatalog.pickerEntries(
             for: .dictation,
@@ -178,19 +171,6 @@ struct ConnectionSettingsPane: View {
                         .pickerStyle(.menu)
                         .labelsHidden()
                         .accessibilityIdentifier("engines.dictation.managedModel")
-                    }
-
-                    if settings.resolvedManagedSpeechModel.showsMemoryLimit {
-                        SettingsFieldRow(title: "Memory limit") {
-                            Picker("", selection: speechdCacheLimitBinding) {
-                                ForEach(SpeechdCacheLimit.allCases) { limit in
-                                    Text(limit.displayName).tag(limit)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .labelsHidden()
-                            .accessibilityIdentifier("engines.dictation.memoryLimit")
-                        }
                     }
 
                     ManagedBackendStatusRow(
