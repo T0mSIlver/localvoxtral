@@ -2,8 +2,9 @@
 # localvoxtral-remote Claude Code hook shim — strict POSIX sh, needs only curl.
 #
 # Claude Code runs this once per hook event with the event JSON on stdin. Its
-# ONLY job is to POST that JSON, unchanged, to the tunnelled loopback listener
-# on the Mac, authenticated with the enrolled host's bearer token, and to print
+# ONLY job is to POST that JSON (a Notification or a Stop rebuilt, see below)
+# to the tunnelled loopback listener on the Mac, authenticated with the
+# enrolled host's bearer token, and to print
 # the listener's 200 response body on stdout for Claude Code to act on — but
 # only after gating it against the exact allowlisted ClaudeHookOutput grammar
 # (see the stdout gate at the bottom); anything else prints nothing.
@@ -133,6 +134,36 @@ if [ "$EVENT" = "Notification" ]; then
 EOF
 fi
 
+# --- Stop: the session and its cwd, never the reply (#818) ---------------------
+# A Stop carries `last_assistant_message`, the agent's whole reply, and the
+# owner ruling on #717 keeps that text on this host. The body is REBUILT from
+# the fields the Mac reads for a Stop: the session id checked above and the
+# payload's `cwd`. The cwd is copied as the JSON string token it already is,
+# quotes and escapes included, and only when that token matches strict JSON
+# string grammar: no raw quote, backslash or control byte, and only the
+# escapes JSON defines. A token that fails, or is over 4096 bytes, is dropped
+# and the Mac keeps the session's last known workspace. A payload without a
+# usable session id still dials, so the backoff and status stamps stay
+# current, and the Mac drops the record.
+if [ "$EVENT" = "Stop" ]; then
+  STOP_BODY='"hook_event_name":"Stop"'
+  if [ -n "$SESSION_ID" ]; then
+    STOP_BODY="$STOP_BODY,\"session_id\":\"$SESSION_ID\""
+    STOP_CWD="$(LC_ALL=C awk '
+      match($0, /"cwd"[[:space:]]*:[[:space:]]*"([^"\\[:cntrl:]]|\\["\\\/bfnrt]|\\u[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f])*"/) {
+        value = substr($0, RSTART, RLENGTH)
+        sub(/^"cwd"[[:space:]]*:[[:space:]]*/, "", value)
+        if (length(value) <= 4096) print value
+        exit
+      }
+    ' "$WORK/event" 2>/dev/null)" || STOP_CWD=""
+    [ -z "$STOP_CWD" ] || STOP_BODY="$STOP_BODY,\"cwd\":$STOP_CWD"
+  fi
+  cat 2>/dev/null >"$WORK/event" <<EOF || exit 0
+{$STOP_BODY}
+EOF
+fi
+
 SESSION_STAMP_DIR="$STAMP_DIR/sessions"
 if [ "$EVENT" = "SessionEnd" ] && [ -n "$STAMP_DIR" ] && [ -n "$SESSION_ID" ]; then
   rm -f "$SESSION_STAMP_DIR/$SESSION_ID" 2>/dev/null || :
@@ -240,7 +271,7 @@ fi
 # the app validates the shape and trusts nothing else about it.
 cat 2>/dev/null >"$WORK/header" <<EOF || fail_open
 Authorization: Bearer $TOKEN
-X-Lvx-Plugin-Version: 1.17.0
+X-Lvx-Plugin-Version: 1.18.0
 EOF
 
 # --- Allowlisted environment enrichment --------------------------------------

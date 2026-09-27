@@ -1888,7 +1888,11 @@ there is not.
     outside the set publishes nothing, and a record without one is dropped
     at decode. The reply text (`last_assistant_message`) stays out of the
     app too (owner ruling on #717, 2026-09-26): nothing reads it aloud, and
-    the answer hotkey brings the pane forward to read it there.
+    the answer hotkey brings the pane forward to read it there. It stays on
+    the remote host as well (#818): the shim rebuilds a `Stop` from the
+    checked session id and the cwd, copied only when its JSON string token
+    passes a strict grammar check, since the shim has no JSON tool to
+    re-escape it.
   - **"Were you looking at it" asks only local questions** (#717). A turn's
     end queues a finished entry only when the user was not looking at the
     session's pane (`AgentAttentionTracker`), and that is answered by

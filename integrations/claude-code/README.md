@@ -1023,6 +1023,8 @@ overrides, and zero-width characters before it is stored, so foreign text
 stays text and cannot act on anything.
 
 Transcript contents, `Bash` command strings, and anything claiming to be trusted
-still never cross, exactly as locally. A `Notification` is the one event whose
-body the shim rebuilds instead of posting as-is: it sends the session id and
-the `notification_type`, and its `message` and `title` never leave the host.
+still never cross, exactly as locally. The shim rebuilds two events' bodies
+instead of posting them as-is. A `Notification` sends the session id and the
+`notification_type`, so its `message` and `title` never leave the host. A
+`Stop` sends the session id and cwd, so the agent's reply
+(`last_assistant_message`) never leaves it either.
