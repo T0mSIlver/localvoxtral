@@ -312,6 +312,18 @@ struct DictationSettingsPane: View {
                         .labelsHidden()
                 }
 
+                SettingsFieldRow(title: "Menu bar mark when an agent needs you") {
+                    Picker("", selection: $settings.agentAttentionMark) {
+                        ForEach(AgentAttentionMark.allCases) { mark in
+                            Text(mark.displayName).tag(mark)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .fixedSize()
+                    .disabled(!settings.agentAttentionEnabled)
+                }
+
                 // Optional: opens a dictation in the pane of the session that
                 // needs you, as Tab to it would.
                 SettingsShortcutRow(

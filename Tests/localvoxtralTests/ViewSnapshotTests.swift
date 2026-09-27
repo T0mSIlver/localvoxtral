@@ -252,6 +252,54 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
+    // MARK: - Menu bar icon
+
+    /// The needs-you marks beside the idle mic, on a light and a dark menu
+    /// bar: at the size the menu bar draws them, and enlarged to 4 pt a
+    /// cell without smoothing, so the pixel grid shows.
+    func testMenuBarAttentionMarks() throws {
+        let template = try MenuBarIconFixture.template()
+        let icons: [(name: String, image: NSImage)] =
+            [("idle", template)]
+            + AgentAttentionMark.allCases.map {
+                ($0.displayName, MenuBarStatusIcon.withAttentionMark(template: template, mark: $0))
+            }
+        for (theme, appearance, bar) in [
+            ("light", NSAppearance.Name.aqua, Color(white: 0.9)),
+            ("dark", NSAppearance.Name.darkAqua, Color(white: 0.15)),
+        ] {
+            let renders = try icons.map { icon in
+                let rep = try MenuBarIconFixture.render(icon.image, appearance: appearance)
+                let image = NSImage(size: rep.size)
+                image.addRepresentation(rep)
+                return (name: icon.name, image: image)
+            }
+            let view = HStack(alignment: .top, spacing: 20) {
+                ForEach(renders.indices, id: \.self) { index in
+                    let icon = renders[index]
+                    VStack(spacing: 8) {
+                        // The label's frame in `localvoxtralApp`.
+                        Image(nsImage: icon.image)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 13, height: 16)
+                            .frame(height: 24)
+                        Image(nsImage: icon.image)
+                            .resizable()
+                            .interpolation(.none)
+                            .frame(width: 88, height: 88)
+                        Text(icon.name)
+                            .font(.caption)
+                    }
+                }
+            }
+            .padding(16)
+            .background(bar)
+            .environment(\.colorScheme, theme == "light" ? .light : .dark)
+            try record(view, name: "menu-bar-marks-\(theme)", width: 520, height: 200, growToFit: false)
+        }
+    }
+
     // MARK: - Overlay panel
 
     func testOverlayPanelStates() throws {

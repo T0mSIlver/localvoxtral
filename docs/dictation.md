@@ -313,7 +313,8 @@ A Mistral Vibe session tells you only when it finishes, since Vibe reports
 no waits.
 
 Each time, the app plays a sound and shows a macOS banner, and the menu bar
-icon gets an orange dot. The popover names the session: "payments needs you"
+icon gets an orange dot. Settings > Dictation > Output can make the dot a
+square or an exclamation mark instead. The popover names the session: "payments needs you"
 or "payments finished". Nothing fires for a turn that ends in the pane you
 are looking at.
 
