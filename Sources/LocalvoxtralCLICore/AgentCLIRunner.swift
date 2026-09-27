@@ -98,6 +98,7 @@ public struct AgentCLIText: Sendable {
         if let terms = response.terms { lines += render(terms) }
         if let proposal = response.proposal { lines += render(proposal) }
         if let status = response.status { lines += render(status) }
+        if let doctor = response.doctor { lines += render(doctor) }
         return lines.map { $0 + "\n" }.joined()
     }
 
@@ -181,6 +182,30 @@ public struct AgentCLIText: Sendable {
         } else {
             lines.append("Last dictation joined: no session")
         }
+        return lines
+    }
+
+    /// Numbered, so a person can say "check 4" and an agent can quote it.
+    private func render(_ doctor: AgentCLIDoctor) -> [String] {
+        var lines: [String] = []
+        for (index, check) in doctor.checks.enumerated() {
+            let mark = switch check.state {
+            case .ok: "ok  "
+            case .warning: "warn"
+            case .failed: "FAIL"
+            case .skipped: "--  "
+            }
+            lines.append("\(index + 1). [\(mark)] \(check.title): \(check.detail)")
+            if let fix = check.fix, check.state != .ok { lines.append("   fix: \(fix)") }
+        }
+        let failed = doctor.checks.filter { $0.state == .failed }.count
+        let warned = doctor.checks.filter { $0.state == .warning }.count
+        lines.append("")
+        lines.append(
+            failed + warned == 0
+                ? "No problems found."
+                : "\(failed) failed, \(warned) to look at."
+        )
         return lines
     }
 

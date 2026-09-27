@@ -76,6 +76,7 @@ public enum AgentCLICommand: String, Sendable, CaseIterable {
     case termsList = "terms.list"
     case termsPropose = "terms.propose"
     case status
+    case doctor
 }
 
 /// The coding agent that ran the command, recorded as a proposed term's
@@ -369,6 +370,43 @@ public struct AgentCLIStatus: Sendable, Equatable, Codable {
     public static let notRunning = AgentCLIStatus(running: false)
 }
 
+/// One `doctor` check: what was checked, what was found, and when it is not
+/// fine, the one step that fixes it. No dictated text and no key; a remote
+/// host's check names the host.
+public struct AgentCLICheck: Sendable, Equatable, Codable {
+    public enum State: String, Sendable, Codable {
+        case ok
+        case warning
+        case failed
+        /// Nothing to check here (a feature that is off, an engine the app
+        /// does not run).
+        case skipped
+    }
+
+    /// Stable across versions, so an agent can match on it.
+    public var id: String
+    public var title: String
+    public var state: State
+    public var detail: String
+    public var fix: String?
+
+    public init(id: String, title: String, state: State, detail: String, fix: String? = nil) {
+        self.id = id
+        self.title = title
+        self.state = state
+        self.detail = detail
+        self.fix = fix
+    }
+}
+
+public struct AgentCLIDoctor: Sendable, Equatable, Codable {
+    public var checks: [AgentCLICheck]
+
+    public init(checks: [AgentCLICheck]) {
+        self.checks = checks
+    }
+}
+
 /// One answer. Exactly one of the payloads is set when `ok`, `error` when not.
 public struct AgentCLIResponse: Sendable, Equatable, Codable {
     public var cli: Int
@@ -378,13 +416,15 @@ public struct AgentCLIResponse: Sendable, Equatable, Codable {
     public var terms: AgentCLITerms?
     public var proposal: AgentCLIProposal?
     public var status: AgentCLIStatus?
+    public var doctor: AgentCLIDoctor?
 
     public init(
         error: AgentCLIError? = nil,
         history: AgentCLIHistory? = nil,
         terms: AgentCLITerms? = nil,
         proposal: AgentCLIProposal? = nil,
-        status: AgentCLIStatus? = nil
+        status: AgentCLIStatus? = nil,
+        doctor: AgentCLIDoctor? = nil
     ) {
         self.cli = AgentCLIWire.version
         self.ok = error == nil
@@ -393,6 +433,7 @@ public struct AgentCLIResponse: Sendable, Equatable, Codable {
         self.terms = terms
         self.proposal = proposal
         self.status = status
+        self.doctor = doctor
     }
 
     public static func failure(_ code: AgentCLIError.Code, _ message: String) -> AgentCLIResponse {

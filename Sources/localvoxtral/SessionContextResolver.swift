@@ -68,6 +68,11 @@ final class SessionContextResolver {
         Log.claudeContext.notice("Claude join outcome: \(line, privacy: .public)")
     }
 
+    /// The last line `joinOutcomeLog` got, for `localvoxtral doctor`: the
+    /// unified log is the only other copy, and `log show` needs the right
+    /// predicate and a recent enough dictation.
+    private(set) var lastJoinOutcomeLine: String?
+
     init(settings: SettingsStore, textInsertion: TextInsertionService) {
         self.settings = settings
         self.textInsertion = textInsertion
@@ -303,6 +308,7 @@ final class SessionContextResolver {
             DiagnosticCaptureTap.shared.noteJoinAbstention(gate.rawValue)
         }
         let summary = ClaudeSessionJoinSummary.summarize(join: attempt.join, abstentions: causes)
+        lastJoinOutcomeLine = summary.noticeText
         joinOutcomeLog(summary.noticeText)
         #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         // Snapshotted HERE, at the single resolution, because the commit path

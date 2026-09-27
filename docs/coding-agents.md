@@ -366,6 +366,7 @@ localvoxtral history last
 localvoxtral terms list --project .
 localvoxtral terms propose Featherline QuillDoc --project .
 localvoxtral status
+localvoxtral doctor
 ```
 
 - Every command takes `--json`.
@@ -375,6 +376,11 @@ localvoxtral status
 - `--since` takes `today`, `yesterday`, `3d`, `12h`, `30m`, `2w` or a date.
 
 Under **History → Don't keep**, `history` answers with nothing.
+
+`doctor` checks the microphone and Accessibility permissions, the speech and
+polish engines, the Claude Code plugin, each remote host and the session the
+last dictation joined. Each problem comes with the step that fixes it. It
+prints no dictated text and no key, but it names your remote hosts.
 
 The command talks to the running app over the same private socket the hooks
 use. It opens no network port, and only processes running as you can reach

@@ -26,6 +26,8 @@ package protocol AgentCLIDataSource: Sendable {
         excluding: [String]
     ) async -> [String]
     func status() async -> AgentCLIStatus
+    /// What `doctor` checks (`AgentCLIDoctorChecks`).
+    func doctorFacts() async -> AgentCLIDoctorFacts
 }
 
 /// Answers the command's requests. Everything here is the part that does not
@@ -69,6 +71,10 @@ package struct AgentCLIService: Sendable {
         case .termsList: response = await termsList(request)
         case .termsPropose: response = await termsPropose(request)
         case .status: response = AgentCLIResponse(status: await source.status())
+        case .doctor:
+            response = AgentCLIResponse(
+                doctor: AgentCLIDoctor(checks: AgentCLIDoctorChecks.checks(await source.doctorFacts()))
+            )
         }
         if let error = response.error {
             Log.backends.error(

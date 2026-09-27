@@ -82,6 +82,69 @@ final class AgentCLIAppDataSource: AgentCLIDataSource {
         )
     }
 
+    func doctorFacts() async -> AgentCLIDoctorFacts {
+        guard let viewModel else {
+            return AgentCLIDoctorFacts(
+                microphone: .notAsked, accessibilityTrusted: false, speech: .off, polish: .off,
+                claudePlugin: nil, remoteHosts: [], lastJoinLine: nil, now: Date()
+            )
+        }
+        let settings = viewModel.settings
+        let backends = viewModel.backendManager
+        let microphone: AgentCLIDoctorFacts.Permission = switch viewModel.session.currentMicrophoneAuthorizationStatus() {
+        case .authorized: .granted
+        case .denied: .denied
+        case .restricted: .restricted
+        case .notDetermined: .notAsked
+        }
+        // Only the key an engine in use needs, the same key a dictation
+        // would load: no Keychain prompt for one the user does not use.
+        func mistralKeySet() -> Bool {
+            settings.ensureSecretsLoaded([.mistralAPIKey])
+            return !settings.mistralAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        let speech: AgentCLIDoctorFacts.Engine = switch settings.dictationBackendMode {
+        case .managedLocal: .managed(backends.speechdStatus)
+        case .mistralAPI: .mistralAPI(keySet: mistralKeySet())
+        case .externalURL: .externalURL
+        }
+        let polish: AgentCLIDoctorFacts.Engine = if !settings.llmPolishingEnabled {
+            .off
+        } else {
+            switch settings.polishingBackendMode {
+            case .managedLocal: .managed(backends.polishdStatus)
+            case .mistralAPI: .mistralAPI(keySet: mistralKeySet())
+            case .externalURL: .externalURL
+            }
+        }
+        var claudePlugin: ClaudePluginStatus?
+        var hosts: [AgentCLIDoctorFacts.RemoteHost] = []
+        if let integration = viewModel.claudeIntegrationSettings {
+            await integration.refreshLocalPluginStatus()
+            integration.refreshHosts()
+            claudePlugin = integration.localPluginStatus
+            hosts = integration.hosts.filter { !$0.isRevoked }.map { row in
+                AgentCLIDoctorFacts.RemoteHost(
+                    label: row.label,
+                    sshHostAlias: row.sshHostAlias,
+                    lastSeenAt: row.lastSeenAt,
+                    pluginNeedsUpdate: row.pluginNeedsUpdate,
+                    forwardFailure: row.forwardIsFailure ? row.forwardStatusText : nil
+                )
+            }
+        }
+        return AgentCLIDoctorFacts(
+            microphone: microphone,
+            accessibilityTrusted: viewModel.isAccessibilityTrusted,
+            speech: speech,
+            polish: polish,
+            claudePlugin: claudePlugin,
+            remoteHosts: hosts,
+            lastJoinLine: viewModel.context.lastJoinOutcomeLine,
+            now: Date()
+        )
+    }
+
     /// History keeps the text with the clipboard placeholder, never the
     /// clipboard itself, and so does this.
     static func dictation(_ entry: DictationHistoryEntry) -> AgentCLIDictation {

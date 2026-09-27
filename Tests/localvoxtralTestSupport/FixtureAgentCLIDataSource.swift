@@ -15,6 +15,16 @@ package final class FixtureAgentCLIDataSource: AgentCLIDataSource, @unchecked Se
         package var refusedTerms: [String] = []
         package var learned = LearnedTerms()
         package var status = AgentCLIStatus(running: true)
+        package var doctorFacts = AgentCLIDoctorFacts(
+            microphone: .granted,
+            accessibilityTrusted: true,
+            speech: .managed(.ready),
+            polish: .off,
+            claudePlugin: nil,
+            remoteHosts: [],
+            lastJoinLine: nil,
+            now: Date(timeIntervalSince1970: 1_790_000_000)
+        )
         package var now = Date(timeIntervalSince1970: 1_790_000_000)
 
         package init() {}
@@ -63,4 +73,5 @@ package final class FixtureAgentCLIDataSource: AgentCLIDataSource, @unchecked Se
     }
 
     package func status() async -> AgentCLIStatus { state.withLock { $0.status } }
+    package func doctorFacts() async -> AgentCLIDoctorFacts { state.withLock { $0.doctorFacts } }
 }

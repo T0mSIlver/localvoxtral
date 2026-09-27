@@ -50,6 +50,8 @@ public struct AgentCLIArguments: Sendable {
               --project <dir>       the project (default: the current directory)
               --agent <name>        claude, codex, opencode or vibe (default: detected)
           status                  whether the app runs, its engines, the last join
+          doctor                  checks permissions, engines, plugins, remote hosts
+                                  and the last join, with a fix for each problem
 
         Every command takes --json. Exit status: 0 answered, 1 the app refused,
         2 bad arguments, 3 the app is not running.
@@ -96,6 +98,9 @@ public struct AgentCLIArguments: Sendable {
         case "status":
             command = .status
             operands = rest
+        case "doctor":
+            command = .doctor
+            operands = rest
         case "history", "terms":
             guard let verb = rest.first else { return .usageError("\(group) needs a command") }
             operands = Array(rest.dropFirst())
@@ -115,7 +120,7 @@ public struct AgentCLIArguments: Sendable {
         case .historySearch: allowed = ["--project", "--since", "--limit"]
         case .termsList: allowed = ["--project"]
         case .termsPropose: allowed = ["--project", "--agent"]
-        case .historyLast, .status: allowed = []
+        case .historyLast, .status, .doctor: allowed = []
         }
         if let stray = options.keys.sorted().first(where: { !allowed.contains($0) }) {
             return .usageError("\(stray) does not apply to \(command.rawValue.replacingOccurrences(of: ".", with: " "))")
@@ -139,7 +144,7 @@ public struct AgentCLIArguments: Sendable {
             } else {
                 request.caller = AgentCLICaller.detect(environment: environment)
             }
-        case .historyLast, .termsList, .status:
+        case .historyLast, .termsList, .status, .doctor:
             break
         }
         guard operands.isEmpty else { return .usageError("unexpected argument: \(operands[0])") }
