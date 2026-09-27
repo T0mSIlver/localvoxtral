@@ -197,7 +197,7 @@ final class LazySecretLoadingTests: XCTestCase {
         XCTAssertFalse(secrets.reads.contains(.jevAPIKey))
         XCTAssertEqual(store.jevAPIKey, "")
 
-        store.quickCaptureJevEnabled = true
+        store.quickCaptureRouter = .jev
         XCTAssertEqual(secrets.reads.filter { $0 == .jevAPIKey }.count, 1)
         XCTAssertEqual(store.jevAPIKey, "jev-key")
     }

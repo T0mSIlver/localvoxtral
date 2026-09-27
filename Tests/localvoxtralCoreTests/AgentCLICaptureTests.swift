@@ -17,10 +17,11 @@ final class AgentCLICaptureTests: XCTestCase {
 
     private func item(
         _ id: UUID, hoursAgo: Double, text: String, title: String = "", project: (String, String)?,
-        repository: String? = nil, state: QuickCaptureItem.State = .ready
+        repository: String? = nil, state: QuickCaptureItem.State = .ready, kind: QuickCaptureKind? = nil
     ) -> QuickCaptureItem {
         var item = QuickCaptureItem(id: id, capturedAt: now.addingTimeInterval(-hoursAgo * 3_600), text: text)
         item.state = state
+        item.kind = kind
         item.projectKey = project?.0
         item.projectName = project?.1
         item.repository = repository
@@ -201,5 +202,19 @@ final class AgentCLICaptureTests: XCTestCase {
         // No repository known: the URL's becomes the capture's.
         response = await respond(.captureFiled, capture: "drafting progress", url: "https://github.com/o/website/issues/2", source: source)
         XCTAssertEqual(response.capture?.repository, "o/website")
+    }
+
+    func testAQuestionTaskOrNoteReportsItsKindAndIsNeverMarkedFiled() async throws {
+        var state = FixtureAgentCLIDataSource.State()
+        state.now = now
+        state.inbox = QuickCaptureInbox(items: [
+            item(herdrID, hoursAgo: 2, text: "check the vLLM numbers tomorrow", title: "Check the vLLM numbers",
+                 project: ("/work/reach", "reach"), repository: "o/reach", kind: .task),
+        ])
+        let source = FixtureAgentCLIDataSource(state)
+        var response = await respond(.captureShow, capture: "vLLM", source: source)
+        XCTAssertEqual(response.capture?.kind, "task")
+        response = await respond(.captureFiled, capture: "vLLM", url: "https://github.com/o/reach/issues/4", source: source)
+        XCTAssertEqual(response.error, AgentCLIError(.notFileable, "a task is never filed"))
     }
 }

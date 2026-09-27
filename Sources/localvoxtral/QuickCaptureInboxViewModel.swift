@@ -39,9 +39,18 @@ final class QuickCaptureInboxViewModel {
                     .appendingPathComponent(".vibe", isDirectory: true)
             ),
             openIssues: { await github.openIssues(ofCheckout: $0, repository: $1) },
-            remote: { capture, project in
+            context: { root, repository, capture in
+                await QuickCaptureContextGatherer(
+                    run: QuickCaptureContextGatherer.processRun(),
+                    openIssues: { await github.openIssues(ofCheckout: $0, repository: $1) },
+                    checkoutRepository: { await github.repository(ofCheckout: $0) }
+                ).gather(root: root, repository: repository, capture: capture)
+            },
+            remote: { capture, project, firstDrafter, onFirstDraft in
                 guard let requests = remote.value.withLock({ $0 }) else { return .notRun(.remoteProject) }
-                return await requests.draft(capture: capture, project: project)
+                return await requests.draft(
+                    capture: capture, project: project, firstDrafter: firstDrafter, onFirstDraft: onFirstDraft
+                )
             },
             usageRecorder: usageRecorder
         )
@@ -58,7 +67,7 @@ final class QuickCaptureInboxViewModel {
                 )
             },
             agents: { [.claude, .vibe, .opencode] },
-            drafter: { drafter },
+            drafter: { drafter.withFirstDrafter(Self.firstDrafter(settings: settings, usageRecorder: usageRecorder)) },
             github: github
         )
         store = learnedTermStore
@@ -144,16 +153,18 @@ final class QuickCaptureInboxViewModel {
 
     var waitingCount: Int { items.filter { $0.state != .filed }.count }
 
-    /// Jev only when the user allowed it and a key is set; the polishing
-    /// model next, when polishing has a configuration. With neither, every
-    /// capture waits in the Inbox for the user to place it.
+    /// The router Settings picked (#918): the polishing model by default,
+    /// Jev first when chosen and a key is set, with the polishing model as
+    /// its fallback. With neither, every capture waits in the Inbox for the
+    /// user to place it.
     static func classifiers(
         settings: SettingsStore, usageRecorder: (any UsageRecording)? = nil
     ) -> [any QuickCaptureClassifying] {
         var classifiers: [any QuickCaptureClassifying] = []
-        if settings.quickCaptureJevEnabled { settings.ensureSecretsLoaded([.jevAPIKey]) }
+        let useJev = settings.quickCaptureRouter == .jev
+        if useJev { settings.ensureSecretsLoaded([.jevAPIKey]) }
         let jevKey = settings.jevAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        if settings.quickCaptureJevEnabled, !jevKey.isEmpty {
+        if useJev, !jevKey.isEmpty {
             classifiers.append(JevClassifier(
                 host: jevHost(forKey: jevKey), apiKey: jevKey, usageRecorder: usageRecorder))
         }
@@ -168,6 +179,33 @@ final class QuickCaptureInboxViewModel {
             ))
         }
         return classifiers
+    }
+
+    /// The first draft's writer (#918): the polishing model, at low
+    /// reasoning effort on the Mistral shape. Nil without a polishing
+    /// configuration; the agent then drafts alone.
+    static func firstDrafter(
+        settings: SettingsStore, usageRecorder: (any UsageRecording)? = nil
+    ) -> (any QuickCaptureFirstDrafting)? {
+        guard let polishing = settings.llmPolishingConfiguration else { return nil }
+        return QuickCaptureFirstDrafter(
+            endpoint: LLMPolishingService.normalizedChatCompletionsURL(polishing.endpointURL),
+            apiKey: polishing.apiKey,
+            model: polishing.model,
+            extraBody: firstDraftExtraBody(polishing),
+            usageBackend: polishing.usageBackend,
+            usageRecorder: usageRecorder
+        )
+    }
+
+    /// The model's lowest reasoning effort on the Mistral shape, whatever
+    /// polish uses: GLM's `low`, Mistral's own `none` (it rejects `low`).
+    /// At a higher effort GLM 5.3's reasoning once used the whole token cap
+    /// (#918). A self-hosted server keeps its polish switches.
+    static func firstDraftExtraBody(_ configuration: LLMPolishingConfiguration) -> [String: any Sendable] {
+        guard configuration.requestShape == .mistral else { return chatExtraBody(configuration) }
+        guard let wireValue = MistralReasoningEffort.forModel(configuration.model).wireValue else { return [:] }
+        return ["reasoning_effort": wireValue]
     }
 
     /// Vercel AI Gateway keys start `vck_`; any other key is TypeSafe's.

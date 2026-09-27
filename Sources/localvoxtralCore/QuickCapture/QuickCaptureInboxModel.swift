@@ -1,8 +1,10 @@
 import Foundation
+import Synchronization
 
 /// The Inbox page's model (#732): takes a stopped quick capture, routes it,
-/// has the project's agent draft it, and files it only when the user
-/// presses File. Every change is written to the inbox file at once, so a
+/// drafts it in two stages (#918: the polishing model's first draft, then
+/// the agent's check against the code for an issue), and files it only when
+/// the user presses File. Every change is written to the inbox file at once, so a
 /// capture survives a quit at any step.
 ///
 /// Not `@Observable`: Observation does not link on the Linux toolchain the
@@ -27,7 +29,8 @@ package final class QuickCaptureInboxModel {
     private let now: @MainActor () -> Date
     /// One short sentence for the menu bar popover.
     package var onStatus: (@MainActor (String) -> Void)?
-    /// A draft finished: an item went from drafting to a ready draft (#927).
+    /// A draft finished: an item went from drafting, or from an issue's
+    /// check, to a ready draft (#927, #918).
     /// Called before `onChange`.
     package var onDraftReady: (@MainActor (QuickCaptureItem) -> Void)?
     /// Where the capture went, for its History record.
@@ -75,7 +78,7 @@ package final class QuickCaptureInboxModel {
         let item = QuickCaptureItem(
             id: id, capturedAt: capturedAt ?? now(), text: text, historyRecordID: historyRecordID)
         mutate { $0.add(item) }
-        Log.backends.info("Quick capture: saved, routing")
+        Log.backends.notice("Quick capture: saved, routing")
         let router = makeRouter()
         let projects = projects()
         return Task { @MainActor [weak self] in
@@ -96,13 +99,68 @@ package final class QuickCaptureInboxModel {
         mutate { inbox in
             inbox.update(id) {
                 $0.state = .drafting
+                $0.note = nil
+                $0.codeCheck = nil
                 // A remote project's host drafts on its next session hook.
                 if !key.hasPrefix("/") { $0.note = QuickCaptureInbox.waitingForHostNote }
             }
         }
         let repository = await repository(of: projects.first { $0.key == key })
-        let outcome = await drafter().draft(capture: text, route: destination, projects: projects, agents: agents())
-        mutate { $0.applyDraft(outcome, repository: repository, to: id) }
+        let drafter = drafter()
+        let agents = agents()
+        Log.backends.notice(
+            "Quick capture draft: started, \(drafter.writesFirstDrafts ? "first draft then check" : "agent only", privacy: .public), \(key.hasPrefix("/") ? "local" : "remote", privacy: .public) project"
+        )
+        // What the first draft said, to tell whether the user edited it
+        // before the check came back.
+        let shown = Mutex<(title: String, body: String)?>(nil)
+        let final = await drafter.draft(
+            capture: text, route: destination, projects: projects, agents: agents,
+            onFirstDraft: { @MainActor [weak self] outcome in
+                guard let self, let item = self.inbox.items.first(where: { $0.id == id }),
+                      item.state == .drafting, item.projectKey == key
+                else { return false }
+                self.mutate { $0.applyFirstDraft(outcome, repository: repository, checking: !agents.isEmpty, to: id) }
+                guard let now = self.inbox.items.first(where: { $0.id == id }) else { return false }
+                if case .draft = outcome { shown.withLock { $0 = (now.title, now.body) } }
+                return now.state == .drafting || now.codeCheck?.state == .checking
+            }
+        )
+        guard let final else { return }
+        guard let item = inbox.items.first(where: { $0.id == id }), item.projectKey == key else {
+            Log.backends.notice("Quick capture draft: the capture was moved or discarded, draft dropped")
+            return
+        }
+        if item.state == .filing || item.state == .filed {
+            Log.backends.notice("Quick capture draft: filed before the check finished, check dropped")
+            // Mid-filing, the filing may still fail: the check then reads as
+            // failed, so Draft Again can bring it back.
+            mutate { inbox in
+                inbox.update(id) {
+                    if $0.state == .filed { $0.codeCheck = nil } else { $0.codeCheck?.state = .failed }
+                }
+            }
+            return
+        }
+        mutate { $0.applyDraft(final, repository: repository, firstDraft: shown.withLock { $0 }, to: id) }
+        if let after = inbox.items.first(where: { $0.id == id }), after.codeCheck?.keptEdits == true {
+            Log.backends.notice("Quick capture draft: checked, the user's edits kept")
+        }
+    }
+
+    /// Drafts a capture again in its project, both stages, after its draft
+    /// or its check failed.
+    @discardableResult
+    package func draftAgain(_ id: UUID) -> Task<Void, Never>? {
+        guard let item = inbox.items.first(where: { $0.id == id }), item.canDraftAgain, let key = item.projectKey else {
+            return nil
+        }
+        let projects = projects()
+        guard projects.contains(where: { $0.key == key }) else { return nil }
+        Log.backends.notice("Quick capture draft: drafting again")
+        return Task { @MainActor [weak self] in
+            await self?.draft(id, text: item.text, destination: .project(key), projects: projects)
+        }
     }
 
     /// The project's filing repository, else a local checkout's `origin`
@@ -274,7 +332,9 @@ package final class QuickCaptureInboxModel {
 
     private func noteDraftsThatFinished(from old: QuickCaptureInbox) {
         guard let onDraftReady else { return }
-        let drafting = Set(old.items.filter { $0.state == .drafting }.map(\.id))
+        // Drafting, or an issue's check still running (#918): the cue waits
+        // for the checked draft, and fires at once for other kinds.
+        let drafting = Set(old.items.filter { $0.state == .drafting || $0.codeCheck?.state == .checking }.map(\.id))
         guard !drafting.isEmpty else { return }
         for item in inbox.items where drafting.contains(item.id) && item.isReadyDraft {
             onDraftReady(item)
