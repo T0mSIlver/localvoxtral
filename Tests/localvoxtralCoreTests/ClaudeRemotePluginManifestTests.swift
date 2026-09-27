@@ -1818,6 +1818,97 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         XCTAssertTrue(joined.sessionID.hasSuffix(":desktop"))
     }
 
+    /// What the shim posts for a recorded Desktop hook (#834), run as a
+    /// Desktop session's own hook: the env headers and the body, read by the
+    /// listener's own parsers.
+    private func desktopSessionPost(
+        event: String, recorded name: String
+    ) throws -> (environment: ClaudeRemoteSessionEnvironment?, body: Data) {
+        let fixtures = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let payload = try Data(contentsOf: fixtures.appendingPathComponent("ClaudeDesktopHookPayloads/\(name).json"))
+        let tree = try desktopTreeLauncher(nested: false, event: event)
+        defer { try? FileManager.default.removeItem(at: tree.root) }
+        let headerDump = tree.root.appendingPathComponent("headers")
+        let bodyDump = tree.root.appendingPathComponent("body")
+        var environment = tree.environment
+        environment["FAKE_CURL_HEADER_DUMP"] = headerDump.path
+        environment["FAKE_CURL_BODY_DUMP"] = bodyDump.path
+        let result = try runShimWithStubCurl(
+            event: event,
+            status: "200",
+            body: ClaudeRemoteHTTPCodec.hookResponseBody,
+            extraEnvironment: environment,
+            payload: payload,
+            launcher: tree.launcher
+        )
+        assertEnrichmentRunWasQuiet(result)
+        let headers = try String(contentsOf: headerDump, encoding: .utf8)
+        return (
+            ClaudeRemoteEnvironmentCodec.environment(in: try parseCapturedHeaders(headers).headers),
+            try Data(contentsOf: bodyDump)
+        )
+    }
+
+    /// A Code-tab session Desktop runs on this host: its permission prompt
+    /// and its turn's end cross the tunnel with the view's id, the Mac cues
+    /// under the session's name, and a turn's end cues only while Desktop
+    /// shows another session.
+    @MainActor
+    func testADesktopSessionOverSSHCuesOnTheMac() async throws {
+        let channel = ClaudeRemoteSessionScope.channel(hostID: "h1")
+        let now = Date(timeIntervalSince1970: 2_000_000)
+        let registry = ClaudeSessionRegistry(now: { now })
+        let shown = Mutex<String?>("https://claude.ai/epitaxy/local_eeda27ee-43ae-4ab3-8e26-0fdc50fb1c7c")
+        let resolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            focusedDesktopSessionURL: { _ in shown.withLock { $0 } }
+        )
+        let desktop = TerminalScreenTarget(pid: 4_100, bundleID: ClaudeDesktopAllowlist.bundleID)
+        let tracker = AgentAttentionTracker(
+            isEnabled: { true },
+            isWatching: { await resolver.sessionShown(target: desktop) == $0.sessionID },
+            liveSessionIDs: { Set(registry.liveSessions().map(\.sessionID)) },
+            now: { now }
+        )
+        var cues: [String] = []
+        tracker.onCue = { cues.append(AgentAttentionText.sentence($0)) }
+
+        func deliver(_ event: String, _ name: String) async throws {
+            let post = try desktopSessionPost(event: event, recorded: name)
+            XCTAssertEqual(post.environment?.desktopSessionID, desktopID, name)
+            XCTAssertFalse(String(decoding: post.body, as: UTF8.self).contains("Done."), "#818: the reply stays on the host")
+            var record = try XCTUnwrap(
+                ClaudeRemoteHookPayloadParser.parse(data: post.body, fallbackEvent: event, timestamp: 1)?.record, name
+            )
+            record.sessionID = ClaudeRemoteSessionScope.scopedSessionID(hostID: "h1", sessionID: record.sessionID)
+            let session = try XCTUnwrap(registry.ingest(record, origin: .remote(channel: channel), environment: post.environment))
+            await tracker.receive(record.event, session: session)?.value
+        }
+
+        // The shim posts a Notification as its session id and type alone, so
+        // the session's name comes from the turn's prompt before it.
+        try await deliver("UserPromptSubmit", "UserPromptSubmit")
+        try await deliver("Notification", "Notification-permission_prompt")
+        XCTAssertEqual(cues, ["payments needs you"])
+        guard case .resolved(let snapshot) = registry.resolve(desktopSessionID: desktopID) else {
+            return XCTFail("the Desktop view must resolve to the ssh session")
+        }
+        XCTAssertEqual(
+            SessionPaneFocusRoute.of(snapshot),
+            .claudeDesktop(URL(string: "claude://code/continue?session=\(desktopID)")!),
+            "the answer shortcut can bring it forward"
+        )
+
+        shown.withLock { $0 = "https://claude.ai/epitaxy/\(desktopID)" }
+        try await deliver("Stop", "Stop")
+        XCTAssertEqual(cues, ["payments needs you"], "no cue for a turn the owner watched end")
+        XCTAssertTrue(tracker.queue.isEmpty)
+
+        shown.withLock { $0 = nil }
+        try await deliver("Stop", "Stop")
+        XCTAssertEqual(cues, ["payments needs you", "payments finished"])
+    }
+
     func testAHookOutsideAnyDesktopDaemonSendsNoDesktopID() throws {
         let captured = try capturedRequestHeaders(environment: [
             "CLAUDE_CODE_HOST_SESSION_ID": desktopID,
