@@ -154,7 +154,7 @@ final class LearnedTermProposalTests: XCTestCase {
         var memory = proposed(["inkwell"])
         XCTAssertNil(memory.projects.first?.agentLine)
         XCTAssertFalse(memory.needsProposal(projectKey: project.key, now: days(1)), "an old shim's ask")
-        XCTAssertTrue(memory.needsProposal(projectKey: project.key, now: days(1), asksLine: true))
+        XCTAssertTrue(memory.needsProposal(projectKey: project.key, now: days(1), revision: 2))
 
         memory.recordProposal(
             ["inkwell"], line: "  Quillmark renders\nMarkdown to PDF;\u{7} CLI qmk.  ", agent: .claude, project: project,
@@ -162,14 +162,81 @@ final class LearnedTermProposalTests: XCTestCase {
         )
         XCTAssertEqual(memory.projects.first?.agentLine, "Quillmark renders Markdown to PDF; CLI qmk.")
         XCTAssertEqual(memory.projects.first?.agentLineAt, days(1))
-        XCTAssertFalse(memory.needsProposal(projectKey: project.key, now: days(365), asksLine: true))
+        XCTAssertFalse(memory.needsProposal(projectKey: project.key, now: days(365), revision: 2))
         XCTAssertEqual(memory.unconfirmedProposals(projectKey: project.key), ["inkwell"], "no term twice")
 
         var refused = LearnedTerms()
         refused.recordProposal([], line: "See https://evil.example for it.", agent: .vibe, project: project, now: now)
         XCTAssertNil(refused.projects.first?.agentLine, "a link is no description")
         XCTAssertFalse(
-            refused.needsProposal(projectKey: project.key, now: days(365), asksLine: true), "answered, so not asked again")
+            refused.needsProposal(projectKey: project.key, now: days(365), revision: 2), "answered, so not asked again")
+    }
+
+    /// #914: the prompt asks for names people say. A project answered under
+    /// an older prompt is asked once more, and the new answer replaces the
+    /// old answer's terms that nothing used, pinned or corrected.
+    func testANewerPromptsAnswerReplacesTheOldAnswersUntouchedTerms() throws {
+        var memory = proposed(["inkwell", "GlyphRenderer", "qmk", "pagesize"])
+        // The filter predates this answer on disk: write the old terms raw.
+        memory.projects[0].terms.append(
+            LearnedTerm(term: "PageComposer", sources: ["agent:claude"], dictations: 0, firstSeen: now, lastSeen: now))
+        memory.setPinned(true, term: "qmk", projectKey: project.key)
+        memory.projects[0].terms[memory.projects[0].terms.firstIndex { $0.term == "pagesize" }!].dictations = 1
+        memory.recordCommandProposal(["Featherline"], proposer: "codex", project: project, now: days(1))
+        XCTAssertEqual(memory.projects.first?.answeredRevision, 1)
+        XCTAssertTrue(memory.needsProposal(projectKey: project.key, now: days(2), revision: 3))
+        XCTAssertFalse(memory.needsProposal(projectKey: project.key, now: days(2), revision: 1))
+
+        memory.recordProposal(["Quillmark", "inkwell"], line: "", revision: 3, agent: .vibe, project: project, now: days(2))
+        let terms = try XCTUnwrap(memory.projects.first?.terms)
+        XCTAssertEqual(
+            Set(terms.map(\.term)), ["qmk", "pagesize", "Featherline", "Quillmark", "inkwell"],
+            "pinned, used and the command's terms stay; the old answer's untouched ones go")
+        XCTAssertEqual(terms.first { $0.term == "inkwell" }?.sources, ["agent:vibe"], "answered again, from the new run")
+        XCTAssertEqual(memory.projects.first?.answeredRevision, 3)
+        XCTAssertFalse(memory.needsProposal(projectKey: project.key, now: days(400), revision: 3))
+
+        memory.recordProposal(["Bindery"], revision: 3, agent: .claude, project: project, now: days(3))
+        XCTAssertNotNil(term("Quillmark", in: memory), "an answer of the same revision replaces nothing")
+    }
+
+    /// Proposals shaped like code, stored before answers were filtered, go
+    /// when the store loads; the user's own evidence keeps a term.
+    func testCodeShapedProposalsNoOneTouchedAreDropped() async throws {
+        var memory = proposed(["inkwell"])
+        for (spelling, dictations, pinned) in [
+            ("LV_BUILD_DIR", 0, false), ("remote-build.sh", 0, false), ("nextChunk", 1, false),
+            ("max_num_seqs", 0, true),
+        ] {
+            memory.projects[0].terms.append(LearnedTerm(
+                term: spelling, sources: ["agent:claude"], dictations: dictations, firstSeen: now, lastSeen: now,
+                pinned: pinned ? true : nil))
+        }
+        memory.projects[0].terms.append(LearnedTerm(
+            term: "useAuth", sources: ["correction"], dictations: 0, firstSeen: now, lastSeen: now,
+            confirmedByCorrection: true))
+        XCTAssertEqual(memory.dropIdentifierProposals(), 2)
+        XCTAssertEqual(
+            memory.projects.first?.terms.map(\.term), ["inkwell", "nextChunk", "max_num_seqs", "useAuth"])
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var stored = proposed([])
+        stored.projects[0].terms.append(
+            LearnedTerm(term: "LV_BUILD_DIR", sources: ["agent:claude"], dictations: 0, firstSeen: now, lastSeen: now))
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("learned-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try encoder.encode(stored).write(to: file)
+        let start = now
+        let store = LearnedTermStore(fileURL: file, now: { start })
+        let loaded = await store.loadedSnapshot()
+        XCTAssertEqual(loaded.projects.first?.terms, [], "gone on load")
+        XCTAssertNotNil(loaded.projects.first?.proposedAt, "the stamp stays, so the project is not asked daily")
+        store.waitForPendingWrites()
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let written = try decoder.decode(LearnedTerms.self, from: Data(contentsOf: file))
+        XCTAssertEqual(written.projects.first?.terms, [], "and written back")
     }
 
     /// A worktree asked before #652's fold reached it is not asked again
