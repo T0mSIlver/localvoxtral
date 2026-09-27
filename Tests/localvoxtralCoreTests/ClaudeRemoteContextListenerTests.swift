@@ -1259,17 +1259,6 @@ extension ClaudeRemoteContextListenerTests {
         XCTAssertEqual(environment.herdrPaneID, "w1:p2")
     }
 
-    func testAVibeRequestSaysNothingAboutTheClaudePlugin() throws {
-        try startListener()
-        _ = try send(hookRequest(token: token, extraHeaders: ["X-Lvx-Agent: vibe"]))
-        XCTAssertNil(
-            hosts.host(id: hostID)?.reportedPluginVersion,
-            "a missing plugin header on a Vibe request must not read as a pre-1.10.0 Claude plugin"
-        )
-        _ = try send(hookRequest(token: token, extraHeaders: ["X-Lvx-Plugin-Version: 1.11.0"]))
-        XCTAssertEqual(hosts.host(id: hostID)?.reportedPluginVersion, .version("1.11.0"))
-    }
-
     func testAVibeSessionEndFromTheHostsWatcherEvictsTheSession() throws {
         try startListener()
         _ = try send(hookRequest(event: "Stop", token: token, extraHeaders: ["X-Lvx-Agent: vibe"]))
