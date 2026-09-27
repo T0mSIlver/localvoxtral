@@ -180,6 +180,13 @@ on the **Inbox** page of the localvoxtral window.
    checkout on this Mac, or reported by a remote project's host), and its
    learned terms. When it is unsure, or two
    projects tie, the capture stays unplaced.
+
+   A README says what a project is, rarely what it has, so the classifier
+   also reads a line you write per project: **Settings → Context → Quick
+   capture → Project descriptions**, up to 200 characters. Say what the
+   project has, such as "Menu bar dictation app: shortcuts, polishing, quick
+   capture and its Inbox". Each field shows the README opening the
+   classifier already reads.
 2. **Draft.** For a checkout on this Mac, the first of Claude Code, Mistral
    Vibe and opencode installed runs in the background with read-only tools
    and drafts an issue: title, scope, constraints and proof, following the
