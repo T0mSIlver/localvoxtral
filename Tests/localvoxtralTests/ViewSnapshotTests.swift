@@ -146,6 +146,23 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
+    /// Dictation → Output → Phrases that press Return (#839): the saved
+    /// list, and a refused one with its reason under the row.
+    func testSendPhrasesRow() throws {
+        let (settings, _) = makeViewModel()
+        settings.spokenSendTriggerPhrases = ["ship it", "over and out"]
+        let refusal = SendTriggerPhrases.Refusal.commonWord("done").message
+        for (name, draft, message) in [("saved", nil, nil), ("refused", "ship it, done", refusal)] as [(String, String?, String?)] {
+            try record(
+                SettingsGroup(title: "Output") {
+                    SendPhrasesRow(settings: settings, draft: draft, refusal: message)
+                }
+                .padding(20),
+                name: "settings-send-phrases-\(name)",
+                width: 600, height: 160, growToFit: false)
+        }
+    }
+
     // MARK: - Status popover
 
     /// The menu bar item's content. The app shows it as an `NSMenu`

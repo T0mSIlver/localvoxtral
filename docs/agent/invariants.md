@@ -138,6 +138,23 @@ there is not.
   only by its own bundle ID on `ReturnSubmitsAppList` (the AX probe reads the
   element focused NOW, which need not be the commit target's), and the Return
   follows only a commit that reported `.succeeded`.
+- **A voice stop is the stop key, never a second commit path** (#839).
+  An Overlay Buffer dictation whose words (settled segments plus the
+  partial in flight: the Mistral API sends no final before the stop) end in
+  a send phrase, followed by `SpokenStopRule.silenceWindow` (3 s) with no
+  new words, calls `stopDictation` like the key; the stop's commit then
+  cuts the phrase and sends as above. It arms only when the commit would
+  send (`planOverlaySpokenSend`, asked again when the timer fires), so a
+  phrase the commit would keep as text never ends the dictation. A held
+  dictation never arms: its release is the stop, and a stop while the key
+  is down would leave a release with nothing to stop (#840). A quick
+  capture stops the same way, saves without the phrase and presses
+  nothing. The window is measured, not guessed: on the owner's 138
+  dictations with audio, 5.6 % of speech pauses reach 3 s and the one
+  mid-sentence "send it" was followed by 2.4 s; a false stop sends half a
+  prompt, a late one costs a key press. The user's phrase list
+  (`SendTriggerPhrases`) refuses one common word and anything over four
+  words, and a stored list that no longer validates loads as the default.
 - **"Go to <name>" is a command only when the name resolves** (#723 step
   1). An Overlay Buffer dictation (a Live Auto-Paste segment, #747) that
   is only "go to" plus at most four words is looked up against the live registry's default names (the git

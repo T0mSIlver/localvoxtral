@@ -12,6 +12,16 @@ struct DictationSettingsPane: View {
     /// The Overlay Buffer group's Learn more: what keeping words on their
     /// line trades for.
     private static let overlayWordHoldDocsURL = DocsLink.page("docs/dictation/#keeping-words-on-their-line")
+    /// The Output group's Learn more: the send phrases, where they press
+    /// Return, and how a dictation stops on one.
+    private static let sendingByVoiceDocsURL = DocsLink.page("docs/dictation/#voice-commands")
+
+    /// Each mode's toggle names the first send phrase, so it stays true
+    /// after the user replaces "send it".
+    private var spokenSendToggleTitle: String {
+        let phrase = settings.spokenSendTriggerPhrases.first ?? "send it"
+        return "Say \u{201C}\(phrase)\u{201D} to press Return in terminals and Claude Desktop"
+    }
 
     private var dictationOutputModeBinding: Binding<DictationOutputMode> {
         Binding(
@@ -273,7 +283,7 @@ struct DictationSettingsPane: View {
                 }
             }
 
-            SettingsGroup(title: "Output") {
+            SettingsGroup(title: "Output", learnMoreURL: Self.sendingByVoiceDocsURL) {
                 SettingsFieldRow(title: "Menu bar mode") {
                     Picker("", selection: dictationOutputModeBinding) {
                         ForEach(DictationOutputMode.allCases) { mode in
@@ -288,6 +298,8 @@ struct DictationSettingsPane: View {
                     Toggle("", isOn: $settings.autoCopyEnabled)
                         .labelsHidden()
                 }
+
+                SendPhrasesRow(settings: settings)
 
                 // In this group rather than Trigger: it works whichever
                 // trigger method is picked.
@@ -395,7 +407,7 @@ struct DictationSettingsPane: View {
             }
 
             SettingsGroup(title: "Live Auto-Paste") {
-                SettingsFieldRow(title: "Say \u{201C}send it\u{201D} to press Return in terminals and Claude Desktop") {
+                SettingsFieldRow(title: spokenSendToggleTitle) {
                     Toggle("", isOn: $settings.liveSpokenSendEnabled)
                         .labelsHidden()
                 }
@@ -458,7 +470,7 @@ struct DictationSettingsPane: View {
                     .labelsHidden()
                 }
 
-                SettingsFieldRow(title: "Say \u{201C}send it\u{201D} to press Return in terminals and Claude Desktop") {
+                SettingsFieldRow(title: spokenSendToggleTitle) {
                     Toggle("", isOn: $settings.overlaySpokenSendEnabled)
                         .labelsHidden()
                 }
@@ -502,6 +514,56 @@ struct DictationSettingsPane: View {
             }
         } message: { move in
             Text("Move it to \(move.target.displayName)? \(move.takenFrom.displayName) will have no shortcut.")
+        }
+    }
+}
+
+/// The send phrases (#839), comma-separated. A list is saved only when every
+/// phrase passes `SendTriggerPhrases.validate`; otherwise the saved list
+/// stays and the footer says why.
+struct SendPhrasesRow: View {
+    @Bindable var settings: SettingsStore
+    @State private var draft: String?
+    @State private var refusal: String?
+    @FocusState private var focused: Bool
+
+    init(settings: SettingsStore, draft: String? = nil, refusal: String? = nil) {
+        self.settings = settings
+        _draft = State(initialValue: draft)
+        _refusal = State(initialValue: refusal)
+    }
+
+    private var saved: String { settings.spokenSendTriggerPhrases.joined(separator: ", ") }
+
+    var body: some View {
+        SettingsFieldRow(title: "Phrases that press Return", controlAlignment: .top) {
+            TextField("send it, send now", text: Binding(
+                get: { draft ?? saved },
+                set: { draft = $0 }
+            ))
+            .textFieldStyle(.roundedBorder)
+            .frame(maxWidth: SettingsLayout.textFieldWidth)
+            .focused($focused)
+            .onSubmit(save)
+            .onChange(of: focused) { _, isFocused in
+                if !isFocused { save() }
+            }
+        } footer: {
+            if let refusal {
+                SettingsInlineMessage(refusal, color: .red)
+            }
+        }
+    }
+
+    private func save() {
+        guard let draft else { return }
+        switch SendTriggerPhrases.validate(SendTriggerPhrases.split(draft)) {
+        case .success(let phrases):
+            settings.spokenSendTriggerPhrases = phrases
+            self.draft = nil
+            refusal = nil
+        case .failure(let reason):
+            refusal = reason.message
         }
     }
 }

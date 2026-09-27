@@ -57,6 +57,7 @@ final class SettingsStore {
         static let autoCopyEnabled = "settings.auto_copy_enabled"
         static let overlaySpokenSendEnabled = "settings.overlay_spoken_send_enabled"
         static let liveSpokenSendEnabled = "settings.live_spoken_send_enabled"
+        static let spokenSendTriggerPhrases = "settings.spoken_send_trigger_phrases"
         static let audioDuckingEnabled = "settings.audio_ducking_enabled"
         static let audioDuckingFadeDuration = "settings.audio_ducking_fade_duration"
         /// The device and volume a launch ducked away from, written at the
@@ -309,6 +310,14 @@ final class SettingsStore {
     /// when its final arrives instead of as the words come. Off by default.
     var liveSpokenSendEnabled: Bool {
         didSet { defaults.set(liveSpokenSendEnabled, forKey: Keys.liveSpokenSendEnabled) }
+    }
+
+    /// The phrases both modes listen for (#839), "send it" and "send now"
+    /// unless the user set their own. Only a list `SendTriggerPhrases`
+    /// accepted is ever assigned; one read back that no longer validates
+    /// loads as the default.
+    var spokenSendTriggerPhrases: [String] {
+        didSet { defaults.set(spokenSendTriggerPhrases, forKey: Keys.spokenSendTriggerPhrases) }
     }
 
     /// Lower other audio while dictating, and fade it back on stop. On by
@@ -1027,6 +1036,8 @@ final class SettingsStore {
             defaults: defaults, key: Keys.overlaySpokenSendEnabled, fallback: false)
         liveSpokenSendEnabled = Self.loadBool(
             defaults: defaults, key: Keys.liveSpokenSendEnabled, fallback: false)
+        spokenSendTriggerPhrases = SendTriggerPhrases.loaded(
+            defaults.stringArray(forKey: Keys.spokenSendTriggerPhrases))
         audioDuckingEnabled = Self.loadBool(
             defaults: defaults, key: Keys.audioDuckingEnabled, fallback: true)
         let storedDuckingFade = defaults.object(forKey: Keys.audioDuckingFadeDuration) != nil

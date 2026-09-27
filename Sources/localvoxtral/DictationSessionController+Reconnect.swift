@@ -48,6 +48,9 @@ extension DictationSessionController {
         // No text can arrive while the socket is down; a silence stop now
         // would end the session before the gap is replayed.
         pauseSilenceAutoStopForReconnect()
+        // Likewise for the voice stop; the next text after the reconnect
+        // decides again.
+        disarmSpokenStop()
 
         // The partial in flight can never be finalized by a session that no
         // longer exists. Promoting it keeps those words — and, because the
@@ -235,6 +238,7 @@ extension DictationSessionController {
         audio.audioDucking.restoreAfterSession()
         isDictating = false
         disarmSilenceAutoStop()
+        disarmSpokenStop()
         escapeCancelHandler.stop()
         finishStoppedSession(promotePendingSegment: true)
         statusText = Self.connectionLostMessage
