@@ -164,6 +164,21 @@ package final class QuickCaptureInboxModel {
         }
     }
 
+    /// A coding agent filed the capture itself (#923). Its History record
+    /// says so, as after File.
+    package func markFiled(_ id: UUID, url: String) -> Result<QuickCaptureItem, QuickCaptureInbox.MarkFiledRefusal> {
+        var changed = inbox
+        let result = changed.markFiled(id, url: url, now: now())
+        if case .success(let item) = result {
+            mutate { $0 = changed }
+            Log.backends.info("Quick capture: a coding agent filed \(url, privacy: .public)")
+            if let recordID = item.historyRecordID, let repository = item.repository {
+                onRouted?(recordID, "Filed in \(repository)")
+            }
+        }
+        return result
+    }
+
     private func mutate(_ change: (inout QuickCaptureInbox) -> Void) {
         change(&inbox)
         guard let fileURL else { return }

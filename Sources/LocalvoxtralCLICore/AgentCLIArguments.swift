@@ -38,7 +38,8 @@ public struct AgentCLIArguments: Sendable {
     public static let usage = """
         usage: localvoxtral <command> [options]
 
-        Reads your dictation history and terms from the running localvoxtral app.
+        Reads your dictation history, terms and quick captures from the running
+        localvoxtral app.
 
           history search <text>   dictations containing <text>
               --project <dir|name>  only dictations that joined this project
@@ -51,6 +52,16 @@ public struct AgentCLIArguments: Sendable {
                                   or a pin in Settings make one yours
               --project <dir>       the project (default: the current directory)
               --agent <name>        claude, codex, opencode or vibe (default: detected)
+          capture list            your quick captures in the Inbox: id, project, kind,
+                                  age, state, title
+              --project <dir|name>  only captures for this project
+              --since <when>        captured since then
+          capture show <capture>  one capture: its draft, your words, the related issue
+                                  and the repository it files in. <capture> is its
+                                  title, a unique part of it, or its id
+          capture filed <capture> <issue-url>
+                                  after you opened the issue with gh, mark the
+                                  capture filed. The command never files anything
           status                  whether the app runs, its engines, the last join
           doctor                  checks the app, permissions, engines, agent hooks,
                                   remote hosts and the last joins, with a fix for
@@ -123,7 +134,7 @@ public struct AgentCLIArguments: Sendable {
         case "doctor":
             command = .doctor
             operands = rest
-        case "history", "terms":
+        case "history", "terms", "capture":
             guard let verb = rest.first else { return .usageError("\(group) needs a command") }
             operands = Array(rest.dropFirst())
             switch (group, verb) {
@@ -131,6 +142,9 @@ public struct AgentCLIArguments: Sendable {
             case ("history", "last"): command = .historyLast
             case ("terms", "list"): command = .termsList
             case ("terms", "propose"): command = .termsPropose
+            case ("capture", "list"): command = .captureList
+            case ("capture", "show"): command = .captureShow
+            case ("capture", "filed"): command = .captureFiled
             default: return .usageError("unknown command: \(group) \(verb)")
             }
         default:
@@ -140,6 +154,9 @@ public struct AgentCLIArguments: Sendable {
         let allowed: Set<String>
         switch command {
         case .historySearch: allowed = ["--project", "--since", "--limit"]
+        case .captureList: allowed = ["--project", "--since"]
+        case .captureFiled: allowed = ["--agent"]
+        case .captureShow: allowed = []
         case .termsList: allowed = ["--project"]
         case .termsPropose: allowed = ["--project", "--agent"]
         case .historyLast, .status, .doctor: allowed = []
@@ -158,15 +175,30 @@ public struct AgentCLIArguments: Sendable {
             request.terms = operands
             operands = []
             request.project = project(options["--project"] ?? ".")
-            if let agent = options["--agent"] {
-                guard let caller = AgentCLICaller(rawValue: agent.lowercased()), caller != .unknown else {
-                    return .usageError("--agent must be claude, codex, opencode or vibe")
-                }
-                request.caller = caller
-            } else {
-                request.caller = AgentCLICaller.detect(environment: environment)
+            guard let caller = caller(options["--agent"]) else {
+                return .usageError("--agent must be claude, codex, opencode or vibe")
             }
-        case .historyLast, .termsList, .status, .doctor:
+            request.caller = caller
+        case .captureShow:
+            // Unquoted words are one title.
+            guard !operands.isEmpty else { return .usageError("capture show needs a capture: its title or id") }
+            request.capture = operands.joined(separator: " ")
+            operands = []
+        case .captureFiled:
+            guard operands.count >= 2, let url = operands.last else {
+                return .usageError("capture filed needs a capture and the issue's URL")
+            }
+            guard url.hasPrefix("https://") else {
+                return .usageError("capture filed takes the issue's URL last, as gh issue create prints it")
+            }
+            request.capture = operands.dropLast().joined(separator: " ")
+            request.url = url
+            operands = []
+            guard let caller = caller(options["--agent"]) else {
+                return .usageError("--agent must be claude, codex, opencode or vibe")
+            }
+            request.caller = caller
+        case .historyLast, .termsList, .status, .captureList, .doctor:
             break
         }
         guard operands.isEmpty else { return .usageError("unexpected argument: \(operands[0])") }
@@ -190,6 +222,14 @@ public struct AgentCLIArguments: Sendable {
     }
 
     static let sinceUsage = "--since takes today, yesterday, 3d, 12h, 30m, 2w, or a date like 2026-09-25"
+
+    /// `--agent`, or the agent the environment names; nil for a name that
+    /// is not an agent's.
+    func caller(_ option: String?) -> AgentCLICaller? {
+        guard let option else { return AgentCLICaller.detect(environment: environment) }
+        guard let caller = AgentCLICaller(rawValue: option.lowercased()), caller != .unknown else { return nil }
+        return caller
+    }
 
     /// A directory becomes an absolute path; anything else is a project name.
     /// Something that looks like a path is a path: `.`, `..`, `~`, or any

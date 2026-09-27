@@ -194,6 +194,16 @@ final class AgentCLIAppDataSource: AgentCLIDataSource {
         )
     }
 
+    func captures() async -> [QuickCaptureItem]? {
+        viewModel?.quickCapture?.model.items
+    }
+
+    func markCaptureFiled(
+        _ id: UUID, url: String
+    ) async -> Result<QuickCaptureItem, QuickCaptureInbox.MarkFiledRefusal>? {
+        viewModel?.quickCapture?.model.markFiled(id, url: url)
+    }
+
     /// History keeps the text with the clipboard placeholder, never the
     /// clipboard itself, and so does this.
     static func dictation(_ entry: DictationHistoryEntry) -> AgentCLIDictation {

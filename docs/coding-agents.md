@@ -348,8 +348,9 @@ copy the note by hand.
 
 ## The localvoxtral command
 
-A coding agent can read your dictation history and your terms, propose
-terms of its own, and find out why dictation misbehaves, with the
+A coding agent can read your dictation history, your terms and your quick
+captures, propose terms of its own, mark a capture filed, and find out why
+dictation misbehaves, with the
 localvoxtral command.
 
 ### Install the command
@@ -367,6 +368,9 @@ localvoxtral history search "mac queue" --since yesterday --project .
 localvoxtral history last
 localvoxtral terms list --project .
 localvoxtral terms propose Featherline QuillDoc --project .
+localvoxtral capture list --project .
+localvoxtral capture show "busy herdr pane"
+localvoxtral capture filed "busy herdr pane" https://github.com/you/app/issues/42
 localvoxtral status
 localvoxtral doctor
 localvoxtral logs --join --since 3h
@@ -383,6 +387,24 @@ Under **History → Don't keep**, `history` answers with nothing.
 The command talks to the running app over the same private socket the hooks
 use. It opens no network port, and only processes running as you can reach
 it. It needs the app running, and exits with status 3 when it is not.
+
+### Quick captures
+
+Tell your agent "look at the capture about the busy herdr pane". The command
+calls an Inbox item a capture, not an issue, so the agent asks the command
+instead of searching GitHub.
+
+- `capture list` shows each capture's id, project, kind, age, state and
+  title. The title is the draft's, or the capture's first words until it has
+  a draft.
+- `capture show` takes the title, any unique part of it, or the id, and
+  prints the draft, your dictated words, the related issue and the
+  repository it files in, followed by the body **File** would send.
+- The command never files. The agent opens the issue with its own `gh`,
+  then runs `capture filed` with the issue's URL. The capture then shows as
+  filed on the Inbox page, as after **File**. The URL must be an issue in
+  the capture's repository, and a capture that is still drafting or already
+  filed is refused.
 
 ### Find out what is wrong
 
@@ -465,8 +487,9 @@ A capture then goes through three steps.
    duplicates (see [How the draft is written](#how-the-draft-is-written)).
 3. **Review.** On the Inbox page you edit the draft, move the capture to
    another project, or discard it. **File** creates the issue with your
-   GitHub CLI, with your dictated words quoted under the draft. Nothing is
-   filed any other way.
+   GitHub CLI, with your dictated words quoted under the draft. Your coding
+   agent can also file it with its own `gh`
+   ([Quick captures](#quick-captures)). Nothing else files.
 
 ### Which projects a capture can go to
 
