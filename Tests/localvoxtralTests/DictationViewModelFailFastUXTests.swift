@@ -363,6 +363,49 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         )
     }
 
+    /// The user's terms follow the same snapshot (#521): a start in External
+    /// URL mode sends no list, even when Settings switches to Managed local
+    /// while the start waits on the screen-context capture.
+    func testModeFlipToManagedDuringTheStartCaptureSendsTheExternalServerNoVocabulary() async {
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+        viewModel.settings.dictationBackendMode = .externalURL
+        viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:9/v1/realtime"
+        viewModel.settings.polishSpeakerTerms = ["herdr", "mlx-lm"]
+        viewModel.session.realtimeAPIClient.debugSkipSocketCreationForTesting()
+        viewModel.dependencies.clock = ManualSessionClock().clock
+        retainForTestProcessLifetime(viewModel)
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.settings.llmPolishingEndpointURL = "http://127.0.0.1:9/v1/chat/completions"
+        viewModel.settings.terminalScreenContextEnabled = true
+        viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        TerminalScreenContextSource.debugFrontmostTargetOverride = {
+            TerminalScreenTarget(pid: 4242, bundleID: TerminalScreenAllowlist.ghosttyBundleID)
+        }
+        defer { TerminalScreenContextSource.debugFrontmostTargetOverride = nil }
+        let flips = FlipCounter()
+        viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
+            registry: ClaudeSessionRegistry(
+                now: { Date(timeIntervalSince1970: 1_000) },
+                isProcessAlive: { _ in true }
+            ),
+            focusedTerminalTTY: { [weak viewModel] _ in
+                viewModel?.settings.dictationBackendMode = .managedLocal
+                flips.count += 1
+                return nil
+            }
+        )
+
+        await viewModel.session.beginDictationSession()
+
+        XCTAssertEqual(flips.count, 1, "positive control: the mode flipped inside the capture")
+        let dialled = viewModel.session.realtimeAPIClient.debugLastConnectConfigurationForTesting()
+        XCTAssertEqual(
+            dialled?.endpoint.absoluteString, "ws://127.0.0.1:9/v1/realtime",
+            "the session dials the endpoint it was started for"
+        )
+        XCTAssertEqual(dialled?.vocabulary, [], "the external server must never receive the user's terms")
+    }
+
     func testStartupPermissionPromptsAreSkippedUntilOnboardingCompletes() {
         let settings = makeExternalBackendSettings(outputMode: .overlayBuffer)
         settings.onboardingCompleted = false
