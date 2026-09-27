@@ -963,15 +963,13 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
     // beginDictationSession -> connect -> beginListeningAfterConnection).
     // What can regress is therefore the DISARM: every session-teardown path
     // must call escapeCancelHandler.stop(), otherwise Escape is swallowed
-    // system-wide while the Carbon hotkey remains registered. These cover each
-    // teardown path in both output modes.
+    // system-wide while the Carbon hotkey remains registered. The stop call
+    // sits in stopDictation before any output-mode branch (and these helpers
+    // pass finalizeRemainingAudio: false, so the mode branch is never
+    // reached), so one mode per teardown path covers the shared statement.
 
     func testStopDictationClearsEscapeCancelArmingInOverlayBufferMode() {
         assertStopDictationClearsEscapeCancelArming(outputMode: .overlayBuffer)
-    }
-
-    func testStopDictationClearsEscapeCancelArmingInLiveAutoPasteMode() {
-        assertStopDictationClearsEscapeCancelArming(outputMode: .liveAutoPaste)
     }
 
     private func assertStopDictationClearsEscapeCancelArming(outputMode: DictationOutputMode) {
@@ -997,10 +995,6 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
     func testCancelDictationClearsEscapeCancelArmingInOverlayBufferMode() {
         assertCancelDictationClearsEscapeCancelArming(outputMode: .overlayBuffer)
-    }
-
-    func testCancelDictationClearsEscapeCancelArmingInLiveAutoPasteMode() {
-        assertCancelDictationClearsEscapeCancelArming(outputMode: .liveAutoPaste)
     }
 
     private func assertCancelDictationClearsEscapeCancelArming(outputMode: DictationOutputMode) {

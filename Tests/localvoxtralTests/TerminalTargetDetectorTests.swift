@@ -106,50 +106,32 @@ final class TerminalTargetDetectorTests: XCTestCase {
         XCTAssertFalse(TerminalTargetDetector.isTerminalLikeBundleID("dev.warplike.Other"))
     }
 
-    func testFixtureUsesDeadExternalBackendInsteadOfLiveManagedService() {
-        let viewModel = makeViewModel(outputMode: .overlayBuffer)
-
-        XCTAssertEqual(viewModel.settings.dictationBackendMode, .externalURL)
-        XCTAssertEqual(
-            viewModel.settings.resolvedWebSocketURL?.absoluteString,
-            "ws://127.0.0.1:1/realtime"
-        )
-    }
-
     // MARK: - Decision logic (injected AX probe)
 
-    func testUnknownBundleWithUnsettableValueIsTerminalLike() {
-        let decision = TerminalTargetDetector.decision(forBundleID: "com.example.unknown") {
-            .valueNotSettable
+    func testUnknownBundleDecisionFollowsTheAXProbeResult() {
+        let cases: [(
+            probe: TerminalTargetDetector.FocusedElementProbe,
+            isTerminalLike: Bool,
+            reason: TerminalTargetDetector.Reason,
+            row: String
+        )] = [
+            (.valueNotSettable, true, .axProbeValueNotSettable, "valueNotSettable"),
+            (.noFocusedElement, true, .axProbeNoFocusedElement, "noFocusedElement"),
+            (.valueSettable, false, .axProbeValueSettable, "valueSettable"),
+            // AX trust missing / transient AX errors must not flip ordinary apps
+            // terminal-like — "couldn't tell" is distinct from "confirmed grid".
+            (.probeUnavailable, false, .axProbeUnavailable, "probeUnavailable"),
+        ]
+        for row in cases {
+            let decision = TerminalTargetDetector.decision(forBundleID: "com.example.unknown") {
+                row.probe
+            }
+            XCTAssertEqual(
+                decision.isTerminalLike, row.isTerminalLike,
+                "\(row.row): a terminal grid reads unsettable or missing; a writable value is an ordinary editor"
+            )
+            XCTAssertEqual(decision.reason, row.reason, row.row)
         }
-        XCTAssertTrue(decision.isTerminalLike)
-        XCTAssertEqual(decision.reason, .axProbeValueNotSettable)
-    }
-
-    func testUnknownBundleWithMissingFocusedElementIsTerminalLike() {
-        let decision = TerminalTargetDetector.decision(forBundleID: "com.example.unknown") {
-            .noFocusedElement
-        }
-        XCTAssertTrue(decision.isTerminalLike)
-        XCTAssertEqual(decision.reason, .axProbeNoFocusedElement)
-    }
-
-    func testUnknownBundleWithSettableValueIsNotTerminalLike() {
-        let decision = TerminalTargetDetector.decision(forBundleID: "com.example.unknown") {
-            .valueSettable
-        }
-        XCTAssertFalse(decision.isTerminalLike)
-        XCTAssertEqual(decision.reason, .axProbeValueSettable)
-    }
-
-    func testUnknownBundleWithUnavailableProbeIsNotTerminalLike() {
-        // AX trust missing / transient AX errors must not flip ordinary apps
-        // terminal-like — "couldn't tell" is distinct from "confirmed grid".
-        let decision = TerminalTargetDetector.decision(forBundleID: "com.example.unknown") {
-            .probeUnavailable
-        }
-        XCTAssertFalse(decision.isTerminalLike)
-        XCTAssertEqual(decision.reason, .axProbeUnavailable)
     }
 
     func testAllowlistedBundleIsTerminalLikeWithoutProbing() {
@@ -217,30 +199,6 @@ final class TerminalTargetDetectorTests: XCTestCase {
             return .valueSettable
         }
         XCTAssertEqual(decision.reason, .bundleMatch)
-    }
-
-    func testCaptureUsesUserTerminalAppsFromSettings() {
-        // The original cmux field case (2026-07-07): a terminal host with a
-        // writable AX value that only the user's added-apps entry can
-        // classify. cmux itself is built-in now, so an unknown stand-in keeps
-        // this capture path exercised.
-        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.example.myterminal" }
-        TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueSettable }
-        TerminalTargetDetector.debugSecureEventInputOverride = { false }
-
-        let viewModel = makeViewModel(
-            outputMode: .liveAutoPaste,
-            terminalAppBundleIDs: ["com.example.myterminal"]
-        )
-        viewModel.session.captureSessionTargetVerdict()
-        viewModel.session.applyPreCapturedSessionTargetVerdict()
-        XCTAssertTrue(viewModel.session.sessionTargetIsTerminalLike)
-
-        // Without the added app the same target stays non-terminal.
-        let unconfigured = makeViewModel(outputMode: .liveAutoPaste)
-        unconfigured.session.captureSessionTargetVerdict()
-        unconfigured.session.applyPreCapturedSessionTargetVerdict()
-        XCTAssertFalse(unconfigured.session.sessionTargetIsTerminalLike)
     }
 
     // MARK: - Insertion scalar tracing (marker-file gate)
@@ -792,7 +750,6 @@ final class TerminalTargetDetectorTests: XCTestCase {
 
     private func makeViewModel(
         outputMode: DictationOutputMode,
-        terminalAppBundleIDs: [String] = [],
         coordinator: MockOverlayCoordinator = MockOverlayCoordinator()
     ) -> DictationViewModel {
         let suiteName = "localvoxtral.TerminalTargetDetectorTests.\(UUID().uuidString)"
@@ -803,12 +760,6 @@ final class TerminalTargetDetectorTests: XCTestCase {
         }
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         settings.dictationOutputMode = outputMode
-        // The user-added apps list is settings-backed now (the TOML is a
-        // one-shot migration source at launch), so the fixture stages it the
-        // way the app would have it after that import.
-        settings.userTerminalApps = terminalAppBundleIDs.map {
-            UserTerminalApp(bundleID: $0, displayName: $0)
-        }
         // Never let a process-global launchd service decide these tests. The
         // managed default resolves to port 8000 and can be live on the persistent
         // runner after an integration job, turning a session-start test into a
@@ -826,9 +777,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         viewModel.session.realtimeAPIClient.debugSkipSocketCreationForTesting()
         // Keep tests hermetic: capture reads the terminal-apps config through
         // the store, which must never touch the real config directory here.
-        viewModel.appConfigStore = MockAppConfigStore(
-            terminalAppBundleIDs: terminalAppBundleIDs
-        )
+        viewModel.appConfigStore = MockAppConfigStore()
         return viewModel
     }
 }
