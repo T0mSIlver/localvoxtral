@@ -144,15 +144,28 @@ watch() {
   ) &
 }
 
-# github_repo <remote-url>: its owner/name when it is a github.com URL in a
-# shape git clone writes (https, ssh, git@github.com:), with or without
-# `.git`; nothing otherwise.
+# github_repo <remote-url>: its owner/name when it is a github.com URL
+# (https, ssh with or without a port, git@github.com:), with or without
+# `.git`; nothing otherwise. QuickCaptureFiling.repository(fromRemoteURL:)
+# reads the same shapes on the Mac.
 github_repo() {
   case "$1" in
-  https://github.com/* | http://github.com/* | ssh://git@github.com/* | git://github.com/*) path="${1#*://*/}" ;;
-  git@github.com:*) path="${1#git@github.com:}" ;;
+  https://* | http://* | ssh://* | git://*)
+    rest="${1#*://}"
+    host="${rest%%/*}"
+    path="${rest#"$host"}"
+    host="${host##*@}"
+    host="${host%%:*}"
+    ;;
+  *:*)
+    host="${1%%:*}"
+    host="${host##*@}"
+    path="${1#*:}"
+    ;;
   *) return 0 ;;
   esac
+  [ "$(printf '%s' "$host" | tr 'A-Z' 'a-z')" = github.com ] || return 0
+  path="${path#/}"
   path="${path%/}"
   path="${path%.git}"
   case "$path" in

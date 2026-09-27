@@ -321,6 +321,16 @@ for agent in claude vibe; do
   [ ! -e "$TMP_DIR/gh-argv" ] || fail "$label: gh listed issues for an origin off GitHub"
   [ ! -s "$TMP_DIR/prompt-body" ] || fail "$label: posted issues for an origin off GitHub"
   pass "$label: an origin off GitHub lists nothing"
+
+  # 8. An ssh origin with a port still names its repository.
+  reset_state
+  printf 'X-Lvx-Draft: %s\r\n' "$DRAFT_ID" >"$TMP_DIR/asks"
+  git -C "$TMP_DIR/repo" remote set-url origin ssh://git@GitHub.com:22/me/quill.git
+  run_hook "$agent" "$TMP_DIR/repo"
+  wait_for "$TMP_DIR/$agent-started" || fail "$label: an ssh origin with a port started no run"
+  git -C "$TMP_DIR/repo" remote set-url origin git@github.com:me/quill.git
+  grep -A1 -x -- '--repo' "$TMP_DIR/gh-argv" | grep -qx me/quill || fail "$label: an ssh origin with a port lost its repository"
+  pass "$label: an ssh origin with a port names its repository"
 done
 done
 echo "remote shim capture: all checks passed"
