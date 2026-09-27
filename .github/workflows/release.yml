@@ -303,11 +303,23 @@ jobs:
           fi
 
       - name: Gate — live integration (STT service)
+        id: stt_gate
         if: steps.plan.outputs.proceed != 'false'
         env:
           VLLM_REALTIME_TEST_ENABLE: "1"
           VLLM_REALTIME_TEST_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead
         run: swift test --build-system native --filter RealtimeAPIVLLMIntegrationTests
+
+      - name: Name the STT service's state
+        # A red gate reads the same whether the model misheard, the reaper
+        # stopped the server, or another process held port 8000 (#829).
+        if: failure() && steps.stt_gate.outcome == 'failure'
+        run: |
+          {
+            echo '```'
+            ./scripts/mac/lv-test-servers.sh diagnose speechd
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Gate — package app bundle
         # Releases stay ad-hoc signed on purpose: the runner's localvoxtral-dev
