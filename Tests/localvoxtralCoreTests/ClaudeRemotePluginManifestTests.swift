@@ -1553,6 +1553,26 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         )
     }
 
+    func testShimPinsIFSImmediatelyBeforeTheSSHConnectionSplit() throws {
+        // Source-level, because dash and bash both reset an IFS exported into
+        // their environment: no executed test can deliver a foreign IFS to the
+        // split, so none fails if the pin goes. The pin is what holds if a
+        // host's /bin/sh ever inherits one.
+        let source = try shimSource()
+        let split = try XCTUnwrap(
+            source.range(of: "set -- ${SSH_CONNECTION:-}"),
+            "the shim must split $SSH_CONNECTION through the shell's field splitting"
+        )
+        let pin = try XCTUnwrap(
+            source.range(of: "IFS=' '\n", options: .backwards, range: source.startIndex..<split.lowerBound),
+            "the split must run with IFS pinned to a single space"
+        )
+        XCTAssertFalse(
+            source[pin.upperBound..<split.lowerBound].contains("IFS="),
+            "nothing may reassign IFS between the pin and the split"
+        )
+    }
+
     func testShimSendsTheLocalTTYTheUsersShellExported() throws {
         // The value that makes a plain-ssh join work through ProxyJump and
         // ControlMaster. Verified end to end on a live OpenSSH pair
