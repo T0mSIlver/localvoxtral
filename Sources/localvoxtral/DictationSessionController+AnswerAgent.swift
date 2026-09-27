@@ -3,9 +3,10 @@ import Foundation
 import os
 
 /// The answer shortcut (#717): brings forward the pane of the session that
-/// needs you (the oldest wait, else the oldest finished turn) and starts a
-/// dictation there, so you answer by voice. Pressed again during that
-/// dictation, it stops it. The pane comes forward through the go-to
+/// needs you (the oldest wait, else the oldest finished turn) and starts an
+/// Overlay Buffer dictation there, so you answer by voice. During an Overlay
+/// Buffer dictation it picks that session as the destination, as Tab would
+/// (#840); pressed on it, or with nobody waiting, it stops the dictation. The pane comes forward through the go-to
 /// primitive (`SessionNavigator`), and the dictation starts only when the
 /// terminal confirmed that pane is the focused one (`.focused`): an
 /// unconfirmed focus could put your answer in another session.
@@ -17,6 +18,7 @@ extension DictationSessionController {
 
     func answerAgentThatNeedsYou() {
         if isDictating {
+            if pickWaitingSessionOrStop() { return }
             stopDictation(reason: "answer shortcut")
             return
         }
@@ -49,7 +51,7 @@ extension DictationSessionController {
             case .focused?:
                 // A dictation started while the pane came forward keeps it.
                 guard !self.isDictating, !self.isConnectingRealtimeSession, !self.isFinalizingStop else { return }
-                self.startDictation(outputMode: nil)
+                self.startDictation(outputMode: .overlayBuffer)
             case .unverified?:
                 self.statusText = AnswerAgentStatus.unconfirmed
             case .paneNotFound?, nil:

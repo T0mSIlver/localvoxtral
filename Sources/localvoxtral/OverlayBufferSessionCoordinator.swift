@@ -72,11 +72,15 @@ protocol OverlayBufferSessionCoordinating: AnyObject {
     /// transcript, so the overlay shows the "Polished" badge while the polished
     /// text is held before dismissal. Defaulted so test doubles stay unchanged.
     func markPolished(_ polished: Bool)
+    /// Shows the overlay's destinations (#840). Defaulted so test doubles
+    /// stay unchanged.
+    func showDestinations(_ strip: OverlayDestinationStrip?)
 }
 
 extension OverlayBufferSessionCoordinating {
     func showSecureInputWarning() {}
     func markPolished(_ polished: Bool) {}
+    func showDestinations(_ strip: OverlayDestinationStrip?) {}
 }
 
 @MainActor
@@ -279,6 +283,11 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
 
     func markPolished(_ polished: Bool) {
         stateMachine.setPolished(polished)
+        renderCurrentSnapshot()
+    }
+
+    func showDestinations(_ strip: OverlayDestinationStrip?) {
+        stateMachine.setDestinations(strip)
         renderCurrentSnapshot()
     }
 

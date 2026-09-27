@@ -5,8 +5,8 @@ import UserNotifications
 
 /// The needs-you cue (#717): the queue the menu bar icon and the popover
 /// line read, fed by `AgentAttentionTracker`. Each new entry plays a sound
-/// and posts a banner. Off, with nothing queued, while no answer shortcut
-/// is set.
+/// and posts a banner. Off, with nothing queued, while "Tell me when an
+/// agent needs you" is off.
 @MainActor
 @Observable
 final class AgentAttentionModel {
@@ -36,8 +36,7 @@ final class AgentAttentionModel {
 /// The sound and the banner.
 @MainActor
 protocol AgentAttentionAnnouncing: AnyObject {
-    /// Asks macOS to allow banners. Called when the user sets the answer
-    /// shortcut, which is when they turn the cue on.
+    /// Asks macOS to allow banners. Called when the user turns the cue on.
     func requestPermission()
     func announce(_ entry: AgentAttentionEntry)
     /// Takes down the banners of sessions that left the queue.

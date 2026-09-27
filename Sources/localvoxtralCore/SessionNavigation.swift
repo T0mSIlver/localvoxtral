@@ -429,6 +429,13 @@ package final class SessionNavigator {
         return SessionNameResolver.resolve(spokenName: spokenName, candidates: candidates)
     }
 
+    /// Whether `bundleID`'s focused pane, read back the way the join reads
+    /// it, shows the live session `sessionID`; false once it is not live.
+    package func focusedPaneShows(sessionID: String, bundleID: String) async -> Bool {
+        guard let session = liveSessions().first(where: { $0.sessionID == sessionID }) else { return false }
+        return await focuser.focusedPaneShows(session, bundleID: bundleID)
+    }
+
     /// Brings a live session's pane forward by registry id; nil when the
     /// session is no longer live.
     package func focusPane(sessionID: String) async -> SessionPaneFocusOutcome? {
