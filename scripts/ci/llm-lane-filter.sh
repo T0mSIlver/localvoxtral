@@ -168,6 +168,7 @@ EXEMPT=(
   'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+SSHConfig.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+RemoteSetup.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+RemotePlugin.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteMarketplaceFiles.swift'   # the plugin copy the setup writes to a host
   'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+RemoteEnvironment.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+RemoteHerdr.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+LocalHerdrPanel.swift'

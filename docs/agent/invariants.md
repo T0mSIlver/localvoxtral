@@ -2267,6 +2267,17 @@ there is not.
   malicious process running as the user on the REMOTE host can still read
   `~/.claude/` and therefore the plugin's token no matter what we do. Say so
   rather than implying the token bounds it.
+- **A host installs the remote plugin from the app's own copy, never from
+  GitHub** (#836). The setup writes the bundled marketplace to
+  `~/.local/share/localvoxtral/claude-marketplace` on the host and registers
+  that directory, then demands the read-back equal the version this build
+  ships. A GitHub marketplace tracks main, so every shipped app failed that
+  read-back (exit 43) on every host the day main bumped the plugin. Don't
+  relax the read-back instead: the shim's wire contract is versioned. Don't
+  `claude plugin marketplace remove` to switch sources either: it uninstalls
+  the plugin and deletes the token, which the update path cannot resend;
+  `marketplace add` on the existing name replaces the source and keeps both
+  (Claude Code 2.1.283).
 - **The Mac asks a host to spend, and the host's answer is a label source**
   (#641). A remote project's terms come from a run on the host, because the
   Mac holds only a label for the repository and a label never becomes a path,

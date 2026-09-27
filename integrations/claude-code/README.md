@@ -908,6 +908,10 @@ sentence names the local files and enrolled SSH alias, and **Set Up** runs the
 same seven-step flow as enrollment. The app never uses the display name in
 place of the alias. A host enrolled before aliases were recorded must be
 re-enrolled before the app can update it.
+The app does not install from GitHub: it writes its own copy of this
+marketplace to `~/.local/share/localvoxtral/claude-marketplace` on the host
+and registers that directory, so the host gets the plugin version the app
+was built for even when main has moved on.
 Non-interactive SSH skips your login shell's rc, so the app's version of these
 commands first sets `PATH` to the usual `claude` install locations. Add that
 yourself if `claude` is off the PATH a plain `ssh host 'claude …'` sees.
