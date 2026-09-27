@@ -19,11 +19,13 @@ final class RemoteQuickCaptureTests: XCTestCase {
             memory.withLock { _ = $0.recordSummary(summary, projectKey: projectKey, now: moment) }
         }
         let reports = Mutex<[String]>([])
-        func recordRemoteReport(project: LearnedTermProjectIdentity, asRepository: Bool, repository: String?) {
+        func recordRemoteReport(
+            project: LearnedTermProjectIdentity, asRepository: Bool, repository: String?, hostID: String?
+        ) {
             let moment = now()
             reports.withLock { $0.append(project.key) }
             memory.withLock {
-                _ = $0.recordRemoteReport(project: project, asRepository: asRepository, repository: repository, now: moment)
+                _ = $0.recordRemoteReport(project: project, asRepository: asRepository, repository: repository, hostID: hostID, now: moment)
             }
         }
         /// A project a dictation has shown the app.

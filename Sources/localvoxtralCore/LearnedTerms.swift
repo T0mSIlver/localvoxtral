@@ -178,8 +178,13 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
     /// When `github` was fetched; asked again after `githubRefreshDays`.
     package var githubAt: Date? = nil
     /// The user files this fork's issues in its upstream (GitHub's
-    /// `parent`), not in the fork. Nil reads as false.
+    /// `parent`), not in the fork. Nil until the user picks; it files in
+    /// the fork meanwhile.
     package var filesUpstream: Bool? = nil
+    /// The enrolled hosts (`ClaudeRemoteHost.id`) whose hooks named this
+    /// remote project, so the Projects pane can say where it is checked
+    /// out. Nil on a local project and on one no hook named since.
+    package var hostIDs: [String]? = nil
 
     package init(
         key: String,
@@ -376,6 +381,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         project: LearnedTermProjectIdentity,
         asRepository: Bool,
         repository: String? = nil,
+        hostID: String? = nil,
         now: Date
     ) -> Bool {
         guard project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix) else { return false }
@@ -389,6 +395,9 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
             index = projects.count - 1
         }
         projects[index].reportedAt = now
+        if let hostID, !(projects[index].hostIDs ?? []).contains(hostID) {
+            projects[index].hostIDs = (projects[index].hostIDs ?? []) + [hostID]
+        }
         if asRepository {
             projects[index].reportedAsRepository = true
             if let repository { setOriginRepository(repository, at: index) }
@@ -447,10 +456,11 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     }
 
     /// The "File issues here" choice, on every project that names
-    /// `repository`.
+    /// `repository`. Kept either way: a fork with no choice yet is one the
+    /// Projects pane asks about.
     package mutating func setFilesUpstream(_ upstream: Bool, repository: String) {
         for index in projects.indices where projects[index].repository == repository {
-            projects[index].filesUpstream = upstream ? true : nil
+            projects[index].filesUpstream = upstream
         }
     }
 
