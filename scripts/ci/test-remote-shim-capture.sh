@@ -356,7 +356,8 @@ for agent in claude vibe; do
   #    after a 202.
   reset_state
   printf 'X-Lvx-Draft: %s\r\n' "$DRAFT_ID" >"$TMP_DIR/asks"
-  printf 'quillmark\n--output=/tmp/x\nKerning\n' >"$TMP_DIR/words"
+  # The Mac's reply has no final newline: the last word counts too.
+  printf 'kerning\n--output=/tmp/x\nquillmark' >"$TMP_DIR/words"
   echo 200 >"$TMP_DIR/words-status"
   printf '202\n200\n' >"$TMP_DIR/check-statuses"
   run_hook "$agent" "$TMP_DIR/repo/Sources"

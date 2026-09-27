@@ -418,7 +418,7 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
             else { return nil }
             draft.wordsSent = true
             state.drafts[draftID] = draft
-            return QuickCaptureContext.searchWords(in: draft.capture).joined(separator: "\n")
+            return QuickCaptureContext.searchWords(in: draft.capture).map { $0 + "\n" }.joined()
         }
     }
 

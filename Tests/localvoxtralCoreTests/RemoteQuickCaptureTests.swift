@@ -624,7 +624,7 @@ final class RemoteQuickCaptureTests: XCTestCase {
         )
         let words = try answer(RemoteQuickCaptureRequests.draftWordsPath, session: "s1", draftID: draftID, body: "")
         XCTAssertEqual(words.status, 200)
-        XCTAssertEqual(String(decoding: words.body, as: UTF8.self), "kerning\nitalic\nquill\nwrong")
+        XCTAssertEqual(String(decoding: words.body, as: UTF8.self), "kerning\nitalic\nquill\nwrong\n")
         XCTAssertEqual(
             try answer(RemoteQuickCaptureRequests.draftWordsPath, session: "s2", draftID: draftID, body: "").status,
             409, "only the session asked"

@@ -251,7 +251,7 @@ if [ "$STATUS" = 200 ]; then
   if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     # The Mac's words: 8 at most, each a lowercase letter or digit, then
     # letters, digits, `_`, `.` or `-`, so none reads as an option.
-    head -n 8 "$WORK/words" 2>/dev/null | while IFS= read -r word; do
+    head -n 8 "$WORK/words" 2>/dev/null | while IFS= read -r word || [ -n "$word" ]; do
       case "$word" in
       [abcdefghijklmnopqrstuvwxyz0123456789]*) ;;
       *) continue ;;
