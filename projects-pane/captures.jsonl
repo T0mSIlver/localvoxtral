@@ -1,0 +1,48 @@
+{"id":"lv1","expected":"localvoxtral","text":"so when I stop dictating in ghostty the last two words sometimes don't get pasted, it feels like the final delta arrives after we already committed, we should wait for the done event before inserting"}
+{"id":"lv2","expected":"localvoxtral","text":"idea for the menu bar popover, show which Claude session I'm joined to with the little dot so I know where the words go"}
+{"id":"lv3","expected":"localvoxtral","text":"the polish sometimes rewrites my file names, like it turned the swift file name into two words, need to ground it harder on the session's file list"}
+{"id":"vt1","expected":"vidtheque","text":"the search results should jump to the exact second in the talk, right now the timestamp is off by like ten seconds on long streams"}
+{"id":"vt2","expected":"vidtheque","text":"add a shelf for the Latent Space podcast episodes and make the worker pick up new uploads every night"}
+{"id":"vt3","expected":"vidtheque","text":"when the slide OCR fails on a frame we silently drop it, the receipt should still show the sentence even with no slide"}
+{"id":"gl1","expected":"glossator","text":"the history tool should say when the rate limits page changed the free tier numbers, right now it only compares the two latest snapshots"}
+{"id":"gl2","expected":"glossator","text":"bump the pinned docs commit, Mistral shipped a bunch of new pages about Work connectors and the search doesn't know them"}
+{"id":"gl3","expected":"glossator","text":"the Vespa ranking puts the changelog above the actual API reference section, need to downweight changelog pages"}
+{"id":"ws1","expected":"working-set","text":"the explorer should let me pick an RTX 3090 not just H200 and B300, a lot of people want to know how many agents fit on consumer cards"}
+{"id":"ws2","expected":"working-set","text":"I think the KV cache math is wrong for the MoE model when prefix caching is on, we count the shared prefix per user"}
+{"id":"ws3","expected":"working-set","text":"run the vLLM benchmark again with max num seqs at 64 and see whether decode bandwidth or prefill is what binds"}
+{"id":"hi1","expected":"hither","text":"when I press the chord in a pane that's inside a worktree Zed opens the main checkout instead of the worktree folder"}
+{"id":"hi2","expected":"hither","text":"the mac side installer should check that Zed's CLI is on the PATH before it says done"}
+{"id":"hm1","expected":"herdr-main-checkout","text":"the little house badge shows up on worktree agents too when the worktree is inside the repo folder, it should only be the main checkout"}
+{"id":"hm2","expected":"herdr-main-checkout","text":"maybe also mark the agent that's on the main branch even if it's in a worktree, that's the one driving"}
+{"id":"ht1","expected":"herdr-title-wrap","text":"long session names still get cut when the sidebar is narrow, the wrap should use four lines before truncating"}
+{"id":"ht2","expected":"herdr-title-wrap","text":"when the title shrinks the old third line stays on screen, the clearing isn't working anymore after the herdr update"}
+{"id":"tk1","expected":"toklen","text":"the python and the node versions disagree on the Mistral tokenizer by one token, probably the BOS token, both should print the same number"}
+{"id":"tk2","expected":"toklen","text":"let it read a whole folder and print the total, I want to know how many tokens a repo is without writing a loop"}
+{"id":"fc1","expected":"fastcontext","text":"the explorer agent keeps reading whole files instead of the line ranges, its answers need tighter citations"}
+{"id":"fc2","expected":"fastcontext","text":"the TUI should show which tool call is running and how many tokens the subagent spent so far"}
+{"id":"sk1","expected":"skills","text":"the codex delegation skill should mention that resume drops the sandbox flag, I got bitten again today"}
+{"id":"sk2","expected":"skills","text":"write a new skill for driving opencode with GLM flash for cheap reviews and vendor the unslop one from upstream"}
+{"id":"cf1","expected":"claude-fable-usage","text":"the status line shows Fable at zero percent when I'm on Opus, it should just stay hidden until I switch models"}
+{"id":"cf2","expected":"claude-fable-usage","text":"color thresholds for the seven day bar should be different, 80 percent on day six isn't alarming"}
+{"id":"pl1","expected":"pi-llamacpp-provider","text":"when the llama server restarts with a new preset the model list in pi doesn't refresh until I restart pi"}
+{"id":"pl2","expected":"pi-llamacpp-provider","text":"read the context length from the props endpoint instead of guessing 128k for every model"}
+{"id":"hb1","expected":"homebrew-localvoxtral","text":"the cask still points at the old version, the release script should bump the sha and the url automatically"}
+{"id":"t2l1","expected":"tube2lora","text":"the generate stage should reuse the cached transcripts when I only change the filter thresholds, it reruns everything"}
+{"id":"t2l2","expected":"tube2lora","text":"try training the adapter on Ministral instead and compare the eval scores with the current run"}
+{"id":"ma1","expected":"mlx-audio-swift","text":"the Voxtral realtime model in the Swift package leaks memory on long streams, the KV cache never shrinks after the audio buffer rolls"}
+{"id":"ma2","expected":"mlx-audio-swift","text":"upstream changed the STT protocol, rebase my fork and keep the streaming decoder patch"}
+{"id":"cb1","expected":"CodexBar","text":"in the menu bar usage app the Codex weekly reset time shows in UTC, it should be local time"}
+{"id":"in1","expected":"inbox","text":"remember to book the dentist for next Thursday afternoon"}
+{"id":"in2","expected":"inbox","text":"idea for a blog post, why I stopped using small models for polishing and what the numbers were"}
+{"id":"in3","expected":"inbox","text":"buy more coffee filters and call the bank about the card"}
+{"id":"in4","expected":"inbox","text":"look into that new Rust terminal someone mentioned on the podcast, maybe try it this weekend"}
+{"id":"in5","expected":"inbox","text":"check whether my GitHub sponsors page is set up correctly"}
+{"id":"in6","expected":"inbox","text":"the thing we talked about yesterday, need to follow up on that"}
+{"id":"in7","expected":"inbox","text":"renew the domain name before it expires next month"}
+{"id":"in8","expected":"inbox","text":"try that new diffusion image model for a logo, just for fun"}
+{"id":"ad1","expected":"inbox","text":"herdr's sidebar should let me pin a workspace to the top, file that upstream with the herdr folks"}
+{"id":"ad2","expected":"inbox","text":"llama server crashes when two requests hit the same slot with prompt caching on, need a minimal repro for upstream"}
+{"id":"ad3","expected":"inbox","text":"Claude Code's plan mode forgets the plan after compaction, worth a bug report to Anthropic"}
+{"id":"ad4","expected":"inbox","text":"Ghostty should keep the scrollback when I split a pane, check if there's already an issue"}
+{"id":"ad5","expected":"inbox","text":"the Mistral console shows my Vibe credits wrong this month, email support"}
+{"id":"ad6","expected":"inbox","text":"compare Wispr Flow's new model with Superwhisper for my talk next month"}
