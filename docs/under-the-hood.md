@@ -128,8 +128,9 @@ asked (dictation, polishing, the second pass, term suggestions, project
 terms, quick-capture routing or drafting), the backend that answered (Mistral,
 Jev, the bundled helper, your own server, or a coding agent), the model, the
 seconds of audio sent or the tokens the backend reports, and the estimated
-cost: in EUR for Mistral, and in USD at API prices for an agent run that
-reports it. The Usage row sums only the Mistral lines. The log never holds
+cost: in EUR for Mistral, in USD at API prices for an agent run that reports
+it, and in USD at Jev's list price ($0.042 per million input tokens) for a Jev
+call whose answer reports its tokens. Vibe reports tokens but no price. The Usage row sums only the Mistral lines. The log never holds
 what you said, and nothing in it leaves the Mac.
 
 The prices are Mistral's EUR list prices, built into the app, so the estimate

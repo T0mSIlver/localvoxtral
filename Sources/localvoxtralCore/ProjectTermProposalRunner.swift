@@ -61,7 +61,9 @@ package struct ProjectTermProposalProcessRunner: ProjectTermProposalRunning {
         if output.capped { return .failed(.outputTooLarge) }
         switch agent {
         case .claude: return ProjectTermProposal.parseClaude(stdout: output.data, exitCode: output.exitCode)
-        case .vibe: return ProjectTermProposal.parseVibe(stdout: output.data, exitCode: output.exitCode)
+        case .vibe:
+            return ProjectTermProposal.parseVibe(stdout: output.data, exitCode: output.exitCode)
+                .reporting(VibeSessionUsage.read(home: vibeHome, output: output.data))
         case .opencode: return ProjectTermProposal.parseOpencode(stdout: output.data, exitCode: output.exitCode)
         }
     }
@@ -160,5 +162,94 @@ package enum VibeProposalHome {
             }
         }
         return true
+    }
+}
+
+/// What a Vibe run used, from the session log Vibe writes under the app's
+/// `VIBE_HOME`; `vibe -p --output json` carries no usage. Measured on Vibe
+/// 2.25.4's unified harness (2026-09-27): the output's entries name the
+/// session, `logs/session/unified/<id>/CURRENT` names its newest generation,
+/// and that generation's `projection-state.json` holds
+/// `snapshot.session.tokenUsage`, summed over the run's turns, with the
+/// cached input inside the input count. Vibe keeps no price. The same file
+/// holds the prompt as `preview`; only the three counts are read.
+package enum VibeSessionUsage {
+    /// The session the output's entries name: 1 to 64 ASCII letters,
+    /// digits and `-`, so it can name a directory and nothing else.
+    package static func sessionID(inOutput stdout: Data) -> String? {
+        guard let entries = try? JSONSerialization.jsonObject(with: stdout) as? [[String: Any]],
+              let id = entries.lazy.compactMap({ $0["sessionId"] as? String }).first,
+              isPathComponent(id)
+        else { return nil }
+        return id
+    }
+
+    /// The run's usage, or nil when the log is missing or not this shape.
+    package static func read(home: URL, output: Data, fileManager: FileManager = .default) -> ProjectTermProposal.Usage? {
+        guard let id = sessionID(inOutput: output) else { return nil }
+        let session = home.appendingPathComponent("logs/session/unified/\(id)", isDirectory: true)
+        guard let current = fileManager.contents(atPath: session.appendingPathComponent("CURRENT").path),
+              let object = try? JSONSerialization.jsonObject(with: current) as? [String: Any],
+              let generation = object["generation"] as? String, isPathComponent(generation),
+              let state = fileManager.contents(
+                  atPath: session.appendingPathComponent("generations/\(generation)/projection-state.json").path)
+        else { return nil }
+        return usage(inProjectionState: state)
+    }
+
+    package static func usage(inProjectionState data: Data) -> ProjectTermProposal.Usage? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let snapshot = object["snapshot"] as? [String: Any],
+              let session = snapshot["session"] as? [String: Any],
+              let tokens = session["tokenUsage"] as? [String: Any]
+        else { return nil }
+        return usage(
+            inputTokens: (tokens["inputTokens"] as? NSNumber)?.intValue,
+            cachedInputTokens: (tokens["cachedInputTokens"] as? NSNumber)?.intValue,
+            outputTokens: (tokens["outputTokens"] as? NSNumber)?.intValue
+        )
+    }
+
+    /// Vibe's counts in the ledger's terms: its input includes the cached
+    /// part, which the ledger counts as cache reads beside the rest.
+    package static func usage(inputTokens: Int?, cachedInputTokens: Int?, outputTokens: Int?)
+        -> ProjectTermProposal.Usage?
+    {
+        guard let input = inputTokens, input >= 0 else { return nil }
+        let cached = cachedInputTokens.map { min(max($0, 0), input) }
+        return ProjectTermProposal.Usage(
+            turns: nil,
+            costUSD: nil,
+            inputTokens: input - (cached ?? 0),
+            cacheWriteTokens: nil,
+            cacheReadTokens: cached,
+            outputTokens: outputTokens.map { max($0, 0) }
+        )
+    }
+
+    private static func isPathComponent(_ value: String) -> Bool {
+        (1...64).contains(value.utf8.count)
+            && value.utf8.allSatisfy { byte in
+                (byte >= UInt8(ascii: "a") && byte <= UInt8(ascii: "z"))
+                    || (byte >= UInt8(ascii: "A") && byte <= UInt8(ascii: "Z"))
+                    || (byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9"))
+                    || byte == UInt8(ascii: "-")
+            }
+    }
+}
+
+extension ProjectTermProposal.Outcome {
+    /// An answer with `usage` beside it, when it has none of its own.
+    package func reporting(_ usage: ProjectTermProposal.Usage?) -> Self {
+        guard let usage, case .terms(let terms, nil) = self else { return self }
+        return .terms(terms, usage: usage)
+    }
+}
+
+extension QuickCaptureDraft.Outcome {
+    /// A draft with `usage` beside it, when it has none of its own.
+    package func reporting(_ usage: ProjectTermProposal.Usage?) -> Self {
+        guard let usage, case .draft(let draft, nil) = self else { return self }
+        return .draft(draft, usage: usage)
     }
 }
