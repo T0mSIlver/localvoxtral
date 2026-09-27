@@ -602,6 +602,7 @@ final class DictationViewModel {
         textInsertion.onAccessibilityTrustChanged = { [weak self] in
             guard let self else { return }
             self.shortcuts.retryModifierOnlyHotKeyRegistrationIfNeeded()
+            self.shortcuts.retryChordShortcutRegistrationIfNeeded()
             if self.currentErrorToken == .accessibilityPermissionRequired {
                 self.lastError = nil
             }

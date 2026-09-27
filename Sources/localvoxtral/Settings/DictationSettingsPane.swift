@@ -294,7 +294,8 @@ struct DictationSettingsPane: View {
                         ShortcutRecorderField(
                             shortcut: answerAgentShortcutBinding,
                             validationError: $answerAgentValidationError,
-                            fixedWidth: 132
+                            fixedWidth: 132,
+                            acceptsModifierChord: true
                         )
                         .frame(height: 24, alignment: .leading)
 
@@ -320,7 +321,8 @@ struct DictationSettingsPane: View {
                         ShortcutRecorderField(
                             shortcut: quickCaptureShortcutBinding,
                             validationError: $quickCaptureValidationError,
-                            fixedWidth: 132
+                            fixedWidth: 132,
+                            acceptsModifierChord: true
                         )
                         .frame(height: 24, alignment: .leading)
 
@@ -496,7 +498,8 @@ struct DictationSettingsPane: View {
                         ShortcutRecorderField(
                             shortcut: copyLastDictationShortcutBinding,
                             validationError: $copyLastDictationValidationError,
-                            fixedWidth: 132
+                            fixedWidth: 132,
+                            acceptsModifierChord: true
                         )
                         .frame(height: 24, alignment: .leading)
 

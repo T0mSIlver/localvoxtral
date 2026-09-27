@@ -53,6 +53,13 @@ that has waited longest, **Quick capture to Inbox** on the Inbox. Pressed
 during a dictation, each picks its destination the way Tab would; pressed
 again, it stops.
 
+These two shortcuts and **Copy last dictation** can also be a chord of
+modifier keys, such as left Shift and right Shift together. To record one,
+click the field, press the keys together and let go. The chord fires when you
+let go, and only if its keys went down within 100 ms of each other with no
+other key pressed in between, so holding one Shift while typing never fires
+it. Like the single modifier key, a chord needs Accessibility permission.
+
 ## Output modes
 
 - **Overlay Buffer.** Your words collect in a floating overlay while you

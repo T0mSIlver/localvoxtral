@@ -141,14 +141,17 @@ final class SettingsStore {
         static let copyLastDictationShortcutModifiers =
             "settings.copy_last_dictation_shortcut_carbon_modifiers"
         static let copyLastDictationShortcutEnabled = "settings.copy_last_dictation_shortcut_enabled"
+        static let copyLastDictationShortcutChord = "settings.copy_last_dictation_shortcut_chord"
         static let answerAgentShortcutKeyCode = "settings.answer_agent_shortcut_key_code"
         static let answerAgentShortcutModifiers = "settings.answer_agent_shortcut_carbon_modifiers"
         static let answerAgentShortcutEnabled = "settings.answer_agent_shortcut_enabled"
+        static let answerAgentShortcutChord = "settings.answer_agent_shortcut_chord"
         static let agentAttentionEnabled = "settings.agent_attention_enabled"
         static let modifierHoldLiveAutoPaste = "settings.modifier_hold_live_auto_paste"
         static let quickCaptureShortcutKeyCode = "settings.quick_capture_shortcut_key_code"
         static let quickCaptureShortcutModifiers = "settings.quick_capture_shortcut_carbon_modifiers"
         static let quickCaptureShortcutEnabled = "settings.quick_capture_shortcut_enabled"
+        static let quickCaptureShortcutChord = "settings.quick_capture_shortcut_chord"
         static let quickCaptureJevEnabled = "settings.quick_capture_jev_enabled"
         static let jevAPIKeyNeverStored = "settings.jev_api_key"
     }
@@ -902,6 +905,20 @@ final class SettingsStore {
         }
     }
 
+    /// A modifier-only chord in an action slot (#831), in
+    /// `ModifierChord.storageValue` form; empty when the slot holds a key.
+    var copyLastDictationShortcutChord: String {
+        didSet { defaults.set(copyLastDictationShortcutChord, forKey: Keys.copyLastDictationShortcutChord) }
+    }
+
+    var answerAgentShortcutChord: String {
+        didSet { defaults.set(answerAgentShortcutChord, forKey: Keys.answerAgentShortcutChord) }
+    }
+
+    var quickCaptureShortcutChord: String {
+        didSet { defaults.set(quickCaptureShortcutChord, forKey: Keys.quickCaptureShortcutChord) }
+    }
+
     var livePasteShortcutKeyCode: UInt32 {
         didSet { defaults.set(livePasteShortcutKeyCode, forKey: Keys.livePasteShortcutKeyCode) }
     }
@@ -1280,6 +1297,9 @@ final class SettingsStore {
             (defaults.object(forKey: Keys.quickCaptureShortcutModifiers) as? NSNumber)?.uint32Value ?? 0
         quickCaptureShortcutEnabled = Self.loadBool(
             defaults: defaults, key: Keys.quickCaptureShortcutEnabled, fallback: false)
+        copyLastDictationShortcutChord = defaults.string(forKey: Keys.copyLastDictationShortcutChord) ?? ""
+        answerAgentShortcutChord = defaults.string(forKey: Keys.answerAgentShortcutChord) ?? ""
+        quickCaptureShortcutChord = defaults.string(forKey: Keys.quickCaptureShortcutChord) ?? ""
 
         if needsOverlayMigrationPersist {
             defaults.set(overlayBufferShortcutKeyCode, forKey: Keys.overlayBufferShortcutKeyCode)
