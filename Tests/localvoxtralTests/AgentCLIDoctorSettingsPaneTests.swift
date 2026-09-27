@@ -55,13 +55,13 @@ final class AgentCLIDoctorSettingsPaneTests: XCTestCase {
         let engines: [AgentCLIDoctorFacts.Engine] = [
             .off, .externalURL, .mistralAPI(keySet: false), .mistralAPI(keySet: true),
             .managed(.ready), .managed(.starting), .managed(.stopped),
-            .managed(.preparingModel(ModelDownloadProgress(downloadedBytes: 1, totalBytes: 2))),
-            .managed(.pausedModelDownload(ModelDownloadProgress(downloadedBytes: 1, totalBytes: 2))),
+            .managed(.preparingModel(progress: ModelDownloadProgress(downloadedBytes: 1, totalBytes: 2))),
+            .managed(.pausedModelDownload(progress: ModelDownloadProgress(downloadedBytes: 1, totalBytes: 2))),
             .managed(.failed(summary: "exited", detail: "")),
         ]
         let claude: [ClaudePluginStatus] = [
             .unknown, .notInstalled, .installed(version: "2.4.0"),
-            .updateAvailable(installed: "2.3.0", bundled: "2.4.0"), .failedToLoad,
+            .updateAvailable(installed: "2.3.0", bundled: "2.4.0"), .failedToLoad(version: "2.4.0"),
         ]
         let codex: [CodexPluginInstallService.Status] = [.unknown, .notInstalled, .disabled, .installed, .updateAvailable]
         let opencode: [OpencodePluginInstallService.Status] = [
