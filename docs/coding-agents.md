@@ -480,7 +480,7 @@ checkout.
 
 A project's repository is the GitHub repository its `origin` remote points
 at. The app reads it from a checkout on this Mac; a host sends it from
-remote plugin 1.22.0 or Vibe hooks 1.7.0. A project whose `origin` is not on
+remote plugin 1.23.0 or Vibe hooks 1.8.0. A project whose `origin` is not on
 GitHub, or that has none, asks for `owner/repository` on its first capture
 and keeps your answer.
 
