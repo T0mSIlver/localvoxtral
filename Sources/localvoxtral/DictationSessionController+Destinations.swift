@@ -30,6 +30,7 @@ struct SessionDestinations {
 extension DictationSessionController {
     enum DestinationStatus {
         static let cantGoBack = "Can't bring that window back"
+        static let paneLeftFront = "That session's window left the front"
     }
 
     /// Called when the overlay opens: the list, and Tab while it runs.
@@ -65,6 +66,9 @@ extension DictationSessionController {
     /// Called wherever the dictation stops listening. What the pick decided
     /// is in `sessionIsQuickCapture` and in which app is in front.
     func endDestinations() {
+        if let state = destinations, case .session = state.list.selected {
+            sessionPickedPaneBundleID = state.paneInFront?.bundleID
+        }
         destinationKeyHandler.stop()
         destinationFocusTask?.cancel()
         destinationFocusTask = nil
@@ -215,6 +219,38 @@ extension DictationSessionController {
             state.names[entry.sessionID] = entry.name
         }
         state.list.refresh(waitingSessionIDs: waiting.map(\.sessionID), focusedSessionID: state.originSessionID)
+    }
+
+    /// A dictation that picked a session pane commits only while the app it
+    /// commits into (the one in front at stop) is that pane's app: focus
+    /// moved to another app after the pick must not take the words with it.
+    /// Otherwise the words stay in History as not inserted. Returns true
+    /// when it kept them.
+    func keepInHistoryIfPickedPaneLeftFront(sessionMode: DictationOutputMode) -> Bool {
+        guard let pickedBundleID = sessionPickedPaneBundleID else { return false }
+        sessionPickedPaneBundleID = nil
+        let targetBundleID = overlayBufferCoordinator.commitTargetAppPID.flatMap(dependencies.bundleIdentifier)
+        guard targetBundleID != pickedBundleID else { return false }
+        Log.dictation.notice("destination: the picked session's app is no longer in front; kept in History")
+        let sessionAudio = audio.sessionRecording.finish()
+        saveSessionRecord(
+            startedAt: sessionStartedAt ?? Date(),
+            rawText: transcript.currentDictationEventText,
+            polishedText: nil,
+            polishingDuration: nil,
+            provider: sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue,
+            model: sessionModelName ?? settings.effectiveModelName,
+            outputMode: sessionMode.rawValue,
+            targetAppBundleID: nil,
+            status: .sttCompleted,
+            commitSucceeded: false,
+            audio: sessionStoresAudio ? sessionAudio : nil,
+            joined: nil
+        )
+        overlayBufferCoordinator.reset()
+        completeStoppedSessionCleanup(sessionMode: sessionMode, overlayCommitOutcome: nil, shouldCommitOverlay: true)
+        statusText = DestinationStatus.paneLeftFront
+        return true
     }
 
     /// The needs-you queue in answer order, empty while the cue is off.

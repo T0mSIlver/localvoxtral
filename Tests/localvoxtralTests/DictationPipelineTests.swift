@@ -182,6 +182,11 @@ final class DictationPipelineTests: XCTestCase {
     func testTabToAWaitingSessionBringsItsPaneForwardAndCommitsThere() async throws {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
         let waiting = installWaitingSessions(pipeline, ["pay": "/r/payments"])
+        // At the stop, the terminal holding the pane is in front.
+        let terminalPID: pid_t = 5151
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == terminalPID ? TerminalScreenAllowlist.ghosttyBundleID : nil
+        }
 
         await startAndSpeak(pipeline)
         let strip = try XCTUnwrap(pipeline.overlay.shownDestinations.last ?? nil)
@@ -197,9 +202,37 @@ final class DictationPipelineTests: XCTestCase {
             "the picked session keeps its pill after it left the queue"
         )
 
+        pipeline.overlay.commitTargetAppPID = terminalPID
         sendPartials(pipeline)
         await stopAndFinalize(pipeline)
         XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
+    }
+
+    /// Focus moved to another app between the pick and the stop: the words
+    /// must not follow it. They stay in History as not inserted, and the
+    /// popover says why.
+    func testAPickedSessionWhoseAppLeftTheFrontKeepsTheWordsInHistory() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        _ = installWaitingSessions(pipeline, ["pay": "/r/payments"])
+        let otherAppPID: pid_t = 6262
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == otherAppPID ? "com.apple.Safari" : TerminalScreenAllowlist.ghosttyBundleID
+        }
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.session.moveDestination(forward: true)
+        await pipeline.viewModel.session.destinationFocusTask?.value
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
+
+        // The user clicked into Safari before stopping.
+        pipeline.overlay.commitTargetAppPID = otherAppPID
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline, finalStatus: DictationSessionController.DestinationStatus.paneLeftFront)
+
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing reaches the app that took the focus")
+        let record = try XCTUnwrap(pipeline.records.all.first)
+        XCTAssertFalse(record.commitSucceeded)
+        XCTAssertEqual(record.rawText, Self.phrase)
     }
 
     /// A pane the terminal did not confirm never gets the words: the overlay

@@ -424,6 +424,11 @@ final class DictationSessionController {
     /// Brings a picked pane forward, or the focused app back.
     @ObservationIgnored
     var destinationFocusTask: Task<Void, Never>?
+    /// The app of the session pane the stopped dictation picked, kept from
+    /// the stop to the commit: the words go in only while the commit target
+    /// is still that app.
+    @ObservationIgnored
+    var sessionPickedPaneBundleID: String?
     @ObservationIgnored
     var sessionStartedAt: Date?
     @ObservationIgnored

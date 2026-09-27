@@ -42,6 +42,7 @@ extension DictationSessionController {
         sessionConnectionGeneration = .none
         sessionOutputMode = nil
         sessionIsQuickCapture = false
+        sessionPickedPaneBundleID = nil
         sessionStartedAt = nil
         sessionProvider = nil
         sessionModelName = nil

@@ -200,6 +200,15 @@ final class ViewSnapshotTests: XCTestCase {
             ("listening-unjoined", DictationOverlayView(
                 phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
                 metrics: metrics, claudeJoin: .unjoined)),
+            ("destinations-here", DictationOverlayView(
+                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, destinations: Self.strip(selected: .focusedApp))),
+            ("destinations-session", DictationOverlayView(
+                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, destinations: Self.strip(selected: .session(id: "pay")))),
+            ("destinations-inbox", DictationOverlayView(
+                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, destinations: Self.strip(selected: .inbox))),
             ("secure-input", DictationOverlayView(
                 phase: .buffering, text: sample, errorMessage: nil, secureInputActive: true,
                 metrics: metrics)),
@@ -226,6 +235,16 @@ final class ViewSnapshotTests: XCTestCase {
                 view, name: "overlay-\(state.name)",
                 width: metrics.panelWidth + 2 * inset, height: height + 2 * inset, growToFit: false)
         }
+    }
+
+    /// The overlay's destinations (#840) with one session waiting.
+    private static func strip(selected: DictationDestination) -> OverlayDestinationStrip {
+        OverlayDestinationStrip(
+            list: DictationDestinationList(waitingSessionIDs: ["pay"], focusedSessionID: nil, selected: selected),
+            focusedAppLabel: "localvoxtral",
+            focusedAppJoined: true,
+            sessionName: { _ in "payments" }
+        )
     }
 
     // MARK: - Support

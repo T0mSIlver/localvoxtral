@@ -70,6 +70,8 @@ final class AnswerAgentTests: XCTestCase {
         for sentence in [
             DictationSessionController.AnswerAgentStatus.nobodyWaiting,
             DictationSessionController.AnswerAgentStatus.unconfirmed,
+            DictationSessionController.DestinationStatus.cantGoBack,
+            DictationSessionController.DestinationStatus.paneLeftFront,
         ] {
             XCTAssertLessThanOrEqual(sentence.count, 44, sentence)
         }
