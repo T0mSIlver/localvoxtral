@@ -75,15 +75,17 @@ package enum QuickCaptureRouting {
     package static let catchAllDescription =
         "None of the projects above: a personal note, a task or an idea about something else, or too vague to place."
     /// Below this, the top option is a guess and the capture goes to the
-    /// catch-all. Jev's probabilities are calibrated, so its bar is the
-    /// plain majority. A chat model's self-reported confidence is not: on
-    /// the owner's 36-capture replay (2026-09-26, GLM 5.3) every one of its
-    /// 19 wrong-project answers said 0.85 or less, and all 25 answers at 0.9
-    /// or more were right.
-    package static func minimumTopProbability(for classifier: QuickCaptureRoute.Classifier) -> Double {
-        classifier == .chatModel ? 0.9 : 0.5
-    }
-    /// A top option this close to the second is a tie.
+    /// catch-all. Measured on the owner's 36-capture replay (2026-09-26),
+    /// three project sets each:
+    /// - GLM 5.3's self-reported confidence: all 19 wrong-project answers
+    ///   said 0.85 or less, all 25 answers at 0.9 or more were right.
+    /// - Jev through Vercel AI Gateway: every right project came at 0.95 or
+    ///   more; 10 of its 12 wrong ones came under 0.9, and the two above were
+    ///   captures whose project was not in the list at all.
+    /// One bar for both, then.
+    package static let minimumTopProbability = 0.9
+    /// A top option this close to the second is a tie. Under the 0.9 bar
+    /// only a classifier whose numbers do not sum to one can tie.
     package static let minimumMargin = 0.15
 
     /// The options a classifier gets: one per project, then the catch-all.
@@ -108,7 +110,7 @@ package enum QuickCaptureRouting {
     }
 
     /// The decision on one answer. The catch-all wins whenever the top
-    /// option is the catch-all, below `minimumTopProbability(for:)`, or within
+    /// option is the catch-all, below `minimumTopProbability`, or within
     /// `minimumMargin` of the runner-up; never a guessed project.
     package static func decide(
         probabilities: [String: Double],
@@ -125,7 +127,7 @@ package enum QuickCaptureRouting {
             QuickCaptureRoute(destination: .catchAll, classifier: classifier, reason: reason, topProbability: topProbability)
         }
         guard let key = top.projectKey else { return catchAll(.classifierChoseCatchAll) }
-        guard topProbability >= minimumTopProbability(for: classifier) else { return catchAll(.lowConfidence) }
+        guard topProbability >= minimumTopProbability else { return catchAll(.lowConfidence) }
         let runnerUp = ranked.count > 1 ? ranked[1].1 : 0
         guard topProbability - runnerUp >= minimumMargin else { return catchAll(.nearTie) }
         return QuickCaptureRoute(destination: .project(key), classifier: classifier, reason: .confident, topProbability: topProbability)

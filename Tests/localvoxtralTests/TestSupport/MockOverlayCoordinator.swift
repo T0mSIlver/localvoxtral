@@ -27,6 +27,9 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     /// When set, `commitIfNeeded` hands the buffer to the committer it is
     /// given, as the real overlay does, for tests of where the text went.
     var insertsThroughCommitter = false
+    /// Off, the committer gets no target pid, so a test can name a target
+    /// without the insertion trying to activate that (absent) app.
+    var passesTargetPIDToCommitter = true
     /// Runs after each `refresh` is recorded, for tests that wait for the
     /// buffer to show a text.
     var onRefresh: ((BufferCall) -> Void)?
@@ -36,6 +39,8 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     var lastDismissAfterHoldMinimumVisibility: TimeInterval? { dismissHoldVisibilities.last }
     var resetCallCount = 0
     var markPolishedCalls: [Bool] = []
+    /// Every destination strip the overlay was asked to show (#840).
+    var shownDestinations: [OverlayDestinationStrip?] = []
 
     func resolveAnchorNow() -> OverlayAnchor {
         OverlayAnchor(
@@ -70,7 +75,9 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
         commitCallCount += 1
         committedTexts.append(commitBufferText)
         if insertsThroughCommitter,
-           !textCommitter.insertTextPrioritizingKeyboard(commitBufferText, preferredAppPID: commitTargetAppPID).isSuccess {
+           !textCommitter.insertTextPrioritizingKeyboard(
+               commitBufferText, preferredAppPID: passesTargetPIDToCommitter ? commitTargetAppPID : nil
+           ).isSuccess {
             return .failed(message: "insert failed")
         }
         onCommit?()
@@ -86,6 +93,10 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     }
 
     func captureLiveCommitTargetAppPID() {}
+
+    func showDestinations(_ strip: OverlayDestinationStrip?) {
+        shownDestinations.append(strip)
+    }
 
     func markPolished(_ polished: Bool) {
         markPolishedCalls.append(polished)

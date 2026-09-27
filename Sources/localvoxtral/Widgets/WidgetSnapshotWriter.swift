@@ -220,7 +220,7 @@ final class WidgetSnapshotWriter {
             polishEnabled: settings.llmPolishingEnabled,
             physicalMemoryBytes: ProcessInfo.processInfo.physicalMemory,
             mistral: WidgetSnapshotAssembler.mistralSpend(
-                viewModel.engines.mistralUsageLedger?.entries() ?? [], now: now, calendar: calendar)
+                viewModel.engines.usageLedger?.entries() ?? [], now: now, calendar: calendar)
         )
     }
 

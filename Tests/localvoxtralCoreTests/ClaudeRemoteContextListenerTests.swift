@@ -82,28 +82,8 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
 
     /// Connect, write `raw` verbatim, read to EOF. No framing help, no retries.
     private func send(_ raw: Data, timeout: TimeInterval = 5) throws -> Response? {
-        #if canImport(Darwin)
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
-        #else
-        let fd = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
-        #endif
-        XCTAssertGreaterThanOrEqual(fd, 0)
+        guard let fd = connectedClient() else { return nil }
         defer { close(fd) }
-
-        var address = sockaddr_in()
-        #if canImport(Darwin)
-        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        #endif
-        address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = port.bigEndian
-        address.sin_addr = in_addr(s_addr: INADDR_LOOPBACK.bigEndian)
-
-        let connected = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        guard connected == 0 else { return nil }
 
         var receiveTimeout = timeval(tv_sec: Int(timeout), tv_usec: 0)
         setsockopt(
@@ -145,6 +125,29 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         }
         guard !received.isEmpty else { return nil }
         return parse(received)
+    }
+
+    /// A descriptor connected to the listener, or nil; the caller closes it.
+    private func connectedClient() -> Int32? {
+        let fd = socket(AF_INET, POSIXSocket.stream, 0)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+
+        var address = sockaddr_in()
+        POSIXSocket.setLength(of: &address)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = port.bigEndian
+        address.sin_addr = in_addr(s_addr: INADDR_LOOPBACK.bigEndian)
+
+        let connected = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard connected == 0 else {
+            close(fd)
+            return nil
+        }
+        return fd
     }
 
     private func parse(_ raw: Data) -> Response? {
@@ -1059,6 +1062,41 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
             "the listener must hang up on a connection that has outlived its deadline"
         )
         XCTAssertTrue(sessions.liveSessions().isEmpty)
+    }
+
+    /// A peer that sends its request and resets the connection before the
+    /// listener serves it, as a forward torn down mid-request does. Darwin
+    /// refuses SO_NOSIGPIPE on that socket, and a response written to it
+    /// raises SIGPIPE, which kills the app (#791).
+    func testAPeerThatLeavesBeforeItIsServedDoesNotKillTheApp() throws {
+        let peerLeft = DispatchSemaphore(value: 0)
+        let served = Mutex(0)
+        try startListener()
+        listener.debugConfigureServeHook {
+            let call = served.withLock { count -> Int in
+                count += 1
+                return count
+            }
+            if call == 1 { _ = peerLeft.wait(timeout: .now() + 5) }
+        }
+
+        let fd = try XCTUnwrap(connectedClient())
+        let request = hookRequest(token: token)
+        let sent = request.withUnsafeBytes { raw in
+            LibC.send(fd, raw.baseAddress!, raw.count, POSIXSocket.sendFlags)
+        }
+        XCTAssertEqual(sent, request.count)
+        // A zero linger makes close() reset the connection, which shuts down
+        // both directions of the listener's socket.
+        var reset = linger(l_onoff: 1, l_linger: 0)
+        setsockopt(fd, SOL_SOCKET, SO_LINGER, &reset, socklen_t(MemoryLayout<linger>.size))
+        close(fd)
+        peerLeft.signal()
+
+        // One thread per connection, so this does not wait on the first one;
+        // it fails if the response to the departed peer took the process down.
+        let response = try XCTUnwrap(try send(hookRequest(token: nil)))
+        XCTAssertEqual(response.status, 401)
     }
 
     // MARK: - Lifecycle

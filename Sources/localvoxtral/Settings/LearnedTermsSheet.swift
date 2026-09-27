@@ -182,6 +182,7 @@ struct LearnedTermsSheet: View {
     /// strongest evidence first, the order the prompt ranks them in.
     nonisolated static func displayOrder(_ terms: LearnedTerms) -> [LearnedTermProject] {
         terms.projects
+            .filter { !$0.terms.isEmpty }
             .map { project in
                 var sorted = project
                 sorted.terms.sort(by: LearnedTerms.isStrongerEvidence)

@@ -4,7 +4,7 @@ import XCTest
 @testable import localvoxtralCore
 
 final class QuickCaptureProjectsTests: XCTestCase {
-    func testTheFirstParagraphSkipsWhatIsNotProse() {
+    func testTheSummaryIsTheFirstTwoProseParagraphs() {
         let cases: [(String, String?)] = [
             (
                 """
@@ -23,14 +23,17 @@ final class QuickCaptureProjectsTests: XCTestCase {
 
                 Second paragraph.
                 """,
-                "A native macOS menu bar app for realtime dictation with Voxtral, speechd and polish."
+                "A native macOS menu bar app for realtime dictation with Voxtral, speechd and polish. Second paragraph."
             ),
             ("# Title\n\n```sh\nmake\n```\n\nBuilds it.", "Builds it."),
+            ("One.\n\nTwo.\n\nThree.", "One. Two."),
             ("# Title\n\n- a list\n- only\n\n| a | b |", nil),
-            ("Plain first line\nwraps here\n\nnext", "Plain first line wraps here"),
+            ("Plain first line\nwraps here\n\nnext", "Plain first line wraps here next"),
+            ("Speak.&nbsp;\n\nTom &amp; Jerry.", "Speak. Tom & Jerry."),
+            ("Speak.\n\nhttps://github.com/user-attachments/assets/81a3\n\nThen type.", "Speak. Then type."),
         ]
         for (readme, expected) in cases {
-            XCTAssertEqual(QuickCaptureProjects.firstParagraph(ofReadme: readme), expected, readme)
+            XCTAssertEqual(QuickCaptureProjects.summary(ofReadme: readme), expected, readme)
         }
     }
 
@@ -39,8 +42,11 @@ final class QuickCaptureProjectsTests: XCTestCase {
         func term(_ spelling: String, dictations: Int, source: String = "screen") -> LearnedTerm {
             LearnedTerm(term: spelling, sources: [source], dictations: dictations, firstSeen: now, lastSeen: now)
         }
+        var website = LearnedTermProject(key: "remote:website", name: "website", terms: [term("Astro", dictations: 3)], lastSeen: now)
+        website.reportedAt = now
+        website.reportedAsRepository = true
         let learned = LearnedTerms(projects: [
-            LearnedTermProject(key: "remote:website", name: "website", terms: [term("Astro", dictations: 3)], lastSeen: now),
+            website,
             LearnedTermProject(
                 key: "/w/localvoxtral", name: "localvoxtral",
                 terms: [term("speechd", dictations: 0, source: "agent:claude"), term("Voxtral", dictations: 5), term("rare", dictations: 1)],
@@ -51,6 +57,7 @@ final class QuickCaptureProjectsTests: XCTestCase {
         let projects = QuickCaptureProjects.projects(
             from: learned,
             userLines: ["remote:website": "  My portfolio site.  ", "/w/localvoxtral": " "],
+            now: now,
             readme: { root in
                 readmeReads.append(root)
                 return "# x\n\nDictation for coding agents."
@@ -65,6 +72,32 @@ final class QuickCaptureProjectsTests: XCTestCase {
             "Project localvoxtral. Dictation for coding agents. Its names: Voxtral, speechd."
         )
         XCTAssertEqual(projects[1].description, "Project website. My portfolio site. Its names: Astro.")
+    }
+
+    /// #819: a remote project no hook has named since hosts began sending
+    /// `X-Lvx-Env-Project` is a label no session reports any more.
+    func testARemoteProjectIsListedOnlyOnceAHookHasNamedIt() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let day: TimeInterval = 86_400
+        let term = LearnedTerm(term: "ScreenPipe", sources: ["screen"], dictations: 3, firstSeen: now, lastSeen: now)
+        var learned = LearnedTerms(projects: [
+            LearnedTermProject(key: "remote:modest-lewin-c92780", name: "modest-lewin-c92780", terms: [term], lastSeen: now),
+            LearnedTermProject(key: "remote:quill-fix", name: "quill-fix", terms: [term], lastSeen: now),
+            LearnedTermProject(key: "/w/inkwell", name: "inkwell", terms: [term], lastSeen: now),
+            LearnedTermProject(key: LearnedTermProjectResolver.shared.key, name: "No project", terms: [term], lastSeen: now),
+        ])
+        learned.recordRemoteReport(project: .init(key: "remote:quillmark", name: "quillmark"), asRepository: true, now: now)
+        learned.recordRemoteReport(project: .init(key: "remote:quill-fix", name: "quill-fix"), asRepository: false, now: now)
+        func listed(at moment: Date) -> [String] {
+            QuickCaptureProjects.projects(from: learned, userLines: [:], now: moment, readme: { _ in nil })
+                .map(\.key).sorted()
+        }
+        XCTAssertEqual(listed(at: now), ["/w/inkwell", "remote:quill-fix", "remote:quillmark"])
+        XCTAssertEqual(
+            listed(at: now.addingTimeInterval(Double(QuickCaptureProjects.remoteLabelListedDays) * day)),
+            ["/w/inkwell", "remote:quillmark"],
+            "an old shim's cwd label drops out a week after its last hook; a repository stays"
+        )
     }
 
     func testTheReadmeIsReadFromTheCheckoutRoot() throws {

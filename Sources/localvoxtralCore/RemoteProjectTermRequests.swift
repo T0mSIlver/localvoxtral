@@ -57,12 +57,15 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
     private let store: any ProjectTermProposalStoring
     private let hosts: ClaudeRemoteHostRegistry
     private let now: @Sendable () -> Date
+    private let usageRecorder: (any UsageRecording)?
 
     package init(
         store: any ProjectTermProposalStoring,
         hosts: ClaudeRemoteHostRegistry,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        usageRecorder: (any UsageRecording)? = nil
     ) {
+        self.usageRecorder = usageRecorder
         self.store = store
         self.hosts = hosts
         self.now = now
@@ -165,6 +168,9 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
         #if DEBUG
         debugAnswerObserver.withLock { $0 }?(answer.count)
         #endif
+        // The host ran the agent whatever it answered. Its shim sends the
+        // answer text only, so the run is counted without its usage.
+        usageRecorder?.record(.agentRun(date: now(), feature: .projectTerms, agent: slot.agent, usage: nil))
         guard let text = String(data: answer, encoding: .utf8),
               let raw = ProjectTermProposal.termsObject(in: text)
         else { return nil }

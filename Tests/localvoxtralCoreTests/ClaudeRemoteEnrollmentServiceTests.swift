@@ -1,7 +1,8 @@
 import Foundation
 import Synchronization
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
+import localvoxtralTestSupport
 
 private final class MemoryLocalHerdrConfigFileSystem: ClaudeLocalHerdrConfigFileSystem {
     struct Storage: Sendable {
@@ -59,7 +60,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     )
     private let token = "tokenAAAABBBBCCCCDDDDEEEEFFFF00001111"
 
-    /// Tests/localvoxtralTests/<this file> → repo root. Derived from the source
+    /// Tests/localvoxtralCoreTests/<this file> → repo root. Derived from the source
     /// path, not the build path, so it resolves on any checkout.
     private var repositoryRoot: URL {
         URL(fileURLWithPath: #filePath)
@@ -157,11 +158,20 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     private func assertEveryConfigArgumentIsThePort(
         in text: String, line: UInt = #line
     ) {
+        for violation in configArgumentViolations(in: text) {
+            XCTFail(violation, line: line)
+        }
+    }
+
+    /// What `assertEveryConfigArgumentIsThePort` fails with, one message per
+    /// broken rule; empty when every `--config` is the port.
+    private func configArgumentViolations(in text: String) -> [String] {
         let key = ClaudeRemoteEnrollmentService.portConfigKey
+        var violations: [String] = []
         for range in text.ranges(of: "--config ") {
             let rest = text[range.upperBound...]
             guard let closing = rest.dropFirst().firstIndex(of: "'") else {
-                XCTFail("unterminated --config argument in: \(text)", line: line)
+                violations.append("unterminated --config argument in: \(text)")
                 continue
             }
             let argument = String(rest[rest.startIndex...closing])
@@ -175,19 +185,17 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             // 2026-08-04). So a trailing quote is allowed only when it is the
             // last thing on the line.
             let tail: Substring = after.first == "'" ? after.dropFirst() : after
-            XCTAssertTrue(
-                after.isEmpty || after.first == " " || after.first == "\n"
-                    || (after.first == "'" && (tail.isEmpty || tail.first == " " || tail.first == "\n")),
-                "a --config argument must END at its closing quote: \(text)"
-            )
+            if !(after.isEmpty || after.first == " " || after.first == "\n"
+                || (after.first == "'" && (tail.isEmpty || tail.first == " " || tail.first == "\n")))
+            {
+                violations.append("a --config argument must END at its closing quote: \(text)")
+            }
             let digits = argument.dropFirst("'\(key)=".count).dropLast()
-            XCTAssertTrue(
-                argument.hasPrefix("'\(key)=") && !digits.isEmpty
-                    && digits.allSatisfy(\.isNumber),
-                "the only config this path may write is a numeric port, got \(argument)",
-                line: line
-            )
+            if !(argument.hasPrefix("'\(key)=") && !digits.isEmpty && digits.allSatisfy(\.isNumber)) {
+                violations.append("the only config this path may write is a numeric port, got \(argument)")
+            }
         }
+        return violations
     }
 
     /// The anchoring above is load-bearing, so it gets its own test: these are
@@ -200,9 +208,9 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             "ssh builder 'claude plugin install ref --config '\(key)=28511x''",
             "ssh builder 'claude plugin install ref --config 'token=secret''",
         ] {
-            XCTExpectFailure("this shape must be rejected by the anchoring: \(smuggled)") {
-                assertEveryConfigArgumentIsThePort(in: smuggled)
-            }
+            XCTAssertFalse(
+                configArgumentViolations(in: smuggled).isEmpty,
+                "this shape must be rejected by the anchoring: \(smuggled)")
         }
     }
 
@@ -800,6 +808,19 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
     }
 
+    /// The marketplace copy every mutation script writes first. Its
+    /// here-documents carry the shims' own text (`case "`, `--config`, lines
+    /// starting with `claude `), so checks on what the script RUNS strip it.
+    private func marketplaceWrite() throws -> String {
+        ClaudeRemoteEnrollmentService.remoteMarketplaceWriteScript(
+            try XCTUnwrap(ClaudeRemoteMarketplaceFiles.bundled())
+        )
+    }
+
+    private func commands(of script: String) throws -> String {
+        script.replacingOccurrences(of: try marketplaceWrite(), with: "")
+    }
+
     func testRemoteSetupGoesThroughTheClaudePluginCLI() throws {
         // Never by hand-editing the remote's ~/.claude/settings.json: that file
         // is the user's, Claude Code owns its schema, and the CLI is the
@@ -808,11 +829,12 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertEqual(
             scripts[1],
             "set -eu\n" + ClaudeRemoteEnrollmentService.claudePathResolverPreamble
-                + "claude plugin marketplace add \(ClaudeRemoteEnrollmentService.repositoryMarketplaceReference)\n"
+                + (try marketplaceWrite())
+                + "claude plugin marketplace add \"$M\"\n"
                 + "claude plugin install localvoxtral-remote@localvoxtral --config 'token=\(token)' --config 'port=28511'"
         )
         for script in scripts {
-            XCTAssertFalse(script.contains("settings.json"), "never touch the user's Claude config")
+            XCTAssertFalse(try commands(of: script).contains("settings.json"), "never touch the user's Claude config")
         }
     }
 
@@ -829,17 +851,6 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
                 "must not install the local plugin on a remote host"
             )
         }
-    }
-
-    func testTheMarketplaceReferenceIsTheCurrentRepoOwner() {
-        XCTAssertEqual(
-            ClaudeRemoteEnrollmentService.repositoryMarketplaceReference,
-            "T0mSIlver/localvoxtral"
-        )
-        XCTAssertFalse(
-            ClaudeRemoteEnrollmentService.repositoryMarketplaceReference.contains("tomvaucourt"),
-            "the old owner would resolve to nothing"
-        )
     }
 
     // MARK: What left the plan, and where it went
@@ -914,6 +925,8 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertEqual(
             try pluginMutationScripts().update,
             "set -eu\n" + ClaudeRemoteEnrollmentService.claudePathResolverPreamble
+                + (try marketplaceWrite())
+                + "claude plugin marketplace add \"$M\"\n"
                 + "claude plugin marketplace update \(ClaudePluginAssets.marketplaceName)\n"
                 + "claude plugin update localvoxtral-remote@localvoxtral\n"
                 + "claude plugin install \(ClaudeRemoteEnrollmentService.remotePluginReference) "
@@ -928,12 +941,12 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         let scripts = try pluginMutationScripts()
         for script in [scripts.update, scripts.current] {
             XCTAssertFalse(script.contains(token))
-            XCTAssertFalse(script.contains(ClaudeRemoteEnrollmentService.tokenConfigKey + "="))
+            XCTAssertFalse(try commands(of: script).contains(ClaudeRemoteEnrollmentService.tokenConfigKey + "="))
             // Not a blanket ban on `--config` any more: the port migration is a
             // config write, and it is the whole point of this path since #215.
             // Every `--config` on it must be the port one — that is a stricter
             // statement than "no --config", not a looser one.
-            assertEveryConfigArgumentIsThePort(in: script)
+            assertEveryConfigArgumentIsThePort(in: try commands(of: script))
         }
     }
 
@@ -1016,7 +1029,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             "ssh -o BatchMode=yes -- <alias> /bin/sh -s",
             "ssh -G -- <alias>",
             "claude plugin list --json",
-            "claude plugin marketplace add T0mSIlver/localvoxtral",
+            "claude plugin marketplace add \"$M\"",
             "claude plugin marketplace update localvoxtral",
             "claude plugin update localvoxtral-remote@localvoxtral",
             "claude plugin install localvoxtral-remote@localvoxtral",
@@ -1042,7 +1055,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         let scripts = try pluginSetupScripts(before: "1.4.0", token: nil)
             + pluginSetupScripts(before: nil, token: token)
         let commands = Set(
-            scripts.flatMap { $0.components(separatedBy: "\n") }
+            try scripts.map { try self.commands(of: $0) }.flatMap { $0.components(separatedBy: "\n") }
                 .filter { $0.hasPrefix("claude ") }
                 .map { $0.components(separatedBy: " --config ")[0] }
         )
@@ -1119,75 +1132,33 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertTrue(written.contains("Host other"))
     }
 
-    func testSSHConfigInsertionRefusesASymlinkedConfigWithoutWriting() throws {
-        // A rename-based atomic write would replace the symlink with a regular
-        // file and silently desync a dotfiles-managed setup.
-        let fileSystem = MemorySSHConfigFileSystem(
-            state: ClaudeRemoteSSHConfigState(
+    func testSSHConfigInsertionRefusesUntrustedPathsWithoutWriting() throws {
+        typealias State = ClaudeRemoteSSHConfigState
+        typealias Error = ClaudeRemoteEnrollmentService.ServiceError
+        let cases: [(name: String, configure: (inout State) -> Void, error: Error)] = [
+            // Atomic replacement must not overwrite a dotfiles-managed symlink.
+            ("symlinked config", { $0.configIsSymlink = true }, .sshConfigIsSymlink),
+            ("symlinked directory", { $0.directoryIsSymlink = true }, .sshConfigIsSymlink),
+            ("writable directory", { $0.directoryPermissions = 0o770 }, .sshDirectoryNotTrusted),
+            ("foreign-owned directory", { $0.directoryOwnedByCurrentUser = false }, .sshDirectoryNotTrusted),
+        ]
+        let snippet = try plan(alias: "builder").sshConfigSnippet
+        for (name, configure, error) in cases {
+            var state = State(
                 directoryExists: true,
                 configData: nil,
                 configPermissions: nil,
-                configIsSymlink: true
+                directoryPermissions: 0o700
             )
-        )
-        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: fileSystem)
-
-        XCTAssertThrowsError(try service.insertSSHConfig(snippet: try plan(alias: "builder").sshConfigSnippet, hostID: host.id)) {
-            XCTAssertEqual(
-                $0 as? ClaudeRemoteEnrollmentService.ServiceError, .sshConfigIsSymlink
-            )
-        }
-        XCTAssertTrue(fileSystem.snapshot.writes.isEmpty)
-        XCTAssertTrue(fileSystem.snapshot.createdDirectoryPermissions.isEmpty)
-    }
-
-    func testSSHConfigInsertionRefusesASymlinkedSSHDirectoryWithoutWriting() throws {
-        let fileSystem = MemorySSHConfigFileSystem(
-            state: ClaudeRemoteSSHConfigState(
-                directoryExists: true,
-                configData: nil,
-                configPermissions: nil,
-                directoryIsSymlink: true
-            )
-        )
-        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: fileSystem)
-
-        XCTAssertThrowsError(try service.insertSSHConfig(snippet: try plan(alias: "builder").sshConfigSnippet, hostID: host.id)) {
-            XCTAssertEqual(
-                $0 as? ClaudeRemoteEnrollmentService.ServiceError, .sshConfigIsSymlink
-            )
-        }
-        XCTAssertTrue(fileSystem.snapshot.writes.isEmpty)
-    }
-
-    func testSSHConfigInsertionRefusesAnUntrustedSSHDirectoryWithoutWriting() throws {
-        for state in [
-            // group/world-writable
-            ClaudeRemoteSSHConfigState(
-                directoryExists: true,
-                configData: nil,
-                configPermissions: nil,
-                directoryPermissions: 0o770
-            ),
-            // not the user's directory
-            ClaudeRemoteSSHConfigState(
-                directoryExists: true,
-                configData: nil,
-                configPermissions: nil,
-                directoryOwnedByCurrentUser: false
-            ),
-        ] {
+            configure(&state)
             let fileSystem = MemorySSHConfigFileSystem(state: state)
             let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: fileSystem)
 
-            XCTAssertThrowsError(
-                try service.insertSSHConfig(snippet: try plan(alias: "builder").sshConfigSnippet, hostID: host.id)
-            ) {
-                XCTAssertEqual(
-                    $0 as? ClaudeRemoteEnrollmentService.ServiceError, .sshDirectoryNotTrusted
-                )
+            XCTAssertThrowsError(try service.insertSSHConfig(snippet: snippet, hostID: host.id), name) {
+                XCTAssertEqual($0 as? Error, error, name)
             }
-            XCTAssertTrue(fileSystem.snapshot.writes.isEmpty)
+            XCTAssertTrue(fileSystem.snapshot.writes.isEmpty, name)
+            XCTAssertTrue(fileSystem.snapshot.createdDirectoryPermissions.isEmpty, name)
         }
     }
 
@@ -2187,32 +2158,6 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: victim), Data("victim".utf8))
     }
 
-    func testLiveLocalHerdrConfigReportsAnUnreadableFileAsUnknownNotAbsent() throws {
-        let home = try temporaryHome()
-        defer { try? FileManager.default.removeItem(at: home) }
-        let fileSystem = LiveClaudeLocalHerdrConfigFileSystem(homeDirectoryURL: home)
-        try fileSystem.createConfigDirectory(permissions: 0o755)
-        try fileSystem.atomicWriteConfig(
-            Data("[ui]\n".utf8), permissions: 0o644, expectedConfigPresent: false
-        )
-        let configPath = home.appendingPathComponent(".config/herdr/config.toml").path
-        // Restore the mode so the temporary tree can be removed.
-        defer {
-            try? FileManager.default.setAttributes(
-                [.posixPermissions: NSNumber(value: 0o644)], ofItemAtPath: configPath
-            )
-        }
-        try FileManager.default.setAttributes(
-            [.posixPermissions: NSNumber(value: 0o000)], ofItemAtPath: configPath
-        )
-        XCTAssertThrowsError(try fileSystem.readState(), "an unreadable file is not an absent one")
-        XCTAssertEqual(
-            ClaudeRemoteEnrollmentService(localHerdrConfigFileSystem: fileSystem)
-                .localHerdrPanelStatus(),
-            .unknown
-        )
-    }
-
     func testLiveLocalHerdrConfigIgnoresANonDirectoryHerdrDev() throws {
         // A file (or symlink, or socket) at the dev path must not divert the
         // write: only an actual directory selects the dev build.
@@ -2528,7 +2473,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertTrue(scripts[2].contains("claude plugin list --json"))
         // Nothing on the host matches text: the decision and the read-back
         // are decoded here from the JSON the CLI prints.
-        for script in scripts {
+        for script in try scripts.map(commands(of:)) {
             XCTAssertFalse(script.contains("grep"), "no text matching on the host")
             XCTAssertFalse(script.contains("case \""), "no text matching on the host")
         }

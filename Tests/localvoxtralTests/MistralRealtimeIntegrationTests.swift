@@ -133,7 +133,7 @@ final class MistralRealtimeIntegrationTests: XCTestCase {
             spokenPCM16, chunkSizeBytes: 3_200)
 
         let client = MistralRealtimeWebSocketClient()
-        let ledger = MistralUsageLedger(fileURL: nil)
+        let ledger = UsageLedger(fileURL: nil)
         client.setUsageRecorder(ledger)
         let deltas = LockedStrings()
         let finals = LockedStrings()
@@ -216,7 +216,7 @@ final class MistralRealtimeIntegrationTests: XCTestCase {
     /// Eight output tokens at most: this costs a small fraction of a cent.
     func testMistralPolishReportsUsageTheLedgerPrices() async throws {
         let apiKey = try integrationConfiguration().apiKey
-        let ledger = MistralUsageLedger(fileURL: nil)
+        let ledger = UsageLedger(fileURL: nil)
         let service = LLMPolishingService(usageRecorder: ledger)
 
         _ = try await service.polish(

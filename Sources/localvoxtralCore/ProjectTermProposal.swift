@@ -182,13 +182,15 @@ package enum ProjectTermProposal {
     /// 2026-09-26, opencode 1.18.31). `--dir` and the working directory are
     /// the same project. No `--model`: the run uses the user's own default,
     /// as Vibe's does.
-    package static func opencodeArguments(workingDirectory: String) -> [String] {
+    package static func opencodeArguments(
+        workingDirectory: String, agentName: String = opencodeAgentName, prompt: String = ProjectTermProposal.prompt
+    ) -> [String] {
         [
             "run",
             "--pure",
             "--format", "json",
             "--dir", workingDirectory,
-            "--agent", opencodeAgentName,
+            "--agent", agentName,
             prompt,
         ]
     }
@@ -216,14 +218,14 @@ package enum ProjectTermProposal {
     /// The run's own agent and permissions, passed as
     /// `OPENCODE_CONFIG_CONTENT`, which opencode merges last. `steps` caps
     /// the tool turns; at the cap opencode forces a text-only answer.
-    package static var opencodeConfig: String {
+    package static func opencodeConfig(agentName: String, steps: Int, systemPrompt: String) -> String {
         let config: [String: Any] = [
             "permission": opencodePermission,
             "agent": [
-                opencodeAgentName: [
+                agentName: [
                     "mode": "primary",
-                    "steps": 12,
-                    "prompt": claudeSystemPrompt,
+                    "steps": steps,
+                    "prompt": systemPrompt,
                     "permission": opencodePermission,
                 ] as [String: Any],
             ],
@@ -235,22 +237,33 @@ package enum ProjectTermProposal {
         return String(decoding: data, as: UTF8.self)
     }
 
-    /// opencode has no price cap, so the run is bounded by 12 steps, 4096
-    /// output tokens per step and `timeoutSeconds`. The rest keeps the run
-    /// out of everything the user owns: an in-memory database, so the run
-    /// never shows in their session list; no project config, so the repo's
-    /// `opencode.json` starts no MCP server and changes no permission; no
-    /// Claude Code or external skills; no update or LSP download.
-    package static let opencodeEnvironment: [String: String] = [
-        "OPENCODE_CONFIG_CONTENT": opencodeConfig,
-        "OPENCODE_DB": ":memory:",
-        "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
-        "OPENCODE_DISABLE_CLAUDE_CODE": "1",
-        "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1",
-        "OPENCODE_DISABLE_AUTOUPDATE": "1",
-        "OPENCODE_DISABLE_LSP_DOWNLOAD": "1",
-        "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX": "4096",
-    ]
+    package static let opencodeSteps = 12
+
+    package static var opencodeConfig: String {
+        opencodeConfig(agentName: opencodeAgentName, steps: opencodeSteps, systemPrompt: claudeSystemPrompt)
+    }
+
+    /// opencode has no price cap, so a run is bounded by its agent's steps,
+    /// `outputTokens` per step, reasoning included, and the caller's timeout. The rest keeps
+    /// the run out of everything the user owns: an in-memory database, so
+    /// the run never shows in their session list; no project config, so the
+    /// repo's `opencode.json` starts no MCP server and changes no
+    /// permission; no Claude Code or external skills; no update or LSP
+    /// download.
+    package static func opencodeEnvironment(config: String, outputTokens: Int = 4096) -> [String: String] {
+        [
+            "OPENCODE_CONFIG_CONTENT": config,
+            "OPENCODE_DB": ":memory:",
+            "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
+            "OPENCODE_DISABLE_CLAUDE_CODE": "1",
+            "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1",
+            "OPENCODE_DISABLE_AUTOUPDATE": "1",
+            "OPENCODE_DISABLE_LSP_DOWNLOAD": "1",
+            "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX": String(outputTokens),
+        ]
+    }
+
+    package static var opencodeEnvironment: [String: String] { opencodeEnvironment(config: opencodeConfig) }
 
     package static func invocation(
         agent: Agent,
@@ -276,7 +289,7 @@ package enum ProjectTermProposal {
 
     // MARK: Answer
 
-    package enum Failure: Equatable, Sendable {
+    package enum Failure: Error, Equatable, Sendable {
         case agentNotFound
         case launchFailed
         case timedOut
@@ -403,17 +416,30 @@ package enum ProjectTermProposal {
     /// quota) fails the run whatever came before it. At the step cap
     /// opencode forces a text-only answer, so there is no turn-limit case.
     package static func parseOpencode(stdout: Data, exitCode: Int32) -> Outcome {
+        switch opencodeAnswer(stdout: stdout, exitCode: exitCode) {
+        case .failure(let failure): return .failed(failure)
+        case .success(let answer):
+            guard let terms = termsObject(in: answer.text) else { return .failed(.malformedOutput) }
+            return .terms(terms, usage: answer.usage)
+        }
+    }
+
+    /// The last text message and the run's usage, or why there is none. The
+    /// terms run and quick-capture drafting (#812) both read this.
+    package static func opencodeAnswer(
+        stdout: Data, exitCode: Int32
+    ) -> Result<(text: String, usage: Usage), Failure> {
         var events: [[String: Any]] = []
         for line in stdout.split(separator: UInt8(ascii: "\n")) where !line.isEmpty {
             guard let event = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else {
-                return .failed(exitCode == 0 ? .malformedOutput : .exit(exitCode))
+                return .failure(exitCode == 0 ? .malformedOutput : .exit(exitCode))
             }
             events.append(event)
         }
         if let error = events.last(where: { $0["type"] as? String == "error" })?["error"] as? [String: Any] {
-            return .failed(.agentError(error["name"] as? String ?? "unknown"))
+            return .failure(.agentError(error["name"] as? String ?? "unknown"))
         }
-        guard exitCode == 0 else { return .failed(.exit(exitCode)) }
+        guard exitCode == 0 else { return .failure(.exit(exitCode)) }
         let texts = events.compactMap { event -> (message: String, text: String)? in
             guard event["type"] as? String == "text",
                   let part = event["part"] as? [String: Any],
@@ -422,10 +448,9 @@ package enum ProjectTermProposal {
             else { return nil }
             return (message, text)
         }
-        guard let lastMessage = texts.last?.message,
-              let terms = termsObject(in: texts.filter { $0.message == lastMessage }.map(\.text).joined())
-        else { return .failed(.malformedOutput) }
-        return .terms(terms, usage: opencodeUsage(events))
+        guard let lastMessage = texts.last?.message else { return .failure(.malformedOutput) }
+        let text = texts.filter { $0.message == lastMessage }.map(\.text).joined()
+        return .success((text, opencodeUsage(events)))
     }
 
     private static func opencodeUsage(_ events: [[String: Any]]) -> Usage {

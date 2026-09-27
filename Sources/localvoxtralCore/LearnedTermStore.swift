@@ -15,7 +15,7 @@ import os
 /// pipeline already resolved — a file name, a product, a model — and the
 /// counters beside it, which is exactly what `SpeakerTerms` keeps for the
 /// hand-written list.
-package final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sendable {
+package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectSummaryStoring, @unchecked Sendable {
     private struct State {
         var terms: LearnedTerms?
     }
@@ -106,7 +106,7 @@ package final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sen
     /// Terms, then projects — what the Settings row states.
     package func summary() -> (terms: Int, projects: Int) {
         let terms = snapshot()
-        return (terms.termCount, terms.projects.count)
+        return (terms.termCount, terms.projects.filter { !$0.terms.isEmpty }.count)
     }
 
     // MARK: Writing
@@ -194,6 +194,27 @@ package final class LearnedTermStore: ProjectTermProposalStoring, @unchecked Sen
                     "Learned terms: \(added.count, privacy: .public) proposed by \(proposer, privacy: .public) through the command"
                 )
                 continuation.resume(returning: added)
+            }
+        }
+    }
+
+    /// A remote host reported its project's README summary (#745).
+    package func recordSummary(_ summary: String?, projectKey: String) {
+        let moment = now()
+        mutate { memory in
+            let kept = memory.recordSummary(summary, projectKey: projectKey, now: moment)
+            Log.polishing.info(
+                "Learned terms: remote README summary \(kept ? (summary == nil ? "empty" : "kept") : "dropped, project gone", privacy: .public)"
+            )
+        }
+    }
+
+    /// A hook from a remote session named its project (#819).
+    package func recordRemoteReport(project: LearnedTermProjectIdentity, asRepository: Bool) {
+        let moment = now()
+        mutate { memory in
+            if memory.recordRemoteReport(project: project, asRepository: asRepository, now: moment) {
+                Log.polishing.info("Learned terms: a remote hook named a new repository")
             }
         }
     }

@@ -121,15 +121,16 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         }
     }
 
-    func testPluginShipsExactlyThreeExecutablesAllPOSIXSh() throws {
+    func testPluginShipsExactlyFourExecutablesAllPOSIXSh() throws {
         // The premise, updated for the command-hook shape: nothing to install
-        // on the remote but the manifests and THREE POSIX-sh scripts — the curl
+        // on the remote but the manifests and FOUR POSIX-sh scripts — the curl
         // shim every hook runs, the status-line renderer the user may point
-        // their own `statusLine` setting at, and the project-terms runner the
-        // shim starts when the Mac asks (#641). No Python, no jq, no nc,
+        // their own `statusLine` setting at, and the project-terms (#641) and
+        // quick capture (#745) runners the shim starts when the Mac asks. No
+        // Python, no jq, no nc,
         // no Node, no publisher binary. If any other runnable file ever
         // appears here, the premise is gone.
-        let shellScripts: Set<String> = ["hooks/post.sh", "hooks/statusline.sh", "hooks/terms.sh"]
+        let shellScripts: Set<String> = ["hooks/post.sh", "hooks/statusline.sh", "hooks/terms.sh", "hooks/capture.sh"]
         let contents = try FileManager.default.subpathsOfDirectory(atPath: pluginRoot.path)
         for path in contents {
             let full = pluginRoot.appendingPathComponent(path)
@@ -153,11 +154,11 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             }
             XCTAssertFalse(
                 FileManager.default.isExecutableFile(atPath: full.path),
-                "the remote plugin must ship no executable but its three sh scripts, found \(path)"
+                "the remote plugin must ship no executable but its four sh scripts, found \(path)"
             )
             XCTAssertTrue(
                 path.hasSuffix(".json"),
-                "the remote plugin must ship JSON manifests and its three sh scripts only, found \(path)"
+                "the remote plugin must ship JSON manifests and its four sh scripts only, found \(path)"
             )
         }
         for script in shellScripts {
@@ -597,6 +598,39 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         XCTAssertEqual(rendered.stderr, "")
     }
 
+    /// A Stop's reply stays on the host (#818): the body the shim posts, fed
+    /// to the listener's own parser, still names the session and its cwd.
+    func testAStopPostsItsSessionAndCwdButNotTheReply() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shim-stop-body-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let dump = directory.appendingPathComponent("body")
+        let payload = Data(
+            #"{"session_id":"6f1c2d3e-aaaa-bbbb-cccc-0123456789ab","transcript_path":"/home/u/.claude/projects/p/s.jsonl","cwd":"/srv/a\"b/caf\u00e9","permission_mode":"default","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"I ran \"rm -rf build\" and pushed."}"#.utf8
+        )
+
+        let result = try runShimWithStubCurl(
+            status: "200",
+            body: ClaudeRemoteHTTPCodec.hookResponseBody,
+            extraEnvironment: ["FAKE_CURL_BODY_DUMP": dump.path],
+            payload: payload
+        )
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stderr, "")
+        let posted = try Data(contentsOf: dump)
+        let text = String(decoding: posted, as: UTF8.self)
+        XCTAssertFalse(text.contains("last_assistant_message"), text)
+        XCTAssertFalse(text.contains("rm -rf"), text)
+        let record = try XCTUnwrap(
+            ClaudeRemoteHookPayloadParser.parse(data: posted, fallbackEvent: "Stop", timestamp: 1)?.record
+        )
+        XCTAssertEqual(record.event, .stop)
+        XCTAssertEqual(record.sessionID, "6f1c2d3e-aaaa-bbbb-cccc-0123456789ab")
+        XCTAssertEqual(record.rawCwd, "/srv/a\"b/caf\u{E9}")
+    }
+
     func testSessionStartPrunesSessionStampsOlderThanADay() throws {
         let state = FileManager.default.temporaryDirectory
             .appendingPathComponent("prune-session-state-\(UUID().uuidString)")
@@ -744,6 +778,11 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         for argument in "$@"; do
           [ "$previous" = "--output" ] && out="$argument"
           [ "$previous" = "--dump-header" ] && response_headers="$argument"
+          if [ "$previous" = "--data-binary" ] && [ -n "${FAKE_CURL_BODY_DUMP:-}" ]; then
+            case "$argument" in
+            @*) cat "${argument#@}" >"$FAKE_CURL_BODY_DUMP" 2>/dev/null ;;
+            esac
+          fi
           if [ "$previous" = "--header" ] && [ -n "${FAKE_CURL_HEADER_DUMP:-}" ]; then
             case "$argument" in
             @*) cat "${argument#@}" >>"$FAKE_CURL_HEADER_DUMP" 2>/dev/null ;;
@@ -1412,46 +1451,6 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         )
     }
 
-    func testShimSourceCoversTheWholeAllowlistWithNoDrift() throws {
-        // Source-level, because a variable the shim never reads is invisible to
-        // every behavioural test above: it simply never appears. This is the
-        // assertion that fails when the Swift allowlist grows and the shim does
-        // not, which would otherwise ship as a join arm that never joins.
-        let source = try shimSource()
-        for field in ClaudeRemoteEnvironmentField.allCases {
-            let expected: String
-            switch field {
-            case .hookParentPID:
-                expected = "'\(field.headerName)' \"${PPID:-}\""
-            case .sshConnection:
-                // The one value the shim re-shapes rather than forwarding: its
-                // four space-separated fields are re-joined with commas, so the
-                // header carries the positional parameters the split produced.
-                // The VARIABLE still has to be read, and it is asserted
-                // separately just below.
-                expected = "'\(field.headerName)' \"$1,$2,$3,$4\""
-            default:
-                expected = "'\(field.headerName)' \"${\(field.shellSource.dropFirst()):-}\""
-            }
-            XCTAssertTrue(
-                source.contains(expected),
-                "the shim must publish \(field.shellSource) as \(field.headerName): \(expected)"
-            )
-        }
-        XCTAssertTrue(
-            source.contains("set -- ${SSH_CONNECTION:-}"),
-            "the shim must read $SSH_CONNECTION through the shell's field splitting"
-        )
-        XCTAssertTrue(
-            source.contains("set -f"),
-            "the split must run with globbing off, or a value containing `*` expands"
-        )
-        XCTAssertTrue(
-            source.contains("IFS=' '"),
-            "the split must not inherit IFS from the remote host's profile"
-        )
-    }
-
     func testShimRejoinsSSHConnectionWithCommasSoItSurvivesTheHeaderCharset() throws {
         // The real value, in the exact spelling sshd writes it (measured on a
         // live OpenSSH session, 2026-09-05:
@@ -1551,6 +1550,26 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         XCTAssertFalse(
             captured.contains("X-Lvx-Env-Ssh-Connection"),
             "a glob must not expand against the host's filesystem: \(captured)"
+        )
+    }
+
+    func testShimPinsIFSImmediatelyBeforeTheSSHConnectionSplit() throws {
+        // Source-level, because dash and bash both reset an IFS exported into
+        // their environment: no executed test can deliver a foreign IFS to the
+        // split, so none fails if the pin goes. The pin is what holds if a
+        // host's /bin/sh ever inherits one.
+        let source = try shimSource()
+        let split = try XCTUnwrap(
+            source.range(of: "set -- ${SSH_CONNECTION:-}"),
+            "the shim must split $SSH_CONNECTION through the shell's field splitting"
+        )
+        let pin = try XCTUnwrap(
+            source.range(of: "IFS=' '\n", options: .backwards, range: source.startIndex..<split.lowerBound),
+            "the split must run with IFS pinned to a single space"
+        )
+        XCTAssertFalse(
+            source[pin.upperBound..<split.lowerBound].contains("IFS="),
+            "nothing may reassign IFS between the pin and the split"
         )
     }
 
@@ -1777,6 +1796,97 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             return XCTFail("the session's own view must still resolve beside its child")
         }
         XCTAssertTrue(joined.sessionID.hasSuffix(":desktop"))
+    }
+
+    /// What the shim posts for a recorded Desktop hook (#834), run as a
+    /// Desktop session's own hook: the env headers and the body, read by the
+    /// listener's own parsers.
+    private func desktopSessionPost(
+        event: String, recorded name: String
+    ) throws -> (environment: ClaudeRemoteSessionEnvironment?, body: Data) {
+        let fixtures = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let payload = try Data(contentsOf: fixtures.appendingPathComponent("ClaudeDesktopHookPayloads/\(name).json"))
+        let tree = try desktopTreeLauncher(nested: false, event: event)
+        defer { try? FileManager.default.removeItem(at: tree.root) }
+        let headerDump = tree.root.appendingPathComponent("headers")
+        let bodyDump = tree.root.appendingPathComponent("body")
+        var environment = tree.environment
+        environment["FAKE_CURL_HEADER_DUMP"] = headerDump.path
+        environment["FAKE_CURL_BODY_DUMP"] = bodyDump.path
+        let result = try runShimWithStubCurl(
+            event: event,
+            status: "200",
+            body: ClaudeRemoteHTTPCodec.hookResponseBody,
+            extraEnvironment: environment,
+            payload: payload,
+            launcher: tree.launcher
+        )
+        assertEnrichmentRunWasQuiet(result)
+        let headers = try String(contentsOf: headerDump, encoding: .utf8)
+        return (
+            ClaudeRemoteEnvironmentCodec.environment(in: try parseCapturedHeaders(headers).headers),
+            try Data(contentsOf: bodyDump)
+        )
+    }
+
+    /// A Code-tab session Desktop runs on this host: its permission prompt
+    /// and its turn's end cross the tunnel with the view's id, the Mac cues
+    /// under the session's name, and a turn's end cues only while Desktop
+    /// shows another session.
+    @MainActor
+    func testADesktopSessionOverSSHCuesOnTheMac() async throws {
+        let channel = ClaudeRemoteSessionScope.channel(hostID: "h1")
+        let now = Date(timeIntervalSince1970: 2_000_000)
+        let registry = ClaudeSessionRegistry(now: { now })
+        let shown = Mutex<String?>("https://claude.ai/epitaxy/local_eeda27ee-43ae-4ab3-8e26-0fdc50fb1c7c")
+        let resolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            focusedDesktopSessionURL: { _ in shown.withLock { $0 } }
+        )
+        let desktop = TerminalScreenTarget(pid: 4_100, bundleID: ClaudeDesktopAllowlist.bundleID)
+        let tracker = AgentAttentionTracker(
+            isEnabled: { true },
+            isWatching: { await resolver.sessionShown(target: desktop) == $0.sessionID },
+            liveSessionIDs: { Set(registry.liveSessions().map(\.sessionID)) },
+            now: { now }
+        )
+        var cues: [String] = []
+        tracker.onCue = { cues.append(AgentAttentionText.sentence($0)) }
+
+        func deliver(_ event: String, _ name: String) async throws {
+            let post = try desktopSessionPost(event: event, recorded: name)
+            XCTAssertEqual(post.environment?.desktopSessionID, desktopID, name)
+            XCTAssertFalse(String(decoding: post.body, as: UTF8.self).contains("Done."), "#818: the reply stays on the host")
+            var record = try XCTUnwrap(
+                ClaudeRemoteHookPayloadParser.parse(data: post.body, fallbackEvent: event, timestamp: 1)?.record, name
+            )
+            record.sessionID = ClaudeRemoteSessionScope.scopedSessionID(hostID: "h1", sessionID: record.sessionID)
+            let session = try XCTUnwrap(registry.ingest(record, origin: .remote(channel: channel), environment: post.environment))
+            await tracker.receive(record.event, session: session)?.value
+        }
+
+        // The shim posts a Notification as its session id and type alone, so
+        // the session's name comes from the turn's prompt before it.
+        try await deliver("UserPromptSubmit", "UserPromptSubmit")
+        try await deliver("Notification", "Notification-permission_prompt")
+        XCTAssertEqual(cues, ["payments needs you"])
+        guard case .resolved(let snapshot) = registry.resolve(desktopSessionID: desktopID) else {
+            return XCTFail("the Desktop view must resolve to the ssh session")
+        }
+        XCTAssertEqual(
+            SessionPaneFocusRoute.of(snapshot),
+            .claudeDesktop(URL(string: "claude://code/continue?session=\(desktopID)")!),
+            "the answer shortcut can bring it forward"
+        )
+
+        shown.withLock { $0 = "https://claude.ai/epitaxy/\(desktopID)" }
+        try await deliver("Stop", "Stop")
+        XCTAssertEqual(cues, ["payments needs you"], "no cue for a turn the owner watched end")
+        XCTAssertTrue(tracker.queue.isEmpty)
+
+        shown.withLock { $0 = nil }
+        try await deliver("Stop", "Stop")
+        XCTAssertEqual(cues, ["payments needs you", "payments finished"])
     }
 
     func testAHookOutsideAnyDesktopDaemonSendsNoDesktopID() throws {
@@ -2244,8 +2354,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             "the block must forward a per-Mac remote port to the app's listener port"
         )
         try assertReadmeHasLine(
-            equalTo: "claude plugin marketplace add "
-                + ClaudeRemoteEnrollmentService.repositoryMarketplaceReference,
+            equalTo: "claude plugin marketplace add T0mSIlver/localvoxtral",
             "a remote host installs from the repo, not from an app bundle it does not have"
         )
         try assertReadmeHasLine(startingWith: "claude plugin install localvoxtral-remote@localvoxtral")

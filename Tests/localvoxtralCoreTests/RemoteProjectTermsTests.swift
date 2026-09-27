@@ -56,6 +56,7 @@ final class RemoteProjectTermsTests: XCTestCase {
     private var sessions: ClaudeSessionRegistry!
     private var store: FakeStore!
     private var requests: RemoteProjectTermRequests!
+    private var usage: UsageLedger!
     private var listener: ClaudeRemoteContextListener!
     private var port: UInt16 = 0
     private var token = ""
@@ -74,7 +75,8 @@ final class RemoteProjectTermsTests: XCTestCase {
         hostID = enrollment.host.id
         sessions = ClaudeSessionRegistry(now: { clock.now() }, isProcessAlive: { _ in true })
         store = FakeStore(now: { clock.now() })
-        requests = RemoteProjectTermRequests(store: store, hosts: hosts, now: { clock.now() })
+        usage = UsageLedger(fileURL: nil)
+        requests = RemoteProjectTermRequests(store: store, hosts: hosts, now: { clock.now() }, usageRecorder: usage)
         port = try unusedLoopbackPort()
         listener = ClaudeRemoteContextListener(
             registry: sessions,
@@ -269,6 +271,22 @@ final class RemoteProjectTermsTests: XCTestCase {
         XCTAssertEqual(try answer(session: "s1").status, 409, "one answer per ask")
     }
 
+    func testEachAnswerCountsOneHostRunWithoutUsage() throws {
+        try hook("SessionStart", session: "s1", project: "quillmark")
+        try dictate(into: "s1")
+        try hook("UserPromptSubmit", session: "s1", project: "quillmark")
+        XCTAssertEqual(try answer(session: "s1", token: String(repeating: "A", count: 43)).status, 401)
+        XCTAssertTrue(usage.entries().isEmpty, "a refused answer is no run of ours")
+
+        XCTAssertEqual(try answer(session: "s1").status, 200)
+        XCTAssertEqual(try answer(session: "s1").status, 409)
+
+        XCTAssertEqual(
+            usage.entries(),
+            [UsageEntry(date: clock.now(), feature: .projectTerms, backend: .claudeCode, model: "sonnet")]
+        )
+    }
+
     func testAVibeSessionsAnswerIsFiledAsVibes() throws {
         try hook("UserPromptSubmit", session: "v1", agent: .vibe)
         XCTAssertTrue(try dictate(into: "v1", agent: .vibe))
@@ -361,7 +379,12 @@ final class RemoteProjectTermsTests: XCTestCase {
         XCTAssertFalse(ClaudeRemotePluginVersionCodec.isVersion(
             shipped, olderThan: RemoteProjectTermRequests.minimumPluginVersion
         ))
-        XCTAssertTrue(vibeShim.contains("X-Lvx-Vibe-Hooks-Version: \(RemoteProjectTermRequests.minimumVibeHooksVersion)"))
+        let vibeVersion = try XCTUnwrap(VibeRemoteHooksFiles(
+            postScript: vibeShim, compactScript: "", hooksBlock: "", termsScript: "", captureScript: ""
+        ).version)
+        XCTAssertFalse(ClaudeRemotePluginVersionCodec.isVersion(
+            vibeVersion, olderThan: RemoteProjectTermRequests.minimumVibeHooksVersion
+        ))
         for shim in [claudeShim, vibeShim] {
             XCTAssertTrue(shim.contains("[Xx]-[Ll][Vv][Xx]-[Tt][Ee][Rr][Mm][Ss]: \(wanted)$"))
         }

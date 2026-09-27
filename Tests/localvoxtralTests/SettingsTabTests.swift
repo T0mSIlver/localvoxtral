@@ -67,11 +67,12 @@ final class SettingsTabTests: XCTestCase {
         )
         let rawValues = Set(SettingsTab.allKnownPanes.map(\.rawValue))
 
-        // History and Insights are drilled by neither script. Both run on the
-        // owner's Mac against his real store, the capture publishes a picture
-        // of the pane and the drill dumps the window's AX tree into a public CI
-        // log when an assertion fails: either would publish what he dictated.
-        let scriptedRawValues = rawValues.subtracting(["history", "insights"])
+        // History, Insights and the Inbox are drilled by neither script. Both
+        // run on the owner's Mac against his real store, the capture publishes
+        // a picture of the pane and the drill dumps the window's AX tree into a
+        // public CI log when an assertion fails: either would publish what he
+        // dictated.
+        let scriptedRawValues = rawValues.subtracting(["history", "insights", "inbox"])
         XCTAssertEqual(
             Self.firstQuotedArguments(ofCalls: "assert_tab ", in: uiSmoke),
             scriptedRawValues,
@@ -400,7 +401,7 @@ final class SettingsTabTests: XCTestCase {
     func testSidebarOrderIsThePresentationContract() {
         let panes = SettingsTab.allKnownPanes
         XCTAssertEqual(Set(panes).count, panes.count, "a pane is listed in two sidebar sections")
-        XCTAssertEqual(SettingsTab.historySidebarItems, [.history, .insights])
+        XCTAssertEqual(SettingsTab.historySidebarItems, [.inbox, .history, .insights])
         XCTAssertEqual(
             SettingsTab.primarySidebarItems,
             [.general, .dictation, .endpoints, .textProcessing, .integrationsContext, .about]
@@ -431,7 +432,7 @@ final class SettingsTabTests: XCTestCase {
             Set(SettingsTab.allKnownPanes.map(\.rawValue)),
             [
                 "general", "endpoints", "dictation", "textProcessing", "about", "history",
-                "insights",
+                "insights", "inbox",
                 "integrations.context", "integrations.claude", "integrations.opencode",
                 "integrations.vibe", "integrations.codex", "integrations.herdr", "integrations.remote",
                 "terminals.ghostty", "terminals.iterm2", "terminals.apple-terminal",

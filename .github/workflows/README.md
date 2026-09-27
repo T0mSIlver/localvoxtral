@@ -32,7 +32,7 @@ launch-smoking the bundle signed with the stable `localvoxtral-dev` identity
 `scripts/try-pr.sh` install), the installable `localvoxtral-app` artifact and
 `localvoxtral-dsym` (30-day retention) for symbolicating field crashes, the
 live STT-service integration (path-gated on PRs by `scripts/ci/stt-lane-filter.sh`,
-always on dispatches and in the nightly release), the conditional polishd/speechd/herdr live-model
+always on dispatches and in every release), the conditional polishd/speechd/herdr live-model
 lanes, the two MLX helper unit suites (kept here for the warm Cmlx build), the
 opt-in dogfood packaging, the UI-gate install, and the process leak
 check. It keeps `clean: false` — the persistent warm `.build` that makes those
@@ -131,7 +131,7 @@ forces the full run.
 The two helper unit suites are additionally path-gated per helper
 (`scripts/ci/helper-lane-filter.sh`): a PR runs a helper's suite only when the
 diff touches that helper's directory or the shared CI plumbing, while
-dispatches run both. Pushes to main skip `mac-lanes` altogether; the nightly
+dispatches run both. Pushes to main skip `mac-lanes` altogether; the daily
 release covers main.
 
 Packaging, the uploads and the launch smoke (about 95 s of the Mac) are
@@ -173,6 +173,7 @@ channels that share every gate:
 ```bash
 ./scripts/release.sh            # patch bump, stable channel
 ./scripts/release.sh minor      # or major, or an explicit X.Y.Z
+./scripts/release.sh daily      # the 03:15 UTC daily release, on demand
 ./scripts/release.sh nightly    # a nightly prerelease of main, on demand
 ./scripts/release.sh rehearse [target] [ref]   # all gates, no tag, no release
 ```
@@ -182,14 +183,33 @@ unit tests → live integration tests (speechd STT service) → package app bund
 smoke test → zip + dmg → **create tag** → publish GitHub release with
 auto-generated notes and both artifacts.
 
-**Stable** is deliberate: dispatched by hand from `main` (or from a branch as
-an `X.Y.Z-rc.N` prerelease), and it is what GitHub's `/releases/latest`
-points at, which is what `install.sh` follows by default.
+**Stable** is dispatched by hand from `main` (or from a branch as an
+`X.Y.Z-rc.N` prerelease), and it is what GitHub's `/releases/latest` points
+at, which is what `install.sh` and the Homebrew cask follow.
+`release.sh` refuses it unless the e2e dictation check passed on the release
+commit.
 
-**Nightly** runs from the cron at 03:15 UTC (clear of eval-e2e at 04:45 and
-the ui-smoke ladder at 18:00 to 21:00 on the same single runner), or on
-demand with `release.sh nightly`. A schedule event is always the nightly
-channel, and a real nightly publishes from `main` only. Its version is the
+**Daily** runs at 03:15 UTC (clear of eval-e2e at 04:45 on the same single
+runner): the dev box's scheduler dispatches it with `release.sh daily`, and
+the 03:15 cron is the fallback, because GitHub fires it hours late. A
+dispatch always runs; the cron skips as described in
+[test-tiers.md](../../docs/agent/test-tiers.md#scheduled-mac-inference-stays-in-the-night-window). It is a stable
+release with a minor bump (`v0.9.x` → `v0.10.0` → `v0.11.0`), from `main`
+only. Nobody is at the Mac at 03:15, so the gate is applied in the workflow:
+`scripts/ci/daily-release-plan.sh` (tested by `test-daily-release-plan.sh`)
+picks the newest `main` commit that a UI Smoke run scored the e2e dictation
+on, and the run checks out, builds, tags and ships that commit. UI Smoke has
+no schedule; the owner dispatches it on main when he is at the Mac, so the
+release ships `main` as it was then, and what merged later waits for the
+next check. The run skips green, with a step-summary line, when no commit
+since the newest stable tag has passed the check, when `main` is already
+that tag, or, for the cron only, when it cannot end by 07:00 UTC, a release
+run on main already succeeded or is running in the last 20 hours, or the Mac
+is on battery power (`scripts/ci/scheduled-run-guard.sh`). It fails red when it cannot read the UI
+Smoke runs.
+
+**Nightly** runs only on demand with `release.sh nightly`: `main`'s head,
+without the e2e gate, from `main` only. Its version is the
 latest stable tag with the patch bumped and a `-nightly.YYYYMMDD` suffix,
 with `.2`, `.3` and so on for a second build the same day
 (`scripts/ci/nightly-version.sh`, tested by `test-nightly-version.sh`).
@@ -199,20 +219,13 @@ every `v*-*` tag so a nightly can never become the base for the next stable
 version. Users opt in with `LOCALVOXTRAL_CHANNEL=nightly` (see
 [docs/install.md](../../docs/install.md)).
 
-Two things the nightly does that stable does not:
-
-- **Skip when nothing is new.** A scheduled run stops green, with a
-  step-summary line, when `main` is already released as the newest nightly or
-  the newest stable tag. It also stops green when the Mac is on battery power
-  (`scripts/ci/ac-power-guard.sh`, the guard eval-e2e and ui-smoke share). A
-  dispatch always builds.
-- **Prune.** After publishing, nightly releases beyond the newest 7 are
-  deleted with their tags. The selection is
-  `scripts/ci/prune-nightly-releases.sh`: it takes tags on stdin, prints only
-  tags matching the nightly shape exactly, and touches no network, so
-  `test-prune-nightly-releases.sh` can hold it to the cases that matter (a
-  stable or rc tag is invisible to it). The workflow re-checks the shape
-  before each delete.
+After publishing, a nightly deletes the nightly releases beyond the newest
+7, tags included. The selection is
+`scripts/ci/prune-nightly-releases.sh`: it takes tags on stdin, prints only
+tags matching the nightly shape exactly, and touches no network, so
+`test-prune-nightly-releases.sh` can hold it to the cases that matter (a
+stable or rc tag is invisible to it). The workflow re-checks the shape
+before each delete.
 
 **Rehearsal** (`publish=false`, or `release.sh rehearse`) runs every gate and
 the packaging, then uploads the zip, dmg and checksums as the
@@ -285,7 +298,7 @@ check"). `scripts/release.sh` refuses a stable release unless a run on the
 release commit has its `E2E dictation scored` step green (#574).
 
 `ax-drill` runs the AX drill (`scripts/ui-smoke.sh`) on a GitHub-hosted
-`macos-latest` runner, at the 18:00 UTC slot and on every dispatch or label,
+`macos-latest` runner on every dispatch or label,
 fork PRs included. It packages the app ad-hoc signed and without the MLX
 helpers, copies the bundle out of the workspace and hides `.build` (the #87
 launch check), then launches a fresh menu bar instance, verifies the status
@@ -305,17 +318,19 @@ image pre-grants Accessibility and Screen Recording to `bash` and
 signed dogfood build and runs `scripts/e2e-dictation.sh`, where the packaged
 app dictates from a WAV in place of the microphone into a throwaway target
 window, once per scenario in `scripts/e2e/scenarios/`, and the inserted text
-is scored against the spoken phrase. It has three scheduled slots
-(18:00/19:30/21:00 UTC, 20:00 Paris anchor), each gated by
-`scripts/ci/ui-smoke-guard.sh`: a slot skips green when the Mac is on battery
-power (scheduled lanes never drain the owner's MacBook,
-`scripts/ci/ac-power-guard.sh`, shared with eval-e2e.yml's weekly run), when the
-screen is locked (the check needs an unlocked GUI session), or when an
-earlier slot's dictation was already scored that day. Manual dispatch and the
-label bypass the guard; fork PRs never reach this job. The script exits 3
-when the Mac could not run it (locked, no STT server, no Accessibility
-grant), which a scheduled slot reports as a warning and a dispatch or label
-reports as a failure. `e2e-dictation-log` is uploaded on every run.
+is scored against the spoken phrase. It has no schedule: GitHub cron starts
+up to an hour late, so the old evening slots took the owner's Mac at
+unpredictable times. The owner dispatches it on main when he is at the Mac
+(the GitHub app's "Run workflow" button, or `gh workflow run ui-smoke.yml`),
+and the daily release ships the commit that run scored. That dispatch is
+gated by `scripts/ci/ui-smoke-guard.sh`: it skips green when the Mac is on
+battery power (`scripts/ci/ac-power-guard.sh`, shared with eval-e2e.yml's
+weekly run) or the screen is locked (the check needs an unlocked GUI
+session). Branch dispatches and the label bypass the guard; fork PRs never
+reach this job. The script exits 3 when the Mac could not run it (locked, no
+STT server, no Accessibility grant), which the owner's dispatch on main
+reports as a warning and a branch dispatch or label reports as a failure.
+`e2e-dictation-log` is uploaded on every run.
 
 The GUI lanes on the self-hosted runner (`e2e-dictation` here,
 `capture-assets.yml`) need one-time TCC grants, because the runner is a
@@ -381,6 +396,14 @@ from the built site. A PR gets the build, the check and the site as the
 `github-pages` artifact. Zensical is pinned in the workflow; after a bump,
 look at the built site before merging. Build it locally with
 `scripts/docs-site/build.sh` (needs `zensical` on `PATH`).
+
+## `pr-waits-labels.yml`
+
+Adds `waits:mac-llm`, `waits:mac-voxtral` and `waits:stack` to a same-repo PR
+on open, push, and body or base edits, from `scripts/ci/waits-labels.sh`,
+which runs the same lane filters `ci.yml` does. Hosted Ubuntu, a few seconds,
+not a required check. It only adds labels. What each label means and who
+removes it: `docs/agent/test-tiers.md`, "Why a PR waits: the waits labels".
 
 ## Action pins
 

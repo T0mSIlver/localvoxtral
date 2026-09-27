@@ -80,7 +80,7 @@
 0.025 ClaudeRemoteForwardSupervisorTests
 0.025 RepoVocabularyPhoneticTests
 0.022 LearnedTermsTests
-0.022 MistralUsageLedgerTests
+0.022 UsageLedgerTests
 0.022 OpencodePluginManifestTests
 0.022 VibeHookProcessTreeTests
 0.021 ClaudeRemoteForwardPortTests

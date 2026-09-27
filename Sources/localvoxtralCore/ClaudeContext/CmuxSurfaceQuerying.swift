@@ -96,3 +96,31 @@ package protocol CmuxSurfaceQuerying: Sendable {
         surfaceID: String, expectedPeerPID: pid_t
     ) async -> CmuxQueryResult<String>
 }
+
+/// cmux's answer to one write into a surface (#727).
+package enum CmuxWriteResult: Sendable, Equatable {
+    /// cmux took it for exactly that surface. `queued` is its own report:
+    /// false when the surface's terminal got the input, true when the
+    /// terminal is starting and will get it then. Nil when cmux did not say,
+    /// which older builds do not; those can drop text sent to a surface
+    /// whose tab is not focused (manaflow-ai/cmux#3129), so nil confirms
+    /// nothing on its own.
+    case accepted(queued: Bool?)
+    /// Nothing was written: no socket, a failed peer check or login, a
+    /// write that never completed, or an error cmux answered before writing.
+    case refused
+    /// The request went out and no clean answer came back. It may have
+    /// landed.
+    case unconfirmed
+}
+
+/// The two writes the cmux route makes, into exactly one surface. Never a
+/// focused-surface default: every call names the surface the join resolved.
+package protocol CmuxSurfaceWriting: Sendable {
+    /// `surface.send_text`. The caller refuses control characters first:
+    /// cmux turns `\n` and `\r` into Return and Tab, Escape and Backspace
+    /// into keys.
+    func sendText(_ text: String, surfaceID: String, expectedPeerPID: pid_t) async -> CmuxWriteResult
+    /// `surface.send_key` with `enter`.
+    func sendEnter(surfaceID: String, expectedPeerPID: pid_t) async -> CmuxWriteResult
+}
