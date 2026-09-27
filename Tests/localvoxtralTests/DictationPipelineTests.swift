@@ -960,6 +960,253 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase], "the text is in History")
     }
 
+    // MARK: - Stopping by voice (#839)
+
+    /// A trailing "send it" and three seconds without new words stop the
+    /// dictation as the key would: the stop's commit inserts the text
+    /// without the phrase, once, then presses Return once.
+    func testATrailingSendPhraseAndSilenceStopsCommitsAndSendsOnce() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        var returns: [pid_t] = []
+        targetClaudeDesktop(pipeline, returns: { returns.append($0) })
+
+        await startAndSpeak(pipeline)
+        await sendDelta(pipeline, "run the tests, send it.")
+        let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "armed by the trailing phrase")
+        await pipeline.clock.waitForSleepers(3)
+        pipeline.clock.advance(by: 3 - 0.01)
+        XCTAssertTrue(pipeline.viewModel.isDictating, "one hundredth short, still dictating")
+
+        pipeline.clock.advance(by: 0.01)
+        await armed.value
+        XCTAssertFalse(pipeline.viewModel.isDictating)
+        XCTAssertTrue(pipeline.viewModel.isFinalizingStop, "the stop finalizes like a pressed stop")
+        await finishStoppedSession(pipeline, finalText: "run the tests, send it.")
+
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["run the tests"])
+        XCTAssertEqual(returns, [Self.desktopPID], "Return once, after the commit")
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), ["run the tests"])
+    }
+
+    /// A generation that ends mid-word (#536): "sen" then "d it." reads as
+    /// "send it." and stops like the phrase said in one piece.
+    func testASendPhraseSplitAcrossSegmentsStops() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        var returns: [pid_t] = []
+        targetClaudeDesktop(pipeline, returns: { returns.append($0) })
+
+        await startAndSpeak(pipeline)
+        // Words arrive space-prefixed, as vLLM streams them; that is what
+        // tells a segment without a leading space from a new word.
+        await sendDelta(pipeline, "run the tests,")
+        await sendDelta(pipeline, " sen")
+        pipeline.server.send(["type": "transcription.done", "text": "run the tests, sen"])
+        await sendDelta(pipeline, "d")
+        await sendDelta(pipeline, " it.")
+        let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "overlay: \(pipeline.overlay.refreshCalls.last?.displayText.debugDescription ?? "")")
+        await pipeline.clock.waitForSleepers(3)
+        pipeline.clock.advance(by: 3)
+        await armed.value
+        await finishStoppedSession(pipeline, finalText: "d it.")
+
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["run the tests"])
+        XCTAssertEqual(returns, [Self.desktopPID])
+    }
+
+    /// "send it" in the middle of a sentence never arms the stop.
+    func testASendPhraseMidSentenceNeverStops() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        var returns: [pid_t] = []
+        targetClaudeDesktop(pipeline, returns: { returns.append($0) })
+
+        await startAndSpeak(pipeline)
+        await sendDelta(pipeline, "saying send it in the overlay")
+        XCTAssertNil(pipeline.viewModel.session.spokenStopTask)
+        pipeline.clock.advance(by: 10)
+        XCTAssertTrue(pipeline.viewModel.isDictating)
+
+        await stopAndFinalize(pipeline, finalText: "saying send it in the overlay")
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["saying send it in the overlay"])
+        XCTAssertEqual(returns, [])
+    }
+
+    /// Speaking again within the window keeps the dictation going, and the
+    /// words after the phrase make it ordinary text.
+    func testSpeechWithinTheWindowKeepsTheDictationGoing() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        var returns: [pid_t] = []
+        targetClaudeDesktop(pipeline, returns: { returns.append($0) })
+
+        await startAndSpeak(pipeline)
+        await sendDelta(pipeline, "run the tests, send it.")
+        let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask)
+        await pipeline.clock.waitForSleepers(3)
+        pipeline.clock.advance(by: 2.9)
+        await sendDelta(pipeline, " and then report.")
+        await armed.value
+        XCTAssertNil(pipeline.viewModel.session.spokenStopTask, "new words cancelled the stop")
+        pipeline.clock.advance(by: 10)
+        XCTAssertTrue(pipeline.viewModel.isDictating)
+
+        let said = "run the tests, send it. and then report."
+        await stopAndFinalize(pipeline, finalText: said)
+        XCTAssertEqual(pipeline.overlay.committedTexts, [said])
+        XCTAssertEqual(returns, [])
+    }
+
+    /// A held (push to talk) dictation waits for its release: nothing arms,
+    /// and the release right after "send it" commits and sends at once.
+    func testAHeldDictationStopsOnlyOnRelease() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        var returns: [pid_t] = []
+        targetClaudeDesktop(pipeline, returns: { returns.append($0) })
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.shortcuts.hasActivePushToTalkShortcutSession = true
+        await sendDelta(pipeline, "run the tests, send it.")
+        XCTAssertNil(pipeline.viewModel.session.spokenStopTask)
+        pipeline.clock.advance(by: 10)
+        XCTAssertTrue(pipeline.viewModel.isDictating)
+
+        await stopAndFinalize(pipeline, finalText: "run the tests, send it.")
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["run the tests"])
+        XCTAssertEqual(returns, [Self.desktopPID])
+    }
+
+    /// The user's phrase stops and sends; the default no longer does.
+    func testACustomPhraseStopsAndTheDefaultNoLongerDoes() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.settings.spokenSendTriggerPhrases = ["ship it"]
+        var returns: [pid_t] = []
+        targetClaudeDesktop(pipeline, returns: { returns.append($0) })
+
+        await startAndSpeak(pipeline)
+        await sendDelta(pipeline, "run the tests, send it.")
+        XCTAssertNil(pipeline.viewModel.session.spokenStopTask, "send it is ordinary text now")
+        await sendDelta(pipeline, " Ship it.")
+        let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask)
+        await pipeline.clock.waitForSleepers(3)
+        pipeline.clock.advance(by: 3)
+        await armed.value
+        await finishStoppedSession(pipeline, finalText: "run the tests, send it. Ship it.")
+
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["run the tests, send it"])
+        XCTAssertEqual(returns, [Self.desktopPID])
+    }
+
+    /// A quick capture stops the same way and goes to the Inbox without the
+    /// phrase; the Inbox never presses Return.
+    func testAQuickCaptureStopsOnItsSendPhraseAndSavesWithoutIt() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        var returns: [pid_t] = []
+        targetClaudeDesktop(pipeline, returns: { returns.append($0) })
+        let captured = QuickCaptures()
+        pipeline.viewModel.session.onQuickCapture = { text, _ in
+            captured.all.append((text, pipeline.records.all.count))
+        }
+
+        await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
+        await sendDelta(pipeline, "buy milk, send it.")
+        let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask)
+        await pipeline.clock.waitForSleepers(3)
+        pipeline.clock.advance(by: 3)
+        await armed.value
+        await finishStoppedSession(
+            pipeline, finalText: "buy milk, send it.",
+            finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved
+        )
+
+        XCTAssertEqual(captured.all.map(\.text), ["buy milk"])
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0)
+        XCTAssertEqual(returns, [])
+    }
+
+    /// The send phrase was said into an app where it sends nothing, so the
+    /// voice stop stayed off. Tab to the Inbox (#840) re-decides on the
+    /// words already said: the capture stops on its phrase, saves without
+    /// it, and presses no Return.
+    func testTabToTheInboxAfterTheSendPhraseStopsAndSavesWithoutReturn() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        var returns: [pid_t] = []
+        _ = recordTypedText(pipeline, returnKeyPoster: { pid in
+            returns.append(pid)
+            return true
+        })
+        let captured = QuickCaptures()
+        pipeline.viewModel.session.onQuickCapture = { text, _ in
+            captured.all.append((text, pipeline.records.all.count))
+        }
+
+        await startAndSpeak(pipeline)
+        await sendDelta(pipeline, "buy milk, send it.")
+        XCTAssertNil(pipeline.viewModel.session.spokenStopTask, "no app here where the phrase would send")
+
+        pipeline.viewModel.session.moveDestination(forward: true)
+        let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "the Inbox stops on its phrase")
+        await pipeline.clock.waitForSleepers(3)
+        pipeline.clock.advance(by: 3)
+        await armed.value
+        await finishStoppedSession(
+            pipeline, finalText: "buy milk, send it.",
+            finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved
+        )
+
+        XCTAssertEqual(captured.all.map(\.text), ["buy milk"])
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0)
+        XCTAssertEqual(returns, [])
+    }
+
+    private static let desktopPID: pid_t = 4343
+
+    /// Claude Desktop is the commit target, where Return submits, with
+    /// Secure Keyboard Entry off and the spoken send on.
+    private func targetClaudeDesktop(_ pipeline: Pipeline, returns: @escaping (pid_t) -> Void) {
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        pipeline.overlay.commitTargetAppPID = Self.desktopPID
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == Self.desktopPID ? ClaudeDesktopAllowlist.bundleID : nil
+        }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        addTeardownBlock { @MainActor in TerminalTargetDetector.debugSecureEventInputOverride = nil }
+        _ = recordTypedText(pipeline, returnKeyPoster: { pid in
+            returns(pid)
+            return true
+        })
+    }
+
+    /// Sends one delta and returns once the overlay shows it.
+    private func sendDelta(_ pipeline: Pipeline, _ delta: String, file: StaticString = #filePath, line: UInt = #line) async {
+        let shown = BoundedWait()
+        let expected = delta.trimmingCharacters(in: .whitespaces)
+        pipeline.overlay.onRefresh = { call in
+            if call.displayText.hasSuffix(expected) { shown.resolve() }
+        }
+        pipeline.server.send(["type": "transcription.delta", "delta": delta])
+        let seen = await shown.value(failAfter: 10)
+        pipeline.overlay.onRefresh = nil
+        XCTAssertTrue(
+            seen, "overlay shows: \(pipeline.overlay.refreshCalls.last?.displayText.debugDescription ?? "nothing")",
+            file: file, line: line
+        )
+    }
+
+    /// The server's side of a stop the session made itself: the final
+    /// commit is answered, the client closes, and the session records.
+    private func finishStoppedSession(
+        _ pipeline: Pipeline, finalText: String,
+        finalStatus: String = DictationViewModel.StatusStrings.ready,
+        file: StaticString = #filePath, line: UInt = #line
+    ) async {
+        await pipeline.server.awaitFrame("the final commit", file: file, line: line) { $0.isFinalCommit }
+        pipeline.server.send(["type": "transcription.done", "text": finalText])
+        let recorded = await pipeline.records.written.value(failAfter: 10)
+        XCTAssertTrue(recorded, "the session never finished and wrote its record", file: file, line: line)
+        await pipeline.server.awaitClose(file: file, line: line)
+        XCTAssertFalse(pipeline.viewModel.isFinalizingStop, file: file, line: line)
+        XCTAssertEqual(pipeline.viewModel.statusText, finalStatus, file: file, line: line)
+    }
+
     /// Joins the dictation to a cmux surface: the frontmost app is cmux, the
     /// fake socket reports the surface focused, and a local session
     /// published its id and tty.

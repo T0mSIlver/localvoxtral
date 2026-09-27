@@ -323,6 +323,17 @@ final class DictationSessionController {
     /// watch can resume without re-reading Settings. Nil: no watch.
     @ObservationIgnored
     var silenceAutoStopThreshold: TimeInterval?
+    /// Stops an Overlay Buffer dictation that ended in a send phrase
+    /// (`DictationSessionController+SpokenStop.swift`), and the words it
+    /// was armed on.
+    @ObservationIgnored
+    var spokenStopTask: Task<Void, Never>?
+    @ObservationIgnored
+    var spokenStopArmedWords: [Substring]?
+    /// This session was stopped by its send phrase: a quick capture then
+    /// saves without it.
+    @ObservationIgnored
+    var sessionStoppedBySpokenPhrase = false
     @ObservationIgnored
     var isResolvingConnectTimeout = false
     /// The connect snapshot THIS session opened with. A mid-session reconnect
@@ -796,6 +807,7 @@ final class DictationSessionController {
         debugLog("stopDictation reason=\(reason)")
         shortcuts.clearPushToTalkShortcutSessionAttempt()
         disarmSilenceAutoStop()
+        disarmSpokenStop()
 
         // Before anything else: a reconnect run still in flight must not be
         // allowed to hand this session a socket after the user stopped it.

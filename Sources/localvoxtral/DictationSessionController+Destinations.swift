@@ -275,6 +275,11 @@ extension DictationSessionController {
         }
         Log.dictation.notice("destination: \(kind, privacy: .public)")
         showDestinations()
+        // The voice stop (#839) depends on where the words go: the Inbox
+        // stops on its phrase with no send gate. Re-decide on the words
+        // already said, not only on the next ones.
+        disarmSpokenStop()
+        reconsiderSpokenStop()
     }
 
     private func refreshDestinationList(_ state: inout SessionDestinations) {

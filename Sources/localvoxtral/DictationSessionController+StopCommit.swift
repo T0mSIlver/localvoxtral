@@ -791,7 +791,8 @@ extension DictationSessionController {
     /// one does.
     private func commitQuickCapture(sessionMode: DictationOutputMode) {
         let sessionAudio = audio.sessionRecording.finish()
-        let text = transcript.currentDictationEventText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = quickCaptureTextWithoutSpokenStopPhrase(transcript.currentDictationEventText)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let recordID = UUID()
         let keptInHistory = !text.isEmpty && settings.dictationHistoryRetention.savesDictations && sessionStore != nil
         saveSessionRecord(

@@ -72,12 +72,26 @@ again, it stops.
   with the single modifier key, or a **Live Auto-Paste shortcut** with
   keyboard shortcuts. It has no overlay, so Tab does not apply.
 
-**Say "send it" to press Return.** In a terminal or Claude Desktop, end a
-dictation with "send it" or "send now" and the app inserts the text without
-those words, then presses Return in the same app. A coding agent gets the
-prompt without you touching the keyboard. The option is off by default and
-set per mode in Settings → Dictation.
+### Voice commands
 
+**Say "send it" to press Return.** In a terminal or Claude Desktop, end a
+dictation with "send it" or "send now" and the app inserts the text without those words, then presses Return
+in the same app. A coding agent gets the prompt without you touching the
+keyboard. The option is off by default and set per mode in Settings →
+Dictation (Live Auto-Paste's under Advanced).
+
+- **Your own phrases.** Settings → Dictation → Output → **Phrases that press
+  Return** replaces "send it" and "send now" with your list, separated by
+  commas, in both modes. A phrase has at most four words. A single common
+  word ("go", "done", "enter") is refused, since you say it in ordinary
+  prompts.
+- **Overlay Buffer stops on its own.** When the words end in a send phrase
+  and three seconds pass with no new words, the dictation stops as if you
+  pressed the key: polish, commit, then Return. A phrase in the middle of a
+  sentence does nothing, and speaking again within the three seconds keeps
+  the dictation going. The key still stops it at once. A held (push to
+  talk) dictation stops only on release. A quick capture stops the same
+  way and goes to the Inbox without the phrase, and never presses Return.
 - In Overlay Buffer, the app removes the words before polishing, so the
   polisher never sees them.
 - In Live Auto-Paste, the app can only remove the trigger before typing it.
@@ -260,9 +274,9 @@ History; the panes sit under the sidebar's Settings header.
   URL. Memory limit caps the dictation helper's buffer cache (2 GB by
   default). Nemotron never fills it, so the row appears only for Voxtral.
 - **Dictation**: the trigger (single modifier key, or a keyboard shortcut),
-  copy on stop, the needs-you cue and the two destination shortcuts, ducking
-  other audio, the overlay's font size, how many lines it shows before
-  scrolling, whether it
+  copy on stop, the [phrases](#voice-commands) that press Return, the
+  needs-you cue and the two destination shortcuts, ducking other audio, the
+  overlay's font size, how many lines it shows before scrolling, whether it
   [keeps words on their line](#keeping-words-on-their-line), and its spoken
   "send it" trigger. **Advanced** holds Live Auto-Paste, its own "send it"
   trigger, the menu bar mode and the **Copy last dictation** shortcut.

@@ -1,8 +1,8 @@
 import Foundation
 import os
 
-/// The spoken send trigger (#318): dictation that ends in "send it" or
-/// "send now" is inserted without those words, then Return is pressed in the
+/// The spoken send trigger (#318): dictation that ends in a send phrase
+/// ("send it" or "send now" unless the user set their own, #839) is inserted without those words, then Return is pressed in the
 /// app the text went to. Opt-in per output mode, only in an app on
 /// `ReturnSubmitsAppList` (by bundle ID), never under Secure Keyboard Entry. Logs say what was decided and
 /// never what was said.
@@ -17,50 +17,72 @@ enum OverlaySpokenSend: Equatable {
 extension DictationSessionController {
     // MARK: - Overlay Buffer
 
-    /// Runs at stop, before the dictionary and the polisher see the text.
-    /// When the dictation ends in the trigger and every gate passes, the
-    /// trigger is cut from the dictation event and how to send is returned.
-    /// Otherwise the text is left as dictated and nil returned. With a
-    /// healthy prompt relay the commit goes to the pane's prompt, so no
-    /// frontmost-app or Secure Keyboard Entry gate applies.
-    func stripOverlaySpokenSendTrigger() -> OverlaySpokenSend? {
-        guard settings.overlaySpokenSendEnabled else { return nil }
-        let action = SendNowCommandParser.parse(transcript.currentDictationEventText)
+    /// What the commit would do with the dictation as it reads now: send
+    /// it (and how, with the text left once the phrase is cut), or keep
+    /// it as dictated, with why. Changes nothing, so the voice stop asks it
+    /// on every change and only the stop acts on it.
+    enum OverlaySpokenSendPlan: Equatable {
+        case send(OverlaySpokenSend, remainder: String)
+        /// The dictation ends in a send phrase, but it would stay text.
+        case keep(reason: String)
+        /// Off, or no send phrase at the end.
+        case noTrigger
+    }
+
+    func planOverlaySpokenSend(for text: String) -> OverlaySpokenSendPlan {
+        guard settings.overlaySpokenSendEnabled else { return .noTrigger }
         let remainder: String
-        switch action {
+        switch SendNowCommandParser.parse(text, triggerPhrases: settings.spokenSendTriggerPhrases) {
         case .pressReturn:
             remainder = ""
         case .insertTextAndPressReturn(let text):
             remainder = text
         case .insertText, .none:
-            return nil
+            return .noTrigger
         }
         if textInsertion.promptRelayTakesText {
-            transcript.currentDictationEventText = remainder
-            refreshOverlayBufferSession()
-            Log.dictation.notice(
-                "spoken send: trigger removed before commit; the prompt relay submits text_empty=\(remainder.isEmpty, privacy: .public)"
-            )
-            return .promptRelaySubmit
+            return .send(.promptRelaySubmit, remainder: remainder)
         }
         guard let pid = overlayBufferCoordinator.commitTargetAppPID else {
-            Log.dictation.notice("spoken send: no target app; trigger kept as text")
-            return nil
+            return .keep(reason: "no target app")
         }
         guard returnSubmitsPrompt(inPID: pid) else {
-            Log.dictation.notice("spoken send: Return does not submit in the target app; trigger kept as text")
-            return nil
+            return .keep(reason: "Return does not submit in the target app")
         }
         guard !TerminalTargetDetector.isSecureKeyboardEntryEnabled() else {
-            Log.dictation.notice("spoken send: Secure Keyboard Entry is on; trigger kept as text")
-            return nil
+            return .keep(reason: "Secure Keyboard Entry is on")
         }
-        transcript.currentDictationEventText = remainder
-        refreshOverlayBufferSession()
-        Log.dictation.notice(
-            "spoken send: trigger removed before commit; Return follows in pid=\(pid, privacy: .public) text_empty=\(remainder.isEmpty, privacy: .public)"
-        )
-        return .returnKey(pid)
+        return .send(.returnKey(pid), remainder: remainder)
+    }
+
+    /// Runs at stop, before the dictionary and the polisher see the text.
+    /// When the dictation ends in a send phrase and every gate passes, the
+    /// phrase is cut from the dictation event and how to send is returned.
+    /// Otherwise the text is left as dictated and nil returned. With a
+    /// healthy prompt relay the commit goes to the pane's prompt, so no
+    /// frontmost-app or Secure Keyboard Entry gate applies.
+    func stripOverlaySpokenSendTrigger() -> OverlaySpokenSend? {
+        switch planOverlaySpokenSend(for: transcript.currentDictationEventText) {
+        case .noTrigger:
+            return nil
+        case .keep(let reason):
+            Log.dictation.notice("spoken send: \(reason, privacy: .public); trigger kept as text")
+            return nil
+        case .send(let spokenSend, let remainder):
+            transcript.currentDictationEventText = remainder
+            refreshOverlayBufferSession()
+            switch spokenSend {
+            case .promptRelaySubmit:
+                Log.dictation.notice(
+                    "spoken send: trigger removed before commit; the prompt relay submits text_empty=\(remainder.isEmpty, privacy: .public)"
+                )
+            case .returnKey(let pid):
+                Log.dictation.notice(
+                    "spoken send: trigger removed before commit; Return follows in pid=\(pid, privacy: .public) text_empty=\(remainder.isEmpty, privacy: .public)"
+                )
+            }
+            return spokenSend
+        }
     }
 
     /// After the overlay commit: send only when the text landed. A
@@ -131,7 +153,7 @@ extension DictationSessionController {
             typeLiveSpokenSendText(merged, startsMidWord: startsMidWord)
             return
         }
-        let action = SendNowCommandParser.parse(final)
+        let action = SendNowCommandParser.parse(final, triggerPhrases: settings.spokenSendTriggerPhrases)
         switch action {
         case .none:
             return
