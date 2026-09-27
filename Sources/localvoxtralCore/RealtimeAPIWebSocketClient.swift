@@ -251,17 +251,19 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                     s.pendingMessages.removeAll(keepingCapacity: true)
                     return (
                         modelName: modelName, vocabulary: s.pendingVocabulary,
-                            shouldSendUpdate: shouldSendUpdate,
+                        shouldSendUpdate: shouldSendUpdate,
                         queuedMessages: queuedMessages
                     )
                 }
 
             guard let startup else { return }
             if startup.shouldSendUpdate {
-                send(event: Self.sessionUpdateEvent(model: startup.modelName, vocabulary: startup.vocabulary))
+                send(
+                    event: Self.sessionUpdateEvent(model: startup.modelName, vocabulary: startup.vocabulary),
+                    generation: generation)
             }
             for message in startup.queuedMessages {
-                sendText(message.text, audioBytes: message.audioBytes)
+                sendText(message.text, audioBytes: message.audioBytes, generation: generation)
             }
         case "session.updated":
             emit(.status("Session updated."), from: generation)
@@ -335,7 +337,11 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         case dropped
     }
 
-    private func send(event: [String: Any], audioBytes: Int = 0) {
+    /// `generation` binds the frame to one socket: when a newer connection has
+    /// replaced it since, the frame is dropped instead of reaching the new one.
+    private func send(
+        event: [String: Any], audioBytes: Int = 0, generation: RealtimeConnectionGeneration? = nil
+    ) {
         guard JSONSerialization.isValidJSONObject(event) else {
             emit(.error("Invalid JSON payload generated."), from: currentConnectionGeneration)
             return
@@ -351,7 +357,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             if let type = event["type"] as? String {
                 debugLog("queue event type=\(type)")
             }
-            sendText(text, audioBytes: audioBytes)
+            sendText(text, audioBytes: audioBytes, generation: generation)
         } catch {
             emit(
                 .error("Failed to serialize WebSocket payload: \(error.localizedDescription)"),
@@ -359,8 +365,11 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         }
     }
 
-    private func sendText(_ text: String, audioBytes: Int = 0) {
+    private func sendText(
+        _ text: String, audioBytes: Int = 0, generation: RealtimeConnectionGeneration? = nil
+    ) {
         let action: SendAction = state.withLock { s in
+            if let generation, !isCurrentConnectionLocked(s.base, generation) { return .dropped }
             switch s.base.socketState {
             case .connected:
                 guard s.hasReceivedSessionCreated || s.hasBypassedSessionCreatedGate else {
@@ -470,10 +479,11 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                 from: generation)
             if startup.shouldSendUpdate {
                 self.send(
-                    event: Self.sessionUpdateEvent(model: startup.modelName, vocabulary: startup.vocabulary))
+                    event: Self.sessionUpdateEvent(model: startup.modelName, vocabulary: startup.vocabulary),
+                    generation: generation)
             }
             for message in startup.queuedMessages {
-                self.sendText(message.text, audioBytes: message.audioBytes)
+                self.sendText(message.text, audioBytes: message.audioBytes, generation: generation)
             }
         }
         s.sessionReadyTimer = timer

@@ -312,7 +312,8 @@ extension DictationSessionController {
         // Mistral session the external key to api.mistral.ai (GLM review,
         // 2026-09-16). One mode, one snapshot: client, endpoint, model, key.
         let apiKey = settings.trimmedAPIKey
-        let usageBackend = Self.usageBackend(for: settings.dictationBackendMode)
+        let backendMode = settings.dictationBackendMode
+        let usageBackend = Self.usageBackend(for: backendMode)
         // Pick THIS session's client before anything else touches one: from
         // here to the stop, every send, poll and disconnect goes to the latched
         // client, whatever Settings does in the meantime.
@@ -385,8 +386,9 @@ extension DictationSessionController {
         )
 
         // Only the bundled helper reads `vocabulary`; an external server or
-        // Mistral never gets the user's terms.
-        let vocabulary = settings.dictationBackendMode == .managedLocal
+        // Mistral never gets the user's terms. The mode is the snapshot's, so a
+        // flip during the capture cannot send the list to an external endpoint.
+        let vocabulary = backendMode == .managedLocal
             ? SpeechSessionVocabulary.terms(
                 speakerTerms: settings.polishSpeakerTerms,
                 learnedTerms: learnedTermStore?.snapshot().confirmedEverywhere().map(\.term) ?? []

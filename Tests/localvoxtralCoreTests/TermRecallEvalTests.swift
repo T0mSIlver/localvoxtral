@@ -187,7 +187,7 @@ final class TermRecallEvalTests: XCTestCase {
         }
         var scores: [TermRecallCaseScore] = []
         var unscored = 0
-        var sttWatch = EvalSpeechStage.ServiceWatch(endpoint: endpointURL)
+        var sttWatch = EvalSpeechStage.ServiceWatch(endpoint: endpoint.url)
         for (index, evalCase) in cases.enumerated() {
             let hypothesis: String
             do {
@@ -224,7 +224,13 @@ final class TermRecallEvalTests: XCTestCase {
                 )
                 sttWatch.recordAnswer()
             } catch {
-                try sttWatch.record(error)
+                do {
+                    try sttWatch.record(error)
+                } catch {
+                    // The run ends here: don't leave the helper holding its model.
+                    await helper?.stop()
+                    throw error
+                }
                 // Infrastructure, not a score: the case id and the error, no
                 // case text.
                 progress("term-recall: [\(index + 1)/\(cases.count)] \(evalCase.id) FAILED: \(error)")
