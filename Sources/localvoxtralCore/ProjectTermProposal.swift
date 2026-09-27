@@ -244,13 +244,13 @@ package enum ProjectTermProposal {
     }
 
     /// opencode has no price cap, so a run is bounded by its agent's steps,
-    /// 4096 output tokens per step and the caller's timeout. The rest keeps
+    /// `outputTokens` per step, reasoning included, and the caller's timeout. The rest keeps
     /// the run out of everything the user owns: an in-memory database, so
     /// the run never shows in their session list; no project config, so the
     /// repo's `opencode.json` starts no MCP server and changes no
     /// permission; no Claude Code or external skills; no update or LSP
     /// download.
-    package static func opencodeEnvironment(config: String) -> [String: String] {
+    package static func opencodeEnvironment(config: String, outputTokens: Int = 4096) -> [String: String] {
         [
             "OPENCODE_CONFIG_CONTENT": config,
             "OPENCODE_DB": ":memory:",
@@ -259,7 +259,7 @@ package enum ProjectTermProposal {
             "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1",
             "OPENCODE_DISABLE_AUTOUPDATE": "1",
             "OPENCODE_DISABLE_LSP_DOWNLOAD": "1",
-            "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX": "4096",
+            "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX": String(outputTokens),
         ]
     }
 

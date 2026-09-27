@@ -41,6 +41,8 @@ final class QuickCaptureDraftTests: XCTestCase {
         var terms = ProjectTermProposal.opencodeEnvironment
         let config = try XCTUnwrap(environment.removeValue(forKey: "OPENCODE_CONFIG_CONTENT"))
         let termsConfig = try XCTUnwrap(terms.removeValue(forKey: "OPENCODE_CONFIG_CONTENT"))
+        XCTAssertEqual(environment.removeValue(forKey: "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"), "16384")
+        terms.removeValue(forKey: "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX")
         XCTAssertEqual(environment, terms, "the same isolation from the user's database, config and skills")
 
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(config.utf8)) as? [String: Any])

@@ -45,7 +45,7 @@ package struct QuickCaptureDraftProcessRunner: QuickCaptureDraftRunning {
             arguments: invocation.arguments,
             environment: environment,
             currentDirectory: invocation.workingDirectory,
-            timeoutSeconds: QuickCaptureDraft.timeoutSeconds,
+            timeoutSeconds: agent == .opencode ? QuickCaptureDraft.opencodeTimeoutSeconds : QuickCaptureDraft.timeoutSeconds,
             maxBytes: QuickCaptureDraft.maxOutputBytes,
             label: "quick capture draft \(agent.rawValue)"
         ) else {

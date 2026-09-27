@@ -13,6 +13,14 @@ import Foundation
 /// and no `gh` of its own.
 package enum QuickCaptureDraft {
     package static let timeoutSeconds: TimeInterval = 240
+    /// opencode runs the user's default model, which may reason at length
+    /// every step: GLM 5.3 took 378 s over 14 steps to draft in this
+    /// repository (2026-09-27), where Claude Code takes under 150 s.
+    package static let opencodeTimeoutSeconds: TimeInterval = 480
+    /// Per step, reasoning included: the answer's step carries the whole
+    /// draft, up to `maxBodyCharacters`, after the model's reasoning. The
+    /// terms run's 4,096 cut drafts off mid-JSON.
+    package static let opencodeOutputTokens = 16_384
     package static let maxOutputBytes = 8_000_000
     package static let maxTurns = 20
     package static let claudeBudgetUSD = "0.50"
@@ -142,7 +150,8 @@ package enum QuickCaptureDraft {
     /// grep and list tools and nothing else, the same isolation from the
     /// user's sessions, plugins and project config, and `maxTurns` steps.
     /// opencode has a list tool, so the prompt needs no tracked files, and
-    /// no price cap, so the steps and the timeout bound the cost.
+    /// no price cap, so the steps, the per-step output cap and the timeout
+    /// bound the cost.
     package static func opencodeArguments(workingDirectory: String, prompt: String) -> [String] {
         ProjectTermProposal.opencodeArguments(
             workingDirectory: workingDirectory, agentName: opencodeAgentName, prompt: prompt
@@ -150,9 +159,12 @@ package enum QuickCaptureDraft {
     }
 
     package static var opencodeEnvironment: [String: String] {
-        ProjectTermProposal.opencodeEnvironment(config: ProjectTermProposal.opencodeConfig(
-            agentName: opencodeAgentName, steps: maxTurns, systemPrompt: claudeSystemPrompt
-        ))
+        ProjectTermProposal.opencodeEnvironment(
+            config: ProjectTermProposal.opencodeConfig(
+                agentName: opencodeAgentName, steps: maxTurns, systemPrompt: claudeSystemPrompt
+            ),
+            outputTokens: opencodeOutputTokens
+        )
     }
 
     package static func invocation(

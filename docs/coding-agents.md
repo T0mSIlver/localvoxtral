@@ -186,8 +186,9 @@ on the **Inbox** page of the localvoxtral window.
    repository's AGENTS.md, and naming any open issue it duplicates. The run is
    capped at 20 turns and $0.50 (Claude Code) or $0.30 (Vibe) of your agent
    plan or API key. opencode has no price cap, so its run, on your default
-   model, is capped at 20 steps and 4 minutes. For a project on an ssh host, the host runs the agent in its own
-   checkout, the next time a session there sends a hook
+   model, is capped at 20 steps and 8 minutes. For a project on an ssh host,
+   the host runs the agent in its own checkout, the next time a session there
+   sends a hook
    ([Quick capture on a host](remote-claude-context.md#quick-capture-on-a-host)).
 3. **Review.** On the Inbox page you edit the draft, move the capture to
    another project, or discard it. **File** creates the issue with your GitHub
