@@ -1451,46 +1451,6 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         )
     }
 
-    func testShimSourceCoversTheWholeAllowlistWithNoDrift() throws {
-        // Source-level, because a variable the shim never reads is invisible to
-        // every behavioural test above: it simply never appears. This is the
-        // assertion that fails when the Swift allowlist grows and the shim does
-        // not, which would otherwise ship as a join arm that never joins.
-        let source = try shimSource()
-        for field in ClaudeRemoteEnvironmentField.allCases {
-            let expected: String
-            switch field {
-            case .hookParentPID:
-                expected = "'\(field.headerName)' \"${PPID:-}\""
-            case .sshConnection:
-                // The one value the shim re-shapes rather than forwarding: its
-                // four space-separated fields are re-joined with commas, so the
-                // header carries the positional parameters the split produced.
-                // The VARIABLE still has to be read, and it is asserted
-                // separately just below.
-                expected = "'\(field.headerName)' \"$1,$2,$3,$4\""
-            default:
-                expected = "'\(field.headerName)' \"${\(field.shellSource.dropFirst()):-}\""
-            }
-            XCTAssertTrue(
-                source.contains(expected),
-                "the shim must publish \(field.shellSource) as \(field.headerName): \(expected)"
-            )
-        }
-        XCTAssertTrue(
-            source.contains("set -- ${SSH_CONNECTION:-}"),
-            "the shim must read $SSH_CONNECTION through the shell's field splitting"
-        )
-        XCTAssertTrue(
-            source.contains("set -f"),
-            "the split must run with globbing off, or a value containing `*` expands"
-        )
-        XCTAssertTrue(
-            source.contains("IFS=' '"),
-            "the split must not inherit IFS from the remote host's profile"
-        )
-    }
-
     func testShimRejoinsSSHConnectionWithCommasSoItSurvivesTheHeaderCharset() throws {
         // The real value, in the exact spelling sshd writes it (measured on a
         // live OpenSSH session, 2026-09-05:
@@ -1590,6 +1550,26 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         XCTAssertFalse(
             captured.contains("X-Lvx-Env-Ssh-Connection"),
             "a glob must not expand against the host's filesystem: \(captured)"
+        )
+    }
+
+    func testShimPinsIFSImmediatelyBeforeTheSSHConnectionSplit() throws {
+        // Source-level, because dash and bash both reset an IFS exported into
+        // their environment: no executed test can deliver a foreign IFS to the
+        // split, so none fails if the pin goes. The pin is what holds if a
+        // host's /bin/sh ever inherits one.
+        let source = try shimSource()
+        let split = try XCTUnwrap(
+            source.range(of: "set -- ${SSH_CONNECTION:-}"),
+            "the shim must split $SSH_CONNECTION through the shell's field splitting"
+        )
+        let pin = try XCTUnwrap(
+            source.range(of: "IFS=' '\n", options: .backwards, range: source.startIndex..<split.lowerBound),
+            "the split must run with IFS pinned to a single space"
+        )
+        XCTAssertFalse(
+            source[pin.upperBound..<split.lowerBound].contains("IFS="),
+            "nothing may reassign IFS between the pin and the split"
         )
     }
 

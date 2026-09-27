@@ -1127,75 +1127,33 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertTrue(written.contains("Host other"))
     }
 
-    func testSSHConfigInsertionRefusesASymlinkedConfigWithoutWriting() throws {
-        // A rename-based atomic write would replace the symlink with a regular
-        // file and silently desync a dotfiles-managed setup.
-        let fileSystem = MemorySSHConfigFileSystem(
-            state: ClaudeRemoteSSHConfigState(
+    func testSSHConfigInsertionRefusesUntrustedPathsWithoutWriting() throws {
+        typealias State = ClaudeRemoteSSHConfigState
+        typealias Error = ClaudeRemoteEnrollmentService.ServiceError
+        let cases: [(name: String, configure: (inout State) -> Void, error: Error)] = [
+            // Atomic replacement must not overwrite a dotfiles-managed symlink.
+            ("symlinked config", { $0.configIsSymlink = true }, .sshConfigIsSymlink),
+            ("symlinked directory", { $0.directoryIsSymlink = true }, .sshConfigIsSymlink),
+            ("writable directory", { $0.directoryPermissions = 0o770 }, .sshDirectoryNotTrusted),
+            ("foreign-owned directory", { $0.directoryOwnedByCurrentUser = false }, .sshDirectoryNotTrusted),
+        ]
+        let snippet = try plan(alias: "builder").sshConfigSnippet
+        for (name, configure, error) in cases {
+            var state = State(
                 directoryExists: true,
                 configData: nil,
                 configPermissions: nil,
-                configIsSymlink: true
+                directoryPermissions: 0o700
             )
-        )
-        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: fileSystem)
-
-        XCTAssertThrowsError(try service.insertSSHConfig(snippet: try plan(alias: "builder").sshConfigSnippet, hostID: host.id)) {
-            XCTAssertEqual(
-                $0 as? ClaudeRemoteEnrollmentService.ServiceError, .sshConfigIsSymlink
-            )
-        }
-        XCTAssertTrue(fileSystem.snapshot.writes.isEmpty)
-        XCTAssertTrue(fileSystem.snapshot.createdDirectoryPermissions.isEmpty)
-    }
-
-    func testSSHConfigInsertionRefusesASymlinkedSSHDirectoryWithoutWriting() throws {
-        let fileSystem = MemorySSHConfigFileSystem(
-            state: ClaudeRemoteSSHConfigState(
-                directoryExists: true,
-                configData: nil,
-                configPermissions: nil,
-                directoryIsSymlink: true
-            )
-        )
-        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: fileSystem)
-
-        XCTAssertThrowsError(try service.insertSSHConfig(snippet: try plan(alias: "builder").sshConfigSnippet, hostID: host.id)) {
-            XCTAssertEqual(
-                $0 as? ClaudeRemoteEnrollmentService.ServiceError, .sshConfigIsSymlink
-            )
-        }
-        XCTAssertTrue(fileSystem.snapshot.writes.isEmpty)
-    }
-
-    func testSSHConfigInsertionRefusesAnUntrustedSSHDirectoryWithoutWriting() throws {
-        for state in [
-            // group/world-writable
-            ClaudeRemoteSSHConfigState(
-                directoryExists: true,
-                configData: nil,
-                configPermissions: nil,
-                directoryPermissions: 0o770
-            ),
-            // not the user's directory
-            ClaudeRemoteSSHConfigState(
-                directoryExists: true,
-                configData: nil,
-                configPermissions: nil,
-                directoryOwnedByCurrentUser: false
-            ),
-        ] {
+            configure(&state)
             let fileSystem = MemorySSHConfigFileSystem(state: state)
             let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: fileSystem)
 
-            XCTAssertThrowsError(
-                try service.insertSSHConfig(snippet: try plan(alias: "builder").sshConfigSnippet, hostID: host.id)
-            ) {
-                XCTAssertEqual(
-                    $0 as? ClaudeRemoteEnrollmentService.ServiceError, .sshDirectoryNotTrusted
-                )
+            XCTAssertThrowsError(try service.insertSSHConfig(snippet: snippet, hostID: host.id), name) {
+                XCTAssertEqual($0 as? Error, error, name)
             }
-            XCTAssertTrue(fileSystem.snapshot.writes.isEmpty)
+            XCTAssertTrue(fileSystem.snapshot.writes.isEmpty, name)
+            XCTAssertTrue(fileSystem.snapshot.createdDirectoryPermissions.isEmpty, name)
         }
     }
 
