@@ -260,6 +260,32 @@ audio off with the history. Turning the option off asks first, then deletes
 every recording and keeps the dictations. A minute of audio takes about 2 MB,
 and a dictation longer than 20 minutes is saved without audio.
 
+### Diagnostic records
+
+**Keep diagnostic records on this Mac**, on by default, saves one file per
+polished dictation that says what the app used to polish it: the transcript
+at each step, which coding-agent session it joined or why it joined none,
+the screen text and project terms it read, which of those terms matched your
+words, the prompt it sent to the polishing model and the reply. When a term
+comes out wrong, the record shows which step lost it. The app also notes
+whether you pressed Backspace, forward delete or ⌘A within a few seconds of
+the insertion; it records that you did, never which text or any other key.
+
+The records are JSON files in
+`~/Library/Application Support/localvoxtral/diagnostic-records`, readable
+only by your account. The app never sends them anywhere. Before writing one,
+it masks strings shaped like secrets (API keys, `Bearer` tokens, JWTs,
+private keys, long hex strings, `…_KEY=` assignments) and leaves out the
+prompt you last sent to your coding agent. Earlier prompts can still appear
+in the screen text, and masking goes by shape, so a secret with no
+recognisable shape can still be in a record.
+
+A record follows its dictation: Delete, Delete All, the Keep dictations
+period and Don't keep remove it with the text, and under Don't keep the app
+writes none. The app keeps at most the last 500 records, for 14 days.
+Turning the option off asks first, then deletes every record and keeps the
+dictations. Live Auto-Paste dictations get no record.
+
 ### Insights
 
 **Insights**, under History in the sidebar, counts the saved dictations over

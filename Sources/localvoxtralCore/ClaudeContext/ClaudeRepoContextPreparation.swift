@@ -172,6 +172,10 @@ package struct ClaudeRepoContextPreparation: Sendable, Equatable {
 /// `PolishContextPreparation` like the clipboard and the screen — there is no
 /// structure here worth a second selector.
 package enum ClaudeSessionContextText {
+    /// Heads the prompt the user last sent to the agent. The diagnostic record
+    /// finds that prompt by it to leave it out, whatever its length.
+    package static let priorPromptLabel = "previous request to the agent: "
+
     /// The `.claude` source's text for `snapshot`, or "" when the session has
     /// told us nothing worth attaching.
     ///
@@ -199,7 +203,7 @@ package enum ClaudeSessionContextText {
             // already submitted it and is now speaking the next one. This is the
             // task they are continuing, which is why it is worth attaching at
             // all.
-            parts.append("previous request to the agent: \(prompt)")
+            parts.append(priorPromptLabel + prompt)
         }
         if !snapshot.recentFiles.isEmpty {
             let files = snapshot.recentFiles.map {
