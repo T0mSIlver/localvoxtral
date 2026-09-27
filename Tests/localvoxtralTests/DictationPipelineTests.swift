@@ -276,6 +276,7 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
 
         pipeline.viewModel.session.moveDestination(forward: false)
+        await pipeline.viewModel.session.destinationFocusTask?.value
         XCTAssertEqual(activated, [], "activating the terminal would bring the session pane, not the start")
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
         XCTAssertEqual(pipeline.viewModel.statusText, DictationSessionController.DestinationStatus.cantGoBack)
@@ -285,9 +286,52 @@ final class DictationPipelineTests: XCTestCase {
             $0 == terminalPID ? "com.apple.Safari" : TerminalScreenAllowlist.ghosttyBundleID
         }
         pipeline.viewModel.session.moveDestination(forward: false)
+        await pipeline.viewModel.session.destinationFocusTask?.value
         XCTAssertEqual(activated, [terminalPID])
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .focusedApp(joined: nil))
         pipeline.viewModel.session.cancelDictation()
+    }
+
+    /// A stop while a Tab is still bringing a pane forward cannot know which
+    /// window will be in front when the words go in: they stay in History.
+    func testAStopWhileAPaneIsComingForwardKeepsTheWordsInHistory() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        _ = installWaitingSessions(pipeline, ["pay": "/r/payments"])
+        await startAndSpeak(pipeline)
+        sendPartials(pipeline)
+
+        pipeline.viewModel.session.moveDestination(forward: true)
+        // The focus task has not run yet.
+        await stopAndFinalize(pipeline, finalStatus: DictationSessionController.DestinationStatus.stoppedWhileSwitching)
+
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0)
+        XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
+    }
+
+    /// An unconfirmed pane may still have come forward. Staying on the
+    /// focused app, the words go in only if the focused app is still the
+    /// commit target; here the pane's terminal is, so they stay in History.
+    func testAnUnconfirmedPaneInFrontAtStopKeepsTheWordsInHistory() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        _ = installWaitingSessions(
+            pipeline, ["pay": "/r/payments"],
+            outcome: .unverified(bundleID: TerminalScreenAllowlist.ghosttyBundleID)
+        )
+        let originPID: pid_t = 7070
+        let terminalPID: pid_t = 7171
+        pipeline.overlay.commitTargetAppPID = originPID
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == originPID ? "com.apple.Safari" : TerminalScreenAllowlist.ghosttyBundleID
+        }
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.session.moveDestination(forward: true)
+        await pipeline.viewModel.session.destinationFocusTask?.value
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .focusedApp(joined: nil))
+
+        pipeline.overlay.commitTargetAppPID = terminalPID
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline, finalStatus: DictationSessionController.DestinationStatus.originLeftFront)
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "the unconfirmed pane never gets the words")
     }
 
     /// The answer shortcut during a dictation picks the oldest session that

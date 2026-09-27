@@ -85,7 +85,7 @@ extension DictationSessionController {
             commitQuickCapture(sessionMode: sessionMode)
             return
         }
-        if keepInHistoryIfPickedPaneLeftFront(sessionMode: sessionMode) { return }
+        if keepInHistoryIfDestinationLeftFront(sessionMode: sessionMode) { return }
         let sessionAudio = audio.sessionRecording.finish()
         let polishingConfig = settings.llmPolishingConfiguration
         let sample = OverlayStopSample(

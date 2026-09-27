@@ -72,6 +72,8 @@ final class AnswerAgentTests: XCTestCase {
             DictationSessionController.AnswerAgentStatus.unconfirmed,
             DictationSessionController.DestinationStatus.cantGoBack,
             DictationSessionController.DestinationStatus.paneLeftFront,
+            DictationSessionController.DestinationStatus.originLeftFront,
+            DictationSessionController.DestinationStatus.stoppedWhileSwitching,
         ] {
             XCTAssertLessThanOrEqual(sentence.count, 44, sentence)
         }

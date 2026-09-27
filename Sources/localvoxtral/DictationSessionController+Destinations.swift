@@ -14,11 +14,38 @@ struct SessionDestinations {
     /// Names of the sessions listed, kept once a session leaves the queue:
     /// picking it answers it, and its pill still needs a name.
     var names: [String: String] = [:]
-    /// The session pane Tab brought forward. While set, the focused app is
-    /// not in front, and going back there has to bring it back.
-    var paneInFront: (sessionID: String, bundleID: String)?
-    /// The destination a focus under way is going to.
+    /// What is in front as far as the picks know. Anything but `.origin`
+    /// means going back to the focused app has to bring it back.
+    var front: FrontWindow = .origin
+    /// The destination the latest pick is going to while it runs.
     var pending: DictationDestination?
+    /// A pick is bringing a window forward; later picks wait for it, and a
+    /// stop now cannot know what is in front.
+    var focusInFlight = false
+    /// Bumped per pick task, so only the latest one clears `focusInFlight`.
+    var pickGeneration = 0
+}
+
+/// Which window a dictation's picks may have put in front.
+enum FrontWindow: Equatable {
+    /// The app the dictation started in.
+    case origin
+    /// A session pane in `bundleID`'s app: confirmed for `sessionID`, or
+    /// raised by a focus the terminal did not confirm (nil).
+    case pane(bundleID: String, sessionID: String?)
+}
+
+/// What the commit checks at stop when picks moved the focus, decided when
+/// the dictation stops listening.
+enum DestinationCommitGuard: Equatable {
+    /// The words go into the picked session: the commit target must still
+    /// be that pane's app.
+    case pickedPane(bundleID: String)
+    /// A pane may have come forward over the focused app: the commit target
+    /// must still be the focused app, and not the pane's app.
+    case focusedApp(pid: pid_t?, notBundleID: String)
+    /// The dictation stopped while a window was coming forward.
+    case unsettled
 }
 
 /// Tab and ⇧Tab during an Overlay Buffer dictation move its words to the
@@ -31,6 +58,8 @@ extension DictationSessionController {
     enum DestinationStatus {
         static let cantGoBack = "Can't bring that window back"
         static let paneLeftFront = "That session's window left the front"
+        static let originLeftFront = "The window you started in left the front"
+        static let stoppedWhileSwitching = "Stopped while a window was switching"
     }
 
     /// Called when the overlay opens: the list, and Tab while it runs.
@@ -66,8 +95,8 @@ extension DictationSessionController {
     /// Called wherever the dictation stops listening. What the pick decided
     /// is in `sessionIsQuickCapture` and in which app is in front.
     func endDestinations() {
-        if let state = destinations, case .session = state.list.selected {
-            sessionPickedPaneBundleID = state.paneInFront?.bundleID
+        if let state = destinations {
+            sessionCommitGuard = Self.commitGuard(for: state)
         }
         destinationKeyHandler.stop()
         destinationFocusTask?.cancel()
@@ -117,88 +146,121 @@ extension DictationSessionController {
         return true
     }
 
+    /// Picks `destination`. The Inbox, and the focused app while nothing
+    /// was brought over it, are picked at once. Anything that brings a
+    /// window forward runs in `destinationFocusTask`, after any pick still
+    /// running: cancelling one would leave its window in front unrecorded.
     private func pickDestination(_ destination: DictationDestination) {
         guard var state = destinations else { return }
-        destinationFocusTask?.cancel()
-        destinationFocusTask = nil
-        state.pending = nil
+        if !state.focusInFlight, pickAtOnce(destination, state: state) { return }
+        state.pending = destination
+        state.focusInFlight = true
+        state.pickGeneration += 1
+        let generation = state.pickGeneration
         destinations = state
+        let prior = destinationFocusTask
+        destinationFocusTask = Task { @MainActor [weak self] in
+            await prior?.value
+            guard let self, !Task.isCancelled, self.isDictating, self.destinations != nil else { return }
+            await self.pickBringingForward(destination)
+            guard !Task.isCancelled, self.destinations?.pickGeneration == generation else { return }
+            self.destinations?.pending = nil
+            self.destinations?.focusInFlight = false
+        }
+    }
+
+    private func pickAtOnce(_ destination: DictationDestination, state: SessionDestinations) -> Bool {
+        switch destination {
+        case .inbox:
+            applyDestination(.inbox)
+            return true
+        case .focusedApp where state.front == .origin:
+            applyDestination(.focusedApp)
+            return true
+        case .focusedApp, .session:
+            return false
+        }
+    }
+
+    private func pickBringingForward(_ destination: DictationDestination) async {
         switch destination {
         case .inbox:
             applyDestination(.inbox)
         case .focusedApp:
-            guard let paneInFront = state.paneInFront else {
-                applyDestination(.focusedApp)
-                return
-            }
-            bringFocusedAppBack(state: state, paneInFront: paneInFront)
+            await bringFocusedAppBack()
         case .session(let id):
             guard let navigator = sessionNavigator else {
                 Log.dictation.error("destination: no session navigator; staying put")
                 return
             }
-            state.pending = destination
-            destinations = state
-            destinationFocusTask = Task { @MainActor [weak self] in
-                let outcome = await navigator.focusPane(sessionID: id)
-                guard let self, !Task.isCancelled, self.isDictating, self.destinations != nil else { return }
-                self.destinations?.pending = nil
-                Log.dictation.notice(
-                    "destination: session pane \(outcome.map { String(describing: $0) } ?? "no longer live", privacy: .public)"
-                )
-                switch outcome {
-                case .focused(let bundleID)?:
-                    self.destinations?.paneInFront = (id, bundleID)
-                    self.agentAttention?.tracker.answered(sessionID: id)
-                    self.applyDestination(destination)
-                case .unverified?:
-                    // The pane may have come forward, but an unconfirmed
-                    // one must not get the words: they stay where they were.
-                    self.statusText = AnswerAgentStatus.unconfirmed
-                case .paneNotFound?, nil:
-                    self.statusText = GoToSessionStatus.paneNotFound
-                case .unsupported?:
-                    self.statusText = GoToSessionStatus.unsupported
-                }
+            let outcome = await navigator.focusPane(sessionID: id)
+            guard !Task.isCancelled, isDictating, destinations != nil else { return }
+            Log.dictation.notice(
+                "destination: session pane \(outcome.map { String(describing: $0) } ?? "no longer live", privacy: .public)"
+            )
+            switch outcome {
+            case .focused(let bundleID)?:
+                destinations?.front = .pane(bundleID: bundleID, sessionID: id)
+                agentAttention?.tracker.answered(sessionID: id)
+                applyDestination(destination)
+            case .unverified(let bundleID)?:
+                // The pane may have come forward, but an unconfirmed one
+                // must not get the words: the pick stays, and the stop
+                // checks what is in front.
+                destinations?.front = .pane(bundleID: bundleID, sessionID: nil)
+                statusText = AnswerAgentStatus.unconfirmed
+            case .paneNotFound?, nil:
+                statusText = GoToSessionStatus.paneNotFound
+            case .unsupported?:
+                statusText = GoToSessionStatus.unsupported
             }
         }
     }
 
-    /// The focused app was left for a session pane. Its own session's pane
-    /// comes back through the navigator; another app comes back by
-    /// activation. The same terminal with no session to find the pane by
-    /// cannot: activating it would show the session pane, so the words
-    /// would land there.
-    private func bringFocusedAppBack(
-        state: SessionDestinations,
-        paneInFront: (sessionID: String, bundleID: String)
-    ) {
-        if let originSessionID = state.originSessionID, let navigator = sessionNavigator {
-            destinations?.pending = .focusedApp
-            destinationFocusTask = Task { @MainActor [weak self] in
-                let outcome = await navigator.focusPane(sessionID: originSessionID)
-                guard let self, !Task.isCancelled, self.isDictating, self.destinations != nil else { return }
-                self.destinations?.pending = nil
-                guard case .focused? = outcome else {
-                    Log.dictation.notice("destination: the focused app's pane did not come back; staying put")
-                    self.statusText = DestinationStatus.cantGoBack
-                    return
-                }
-                self.destinations?.paneInFront = nil
-                self.applyDestination(.focusedApp)
-            }
+    /// A session pane came over the focused app. The focused app's own
+    /// session pane comes back through the navigator; another app comes
+    /// back by activation. The same terminal with no session to find the
+    /// pane by cannot: activating it would show the session pane, so the
+    /// words would land there.
+    private func bringFocusedAppBack() async {
+        guard let state = destinations, case .pane(let paneBundleID, _) = state.front else {
+            applyDestination(.focusedApp)
             return
         }
-        guard let originPID = state.originPID,
-              dependencies.bundleIdentifier(originPID) != paneInFront.bundleID,
-              dependencies.activateApp(originPID)
-        else {
+        if let originSessionID = state.originSessionID, let navigator = sessionNavigator {
+            let outcome = await navigator.focusPane(sessionID: originSessionID)
+            guard !Task.isCancelled, isDictating, destinations != nil else { return }
+            guard case .focused? = outcome else {
+                Log.dictation.notice("destination: the focused app's pane did not come back; staying put")
+                statusText = DestinationStatus.cantGoBack
+                return
+            }
+        } else if let originPID = state.originPID,
+                  dependencies.bundleIdentifier(originPID) != paneBundleID,
+                  dependencies.activateApp(originPID) {
+            // Activated.
+        } else {
             Log.dictation.notice("destination: the focused app cannot be brought back; staying put")
             statusText = DestinationStatus.cantGoBack
             return
         }
-        destinations?.paneInFront = nil
+        destinations?.front = .origin
         applyDestination(.focusedApp)
+    }
+
+    static func commitGuard(for state: SessionDestinations) -> DestinationCommitGuard? {
+        if state.focusInFlight { return .unsettled }
+        switch (state.list.selected, state.front) {
+        case (.inbox, _), (.focusedApp, .origin):
+            return nil
+        case (.session, .pane(let bundleID, _)):
+            return .pickedPane(bundleID: bundleID)
+        case (.focusedApp, .pane(let bundleID, _)):
+            return .focusedApp(pid: state.originPID, notBundleID: bundleID)
+        case (.session, .origin):
+            // A session is selected only once its pane is confirmed in front.
+            return .unsettled
+        }
     }
 
     private func applyDestination(_ destination: DictationDestination) {
@@ -221,17 +283,28 @@ extension DictationSessionController {
         state.list.refresh(waitingSessionIDs: waiting.map(\.sessionID), focusedSessionID: state.originSessionID)
     }
 
-    /// A dictation that picked a session pane commits only while the app it
-    /// commits into (the one in front at stop) is that pane's app: focus
-    /// moved to another app after the pick must not take the words with it.
-    /// Otherwise the words stay in History as not inserted. Returns true
-    /// when it kept them.
-    func keepInHistoryIfPickedPaneLeftFront(sessionMode: DictationOutputMode) -> Bool {
-        guard let pickedBundleID = sessionPickedPaneBundleID else { return false }
-        sessionPickedPaneBundleID = nil
-        let targetBundleID = overlayBufferCoordinator.commitTargetAppPID.flatMap(dependencies.bundleIdentifier)
-        guard targetBundleID != pickedBundleID else { return false }
-        Log.dictation.notice("destination: the picked session's app is no longer in front; kept in History")
+    /// When picks moved the focus, the words go in only where the overlay
+    /// said: into the picked pane while its app is still the commit target
+    /// (the app in front at stop), or into the focused app while no pane
+    /// brought over it is. Otherwise they stay in History as not inserted.
+    /// Returns true when it kept them.
+    func keepInHistoryIfDestinationLeftFront(sessionMode: DictationOutputMode) -> Bool {
+        guard let commitGuard = sessionCommitGuard else { return false }
+        sessionCommitGuard = nil
+        let targetPID = overlayBufferCoordinator.commitTargetAppPID
+        let targetBundleID = targetPID.flatMap(dependencies.bundleIdentifier)
+        let status: String
+        switch commitGuard {
+        case .pickedPane(let bundleID):
+            guard targetBundleID != bundleID else { return false }
+            status = DestinationStatus.paneLeftFront
+        case .focusedApp(let originPID, let paneBundleID):
+            guard targetPID == nil || targetPID != originPID || targetBundleID == paneBundleID else { return false }
+            status = DestinationStatus.originLeftFront
+        case .unsettled:
+            status = DestinationStatus.stoppedWhileSwitching
+        }
+        Log.dictation.notice("destination: the commit target is not the picked window; kept in History")
         let sessionAudio = audio.sessionRecording.finish()
         saveSessionRecord(
             startedAt: sessionStartedAt ?? Date(),
@@ -249,7 +322,7 @@ extension DictationSessionController {
         )
         overlayBufferCoordinator.reset()
         completeStoppedSessionCleanup(sessionMode: sessionMode, overlayCommitOutcome: nil, shouldCommitOverlay: true)
-        statusText = DestinationStatus.paneLeftFront
+        statusText = status
         return true
     }
 
