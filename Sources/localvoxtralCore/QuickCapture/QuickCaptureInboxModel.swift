@@ -143,11 +143,21 @@ package final class QuickCaptureInboxModel {
     }
 
     /// One click on the router's guess (#938): the capture moves there and
-    /// drafts, as after a move.
+    /// drafts, as after a move. A project gone from the list since routing
+    /// leaves the capture where it is, and says so.
     @discardableResult
     package func acceptSuggestion(_ id: UUID) -> Task<Void, Never>? {
-        guard let key = inbox.items.first(where: { $0.id == id })?.suggestion?.projectKey else { return nil }
-        return move(id, toProjectKey: key)
+        guard let suggestion = inbox.items.first(where: { $0.id == id })?.suggestion else { return nil }
+        guard projects().contains(where: { $0.key == suggestion.projectKey }) else {
+            mutate { inbox in
+                inbox.update(id) {
+                    $0.suggestion = nil
+                    $0.note = "\(suggestion.projectName) is no longer a project. Move it to one."
+                }
+            }
+            return nil
+        }
+        return move(id, toProjectKey: suggestion.projectKey)
     }
 
     package func discard(_ id: UUID) {
