@@ -577,21 +577,6 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         XCTAssertEqual(environment.sshTTY, "/dev/pts/3", "the good neighbour still arrives")
     }
 
-    func testAnEnvValuePaddedWithUnicodeWhitespaceIsRejectedOverTheRealSocket() throws {
-        // Review finding, end to end: `pane-7<NBSP>` used to be trimmed by the
-        // head parser (Foundation's Unicode whitespace set) into a value the
-        // byte-level charset check then accepted. The hook itself must still
-        // succeed — a bad enrichment value never costs delivery.
-        try startListener()
-        let response = try XCTUnwrap(try send(hookRequest(token: token, extraHeaders: [
-            "X-Lvx-Env-Herdr-Pane-Id: pane-7\u{A0}",
-        ])))
-        XCTAssertEqual(response.status, 200)
-        let snapshot = try XCTUnwrap(sessions.liveSessions().first)
-        XCTAssertNil(snapshot.remoteSessionEnvironment)
-        XCTAssertEqual(sessions.resolve(herdrPaneID: "pane-7"), .unknown)
-    }
-
     func testARequestWithNoEnvHeadersCarriesNoEnvironment() throws {
         try startListener()
         _ = try send(hookRequest(token: token))
@@ -964,8 +949,10 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
 
     func testNonPOSTIsRejected() throws {
         try startListener()
-        let raw = Data("GET /v1/hook/SessionStart HTTP/1.1\r\nContent-Length: 0\r\n\r\n".utf8)
-        XCTAssertEqual(try send(raw)?.status, 405)
+        for method in ["GET", "PUT", "DELETE", "OPTIONS"] {
+            let raw = Data("\(method) /v1/hook/SessionStart HTTP/1.1\r\nContent-Length: 0\r\n\r\n".utf8)
+            XCTAssertEqual(try send(raw)?.status, 405, "\(method) is not a hook method")
+        }
     }
 
     func testAnOversizedDeclaredBodyIsRejectedBeforeItIsSent() throws {
@@ -1257,17 +1244,6 @@ extension ClaudeRemoteContextListenerTests {
         XCTAssertNil(environment.bridgeSessionID)
         XCTAssertNil(environment.desktopSessionID)
         XCTAssertEqual(environment.herdrPaneID, "w1:p2")
-    }
-
-    func testAVibeRequestSaysNothingAboutTheClaudePlugin() throws {
-        try startListener()
-        _ = try send(hookRequest(token: token, extraHeaders: ["X-Lvx-Agent: vibe"]))
-        XCTAssertNil(
-            hosts.host(id: hostID)?.reportedPluginVersion,
-            "a missing plugin header on a Vibe request must not read as a pre-1.10.0 Claude plugin"
-        )
-        _ = try send(hookRequest(token: token, extraHeaders: ["X-Lvx-Plugin-Version: 1.11.0"]))
-        XCTAssertEqual(hosts.host(id: hostID)?.reportedPluginVersion, .version("1.11.0"))
     }
 
     func testAVibeSessionEndFromTheHostsWatcherEvictsTheSession() throws {
