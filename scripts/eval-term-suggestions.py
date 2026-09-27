@@ -35,8 +35,9 @@ reads each arm's instructions from that file at the arm's ref.
 compares it with the test's expected message, read from the test file, so a
 layout change in the app that this script misses fails loudly.
 
-Standard library only. The Mistral key is read from MISTRAL_API_KEY or
-~/.config/localvoxtral/mistral_api_key.
+Standard library only. A GLM model bills the Vibe plan key
+(VIBE_MISTRAL_API_KEY, else ~/.vibe/.env); any other model reads
+MISTRAL_API_KEY or ~/.config/localvoxtral/mistral_api_key (#851).
 """
 
 from __future__ import annotations
@@ -163,6 +164,9 @@ def self_check() -> None:
     got = message(prompt, [block(d, heard) for d in dictations], ["Qwen"], ["SessionStart"])
     if got != want:
         sys.exit("self-check failed: the script's request no longer matches the app's")
+    both = {"MISTRAL_API_KEY": "studio", "VIBE_MISTRAL_API_KEY": "vibe"}
+    if api_key("zai-glm-5-3", both) != "vibe":
+        sys.exit("self-check failed: a GLM run would bill the exported MISTRAL_API_KEY")
     print("self-check ok")
 
 
@@ -222,8 +226,18 @@ def score(terms: list[tuple[str, list[str]]], dictations: list[dict],
 
 # --- run ------------------------------------------------------------------
 
-def api_key() -> str:
-    if value := os.environ.get("MISTRAL_API_KEY"):
+def api_key(model: str, env: dict[str, str] = os.environ) -> str:
+    """GLM runs on the Vibe plan's monthly allowance, so it never takes an
+    exported MISTRAL_API_KEY: sessions export the pay-per-call Studio key."""
+    if "glm" in model:
+        if value := env.get("VIBE_MISTRAL_API_KEY"):
+            return value.strip()
+        env_file = Path.home() / ".vibe/.env"
+        for line in env_file.read_text().splitlines() if env_file.is_file() else []:
+            if line.startswith("MISTRAL_API_KEY=") and (value := line.split("=", 1)[1].strip().strip("\"'")):
+                return value
+        sys.exit("no Vibe key: log in with vibe --setup or set VIBE_MISTRAL_API_KEY")
+    if value := env.get("MISTRAL_API_KEY"):
         return value.strip()
     return (Path.home() / ".config/localvoxtral/mistral_api_key").read_text().strip()
 
@@ -255,7 +269,7 @@ def run(args: argparse.Namespace) -> None:
     arms = {"base": instructions(args.base), "head": instructions(None)}
     if arms["base"] == arms["head"]:
         print("note: both arms carry the same instructions; the result is a noise measurement")
-    secret = api_key()
+    secret = api_key(args.model)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     spend = 0.0
