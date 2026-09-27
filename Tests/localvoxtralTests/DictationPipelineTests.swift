@@ -171,7 +171,7 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.session.toggleQuickCapture()
         XCTAssertFalse(pipeline.viewModel.isDictating, "pressed on the Inbox, it stops")
         pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
-        _ = await pipeline.records.written.value(failAfter: 10)
+        _ = await pipeline.records.waitForCount(1)
         XCTAssertEqual(pipeline.overlay.commitCallCount, 0)
     }
 
@@ -377,7 +377,7 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.session.answerAgentThatNeedsYou()
         XCTAssertFalse(pipeline.viewModel.isDictating, "pressed on the picked session, it stops")
         pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
-        _ = await pipeline.records.written.value(failAfter: 10)
+        _ = await pipeline.records.waitForCount(1)
     }
 
     /// Claude Desktop (#660): a text field whose prompt sends on Return. The
