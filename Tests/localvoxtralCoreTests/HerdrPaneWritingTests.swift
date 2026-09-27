@@ -34,6 +34,22 @@ final class HerdrPaneWritingTests: XCTestCase {
         )
     }
 
+    /// The fake records a request before it replies (#808): the fake's
+    /// thread is held after its answer until the test has read `requests`,
+    /// so a fake that recorded after replying shows an empty list here.
+    func testTheFakeRecordsTheRequestBeforeItsReply() async throws {
+        let testHasRead = DispatchSemaphore(value: 0)
+        let herdr = try FakeHerdrSocket(afterAnswer: { testHasRead.wait() })
+        defer { herdr.stop() }
+
+        let sent = await client.sendText(socketPath: herdr.socketPath, paneID: "w1:p2", text: "x")
+        let recorded = herdr.requests
+        testHasRead.signal()
+
+        XCTAssertEqual(sent, .ok)
+        XCTAssertEqual(recorded, [.init(method: "pane.send_text", paneID: "w1:p2", text: "x", keys: nil)])
+    }
+
     /// herdr's own error answer says the write did not happen.
     func testAnErrorEnvelopeIsARefusal() async throws {
         let herdr = try FakeHerdrSocket { _ in .error("pane_not_found") }
