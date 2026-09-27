@@ -45,9 +45,12 @@ package enum QuickCaptureDraft {
         }
     }
 
-    package static let ghIssueListArguments = [
-        "issue", "list", "--state", "open", "--limit", String(maxListedIssues), "--json", "number,title,body",
-    ]
+    package static func ghIssueListArguments(repository: String) -> [String] {
+        [
+            "issue", "list", "--repo", repository, "--state", "open", "--limit", String(maxListedIssues),
+            "--json", "number,title,body",
+        ]
+    }
 
     /// `gh issue list --json number,title,body`; nil when it is not that.
     package static func parseIssueList(_ data: Data) -> [OpenIssue]? {

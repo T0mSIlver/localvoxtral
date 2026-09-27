@@ -43,6 +43,9 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
     package var filedURL: String?
     /// When File succeeded; what the Inbox's 7-day listing counts from.
     package var filedAt: Date?
+    /// The changes the user asked for by voice (#927), oldest first. The
+    /// redraft reads them with `text`, which stays as dictated.
+    package var changes: [String]?
 
     package init(id: UUID = UUID(), capturedAt: Date, text: String, historyRecordID: UUID? = nil) {
         self.id = id
@@ -53,6 +56,13 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
         self.title = ""
         self.body = ""
         self.relation = .none
+    }
+
+    /// A draft waiting for the user under a project: what the needs-you cue
+    /// and the spoken review (#927) work on.
+    package var isReadyDraft: Bool {
+        state == .ready && projectKey != nil && projectName != nil
+            && !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// File needs a repository and a title, and never runs twice.
@@ -147,16 +157,59 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
         }
     }
 
+    package enum MarkFiledRefusal: Error, Equatable, Sendable {
+        case notFound
+        /// Still routing, drafting or filing, or already filed.
+        case notReady(QuickCaptureItem.State)
+        /// Not `https://github.com/<owner>/<name>/issues/<n>`, or another
+        /// repository than the capture's.
+        case notAnIssue
+        case otherRepository(String)
+    }
+
+    /// A coding agent filed it with its own `gh` (#923): records the URL as
+    /// File's success would. A capture with no repository takes the URL's.
+    package mutating func markFiled(
+        _ id: UUID, url: String, now: Date
+    ) -> Result<QuickCaptureItem, MarkFiledRefusal> {
+        guard let item = items.first(where: { $0.id == id }) else { return .failure(.notFound) }
+        guard item.state == .ready else { return .failure(.notReady(item.state)) }
+        guard let repository = Self.issueRepository(url) else { return .failure(.notAnIssue) }
+        if let expected = item.repository, expected.caseInsensitiveCompare(repository) != .orderedSame {
+            return .failure(.otherRepository(expected))
+        }
+        var filed = item
+        update(id) { item in
+            item.state = .filed
+            item.filedURL = url
+            item.filedAt = now
+            item.note = nil
+            if item.repository == nil { item.repository = repository }
+            filed = item
+        }
+        return .success(filed)
+    }
+
+    /// `owner/name` of a GitHub issue URL, nil for anything else.
+    package static func issueRepository(_ url: String) -> String? {
+        let pattern = #"^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/[1-9][0-9]*$"#
+        guard url.range(of: pattern, options: .regularExpression) != nil else { return nil }
+        return url.dropFirst("https://github.com/".count).components(separatedBy: "/issues/").first
+    }
+
     /// Drops captures filed more than `keepFiledDays` ago.
     package mutating func prune(now: Date) {
         let cutoff = now.addingTimeInterval(-Double(Self.keepFiledDays) * 86_400)
         items.removeAll { $0.state == .filed && ($0.filedAt ?? $0.capturedAt) < cutoff }
     }
 
-    /// `owner/name`, GitHub's charset.
+    /// `owner/name`, GitHub's charset. Neither part is `.` or `..`: a
+    /// host's value becomes a `gh api repos/…` path (#926).
     package static func isRepository(_ value: String?) -> Bool {
-        guard let value else { return false }
-        return value.range(of: #"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil
+        guard let value,
+              value.range(of: #"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"#, options: .regularExpression) != nil
+        else { return false }
+        return !value.split(separator: "/").contains { $0.allSatisfy { $0 == "." } }
     }
 
     static func note(for failure: ProjectTermProposal.Failure) -> String {

@@ -42,6 +42,7 @@ extension DictationSessionController {
         sessionConnectionGeneration = .none
         sessionOutputMode = nil
         sessionIsQuickCapture = false
+        sessionDraftReview = nil
         sessionCommitGuard = nil
         sessionStartedAt = nil
         sessionCaptureTimeline = nil
@@ -490,8 +491,10 @@ extension DictationSessionController {
         clearLatchedSessionMetadata()
         sessionOutputMode = requestedOutputMode
         sessionIsQuickCapture = requestedQuickCapture && requestedOutputMode == .overlayBuffer
+        sessionDraftReview = requestedOutputMode == .overlayBuffer ? requestedDraftReview : nil
         sessionStoppedBySpokenPhrase = false
         requestedQuickCapture = false
+        requestedDraftReview = nil
         sessionStartedAt = Date()
         sessionCaptureTimeline = CaptureTimeline(
             pressedAt: dependencies.clock.now(), now: dependencies.clock.now)
@@ -1063,7 +1066,12 @@ extension DictationSessionController {
             // commit re-checks secure input and falls back to the clipboard.
             overlayBufferCoordinator.showSecureInputWarning()
         }
-        beginDestinations()
+        // A review shows its one draft and offers no other destination.
+        if let review = sessionDraftReview {
+            overlayBufferCoordinator.showDraftReview(review)
+        } else {
+            beginDestinations()
+        }
     }
 
     func beginOverlayFinalization() {
