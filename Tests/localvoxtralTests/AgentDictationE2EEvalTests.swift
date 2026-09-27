@@ -249,6 +249,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         var reports: [Support.CaseReportRecord] = []
         var reportSystemPrompts: [String] = []
         var caseIndex = 0
+        var sttWatch = EvalSpeechStage.ServiceWatch(endpoint: asrConfiguration.endpoint)
 
         for loaded in strata {
             let stratum = loaded.stratum
@@ -257,6 +258,9 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                 if let selectedCaseIDs, !selectedCaseIDs.contains(evalCase.id) { continue }
                 caseIndex += 1
                 print("agent-e2e [\(caseIndex)/\(totalCases)] \(evalCase.id)")
+                // stdout is a pipe under CI: unflushed, the whole run's output
+                // reached the log only at exit, and a hung run showed nothing.
+                fflush(nil)
                 let run = await runCase(
                     evalCase,
                     stratumName: stratum.stratum,
@@ -272,6 +276,11 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                     frVoice: frVoice
                 )
                 results.append(run.result)
+                if let speechError = run.capture.speechError {
+                    try sttWatch.record(speechError)
+                } else if run.capture.transcript != nil {
+                    sttWatch.recordAnswer()
+                }
 
                 var systemPromptIndex: Int?
                 if let prompt = run.capture.polishSystemPrompt {
@@ -381,7 +390,12 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                     }
                     pcm = try synthesizedPCM16(text: evalCase.spokenForm, voice: voice)
                 }
-                polishInput = try await transcribe(pcm: pcm, enablement: enablement)
+                do {
+                    polishInput = try await transcribe(pcm: pcm, enablement: enablement)
+                } catch {
+                    capture.speechError = error
+                    throw error
+                }
                 capture.transcript = polishInput
             }
 

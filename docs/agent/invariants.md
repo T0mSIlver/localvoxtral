@@ -1893,6 +1893,27 @@ there is not.
     checked session id and the cwd, copied only when its JSON string token
     passes a strict grammar check, since the shim has no JSON tool to
     re-escape it.
+  - **A Claude Desktop session comes forward through Desktop's own link,
+    and counts as forward only when the join reads it back** (#834). A
+    session that reports a Desktop view id, local or from an ssh host, is
+    brought forward by opening `claude://code/continue?session=local_<uuid>`
+    in the running Desktop (never the default `claude://` handler, and never
+    when Desktop is not running: the link would launch it). Read from
+    Desktop 2.9939.2's handler (2026-09-27): it takes the id only when it
+    matches `^local_[A-Za-z0-9-]{1,64}$` and routes to the session's
+    `/epitaxy/` view. MEASURED the same day, from Finder and from Desktop
+    showing another session: an ssh-host session came forward and the join's
+    Desktop reader read it back from its prompt 0.2 s after the open. The
+    sidebar exposes no session id to Accessibility (rows are titles), so
+    clicking a row cannot be tied to a session. `.focused` requires Desktop
+    frontmost and `sessionShown` to resolve the focused view to this
+    registry session: focus in the primary pane's prompt, and the id
+    reported by this session alone. An ambiguous id, focus left in the
+    sidebar or a second pane, or no answer within 2 s is `.unverified`, and
+    the answer shortcut starts no dictation. "Send that to" keeps refusing
+    Desktop: its Return exception is ruled for terminal tabs only. The link
+    and the id are UNDOCUMENTED; a Desktop update that drops them leaves the
+    read-back failing, never a dictation in the wrong session.
   - **"Were you looking at it" asks only local questions** (#717). A turn's
     end queues a finished entry only when the user was not looking at the
     session's pane (`AgentAttentionTracker`), and that is answered by
@@ -2273,7 +2294,12 @@ there is not.
   (`--permission-mode dontAsk --allowedTools Read(./**)`; without it Read
   opens any file, measured 2026-09-27; Vibe's tools are workspace-bound) and
   the shim allows one draft at a time and 20 a day. `capture.sh` never runs
-  `gh` for anything but `issue list`.
+  `gh` for anything but `issue list`. Which remote projects the router sees
+  (#819): a hook adds a project only for a name its host sent as
+  `X-Lvx-Env-Project`; a cwd label only stamps a project already held,
+  because each worktree has its own, and a label no hook has named since is
+  not listed, since no session will report it again. Nothing guesses which
+  repository an old label belonged to.
 - **The SendEnv probe uses a random value that is never logged and never
   interpreted beyond equality.** `probeRemoteEnvironment` mints a fresh nonce
   per call (a UUID by default, injected in tests), exports it into that one

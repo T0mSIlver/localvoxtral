@@ -630,11 +630,12 @@ public final class ClaudeRemoteContextListener: Sendable {
         let scopedSessionID = ClaudeAgentSessionScope.scopedSessionID(
             agent: prepared.record.agent, sessionID: prepared.record.sessionID
         )
-        let captureAsks = commitIngestStatus == .joined
-            && RemoteQuickCaptureRequests.requestReadsTheAsks(
-                agent: prepared.record.agent, plugin: pluginVersionReport, vibe: vibeHooksVersion
-            )
-            ? registry.snapshot(sessionID: scopedSessionID).flatMap { quickCapture?.asks(for: $0) }
+        let joinedSnapshot = commitIngestStatus == .joined ? registry.snapshot(sessionID: scopedSessionID) : nil
+        if let joinedSnapshot { quickCapture?.noteReport(for: joinedSnapshot) }
+        let captureAsks = RemoteQuickCaptureRequests.requestReadsTheAsks(
+            agent: prepared.record.agent, plugin: pluginVersionReport, vibe: vibeHooksVersion
+        )
+            ? joinedSnapshot.flatMap { quickCapture?.asks(for: $0) }
             : nil
         respond(
             fd: fd,

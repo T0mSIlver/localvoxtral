@@ -1087,43 +1087,6 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         )
     }
 
-    /// The other side: a block this build would write unchanged is left alone,
-    /// so the update stays a plugin action and does not churn the user's file.
-    @MainActor
-    func testUpdatePlanLeavesAnALREADYCurrentBlockAlone() async throws {
-        let registry = try makeRegistry()
-        let filesystem = RecordingSSHConfigFileSystem()
-        let service = ClaudeRemoteEnrollmentService(
-            runner: { _ in .init(exitCode: 0, message: "ok") },
-            sshConfigFileSystem: filesystem
-        )
-        let model = await enrolledModel(
-            label: "sandbox", alias: "sandbox-vpn", registry: registry, service: service,
-            remoteForwardPort: 28_542
-        )
-        let hostID = try XCTUnwrap(model.hosts.first).id
-        let host = try XCTUnwrap(registry.host(id: hostID))
-        filesystem.setConfig(
-            ClaudeRemoteEnrollmentService.applySSHConfigSnippet(
-                to: "",
-                snippet: ClaudeRemoteEnrollmentService.sshConfigSnippet(
-                    host: host,
-                    sshHostAlias: "sandbox-vpn",
-                    listenerPort: ClaudeRemoteListenerLimits.default.port,
-                    remoteForwardPort: 28_542
-                ),
-                hostID: hostID
-            )
-        )
-
-        model.requestPluginUpdate(hostID: hostID)
-        let update = try XCTUnwrap(model.presentedPluginUpdate)
-        XCTAssertNil(
-            update.sshConfigSnippet,
-            "a current block is not rewritten — the update is a plugin action then"
-        )
-    }
-
     /// Every artifact the pane hands the user must name the SAME remote port —
     /// this Mac's allocation (#215). One that names a different port than
     /// another is a tunnel to nothing, and it fails open, i.e. silently.

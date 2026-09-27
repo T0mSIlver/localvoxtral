@@ -97,7 +97,8 @@ only "go to payments" (in Live Auto-Paste, a phrase between pauses) brings the p
 agent session named payments to the front instead of typing anything. A
 session answers to its repository's name and, in a linked worktree, to the
 worktree's name. It works for sessions in Ghostty, iTerm2 and Terminal.app on
-this Mac. When no session has that name, the dictation is typed as usual;
+this Mac, and for Claude Desktop Code-tab sessions, on this Mac or on an ssh
+host Desktop runs them on. When no session has that name, the dictation is typed as usual;
 when more than one does, or its pane can't be reached, nothing is typed and
 the menu bar popover says so. In Live Auto-Paste, what you say next is
 typed into the session you went to.
@@ -160,8 +161,10 @@ session, as in [Where the words go](#where-the-words-go). The optional
 forward the pane of the session that has waited longest, or else the one
 that finished first, and starts a dictation there. Press it again to stop;
 the next press goes to the next session. Like "go to", both reach sessions in
-Ghostty, iTerm2 and Terminal.app on this Mac. For any other session, the
-popover says it can't bring that session forward.
+Ghostty, iTerm2 and Terminal.app on this Mac, and Claude Desktop Code-tab
+sessions, local or over ssh: Desktop switches to the session, and the words
+go there once its prompt has focus. For any other session, the popover says
+it can't bring that session forward.
 
 A session leaves the list when you send it a prompt, when it starts working
 again, when it ends, or when you dictate into it. The app never receives what

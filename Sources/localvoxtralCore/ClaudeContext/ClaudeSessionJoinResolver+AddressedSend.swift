@@ -34,6 +34,10 @@ extension ClaudeSessionJoinResolver {
         switch SessionPaneFocusRoute.of(session) {
         case .terminalTTY:
             return .terminalPane
+        case .claudeDesktop:
+            // The Return exception is ruled for terminal tabs only.
+            Log.claudeContext.notice("send to session: no route (claudeDesktop)")
+            return .unsupported(.claudeDesktop)
         case .unsupported(let reason):
             Log.claudeContext.notice("send to session: no route (\(reason.rawValue, privacy: .public))")
             return .unsupported(reason)

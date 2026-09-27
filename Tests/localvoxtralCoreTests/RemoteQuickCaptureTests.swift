@@ -18,6 +18,12 @@ final class RemoteQuickCaptureTests: XCTestCase {
             let moment = now()
             memory.withLock { _ = $0.recordSummary(summary, projectKey: projectKey, now: moment) }
         }
+        let reports = Mutex<[String]>([])
+        func recordRemoteReport(project: LearnedTermProjectIdentity, asRepository: Bool) {
+            let moment = now()
+            reports.withLock { $0.append(project.key) }
+            memory.withLock { _ = $0.recordRemoteReport(project: project, asRepository: asRepository, now: moment) }
+        }
         /// A project a dictation has shown the app.
         func learn(_ name: String) {
             let moment = now()
@@ -97,6 +103,7 @@ final class RemoteQuickCaptureTests: XCTestCase {
         agent: ProjectTermProposal.Agent = .claude,
         version: String? = nil,
         project: String = "quill",
+        sendsProject: Bool = true,
         token: String? = nil
     ) throws -> RemoteListenerResponse {
         var headers = ["Authorization": "Bearer \(token ?? self.token)", "Content-Type": "application/json"]
@@ -109,7 +116,7 @@ final class RemoteQuickCaptureTests: XCTestCase {
         case .opencode:
             preconditionFailure("opencode has no remote shim")
         }
-        headers["X-Lvx-Env-Project"] = project
+        if sendsProject { headers["X-Lvx-Env-Project"] = project }
         let body = #"{"hook_event_name":"\#(event)","session_id":"\#(session)","cwd":"/srv/work/\#(project)-fix","prompt":"hello"}"#
         return try postToRemoteListener(port: port, path: "/v1/hook/\(event)", headers: headers, body: Data(body.utf8))
     }
@@ -173,7 +180,7 @@ final class RemoteQuickCaptureTests: XCTestCase {
         XCTAssertEqual(try answer(RemoteQuickCaptureRequests.readmePath, session: "s1", body: Self.readme).status, 200)
         let summary = "Quill typesets Markdown into print-ready PDFs. It runs on the glyph cache and one font directory."
         XCTAssertEqual(store.snapshot().projects.first?.summary, summary)
-        let projects = QuickCaptureProjects.projects(from: store.snapshot(), userLines: [:], readme: { _ in
+        let projects = QuickCaptureProjects.projects(from: store.snapshot(), userLines: [:], now: clock.now(), readme: { _ in
             XCTFail("a remote project's README is never read on this machine")
             return nil
         })
@@ -187,15 +194,47 @@ final class RemoteQuickCaptureTests: XCTestCase {
         XCTAssertEqual(try hook(session: "s1").headers[readmeHeader], "wanted", "asked again after a week")
     }
 
-    func testNoReadmeIsAskedOfAnOldShimOrForAProjectNoDictationShowed() throws {
+    func testNoReadmeIsAskedOfAnOldShimOrForACwdLabel() throws {
         try hook("SessionStart", session: "old", version: "1.16.0")
         XCTAssertNil(try hook(session: "old", version: "1.16.0").headers[readmeHeader])
         try hook("SessionStart", session: "v1", agent: .vibe, version: "1.2.0")
         XCTAssertNil(try hook(session: "v1", agent: .vibe, version: "1.2.0").headers[readmeHeader])
-        try hook("SessionStart", session: "s2", project: "unseen")
-        XCTAssertNil(try hook(session: "s2", project: "unseen").headers[readmeHeader])
+        try hook("SessionStart", session: "s2", project: "unseen", sendsProject: false)
+        XCTAssertNil(try hook(session: "s2", project: "unseen", sendsProject: false).headers[readmeHeader])
         XCTAssertEqual(try answer(RemoteQuickCaptureRequests.readmePath, session: "s2", body: Self.readme).status, 409)
         XCTAssertNil(store.snapshot().projects.first?.summaryAt)
+    }
+
+    // MARK: Which projects the hooks name (#819)
+
+    func testAHookThatNamesARepositoryAddsItAndItsReadmeIsAsked() throws {
+        let first = try hook("SessionStart", session: "s1", project: "inkwell")
+        let inkwell = try XCTUnwrap(store.snapshot().projects.first { $0.key == "remote:inkwell" })
+        XCTAssertEqual(inkwell.reportedAt, clock.now())
+        XCTAssertEqual(inkwell.reportedAsRepository, true)
+        XCTAssertEqual(first.headers[readmeHeader], "wanted", "the router needs what the new project is about")
+        XCTAssertEqual(
+            QuickCaptureProjects.projects(from: store.snapshot(), userLines: [:], now: clock.now(), readme: { _ in nil })
+                .map(\.key),
+            ["remote:inkwell"],
+            "quill was only ever learned into, and no hook has named it"
+        )
+    }
+
+    func testAnOldShimsWorktreeLabelAddsNoProject() throws {
+        // Before 1.13.0 a session in `/srv/work/quill-fix` names only its cwd.
+        try hook("SessionStart", session: "s1", version: "1.12.0", sendsProject: false)
+        XCTAssertEqual(store.snapshot().projects.map(\.key), ["remote:quill"])
+        XCTAssertNil(store.snapshot().projects.first?.reportedAt)
+    }
+
+    func testAProjectIsRecordedOncePerInterval() throws {
+        try hook("SessionStart", session: "s1", project: "inkwell")
+        try hook(session: "s1", project: "inkwell")
+        XCTAssertEqual(store.reports.withLock { $0 }, ["remote:inkwell"])
+        clock.advance(RemoteQuickCaptureRequests.reportInterval)
+        try hook(session: "s1", project: "inkwell")
+        XCTAssertEqual(store.reports.withLock { $0 }, ["remote:inkwell", "remote:inkwell"])
     }
 
     func testAnEmptyReadmeIsRecordedSoTheHostIsNotAskedAgainThisWeek() throws {
