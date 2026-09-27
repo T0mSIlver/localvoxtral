@@ -159,10 +159,12 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         settings: SettingsStore,
         coordinator: MockOverlayCoordinator = MockOverlayCoordinator()
     ) -> DictationViewModel {
+        // The dial opens the microphone (#527): never the host's.
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: coordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(microphone: { FakeMicrophoneCaptureService() })
         )
         // Keep tests hermetic: session start reads config (terminal apps,
         // replacement dictionary) through the store — never the real
