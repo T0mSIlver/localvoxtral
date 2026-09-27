@@ -104,7 +104,8 @@ there is not.
   promotion a stop or dropped socket does), then Return is pressed. That is
   the owner's accepted cost (2026-09-24), shown next to the toggle. The
   Return is pressed only in the PID the session pinned, only while that PID
-  is frontmost (it never activates an app for a Return), never under Secure
+  is frontmost (it never activates an app for a Return; the one exception
+  is the named session of "Send that to <name>" below), never under Secure
   Keyboard Entry, and only once the hold-back stream has released every
   word — a Return ahead of the last word would submit half a prompt. Every
   Live decision is taken when it is needed, from the app frontmost THEN
@@ -178,6 +179,37 @@ there is not.
   matched ahead of every default name, one session holds it at a time (the
   last one named), and it is kept per registry session id in
   `UserDefaults`, at most 100.
+- **"Send that to <name>" writes only into the named session** (#723
+  step 3; owner rulings on #723, 2026-09-26). An Overlay Buffer dictation
+  ending in "send that to" plus at most four words, with text before it, is
+  looked up like go-to after the go-to check and before the spoken send
+  cut, the dictionary and the polisher. No match: it commits as dictated.
+  Ambiguous: nothing is typed anywhere and the text goes to History. A
+  match: the phrase is cut, the rest is polished, and the commit goes to
+  that session and is submitted there; the spoken send trigger is not
+  applied, so "send it" inside the text stays text. The focused app never
+  gets the text or a key. Routes, in order:
+  (1) opencode's prompt relay, from a fresh declaration by the session's
+  pid; (2) the herdr pane the session's own hooks reported, only when it is
+  the one live local herdr, the registry maps the pane to that session
+  alone, and herdr lists the session's pid in the pane's foreground (the
+  route asks again before Enter); (3) a Ghostty, iTerm2 or Terminal.app
+  tab. Anything else, cmux included (its route can prove a surface only
+  while it is the focused one), is refused in one sentence. Every route
+  refusal is `keepInHistory`, never `typeInstead`: keys would go to the
+  focused app. **The Return exception** (owner ruling): in a terminal tab,
+  and only there, Return may be pressed in an app the app itself brought
+  forward. The pane must first read back `.focused` (its tty through the
+  join's reader, never a window title); only then is the text typed, into
+  the terminal pid that is frontmost and carries the focused bundle ID.
+  After the typing the tty is read back again, and Return is pressed only
+  if it still matches, that pid is frontmost and on `ReturnSubmitsAppList`,
+  and Secure Keyboard Entry is off. A failed check before the typing types
+  nothing and keeps the text in History; one after it leaves the text
+  unsubmitted, and the popover says so. Correction learning and term
+  proposals skip an addressed dictation: they key on the join of the pane
+  it started in. Live Auto-Paste has no addressed send: its words are
+  typed before the phrase at the end is heard.
 - **The Mistral second pass holds the text back, never the world** (#317).
   An Overlay Buffer dictation in Mistral API mode is sent whole to the batch
   endpoint on stop (`DictationSessionController+StopCommit.swift`,
@@ -491,7 +523,11 @@ there is not.
   and each adds its own below:
   (1) *One route, resolved at start.* `SessionContextResolver.resolveAgentPromptRoute()`
   picks at most one route per dictation, next to the join, for the session
-  the join resolved and nothing else. It is dropped with the join.
+  the join resolved and nothing else. It is dropped with the join. The one
+  exception is a dictation addressed by name ("Send that to <name>" above):
+  its route is resolved at commit, for the named session, by
+  `ClaudeSessionJoinResolver.addressedRoute(for:)`, and never falls back
+  to keys.
   (2) *Append and submit only* (`AgentPromptCall`). Widening a route (clear,
   commands, another session or pane) is a new capability and needs the
   owner's decision.

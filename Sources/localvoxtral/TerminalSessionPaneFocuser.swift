@@ -116,6 +116,11 @@ final class TerminalSessionPaneFocuser: SessionPaneFocusing {
         return .paneNotFound
     }
 
+    func focusedPaneShows(_ session: ClaudeSessionSnapshot, bundleID: String) async -> Bool {
+        guard case .terminalTTY(let tty, _) = SessionPaneFocusRoute.of(session) else { return false }
+        return await focusedTTY(bundleID) == tty
+    }
+
     static let focusedReply = "focused"
 
     static func askingOrder(termProgram: String?) -> [String] {
