@@ -444,6 +444,9 @@ final class DictationSessionController {
     var sessionCommitGuard: DestinationCommitGuard?
     @ObservationIgnored
     var sessionStartedAt: Date?
+    /// This start's press → socket → microphone → first buffer line (#527).
+    @ObservationIgnored
+    var sessionCaptureTimeline: CaptureTimeline?
     @ObservationIgnored
     var sessionProvider: SettingsStore.RealtimeProvider?
     @ObservationIgnored

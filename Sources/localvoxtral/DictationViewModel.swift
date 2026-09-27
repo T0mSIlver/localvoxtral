@@ -509,22 +509,25 @@ final class DictationViewModel {
             ducksRealOutput: ducksRealOutput
         )
         let overlay: OverlayBufferSessionCoordinating
+        var overlayPanel: DictationOverlayController?
         if let overlayBufferCoordinator {
             overlay = overlayBufferCoordinator
         } else {
             let anchorResolver = OverlayAnchorResolver()
+            let panel = DictationOverlayController(
+                metricsProvider: {
+                    OverlayLayoutMetrics(
+                        bodyFontSize: settings.overlayBufferFontSize,
+                        visibleLines: settings.overlayBufferVisibleLines,
+                        wordHold: settings.overlayBufferWordHold)
+                },
+                storedPlacementProvider: { settings.overlayBufferPlacement },
+                placementWriter: { settings.overlayBufferPlacement = $0 }
+            )
+            overlayPanel = panel
             overlay = OverlayBufferSessionCoordinator(
                 stateMachine: OverlayBufferStateMachine(),
-                renderer: DictationOverlayController(
-                    metricsProvider: {
-                        OverlayLayoutMetrics(
-                            bodyFontSize: settings.overlayBufferFontSize,
-                            visibleLines: settings.overlayBufferVisibleLines,
-                            wordHold: settings.overlayBufferWordHold)
-                    },
-                    storedPlacementProvider: { settings.overlayBufferPlacement },
-                    placementWriter: { settings.overlayBufferPlacement = $0 }
-                ),
+                renderer: panel,
                 anchorResolver: anchorResolver
             )
         }
@@ -638,6 +641,9 @@ final class DictationViewModel {
         session.destinationKeyHandler.onMove = { [weak session] forward in
             session?.moveDestination(forward: forward)
         }
+        overlayPanel?.onDestinationClick = { [weak session] destination in
+            session?.clickDestination(destination)
+        }
 
         textInsertion.refreshAccessibilityTrustState()
         if startRuntimeServices {
@@ -745,12 +751,13 @@ final class DictationViewModel {
         }
     }
 
-    /// Points the realtime socket, the second pass and the polishing service
+    /// Points both realtime clients, the second pass and the polishing service
     /// (polishes and term suggestions) at `ledger`. Replaces `llmPolishingService`, so a test that
     /// substitutes a fake does so after this.
     func installUsageLedger(_ ledger: UsageLedger) {
         engines.installUsageLedger(ledger)
         session.mistralRealtimeClient.setUsageRecorder(ledger)
+        session.realtimeAPIClient.setUsageRecorder(ledger)
         session.secondPassUsageRecorder = ledger
         llmPolishingService = LLMPolishingService(usageRecorder: ledger)
     }

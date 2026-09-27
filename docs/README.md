@@ -13,6 +13,16 @@
   and their pinned models, bring-your-own-server
 - [Roadmap](roadmap.md)
 
+## Integrations
+
+- [Claude Code](../integrations/claude-code/README.md)
+- [opencode](../integrations/opencode/README.md)
+- [Mistral Vibe](../integrations/vibe/README.md)
+- [Codex](../integrations/codex/README.md)
+- [herdr](../integrations/herdr/README.md): dictating into a herdr pane, on
+  this Mac, on an ssh host and on a federated machine
+- [Remote Claude Code over SSH](remote-claude-context.md)
+
 ## Developing localvoxtral
 
 - [Building from source](building.md), plus [CONTRIBUTING.md](../CONTRIBUTING.md)

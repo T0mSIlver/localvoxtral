@@ -50,6 +50,7 @@ struct DictationSettingsPane: View {
     @State private var copyLastDictationValidationError: String?
     @State private var answerAgentValidationError: String?
     @State private var quickCaptureValidationError: String?
+    @State private var dictationChordValidationError: String?
     @State private var pendingShortcutMove: PendingShortcutMove?
 
     /// A recording that would take the other mode's key, held until the user
@@ -125,6 +126,23 @@ struct DictationSettingsPane: View {
         )
     }
 
+    static let dictationChordNeedsModifiersMessage = "Press two modifier keys together."
+
+    /// The Chord row's recorder also takes a modifier+key shortcut; this slot
+    /// refuses one, since only the keyboard-shortcut trigger registers keys.
+    private var dictationChordBinding: Binding<DictationShortcut?> {
+        Binding(
+            get: { settings.dictationChord.map(DictationShortcut.init(chord:)) },
+            set: { shortcut in
+                if let shortcut, shortcut.modifierChord == nil {
+                    dictationChordValidationError = Self.dictationChordNeedsModifiersMessage
+                    return
+                }
+                dictationChordValidationError = viewModel.shortcuts.requestDictationChord(shortcut?.modifierChord)
+            }
+        )
+    }
+
     private func assignQuickCaptureShortcut(_ shortcut: DictationShortcut?) {
         quickCaptureValidationError = viewModel.shortcuts.requestQuickCaptureShortcut(shortcut)
     }
@@ -169,7 +187,7 @@ struct DictationSettingsPane: View {
                             )
                         }
                     )) {
-                        Text("Single modifier key").tag(true)
+                        Text("Modifier keys").tag(true)
                         Text("Keyboard shortcuts").tag(false)
                     }
                     .pickerStyle(.segmented)
@@ -181,8 +199,8 @@ struct DictationSettingsPane: View {
                         Picker("", selection: Binding(
                             get: { settings.modifierOnlyHotKeyModifier },
                             set: { newValue in
-                                settings.modifierOnlyHotKeyModifier = newValue
-                                viewModel.shortcuts.applyHotKeySettingsChange()
+                                dictationChordValidationError = nil
+                                viewModel.shortcuts.selectModifierKey(newValue)
                             }
                         )) {
                             ForEach(ModifierOnlyHotKeyManager.ModifierKey.allCases) { key in
@@ -191,6 +209,30 @@ struct DictationSettingsPane: View {
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
+                    }
+
+                    if settings.modifierOnlyHotKeyModifier == .chord {
+                        SettingsFieldRow(
+                            title: "Chord keys",
+                            controlAlignment: .top
+                        ) {
+                            ShortcutRecorderField(
+                                shortcut: dictationChordBinding,
+                                validationError: $dictationChordValidationError,
+                                fixedWidth: 132,
+                                acceptsModifierChord: true
+                            )
+                            .frame(height: 24, alignment: .leading)
+                        } footer: {
+                            if let dictationChordValidationError {
+                                SettingsInlineMessage(dictationChordValidationError, color: .red)
+                            } else if settings.dictationChord == nil {
+                                SettingsInlineMessage(
+                                    "Not set. Record one to enable.",
+                                    color: .secondary
+                                )
+                            }
+                        }
                     }
 
                     SettingsFieldRow(title: "Hold delay") {

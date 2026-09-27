@@ -31,10 +31,12 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let settings = makeSettings(outputMode: .liveAutoPaste)
         settings.realtimeAPIEndpointURL = "ws://127.0.0.1:1/realtime"
         let overlayCoordinator = MockOverlayCoordinator()
+        // The dial opens the microphone (#527): never the host's.
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(microphone: { FakeMicrophoneCaptureService() })
         )
         retainForTestProcessLifetime(viewModel)
 
@@ -966,9 +968,9 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
     }
 
     // The Escape Carbon hotkey is armed in a single shared code path
-    // (startAudioCaptureAfterConnection) used by BOTH output modes and BOTH
+    // (beginListeningAfterConnection) used by BOTH output modes and BOTH
     // shortcut modes (push-to-talk and toggle all funnel through
-    // beginDictationSession -> connect -> startAudioCaptureAfterConnection).
+    // beginDictationSession -> connect -> beginListeningAfterConnection).
     // What can regress is therefore the DISARM: every session-teardown path
     // must call escapeCancelHandler.stop(), otherwise Escape is swallowed
     // system-wide while the Carbon hotkey remains registered. These cover each

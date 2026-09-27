@@ -99,7 +99,125 @@ final class ModifierChordShortcutTests: XCTestCase {
         XCTAssertNil(shortcuts.settings.livePasteShortcut)
     }
 
+    // MARK: - The dictation key as a chord (#863)
+
+    func testBothShiftsAsTheDictationKeyTapToggleAndHoldIsPushToTalk() {
+        let (shortcuts, session, timer) = makeDictationChord()
+        let chords = shortcuts.hotKeyManager.chordMonitor
+        XCTAssertEqual(chords.dictationChord, .bothShifts, "both Shifts until another is recorded")
+
+        // A tap: released before the hold delay runs out.
+        chords.debugHandleFlagsChangedForTesting(held: [.leftShift], timestamp: 10.0)
+        chords.debugHandleFlagsChangedForTesting(held: [.leftShift, .rightShift], timestamp: 10.03125)
+        XCTAssertEqual(timer.scheduledDelays, [0.5], "the hold delay setting")
+        chords.debugHandleFlagsChangedForTesting(held: [], timestamp: 10.25)
+        timer.fireAll()
+        XCTAssertEqual(session.toggledModes, [.overlayBuffer])
+        XCTAssertEqual(session.startedModes, [])
+
+        // A hold: still down when the delay runs out, then one Shift lets go.
+        chords.debugHandleFlagsChangedForTesting(held: [.leftShift, .rightShift], timestamp: 20.0)
+        timer.fireAll()
+        XCTAssertEqual(session.startedModes, [.overlayBuffer], "push to talk starts")
+        XCTAssertTrue(session.isDictating)
+        chords.debugHandleFlagsChangedForTesting(held: [.rightShift], timestamp: 23.0)
+        XCTAssertEqual(session.stopReasons, ["modifier hold release"])
+        chords.debugHandleFlagsChangedForTesting(held: [], timestamp: 23.03125)
+        XCTAssertEqual(session.toggledModes, [.overlayBuffer], "no tap after a hold")
+    }
+
+    func testAShiftHeldWhileTypingNeverStartsADictation() {
+        let (shortcuts, session, timer) = makeDictationChord()
+        let chords = shortcuts.hotKeyManager.chordMonitor
+
+        // "Hi", then a stray right Shift before letting go of the left.
+        chords.debugHandleFlagsChangedForTesting(held: [.leftShift], timestamp: 100.0)
+        chords.debugHandleKeyDownForTesting()
+        chords.debugHandleFlagsChangedForTesting(held: [.leftShift, .rightShift], timestamp: 100.5)
+        timer.fireAll()
+        chords.debugHandleFlagsChangedForTesting(held: [], timestamp: 101.0)
+
+        // Both Shifts together, then a letter before the hold delay.
+        chords.debugHandleFlagsChangedForTesting(held: [.leftShift, .rightShift], timestamp: 200.0)
+        chords.debugHandleKeyDownForTesting()
+        timer.fireAll()
+        chords.debugHandleFlagsChangedForTesting(held: [], timestamp: 200.25)
+
+        XCTAssertEqual(session.toggledModes, [])
+        XCTAssertEqual(session.startedModes, [])
+    }
+
+    /// One chord does one job, whichever side records it first.
+    func testTheDictationChordAndTheActionSlotsRefuseEachOther() {
+        let (shortcuts, _, _) = makeDictationChord()
+        XCTAssertEqual(
+            shortcuts.requestQuickCaptureShortcut(bothShifts), ShortcutController.dictationChordConflictMessage)
+        XCTAssertEqual(
+            shortcuts.requestAnswerAgentShortcut(bothShifts), ShortcutController.dictationChordConflictMessage)
+        XCTAssertEqual(
+            shortcuts.requestCopyLastDictationShortcut(bothShifts),
+            ShortcutController.dictationChordConflictMessage)
+        XCTAssertNil(shortcuts.settings.quickCaptureShortcut)
+
+        let bothCommands = ModifierChord(keys: [.leftCommand, .rightCommand])!
+        XCTAssertNil(shortcuts.requestDictationChord(bothCommands))
+        XCTAssertEqual(shortcuts.hotKeyManager.chordMonitor.dictationChord, bothCommands)
+        XCTAssertNil(shortcuts.requestQuickCaptureShortcut(bothShifts), "free once the dictation key moved")
+        XCTAssertEqual(
+            shortcuts.requestDictationChord(.bothShifts), ShortcutController.quickCaptureConflictMessage)
+        XCTAssertEqual(shortcuts.settings.dictationChord, bothCommands, "the refused chord changed nothing")
+    }
+
+    /// A chord an action slot took while Fn dictated is not registered twice
+    /// when the picker goes back to Chord; the row asks for a new one.
+    func testPickingChordDropsAStoredChordAnActionSlotTook() {
+        let (shortcuts, session, _) = makeDictationChord()
+        shortcuts.selectModifierKey(.fn)
+        XCTAssertNil(shortcuts.hotKeyManager.chordMonitor.dictationChord)
+        XCTAssertNil(shortcuts.requestQuickCaptureShortcut(bothShifts))
+
+        shortcuts.selectModifierKey(.chord)
+        XCTAssertNil(shortcuts.settings.dictationChord)
+        XCTAssertNil(shortcuts.hotKeyManager.chordMonitor.dictationChord)
+        XCTAssertEqual(shortcuts.hotKeyManager.chordMonitor.chords[.quickCapture], .bothShifts)
+        XCTAssertNil(session.lastError)
+
+        let relaunched = SettingsStore(
+            defaults: shortcuts.settings.defaults, environment: [:], secretStore: InMemorySecretStore())
+        XCTAssertNil(relaunched.dictationChord, "the dropped chord stays dropped")
+    }
+
+    /// Back on keyboard shortcuts, the chord monitor lets the dictation
+    /// chord go and the Carbon dictation shortcut takes over.
+    func testLeavingTheModifierKeysTriggerRemovesTheDictationChord() {
+        let (shortcuts, session, timer) = makeDictationChord()
+        HotKeyManager.debugForceHandlerInstallResultForTesting(true)
+        HotKeyManager.debugForceRegisterStatusForTesting(hotKeyID: .overlay, status: noErr)
+        addTeardownBlock { @MainActor in HotKeyManager.debugResetOverridesForTesting() }
+
+        shortcuts.applyDictationTriggerModeChange(modifierOnlyEnabled: false)
+        XCTAssertNil(shortcuts.hotKeyManager.chordMonitor.dictationChord)
+        let chords = shortcuts.hotKeyManager.chordMonitor
+        chords.debugHandleFlagsChangedForTesting(held: [.leftShift, .rightShift], timestamp: 1.0)
+        chords.debugHandleFlagsChangedForTesting(held: [], timestamp: 1.125)
+        XCTAssertEqual(timer.scheduledDelays, [])
+        XCTAssertEqual(session.toggledModes, [])
+    }
+
     // MARK: - Helpers
+
+    /// The modifier-key trigger set to Chord, with a 500 ms hold delay the
+    /// test plays through `HoldSchedulerProbe`.
+    private func makeDictationChord() -> (ShortcutController, FakeShortcutSession, HoldSchedulerProbe) {
+        let (shortcuts, session) = makeShortcuts()
+        session.startDictationSucceeds = true
+        let timer = HoldSchedulerProbe()
+        shortcuts.hotKeyManager.chordMonitor.holdScheduler = timer.scheduler
+        shortcuts.settings.modifierOnlyHotKeyEnabled = true
+        shortcuts.settings.modifierOnlyHoldDelay = 0.5
+        shortcuts.selectModifierKey(.chord)
+        return (shortcuts, session, timer)
+    }
 
     private func forceActionRegistrationSuccess() {
         HotKeyManager.debugResetOverridesForTesting()

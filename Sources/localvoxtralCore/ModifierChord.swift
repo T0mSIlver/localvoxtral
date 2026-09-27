@@ -181,8 +181,19 @@ package struct ModifierChordDetector: Sendable {
 
     /// A non-modifier key went down: any attempt in progress is cancelled.
     package mutating func keyPressed() {
+        cancel()
+    }
+
+    /// The attempt in progress can't fire; the next starts once every key is up.
+    package mutating func cancel() {
         if case .idle = phase { return }
         phase = .cancelled
+    }
+
+    /// Every key of the chord went down in time and nothing cancelled it yet.
+    package var isArmed: Bool {
+        if case .armed = phase { return true }
+        return false
     }
 
     /// Forget the attempt in progress, as if every key were up.
@@ -201,6 +212,95 @@ package struct ModifierChordDetector: Sendable {
         }
         phase = .armed
         return .armed(gap: gap)
+    }
+}
+
+/// The dictation key as a chord (#863): a tap toggles, a hold is push to
+/// talk, like the single modifier key.
+///
+/// `ModifierChordDetector` decides whether the keys count as the chord. Once
+/// they do, the caller waits `holdDelay` and calls `holdDelayElapsed`: with
+/// every key still down and nothing pressed since, that starts the hold. So
+/// a slow tap and a hold differ by the hold delay alone, measured from the
+/// moment the last key of the chord went down. A tap fires on release, as
+/// the action chords do; a hold ends as soon as one key of the chord goes up
+/// or anything else is pressed.
+package struct ModifierChordGesture: Sendable {
+    package enum Outcome: Equatable, Sendable {
+        case none
+        /// Every key is down in time. Call `holdDelayElapsed(attempt:)` after
+        /// the hold delay; `attempt` tells a stale call from the current one.
+        case armed(gap: TimeInterval, attempt: UInt64)
+        case tooSlow(gap: TimeInterval)
+        case tap
+        case holdStart
+        case holdEnd
+    }
+
+    private var detector: ModifierChordDetector
+    private var held = Set<SidedModifier>()
+    private var attempt: UInt64 = 0
+    private var holding = false
+
+    package var chord: ModifierChord { detector.chord }
+    /// A hold started and hasn't ended.
+    package var isHolding: Bool { holding }
+
+    package init(chord: ModifierChord, window: TimeInterval = ModifierChordDetector.defaultWindow) {
+        detector = ModifierChordDetector(chord: chord, window: window)
+    }
+
+    package mutating func modifiersChanged(
+        held: Set<SidedModifier>, otherModifierHeld: Bool = false, at time: TimeInterval
+    ) -> Outcome {
+        self.held = otherModifierHeld ? [] : held
+        if holding, held != chord.keys || otherModifierHeld {
+            endHold()
+            _ = detector.modifiersChanged(held: held, otherModifierHeld: otherModifierHeld, at: time)
+            return .holdEnd
+        }
+        switch detector.modifiersChanged(held: held, otherModifierHeld: otherModifierHeld, at: time) {
+        case .none:
+            return .none
+        case .armed(let gap):
+            attempt &+= 1
+            return .armed(gap: gap, attempt: attempt)
+        case .tooSlow(let gap):
+            return .tooSlow(gap: gap)
+        case .fire:
+            return .tap
+        }
+    }
+
+    /// A non-modifier key went down: it cancels a tap, and ends a hold.
+    package mutating func keyPressed() -> Outcome {
+        if holding {
+            endHold()
+            return .holdEnd
+        }
+        detector.keyPressed()
+        return .none
+    }
+
+    /// The hold delay passed since `.armed(attempt:)`.
+    package mutating func holdDelayElapsed(attempt: UInt64) -> Outcome {
+        guard attempt == self.attempt, !holding, detector.isArmed, held == chord.keys else { return .none }
+        holding = true
+        return .holdStart
+    }
+
+    /// Forget the gesture in progress, a hold included, without an outcome.
+    package mutating func reset() {
+        detector.reset()
+        held = []
+        holding = false
+        attempt &+= 1
+    }
+
+    /// The rest of this press is neither a tap nor a hold.
+    private mutating func endHold() {
+        holding = false
+        detector.cancel()
     }
 }
 

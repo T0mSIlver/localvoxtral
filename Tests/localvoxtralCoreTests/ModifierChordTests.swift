@@ -131,3 +131,91 @@ final class ModifierChordRecorderTests: XCTestCase {
         XCTAssertEqual(recorder.modifiersChanged(held: [], at: 3.5), .tooSlow)
     }
 }
+
+/// The dictation key as a chord (#863): a tap toggles, a hold past the hold
+/// delay is push to talk. The test plays the timer: it calls
+/// `holdDelayElapsed` where the app's hold delay would run out.
+final class ModifierChordGestureTests: XCTestCase {
+    private let left: Set<SidedModifier> = [.leftShift]
+    private let right: Set<SidedModifier> = [.rightShift]
+    private let both: Set<SidedModifier> = [.leftShift, .rightShift]
+
+    private func gesture() -> ModifierChordGesture {
+        ModifierChordGesture(chord: .bothShifts, window: 0.100)
+    }
+
+    func testReleasedBeforeTheHoldDelayIsATap() {
+        var key = gesture()
+        _ = key.modifiersChanged(held: left, at: 1.0)
+        XCTAssertEqual(key.modifiersChanged(held: both, at: 1.03125), .armed(gap: 0.03125, attempt: 1))
+        XCTAssertEqual(key.modifiersChanged(held: right, at: 1.25), .none)
+        XCTAssertEqual(key.modifiersChanged(held: [], at: 1.3), .tap)
+        XCTAssertEqual(key.holdDelayElapsed(attempt: 1), .none, "the delay ran out after the release")
+    }
+
+    func testStillDownWhenTheHoldDelayEndsIsAHoldThatEndsWithTheFirstKeyUp() {
+        var key = gesture()
+        _ = key.modifiersChanged(held: right, at: 1.0)
+        XCTAssertEqual(key.modifiersChanged(held: both, at: 1.0625), .armed(gap: 0.0625, attempt: 1))
+        XCTAssertEqual(key.holdDelayElapsed(attempt: 1), .holdStart)
+        XCTAssertTrue(key.isHolding)
+        XCTAssertEqual(key.modifiersChanged(held: left, at: 3.0), .holdEnd)
+        XCTAssertFalse(key.isHolding)
+        XCTAssertEqual(key.modifiersChanged(held: [], at: 3.03125), .none, "no tap after a hold")
+
+        XCTAssertEqual(key.modifiersChanged(held: both, at: 5.0), .armed(gap: 0, attempt: 2))
+        XCTAssertEqual(key.modifiersChanged(held: [], at: 5.125), .tap, "the next press starts afresh")
+    }
+
+    func testAShiftHeldWhileTypingIsNeitherATapNorAHold() {
+        var key = gesture()
+        _ = key.modifiersChanged(held: left, at: 0.0)
+        XCTAssertEqual(key.keyPressed(), .none) // H
+        XCTAssertEqual(key.modifiersChanged(held: both, at: 0.05), .none, "a letter came first")
+        XCTAssertEqual(key.modifiersChanged(held: [], at: 0.2), .none)
+
+        // The second Shift long after the first: too slow, so no timer either.
+        _ = key.modifiersChanged(held: left, at: 1.0)
+        XCTAssertEqual(key.modifiersChanged(held: both, at: 1.5), .tooSlow(gap: 0.5))
+        XCTAssertEqual(key.modifiersChanged(held: [], at: 2.0), .none)
+    }
+
+    func testAKeyTypedBeforeTheHoldDelayCancelsBothAndOneTypedDuringAHoldEndsIt() {
+        var key = gesture()
+        _ = key.modifiersChanged(held: both, at: 0.0)
+        XCTAssertEqual(key.keyPressed(), .none)
+        XCTAssertEqual(key.holdDelayElapsed(attempt: 1), .none)
+        XCTAssertEqual(key.modifiersChanged(held: [], at: 0.5), .none)
+
+        _ = key.modifiersChanged(held: both, at: 1.0)
+        XCTAssertEqual(key.holdDelayElapsed(attempt: 2), .holdStart)
+        XCTAssertEqual(key.keyPressed(), .holdEnd)
+        XCTAssertEqual(key.modifiersChanged(held: [], at: 2.0), .none)
+    }
+
+    func testAnotherModifierDuringAHoldEndsIt() {
+        var key = gesture()
+        _ = key.modifiersChanged(held: both, at: 0.0)
+        XCTAssertEqual(key.holdDelayElapsed(attempt: 1), .holdStart)
+        XCTAssertEqual(key.modifiersChanged(held: both.union([.leftCommand]), at: 1.0), .holdEnd)
+        XCTAssertEqual(key.modifiersChanged(held: [], at: 1.5), .none)
+    }
+
+    /// A timer from an earlier press, or one that ends while a key of the
+    /// chord is up, starts nothing.
+    func testAStaleOrInterruptedHoldDelayStartsNoHold() {
+        var key = gesture()
+        _ = key.modifiersChanged(held: both, at: 0.0)
+        _ = key.modifiersChanged(held: [], at: 0.125)
+        _ = key.modifiersChanged(held: both, at: 1.0)
+        XCTAssertEqual(key.holdDelayElapsed(attempt: 1), .none, "the first press's timer")
+
+        XCTAssertEqual(key.modifiersChanged(held: left, at: 1.1), .none)
+        XCTAssertEqual(key.holdDelayElapsed(attempt: 2), .none, "right Shift is up")
+        XCTAssertEqual(key.modifiersChanged(held: [], at: 1.2), .tap)
+
+        _ = key.modifiersChanged(held: both, at: 2.0)
+        key.reset()
+        XCTAssertEqual(key.holdDelayElapsed(attempt: 3), .none, "reset forgets the press")
+    }
+}

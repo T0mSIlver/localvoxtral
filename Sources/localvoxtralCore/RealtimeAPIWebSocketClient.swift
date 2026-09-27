@@ -15,6 +15,13 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         case awaitingFinalCommitTranscriptionDone
     }
 
+    /// A frame held until the handshake, with the PCM bytes it carries (zero
+    /// for a control frame) so audio is counted only once it is sent.
+    private struct PendingFrame {
+        let text: String
+        let audioBytes: Int
+    }
+
     private struct State {
         var base = BaseState()
         var pingTimer: DispatchSourceTimer?
@@ -25,8 +32,13 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         var hasUncommittedAudio = false
         var isGenerationInProgress = false
         var finalCommitCompletionGate: FinalCommitCompletionGate = .idle
-        var pendingMessages: [String] = []
+        var pendingMessages: [PendingFrame] = []
         var pendingModelName = ""
+        /// The open socket's ledger line: who serves it, the model it asked
+        /// for, and the PCM bytes handed to it. Nil backend records nothing.
+        var usageBackend: UsageEntry.Backend?
+        var usageModel = ""
+        var sentAudioBytes = 0
         #if DEBUG
         var skipsSocketCreationForTesting = false
         var lastConnectConfigurationForTesting: RealtimeSessionConfiguration?
@@ -34,12 +46,27 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     }
 
     private let state = Mutex(State())
+    private let usageRecorder = Mutex<(any RealtimeUsageRecording)?>(nil)
+    /// The date a closing socket's usage is filed under; injected so tests
+    /// read no wall clock.
+    private let usageDate: @Sendable () -> Date
     package let supportsPeriodicCommit = true
     package var isConnected: Bool {
         state.withLock { $0.base.socketState == .connected }
     }
     package var connectionGeneration: RealtimeConnectionGeneration {
         state.withLock { $0.base.connectionGeneration }
+    }
+
+    package init(usageDate: @escaping @Sendable () -> Date = { Date() }) {
+        self.usageDate = usageDate
+        super.init()
+    }
+
+    /// Where each socket reports the audio it sent when it closes. Nil (the
+    /// default) records nothing.
+    package func setUsageRecorder(_ recorder: (any RealtimeUsageRecording)?) {
+        usageRecorder.withLock { $0 = recorder }
     }
 
     override func withBaseState<R>(_ body: (inout BaseState) -> R) -> R {
@@ -82,7 +109,8 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         let modelName = configuration.model.trimmed
         debugLog("connect endpoint=\(configuration.endpoint.absoluteString) model=\(modelName)")
 
-        state.withLock { s in
+        let previousUsage: SocketUsage? = state.withLock { s in
+            let usage = takeUsageLocked(&s)
             closeSocketLocked(&s, cancelTask: true)
             // Stamped in the SAME locked block as the swap. A separate
             // acquisition would leave a window where the outgoing socket is
@@ -105,19 +133,25 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             s.hasUncommittedAudio = false
             s.isGenerationInProgress = false
             s.finalCommitCompletionGate = .idle
+            s.usageBackend = configuration.usageBackend
+            s.usageModel = modelName
 
             task.resume()
+            return usage
         }
+        recordUsage(previousUsage)
     }
 
     package func disconnect() {
-        let closed: RealtimeConnectionGeneration? = state.withLock { s in
-            guard s.base.socketState != .disconnected else { return nil }
+        let (closed, usage): (RealtimeConnectionGeneration?, SocketUsage?) = state.withLock { s in
+            guard s.base.socketState != .disconnected else { return (nil, nil) }
             s.base.isUserInitiatedDisconnect = true
             let generation = s.base.connectionGeneration
+            let usage = takeUsageLocked(&s)
             closeSocketLocked(&s, cancelTask: true)
-            return generation
+            return (generation, usage)
         }
+        recordUsage(usage)
 
         if let closed {
             debugLog("disconnect")
@@ -133,7 +167,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             "type": "input_audio_buffer.append",
             "audio": pcm16Data.base64EncodedString(),
         ]
-        send(event: payload)
+        send(event: payload, audioBytes: pcm16Data.count)
     }
 
     package func sendCommit(final: Bool) {
@@ -195,7 +229,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         switch type {
         case "session.created":
             emit(.status("Session ready."), from: generation)
-            let startup: (modelName: String, shouldSendUpdate: Bool, queuedMessages: [String])? =
+            let startup: (modelName: String, shouldSendUpdate: Bool, queuedMessages: [PendingFrame])? =
                 state.withLock { s in
                     // The socket this frame was read from, not whichever one
                     // the client holds now: a stale handshake applied here
@@ -224,7 +258,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                 send(event: ["type": "session.update", "model": startup.modelName])
             }
             for message in startup.queuedMessages {
-                sendText(message)
+                sendText(message.text, audioBytes: message.audioBytes)
             }
         case "session.updated":
             emit(.status("Session updated."), from: generation)
@@ -298,7 +332,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         case dropped
     }
 
-    private func send(event: [String: Any]) {
+    private func send(event: [String: Any], audioBytes: Int = 0) {
         guard JSONSerialization.isValidJSONObject(event) else {
             emit(.error("Invalid JSON payload generated."), from: currentConnectionGeneration)
             return
@@ -314,7 +348,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             if let type = event["type"] as? String {
                 debugLog("queue event type=\(type)")
             }
-            sendText(text)
+            sendText(text, audioBytes: audioBytes)
         } catch {
             emit(
                 .error("Failed to serialize WebSocket payload: \(error.localizedDescription)"),
@@ -322,18 +356,22 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         }
     }
 
-    private func sendText(_ text: String) {
+    private func sendText(_ text: String, audioBytes: Int = 0) {
         let action: SendAction = state.withLock { s in
             switch s.base.socketState {
             case .connected:
                 guard s.hasReceivedSessionCreated || s.hasBypassedSessionCreatedGate else {
-                    s.pendingMessages.append(text)
+                    s.pendingMessages.append(PendingFrame(text: text, audioBytes: audioBytes))
                     return .queued
                 }
                 guard let webSocketTask = s.base.webSocketTask else { return .dropped }
+                // Counted when handed to the socket, as the Mistral client
+                // does: a send that fails as the socket dies over-counts by
+                // the frames in flight.
+                s.sentAudioBytes += audioBytes
                 return .send(task: webSocketTask, text: text)
             case .connecting:
-                s.pendingMessages.append(text)
+                s.pendingMessages.append(PendingFrame(text: text, audioBytes: audioBytes))
                 return .queued
             case .disconnected:
                 return .dropped
@@ -399,7 +437,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         timer.setEventHandler { [weak self] in
             guard let self else { return }
             let startup:
-                (modelName: String, shouldSendUpdate: Bool, queuedMessages: [String])? = self.state
+                (modelName: String, shouldSendUpdate: Bool, queuedMessages: [PendingFrame])? = self.state
                     .withLock { s in
                         // Cancelling a DispatchSourceTimer does not unqueue a
                         // handler already on its way: without this, a timer
@@ -430,7 +468,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                 self.send(event: ["type": "session.update", "model": startup.modelName])
             }
             for message in startup.queuedMessages {
-                self.sendText(message)
+                self.sendText(message.text, audioBytes: message.audioBytes)
             }
         }
         s.sessionReadyTimer = timer
@@ -451,17 +489,22 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         for task: URLSessionWebSocketTask, errorMessage: String?
     ) {
         let outcome:
-            (error: String?, disconnected: Bool, generation: RealtimeConnectionGeneration) =
+            (
+                error: String?, disconnected: Bool, usage: SocketUsage?,
+                generation: RealtimeConnectionGeneration
+            ) =
             state.withLock { s in
                 guard s.base.socketState != .disconnected, s.base.webSocketTask === task else {
-                    return (nil, false, .none)
+                    return (nil, false, nil, .none)
                 }
 
                 let shouldEmitError = !s.base.isUserInitiatedDisconnect
                 let generation = s.base.connectionGeneration
+                let usage = takeUsageLocked(&s)
                 closeSocketLocked(&s, cancelTask: false)
-                return (shouldEmitError ? errorMessage : nil, true, generation)
+                return (shouldEmitError ? errorMessage : nil, true, usage, generation)
             }
+        recordUsage(outcome.usage)
 
         if let error = outcome.error {
             emit(.error(error), from: outcome.generation)
@@ -469,6 +512,40 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         if outcome.disconnected {
             emit(.disconnected, from: outcome.generation)
         }
+    }
+
+    // MARK: - Usage
+
+    private struct SocketUsage {
+        let backend: UsageEntry.Backend
+        let model: String
+        let audioSeconds: Double
+    }
+
+    /// The closing socket's entry, nil when it has no backend or sent no
+    /// audio. Resets the counters, so each socket is recorded exactly once
+    /// whichever path closes it.
+    private func takeUsageLocked(_ s: inout State) -> SocketUsage? {
+        defer {
+            s.usageBackend = nil
+            s.usageModel = ""
+            s.sentAudioBytes = 0
+        }
+        guard let backend = s.usageBackend, s.sentAudioBytes > 0 else { return nil }
+        return SocketUsage(
+            backend: backend,
+            // A user server may take no model name; the ledger needs one.
+            model: s.usageModel.isEmpty ? "default" : s.usageModel,
+            // 16 kHz mono S16, what the capture pipeline sends both clients.
+            audioSeconds: Double(s.sentAudioBytes) / Double(MistralRealtimeWebSocketClient.audioSampleRate * 2)
+        )
+    }
+
+    private func recordUsage(_ usage: SocketUsage?) {
+        guard let usage, let recorder = usageRecorder.withLock({ $0 }) else { return }
+        recorder.recordRealtimeDictation(
+            date: usageDate(), backend: usage.backend, model: usage.model, audioSeconds: usage.audioSeconds
+        )
     }
 
     // MARK: - State Cleanup
@@ -547,7 +624,11 @@ extension RealtimeAPIWebSocketClient {
     }
 
     package func debugPrimeConnectedStateForTesting(
-        task: URLSessionWebSocketTask, isUserInitiatedDisconnect: Bool = false
+        task: URLSessionWebSocketTask,
+        isUserInitiatedDisconnect: Bool = false,
+        hasReceivedSessionCreated: Bool = false,
+        usageBackend: UsageEntry.Backend? = nil,
+        usageModel: String = ""
     ) {
         state.withLock { s in
             closeSocketLocked(&s, cancelTask: false)
@@ -555,7 +636,11 @@ extension RealtimeAPIWebSocketClient {
             s.base.webSocketTask = task
             s.base.socketState = .connected
             s.base.isUserInitiatedDisconnect = isUserInitiatedDisconnect
-            s.pendingMessages = ["pending-message"]
+            s.hasReceivedSessionCreated = hasReceivedSessionCreated
+            s.usageBackend = usageBackend
+            s.usageModel = usageModel
+            s.sentAudioBytes = 0
+            s.pendingMessages = [PendingFrame(text: "pending-message", audioBytes: 0)]
             s.hasUncommittedAudio = true
             s.isGenerationInProgress = true
             startPingTimerLocked(&s)
