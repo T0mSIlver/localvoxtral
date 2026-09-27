@@ -993,7 +993,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 },
                 projectTerms: projectTerms,
-                quickCapture: quickCapture
+                quickCapture: quickCapture,
+                doctor: RemoteDoctorRoute { @MainActor [weak viewModel] hostID in
+                    guard let viewModel else { return [] }
+                    return await AgentCLIAppDataSource(viewModel: viewModel).hostDoctorChecks(hostID: hostID)
+                }
             )
         }
         claudeRemoteListenerCoordinator = coordinator

@@ -124,6 +124,9 @@ public final class ClaudeRemoteContextListener: Sendable {
     /// Quick capture's asks for a remote project's README and drafts (#745),
     /// and their three routes. Nil without an Inbox; the routes then 404.
     private let quickCapture: RemoteQuickCaptureRequests?
+    /// The Mac's half of a host's `localvoxtral doctor` (#910). Nil without
+    /// the app's checks; the route then 404s.
+    private let doctor: RemoteDoctorRoute?
 
     #if DEBUG
     private let debugPostAuthenticationHook = Mutex<(@Sendable () -> Void)?>(nil)
@@ -174,8 +177,10 @@ public final class ClaudeRemoteContextListener: Sendable {
         uptimeNanos: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
         onRemoteHerdrActivity: @escaping @Sendable (String, String) -> Void = { _, _ in },
         projectTerms: RemoteProjectTermRequests? = nil,
-        quickCapture: RemoteQuickCaptureRequests? = nil
+        quickCapture: RemoteQuickCaptureRequests? = nil,
+        doctor: RemoteDoctorRoute? = nil
     ) {
+        self.doctor = doctor
         self.projectTerms = projectTerms
         self.quickCapture = quickCapture
         self.registry = registry
@@ -564,6 +569,11 @@ public final class ClaudeRemoteContextListener: Sendable {
             return
         }
 
+        if request.path == RemoteDoctorRoute.path {
+            serveDoctor(fd: fd, request: request, token: token, host: host)
+            return
+        }
+
         guard ClaudeRemoteHTTPCodec.eventName(inPath: request.path) != nil else {
             respond(fd: fd, status: 404)
             return
@@ -852,6 +862,31 @@ public final class ClaudeRemoteContextListener: Sendable {
         }
     }
 
+    /// A host's doctor asks for the Mac's checks. Reads no body, records no
+    /// activity: running doctor is not the host sending context.
+    private func serveDoctor(fd: Int32, request: ClaudeRemoteHTTPRequest, token: String, host: ClaudeRemoteHost) {
+        guard let doctor else {
+            respond(fd: fd, status: 404)
+            return
+        }
+        // Re-authenticated as ingest is: a host revoked since the first
+        // check gets nothing.
+        guard hosts.withAuthenticatedHost(token: token, expectedHostID: host.id, { _ in true }) == true else {
+            Log.claudeContext.error("Rejected remote doctor request: host was revoked")
+            respond(fd: fd, status: 401)
+            return
+        }
+        let json = request.headers["accept"]?.contains("application/json") == true
+        switch doctor.answer(hostID: host.id, json: json) {
+        case .timedOut:
+            Log.backends.error("Remote doctor: the app did not answer in time")
+            respond(fd: fd, status: 503)
+        case .body(let body, let contentType):
+            Log.backends.info("Remote doctor: answered a host, \(body.count, privacy: .public) bytes")
+            respond(fd: fd, status: 200, body: body, contentType: contentType)
+        }
+    }
+
     private func refuseQuickCapture(fd: Int32, status: Int, _ reason: String) {
         Log.backends.error("Quick capture: refused a remote answer: \(reason, privacy: .public)")
         respond(fd: fd, status: status)
@@ -998,7 +1033,8 @@ public final class ClaudeRemoteContextListener: Sendable {
         sessionStatus: ClaudeRemoteSessionStatus? = nil,
         readmeWanted: Bool = false,
         draftID: String? = nil,
-        termsWanted: Bool = false
+        termsWanted: Bool = false,
+        contentType: String = "application/json"
     ) {
         let data = ClaudeRemoteHTTPCodec.response(
             status: status,
@@ -1006,7 +1042,8 @@ public final class ClaudeRemoteContextListener: Sendable {
             sessionStatus: sessionStatus,
             termsWanted: termsWanted,
             readmeWanted: readmeWanted,
-            draftID: draftID
+            draftID: draftID,
+            contentType: contentType
         )
         _ = data.withUnsafeBytes { raw -> Int in
             guard let base = raw.baseAddress else { return 0 }

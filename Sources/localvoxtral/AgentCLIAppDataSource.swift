@@ -86,7 +86,7 @@ final class AgentCLIAppDataSource: AgentCLIDataSource {
         guard let viewModel else {
             return AgentCLIDoctorFacts(
                 microphone: .notAsked, accessibilityTrusted: false, speech: .off, polish: .off,
-                claudePlugin: nil, remoteHosts: [], lastJoinLine: nil, now: Date()
+                claudePlugin: nil, remoteHosts: [], recentJoins: [], now: Date()
             )
         }
         let settings = viewModel.settings
@@ -117,31 +117,80 @@ final class AgentCLIAppDataSource: AgentCLIDataSource {
             case .externalURL: .externalURL
             }
         }
-        var claudePlugin: ClaudePluginStatus?
-        var hosts: [AgentCLIDoctorFacts.RemoteHost] = []
-        if let integration = viewModel.claudeIntegrationSettings {
-            await integration.refreshLocalPluginStatus()
-            integration.refreshHosts()
-            claudePlugin = integration.localPluginStatus
-            hosts = integration.hosts.filter { !$0.isRevoked }.map { row in
-                AgentCLIDoctorFacts.RemoteHost(
-                    label: row.label,
-                    sshHostAlias: row.sshHostAlias,
-                    lastSeenAt: row.lastSeenAt,
-                    pluginNeedsUpdate: row.pluginNeedsUpdate,
-                    forwardFailure: row.forwardIsFailure ? row.forwardStatusText : nil
-                )
-            }
-        }
-        return AgentCLIDoctorFacts(
+        var facts = AgentCLIDoctorFacts(
+            appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+            appBundlePath: Bundle.main.bundlePath,
+            commandLink: Self.commandLink(),
             microphone: microphone,
             accessibilityTrusted: viewModel.isAccessibilityTrusted,
             speech: speech,
             polish: polish,
-            claudePlugin: claudePlugin,
-            remoteHosts: hosts,
-            lastJoinLine: viewModel.context.lastJoinOutcomeLine,
+            claudePlugin: nil,
+            remoteHosts: [],
+            recentJoins: viewModel.context.recentJoinOutcomes,
             now: Date()
+        )
+        if let integration = viewModel.claudeIntegrationSettings {
+            // Both list plugins through their CLI (1–3 s each), so together,
+            // inside the broker's 10 s.
+            async let claude: Void = integration.refreshLocalPluginStatus()
+            async let codex: Void = integration.refreshCodexStatus()
+            _ = await (claude, codex)
+            integration.refreshOpencodeStatus()
+            integration.refreshVibeStatus()
+            integration.refreshDictationNoteStatuses()
+            integration.refreshHosts()
+            facts.claudePlugin = integration.localPluginStatus
+            facts.codexPlugin = integration.codexStatus
+            facts.codexHookHeard = integration.codexHookHeard
+            facts.opencodePlugin = integration.opencodeStatus
+            facts.vibeHooks = integration.vibeStatus
+            facts.dictationNotes = integration.dictationNoteStatuses
+            facts.remoteHosts = Self.remoteHosts(integration)
+        }
+        return facts
+    }
+
+    /// Enrolled hosts in the Remote hosts pane's order, revoked ones left out.
+    static func remoteHosts(_ integration: ClaudeIntegrationSettingsModel) -> [AgentCLIDoctorFacts.RemoteHost] {
+        let reported = Dictionary(
+            (integration.registry?.hosts() ?? []).map { ($0.id, $0.reportedPluginVersion) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return integration.hosts.filter { !$0.isRevoked }.map { row in
+            let plugin: String? = switch reported[row.id] ?? nil {
+            case nil: nil
+            case .headerAbsent: "1.9.0 or older"
+            case .version(let version): version
+            }
+            return AgentCLIDoctorFacts.RemoteHost(
+                label: row.label,
+                sshHostAlias: row.sshHostAlias,
+                lastSeenAt: row.lastSeenAt,
+                pluginNeedsUpdate: row.pluginNeedsUpdate,
+                forwardFailure: row.forwardIsFailure ? row.forwardStatusText : nil,
+                keepsTunnelOpen: row.persistentForwardEnabled,
+                reportedPluginVersion: plugin
+            )
+        }
+    }
+
+    /// Host-safe checks for the enrolled host with this id
+    /// (`AgentCLIDoctorChecks.hostChecks`), for the remote listener's
+    /// `/v1/doctor`.
+    func hostDoctorChecks(hostID: String) async -> [AgentCLICheck] {
+        let facts = await doctorFacts()
+        let rows = viewModel?.claudeIntegrationSettings?.hosts.filter { !$0.isRevoked } ?? []
+        return AgentCLIDoctorChecks.hostChecks(facts, hostIndex: rows.firstIndex { $0.id == hostID })
+    }
+
+    static func commandLink() -> AgentCLIDoctorFacts.CommandLink? {
+        guard let binary = Bundle.main.executableURL?.deletingLastPathComponent()
+            .appendingPathComponent(AgentCLIInstallState.binaryName).path
+        else { return nil }
+        return AgentCLIDoctorFacts.CommandLink(
+            state: AgentCLIInstallState.read(bundledBinary: binary),
+            target: try? FileManager.default.destinationOfSymbolicLink(atPath: AgentCLIInstallState.linkPath)
         )
     }
 

@@ -14,6 +14,8 @@ public struct AgentCLIInvocation: Equatable, Sendable {
 
 public enum AgentCLIParseResult: Equatable, Sendable {
     case run(AgentCLIInvocation)
+    /// `logs` reads the unified log itself; it never asks the app.
+    case logs(AgentCLILogsQuery)
     case help
     case usageError(String)
 }
@@ -50,17 +52,22 @@ public struct AgentCLIArguments: Sendable {
               --project <dir>       the project (default: the current directory)
               --agent <name>        claude, codex, opencode or vibe (default: detected)
           status                  whether the app runs, its engines, the last join
-          doctor                  checks permissions, engines, plugins, remote hosts
-                                  and the last join, with a fix for each problem
+          doctor                  checks the app, permissions, engines, agent hooks,
+                                  remote hosts and the last joins, with a fix for
+                                  each problem
+          logs                    the app's join lines and errors from the unified log
+              --join                only the join lines, one per dictation
+              --since <when>        as for history search (default 1h)
 
         Every command takes --json. Exit status: 0 answered, 1 the app refused,
-        2 bad arguments, 3 the app is not running.
+        2 bad arguments, 3 the app is not running, 4 a doctor check failed.
         """
 
     public func parse(_ arguments: [String]) -> AgentCLIParseResult {
         var positional: [String] = []
         var options: [String: String] = [:]
         var json = false
+        var joinOnly = false
         var index = 0
         let valued: Set<String> = ["--project", "--since", "--limit", "--agent"]
         while index < arguments.count {
@@ -70,6 +77,8 @@ public struct AgentCLIArguments: Sendable {
                 return .help
             case "--json":
                 json = true
+            case "--join":
+                joinOnly = true
             case "--":
                 positional += arguments[(index + 1)...]
                 index = arguments.count
@@ -92,6 +101,19 @@ public struct AgentCLIArguments: Sendable {
 
         guard let group = positional.first, group != "help" else { return .help }
         let rest = Array(positional.dropFirst())
+        if group == "logs" {
+            if let stray = options.keys.sorted().first(where: { $0 != "--since" }) {
+                return .usageError("\(stray) does not apply to logs")
+            }
+            if let operand = rest.first { return .usageError("unexpected argument: \(operand)") }
+            var start = now.addingTimeInterval(-AgentCLILogsQuery.defaultWindow)
+            if let value = options["--since"] {
+                guard let since = since(value) else { return .usageError(Self.sinceUsage) }
+                start = since
+            }
+            return .logs(AgentCLILogsQuery(joinOnly: joinOnly, since: start, json: json))
+        }
+        if joinOnly { return .usageError("--join applies to logs only") }
         let command: AgentCLICommand
         var operands: [String]
         switch group {
@@ -154,7 +176,7 @@ public struct AgentCLIArguments: Sendable {
         }
         if let value = options["--since"] {
             guard let since = since(value) else {
-                return .usageError("--since takes today, yesterday, 3d, 12h, 30m, 2w, or a date like 2026-09-25")
+                return .usageError(Self.sinceUsage)
             }
             request.since = since
         }
@@ -166,6 +188,8 @@ public struct AgentCLIArguments: Sendable {
         }
         return .run(AgentCLIInvocation(request: request, json: json))
     }
+
+    static let sinceUsage = "--since takes today, yesterday, 3d, 12h, 30m, 2w, or a date like 2026-09-25"
 
     /// A directory becomes an absolute path; anything else is a project name.
     /// Something that looks like a path is a path: `.`, `..`, `~`, or any

@@ -22,7 +22,7 @@ package final class FixtureAgentCLIDataSource: AgentCLIDataSource, @unchecked Se
             polish: .off,
             claudePlugin: nil,
             remoteHosts: [],
-            lastJoinLine: nil,
+            recentJoins: [],
             now: Date(timeIntervalSince1970: 1_790_000_000)
         )
         package var now = Date(timeIntervalSince1970: 1_790_000_000)

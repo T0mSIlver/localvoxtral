@@ -389,13 +389,19 @@ public struct AgentCLICheck: Sendable, Equatable, Codable {
     public var state: State
     public var detail: String
     public var fix: String?
+    /// Supporting lines, such as the last dictations' join lines, most
+    /// recent first.
+    public var lines: [String]?
 
-    public init(id: String, title: String, state: State, detail: String, fix: String? = nil) {
+    public init(
+        id: String, title: String, state: State, detail: String, fix: String? = nil, lines: [String]? = nil
+    ) {
         self.id = id
         self.title = title
         self.state = state
         self.detail = detail
         self.fix = fix
+        self.lines = lines
     }
 }
 
@@ -404,6 +410,32 @@ public struct AgentCLIDoctor: Sendable, Equatable, Codable {
 
     public init(checks: [AgentCLICheck]) {
         self.checks = checks
+    }
+
+    public var hasFailure: Bool { checks.contains { $0.state == .failed } }
+
+    /// Numbered, so a person can say "check 4" and an agent can quote it.
+    /// The Mac's `doctor` and a remote host's print the same form.
+    public func textLines(numberedFrom first: Int = 1) -> [String] {
+        var lines: [String] = []
+        for (index, check) in checks.enumerated() {
+            let mark = switch check.state {
+            case .ok: "ok  "
+            case .warning: "warn"
+            case .failed: "FAIL"
+            case .skipped: "--  "
+            }
+            lines.append("\(first + index). [\(mark)] \(check.title): \(check.detail)")
+            for line in check.lines ?? [] { lines.append("   \(line)") }
+            if let fix = check.fix, check.state != .ok { lines.append("   fix: \(fix)") }
+        }
+        return lines
+    }
+
+    public var summaryLine: String {
+        let failed = checks.filter { $0.state == .failed }.count
+        let warned = checks.filter { $0.state == .warning }.count
+        return failed + warned == 0 ? "No problems found." : "\(failed) failed, \(warned) to look at."
     }
 }
 

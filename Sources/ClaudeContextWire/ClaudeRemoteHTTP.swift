@@ -348,11 +348,12 @@ public enum ClaudeRemoteHTTPCodec {
         sessionStatus: ClaudeRemoteSessionStatus? = nil,
         termsWanted: Bool = false,
         readmeWanted: Bool = false,
-        draftID: String? = nil
+        draftID: String? = nil,
+        contentType: String = "application/json"
     ) -> Data {
         var head = "HTTP/1.1 \(status) \(reasonPhrase(for: status))\r\n"
         head += "Connection: close\r\n"
-        head += "Content-Type: application/json\r\n"
+        head += "Content-Type: \(contentType)\r\n"
         head += "Content-Length: \(body?.count ?? 0)\r\n"
         if status == 401 { head += "WWW-Authenticate: Bearer\r\n" }
         if status == 200, let sessionStatus {
@@ -403,6 +404,7 @@ public enum ClaudeRemoteHTTPCodec {
         case 409: return "Conflict"
         case 413: return "Payload Too Large"
         case 431: return "Request Header Fields Too Large"
+        case 503: return "Service Unavailable"
         default: return "Error"
         }
     }

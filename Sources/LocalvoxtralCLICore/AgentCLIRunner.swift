@@ -10,6 +10,8 @@ public struct AgentCLIRunner: Sendable {
         case refused = 1
         case usage = 2
         case notRunning = 3
+        /// `doctor` answered and at least one check failed.
+        case checkFailed = 4
     }
 
     public struct Outcome: Equatable, Sendable {
@@ -69,6 +71,8 @@ public struct AgentCLIRunner: Sendable {
         let exitCode: ExitCode
         if let error = response.error {
             exitCode = error.code == .notRunning ? .notRunning : .refused
+        } else if response.doctor?.hasFailure == true {
+            exitCode = .checkFailed
         } else {
             exitCode = .answered
         }
@@ -185,28 +189,8 @@ public struct AgentCLIText: Sendable {
         return lines
     }
 
-    /// Numbered, so a person can say "check 4" and an agent can quote it.
     private func render(_ doctor: AgentCLIDoctor) -> [String] {
-        var lines: [String] = []
-        for (index, check) in doctor.checks.enumerated() {
-            let mark = switch check.state {
-            case .ok: "ok  "
-            case .warning: "warn"
-            case .failed: "FAIL"
-            case .skipped: "--  "
-            }
-            lines.append("\(index + 1). [\(mark)] \(check.title): \(check.detail)")
-            if let fix = check.fix, check.state != .ok { lines.append("   fix: \(fix)") }
-        }
-        let failed = doctor.checks.filter { $0.state == .failed }.count
-        let warned = doctor.checks.filter { $0.state == .warning }.count
-        lines.append("")
-        lines.append(
-            failed + warned == 0
-                ? "No problems found."
-                : "\(failed) failed, \(warned) to look at."
-        )
-        return lines
+        doctor.textLines() + ["", doctor.summaryLine]
     }
 
     private func timestamp(_ date: Date) -> String {
