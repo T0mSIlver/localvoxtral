@@ -177,11 +177,13 @@ final class RemoteProjectTermsTests: XCTestCase {
         session: String,
         agent: ProjectTermProposal.Agent = .claude,
         body: String = #"{"terms":["Quillmark","GlyphAtlasCache","https://example.com"]}"#,
+        usage: String? = nil,
         token: String? = nil,
         contentLength: Int? = nil
     ) throws -> Response {
         var headers = ["Authorization": "Bearer \(token ?? self.token)", "X-Lvx-Terms-Session": session]
         if agent == .vibe { headers["X-Lvx-Agent"] = "vibe" }
+        if let usage { headers["X-Lvx-Usage"] = usage }
         return try send(path: "/v1/terms", headers: headers, body: Data(body.utf8), contentLength: contentLength)
     }
 
@@ -284,6 +286,79 @@ final class RemoteProjectTermsTests: XCTestCase {
         XCTAssertEqual(
             usage.entries(),
             [UsageEntry(date: clock.now(), feature: .projectTerms, backend: .claudeCode, model: "sonnet")]
+        )
+    }
+
+    /// A 1.19.0 shim sends Claude Code's result object; its usage lands in
+    /// the ledger and its terms in the store, as a local run's do.
+    func testAClaudeResultObjectRecordsTheRunsTokensAndPrice() throws {
+        try hook("SessionStart", session: "s1", project: "quillmark")
+        try dictate(into: "s1")
+        try hook("UserPromptSubmit", session: "s1", project: "quillmark")
+
+        XCTAssertEqual(try answer(session: "s1", body: AgentUsageFixtures.claudeTermsResult).status, 200)
+
+        let project = try XCTUnwrap(store.snapshot().projects.first { $0.key == "remote:quillmark" })
+        XCTAssertEqual(project.terms.map(\.term), ["Quillmark", "GlyphAtlasCache"])
+        XCTAssertEqual(
+            usage.entries(),
+            [.agentRun(date: clock.now(), feature: .projectTerms, agent: .claude, usage: AgentUsageFixtures.claudeTermsUsage)]
+        )
+        let entry = try XCTUnwrap(usage.entries().first)
+        XCTAssertEqual(entry.promptTokens, 4 + 16017 + 14686)
+        XCTAssertEqual(entry.agentCostUSD, 0.0839732)
+    }
+
+    func testAVibeAnswerCarriesItsCountsInAHeaderAndABadOneIsIgnored() throws {
+        for (session, header, expected) in [
+            ("v1", "13626 10944 16", AgentUsageFixtures.vibeUsage),
+            ("v2", "13626 10944", nil),
+            ("v3", "1 2 3 4", nil),
+            ("v4", "-1 0 0", nil),
+            ("v5", "12345678901 0 0", nil),
+        ] as [(String, String, ProjectTermProposal.Usage?)] {
+            try hook("UserPromptSubmit", session: session, agent: .vibe, project: "quill-\(session)")
+            XCTAssertTrue(try dictate(into: session, agent: .vibe), session)
+            try hook("Stop", session: session, agent: .vibe, project: "quill-\(session)")
+            XCTAssertEqual(
+                try answer(session: session, agent: .vibe, body: #"{"terms":["qmk"]}"#, usage: header).status, 200, session)
+            XCTAssertEqual(
+                usage.entries().last,
+                .agentRun(date: clock.now(), feature: .projectTerms, agent: .vibe, usage: expected), header)
+        }
+    }
+
+    /// The shipped runner, run as the hook shim starts it, against this
+    /// listener: Claude Code's run sends its result object, Vibe's its text
+    /// with the counts from the session log.
+    func testTheShippedRunnerSendsEachAgentsUsage() throws {
+        let host = try AgentUsageFixtures.Host(
+            agents: [
+                "claude": AgentUsageFixtures.fakeClaude(printing: AgentUsageFixtures.claudeTermsResult),
+                "vibe": AgentUsageFixtures.fakeVibe(printing: #"{"terms":["Quillmark"]}"#),
+            ],
+            testCase: self)
+        for (session, agent) in [("s1", ProjectTermProposal.Agent.claude), ("v1", .vibe)] {
+            let project = "quill-\(session)"
+            try hook("UserPromptSubmit", session: session, agent: agent, project: project)
+            XCTAssertTrue(try dictate(into: session, agent: agent))
+            XCTAssertEqual(try hook("Stop", session: session, agent: agent, project: project).headers[termsHeader], wanted)
+            let stamp = host.home.appendingPathComponent("stamp-\(session)", isDirectory: true)
+            try FileManager.default.createDirectory(at: stamp, withIntermediateDirectories: true)
+
+            try host.run(
+                "terms.sh",
+                [agent == .claude ? "claude" : "vibe", "\(port)", session, host.project.path, stamp.path, host.userVibe.path],
+                token: token)
+
+            XCTAssertTrue(FileManager.default.fileExists(atPath: stamp.appendingPathComponent("done").path), "the Mac said 200")
+        }
+        XCTAssertEqual(
+            usage.entries(),
+            [
+                .agentRun(date: clock.now(), feature: .projectTerms, agent: .claude, usage: AgentUsageFixtures.claudeTermsUsage),
+                .agentRun(date: clock.now(), feature: .projectTerms, agent: .vibe, usage: AgentUsageFixtures.vibeUsage),
+            ]
         )
     }
 
@@ -393,7 +468,7 @@ final class RemoteProjectTermsTests: XCTestCase {
         XCTAssertTrue(runner.contains("head -c \(RemoteProjectTermRequests.maxAnswerBytes)"))
 
         // The same run as the app's local one (ProjectTermProposal), but for
-        // the output mode.
+        // Vibe's output mode.
         XCTAssertTrue(runner.contains("\n" + ProjectTermProposal.prompt + "\n"))
         let quoted = ProjectTermProposal.claudeSystemPrompt.replacingOccurrences(of: "'", with: "'\"'\"'")
         XCTAssertTrue(runner.contains("'\(quoted)'"))
@@ -402,7 +477,6 @@ final class RemoteProjectTermsTests: XCTestCase {
         for (flag, value) in zip(claude, claude.dropFirst()) where flag.hasPrefix("--") && !value.hasPrefix("-") {
             switch flag {
             case "--system-prompt", "--json-schema": continue
-            case "--output-format": XCTAssertTrue(runner.contains("--output-format text"))
             default: XCTAssertTrue(runner.contains("\(flag) \(value)") || runner.contains("\(flag) '\(value)'"), flag)
             }
         }

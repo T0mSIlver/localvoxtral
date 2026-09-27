@@ -270,6 +270,10 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
             dialled?.apiKey, "external-server-key",
             "the external server must never receive the Mistral account key"
         )
+        XCTAssertEqual(
+            dialled?.usageBackend, .userServer,
+            "the usage ledger charges the server the session was started for"
+        )
         XCTAssertTrue(
             viewModel.session.activeRealtimeClient === viewModel.session.realtimeAPIClient,
             "the latch is not swapped under a starting session"
@@ -330,6 +334,10 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(
             dialled?.apiKey, "external-server-key",
             "the external server must never receive the Mistral account key"
+        )
+        XCTAssertEqual(
+            dialled?.usageBackend, .userServer,
+            "the usage ledger charges the server the session was started for"
         )
         XCTAssertNil(
             viewModel.session.mistralRealtimeClient.debugLastConnectConfigurationForTesting(),

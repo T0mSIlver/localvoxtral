@@ -19,7 +19,9 @@ extension DictationSessionController {
     /// front of the user, so only `.succeeded` is watchable. `.failed` and
     /// `.copiedToClipboard` left nothing in the target app — a Backspace
     /// there would be recorded as erasing an insertion that never happened,
-    /// and an uneventful window would pad the `clean` denominator.
+    /// and an uneventful window would pad the `clean` denominator. Nil means
+    /// the text went to a named session rather than the focused app (an
+    /// addressed send): a Backspace in the focused app says nothing about it.
     ///
     /// `committedTextForWatch` is the payload-SUBSTITUTED commit copy,
     /// measured and discarded (the watcher keeps only its word-count bucket):
@@ -30,7 +32,7 @@ extension DictationSessionController {
     func writeDiagnosticRecordIfEnabled(
         _ inputs: DiagnosticRecordInputs,
         historyID: UUID?,
-        commitOutcome: OverlayBufferCommitOutcome,
+        commitOutcome: OverlayBufferCommitOutcome?,
         committedTextForWatch: String
     ) async {
         let abstentions = DiagnosticCaptureTap.shared.consumeJoinAbstentions()
@@ -62,7 +64,7 @@ extension DictationSessionController {
         editSignalWatcher.onOutcome = { [weak self] id, outcome in
             self?.sessionStore?.setEditOutcome(outcome, forDictation: id)
         }
-        if case .succeeded = commitOutcome {
+        if case .succeeded? = commitOutcome {
             watchToken = editSignalWatcher.arm(
                 committedText: committedTextForWatch,
                 outputMode: inputs.session.outputMode

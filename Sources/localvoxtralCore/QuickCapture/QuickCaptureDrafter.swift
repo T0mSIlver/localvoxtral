@@ -55,7 +55,9 @@ package struct QuickCaptureDraftProcessRunner: QuickCaptureDraftRunning {
         if output.capped { return .failed(.outputTooLarge) }
         switch agent {
         case .claude: return QuickCaptureDraft.parseClaude(stdout: output.data, exitCode: output.exitCode, openIssues: openIssues)
-        case .vibe: return QuickCaptureDraft.parseVibe(stdout: output.data, exitCode: output.exitCode, openIssues: openIssues)
+        case .vibe:
+            return QuickCaptureDraft.parseVibe(stdout: output.data, exitCode: output.exitCode, openIssues: openIssues)
+                .reporting(VibeSessionUsage.read(home: vibeHome, output: output.data))
         case .opencode: return QuickCaptureDraft.parseOpencode(stdout: output.data, exitCode: output.exitCode, openIssues: openIssues)
         }
     }

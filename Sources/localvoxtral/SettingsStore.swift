@@ -119,6 +119,7 @@ final class SettingsStore {
         static let modifierOnlyHotKeyEnabled = "settings.modifier_only_hotkey_enabled"
         static let modifierOnlyHotKeyModifier = "settings.modifier_only_hotkey_modifier"
         static let modifierOnlyHoldDelay = "settings.modifier_only_hold_delay"
+        static let modifierOnlyHotKeyChord = "settings.modifier_only_hotkey_chord"
         static let overlayBufferShortcutKeyCode = "settings.overlay_buffer_shortcut_key_code"
         static let overlayBufferShortcutModifiers =
             "settings.overlay_buffer_shortcut_carbon_modifiers"
@@ -783,6 +784,13 @@ final class SettingsStore {
         }
     }
 
+    /// The dictation key's chord when `modifierOnlyHotKeyModifier` is
+    /// `.chord` (#863), in `ModifierChord.storageValue` form; empty when none
+    /// is recorded. Both Shifts until the user records another.
+    var modifierOnlyHotKeyChord: String {
+        didSet { defaults.set(modifierOnlyHotKeyChord, forKey: Keys.modifierOnlyHotKeyChord) }
+    }
+
     /// Seconds to hold modifier before it triggers live auto-paste (0.1-0.8).
     var modifierOnlyHoldDelay: Double {
         didSet { defaults.set(modifierOnlyHoldDelay, forKey: Keys.modifierOnlyHoldDelay) }
@@ -1180,6 +1188,8 @@ final class SettingsStore {
         } else {
             modifierOnlyHotKeyModifier = .fn
         }
+        modifierOnlyHotKeyChord = defaults.string(forKey: Keys.modifierOnlyHotKeyChord)
+            ?? ModifierChord.bothShifts.storageValue
         let storedHoldDelay = defaults.object(forKey: Keys.modifierOnlyHoldDelay) != nil
             ? defaults.double(forKey: Keys.modifierOnlyHoldDelay)
             : 0.35

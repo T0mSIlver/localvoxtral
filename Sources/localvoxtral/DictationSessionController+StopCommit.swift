@@ -428,13 +428,30 @@ extension DictationSessionController {
 
         guard !Task.isCancelled else { return }
 
+        let recordInputs = StopCommitCoordinator.diagnosticRecordInputs(
+            material: outcome.material,
+            assembly: assembly,
+            capture: capture,
+            targetBundleID: capturedTargetBundleID,
+            targetIsTerminalLike: self.sessionTargetIsTerminalLike,
+            outputMode: capturedOutputMode,
+            promptProfile: capturedPolishProfile,
+            polishingEndpointURL: polishingConfig.endpointURL,
+            polishModel: polishingConfig.model,
+            rawTranscript: originalText,
+            workingText: workingText,
+            polishedOutput: recordPolishedOutput,
+            committedText: recordCommittedText,
+            polishSeconds: polishingDuration
+        )
+
         let insertedText = self.transcript.currentDictationEventText
         let overlayCommit: StopCommitCoordinator.CommitResult
         if let addressedTo {
             // Clears the interrupted-save once the text is handed over.
             guard let addressed = await self.commitOverlayAddressed(to: addressedTo) else { return }
             self.finishAddressedCommit(addressed, sessionMode: sessionMode)
-            self.saveSessionRecord(
+            let historyID = self.saveSessionRecord(
                 startedAt: capturedSessionStartedAt,
                 rawText: originalText,
                 polishedText: processedTextForPersistence,
@@ -458,6 +475,18 @@ extension DictationSessionController {
                 audio: record.audio,
                 joined: capture.claudeJoin.map(AgentCLIJoin.init)
             )
+            // The text went to the named session, not the focused app, so
+            // no edit watch: nil outcome. Superseded, the capture tap already
+            // belongs to the new dictation, and consuming it here would take
+            // that dictation's facts.
+            if !addressed.superseded {
+                await self.writeDiagnosticRecordIfEnabled(
+                    recordInputs,
+                    historyID: historyID,
+                    commitOutcome: nil,
+                    committedTextForWatch: ""
+                )
+            }
             if let llmConnectionFailure, !addressed.superseded {
                 self.handleLLMPolishingConnectionFailure(
                     title: llmConnectionFailure.title,
@@ -528,22 +557,7 @@ extension DictationSessionController {
         // user's paste. `writeDiagnosticRecordIfEnabled` checks the
         // switch before doing any work.
         await self.writeDiagnosticRecordIfEnabled(
-            StopCommitCoordinator.diagnosticRecordInputs(
-                material: outcome.material,
-                assembly: assembly,
-                capture: capture,
-                targetBundleID: capturedTargetBundleID,
-                targetIsTerminalLike: self.sessionTargetIsTerminalLike,
-                outputMode: capturedOutputMode,
-                promptProfile: capturedPolishProfile,
-                polishingEndpointURL: polishingConfig.endpointURL,
-                polishModel: polishingConfig.model,
-                rawTranscript: originalText,
-                workingText: workingText,
-                polishedOutput: recordPolishedOutput,
-                committedText: recordCommittedText,
-                polishSeconds: polishingDuration
-            ),
+            recordInputs,
             historyID: historyID,
             commitOutcome: overlayCommit.outcome,
             // Substituted for MEASUREMENT only (the watch window

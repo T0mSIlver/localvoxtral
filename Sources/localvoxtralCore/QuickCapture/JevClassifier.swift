@@ -47,6 +47,24 @@ package enum Jev {
     package static let instructions =
         "A developer dictated this note. Which of their software projects is it about? Choose inbox unless the note clearly concerns one project."
     package static let maxOptions = 255
+    /// Jev's list price: $0.042 per million input tokens, output free, on
+    /// both hosts (typesafe.ai/blog/introducing-system-one-models-and-jev,
+    /// vercel.com/ai-gateway/models/jev, read 2026-09-27). Per token, not
+    /// per call.
+    package static let inputUSDPerMillionTokens = 0.042
+
+    /// The token counts an answer reports (`usage.inputTokens`,
+    /// `usage.outputTokens`; the Vercel gateway sends them), priced at the
+    /// list price. Nil when the answer has no input count.
+    package static func usage(in body: Data) -> (inputTokens: Int, outputTokens: Int?, costUSD: Double)? {
+        guard let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
+              let usage = json["usage"] as? [String: Any],
+              let input = (usage["inputTokens"] as? NSNumber)?.intValue, input >= 0
+        else { return nil }
+        let output = (usage["outputTokens"] as? NSNumber)?.intValue
+        return (input, output, Double(input) * inputUSDPerMillionTokens / 1_000_000)
+    }
+
     /// Jev answers in well under a second (liteLLM measured a 127 ms
     /// median). A capture waits on this, so a slow answer falls back.
     package static let requestTimeout: TimeInterval = 5
@@ -183,11 +201,15 @@ package struct JevClassifier: QuickCaptureClassifying {
         return try await Jev.withRetries(sleep: sleep) {
             let (data, response) = try await session.data(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            // Jev reports no token counts: the ledger gets the call, unpriced.
-            // A 429 or 503 did no work and is not counted.
+            // Priced from the answer's token counts; an answer without them
+            // is counted, unpriced. A 429 or 503 did no work and is not
+            // counted.
             if (200..<300).contains(status) {
+                let usage = Jev.usage(in: data)
                 usageRecorder?.record(UsageEntry(
-                    date: now(), feature: .quickCaptureRouting, backend: .jev, model: host.model))
+                    date: now(), feature: .quickCaptureRouting, backend: .jev, model: host.model,
+                    promptTokens: usage?.inputTokens, completionTokens: usage?.outputTokens,
+                    costUSD: usage?.costUSD))
             }
             return try Jev.probabilities(status: status, body: data)
         }

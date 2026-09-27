@@ -91,6 +91,10 @@ struct DictationOverlayView: View {
     /// Where the words go at stop (#840). When shown, it takes the join
     /// badge's place: the first pill carries the join.
     var destinations: OverlayDestinationStrip? = nil
+    /// Where each destination pill sits, in the view's global space (top
+    /// left origin), and nil once it is gone: the panel swallows every
+    /// click, so it finds the clicked pill from these (#880).
+    var onDestinationFrame: ((DictationDestination, CGRect?) -> Void)? = nil
     private let cornerRadius: CGFloat = 12
 
     /// Warning text needs explicit light/dark variants: system `.red` over
@@ -196,8 +200,12 @@ struct DictationOverlayView: View {
     /// may look like the focused app. The trailing ⇥ says how to move.
     private func destinationPills(_ strip: OverlayDestinationStrip) -> some View {
         HStack(spacing: 4) {
-            ForEach(Array(strip.items.enumerated()), id: \.offset) { _, item in
+            ForEach(strip.items, id: \.destination) { item in
                 destinationPill(item)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                        onDestinationFrame?(item.destination, frame)
+                    }
+                    .onDisappear { onDestinationFrame?(item.destination, nil) }
             }
             Text("\u{21E5}")
                 .font(.system(size: metrics.badgeFontSize, weight: .semibold))

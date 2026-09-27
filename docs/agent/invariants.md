@@ -2258,6 +2258,15 @@ there is not.
   that could put a byte on a terminal, so there is no variable part left for a
   squatter to aim at. The fixed `X-Lvx-Session: joined|unknown` response header
   only selects a private per-session status stamp and never reaches stdout.
+  A second copy of the app (a `try-pr.sh` build, a CI launch smoke) loses
+  this port and the broker socket to the running copy, and then waits:
+  `ClaudeHookSocketTakeover` retries only the binds it lost, each time
+  another process with the app's bundle id exits (a kqueue exit watch), and
+  never on a timer, because the broker's liveness check connects to the
+  holder's socket. A retry that still finds the socket held waits for the
+  next exit. MEASURED 2026-09-27 (#655): without it, the survivor of two
+  copies kept dictating with no hook reaching it, and every Claude Desktop
+  join abstained until a relaunch.
   The shim's request-side `X-Lvx-Plugin-Version` header (its own version, a
   constant in `post.sh`) is the same shape of rule: validated to a strict
   numeric shape on arrival (`ClaudeRemotePluginVersionCodec`), recorded on the
@@ -2308,7 +2317,8 @@ there is not.
   the host that authenticated it, and accepts one answer per ask, for a live
   session of the asked agent; the project key is the one the Mac recorded at
   the ask, never anything the host sends. The body is untrusted text that repo
-  contents can steer: 8 KiB at most, `{"terms": [...]}` only, through the #609
+  contents can steer: 16 KiB at most, `{"terms": [...]}` or Claude Code's
+  result object, read for its answer and usage only (#854), through the #609
   term filter, stored only as unconfirmed proposals. A refusal logs its reason,
   never a byte of the body. What stays as it was: the stdout gate, the hook's
   fail-open exit, the forward, and what is sent to herdr.
@@ -2331,7 +2341,11 @@ there is not.
   (`--permission-mode dontAsk --allowedTools Read(./**)`; without it Read
   opens any file, measured 2026-09-27; Vibe's tools are workspace-bound) and
   the shim allows one draft at a time and 20 a day. `capture.sh` never runs
-  `gh` for anything but `issue list`. Which remote projects the router sees
+  `gh` for anything but `issue list`. A Vibe run's usage rides in
+  `X-Lvx-Usage` on `/v1/terms` and `/v1/draft` (#854): three decimal
+  counts, anything else read as none, used for the usage log alone. The
+  shims pull the numbers out of Vibe's session log with `sed` and never send
+  the file, which holds the prompt. Which remote projects the router sees
   (#819): a hook adds a project only for a name its host sent as
   `X-Lvx-Env-Project`; a cwd label only stamps a project already held,
   because each worktree has its own, and a label no hook has named since is
