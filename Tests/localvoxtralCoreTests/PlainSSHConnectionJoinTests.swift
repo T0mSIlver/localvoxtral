@@ -322,60 +322,72 @@ final class PlainSSHConnectionJoinTests: XCTestCase {
         )
     }
 
-    func testASessionInsideTmuxDoesNotJoinEvenWithAMatchingConnection() async {
-        // Measured on the dev box, 2026-09-05: a tmux server started by
-        // connection A keeps A's `$SSH_CONNECTION` in every pane, so a session
-        // reporting a matching tuple may be living in a DIFFERENT surface's
-        // connection. That is a mis-join, not a missed one.
-        let registry = makeRegistry()
-        ingestRemoteSession(
-            into: registry,
-            environment: ClaudeRemoteSessionEnvironment(
-                tmux: "/tmp/tmux-1000/default,3721,0",
-                tmuxPane: "%3",
-                sshTTY: "/dev/pts/3",
-                sshConnection: reportedConnection()
+    func testASessionInsideAMultiplexerDoesNotJoinThroughThisArm() async {
+        // A multiplexer server started by connection A keeps A's
+        // `$SSH_CONNECTION` in every pane (measured on the dev box, 2026-09-05,
+        // tmux 3.x), so a session reporting a matching tuple may be living in a
+        // DIFFERENT surface's connection: a mis-join, not a missed one. herdr
+        // and cmux are multiplexers with the same inheritance property and arms
+        // of their own that bind the pane rather than the connection; screen
+        // publishes `$STY` (screen(1), ENVIRONMENT) and was not on the wire at
+        // all until review, so this exact fixture JOINED.
+        let multiplexers: [(name: String, environment: ClaudeRemoteSessionEnvironment)] = [
+            (
+                "tmux",
+                ClaudeRemoteSessionEnvironment(
+                    tmux: "/tmp/tmux-1000/default,3721,0",
+                    tmuxPane: "%3",
+                    sshTTY: "/dev/pts/3",
+                    sshConnection: reportedConnection()
+                )
+            ),
+            (
+                "herdr",
+                ClaudeRemoteSessionEnvironment(
+                    herdrPaneID: "pane-7",
+                    herdrSocketPath: "/run/user/1000/herdr/default.sock",
+                    sshTTY: "/dev/pts/3",
+                    sshConnection: reportedConnection()
+                )
+            ),
+            (
+                "cmux",
+                ClaudeRemoteSessionEnvironment(
+                    cmuxSurfaceID: "surface-3",
+                    sshTTY: "/dev/pts/3",
+                    sshConnection: reportedConnection()
+                )
+            ),
+            (
+                "screen",
+                ClaudeRemoteSessionEnvironment(
+                    screenSession: "3721.pts-0.sandbox",
+                    sshTTY: "/dev/pts/3",
+                    sshConnection: reportedConnection()
+                )
+            ),
+            (
+                "zellij",
+                ClaudeRemoteSessionEnvironment(
+                    zellijSession: "0",
+                    sshTTY: "/dev/pts/3",
+                    sshConnection: reportedConnection()
+                )
+            ),
+        ]
+        for (name, environment) in multiplexers {
+            let registry = makeRegistry()
+            ingestRemoteSession(into: registry, environment: environment)
+            let (join, causes) = await ClaudeJoinAbstentionTap.collecting {
+                await self.resolver(registry: registry, sshResult: self.surfaceConnection())
+                    .resolve(target: self.ghostty)
+            }
+            XCTAssertNil(join, "\(name): a multiplexer session is not a plain ssh shell")
+            XCTAssertTrue(
+                causes.contains("remote-ssh: no live session on this host is a plain ssh shell"),
+                "\(name): expected the plain-shell refusal, got \(causes)"
             )
-        )
-        await assertNoJoin(
-            surfaceConnection(), registry: registry,
-            expectedCause: "no live session on this host is a plain ssh shell"
-        )
-    }
-
-    func testASessionInsideHerdrDoesNotJoinThroughThisArm() async {
-        // herdr is a multiplexer with the same inheritance property, and it has
-        // an arm of its own that binds the pane rather than the connection.
-        let registry = makeRegistry()
-        ingestRemoteSession(
-            into: registry,
-            environment: ClaudeRemoteSessionEnvironment(
-                herdrPaneID: "pane-7",
-                herdrSocketPath: "/run/user/1000/herdr/default.sock",
-                sshTTY: "/dev/pts/3",
-                sshConnection: reportedConnection()
-            )
-        )
-        await assertNoJoin(
-            surfaceConnection(), registry: registry,
-            expectedCause: "no live session on this host is a plain ssh shell"
-        )
-    }
-
-    func testASessionInsideCmuxDoesNotJoinThroughThisArm() async {
-        let registry = makeRegistry()
-        ingestRemoteSession(
-            into: registry,
-            environment: ClaudeRemoteSessionEnvironment(
-                cmuxSurfaceID: "surface-3",
-                sshTTY: "/dev/pts/3",
-                sshConnection: reportedConnection()
-            )
-        )
-        await assertNoJoin(
-            surfaceConnection(), registry: registry,
-            expectedCause: "no live session on this host is a plain ssh shell"
-        )
+        }
     }
 
     func testASessionWithNoSSHTTYDoesNotJoin() async {
@@ -424,18 +436,6 @@ final class PlainSSHConnectionJoinTests: XCTestCase {
         )
     }
 
-    func testAnSSHHoldingNoEstablishedSocketAbstains() async {
-        // A `ProxyCommand` from ssh_config is invisible in argv and leaves the
-        // client with no TCP socket of its own.
-        let registry = makeRegistry()
-        ingestRemoteSession(into: registry)
-        await assertNoJoin(
-            surfaceConnection(sockets: []), registry: registry,
-            expectedCause: "this ssh holds no connection of its own "
-                + "(a ControlMaster client or a ProxyCommand)"
-        )
-    }
-
     // MARK: The shape the owner's Mac actually has
 
     func testAProxyJumpedConnectionSaysSoInsteadOfGuessingAtControlMaster() async {
@@ -460,26 +460,33 @@ final class PlainSSHConnectionJoinTests: XCTestCase {
         )
     }
 
-    func testAnUnreadableSSHConfigFallsBackToTheOlderWording() async {
-        // Nothing is claimed that was not read: with no `ssh -G` answer the
-        // arm says what it can still see, which is a socketless client.
-        let registry = makeRegistry()
-        ingestRemoteSession(into: registry)
-        await assertNoJoin(
-            surfaceConnection(sockets: []), registry: registry, proxyJump: nil,
-            expectedCause: "this ssh holds no connection of its own "
-                + "(a ControlMaster client or a ProxyCommand)"
-        )
-    }
-
-    func testAConfigWithNoProxyJumpStillBlamesTheSocketlessClient() async {
-        let registry = makeRegistry()
-        ingestRemoteSession(into: registry)
-        await assertNoJoin(
-            surfaceConnection(sockets: []), registry: registry, proxyJump: SSHProxyJumpShape.none,
-            expectedCause: "this ssh holds no connection of its own "
-                + "(a ControlMaster client or a ProxyCommand)"
-        )
+    func testASocketlessClientIsBlamedWheneverNoProxyJumpAnswers() async {
+        // Nothing is claimed that was not read: with no `ssh -G` answer at all
+        // — or one that names no ProxyJump — the arm says only what it can
+        // still see, which is a client with no connection of its own (a
+        // ControlMaster client or a ProxyCommand).
+        let answers: [(name: String, proxyJump: SSHProxyJumpShape?)] = [
+            ("no ssh -G answer", nil),
+            ("a config with no ProxyJump", SSHProxyJumpShape.none),
+        ]
+        for (name, proxyJump) in answers {
+            let registry = makeRegistry()
+            ingestRemoteSession(into: registry)
+            let (join, causes) = await ClaudeJoinAbstentionTap.collecting {
+                await self.resolver(
+                    registry: registry, sshResult: self.surfaceConnection(sockets: []),
+                    proxyJump: proxyJump
+                ).resolve(target: self.ghostty)
+            }
+            XCTAssertNil(join, name)
+            XCTAssertTrue(
+                causes.contains(
+                    "remote-ssh: this ssh holds no connection of its own "
+                        + "(a ControlMaster client or a ProxyCommand)"
+                ),
+                "\(name): expected the socketless-client cause, got \(causes)"
+            )
+        }
     }
 
     func testTheDIRECTPathNeverConsultsTheSSHConfigAtAll() async throws {
@@ -642,41 +649,6 @@ final class PlainSSHConnectionJoinTests: XCTestCase {
         ).resolve(target: ghostty)
         let join = try XCTUnwrap(resolved)
         XCTAssertEqual(join.mechanism, .remoteSSHConnection)
-    }
-
-    func testASessionInsideScreenDoesNotJoinThroughThisArm() async {
-        // screen is a multiplexer SERVER with tmux's inheritance property and
-        // publishes `$STY` (screen(1), ENVIRONMENT). Until the review it was
-        // not on the wire at all, so this exact fixture JOINED.
-        let registry = makeRegistry()
-        ingestRemoteSession(
-            into: registry,
-            environment: ClaudeRemoteSessionEnvironment(
-                screenSession: "3721.pts-0.sandbox",
-                sshTTY: "/dev/pts/3",
-                sshConnection: reportedConnection()
-            )
-        )
-        await assertNoJoin(
-            surfaceConnection(), registry: registry,
-            expectedCause: "no live session on this host is a plain ssh shell"
-        )
-    }
-
-    func testASessionInsideZellijDoesNotJoinThroughThisArm() async {
-        let registry = makeRegistry()
-        ingestRemoteSession(
-            into: registry,
-            environment: ClaudeRemoteSessionEnvironment(
-                zellijSession: "0",
-                sshTTY: "/dev/pts/3",
-                sshConnection: reportedConnection()
-            )
-        )
-        await assertNoJoin(
-            surfaceConnection(), registry: registry,
-            expectedCause: "no live session on this host is a plain ssh shell"
-        )
     }
 
     func testEveryMultiplexerLabelOnTheWireRefusesTheJoinOnItsOwn() async {
