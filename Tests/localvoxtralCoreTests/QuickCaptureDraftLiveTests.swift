@@ -10,7 +10,8 @@ import XCTest
 ///
 /// `QC_CAPTURES` holds `{"id", "expected", "text"}` lines, `QC_PROJECTS`
 /// the replay's project list, `QC_IDS` the capture ids to draft (comma
-/// separated), `QC_AGENT` `claude` or `vibe`, `QC_OUT` the output directory.
+/// separated), `QC_AGENT` `claude`, `vibe` or `opencode`, `QC_OUT` the
+/// output directory.
 /// Each capture is drafted in the project it was labelled with, so the
 /// grade measures the draft, not the routing.
 final class QuickCaptureDraftLiveTests: XCTestCase {

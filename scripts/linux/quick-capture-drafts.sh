@@ -6,7 +6,7 @@
 # the project list names; `gh issue list` reads their open issues.
 #
 #   scripts/linux/quick-capture-drafts.sh --captures FILE --projects FILE \
-#     --ids h28,n2,... --out DIR [--agent claude|vibe]
+#     --ids h28,n2,... --out DIR [--agent claude|vibe|opencode]
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."

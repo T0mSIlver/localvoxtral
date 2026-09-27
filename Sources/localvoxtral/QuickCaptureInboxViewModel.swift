@@ -45,7 +45,7 @@ final class QuickCaptureInboxViewModel {
                     readme: { QuickCaptureProjects.readme(atRoot: $0) }
                 )
             },
-            agents: { [.claude, .vibe] },
+            agents: { [.claude, .vibe, .opencode] },
             drafter: { drafter },
             github: github
         )
