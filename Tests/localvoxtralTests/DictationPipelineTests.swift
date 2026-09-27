@@ -1559,7 +1559,6 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.overlay.startSessionAnchors.count, 1, "a review opens the overlay whatever the menu bar mode")
         XCTAssertEqual(pipeline.overlay.shownDraftReviews.last??.title, "Dark mode")
         XCTAssertTrue(pipeline.overlay.shownDestinations.isEmpty, "a review offers no other destination")
-        XCTAssertNil(pipeline.viewModel.agentAttentionLine, "opened, it leaves the cue")
 
         await sendDelta(pipeline, "File it.")
         await stopAndFinalize(pipeline, finalText: "File it.", finalStatus: QuickCaptureReviewStatus.filing)
@@ -1570,6 +1569,20 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing reaches the focused app")
         XCTAssertEqual(pipeline.records.all.map(\.rawText), ["File it."], "the words are in History")
         XCTAssertNil(pipeline.viewModel.session.sessionDraftReview, "the next dictation is an ordinary one")
+        XCTAssertNil(pipeline.viewModel.agentAttentionLine, "filed, it left the cue")
+    }
+
+    /// A review that files, drops and changes nothing keeps its draft in the
+    /// cue, as does a start the app refused: the next press opens it again.
+    func testAReviewThatSaysNothingKeepsTheDraftInTheCue() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        _ = try await installInboxWithDraft(pipeline, shown: true)
+
+        await startAndSpeak(pipeline, start: { $0.session.answerAgentThatNeedsYou() })
+        // Only the send phrase: nothing left to act on.
+        await stopAndFinalize(pipeline, finalText: "send it", finalStatus: QuickCaptureReviewStatus.kept)
+
+        XCTAssertEqual(pipeline.viewModel.agentAttentionLine, "Draft ready: Inbox for reach")
     }
 
     /// "drop it" alone, then three seconds of silence, stops the review by

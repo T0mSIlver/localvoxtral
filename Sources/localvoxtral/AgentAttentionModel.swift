@@ -60,12 +60,13 @@ final class AgentAttentionModel {
         if drafts != before { Log.claudeContext.notice("needs-you cue: a draft left the Inbox's ready drafts") }
     }
 
-    /// The oldest shown draft, taken out of the cue: the answer shortcut
-    /// opens it.
-    func takeOldestDraft() -> QuickCaptureDraftCue.Entry? {
-        guard let oldest = drafts.shownOldestFirst.first else { return nil }
-        drafts.remove(id: oldest.id)
-        return oldest
+    /// The shown drafts the answer shortcut opens, oldest first. One stays
+    /// in the cue until the Inbox stops holding it as a ready draft, so a
+    /// refused start or a cancelled review loses nothing.
+    var shownDraftsOldestFirst: [QuickCaptureDraftCue.Entry] { drafts.shownOldestFirst }
+
+    func removeDraft(id: UUID) {
+        drafts.remove(id: id)
     }
 
     func clearDrafts() {

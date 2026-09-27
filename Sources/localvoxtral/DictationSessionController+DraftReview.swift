@@ -11,14 +11,18 @@ import os
 /// phrase after a change.
 extension DictationSessionController {
     /// Opens the oldest shown draft, after showing the held ones: the press
-    /// itself is a break. False when no draft waits.
+    /// itself is a break. False when no draft waits. The draft stays in the
+    /// cue: filing, dropping or redrafting it takes it out through the Inbox.
     func openOldestReadyDraft() -> Bool {
         guard settings.agentAttentionEnabled, let attention = agentAttention, let inbox = quickCaptureInbox else {
             return false
         }
         attention.reachedBreak()
-        while let entry = attention.takeOldestDraft() {
-            guard let snapshot = inbox.reviewSnapshot(entry.id) else { continue }
+        for entry in attention.shownDraftsOldestFirst {
+            guard let snapshot = inbox.reviewSnapshot(entry.id) else {
+                attention.removeDraft(id: entry.id)
+                continue
+            }
             Log.dictation.notice("answer shortcut: opening a ready draft")
             startDictation(outputMode: .overlayBuffer, quickCapture: false, draftReview: snapshot)
             return true
