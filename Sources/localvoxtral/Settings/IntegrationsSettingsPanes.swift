@@ -22,6 +22,13 @@ struct IntegrationsContextSettingsPane: View {
     let viewModel: DictationViewModel
     @State private var isShowingProjectLines = false
 
+    /// Lines for the projects the router lists now; a line kept for a
+    /// project that dropped off the list is not counted.
+    private var projectLineCount: Int {
+        let keys = Set((viewModel.quickCapture?.model.projectChoices ?? []).map(\.key))
+        return settings.quickCaptureProjectLines.keys.filter(keys.contains).count
+    }
+
     /// Where the group's Learn more link lands.
     private enum LearnMore {
         static let polishContext = DocsLink.page("docs/coding-agents/#polish-context-what-each-toggle-sends")
@@ -107,7 +114,7 @@ struct IntegrationsContextSettingsPane: View {
                 // stays whatever the toggle says.
                 SettingsFieldRow(
                     title: "Project descriptions",
-                    status: "\(settings.quickCaptureProjectLines.count)"
+                    status: "\(projectLineCount)"
                 ) {
                     Button("Edit…") { isShowingProjectLines = true }
                         .accessibilityIdentifier("settings.quickCaptureProjectLines.edit")
