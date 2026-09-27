@@ -338,6 +338,12 @@ final class ViewSnapshotTests: XCTestCase {
             ("destinations-inbox", DictationOverlayView(
                 phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
                 metrics: metrics, destinations: Self.strip(selected: .inbox))),
+            ("draft-review", DictationOverlayView(
+                phase: .buffering, text: "", errorMessage: nil, secureInputActive: false,
+                metrics: metrics, draftReview: Self.draft)),
+            ("draft-review-change", DictationOverlayView(
+                phase: .buffering, text: "Make it only the popover part", errorMessage: nil,
+                secureInputActive: false, metrics: metrics, draftReview: Self.draft)),
             ("secure-input", DictationOverlayView(
                 phase: .buffering, text: sample, errorMessage: nil, secureInputActive: true,
                 metrics: metrics)),
@@ -353,7 +359,8 @@ final class ViewSnapshotTests: XCTestCase {
                 secureInputActive: false, metrics: metrics)),
         ]
         for state in states {
-            let height = metrics.contentHeight(text: state.view.text, errorMessage: state.view.errorMessage)
+            let height = metrics.contentHeight(
+                text: state.view.text, errorMessage: state.view.errorMessage, draftReview: state.view.draftReview)
             // A flat backdrop stands in for the desktop the panel floats over.
             let inset: CGFloat = 16
             let view = state.view
@@ -365,6 +372,20 @@ final class ViewSnapshotTests: XCTestCase {
                 width: metrics.panelWidth + 2 * inset, height: height + 2 * inset, growToFit: false)
         }
     }
+
+    /// A ready draft under spoken review (#927).
+    private static let draft = QuickCaptureDraftSnapshot(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000927")!,
+        projectName: "localvoxtral",
+        title: "Show drafting progress in the Inbox row",
+        body: """
+        ## Problem
+        A capture shows "Drafting" with a spinner for minutes and never says which step it is on.
+
+        ## Scope
+        The Inbox row names the drafting step. The popover is unchanged.
+        """
+    )
 
     /// The overlay's destinations (#840) with one session waiting.
     private static func strip(selected: DictationDestination) -> OverlayDestinationStrip {

@@ -2473,5 +2473,8 @@ there is not.
   untrusted text: a one-line capped title, a body without control
   characters, a related issue only if it was listed. `QuickCaptureInboxModel.file`
   is the one call to `gh issue create`, reached only from the Inbox's File
-  button. A remote project is drafted on its host (#745, below): a remote
+  button and from a spoken "file it" (#927). That one works only in a review
+  dictation, whose overlay shows exactly one draft, and `applySpokenReview`
+  files only when the draft's title and body still match what the overlay
+  showed. A remote project is drafted on its host (#745, below): a remote
   label never becomes a working directory here.

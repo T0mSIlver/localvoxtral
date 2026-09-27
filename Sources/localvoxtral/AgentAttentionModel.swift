@@ -5,11 +5,13 @@ import UserNotifications
 /// The needs-you cue (#717): the queue the menu bar icon and the popover
 /// line read, fed by `AgentAttentionTracker`. Each new entry posts a banner
 /// with a sound. Off, with nothing queued, while "Tell me when an
-/// agent needs you" is off.
+/// agent needs you" is off. Ready Inbox drafts join it (#927) with no banner
+/// and no sound, once the user reaches a break.
 @MainActor
 @Observable
 final class AgentAttentionModel {
     private(set) var queue = AgentAttentionQueue()
+    private(set) var drafts = QuickCaptureDraftCue()
     @ObservationIgnored
     let tracker: AgentAttentionTracker
     @ObservationIgnored
@@ -26,10 +28,49 @@ final class AgentAttentionModel {
             if !removed.isEmpty { announcer?.withdraw(sessionIDs: removed) }
         }
         tracker.onCue = { entry in announcer?.announce(entry) }
+        tracker.onWatchedTurnEnd = { [weak self] in self?.reachedBreak() }
     }
 
     /// The popover's sentence, nil when nobody waits.
-    var popoverLine: String? { AgentAttentionText.popoverLine(queue) }
+    var popoverLine: String? { AgentAttentionText.popoverLine(queue, drafts: drafts.shownOldestFirst) }
+
+    // MARK: Drafts (#927)
+
+    /// A draft finished; it shows at the next break.
+    func draftReady(id: UUID, projectName: String, at time: Date) {
+        drafts.draftReady(.init(id: id, projectName: projectName, readyAt: time))
+        Log.claudeContext.notice("needs-you cue: draft ready, held for a break")
+    }
+
+    /// A dictation stopped, a watched agent finished, or the answer shortcut
+    /// was pressed: held drafts show.
+    func reachedBreak() {
+        guard drafts.atBreak() else { return }
+        Log.claudeContext.notice("needs-you cue: draft shown at a break")
+    }
+
+    /// Drops the drafts that are no longer ready under the project they were
+    /// cued for.
+    func retainDrafts(in items: [QuickCaptureItem]) {
+        let ready = Dictionary(
+            items.filter(\.isReadyDraft).map { ($0.id, $0.projectName) }, uniquingKeysWith: { first, _ in first }
+        )
+        let before = drafts
+        drafts.retain { ready[$0.id] == $0.projectName }
+        if drafts != before { Log.claudeContext.notice("needs-you cue: a draft left the Inbox's ready drafts") }
+    }
+
+    /// The oldest shown draft, taken out of the cue: the answer shortcut
+    /// opens it.
+    func takeOldestDraft() -> QuickCaptureDraftCue.Entry? {
+        guard let oldest = drafts.shownOldestFirst.first else { return nil }
+        drafts.remove(id: oldest.id)
+        return oldest
+    }
+
+    func clearDrafts() {
+        drafts.clear()
+    }
 }
 
 /// The banner and its sound.

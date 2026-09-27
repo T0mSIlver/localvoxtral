@@ -43,6 +43,9 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
     package var filedURL: String?
     /// When File succeeded; what the Inbox's 7-day listing counts from.
     package var filedAt: Date?
+    /// The changes the user asked for by voice (#927), oldest first. The
+    /// redraft reads them with `text`, which stays as dictated.
+    package var changes: [String]?
 
     package init(id: UUID = UUID(), capturedAt: Date, text: String, historyRecordID: UUID? = nil) {
         self.id = id
@@ -53,6 +56,13 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
         self.title = ""
         self.body = ""
         self.relation = .none
+    }
+
+    /// A draft waiting for the user under a project: what the needs-you cue
+    /// and the spoken review (#927) work on.
+    package var isReadyDraft: Bool {
+        state == .ready && projectKey != nil && projectName != nil
+            && !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// File needs a repository and a title, and never runs twice.
