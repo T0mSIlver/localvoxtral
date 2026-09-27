@@ -254,7 +254,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// update-or-keep decision; held here while onboarding is on screen.
     private var pendingConfigDefaultsPromptFileNames: [String]?
 
-    #if LOCALVOXTRAL_DOGFOOD
+    #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
     /// The dogfood-only local control socket and the service behind it.
     ///
     /// Owned here for the same reason the broker is: the socket answers
@@ -327,7 +327,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startClaudeContextBroker()
         startClaudeRemoteListener()
         maintainLocalClaudePlugin()
-        #if LOCALVOXTRAL_DOGFOOD
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         // After the broker, because the control service's `surface probe` uses
         // the resolver the broker installs on the view model.
         startDogfoodControlSocket()
@@ -352,7 +352,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         widgetSnapshotWriter?.writeAppQuit()
         widgetSnapshotWriter = nil
-        #if LOCALVOXTRAL_DOGFOOD
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         // First: `stop()` does not return until the accept loop has unlinked
         // the socket, so nothing that follows can race a client connecting to
         // an app that is halfway through quitting. The service's bounded
@@ -431,11 +431,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    #if LOCALVOXTRAL_DOGFOOD
+    #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
     /// Binds the dogfood-only control socket, if the owner armed it.
     ///
-    /// Two gates, both required, exactly like the capture: this file is only
-    /// compiled under `LOCALVOXTRAL_DOGFOOD`, and even then the socket binds
+    /// Two gates, both required, exactly like the capture: this code is only
+    /// compiled under `DEBUG || LOCALVOXTRAL_E2E_HARNESS`, and even then the socket binds
     /// only when `debug.dogfood_control_socket_enabled` is set. A shipped build
     /// contains none of this.
     ///

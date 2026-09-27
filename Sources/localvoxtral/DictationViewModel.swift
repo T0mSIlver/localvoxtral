@@ -813,7 +813,7 @@ final class DictationViewModel {
             // to run).
             MainActor.assumeIsolated {
                 guard let self else { return }
-                #if LOCALVOXTRAL_DOGFOOD
+                #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
                 // Last chance for a still-open post-commit watch to patch its
                 // record: after this the process is gone and the dictation
                 // would keep no behavior block at all.
@@ -902,7 +902,7 @@ final class DictationViewModel {
 
 }
 
-#if LOCALVOXTRAL_DOGFOOD
+#if DEBUG || LOCALVOXTRAL_E2E_HARNESS
 extension DictationViewModel {
     /// The dogfood control socket's entry into the dictation trigger.
     ///

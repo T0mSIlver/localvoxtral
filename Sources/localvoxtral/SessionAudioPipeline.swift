@@ -53,7 +53,7 @@ final class SessionAudioPipeline {
     @ObservationIgnored
     var audioSendTask: Task<Void, Never>?
 
-    #if LOCALVOXTRAL_DOGFOOD
+    #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
     /// The WAV this launch dictates from in place of the microphone, or nil.
     /// `var` so tests name a file without touching the process environment.
     @ObservationIgnored
@@ -92,7 +92,7 @@ final class SessionAudioPipeline {
     /// Do not instantiate the lazy CoreAudio service merely to stop it: doing
     /// so registers device listeners that an app-lifetime view model then owns.
     func stopMicrophoneIfInitialized() {
-        #if LOCALVOXTRAL_DOGFOOD
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         stopDogfoodAudioFileSource()
         #endif
         guard hasInitializedMicrophone else { return }
@@ -103,7 +103,7 @@ final class SessionAudioPipeline {
     /// from: that session needs no microphone grant, and nothing may fall back
     /// to the microphone behind its back.
     var capturesFromMicrophone: Bool {
-        #if LOCALVOXTRAL_DOGFOOD
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         return dogfoodAudioFileURL == nil
         #else
         return true
@@ -115,7 +115,7 @@ final class SessionAudioPipeline {
         preferredDeviceID: String?,
         chunkHandler: @escaping MicrophoneCaptureService.ChunkHandler
     ) throws {
-        #if LOCALVOXTRAL_DOGFOOD
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         if let dogfoodAudioFileURL {
             try startDogfoodAudioFileSource(dogfoodAudioFileURL, chunkHandler: chunkHandler)
             return
@@ -130,7 +130,7 @@ final class SessionAudioPipeline {
 
     /// Once this returns no further chunk reaches the session's handler.
     func stopSessionAudioCapture() {
-        #if LOCALVOXTRAL_DOGFOOD
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         stopDogfoodAudioFileSource()
         guard capturesFromMicrophone else { return }
         #endif

@@ -164,6 +164,18 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$BINARY_PATH" "$APP_DIR/Contents/MacOS/localvoxtral"
 chmod +x "$APP_DIR/Contents/MacOS/localvoxtral"
 
+# The e2e test harness (control socket, WAV in place of the microphone) is
+# compiled under `DEBUG || LOCALVOXTRAL_E2E_HARNESS`, and a dogfood build
+# implies the harness (Package.swift). Every other bundle is a release build
+# and must not carry it (docs/agent/invariants.md, "The control socket").
+HARNESS_EXPECT=absent
+if [[ "$CONFIGURATION" == debug || "${LOCALVOXTRAL_E2E_HARNESS:-}" == "1" \
+  || -n "$DOGFOOD_PLIST_ENTRY" ]]; then
+  HARNESS_EXPECT=present
+fi
+"$ROOT_DIR/scripts/packaging/check-harness-symbols.sh" \
+  "$APP_DIR/Contents/MacOS/localvoxtral" "$HARNESS_EXPECT"
+
 # Copy SwiftPM resource bundles into Contents/Resources so the app remains a
 # signable macOS bundle (bundle root must not contain extra unsealed content).
 BUILD_PRODUCTS_DIR="$(cd "$(dirname "$BINARY_PATH")" && pwd)"

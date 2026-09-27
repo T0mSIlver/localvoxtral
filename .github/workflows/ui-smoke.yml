@@ -185,6 +185,8 @@ jobs:
         env:
           LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
           LOCALVOXTRAL_DOGFOOD: "1"
+          # The control socket and the WAV source (docs/agent/invariants.md).
+          LOCALVOXTRAL_E2E_HARNESS: "1"
         run: ./scripts/package_app.sh release
 
       - name: Run e2e dictation

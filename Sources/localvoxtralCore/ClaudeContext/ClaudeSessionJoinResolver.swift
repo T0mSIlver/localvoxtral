@@ -497,7 +497,7 @@ package struct ClaudeSessionJoinResolver {
     /// category the log line above carries; nothing else may be passed in.
     package static func noteAbstention(_ cause: String) {
         ClaudeJoinAbstentionTap.note(cause)
-        #if LOCALVOXTRAL_DOGFOOD
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         ClaudeJoinAbstentionTap.noteForDogfood(cause)
         #endif
     }

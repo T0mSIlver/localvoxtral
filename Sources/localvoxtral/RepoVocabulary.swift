@@ -630,7 +630,7 @@ enum RepoVocabularyService {
         ) else {
             return nil
         }
-        #if LOCALVOXTRAL_DOGFOOD
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         // The exact term pool matching runs against, which the returned
         // outcome no longer carries — see `DogfoodCaptureTap`.
         DogfoodCaptureTap.shared.noteRepoVocabularyHarvest(vocabulary.terms)
