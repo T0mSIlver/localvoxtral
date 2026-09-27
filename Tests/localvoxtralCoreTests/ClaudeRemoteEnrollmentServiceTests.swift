@@ -808,6 +808,19 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
     }
 
+    /// The marketplace copy every mutation script writes first. Its
+    /// here-documents carry the shims' own text (`case "`, `--config`, lines
+    /// starting with `claude `), so checks on what the script RUNS strip it.
+    private func marketplaceWrite() throws -> String {
+        ClaudeRemoteEnrollmentService.remoteMarketplaceWriteScript(
+            try XCTUnwrap(ClaudeRemoteMarketplaceFiles.bundled())
+        )
+    }
+
+    private func commands(of script: String) throws -> String {
+        script.replacingOccurrences(of: try marketplaceWrite(), with: "")
+    }
+
     func testRemoteSetupGoesThroughTheClaudePluginCLI() throws {
         // Never by hand-editing the remote's ~/.claude/settings.json: that file
         // is the user's, Claude Code owns its schema, and the CLI is the
@@ -816,11 +829,12 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertEqual(
             scripts[1],
             "set -eu\n" + ClaudeRemoteEnrollmentService.claudePathResolverPreamble
-                + "claude plugin marketplace add \(ClaudeRemoteEnrollmentService.repositoryMarketplaceReference)\n"
+                + (try marketplaceWrite())
+                + "claude plugin marketplace add \"$M\"\n"
                 + "claude plugin install localvoxtral-remote@localvoxtral --config 'token=\(token)' --config 'port=28511'"
         )
         for script in scripts {
-            XCTAssertFalse(script.contains("settings.json"), "never touch the user's Claude config")
+            XCTAssertFalse(try commands(of: script).contains("settings.json"), "never touch the user's Claude config")
         }
     }
 
@@ -837,17 +851,6 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
                 "must not install the local plugin on a remote host"
             )
         }
-    }
-
-    func testTheMarketplaceReferenceIsTheCurrentRepoOwner() {
-        XCTAssertEqual(
-            ClaudeRemoteEnrollmentService.repositoryMarketplaceReference,
-            "T0mSIlver/localvoxtral"
-        )
-        XCTAssertFalse(
-            ClaudeRemoteEnrollmentService.repositoryMarketplaceReference.contains("tomvaucourt"),
-            "the old owner would resolve to nothing"
-        )
     }
 
     // MARK: What left the plan, and where it went
@@ -922,6 +925,8 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertEqual(
             try pluginMutationScripts().update,
             "set -eu\n" + ClaudeRemoteEnrollmentService.claudePathResolverPreamble
+                + (try marketplaceWrite())
+                + "claude plugin marketplace add \"$M\"\n"
                 + "claude plugin marketplace update \(ClaudePluginAssets.marketplaceName)\n"
                 + "claude plugin update localvoxtral-remote@localvoxtral\n"
                 + "claude plugin install \(ClaudeRemoteEnrollmentService.remotePluginReference) "
@@ -936,12 +941,12 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         let scripts = try pluginMutationScripts()
         for script in [scripts.update, scripts.current] {
             XCTAssertFalse(script.contains(token))
-            XCTAssertFalse(script.contains(ClaudeRemoteEnrollmentService.tokenConfigKey + "="))
+            XCTAssertFalse(try commands(of: script).contains(ClaudeRemoteEnrollmentService.tokenConfigKey + "="))
             // Not a blanket ban on `--config` any more: the port migration is a
             // config write, and it is the whole point of this path since #215.
             // Every `--config` on it must be the port one — that is a stricter
             // statement than "no --config", not a looser one.
-            assertEveryConfigArgumentIsThePort(in: script)
+            assertEveryConfigArgumentIsThePort(in: try commands(of: script))
         }
     }
 
@@ -1024,7 +1029,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             "ssh -o BatchMode=yes -- <alias> /bin/sh -s",
             "ssh -G -- <alias>",
             "claude plugin list --json",
-            "claude plugin marketplace add T0mSIlver/localvoxtral",
+            "claude plugin marketplace add \"$M\"",
             "claude plugin marketplace update localvoxtral",
             "claude plugin update localvoxtral-remote@localvoxtral",
             "claude plugin install localvoxtral-remote@localvoxtral",
@@ -1050,7 +1055,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         let scripts = try pluginSetupScripts(before: "1.4.0", token: nil)
             + pluginSetupScripts(before: nil, token: token)
         let commands = Set(
-            scripts.flatMap { $0.components(separatedBy: "\n") }
+            try scripts.map { try self.commands(of: $0) }.flatMap { $0.components(separatedBy: "\n") }
                 .filter { $0.hasPrefix("claude ") }
                 .map { $0.components(separatedBy: " --config ")[0] }
         )
@@ -2510,7 +2515,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertTrue(scripts[2].contains("claude plugin list --json"))
         // Nothing on the host matches text: the decision and the read-back
         // are decoded here from the JSON the CLI prints.
-        for script in scripts {
+        for script in try scripts.map(commands(of:)) {
             XCTAssertFalse(script.contains("grep"), "no text matching on the host")
             XCTAssertFalse(script.contains("case \""), "no text matching on the host")
         }

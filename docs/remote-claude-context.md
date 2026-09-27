@@ -97,10 +97,14 @@ ssh -o BatchMode=yes -o ClearAllForwardings=yes -- <alias> /bin/sh -s
 
 On this Mac, the token exists only in that stdin script. The remote plugin step
 runs `claude plugin list --json` before and after the change. Between those
-reads, it runs whichever of these commands apply:
+reads, it writes the app's own copy of the plugin marketplace to
+`~/.local/share/localvoxtral/claude-marketplace` on the host, registers that
+directory as the `localvoxtral` marketplace, and runs whichever of the other
+commands apply:
 
 ```sh
-claude plugin marketplace add T0mSIlver/localvoxtral
+M="$HOME/.local/share/localvoxtral/claude-marketplace"
+claude plugin marketplace add "$M"
 claude plugin marketplace update localvoxtral
 claude plugin update localvoxtral-remote@localvoxtral
 claude plugin install localvoxtral-remote@localvoxtral --config 'token=<token>' --config 'port=<this-Mac's-port>'
@@ -542,7 +546,7 @@ seconds.
 
 An enrollment made before per-Mac ports uses the legacy shared 8473 on both
 ends and keeps working. The app never forces a migration. When you want one,
-use **Update host…** in the host's row. It updates the marketplace clone and
+use **Update host…** in the host's row. It updates the marketplace copy and
 the plugin, stores this Mac's allocated port, and rewrites this host's
 ssh-config block in the same action, so the two halves always agree. Your
 token is preserved: `claude plugin update` keeps the stored config, and
@@ -551,6 +555,15 @@ token is preserved: `claude plugin update` keeps the stored config, and
 The update refreshes the marketplace and calls `plugin update`, because a bare
 `plugin install` does not update. On Claude Code 2.1.220 it exits 0 with
 "already installed", and `marketplace add` does not refresh an existing clone.
+
+The host gets the plugin version this app ships, not the one on GitHub's
+main branch: the app would otherwise reject a newer plugin it was not built
+for. A host that a newer app updated goes back to this app's version, and
+keeps its token. A host enrolled from GitHub moves to the app's copy on its
+next update, because `marketplace add` on an existing name replaces its
+source in place. Don't run `claude plugin marketplace remove localvoxtral` to
+switch sources: it uninstalls the plugin and deletes the token (Claude Code
+2.1.283).
 
 ## Shell history and rotation
 
