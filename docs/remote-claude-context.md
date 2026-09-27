@@ -536,9 +536,10 @@ label for it, never a path it could hand to ssh. The run goes like this:
 1. **Mac, at commit.** A dictation joins a remote Claude Code or Vibe session
    whose project (shown as `remote:<label>`) has no answer and no attempt in the
    last 24 hours. The host must have reported localvoxtral-remote 1.15.0 or
-   Vibe hooks 1.2.0. A project answered before the answer carried its
-   sentence is asked once more, on a host that has reported
-   localvoxtral-remote 1.20.0 or Vibe hooks 1.5.0. The Mac marks that session
+   Vibe hooks 1.2.0. A project answered with an older version of the request
+   is asked once more, on a host whose runner asks the newer one: the
+   project's sentence from localvoxtral-remote 1.20.0 or Vibe hooks 1.5.0,
+   names people say from 1.21.0 or 1.6.0. The Mac marks that session
    in memory for 10 minutes and records an attempt on the project.
 2. **Mac, next hook.** The reply to that session's next hook carries a
    terms-wanted header, once. The body stays the constant one.
@@ -546,8 +547,8 @@ label for it, never a path it could hand to ssh. The run goes like this:
    [hook script](../integrations/claude-code/plugins/localvoxtral-remote/hooks/post.sh)
    matches the header exactly and takes a per-project stamp in its state
    directory by an atomic mkdir. The state directory is
-   `$XDG_RUNTIME_DIR/localvoxtral/terms-2/`, else
-   `~/.cache/localvoxtral/terms-2/`.
+   `$XDG_RUNTIME_DIR/localvoxtral/terms-3/`, else
+   `~/.cache/localvoxtral/terms-3/`.
 
    The project is the git toplevel of the hook's working directory, or that
    directory outside git. A project marked done, or attempted in the last 24

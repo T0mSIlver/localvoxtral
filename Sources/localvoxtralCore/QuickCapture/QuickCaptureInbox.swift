@@ -168,6 +168,10 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
         }
     }
 
+    /// While a remote project's draft waits for one of its sessions to
+    /// send a hook, which it does only while it works.
+    package static let waitingForHostNote = "Drafts when a session of this project is next active."
+
     static func note(for reason: QuickCaptureDraft.NotRun) -> String {
         switch reason {
         case .catchAll: "Not routed to a project. Move it to one."
@@ -197,7 +201,9 @@ package enum QuickCaptureInboxFile {
         var result = inbox
         for index in result.items.indices where [.routing, .drafting, .filing].contains(result.items[index].state) {
             result.items[index].state = .ready
-            if result.items[index].title.isEmpty, result.items[index].note == nil {
+            if result.items[index].title.isEmpty,
+               [nil, QuickCaptureInbox.waitingForHostNote].contains(result.items[index].note)
+            {
                 result.items[index].note = "Interrupted before a draft."
             }
         }

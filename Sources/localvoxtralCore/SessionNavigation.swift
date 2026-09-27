@@ -211,7 +211,7 @@ package struct SessionDefaultNames: Equatable, Sendable {
                 repository: repository == primary ? nil : repository
             )
         case .remoteOpaque(let label)?:
-            let project = snapshot.remoteSessionEnvironment?.project
+            let project = snapshot.remoteProject
             return SessionDefaultNames(
                 primary: label,
                 repository: project == label ? nil : project

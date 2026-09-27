@@ -45,14 +45,16 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
                 // `.git`), and this is where it reaches the main checkout.
                 // Idempotent, so a file with nothing to fold is not rewritten.
                 let folded = loaded.foldWorktreesIntoMainCheckouts(now: now())
+                // Proposals agents made before answers were filtered (#914).
+                let dropped = loaded.dropIdentifierProposals()
                 let adopted = state.withLock { state in
                     guard state.terms == nil else { return false }
                     state.terms = loaded
                     return true
                 }
-                if folded > 0, adopted {
+                if folded + dropped > 0, adopted {
                     Log.polishing.info(
-                        "Learned terms: folded \(folded, privacy: .public) worktree projects into their main checkouts"
+                        "Learned terms: folded \(folded, privacy: .public) worktree projects into their main checkouts, dropped \(dropped, privacy: .public) proposals shaped like code"
                     )
                     write(loaded)
                     onChange?()
@@ -164,6 +166,7 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     package func recordProposal(
         _ terms: [String],
         line: String? = nil,
+        revision: Int? = nil,
         agent: ProjectTermProposal.Agent,
         project: LearnedTermProjectIdentity,
         excluding: [String]
@@ -171,7 +174,8 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         let moment = now()
         mutate { memory in
             let added = memory.recordProposal(
-                terms, line: line, agent: agent, project: project, excluding: excluding, now: moment)
+                terms, line: line, revision: revision, agent: agent, project: project, excluding: excluding,
+                now: moment)
             Log.polishing.info(
                 "Learned terms: \(added, privacy: .public) proposed by \(agent.rawValue, privacy: .public) kept for a new project"
             )

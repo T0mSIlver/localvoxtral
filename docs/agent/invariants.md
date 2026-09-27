@@ -362,7 +362,9 @@ there is not.
   the commit path never walks the filesystem for it, and it inherits that
   pipeline's title parsing, ssh titles included. A remote session's key is
   the basename of its repository's main checkout when its host's shim sends
-  `X-Lvx-Env-Project`, else its cwd label, so two repositories with one
+  `X-Lvx-Env-Project`, else the `<repo>` of a Claude Code worktree cwd
+  (`…/<repo>/.claude/worktrees/<name>`: a Desktop session keeps the plugin
+  it started with for days), else its cwd label, so two repositories with one
   basename on one host share a bucket: the price of never holding a remote
   path), and once three separate
   dictations have resolved it, it grounds later ones and rides in the prompt
@@ -2010,7 +2012,10 @@ there is not.
   repository; it replaces the cwd label only as the learned-terms key
   (`ClaudeSessionSnapshot.learnedTermWorkspace`), and only when it is already
   a label under `ClaudeWorkspaceReference.opaqueLabel`'s rule: a value that
-  would need reshaping is refused, never reshaped.
+  would need reshaping is refused, never reshaped. Without the header, the
+  directory above a cwd's `.claude/worktrees/<name>` stands in for it
+  (`claudeWorktreeRepository`), under the same rule; it is read off the cwd
+  as it arrives and kept as a label, like the cwd's own.
 - **A remote request names its agent in a header, and the header buys nothing
   but a namespace.** A remote host runs no publisher of ours, so the agent
   cannot ride inside the record the way it does locally: the Vibe shim
@@ -2359,7 +2364,8 @@ there is not.
   shims pull the numbers out of Vibe's session log with `sed` and never send
   the file, which holds the prompt. Which remote projects the router sees
   (#819): a hook adds a project only for a name its host sent as
-  `X-Lvx-Env-Project`; a cwd label only stamps a project already held,
+  `X-Lvx-Env-Project`, or the repository of a Claude Code worktree cwd; a
+  cwd label only stamps a project already held,
   because each worktree has its own, and a label no hook has named since is
   not listed, since no session will report it again. Nothing guesses which
   repository an old label belonged to.

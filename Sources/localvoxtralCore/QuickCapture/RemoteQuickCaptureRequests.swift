@@ -49,8 +49,8 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
     package static let maxDraftAnswerBytes = 60 * 1024
     /// A project's README is asked for at most this often per launch.
     package static let readmeAskInterval: TimeInterval = 86_400
-    /// An ask waits this long for its answer, and a draft this long for a
-    /// hook from its project.
+    /// An ask waits this long for its answer. A draft checks this often
+    /// that its project still has a live session to wait for.
     package static let askLifetime: TimeInterval = 600
     /// A draft's run: the host's 240 s watchdog and 20 s for `gh`, with room.
     package static let draftRunLifetime: TimeInterval = 600
@@ -173,7 +173,7 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
               ),
               project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix)
         else { return }
-        let asRepository = snapshot.remoteSessionEnvironment?.project == label
+        let asRepository = snapshot.remoteProject == label
         // A cwd label stamps only a project a dictation already added. Until
         // then this hook records nothing, so it must not take the interval:
         // the hook right after that dictation is the one to stamp (#891).
@@ -259,23 +259,12 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
 
     /// Has a remote project's host draft `capture`. Returns once the host
     /// answers, when no session of the project is live on a host that reads
-    /// the ask, or when an ask or run outlives its lifetime.
+    /// the ask, or when the host's run outlives its lifetime.
     package func draft(capture: String, project: QuickCaptureProject) async -> QuickCaptureDraft.Outcome {
         guard project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix) else {
             return .notRun(.remoteProject)
         }
-        var sessionFound = false
-        var hostReads = false
-        for session in registry.liveSessions() {
-            guard case .remote = session.origin,
-                  Self.remoteProjectKey(of: session.learnedTermWorkspace) == project.key,
-                  let agent = ProjectTermProposal.Agent(session.agent), agent != .opencode,
-                  let hostID = ClaudeRemoteSessionScope.hostID(fromScopedSessionID: session.sessionID),
-                  let host = hosts.host(id: hostID), !host.isRevoked
-            else { continue }
-            sessionFound = true
-            if Self.hostReadsTheAsks(host, agent: agent) { hostReads = true }
-        }
+        let (sessionFound, hostReads) = liveSessions(of: project.key)
         guard hostReads else {
             Log.backends.info(
                 "Quick capture draft: \(sessionFound ? "the remote host's shim predates drafting" : "no live session of the remote project", privacy: .public)"
@@ -300,12 +289,19 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
             // Started once the draft is registered, so an early expiry finds it.
             timer.withLock {
                 $0 = Task { [weak self] in
-                    await sleep(Self.askLifetime)
-                    guard let self, !Task.isCancelled else { return }
-                    guard self.isAsked(id) else {
-                        self.finish(id, with: .notRun(.noHostSession), because: "no hook from the project")
-                        return
+                    // A session sends hooks only while it works, and the
+                    // user may capture while every session of the project
+                    // is idle: the draft waits for as long as one is live.
+                    while true {
+                        await sleep(Self.askLifetime)
+                        guard let self, !Task.isCancelled else { return }
+                        if self.isAsked(id) { break }
+                        guard self.liveSessions(of: project.key).hostReads else {
+                            self.finish(id, with: .notRun(.noHostSession), because: "no hook from the project")
+                            return
+                        }
                     }
+                    guard let self else { return }
                     await sleep(Self.draftRunLifetime)
                     guard !Task.isCancelled else { return }
                     self.finish(id, with: .failed(.timedOut), because: "the host's run did not answer")
@@ -314,6 +310,24 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
         }
         timer.withLock { $0?.cancel() }
         return outcome
+    }
+
+    /// Whether a session of the project is live on an enrolled host, and
+    /// whether one of those hosts' shims reads the asks.
+    private func liveSessions(of projectKey: String) -> (sessionFound: Bool, hostReads: Bool) {
+        var sessionFound = false
+        var hostReads = false
+        for session in registry.liveSessions() {
+            guard case .remote = session.origin,
+                  Self.remoteProjectKey(of: session.learnedTermWorkspace) == projectKey,
+                  let agent = ProjectTermProposal.Agent(session.agent), agent != .opencode,
+                  let hostID = ClaudeRemoteSessionScope.hostID(fromScopedSessionID: session.sessionID),
+                  let host = hosts.host(id: hostID), !host.isRevoked
+            else { continue }
+            sessionFound = true
+            if Self.hostReadsTheAsks(host, agent: agent) { hostReads = true }
+        }
+        return (sessionFound, hostReads)
     }
 
     private func isAsked(_ id: String) -> Bool {

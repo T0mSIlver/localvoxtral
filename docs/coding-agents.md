@@ -390,7 +390,9 @@ it. It needs the app running, and exits with status 3 when it is not.
 
 A proposed term joins the project's terms the way the agent's own proposals
 do (see [Dictation](dictation.md)). It applies only where repo vocabulary
-may, and three dictations or a **Pin** make it yours.
+may, and three dictations or a **Pin** make it yours. A name written like
+code (a type or function name, a file name, a path, a flag or an environment
+variable) is refused as not a term.
 
 **Settings → Text Processing → Terms learned from polishing → Show** lists it
 as "Proposed by" the agent that ran the command. Claude Code, Codex and

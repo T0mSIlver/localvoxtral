@@ -175,6 +175,24 @@ public enum ClaudeWorkspaceReference: Sendable, Equatable, Hashable {
         return .remoteOpaque(label: project)
     }
 
+    /// The repository a remote cwd inside a Claude Code worktree belongs to:
+    /// `<repo>` for `…/<repo>/.claude/worktrees/<name>` or below it, the
+    /// layout Claude Code and Claude Desktop create. A host whose shim
+    /// predates `X-Lvx-Env-Project` (#652) names only the worktree, and a
+    /// Desktop session keeps the plugin version it started with for days.
+    /// Nil for any other path, and for a name `opaqueLabel` would reshape.
+    public static func claudeWorktreeRepository(rawCwd: String) -> String? {
+        let components = rawCwd.split(separator: "/").map(String.init)
+        guard let index = components.indices.dropFirst().last(where: { index in
+            components[index] == ".claude"
+                && index + 2 < components.count
+                && components[index + 1] == "worktrees"
+        }) else { return nil }
+        let repository = components[index - 1]
+        guard !repository.isEmpty, opaqueLabel(for: repository) == repository else { return nil }
+        return repository
+    }
+
     /// Reduce a foreign path to a bare, separator-free name.
     ///
     /// Strips directories, then anything that could reconstitute a path or

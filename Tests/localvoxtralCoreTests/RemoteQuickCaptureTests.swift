@@ -39,6 +39,16 @@ final class RemoteQuickCaptureTests: XCTestCase {
         func advance(_ seconds: TimeInterval) { value.withLock { $0 = $0.addingTimeInterval(seconds) } }
     }
 
+    private final class FirstAnswer: Sendable {
+        private let continuation: Mutex<CheckedContinuation<QuickCaptureDraft.Outcome?, Never>?>
+        init(_ continuation: CheckedContinuation<QuickCaptureDraft.Outcome?, Never>) {
+            self.continuation = Mutex(continuation)
+        }
+        func resume(_ outcome: QuickCaptureDraft.Outcome?) {
+            continuation.withLock { $0.take() }?.resume(returning: outcome)
+        }
+    }
+
     private let clock = Clock()
     private let sleeper = ManualSleeper()
     private var hosts: ClaudeRemoteHostRegistry!
@@ -107,6 +117,7 @@ final class RemoteQuickCaptureTests: XCTestCase {
         version: String? = nil,
         project: String = "quill",
         sendsProject: Bool = true,
+        cwd: String? = nil,
         token: String? = nil
     ) throws -> RemoteListenerResponse {
         var headers = ["Authorization": "Bearer \(token ?? self.token)", "Content-Type": "application/json"]
@@ -120,7 +131,7 @@ final class RemoteQuickCaptureTests: XCTestCase {
             preconditionFailure("opencode has no remote shim")
         }
         if sendsProject { headers["X-Lvx-Env-Project"] = project }
-        let body = #"{"hook_event_name":"\#(event)","session_id":"\#(session)","cwd":"/srv/work/\#(project)-fix","prompt":"hello"}"#
+        let body = #"{"hook_event_name":"\#(event)","session_id":"\#(session)","cwd":"\#(cwd ?? "/srv/work/\(project)-fix")","prompt":"hello"}"#
         return try postToRemoteListener(port: port, path: "/v1/hook/\(event)", headers: headers, body: Data(body.utf8))
     }
 
@@ -231,6 +242,19 @@ final class RemoteQuickCaptureTests: XCTestCase {
         try hook("SessionStart", session: "s1", version: "1.12.0", sendsProject: false)
         XCTAssertEqual(store.snapshot().projects.map(\.key), ["remote:quill"])
         XCTAssertNil(store.snapshot().projects.first?.reportedAt)
+    }
+
+    /// A Claude Desktop session started before the host's plugin update
+    /// keeps its old shim, which names only its worktree. Claude Code's
+    /// worktree layout names the repository, so that is the project listed.
+    func testAnOldShimInAClaudeCodeWorktreeListsItsRepository() throws {
+        try hook(
+            "SessionStart", session: "s1", version: "1.11.0", sendsProject: false,
+            cwd: "/home/dev/work/localvoxtral/.claude/worktrees/ci-speed-optimizations-7ffef0"
+        )
+        let project = try XCTUnwrap(store.snapshot().projects.first { $0.key == "remote:localvoxtral" })
+        XCTAssertEqual(project.reportedAsRepository, true)
+        XCTAssertFalse(store.snapshot().projects.contains { $0.key == "remote:ci-speed-optimizations-7ffef0" })
     }
 
     /// #891: a cwd label's hook before the dictation that adds its project
@@ -460,9 +484,40 @@ final class RemoteQuickCaptureTests: XCTestCase {
         XCTAssertEqual(revoked, .notRun(.noHostSession))
     }
 
+    /// The field failure: the project's sessions were idle for ten minutes
+    /// after a capture, and the draft ended as if the host had none. A
+    /// session that is still live drafts it on its next hook.
+    func testADraftOutwaitsAQuietSessionAndGoesOutOnItsNextHook() async throws {
+        try hook("SessionStart", session: "s1")
+        let task = await startDraft()
+        clock.advance(RemoteQuickCaptureRequests.askLifetime)
+        sleeper.wakeAll()
+        // Whichever comes first: the draft ending, or it waiting again.
+        let sleeper = sleeper
+        let ended = await withCheckedContinuation { continuation in
+            let first = FirstAnswer(continuation)
+            Task { await first.resume(task.value) }
+            Task { await sleeper.waitForSleepers(1); first.resume(nil) }
+        }
+        if let ended { return XCTFail("the draft ended while its project's session was live: \(ended)") }
+
+        XCTAssertEqual(try hook(session: "s1").headers[draftHeader], draftID)
+        XCTAssertEqual(
+            try answer(RemoteQuickCaptureRequests.draftPromptPath, session: "s1", draftID: draftID, body: Self.issues).status,
+            200
+        )
+        XCTAssertEqual(
+            try answer(RemoteQuickCaptureRequests.draftAnswerPath, session: "s1", draftID: draftID, exit: "0", body: Self.claudeAnswer).status,
+            200
+        )
+        guard case .draft(let draft, _) = await task.value else { return XCTFail() }
+        XCTAssertEqual(draft.issue, 12)
+    }
+
     func testADraftNoHookPicksUpEndsAndOneThatIsNeverAnsweredTimesOut() async throws {
         try hook("SessionStart", session: "s1")
         let quiet = await startDraft()
+        clock.advance(ClaudeRegistryLimits().sessionTTL + 1)
         sleeper.wakeAll()
         let quietOutcome = await quiet.value
         XCTAssertEqual(quietOutcome, .notRun(.noHostSession))

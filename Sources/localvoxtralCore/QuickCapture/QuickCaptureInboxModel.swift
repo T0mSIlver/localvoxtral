@@ -78,7 +78,13 @@ package final class QuickCaptureInboxModel {
 
     private func draft(_ id: UUID, text: String, destination: QuickCaptureRoute.Destination, projects: [QuickCaptureProject]) async {
         guard case .project(let key) = destination else { return }
-        mutate { inbox in inbox.update(id) { $0.state = .drafting } }
+        mutate { inbox in
+            inbox.update(id) {
+                $0.state = .drafting
+                // A remote project's host drafts on its next session hook.
+                if !key.hasPrefix("/") { $0.note = QuickCaptureInbox.waitingForHostNote }
+            }
+        }
         let repository = key.hasPrefix("/") ? await github.repository(ofCheckout: key) : nil
         let outcome = await drafter().draft(capture: text, route: destination, projects: projects, agents: agents())
         mutate { $0.applyDraft(outcome, repository: repository, to: id) }
