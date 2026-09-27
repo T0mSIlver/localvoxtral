@@ -243,6 +243,8 @@ package struct ModifierChordGesture: Sendable {
     private var holding = false
 
     package var chord: ModifierChord { detector.chord }
+    /// A hold started and hasn't ended.
+    package var isHolding: Bool { holding }
 
     package init(chord: ModifierChord, window: TimeInterval = ModifierChordDetector.defaultWindow) {
         detector = ModifierChordDetector(chord: chord, window: window)

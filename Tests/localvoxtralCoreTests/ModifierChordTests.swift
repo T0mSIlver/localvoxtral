@@ -158,7 +158,9 @@ final class ModifierChordGestureTests: XCTestCase {
         _ = key.modifiersChanged(held: right, at: 1.0)
         XCTAssertEqual(key.modifiersChanged(held: both, at: 1.0625), .armed(gap: 0.0625, attempt: 1))
         XCTAssertEqual(key.holdDelayElapsed(attempt: 1), .holdStart)
+        XCTAssertTrue(key.isHolding)
         XCTAssertEqual(key.modifiersChanged(held: left, at: 3.0), .holdEnd)
+        XCTAssertFalse(key.isHolding)
         XCTAssertEqual(key.modifiersChanged(held: [], at: 3.03125), .none, "no tap after a hold")
 
         XCTAssertEqual(key.modifiersChanged(held: both, at: 5.0), .armed(gap: 0, attempt: 2))

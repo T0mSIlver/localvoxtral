@@ -138,7 +138,11 @@ final class ModifierChordHotKeyMonitor {
         // Recording a chord in Settings must not also fire the one it replaces.
         if let recorder = NSApp?.keyWindow?.firstResponder as? RecorderControl, recorder.isRecording {
             for action in Array(detectors.keys) { detectors[action]!.reset() }
+            // A push to talk held when the recorder took the keys must still
+            // stop, or nothing would be left to end it.
+            let wasHolding = dictationGesture?.isHolding == true
             dictationGesture?.reset()
+            if wasHolding { handleDictation(.holdEnd) }
             return
         }
         let held = SidedModifier.held(inDeviceFlags: rawFlags)
