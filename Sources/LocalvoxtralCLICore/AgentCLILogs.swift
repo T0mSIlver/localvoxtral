@@ -71,8 +71,11 @@ public enum AgentCLILogs {
     /// `log show --style ndjson` output, oldest first. Lines that are not a
     /// log entry (the closing summary, a warning) are skipped.
     public static func parse(_ output: Data) -> [AgentCLILogLine] {
-        // `log show` writes microseconds; a line without them still parses.
-        let timestamps = ["yyyy-MM-dd HH:mm:ss.SSSSSSZ", "yyyy-MM-dd HH:mm:ssZ"].map { format in
+        // `log show` writes microseconds and a `+0200` offset; a line without
+        // the fraction, or with a `+02:00` offset, still parses.
+        let formats = ["yyyy-MM-dd HH:mm:ss.SSSSSSZ", "yyyy-MM-dd HH:mm:ssZ",
+                       "yyyy-MM-dd HH:mm:ss.SSSSSSxxx", "yyyy-MM-dd HH:mm:ssxxx"]
+        let timestamps = formats.map { format in
             let formatter = DateFormatter()
             formatter.locale = Locale(identifier: "en_US_POSIX")
             formatter.dateFormat = format

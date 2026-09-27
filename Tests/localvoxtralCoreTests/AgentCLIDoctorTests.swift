@@ -244,19 +244,23 @@ final class AgentCLIDoctorTests: XCTestCase {
         let output = Data("""
             {"timestamp":"2026-09-21 16:13:20.000000+0200","messageType":"Default","category":"ClaudeContext","eventMessage":"Claude join outcome: arm=tty origin=local causes=none"}
             {"timestamp":"2026-09-21 16:14:20+0200","messageType":"Error","category":"Backends","eventMessage":"Speech engine failed: <private>"}
-            {"count":2,"finished":1}
+            {"timestamp":"2026-09-21 16:15:20.000000+02:00","messageType":"Fault","category":"Backends","eventMessage":"x"}
+            {"count":3,"finished":1}
             not json
             """.utf8)
         let lines = AgentCLILogs.parse(output)
-        XCTAssertEqual(lines.map(\.level), ["notice", "error"])
+        XCTAssertEqual(lines.map(\.level), ["notice", "error", "fault"])
         XCTAssertEqual(lines.first?.at, now)
+        XCTAssertEqual(lines.last?.at, now.addingTimeInterval(120))
         let outcome = AgentCLILogs.run(
-            AgentCLILogsQuery(joinOnly: false, since: now, json: false), timeZone: utc, readLog: { _ in .success(output) }
+            AgentCLILogsQuery(joinOnly: false, since: now, json: false), timeZone: utc,
+            readLog: { _ in .success(output) }
         )
         XCTAssertEqual(outcome.exitCode, .answered)
         XCTAssertEqual(outcome.stdout, """
             2026-09-21 14:13:20 [ClaudeContext] Claude join outcome: arm=tty origin=local causes=none
             2026-09-21 14:14:20 [Backends] error: Speech engine failed: <private>
+            2026-09-21 14:15:20 [Backends] fault: x
 
             """)
         let failed = AgentCLILogs.run(
