@@ -88,6 +88,7 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
     private let now: @Sendable () -> Date
     private let sleep: @Sendable (TimeInterval) async -> Void
     private let makeID: @Sendable () -> String
+    private let usageRecorder: (any UsageRecording)?
 
     package init(
         store: any RemoteProjectSummaryStoring,
@@ -99,8 +100,10 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
         },
         makeID: @escaping @Sendable () -> String = {
             UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-        }
+        },
+        usageRecorder: (any UsageRecording)? = nil
     ) {
+        self.usageRecorder = usageRecorder
         self.store = store
         self.hosts = hosts
         self.registry = registry
@@ -315,6 +318,7 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
         guard let taken, let outcome = Self.outcome(exit: exit, output: output, agent: agent, openIssues: taken.openIssues ?? [])
         else { return false }
         guard let draft = state.withLock({ $0.drafts.removeValue(forKey: draftID) }) else { return false }
+        QuickCaptureDraft.recordUsage(of: outcome, agent: agent, date: now(), to: usageRecorder)
         switch outcome {
         case .draft(let result, let usage):
             Log.backends.info(

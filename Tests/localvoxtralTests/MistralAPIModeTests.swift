@@ -360,10 +360,10 @@ final class MistralAPIModeTests: XCTestCase {
     /// calls. A path left unwired would under-report without any error.
     func testInstalledUsageLedgerReceivesBothMistralPaths() async throws {
         let (viewModel, _, _) = makeViewModel()
-        XCTAssertNil(viewModel.engines.mistralUsageLedger, "tests never write the user's ledger")
-        let ledger = MistralUsageLedger(fileURL: nil)
-        viewModel.installMistralUsageLedger(ledger)
-        XCTAssertTrue(viewModel.engines.mistralUsageLedger === ledger)
+        XCTAssertNil(viewModel.engines.usageLedger, "tests never write the user's ledger")
+        let ledger = UsageLedger(fileURL: nil)
+        viewModel.installUsageLedger(ledger)
+        XCTAssertTrue(viewModel.engines.usageLedger === ledger)
 
         #if DEBUG
         let session = URLSession(configuration: .ephemeral)
@@ -381,7 +381,7 @@ final class MistralAPIModeTests: XCTestCase {
         #endif
 
         let service = try XCTUnwrap(viewModel.llmPolishingService as? LLMPolishingService)
-        XCTAssertTrue((service.usageRecorder as? MistralUsageLedger) === ledger)
+        XCTAssertTrue((service.usageRecorder as? UsageLedger) === ledger)
     }
 
     // MARK: - Fixtures

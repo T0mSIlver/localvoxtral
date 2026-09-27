@@ -39,6 +39,7 @@ final class RemoteQuickCaptureTests: XCTestCase {
     private var sessions: ClaudeSessionRegistry!
     private var store: FakeStore!
     private var requests: RemoteQuickCaptureRequests!
+    private var usage: UsageLedger!
     private var listener: ClaudeRemoteContextListener!
     private var port: UInt16 = 0
     private var token = ""
@@ -61,13 +62,15 @@ final class RemoteQuickCaptureTests: XCTestCase {
         sessions = ClaudeSessionRegistry(now: { clock.now() }, isProcessAlive: { _ in true })
         store = FakeStore(now: { clock.now() })
         store.learn("quill")
+        usage = UsageLedger(fileURL: nil)
         requests = RemoteQuickCaptureRequests(
             store: store,
             hosts: hosts,
             registry: sessions,
             now: { clock.now() },
             sleep: { await sleeper.sleep($0) },
-            makeID: { "0123456789abcdef0123456789abcdef" }
+            makeID: { "0123456789abcdef0123456789abcdef" },
+            usageRecorder: usage
         )
         port = try unusedLoopbackPort()
         listener = ClaudeRemoteContextListener(
@@ -248,6 +251,13 @@ final class RemoteQuickCaptureTests: XCTestCase {
         XCTAssertEqual(
             try answer(RemoteQuickCaptureRequests.draftAnswerPath, session: "s1", draftID: draftID, exit: "0", body: Self.claudeAnswer).status,
             409, "one answer per draft"
+        )
+        XCTAssertEqual(
+            self.usage.entries(),
+            [UsageEntry(
+                date: clock.now(), feature: .quickCaptureDrafting, backend: .claudeCode, model: "sonnet",
+                promptTokens: 10, completionTokens: 200, agentCostUSD: 0.07)],
+            "the host's run, counted once with what it reported"
         )
     }
 

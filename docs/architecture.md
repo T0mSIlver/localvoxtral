@@ -90,8 +90,10 @@ AppKit:
   both websocket clients (#637). On Linux they speak through
   `FoundationNetworking`, whose upgrade and cancel differ from Apple's; the
   base client's comments say how. The Mistral client reports usage through
-  `MistralRealtimeUsageRecording`, so the ledger and its price table stay in
-  the app.
+  `MistralRealtimeUsageRecording`, which the usage ledger implements.
+- the usage ledger (`UsageLedger`, #837): one line per model call, charged
+  to the feature that asked and the backend that answered, with Mistral's
+  price table.
 
 `Sources/localvoxtralCore/ClaudeContext` holds the part of the Claude context
 path that needs no AppKit (#591): the join resolver and its arms, the session

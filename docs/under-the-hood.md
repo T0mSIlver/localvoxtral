@@ -121,12 +121,16 @@ Auto-Paste has already typed its text and gets no second pass.
 
 The **Usage** row in the pane's Mistral API group estimates what those
 requests cost, in EUR, over today, the last 7, 30 or 90 days, or all time.
-The app logs every request it sends to Mistral in
+The app logs every request it sends to a model in
 `~/Library/Application Support/localvoxtral/mistral-usage.jsonl`, one line
-per request. Each line holds the time, the model, the seconds of audio sent
-(dictation and its second pass) or the tokens Mistral reports (polishing),
-and the estimated cost. The log never holds what you said, and nothing in it
-leaves the Mac.
+per request, Mistral's or not. Each line holds the time, the feature that
+asked (dictation, polishing, the second pass, term suggestions, project
+terms, quick-capture routing or drafting), the backend that answered (Mistral,
+Jev, the bundled helper, your own server, or a coding agent), the model, the
+seconds of audio sent or the tokens the backend reports, and the estimated
+cost: in EUR for Mistral, and in USD at API prices for an agent run that
+reports it. The Usage row sums only the Mistral lines. The log never holds
+what you said, and nothing in it leaves the Mac.
 
 The prices are Mistral's EUR list prices, built into the app, so the estimate
 can differ from your invoice. Mistral does not document how it rounds audio
