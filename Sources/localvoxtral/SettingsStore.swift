@@ -141,12 +141,17 @@ final class SettingsStore {
         static let copyLastDictationShortcutModifiers =
             "settings.copy_last_dictation_shortcut_carbon_modifiers"
         static let copyLastDictationShortcutEnabled = "settings.copy_last_dictation_shortcut_enabled"
+        static let copyLastDictationShortcutChord = "settings.copy_last_dictation_shortcut_chord"
         static let answerAgentShortcutKeyCode = "settings.answer_agent_shortcut_key_code"
         static let answerAgentShortcutModifiers = "settings.answer_agent_shortcut_carbon_modifiers"
         static let answerAgentShortcutEnabled = "settings.answer_agent_shortcut_enabled"
+        static let answerAgentShortcutChord = "settings.answer_agent_shortcut_chord"
+        static let agentAttentionEnabled = "settings.agent_attention_enabled"
+        static let modifierHoldLiveAutoPaste = "settings.modifier_hold_live_auto_paste"
         static let quickCaptureShortcutKeyCode = "settings.quick_capture_shortcut_key_code"
         static let quickCaptureShortcutModifiers = "settings.quick_capture_shortcut_carbon_modifiers"
         static let quickCaptureShortcutEnabled = "settings.quick_capture_shortcut_enabled"
+        static let quickCaptureShortcutChord = "settings.quick_capture_shortcut_chord"
         static let quickCaptureJevEnabled = "settings.quick_capture_jev_enabled"
         static let quickCaptureProjectLines = "settings.quick_capture_project_lines"
         static let jevAPIKeyNeverStored = "settings.jev_api_key"
@@ -860,6 +865,18 @@ final class SettingsStore {
         didSet { defaults.set(answerAgentShortcutEnabled, forKey: Keys.answerAgentShortcutEnabled) }
     }
 
+    /// Advanced → "Hold the key for Live Auto-Paste" (#840). Off, a hold of
+    /// the single modifier key is an Overlay Buffer push to talk.
+    var modifierHoldLiveAutoPaste: Bool {
+        didSet { defaults.set(modifierHoldLiveAutoPaste, forKey: Keys.modifierHoldLiveAutoPaste) }
+    }
+
+    /// "Tell me when an agent needs you" (#840): the needs-you cue and the
+    /// waiting sessions in the overlay's destinations. Off by default.
+    var agentAttentionEnabled: Bool {
+        didSet { defaults.set(agentAttentionEnabled, forKey: Keys.agentAttentionEnabled) }
+    }
+
     var answerAgentShortcutKeyCode: UInt32 {
         didSet { defaults.set(answerAgentShortcutKeyCode, forKey: Keys.answerAgentShortcutKeyCode) }
     }
@@ -902,6 +919,20 @@ final class SettingsStore {
         didSet {
             defaults.set(quickCaptureShortcutCarbonModifierFlags, forKey: Keys.quickCaptureShortcutModifiers)
         }
+    }
+
+    /// A modifier-only chord in an action slot (#831), in
+    /// `ModifierChord.storageValue` form; empty when the slot holds a key.
+    var copyLastDictationShortcutChord: String {
+        didSet { defaults.set(copyLastDictationShortcutChord, forKey: Keys.copyLastDictationShortcutChord) }
+    }
+
+    var answerAgentShortcutChord: String {
+        didSet { defaults.set(answerAgentShortcutChord, forKey: Keys.answerAgentShortcutChord) }
+    }
+
+    var quickCaptureShortcutChord: String {
+        didSet { defaults.set(quickCaptureShortcutChord, forKey: Keys.quickCaptureShortcutChord) }
     }
 
     var livePasteShortcutKeyCode: UInt32 {
@@ -1274,12 +1305,19 @@ final class SettingsStore {
             (defaults.object(forKey: Keys.answerAgentShortcutModifiers) as? NSNumber)?.uint32Value ?? 0
         answerAgentShortcutEnabled = Self.loadBool(
             defaults: defaults, key: Keys.answerAgentShortcutEnabled, fallback: false)
+        agentAttentionEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.agentAttentionEnabled, fallback: false)
+        modifierHoldLiveAutoPaste = Self.loadBool(
+            defaults: defaults, key: Keys.modifierHoldLiveAutoPaste, fallback: false)
         quickCaptureShortcutKeyCode =
             (defaults.object(forKey: Keys.quickCaptureShortcutKeyCode) as? NSNumber)?.uint32Value ?? 0
         quickCaptureShortcutCarbonModifierFlags =
             (defaults.object(forKey: Keys.quickCaptureShortcutModifiers) as? NSNumber)?.uint32Value ?? 0
         quickCaptureShortcutEnabled = Self.loadBool(
             defaults: defaults, key: Keys.quickCaptureShortcutEnabled, fallback: false)
+        copyLastDictationShortcutChord = defaults.string(forKey: Keys.copyLastDictationShortcutChord) ?? ""
+        answerAgentShortcutChord = defaults.string(forKey: Keys.answerAgentShortcutChord) ?? ""
+        quickCaptureShortcutChord = defaults.string(forKey: Keys.quickCaptureShortcutChord) ?? ""
 
         if needsOverlayMigrationPersist {
             defaults.set(overlayBufferShortcutKeyCode, forKey: Keys.overlayBufferShortcutKeyCode)

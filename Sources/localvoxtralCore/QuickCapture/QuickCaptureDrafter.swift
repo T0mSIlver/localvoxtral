@@ -6,7 +6,8 @@ package protocol QuickCaptureDraftRunning: Sendable {
 }
 
 /// The real run, on #609's process plumbing: the same CLI lookup, the same
-/// app-owned `VIBE_HOME` that keeps the user's hooks out, `BoundedProcess`.
+/// app-owned `VIBE_HOME` that keeps the user's hooks out, the invocation's
+/// own variables on top (opencode's run config), `BoundedProcess`.
 package struct QuickCaptureDraftProcessRunner: QuickCaptureDraftRunning {
     private let environment: [String: String]
     private let vibeHome: URL
@@ -27,15 +28,12 @@ package struct QuickCaptureDraftProcessRunner: QuickCaptureDraftRunning {
 
     package func run(_ invocation: ProjectTermProposal.Invocation, openIssues: [Int]) async -> QuickCaptureDraft.Outcome {
         let agent = invocation.agent
-        // Drafting speaks Claude Code's and Vibe's output; opencode's is a
-        // follow-up, so it reads as not installed and the next agent runs.
-        guard agent != .opencode else { return .failed(.agentNotFound) }
         guard let executable = ProjectTermProposalProcessRunner.locate(
             agent, environment: environment, isExecutable: isExecutable
         ) else {
             return .failed(.agentNotFound)
         }
-        var environment = environment
+        var environment = environment.merging(invocation.environment) { _, run in run }
         if agent == .vibe {
             guard VibeProposalHome.prepare(at: vibeHome, linkingTo: userVibeDirectory) else {
                 return .failed(.launchFailed)
@@ -47,7 +45,7 @@ package struct QuickCaptureDraftProcessRunner: QuickCaptureDraftRunning {
             arguments: invocation.arguments,
             environment: environment,
             currentDirectory: invocation.workingDirectory,
-            timeoutSeconds: QuickCaptureDraft.timeoutSeconds,
+            timeoutSeconds: agent == .opencode ? QuickCaptureDraft.opencodeTimeoutSeconds : QuickCaptureDraft.timeoutSeconds,
             maxBytes: QuickCaptureDraft.maxOutputBytes,
             label: "quick capture draft \(agent.rawValue)"
         ) else {
@@ -58,7 +56,7 @@ package struct QuickCaptureDraftProcessRunner: QuickCaptureDraftRunning {
         switch agent {
         case .claude: return QuickCaptureDraft.parseClaude(stdout: output.data, exitCode: output.exitCode, openIssues: openIssues)
         case .vibe: return QuickCaptureDraft.parseVibe(stdout: output.data, exitCode: output.exitCode, openIssues: openIssues)
-        case .opencode: return .failed(.agentNotFound)
+        case .opencode: return QuickCaptureDraft.parseOpencode(stdout: output.data, exitCode: output.exitCode, openIssues: openIssues)
         }
     }
 }
@@ -74,6 +72,8 @@ package struct QuickCaptureDrafter: Sendable {
     /// Drafts on a remote project's host (#745); nil leaves a remote capture
     /// undrafted.
     private let remote: (@Sendable (String, QuickCaptureProject) async -> QuickCaptureDraft.Outcome)?
+    private let usageRecorder: (any UsageRecording)?
+    private let now: @Sendable () -> Date
 
     package init(
         runner: any QuickCaptureDraftRunning,
@@ -83,8 +83,12 @@ package struct QuickCaptureDrafter: Sendable {
             var isDirectory: ObjCBool = false
             return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
         },
-        remote: (@Sendable (String, QuickCaptureProject) async -> QuickCaptureDraft.Outcome)? = nil
+        remote: (@Sendable (String, QuickCaptureProject) async -> QuickCaptureDraft.Outcome)? = nil,
+        usageRecorder: (any UsageRecording)? = nil,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
+        self.usageRecorder = usageRecorder
+        self.now = now
         self.remote = remote
         self.runner = runner
         self.openIssues = openIssues
@@ -124,6 +128,7 @@ package struct QuickCaptureDrafter: Sendable {
             )
             Log.backends.info("Quick capture draft: asking \(agent.rawValue, privacy: .public)")
             last = await runner.run(invocation, openIssues: numbers)
+            QuickCaptureDraft.recordUsage(of: last, agent: agent, date: now(), to: usageRecorder)
             switch last {
             case .draft(let draft, let usage):
                 Log.backends.info(

@@ -45,9 +45,41 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
+    /// Insights with the usage ledger holding a call of every feature, on
+    /// every kind of backend: the Usage by feature group at the end (#837).
+    func testInsightsUsageByFeature() async throws {
+        var insights: DictationInsightsModel?
+        try await recordSettings(pane: .insights, name: "settings-insights-usage", setUp: false) { viewModel in
+            let ledger = UsageLedger(fileURL: nil)
+            let now = Date()
+            func add(_ count: Int, _ entry: UsageEntry) {
+                for _ in 0..<count { ledger.record(entry) }
+            }
+            add(40, UsageEntry(date: now, feature: .dictation, backend: .mistral,
+                               model: "voxtral-mini-realtime-latest", audioSeconds: 37, costEUR: 0.0033))
+            add(30, UsageEntry(date: now, feature: .polish, backend: .mistral, model: "zai-glm-5-3", costEUR: 0.001))
+            add(12, UsageEntry(date: now, feature: .polish, backend: .bundledHelper, model: "local"))
+            add(31, UsageEntry(date: now, feature: .secondPass, backend: .mistral,
+                               model: "voxtral-mini-latest", audioSeconds: 37, costEUR: 0.0016))
+            add(1, UsageEntry(date: now, feature: .termSuggestions, backend: .mistral, model: "zai-glm-5-3",
+                              costEUR: 0.08))
+            add(2, UsageEntry(date: now, feature: .projectTerms, backend: .claudeCode, model: "sonnet",
+                              agentCostUSD: 0.1))
+            add(5, UsageEntry(date: now, feature: .quickCaptureRouting, backend: .jev, model: "jev-latest"))
+            add(5, UsageEntry(date: now, feature: .quickCaptureDrafting, backend: .claudeCode, model: "sonnet",
+                              agentCostUSD: 0.099))
+            add(1, UsageEntry(date: now, feature: .quickCaptureDrafting, backend: .vibe, model: "default"))
+            viewModel.installUsageLedger(ledger)
+            let model = DictationInsightsModel(viewModel: viewModel)
+            model.reloadUsage(now: now)
+            insights = model
+        } insightsModel: { insights }
+    }
+
     private func recordSettings(
         pane: SettingsTab, name: String, setUp: Bool,
-        configure: ((DictationViewModel) throws -> Void)? = nil
+        configure: ((DictationViewModel) throws -> Void)? = nil,
+        insightsModel: (() -> DictationInsightsModel?)? = nil
     ) async throws {
         let (settings, viewModel) = makeViewModel()
         try configure?(viewModel)
@@ -63,7 +95,8 @@ final class ViewSnapshotTests: XCTestCase {
             viewModel: viewModel,
             backendManager: BackendManager(),
             navigator: navigator,
-            loginItem: LoginItemController(registrar: FakeLoginItemRegistrar(state: .disabled))
+            loginItem: LoginItemController(registrar: FakeLoginItemRegistrar(state: .disabled)),
+            insightsModel: insightsModel?()
         )
         .environment(\.shortcutRecorderStandIn, true)
         try record(
@@ -234,6 +267,15 @@ final class ViewSnapshotTests: XCTestCase {
             ("listening-unjoined", DictationOverlayView(
                 phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
                 metrics: metrics, claudeJoin: .unjoined)),
+            ("destinations-here", DictationOverlayView(
+                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, destinations: Self.strip(selected: .focusedApp))),
+            ("destinations-session", DictationOverlayView(
+                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, destinations: Self.strip(selected: .session(id: "pay")))),
+            ("destinations-inbox", DictationOverlayView(
+                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, destinations: Self.strip(selected: .inbox))),
             ("secure-input", DictationOverlayView(
                 phase: .buffering, text: sample, errorMessage: nil, secureInputActive: true,
                 metrics: metrics)),
@@ -260,6 +302,16 @@ final class ViewSnapshotTests: XCTestCase {
                 view, name: "overlay-\(state.name)",
                 width: metrics.panelWidth + 2 * inset, height: height + 2 * inset, growToFit: false)
         }
+    }
+
+    /// The overlay's destinations (#840) with one session waiting.
+    private static func strip(selected: DictationDestination) -> OverlayDestinationStrip {
+        OverlayDestinationStrip(
+            list: DictationDestinationList(waitingSessionIDs: ["pay"], focusedSessionID: nil, selected: selected),
+            focusedAppLabel: "localvoxtral",
+            focusedAppJoined: true,
+            sessionName: { _ in "payments" }
+        )
     }
 
     // MARK: - Support

@@ -217,7 +217,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
             stage.standardInput.count, ClaudeRemoteEnrollmentService.Invocation.Budget.standard.standardInputBytes,
             "the scripts alone exceed the preload budget every other enrollment script fits in"
         )
-        XCTAssertEqual(stage.budget, ClaudeRemoteEnrollmentService.vibeRunnerBudget)
+        XCTAssertEqual(stage.budget, ClaudeRemoteEnrollmentService.fileWritingRunnerBudget)
 
         // And the standard budget really does refuse it, in the real runner.
         var standard = stage

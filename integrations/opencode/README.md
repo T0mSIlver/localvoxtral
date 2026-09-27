@@ -15,11 +15,14 @@ localvoxtral's private UNIX socket, which authenticates the connecting peer.
 Its one listener is the prompt relay on 127.0.0.1 (see below). There is no
 telemetry. When the app is not running, every write silently does nothing.
 
-The plugin spends no tokens. One opt-in feature outside it does: with **Ask
-the coding agent for each new project's terms** on, the app runs its own
-read-only `opencode run --pure` once per project, never in your session, with
-your default model; see
+The plugin spends no tokens. Two features outside it do, each with the app's
+own read-only `opencode run --pure`, never in your session, with your default
+model. With **Ask the coding agent for each new project's terms** on, the app
+runs it once per project; see
 [Terms from your coding agent](../../docs/dictation.md#terms-from-your-coding-agent).
+When neither Claude Code nor Mistral Vibe is installed, a
+[quick capture](../../docs/coding-agents.md#quick-capture) routed to a
+project on this Mac runs it once to draft the issue.
 
 ## Install
 

@@ -13,6 +13,14 @@ import Foundation
 /// and no `gh` of its own.
 package enum QuickCaptureDraft {
     package static let timeoutSeconds: TimeInterval = 240
+    /// opencode runs the user's default model, which may reason at length
+    /// every step: GLM 5.3 took 378 s over 14 steps to draft in this
+    /// repository (2026-09-27), where Claude Code takes under 150 s.
+    package static let opencodeTimeoutSeconds: TimeInterval = 480
+    /// Per step, reasoning included: the answer's step carries the whole
+    /// draft, up to `maxBodyCharacters`, after the model's reasoning. The
+    /// terms run's 4,096 cut drafts off mid-JSON.
+    package static let opencodeOutputTokens = 16_384
     package static let maxOutputBytes = 8_000_000
     package static let maxTurns = 20
     package static let claudeBudgetUSD = "0.50"
@@ -135,19 +143,53 @@ package enum QuickCaptureDraft {
         ]
     }
 
+    /// The agent opencode drafts as, defined for this run only.
+    package static let opencodeAgentName = "localvoxtral-draft"
+
+    /// #642's opencode run with the drafting prompt: the same read, glob,
+    /// grep and list tools and nothing else, the same isolation from the
+    /// user's sessions, plugins and project config, and `maxTurns` steps.
+    /// opencode has a list tool, so the prompt needs no tracked files, and
+    /// no price cap, so the steps, the per-step output cap and the timeout
+    /// bound the cost.
+    package static func opencodeArguments(workingDirectory: String, prompt: String) -> [String] {
+        ProjectTermProposal.opencodeArguments(
+            workingDirectory: workingDirectory, agentName: opencodeAgentName, prompt: prompt
+        )
+    }
+
+    package static var opencodeEnvironment: [String: String] {
+        ProjectTermProposal.opencodeEnvironment(
+            config: ProjectTermProposal.opencodeConfig(
+                agentName: opencodeAgentName, steps: maxTurns, systemPrompt: claudeSystemPrompt
+            ),
+            outputTokens: opencodeOutputTokens
+        )
+    }
+
     package static func invocation(
         agent: ProjectTermProposal.Agent,
         workingDirectory: String,
         prompt: String,
         trackedFiles: [String]
     ) -> ProjectTermProposal.Invocation {
-        ProjectTermProposal.Invocation(
-            agent: agent,
-            workingDirectory: workingDirectory,
-            arguments: agent == .claude
-                ? claudeArguments(prompt: prompt)
-                : vibeArguments(prompt: prompt, trackedFiles: trackedFiles)
-        )
+        switch agent {
+        case .claude:
+            ProjectTermProposal.Invocation(
+                agent: agent, workingDirectory: workingDirectory, arguments: claudeArguments(prompt: prompt)
+            )
+        case .vibe:
+            ProjectTermProposal.Invocation(
+                agent: agent, workingDirectory: workingDirectory,
+                arguments: vibeArguments(prompt: prompt, trackedFiles: trackedFiles)
+            )
+        case .opencode:
+            ProjectTermProposal.Invocation(
+                agent: agent, workingDirectory: workingDirectory,
+                arguments: opencodeArguments(workingDirectory: workingDirectory, prompt: prompt),
+                environment: opencodeEnvironment
+            )
+        }
     }
 
     // MARK: Answer
@@ -257,6 +299,19 @@ package enum QuickCaptureDraft {
               let draft = draft(from: answer, openIssues: openIssues)
         else { return .failed(.malformedOutput) }
         return .draft(draft, usage: nil)
+    }
+
+    /// `opencode run --format json`, read as the terms run reads it: the
+    /// last message's text, the usage summed over its steps.
+    package static func parseOpencode(stdout: Data, exitCode: Int32, openIssues: [Int]) -> Outcome {
+        switch ProjectTermProposal.opencodeAnswer(stdout: stdout, exitCode: exitCode) {
+        case .failure(let failure):
+            return .failed(failure)
+        case .success(let answer):
+            guard let object = jsonObject(in: answer.text), let draft = draft(from: object, openIssues: openIssues)
+            else { return .failed(.malformedOutput) }
+            return .draft(draft, usage: answer.usage)
+        }
     }
 
     /// The answer is untrusted text repo contents can steer. The title is

@@ -2354,8 +2354,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             "the block must forward a per-Mac remote port to the app's listener port"
         )
         try assertReadmeHasLine(
-            equalTo: "claude plugin marketplace add "
-                + ClaudeRemoteEnrollmentService.repositoryMarketplaceReference,
+            equalTo: "claude plugin marketplace add T0mSIlver/localvoxtral",
             "a remote host installs from the repo, not from an app bundle it does not have"
         )
         try assertReadmeHasLine(startingWith: "claude plugin install localvoxtral-remote@localvoxtral")

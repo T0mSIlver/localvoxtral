@@ -173,13 +173,14 @@ final class ShortcutController {
         clearPushToTalkShortcutSessionAttempt()
     }
 
-    /// Modifier-only hold gesture started — use push-to-talk semantics with live auto-paste.
+    /// Modifier-only hold gesture started: push to talk, in Overlay Buffer
+    /// unless Advanced → "Hold the key for Live Auto-Paste" is on (#840).
     func handleModifierOnlyHoldStart() {
         guard !session.isDictating, !session.isConnectingRealtimeSession, !session.isFinalizingStop else { return }
         isModifierOnlyHoldActive = true
         isPushToTalkShortcutHeld = true
         hasActivePushToTalkShortcutSession = true
-        session.startDictation(outputMode: .liveAutoPaste)
+        session.startDictation(outputMode: settings.modifierHoldLiveAutoPaste ? .liveAutoPaste : .overlayBuffer)
         if !session.isDictating, !session.isConnectingRealtimeSession, !session.isAwaitingMicrophonePermission {
             hasActivePushToTalkShortcutSession = false
             isModifierOnlyHoldActive = false
@@ -229,6 +230,31 @@ final class ShortcutController {
             "Accessibility trust granted; retrying modifier-only hotkey registration."
         )
         applyHotKeySettingsChange()
+    }
+
+    /// The chord shortcuts (#831) need Accessibility trust like the
+    /// single-modifier gesture, and fail at a cold launch the same way; once
+    /// trust lands, register each chord slot that isn't.
+    func retryChordShortcutRegistrationIfNeeded() {
+        guard session.isAccessibilityTrusted else { return }
+        let slots: [(DictationShortcut?, Bool, (DictationShortcut?) -> HotKeyManager.RegistrationResult, String)] = [
+            (settings.copyLastDictationShortcut, hotKeyManager.isCopyLastDictationShortcutRegistered,
+             { self.hotKeyManager.registerCopyLastDictation($0) },
+             HotKeyManager.copyLastDictationUnavailableErrorMessage),
+            (settings.answerAgentShortcut, hotKeyManager.isAnswerAgentShortcutRegistered,
+             { self.hotKeyManager.registerAnswerAgent($0) },
+             HotKeyManager.answerAgentUnavailableErrorMessage),
+            (settings.quickCaptureShortcut, hotKeyManager.isQuickCaptureShortcutRegistered,
+             { self.hotKeyManager.registerQuickCapture($0) },
+             HotKeyManager.quickCaptureUnavailableErrorMessage),
+        ]
+        for (shortcut, registered, register, message) in slots
+        where shortcut?.modifierChord != nil && !registered {
+            Log.modifierKeys.notice("Accessibility trust granted; retrying a chord shortcut.")
+            if case .success = register(shortcut) {
+                clearHotKeyErrors(actionMessage: message)
+            }
+        }
     }
 
     /// The trigger picker in Settings > Dictation. Switching between the

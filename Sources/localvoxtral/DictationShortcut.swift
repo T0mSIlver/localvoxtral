@@ -3,9 +3,26 @@ import Carbon.HIToolbox
 struct DictationShortcut: Equatable, Sendable {
     var keyCode: UInt32
     var carbonModifierFlags: UInt32
+    /// Set for a modifier-only chord such as left Shift + right Shift (#831),
+    /// which no Carbon hotkey can express; `keyCode` and the flags are then 0
+    /// and unused. Only the action slots (quick capture, answer, copy last
+    /// dictation) take one.
+    var modifierChord: ModifierChord? = nil
+
+    init(keyCode: UInt32, carbonModifierFlags: UInt32) {
+        self.keyCode = keyCode
+        self.carbonModifierFlags = carbonModifierFlags
+    }
+
+    init(chord: ModifierChord) {
+        keyCode = 0
+        carbonModifierFlags = 0
+        modifierChord = chord
+    }
 
     var normalized: DictationShortcut {
-        DictationShortcut(
+        if modifierChord != nil { return self }
+        return DictationShortcut(
             keyCode: keyCode,
             carbonModifierFlags: DictationShortcutValidation.normalizedModifierFlags(
                 carbonModifierFlags)
@@ -49,6 +66,7 @@ enum DictationShortcutValidation {
     }
 
     static func persistenceErrorMessage(for shortcut: DictationShortcut) -> String? {
+        if shortcut.modifierChord != nil { return nil }
         if shortcut.keyCode > UInt32(UInt16.max) {
             return "Shortcut key is not supported."
         }

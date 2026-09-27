@@ -298,10 +298,10 @@ final class DictationViewModel {
         set { session.agentAttention = newValue }
     }
 
-    /// The popover's needs-you sentence, nil when nobody waits or no answer
-    /// shortcut is set (clearing the shortcut turns the cue off at once).
+    /// The popover's needs-you sentence, nil when nobody waits or the cue is
+    /// off (turning it off hides the line at once).
     var agentAttentionLine: String? {
-        guard settings.answerAgentShortcut != nil else { return nil }
+        guard settings.agentAttentionEnabled else { return nil }
         return agentAttention?.popoverLine
     }
 
@@ -333,6 +333,11 @@ final class DictationViewModel {
         /// The bundle identifier of a running process, for the app the
         /// overlay commits into.
         var bundleIdentifier: (pid_t) -> String?
+        /// The app's name, for the overlay's focused app entry (#840).
+        var applicationName: (pid_t) -> String?
+        /// Brings an app back to the front: ⇧Tab to the focused app after a
+        /// session pane came forward. False when it is gone.
+        var activateApp: @MainActor (pid_t) -> Bool
         /// The center the sleep and terminate observers register on. Nil is
         /// the default center, registered only when runtime services run; a
         /// private center is registered on regardless, so a test posts
@@ -368,6 +373,12 @@ final class DictationViewModel {
             bundleIdentifier: @escaping (pid_t) -> String? = {
                 NSRunningApplication(processIdentifier: $0)?.bundleIdentifier
             },
+            applicationName: @escaping (pid_t) -> String? = {
+                NSRunningApplication(processIdentifier: $0)?.localizedName
+            },
+            activateApp: @escaping @MainActor (pid_t) -> Bool = {
+                NSRunningApplication(processIdentifier: $0)?.activate(options: []) ?? false
+            },
             lifecycleNotificationCenter: NotificationCenter? = nil,
             reconnectSleep: @escaping @MainActor (TimeInterval) async -> Void =
                 DictationSessionController.sleepForReconnect,
@@ -382,6 +393,8 @@ final class DictationViewModel {
             self.pasteboardReader = pasteboardReader
             self.pasteboardWriter = pasteboardWriter
             self.bundleIdentifier = bundleIdentifier
+            self.applicationName = applicationName
+            self.activateApp = activateApp
             self.lifecycleNotificationCenter = lifecycleNotificationCenter
             self.reconnectSleep = reconnectSleep
             self.connectionFailurePresenter = connectionFailurePresenter
@@ -589,6 +602,7 @@ final class DictationViewModel {
         textInsertion.onAccessibilityTrustChanged = { [weak self] in
             guard let self else { return }
             self.shortcuts.retryModifierOnlyHotKeyRegistrationIfNeeded()
+            self.shortcuts.retryChordShortcutRegistrationIfNeeded()
             if self.currentErrorToken == .accessibilityPermissionRequired {
                 self.lastError = nil
             }
@@ -622,6 +636,9 @@ final class DictationViewModel {
         }
 
         session.escapeCancelHandler.onCancel = { [weak session] in session?.cancelDictation() }
+        session.destinationKeyHandler.onMove = { [weak session] forward in
+            session?.moveDestination(forward: forward)
+        }
 
         textInsertion.refreshAccessibilityTrustState()
         if startRuntimeServices {
@@ -637,6 +654,11 @@ final class DictationViewModel {
                 directoryURL: DictationAudioStore.defaultDirectoryURL())
             sessionStore?.removeOrphanedAudio()
             applyDictationHistoryRetention()
+            // Before everything that calls a model, so each one records to it.
+            let usageLedger = UsageLedger(fileURL: UsageLedger.defaultFileURL()) {
+                [weak self] in
+                Task { @MainActor in self?.engines.noteUsageLedgerChanged() }
+            }
             learnedTermStore = LearnedTermStore(
                 fileURL: LearnedTermStore.defaultFileURL(),
                 onChange: { [weak self] in
@@ -664,7 +686,8 @@ final class DictationViewModel {
                         userVibeDirectory: FileManager.default.homeDirectoryForCurrentUser
                             .appendingPathComponent(".vibe", isDirectory: true)
                     ),
-                    now: { Date() }
+                    now: { Date() },
+                    usageRecorder: usageLedger
                 )
             }
             installQuickCaptureInbox(
@@ -672,7 +695,8 @@ final class DictationViewModel {
                     settings: settings,
                     learnedTerms: { [weak self] in self?.learnedTermStore?.snapshot() ?? LearnedTerms() },
                     fileURL: QuickCaptureInboxViewModel.defaultFileURL(),
-                    applicationSupport: LearnedTermStore.defaultFileURL().deletingLastPathComponent()
+                    applicationSupport: LearnedTermStore.defaultFileURL().deletingLastPathComponent(),
+                    usageRecorder: usageLedger
                 )
             )
             session.termSuggestionCadence = TermSuggestionCadence(
@@ -685,12 +709,7 @@ final class DictationViewModel {
                 },
                 launchedAt: Date()
             )
-            installMistralUsageLedger(
-                MistralUsageLedger(fileURL: MistralUsageLedger.defaultFileURL()) {
-                    [weak self] in
-                    Task { @MainActor in self?.engines.noteUsageLedgerChanged() }
-                }
-            )
+            installUsageLedger(usageLedger)
             refreshMicrophoneInputs()
             registerLifecycleObservers(on: dependencies.lifecycleNotificationCenter ?? .default)
             permissions.requestStartupPermissionsIfNeeded()
@@ -722,10 +741,10 @@ final class DictationViewModel {
         }
     }
 
-    /// Points both Mistral paths — the realtime socket and the polishing
-    /// service — at `ledger`. Replaces `llmPolishingService`, so a test that
+    /// Points the realtime socket, the second pass and the polishing service
+    /// (polishes and term suggestions) at `ledger`. Replaces `llmPolishingService`, so a test that
     /// substitutes a fake does so after this.
-    func installMistralUsageLedger(_ ledger: MistralUsageLedger) {
+    func installUsageLedger(_ ledger: UsageLedger) {
         engines.installUsageLedger(ledger)
         session.mistralRealtimeClient.setUsageRecorder(ledger)
         session.secondPassUsageRecorder = ledger
@@ -757,6 +776,7 @@ final class DictationViewModel {
         session.overlayBufferCoordinator.reset()
         audio.healthMonitor.cancelTasks()
         session.escapeCancelHandler.stop()
+        session.destinationKeyHandler.stop()
         audio.audioDucking.restoreImmediatelyForTermination()
         if managesRuntimeServices {
             audio.stopMicrophoneIfInitialized()

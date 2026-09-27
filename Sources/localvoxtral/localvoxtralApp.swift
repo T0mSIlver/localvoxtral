@@ -575,7 +575,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         let settings = viewModel.settings
         let tracker = AgentAttentionTracker(
-            isEnabled: { settings.answerAgentShortcut != nil },
+            isEnabled: { settings.agentAttentionEnabled },
             isWatching: { session in
                 guard let target = TerminalScreenContextSource.frontmostTarget() else { return false }
                 return await paneResolver.sessionShown(target: target) == session.sessionID
@@ -897,14 +897,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A remote project's terms come from a run on its host (#641); the
         // proposer marks the session, the listener asks and takes the answer.
         let projectTerms: RemoteProjectTermRequests? = registry.flatMap { hosts in
-            viewModel.learnedTermStore.map { RemoteProjectTermRequests(store: $0, hosts: hosts) }
+            viewModel.learnedTermStore.map {
+                RemoteProjectTermRequests(store: $0, hosts: hosts, usageRecorder: viewModel.engines.usageLedger)
+            }
         }
         viewModel.session.projectTermProposer?.attachRemote(projectTerms)
         // Quick capture's README summaries and drafts for remote projects
         // (#745), on the same channel.
         let quickCapture: RemoteQuickCaptureRequests? = registry.flatMap { hosts in
             viewModel.learnedTermStore.map {
-                RemoteQuickCaptureRequests(store: $0, hosts: hosts, registry: claudeSessionRegistry)
+                RemoteQuickCaptureRequests(
+                    store: $0, hosts: hosts, registry: claudeSessionRegistry,
+                    usageRecorder: viewModel.engines.usageLedger
+                )
             }
         }
         viewModel.quickCapture?.attachRemote(quickCapture)

@@ -2,25 +2,23 @@
 
 ## Shortcuts
 
-You pick one of two triggers in **Settings → Dictation**.
+One key dictates. You pick it in **Settings → Dictation**, as one of two
+triggers.
 
-**Single modifier key.** Fn/Globe, Right Command, or Right Option. The one key
-has two gestures:
+**Single modifier key.** Fn/Globe, Right Command, or Right Option.
 
 | Gesture | Behavior |
 |---|---|
-| Tap | Toggle Overlay Buffer dictation on/off |
-| Hold (past the hold delay, default 350 ms) | Live Auto-Paste push-to-talk: dictates while held, stops on release |
+| Tap | Start an Overlay Buffer dictation; tap again to stop |
+| Hold (past the hold delay, default 350 ms) | Dictate while held; letting go stops |
 
-The gesture picks the output mode. A tap commits through optional LLM
-polishing, and a hold streams words as you speak. The replacement dictionary
-applies to both. Pressing any other key while the modifier is down cancels
-the gesture, so your usual shortcuts with that modifier still work. This
-trigger needs Accessibility permission.
+Pressing any other key while the modifier is down cancels the gesture, so
+your usual shortcuts with that modifier still work. This trigger needs
+Accessibility permission.
 
-**Per-mode keyboard shortcuts.** Overlay Buffer and Live Auto-Paste each get
-their own shortcut, and the `Toggle` / `Push to Talk` setting decides how it
-behaves. A shortcut needs at least one modifier, except for a function key.
+**Keyboard shortcut.** One dictation shortcut, and the `Toggle` / `Push to
+Talk` setting decides how it behaves. A shortcut needs at least one modifier,
+except for a function key.
 F1 to F20 can be recorded on their own, so a spare F13 to F20 on a full-size
 keyboard makes a dedicated dictation key. F1 to F12 are accepted too, but
 macOS uses those presses for brightness and media unless **Use F1, F2, etc.
@@ -28,6 +26,39 @@ keys as standard function keys** is on in System Settings. Until then, the app
 never sees them.
 
 **Escape** cancels an in-progress dictation.
+
+### Where the words go
+
+While you dictate, the top of the overlay lists where the words can go, and
+**Tab** moves to the next one (**⇧Tab** to the previous):
+
+- **The app you started in**, named after its coding agent session when it
+  has one. This is where a dictation goes unless you press Tab.
+- **Each coding agent session that needs you**, oldest first, when
+  [Tell me when an agent needs you](#when-a-coding-agent-needs-you) is on.
+  Picking one brings its pane forward so you can read what it asked while
+  you talk, and your words go into that pane when you stop.
+- **Inbox**: a [quick capture](coding-agents.md#quick-capture). The words are
+  saved there and never typed anywhere.
+
+So with nobody waiting, one Tab sends the dictation to the Inbox. The
+overlay only moves to a session once its terminal confirms the pane is in
+front; otherwise it stays where it was and the menu bar popover says why.
+Tab reaches back to the app you started in unless it is the same terminal
+window as the session and has no session of its own to find the pane by.
+
+Two optional shortcuts under **Settings → Dictation → Output** open the
+overlay on a destination: **Answer the agent that needs you** on the session
+that has waited longest, **Quick capture to Inbox** on the Inbox. Pressed
+during a dictation, each picks its destination the way Tab would; pressed
+again, it stops.
+
+These two shortcuts and **Copy last dictation** can also be a chord of
+modifier keys, such as left Shift and right Shift together. To record one,
+click the field, press the keys together and let go. The chord fires when you
+let go, and only if its keys went down within 100 ms of each other with no
+other key pressed in between, so holding one Shift while typing never fires
+it. Like the single modifier key, a chord needs Accessibility permission.
 
 ## Output modes
 
@@ -43,7 +74,10 @@ never sees them.
   until that display is back.
 - **Live Auto-Paste.** Words land in the focused app while you talk. The app
   applies dictionary replacements before typing, and never backspaces over
-  text an app has already drawn.
+  text an app has already drawn. It is off unless you set it up under
+  **Settings → Dictation → Advanced**: **Hold the key for Live Auto-Paste**
+  with the single modifier key, or a **Live Auto-Paste shortcut** with
+  keyboard shortcuts. It has no overlay, so Tab does not apply.
 
 ### Voice commands
 
@@ -51,7 +85,7 @@ never sees them.
 dictation with "send it" or "send now" and the app inserts the text without those words, then presses Return
 in the same app. A coding agent gets the prompt without you touching the
 keyboard. The option is off by default and set per mode in Settings →
-Dictation.
+Dictation (Live Auto-Paste's under Advanced).
 
 - **Your own phrases.** Settings → Dictation → Output → **Phrases that press
   Return** replaces "send it" and "send now" with your list, separated by
@@ -125,12 +159,12 @@ that never reached the app because:
 - a new dictation started while the last one was still polishing.
 
 It works with history off, until the app quits. You can record a global
-shortcut for it under **Settings → Dictation → Output**.
+shortcut for it under **Settings → Dictation → Advanced**.
 
 ## When a coding agent needs you
 
-Record a shortcut for **Answer the agent that needs you** under **Settings →
-Dictation → Output** to turn this on. localvoxtral then tells you when one of
+Turn on **Tell me when an agent needs you** under **Settings → Dictation →
+Output**. localvoxtral then tells you when one of
 the coding agent sessions it joins waits for you: a permission prompt or a
 question, from Claude Code, Codex or opencode, on this Mac or an enrolled host.
 It also tells you when a session finishes its turn while you are looking at
@@ -142,14 +176,16 @@ gets an orange dot, and the popover names the session: "payments needs you"
 or "payments finished". Nothing fires for a turn that ends in the pane you are
 looking at.
 
-The shortcut brings forward the pane of the session that has waited longest,
-or else the one that finished first, and starts a dictation there, so you can
-answer by voice. Press it again to stop the dictation; the next press goes to
-the next session. Like "go to", it reaches sessions in Ghostty, iTerm2 and
-Terminal.app on this Mac, and Claude Desktop Code-tab sessions, local or over
-ssh: Desktop switches to the session and the dictation starts once its prompt
-has focus. For any other session, the popover says it can't bring that
-session forward.
+To answer by voice, press Tab during a dictation until the overlay shows the
+session, as in [Where the words go](#where-the-words-go). The optional
+**Answer the agent that needs you** shortcut does it in one press: it brings
+forward the pane of the session that has waited longest, or else the one
+that finished first, and starts a dictation there. Press it again to stop;
+the next press goes to the next session. Like "go to", both reach sessions in
+Ghostty, iTerm2 and Terminal.app on this Mac, and Claude Desktop Code-tab
+sessions, local or over ssh: Desktop switches to the session, and the words
+go there once its prompt has focus. For any other session, the popover says
+it can't bring that session forward.
 
 A session leaves the list when you send it a prompt, when it starts working
 again, when it ends, or when you dictate into it. The app never receives what
@@ -244,12 +280,13 @@ History; the panes sit under the sidebar's Settings header.
   full chat completions URL; the app appends `/v1/chat/completions` to a base
   URL. Memory limit caps the dictation helper's buffer cache (2 GB by
   default). Nemotron never fills it, so the row appears only for Voxtral.
-- **Dictation**: the trigger (single modifier key with tap/hold gestures, or
-  per-mode keyboard shortcuts), the menu-bar mode, copy on stop, the **Copy
-  last dictation** shortcut, ducking other audio, the spoken "send it"
-  trigger for each mode and its [phrases](#voice-commands), and the
-  overlay's font size, how many lines it shows before scrolling, and
-  whether it [keeps words on their line](#keeping-words-on-their-line).
+- **Dictation**: the trigger (single modifier key, or a keyboard shortcut),
+  copy on stop, the [phrases](#voice-commands) that press Return, the
+  needs-you cue and the two destination shortcuts, ducking other audio, the
+  overlay's font size, how many lines it shows before scrolling, whether it
+  [keeps words on their line](#keeping-words-on-their-line), and its spoken
+  "send it" trigger. **Advanced** holds Live Auto-Paste, its own "send it"
+  trigger, the menu bar mode and the **Copy last dictation** shortcut.
 
   **Lower other audio while dictating**, on unless you turn it off, drops
   music and calls to a fifth of your volume while a session runs, in both
