@@ -7,6 +7,8 @@ import Synchronization
 package final class FakeQuickCaptureGitHub: QuickCaptureGitHub, @unchecked Sendable {
     package let created = Mutex<[[String]]>([])
     package var createResult: Result<String, QuickCaptureFiling.Failure> = .success("https://github.com/o/reach/issues/9")
+    /// Set, `gh issue create` waits on it before it answers.
+    package var createGate: ManualSleeper?
 
     package init() {}
 
@@ -19,6 +21,7 @@ package final class FakeQuickCaptureGitHub: QuickCaptureGitHub, @unchecked Senda
     }
     package func repositoryFacts(_ repository: String) async -> GitHubRepositoryFacts? { nil }
     package func createIssue(repository: String, title: String, body: String) async -> Result<String, QuickCaptureFiling.Failure> {
+        if let createGate { await createGate.sleep(0) }
         created.withLock { $0.append([repository, title, body]) }
         return createResult
     }
@@ -49,6 +52,47 @@ package final class FakeQuickCaptureDraftRunner: QuickCaptureDraftRunning, @unch
     }
 }
 
+/// An agent run that answers `answers` in turn (the last one repeats),
+/// records each prompt, and, when `gate` is set, waits on it first.
+package final class FakeQuickCaptureCheckRunner: QuickCaptureDraftRunning, @unchecked Sendable {
+    package let gate: ManualSleeper?
+    package let answers: Mutex<[QuickCaptureDraft.Outcome]>
+    package let prompts = Mutex<[String]>([])
+
+    package init(_ answers: [QuickCaptureDraft.Outcome], gated: Bool = false) {
+        self.answers = Mutex(answers)
+        gate = gated ? ManualSleeper() : nil
+    }
+
+    package var runs: Int { prompts.withLock { $0.count } }
+
+    package func run(_ invocation: ProjectTermProposal.Invocation, openIssues: [Int]) async -> QuickCaptureDraft.Outcome {
+        prompts.withLock { $0.append(invocation.arguments.count > 1 ? invocation.arguments[1] : "") }
+        if let gate { await gate.sleep(0) }
+        return answers.withLock { $0.count > 1 ? $0.removeFirst() : $0[0] }
+    }
+}
+
+/// The polishing model's first draft (#918): `answers` in turn (the last
+/// one repeats), with each context it was given; when `gate` is set, it
+/// waits on it before answering.
+package final class FakeQuickCaptureFirstDrafter: QuickCaptureFirstDrafting, @unchecked Sendable {
+    package let gate: ManualSleeper?
+    package let answers: Mutex<[QuickCaptureDraft.Outcome]>
+    package let contexts = Mutex<[QuickCaptureContext]>([])
+
+    package init(_ answers: [QuickCaptureDraft.Outcome], gated: Bool = false) {
+        self.answers = Mutex(answers)
+        gate = gated ? ManualSleeper() : nil
+    }
+
+    package func firstDraft(capture: String, projectName: String, context: QuickCaptureContext) async -> QuickCaptureDraft.Outcome {
+        contexts.withLock { $0.append(context) }
+        if let gate { await gate.sleep(0) }
+        return answers.withLock { $0.count > 1 ? $0.removeFirst() : $0[0] }
+    }
+}
+
 package enum QuickCaptureFixture {
     package static let projects = [
         QuickCaptureProject(key: "/w/reach", name: "reach", summary: nil, terms: [], userLine: nil),
@@ -64,7 +108,7 @@ package enum QuickCaptureFixture {
         github: any QuickCaptureGitHub,
         runner: FakeQuickCaptureDraftRunner,
         projects: [QuickCaptureProject] = projects,
-        remote: (@Sendable (String, QuickCaptureProject) async -> QuickCaptureDraft.Outcome)? = nil
+        remote: QuickCaptureDrafter.Remote? = nil
     ) -> QuickCaptureInboxModel {
         return QuickCaptureInboxModel(
             fileURL: fileURL,

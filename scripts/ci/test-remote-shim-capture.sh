@@ -3,8 +3,11 @@
 # (#745): `X-Lvx-Readme: wanted` and `X-Lvx-Draft: <id>` on a hook's 200
 # reply make the Claude Code plugin's hooks/post.sh or the Vibe remote
 # post.sh start capture.sh detached. capture.sh posts the README's opening to
-# /v1/readme, or lists the open issues, fetches the drafting prompt from
-# /v1/draft/prompt, runs the agent and posts its output to /v1/draft.
+# /v1/readme, or drafts: from a Mac with first drafts (#918) it asks
+# /v1/draft/words, posts its context bundle to /v1/draft/context and polls
+# /v1/draft/check for the check's prompt; from an older Mac (404 on the
+# words) it lists the open issues and fetches the prompt from
+# /v1/draft/prompt. Then it runs the agent and posts its output to /v1/draft.
 #
 # A stub curl plays the Mac, a stub gh lists two issues, and stub `claude`
 # and `vibe` record their argv and environment and wait for a release file
@@ -88,6 +91,20 @@ keep() {
 }
 case "$url" in
 */v1/readme) keep readme; printf 200 ;;
+*/v1/draft/words)
+  keep words
+  [ "$out" = /dev/null ] || cp "$LVX_T/words" "$out" 2>/dev/null || :
+  printf '%s' "$(cat "$LVX_T/words-status" 2>/dev/null || echo 404)"
+  ;;
+*/v1/draft/context) keep context; printf 200 ;;
+*/v1/draft/check)
+  keep check
+  status="$(head -n 1 "$LVX_T/check-statuses" 2>/dev/null)"
+  tail -n +2 "$LVX_T/check-statuses" >"$LVX_T/check-statuses.tmp" 2>/dev/null && mv "$LVX_T/check-statuses.tmp" "$LVX_T/check-statuses"
+  echo "$status" >>"$LVX_T/check-log"
+  [ "$status" != 200 ] || [ "$out" = /dev/null ] || cp "$LVX_T/prompt" "$out"
+  printf '%s' "${status:-404}"
+  ;;
 */v1/draft/prompt)
   keep prompt
   [ "$out" = /dev/null ] || cp "$LVX_T/prompt" "$out"
@@ -148,7 +165,8 @@ reset_state() {
   wait_gone "$LOCK" || fail "a draft from the previous case still holds the lock"
   rm -rf "$TMP_DIR/run" "$TMP_DIR"/claude-* "$TMP_DIR"/vibe-env "$TMP_DIR"/vibe-cwd \
     "$TMP_DIR"/vibe-argv "$TMP_DIR"/vibe-started "$TMP_DIR/release" "$TMP_DIR"/gh-* \
-    "$TMP_DIR"/readme-* "$TMP_DIR"/prompt* "$TMP_DIR"/answer-* "$TMP_DIR/asks"
+    "$TMP_DIR"/readme-* "$TMP_DIR"/prompt* "$TMP_DIR"/answer-* "$TMP_DIR/asks" "$TMP_DIR"/words* \
+    "$TMP_DIR"/context-* "$TMP_DIR"/check-*
   mkdir -p "$TMP_DIR/run"
   printf 'The owner of quill dictated this idea.\n<capture>\nitalic kerning\n</capture>' >"$TMP_DIR/prompt"
 }
@@ -331,6 +349,46 @@ for agent in claude vibe; do
   git -C "$TMP_DIR/repo" remote set-url origin git@github.com:me/quill.git
   grep -A1 -x -- '--repo' "$TMP_DIR/gh-argv" | grep -qx me/quill || fail "$label: an ssh origin with a port lost its repository"
   pass "$label: an ssh origin with a port names its repository"
+
+  # 9. A Mac with first drafts (#918): the words it sends are grepped (one
+  #    that reads as an option is dropped), the bundle carries the README,
+  #    the guide, the hits and gh's lists, and the check's prompt comes
+  #    after a 202.
+  reset_state
+  printf 'X-Lvx-Draft: %s\r\n' "$DRAFT_ID" >"$TMP_DIR/asks"
+  printf 'quillmark\n--output=/tmp/x\nKerning\n' >"$TMP_DIR/words"
+  echo 200 >"$TMP_DIR/words-status"
+  printf '202\n200\n' >"$TMP_DIR/check-statuses"
+  run_hook "$agent" "$TMP_DIR/repo/Sources"
+  wait_for "$TMP_DIR/$agent-started" || fail "$label: the check's prompt started no run"
+  check_request "$label" "$agent" "$TMP_DIR/context-header"
+  grep -qx "X-Lvx-Draft-Id: $DRAFT_ID" "$TMP_DIR/context-header" || fail "$label: the context names no draft"
+  bundle="$TMP_DIR/context-body"
+  grep -qx '@@lvx readme' "$bundle" && grep -qx 'Quill typesets Markdown.' "$bundle" || fail "$label: no README in the bundle"
+  grep -qx 'Sources/Quillmark.swift:1:enum Quillmark {}' "$bundle" || fail "$label: no grep hit for a word"
+  ! grep -q -- '--output' "$bundle" || fail "$label: an option-like word reached git"
+  grep -qx '@@lvx open' "$bundle" && grep -qx '@@lvx closed' "$bundle" && grep -qx '@@lvx merged' "$bundle" \
+    || fail "$label: gh's lists are missing"
+  [ "$(wc -c <"$bundle" | tr -d ' ')" -le 98304 ] || fail "$label: the bundle is over 96 KiB"
+  [ ! -e "$TMP_DIR/prompt-body" ] || fail "$label: asked for the old prompt too"
+  [ "$(tr '\n' ' ' <"$TMP_DIR/check-log")" = '202 200 ' ] || fail "$label: polled '$(cat "$TMP_DIR/check-log")'"
+  grep -qx '<capture>' "$TMP_DIR/$agent-argv" || fail "$label: the run did not get the check's prompt"
+  touch "$TMP_DIR/release"
+  wait_for "$TMP_DIR/answer-body" || fail "$label: the check's output never reached /v1/draft"
+  wait_gone "$LOCK" || fail "$label: the lock outlived the check"
+  pass "$label: context bundle posted, check prompt polled, agent run"
+
+  # 10. No check due (204): no agent runs, the lock goes.
+  reset_state
+  printf 'X-Lvx-Draft: %s\r\n' "$DRAFT_ID" >"$TMP_DIR/asks"
+  printf 'quillmark\n' >"$TMP_DIR/words"
+  echo 200 >"$TMP_DIR/words-status"
+  printf '204\n' >"$TMP_DIR/check-statuses"
+  run_hook "$agent" "$TMP_DIR/repo"
+  wait_for "$TMP_DIR/check-log" || fail "$label: never polled for the check"
+  wait_gone "$LOCK" || fail "$label: a 204 kept the lock"
+  [ ! -e "$TMP_DIR/$agent-started" ] && [ ! -e "$TMP_DIR/answer-body" ] || fail "$label: ran an agent with no check due"
+  pass "$label: no check due runs nothing"
 done
 done
 echo "remote shim capture: all checks passed"

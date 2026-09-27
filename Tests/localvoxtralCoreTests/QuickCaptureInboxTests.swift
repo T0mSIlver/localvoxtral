@@ -28,7 +28,7 @@ final class QuickCaptureInboxTests: XCTestCase {
         answer: [String: Double],
         github: (any QuickCaptureGitHub)? = nil,
         projects: [QuickCaptureProject]? = nil,
-        remote: (@Sendable (String, QuickCaptureProject) async -> QuickCaptureDraft.Outcome)? = nil
+        remote: QuickCaptureDrafter.Remote? = nil
     ) -> QuickCaptureInboxModel {
         let model = QuickCaptureFixture.model(
             fileURL: fileURL, answer: answer, github: github ?? self.github, runner: runner,
@@ -151,7 +151,7 @@ final class QuickCaptureInboxTests: XCTestCase {
 
     func testARemoteDraftSaysItWaitsForASessionUntilTheHostAnswers() async throws {
         let sleeper = ManualSleeper()
-        let model = model(answer: ["website": 0.9]) { _, _ in
+        let model = model(answer: ["website": 0.9]) { _, _, _, _ in
             await sleeper.sleep(0)
             return .notRun(.noHostSession)
         }
