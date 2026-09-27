@@ -78,9 +78,9 @@ for SH in "${SHELLS[@]}"; do
   [ "$got" = "<none>" ] || fail "$SH_NAME bad session id: posted '$got', want nothing"
   pass "$SH_NAME: a Notification without a usable session id posts nothing"
 
-  # Every other event is still posted byte for byte.
-  stop='{"session_id":"s1","hook_event_name":"Stop","cwd":"/srv/app"}'
-  got="$(posted_body Stop "$stop")"
-  [ "$got" = "$stop" ] || fail "$SH_NAME Stop: posted '$got', want the payload unchanged"
-  pass "$SH_NAME: a Stop is posted unchanged"
+  # An event the shim does not rebuild is posted byte for byte.
+  cwd_changed='{"session_id":"s1","hook_event_name":"CwdChanged","old_cwd":"/srv","new_cwd":"/srv/app"}'
+  got="$(posted_body CwdChanged "$cwd_changed")"
+  [ "$got" = "$cwd_changed" ] || fail "$SH_NAME CwdChanged: posted '$got', want the payload unchanged"
+  pass "$SH_NAME: a CwdChanged is posted unchanged"
 done

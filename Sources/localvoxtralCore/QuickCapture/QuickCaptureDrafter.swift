@@ -71,6 +71,9 @@ package struct QuickCaptureDrafter: Sendable {
     private let openIssues: @Sendable (String) async -> [QuickCaptureDraft.OpenIssue]?
     private let trackedFiles: @Sendable (String) async -> [String]
     private let directoryExists: @Sendable (String) -> Bool
+    /// Drafts on a remote project's host (#745); nil leaves a remote capture
+    /// undrafted.
+    private let remote: (@Sendable (String, QuickCaptureProject) async -> QuickCaptureDraft.Outcome)?
 
     package init(
         runner: any QuickCaptureDraftRunning,
@@ -79,8 +82,10 @@ package struct QuickCaptureDrafter: Sendable {
         directoryExists: @escaping @Sendable (String) -> Bool = { path in
             var isDirectory: ObjCBool = false
             return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
-        }
+        },
+        remote: (@Sendable (String, QuickCaptureProject) async -> QuickCaptureDraft.Outcome)? = nil
     ) {
+        self.remote = remote
         self.runner = runner
         self.openIssues = openIssues
         self.trackedFiles = trackedFiles
@@ -98,7 +103,12 @@ package struct QuickCaptureDrafter: Sendable {
         guard case .project(let key) = route, let project = projects.first(where: { $0.key == key }) else {
             return .notRun(.catchAll)
         }
-        guard key.hasPrefix("/") else { return .notRun(.remoteProject) }
+        guard key.hasPrefix("/") else {
+            // A remote label never becomes a working directory here: the
+            // host runs the agent in its own checkout.
+            guard let remote else { return .notRun(.remoteProject) }
+            return await remote(capture, project)
+        }
         guard directoryExists(key) else { return .notRun(.checkoutMissing) }
         let issues = await openIssues(key)
         Log.backends.info(

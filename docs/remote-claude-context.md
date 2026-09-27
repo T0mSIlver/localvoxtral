@@ -357,7 +357,7 @@ The Vibe step runs four `ssh -o BatchMode=yes -o ClearAllForwardings=yes -- <ali
    `~/.local/bin` added), the installed hooks version, and `~/.vibe/hooks.toml`
    (base64, at most 256 KiB) with its `cksum`.
 2. Write `~/.vibe/localvoxtral/remote/` at mode 0700 with `post.sh`,
-   `terms.sh`, `compact.py` and `port` (0600), and put a marked block of two
+   `terms.sh`, `capture.sh`, `compact.py` and `port` (0600), and put a marked block of two
    `[[hooks]]` tables into `~/.vibe/hooks.toml`. The new `hooks.toml` text is
    computed on this Mac by the same rules as the local install, and the script
    writes it only if the file's `cksum` is still the one step 1 saw.
@@ -428,6 +428,49 @@ the measured runs. The run bills the host's Claude Code login or Mistral key,
 under the same caps as the local run. A process that squats the forward port
 could send the header too; the host's stamp bounds that to one run per project
 per 24 hours.
+
+## Quick capture on a host
+
+A quick capture ([Quick capture](coding-agents.md#quick-capture)) routed to a
+remote project is drafted on its host, for the same reason: the repository is
+there. The host also reports the project's README, which the router reads to
+tell projects apart. Both need `localvoxtral-remote` 1.17.0 or Vibe hooks
+1.3.0 on the host.
+
+- **Projects.** A hook that names its repository (`X-Lvx-Env-Project`, plugin
+  1.13.0) adds that repository to the Mac's projects, so the router offers
+  every repository a session runs in. An older shim names only the session's
+  directory, which adds nothing and keeps an existing project listed for a
+  week. A project no hook names for 90 days is dropped.
+- **README.** The reply to a hook from a session in a remote project the Mac
+  holds, with no README summary or one a week old, carries
+  `X-Lvx-Readme: wanted`. The shim starts `capture.sh readme` detached, at most
+  once per project per 24 hours, and it posts the first 16 KiB of the
+  project's `README.md` to `POST /v1/readme`. The Mac keeps the first two prose
+  paragraphs, 400 characters at most, on the project.
+- **Draft.** The capture waits up to 10 minutes for a hook from a live session
+  in its project; the reply to that hook carries `X-Lvx-Draft: <id>`. With no
+  such session, or only sessions on older hooks, the capture waits in the
+  Inbox with your words and a note. The shim starts `capture.sh draft`
+  detached, one at a time and at most 20 a day. It lists the open issues with
+  the host's `gh issue list` when `gh` works there, posts them to
+  `POST /v1/draft/prompt`, and gets back the drafting prompt with your words
+  in it. It runs the Mac's drafting command in the project: Claude Code with
+  Read, Glob and Grep confined to the checkout, or Vibe with its read-only
+  tools, hooks and MCP off, 20 turns, $0.50 or $0.30, a 240 s watchdog. It
+  posts the output, at most 60 KiB, to `POST /v1/draft` with how the run
+  ended.
+
+Each route takes one answer, only from the host, session and agent the Mac
+asked, and files it under the project the Mac recorded. Your words cross the
+tunnel only in the prompt reply, to the session of the project the router
+chose. Nothing is filed on the host: `gh` only lists issues, and the agent has
+no shell. The draft is untrusted text, read as a local draft is.
+
+Whatever answers on the forward port can send both asks. It never sees a
+capture, since those go only to the Mac's listener, but it can hand the host a
+prompt of its own. That is why the agent cannot read outside the checkout, and
+why the shim runs one draft at a time and 20 a day.
 
 ## Why `ExitOnForwardFailure` stays `no`
 

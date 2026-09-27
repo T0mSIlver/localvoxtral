@@ -8,6 +8,9 @@
 #
 #   SWIFT=/path/to/swift scripts/linux/remote-terms-live.sh [--filter <test>]
 #
+# `--filter RemoteQuickCaptureLiveTests` runs #745's instead: a remote draft
+# and README summary through the same forward (about $0.25).
+#
 # The forward needs an sshd that accepts a key this script owns, so it starts
 # a private one as this user on a loopback port, with its own host key and
 # authorized key in a temporary directory. The user's ~/.ssh is not touched.

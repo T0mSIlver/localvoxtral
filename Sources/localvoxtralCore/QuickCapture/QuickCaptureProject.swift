@@ -5,15 +5,17 @@ import Foundation
 /// representative of the project"), so each goes out with a description:
 /// its README's first paragraph, its own terms, and a line the user wrote.
 ///
-/// The projects are the ones the learned-terms file holds, which is every
-/// project a joined dictation has shown the app (#609 stamps each one).
-/// Nothing here comes from the screen or the clipboard.
+/// The projects are the ones the learned-terms file holds: every local
+/// checkout a joined dictation has shown the app (#609 stamps each one), and
+/// every remote repository a hook has named (#819). Nothing here comes from
+/// the screen or the clipboard.
 package struct QuickCaptureProject: Equatable, Sendable {
     /// `LearnedTermProject.key`: a main checkout's path, or `remote:<label>`.
     package let key: String
     package let name: String
-    /// The README's first paragraph. Nil for a remote project, whose files
-    /// are on another machine, and for a checkout without one.
+    /// The README's opening paragraphs: read from a local checkout, or kept
+    /// from the host's report for a remote project (#745). Nil when neither
+    /// has one.
     package let summary: String?
     package let terms: [String]
     /// What the user wrote about the project, when they did.
@@ -45,8 +47,18 @@ package enum QuickCaptureProjects {
     package static let maxSummaryCharacters = 400
     package static let summaryParagraphs = 2
     package static let maxUserLineCharacters = 200
+    /// A remote cwd label is listed this long after a hook last named it.
+    /// Only a host older than plugin 1.13.0 (#652) sends one for a session
+    /// in a repository, and there each worktree has its own label: listed
+    /// while its sessions run, gone a week after.
+    package static let remoteLabelListedDays = 7
 
-    /// Every project in `learned`, most recently dictated first.
+    /// Every project in `learned` a capture can go to, most recent first: a
+    /// local checkout, or a remote project a hook has named since #819 (a
+    /// repository at any time, a cwd label within `remoteLabelListedDays`).
+    /// A remote project no hook has named is a label no session reports any
+    /// more, such as a worktree's from before #652, and the shared bucket is
+    /// no project; neither is listed.
     ///
     /// - Parameters:
     ///   - userLines: the user's line per project key.
@@ -54,17 +66,21 @@ package enum QuickCaptureProjects {
     package static func projects(
         from learned: LearnedTerms,
         userLines: [String: String],
+        now: Date,
         readme: (String) -> String?
     ) -> [QuickCaptureProject] {
-        learned.projects
-            .filter { !$0.key.isEmpty && !$0.name.isEmpty }
-            .sorted { $0.lastSeen > $1.lastSeen }
+        func recency(_ project: LearnedTermProject) -> Date {
+            max(project.lastSeen, project.reportedAt ?? project.lastSeen)
+        }
+        return learned.projects
+            .filter { !$0.key.isEmpty && !$0.name.isEmpty && isListed($0, now: now) }
+            .sorted { recency($0) > recency($1) }
             .map { project in
                 let terms = learned.confirmedTerms(projectKey: project.key)
                     + learned.unconfirmedProposals(projectKey: project.key)
                 let summary = project.key.hasPrefix("/")
                     ? readme(project.key).flatMap(summary(ofReadme:))
-                    : nil
+                    : project.summary
                 return QuickCaptureProject(
                     key: project.key,
                     name: project.name,
@@ -76,6 +92,25 @@ package enum QuickCaptureProjects {
                 )
             }
     }
+
+    private static func isListed(_ project: LearnedTermProject, now: Date) -> Bool {
+        if project.key.hasPrefix("/") { return true }
+        guard project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix),
+              let reported = project.reportedAt
+        else { return false }
+        return project.reportedAsRepository == true
+            || now.timeIntervalSince(reported) < Double(remoteLabelListedDays) * 86_400
+    }
+
+    /// The summary kept for a remote project from the README opening its
+    /// host sent (#745): the same cut as a local README's.
+    package static func summary(ofRemoteReadme data: Data) -> String? {
+        summary(ofReadme: String(decoding: data.prefix(maxRemoteReadmeBytes), as: UTF8.self))
+            .map { clipped($0, to: maxSummaryCharacters) }
+    }
+
+    /// How much of a README a host sends: its opening is all that is read.
+    package static let maxRemoteReadmeBytes = 16_384
 
     /// The README at a checkout's root: `README.md`, `README`, `readme.md`,
     /// `README.markdown`, the first one that reads. Capped at 64 KB, since
@@ -145,6 +180,8 @@ package enum QuickCaptureProjects {
         if line.hasPrefix("#") || line.hasPrefix("<") || line.hasPrefix(">") || line.hasPrefix("|") { return true }
         if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") { return true }
         if line.allSatisfy({ "=-_*".contains($0) }) { return true }
+        // A bare link on its own line: an embedded video or a demo URL.
+        if line.range(of: #"^<?https?://\S+>?$"#, options: .regularExpression) != nil { return true }
         // A line of nothing but images and links: badges, a logo.
         let stripped = line.replacingOccurrences(
             of: #"\[?!\[[^\]]*\]\([^)]*\)\]?(\([^)]*\))?"#,
@@ -154,11 +191,15 @@ package enum QuickCaptureProjects {
         return stripped.isEmpty
     }
 
-    /// Links and images become their text; emphasis and code marks go.
+    /// Links and images become their text; emphasis, code marks, HTML tags
+    /// and entities go.
     private static func inlineText(_ text: String) -> String {
         var result = text.replacingOccurrences(of: #"!\[([^\]]*)\]\([^)]*\)"#, with: "$1", options: .regularExpression)
         result = result.replacingOccurrences(of: #"\[([^\]]*)\]\([^)]*\)"#, with: "$1", options: .regularExpression)
         result = result.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
+        // A README's `&nbsp;` spacer, and any other entity, is no prose.
+        result = result.replacingOccurrences(of: "&amp;", with: "&")
+        result = result.replacingOccurrences(of: #"&(#[0-9]+|[A-Za-z]+);"#, with: " ", options: .regularExpression)
         for mark in ["**", "__", "`"] {
             result = result.replacingOccurrences(of: mark, with: "")
         }

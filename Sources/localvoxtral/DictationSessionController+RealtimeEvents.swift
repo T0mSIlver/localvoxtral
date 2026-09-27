@@ -173,6 +173,7 @@ extension DictationSessionController {
         }
         statusText = isFinalizingStop ? StatusStrings.finalizing : "Transcribing..."
         refreshOverlayBufferSession()
+        reconsiderSpokenStop()
     }
 
     private func handleFinalTranscriptEvent(_ text: String) {
@@ -185,6 +186,7 @@ extension DictationSessionController {
 
         guard let finalized = transcript.applyFinal(processedText) else {
             refreshOverlayBufferSession()
+            reconsiderSpokenStop()
             return
         }
         noteFinalTextForSilenceAutoStop(overlayTextBefore: overlayTextBeforeFinal)
@@ -220,6 +222,7 @@ extension DictationSessionController {
             autoCopyDictationSoFar()
         }
         refreshOverlayBufferSession()
+        reconsiderSpokenStop()
     }
 
     private func handleTranscriptionFinalizedEvent() {

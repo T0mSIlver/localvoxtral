@@ -116,18 +116,24 @@ extension DictationSessionController {
     }
 
     /// Polished and committed by a task when polishing has a configuration,
-    /// committed as-is otherwise.
+    /// committed as-is otherwise. `addressedTo` is the session a "send that
+    /// to <name>" named (#723 step 3): the commit goes there, never to the
+    /// focused app.
     func commitOverlayBufferText(
         sessionMode: DictationOutputMode,
         sample: OverlayStopSample,
-        goToChecked: Bool = false
+        goToChecked: Bool = false,
+        addressedTo: ClaudeSessionSnapshot? = nil
     ) {
-        if !goToChecked, startGoToSessionIfSpoken(sessionMode: sessionMode, sample: sample) {
+        if !goToChecked,
+           startGoToSessionIfSpoken(sessionMode: sessionMode, sample: sample)
+            || startAddressedSendIfSpoken(sessionMode: sessionMode, sample: sample) {
             return
         }
         // Before the dictionary and the polisher: the trigger is a command,
-        // not text, so neither may see it.
-        let spokenSend = stripOverlaySpokenSendTrigger()
+        // not text, so neither may see it. An addressed dictation is
+        // submitted by its own delivery, in the named session.
+        let spokenSend = addressedTo == nil ? stripOverlaySpokenSendTrigger() : nil
         let preparation = StopCommitCoordinator.prepare(
             originalText: transcript.currentDictationEventText,
             polishingConfig: sample.polishingConfig,
@@ -216,8 +222,60 @@ extension DictationSessionController {
                         audio: capturedAudio
                     ),
                     polishProfile: capturedPolishProfile,
-                    spokenSend: spokenSend
+                    spokenSend: spokenSend,
+                    addressedTo: addressedTo
                 )
+            }
+            return
+        }
+
+        if let addressedTo {
+            let historyJoin = (sample.capture?.claudeJoin ?? context.claudeSessionJoin).map(AgentCLIJoin.init)
+            saveInterruptedPolishCommit = { [weak self] in
+                self?.saveSessionRecord(
+                    startedAt: capturedSessionStartedAt,
+                    rawText: originalText,
+                    polishedText: workingText != originalText ? workingText : nil,
+                    polishingDuration: nil,
+                    provider: capturedProvider,
+                    model: capturedModel,
+                    outputMode: capturedOutputMode,
+                    targetAppBundleID: capturedTargetBundleID,
+                    status: .sttCompleted,
+                    commitSucceeded: false,
+                    polishContextSummary: payloadProvenanceSummary,
+                    clipboardPayload: clipboardPayload,
+                    audio: capturedAudio,
+                    joined: historyJoin
+                )
+            }
+            polishAndCommitTask = Task { @MainActor [weak self] in
+                guard let self,
+                      let addressed = await self.commitOverlayAddressed(to: addressedTo)
+                else { return }
+                self.finishAddressedCommit(addressed, sessionMode: sessionMode)
+                self.saveSessionRecord(
+                    startedAt: capturedSessionStartedAt,
+                    rawText: originalText,
+                    polishedText: workingText != originalText ? workingText : nil,
+                    polishingDuration: nil,
+                    provider: capturedProvider,
+                    model: capturedModel,
+                    outputMode: capturedOutputMode,
+                    targetAppBundleID: capturedTargetBundleID,
+                    status: llmConfigurationFailure == nil ? .sttCompleted : .llmFailed,
+                    commitSucceeded: addressed.inserted,
+                    polishContextSummary: payloadProvenanceSummary,
+                    clipboardPayload: clipboardPayload,
+                    audio: capturedAudio,
+                    joined: historyJoin
+                )
+                if let llmConfigurationFailure, !addressed.superseded {
+                    self.handleLLMPolishingConnectionFailure(
+                        message: llmConfigurationFailure.message,
+                        technicalDetails: llmConfigurationFailure.technicalDetails
+                    )
+                }
             }
             return
         }
@@ -290,7 +348,8 @@ extension DictationSessionController {
         capture: StopCommitCoordinator.Capture,
         record: StoppedSessionRecordFields,
         polishProfile capturedPolishProfile: String,
-        spokenSend: OverlaySpokenSend?
+        spokenSend: OverlaySpokenSend?,
+        addressedTo: ClaudeSessionSnapshot?
     ) async {
         let originalText = preparation.originalText
         let workingText = preparation.workingText
@@ -359,12 +418,50 @@ extension DictationSessionController {
         }
 
         guard !Task.isCancelled else { return }
-        // From here the task commits and saves the dictation itself.
-        self.saveInterruptedPolishCommit = nil
 
         let insertedText = self.transcript.currentDictationEventText
+        let overlayCommit: StopCommitCoordinator.CommitResult
+        if let addressedTo {
+            // Clears the interrupted-save once the text is handed over.
+            guard let addressed = await self.commitOverlayAddressed(to: addressedTo) else { return }
+            self.finishAddressedCommit(addressed, sessionMode: sessionMode)
+            self.saveSessionRecord(
+                startedAt: capturedSessionStartedAt,
+                rawText: originalText,
+                polishedText: processedTextForPersistence,
+                polishingDuration: polishingDuration,
+                provider: capturedProvider,
+                model: capturedModel,
+                outputMode: capturedOutputMode,
+                targetAppBundleID: capturedTargetBundleID,
+                status: sessionStatus,
+                commitSucceeded: addressed.inserted,
+                polishProfile: capturedPolishProfile,
+                polishContextSummary: StopCommitCoordinator.mergedPolishProvenanceSummary(
+                    context: assembly.polishContextSummary,
+                    payload: payloadProvenanceSummary,
+                    vocabulary: StopCommitCoordinator.vocabularyProvenance(
+                        repoVocabularyCount: assembly.repoVocabularyCount,
+                        clipboardVocabularyCount: assembly.clipboardVocabularyCount
+                    )
+                ),
+                clipboardPayload: preparation.clipboardPayload,
+                audio: record.audio,
+                joined: capture.claudeJoin.map(AgentCLIJoin.init)
+            )
+            if let llmConnectionFailure, !addressed.superseded {
+                self.handleLLMPolishingConnectionFailure(
+                    title: llmConnectionFailure.title,
+                    message: llmConnectionFailure.message,
+                    technicalDetails: llmConnectionFailure.technicalDetails
+                )
+            }
+            return
+        }
+        // From here the task commits and saves the dictation itself.
+        self.saveInterruptedPolishCommit = nil
         let commitTargetPID = self.overlayBufferCoordinator.commitTargetAppPID
-        let overlayCommit = StopCommitCoordinator.commit(
+        overlayCommit = StopCommitCoordinator.commit(
             overlay: self.overlayBufferCoordinator,
             textInsertion: self.overlayCommitter(join: capture.claudeJoin, targetPID: commitTargetPID),
             autoCopyEnabled: self.settings.autoCopyEnabled
@@ -694,7 +791,8 @@ extension DictationSessionController {
     /// one does.
     private func commitQuickCapture(sessionMode: DictationOutputMode) {
         let sessionAudio = audio.sessionRecording.finish()
-        let text = transcript.currentDictationEventText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = quickCaptureTextWithoutSpokenStopPhrase(transcript.currentDictationEventText)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let recordID = UUID()
         let keptInHistory = !text.isEmpty && settings.dictationHistoryRetention.savesDictations && sessionStore != nil
         saveSessionRecord(

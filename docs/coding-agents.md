@@ -171,16 +171,21 @@ Overlay Buffer dictation for an idea that has no place in the app you are in.
 Your words never reach the focused app. They are saved in History, then shown
 on the **Inbox** page of the localvoxtral window.
 
-1. **Route.** A classifier picks one of the projects localvoxtral has joined.
-   It reads each project's name, the first paragraph of its README (for a
-   checkout on this Mac), and its learned terms. When it is unsure, or two
+1. **Route.** A classifier picks one of your projects: a checkout on this
+   Mac that a dictation joined, or a repository on an ssh host where a
+   session has run (host plugin 1.13.0 or later; an older host lists a
+   project for a week after its last hook). It reads each project's name, the opening of its README (read from a
+   checkout on this Mac, or reported by a remote project's host), and its
+   learned terms. When it is unsure, or two
    projects tie, the capture stays unplaced.
 2. **Draft.** For a checkout on this Mac, that project's Claude Code (or
    Mistral Vibe) runs in the background with read-only tools and drafts an
    issue: title, scope, constraints and proof, following the repository's
    AGENTS.md, and naming any open issue it duplicates. The run is capped at
    20 turns and $0.50 (Claude Code) or $0.30 (Vibe) of your agent plan or API
-   key. A project on a remote host gets no draft yet.
+   key. For a project on an ssh host, the host runs the agent in its own
+   checkout, the next time a session there sends a hook
+   ([Quick capture on a host](remote-claude-context.md#quick-capture-on-a-host)).
 3. **Review.** On the Inbox page you edit the draft, move the capture to
    another project, or discard it. **File** creates the issue with your GitHub
    CLI (`gh issue create`), with your dictated words quoted under the draft.

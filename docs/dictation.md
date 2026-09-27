@@ -45,12 +45,26 @@ never sees them.
   applies dictionary replacements before typing, and never backspaces over
   text an app has already drawn.
 
-**Say "send it" to press Return.** In a terminal or Claude Desktop, end a
-dictation with "send it" or "send now" and the app inserts the text without
-those words, then presses Return in the same app. A coding agent gets the
-prompt without you touching the keyboard. The option is off by default and
-set per mode in Settings → Dictation.
+### Voice commands
 
+**Say "send it" to press Return.** In a terminal or Claude Desktop, end a
+dictation with "send it" or "send now" and the app inserts the text without those words, then presses Return
+in the same app. A coding agent gets the prompt without you touching the
+keyboard. The option is off by default and set per mode in Settings →
+Dictation.
+
+- **Your own phrases.** Settings → Dictation → Output → **Phrases that press
+  Return** replaces "send it" and "send now" with your list, separated by
+  commas, in both modes. A phrase has at most four words. A single common
+  word ("go", "done", "enter") is refused, since you say it in ordinary
+  prompts.
+- **Overlay Buffer stops on its own.** When the words end in a send phrase
+  and three seconds pass with no new words, the dictation stops as if you
+  pressed the key: polish, commit, then Return. A phrase in the middle of a
+  sentence does nothing, and speaking again within the three seconds keeps
+  the dictation going. The key still stops it at once. A held (push to
+  talk) dictation stops only on release. A quick capture stops the same
+  way and goes to the Inbox without the phrase, and never presses Return.
 - In Overlay Buffer, the app removes the words before polishing, so the
   polisher never sees them.
 - In Live Auto-Paste, the app can only remove the trigger before typing it.
@@ -70,7 +84,8 @@ only "go to payments" (in Live Auto-Paste, a phrase between pauses) brings the p
 agent session named payments to the front instead of typing anything. A
 session answers to its repository's name and, in a linked worktree, to the
 worktree's name. It works for sessions in Ghostty, iTerm2 and Terminal.app on
-this Mac. When no session has that name, the dictation is typed as usual;
+this Mac, and for Claude Desktop Code-tab sessions, on this Mac or on an ssh
+host Desktop runs them on. When no session has that name, the dictation is typed as usual;
 when more than one does, or its pane can't be reached, nothing is typed and
 the menu bar popover says so. In Live Auto-Paste, what you say next is
 typed into the session you went to.
@@ -131,8 +146,10 @@ The shortcut brings forward the pane of the session that has waited longest,
 or else the one that finished first, and starts a dictation there, so you can
 answer by voice. Press it again to stop the dictation; the next press goes to
 the next session. Like "go to", it reaches sessions in Ghostty, iTerm2 and
-Terminal.app on this Mac. For any other session, the popover says it can't
-bring that session forward.
+Terminal.app on this Mac, and Claude Desktop Code-tab sessions, local or over
+ssh: Desktop switches to the session and the dictation starts once its prompt
+has focus. For any other session, the popover says it can't bring that
+session forward.
 
 A session leaves the list when you send it a prompt, when it starts working
 again, when it ends, or when you dictate into it. The app never receives what
@@ -230,9 +247,9 @@ History; the panes sit under the sidebar's Settings header.
 - **Dictation**: the trigger (single modifier key with tap/hold gestures, or
   per-mode keyboard shortcuts), the menu-bar mode, copy on stop, the **Copy
   last dictation** shortcut, ducking other audio, the spoken "send it"
-  trigger for each mode, and the overlay's font size, how many lines it shows
-  before scrolling, and whether it
-  [keeps words on their line](#keeping-words-on-their-line).
+  trigger for each mode and its [phrases](#voice-commands), and the
+  overlay's font size, how many lines it shows before scrolling, and
+  whether it [keeps words on their line](#keeping-words-on-their-line).
 
   **Lower other audio while dictating**, on unless you turn it off, drops
   music and calls to a fifth of your volume while a session runs, in both

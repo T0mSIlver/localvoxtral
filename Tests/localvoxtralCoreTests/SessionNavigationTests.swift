@@ -190,7 +190,7 @@ final class SessionNavigationTests: XCTestCase {
 
     // MARK: - Focus route
 
-    func testOnlyALocalSessionInAPlainTerminalHasARoute() {
+    func testALocalTerminalTabOrAnyClaudeDesktopSessionHasARoute() {
         XCTAssertEqual(
             SessionPaneFocusRoute.of(localSession("a", cwd: "/p", tty: "/dev/ttys004", termProgram: "ghostty")),
             .terminalTTY("/dev/ttys004", termProgram: "ghostty")
@@ -205,13 +205,34 @@ final class SessionNavigationTests: XCTestCase {
         cmux.process?.cmuxSurfaceID = "s1"
         XCTAssertEqual(SessionPaneFocusRoute.of(cmux), .unsupported(.cmux))
 
+        let desktopID = "local_6d880b94-4414-4764-a024-c95df1af4456"
+        let link = URL(string: "claude://code/continue?session=\(desktopID)")!
         var desktop = localSession("d", cwd: "/p", tty: "/dev/ttys004")
-        desktop.process?.desktopSessionID = "local_x"
-        XCTAssertEqual(SessionPaneFocusRoute.of(desktop), .unsupported(.claudeDesktop))
+        desktop.process?.desktopSessionID = desktopID
+        XCTAssertEqual(SessionPaneFocusRoute.of(desktop), .claudeDesktop(link))
+
+        var remoteDesktop = ClaudeSessionSnapshot(sessionID: "rd", origin: remote, firstSeen: epoch)
+        remoteDesktop.remoteEnvironment = ClaudeRemoteSessionEnvironment(desktopSessionID: desktopID)
+        XCTAssertEqual(SessionPaneFocusRoute.of(remoteDesktop), .claudeDesktop(link), "Desktop shows an ssh session on this Mac")
 
         var remoteSession = ClaudeSessionSnapshot(sessionID: "r", origin: remote, firstSeen: epoch)
         remoteSession.process = ClaudeHookProcessInfo(hookPID: 1, claudePID: 2, tty: "/dev/ttys004")
         XCTAssertEqual(SessionPaneFocusRoute.of(remoteSession), .unsupported(.remote))
+    }
+
+    /// Desktop's handler takes `local_` plus 1 to 64 letters, digits and
+    /// dashes; anything else would land on its empty Code tab.
+    func testTheDesktopLinkCarriesOnlyAnIDDesktopsHandlerTakes() {
+        XCTAssertEqual(
+            ClaudeDesktopSessionLink.continueURL(desktopSessionID: "local_0f3a-b2")?.absoluteString,
+            "claude://code/continue?session=local_0f3a-b2"
+        )
+        for bad in ["local_", "local_a_b", "local_a&x=1", "local_é", "session_abc", "local_" + String(repeating: "a", count: 65)] {
+            XCTAssertNil(ClaudeDesktopSessionLink.continueURL(desktopSessionID: bad), bad)
+        }
+        var odd = localSession("d", cwd: "/p")
+        odd.process?.desktopSessionID = "local_a_b"
+        XCTAssertEqual(SessionPaneFocusRoute.of(odd), .unsupported(.claudeDesktop))
     }
 
     // MARK: - Navigator

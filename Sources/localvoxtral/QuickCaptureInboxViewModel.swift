@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import Synchronization
 
 /// The Inbox page's observable face (#725). The work is
 /// `QuickCaptureInboxModel`'s, in the core so Linux tests reach it; this
@@ -17,14 +18,20 @@ final class QuickCaptureInboxViewModel {
         applicationSupport: URL,
         github: any QuickCaptureGitHub = QuickCaptureGHClient()
     ) {
+        let remote = RemoteDraftsSlot()
         let drafter = QuickCaptureDrafter(
             runner: QuickCaptureDraftProcessRunner(
                 vibeHome: applicationSupport.appendingPathComponent("vibe-home", isDirectory: true),
                 userVibeDirectory: FileManager.default.homeDirectoryForCurrentUser
                     .appendingPathComponent(".vibe", isDirectory: true)
             ),
-            openIssues: { await github.openIssues(ofCheckout: $0) }
+            openIssues: { await github.openIssues(ofCheckout: $0) },
+            remote: { capture, project in
+                guard let requests = remote.value.withLock({ $0 }) else { return .notRun(.remoteProject) }
+                return await requests.draft(capture: capture, project: project)
+            }
         )
+        remoteSlot = remote
         model = QuickCaptureInboxModel(
             fileURL: fileURL,
             makeRouter: { QuickCaptureRouter(classifiers: Self.classifiers(settings: settings)) },
@@ -32,6 +39,7 @@ final class QuickCaptureInboxViewModel {
                 QuickCaptureProjects.projects(
                     from: learnedTerms(),
                     userLines: [:],
+                    now: Date(),
                     readme: { QuickCaptureProjects.readme(atRoot: $0) }
                 )
             },
@@ -44,6 +52,18 @@ final class QuickCaptureInboxViewModel {
             guard let self else { return }
             self.items = self.model.items
         }
+    }
+
+    @ObservationIgnored private var remoteSlot: RemoteDraftsSlot?
+
+    /// Lets a remote project's host draft its captures (#745). Nil, as
+    /// without enrolled hosts, leaves them undrafted.
+    func attachRemote(_ requests: RemoteQuickCaptureRequests?) {
+        remoteSlot?.value.withLock { $0 = requests }
+    }
+
+    private final class RemoteDraftsSlot: Sendable {
+        let value = Mutex<RemoteQuickCaptureRequests?>(nil)
     }
 
     static func defaultFileURL() -> URL {

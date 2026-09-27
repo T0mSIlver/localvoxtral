@@ -323,6 +323,21 @@ public enum ClaudeRemoteHTTPCodec {
     /// project terms, and its one value (`RemoteProjectTermRequests`).
     public static let termsHeaderName = "X-Lvx-Terms"
     public static let termsHeaderValue = "wanted"
+    /// The reply headers of quick capture's asks (#745,
+    /// `RemoteQuickCaptureRequests`): the host's README opening for the
+    /// session's project, and a draft whose id is the value.
+    public static let readmeHeaderName = "X-Lvx-Readme"
+    public static let readmeHeaderValue = "wanted"
+    public static let draftHeaderName = "X-Lvx-Draft"
+
+    /// A draft id as the Mac mints it and the host shim accepts it: 32
+    /// lowercase hex digits.
+    public static func isDraftID(_ value: String) -> Bool {
+        value.utf8.count == 32 && value.utf8.allSatisfy { byte in
+            (byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9"))
+                || (byte >= UInt8(ascii: "a") && byte <= UInt8(ascii: "f"))
+        }
+    }
 
     /// Serialize a response. Always `Connection: close` — one request per
     /// connection means a peer can never keep a slot alive by going quiet
@@ -331,7 +346,9 @@ public enum ClaudeRemoteHTTPCodec {
         status: Int,
         body: Data? = nil,
         sessionStatus: ClaudeRemoteSessionStatus? = nil,
-        termsWanted: Bool = false
+        termsWanted: Bool = false,
+        readmeWanted: Bool = false,
+        draftID: String? = nil
     ) -> Data {
         var head = "HTTP/1.1 \(status) \(reasonPhrase(for: status))\r\n"
         head += "Connection: close\r\n"
@@ -346,6 +363,12 @@ public enum ClaudeRemoteHTTPCodec {
         // exactly, and they never reach its stdout.
         if status == 200, termsWanted {
             head += "\(termsHeaderName): \(termsHeaderValue)\r\n"
+        }
+        if status == 200, readmeWanted {
+            head += "\(readmeHeaderName): \(readmeHeaderValue)\r\n"
+        }
+        if status == 200, let draftID, isDraftID(draftID) {
+            head += "\(draftHeaderName): \(draftID)\r\n"
         }
         head += "\r\n"
         var data = Data(head.utf8)

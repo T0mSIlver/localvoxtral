@@ -445,6 +445,7 @@ extension DictationSessionController {
         clearLatchedSessionMetadata()
         sessionOutputMode = requestedOutputMode
         sessionIsQuickCapture = requestedQuickCapture && requestedOutputMode == .overlayBuffer
+        sessionStoppedBySpokenPhrase = false
         requestedQuickCapture = false
         sessionStartedAt = Date()
         latchSessionAudio(outputMode: requestedOutputMode)
@@ -683,6 +684,7 @@ extension DictationSessionController {
         cancelConnectTimeout()
         cancelRealtimeReconnect()
         disarmSilenceAutoStop()
+        disarmSpokenStop()
         finalizationWatchdogTask?.cancel()
         finalizationWatchdogTask = nil
         shortcuts.clearPushToTalkShortcutSessionAttempt()
