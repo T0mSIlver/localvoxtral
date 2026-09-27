@@ -129,6 +129,25 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertNil(model.file(id), "a filed capture is not filed again")
     }
 
+    /// #923: a coding agent filed it with its own gh; the app only records it.
+    func testAnAgentMarksACaptureFiledInItsOwnRepositoryOnly() async throws {
+        let model = model(answer: ["reach": 0.9])
+        await model.capture(text: "Add a dark mode", historyRecordID: UUID()).value
+        let id = try XCTUnwrap(model.items.first?.id)
+
+        XCTAssertEqual(model.markFiled(id, url: "https://github.com/o/other/issues/3"), .failure(.otherRepository("o/reach")))
+        XCTAssertEqual(model.markFiled(id, url: "https://github.com/o/reach/pull/3"), .failure(.notAnIssue))
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).items.first?.state, .ready)
+
+        let filed = try model.markFiled(id, url: "https://github.com/O/Reach/issues/12").get()
+        XCTAssertEqual(filed.state, .filed)
+        XCTAssertEqual(filed.filedAt, Date(timeIntervalSince1970: 1_000_000))
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).items.first?.filedURL, "https://github.com/O/Reach/issues/12")
+        XCTAssertEqual(routed.last, "Filed in o/reach")
+        XCTAssertTrue(github.created.withLock { $0.isEmpty }, "the app files nothing itself")
+        XCTAssertEqual(model.markFiled(id, url: "https://github.com/o/reach/issues/13"), .failure(.notReady(.filed)))
+    }
+
     func testAFailedFilingKeepsTheCaptureAndARemoteProjectNeedsARepository() async throws {
         github.createResult = .failure(.failed(exitCode: 1))
         let model = model(answer: ["website": 0.9])
