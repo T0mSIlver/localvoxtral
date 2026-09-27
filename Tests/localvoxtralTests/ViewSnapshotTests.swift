@@ -146,6 +146,23 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
+    /// Dictation → Output → Phrases that press Return (#839): the saved
+    /// list, and a refused one with its reason under the row.
+    func testSendPhrasesRow() throws {
+        let (settings, _) = makeViewModel()
+        settings.spokenSendTriggerPhrases = ["ship it", "over and out"]
+        let refusal = SendTriggerPhrases.Refusal.commonWord("done").message
+        for (name, draft, message) in [("saved", nil, nil), ("refused", "ship it, done", refusal)] as [(String, String?, String?)] {
+            try record(
+                SettingsGroup(title: "Output") {
+                    SendPhrasesRow(settings: settings, draft: draft, refusal: message)
+                }
+                .padding(20),
+                name: "settings-send-phrases-\(name)",
+                width: 600, height: 160, growToFit: false)
+        }
+    }
+
     // MARK: - Status popover
 
     /// The menu bar item's content. The app shows it as an `NSMenu`
@@ -200,6 +217,15 @@ final class ViewSnapshotTests: XCTestCase {
             ("listening-unjoined", DictationOverlayView(
                 phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
                 metrics: metrics, claudeJoin: .unjoined)),
+            ("destinations-here", DictationOverlayView(
+                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, destinations: Self.strip(selected: .focusedApp))),
+            ("destinations-session", DictationOverlayView(
+                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, destinations: Self.strip(selected: .session(id: "pay")))),
+            ("destinations-inbox", DictationOverlayView(
+                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, destinations: Self.strip(selected: .inbox))),
             ("secure-input", DictationOverlayView(
                 phase: .buffering, text: sample, errorMessage: nil, secureInputActive: true,
                 metrics: metrics)),
@@ -226,6 +252,16 @@ final class ViewSnapshotTests: XCTestCase {
                 view, name: "overlay-\(state.name)",
                 width: metrics.panelWidth + 2 * inset, height: height + 2 * inset, growToFit: false)
         }
+    }
+
+    /// The overlay's destinations (#840) with one session waiting.
+    private static func strip(selected: DictationDestination) -> OverlayDestinationStrip {
+        OverlayDestinationStrip(
+            list: DictationDestinationList(waitingSessionIDs: ["pay"], focusedSessionID: nil, selected: selected),
+            focusedAppLabel: "localvoxtral",
+            focusedAppJoined: true,
+            sessionName: { _ in "payments" }
+        )
     }
 
     // MARK: - Support

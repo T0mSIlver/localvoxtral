@@ -519,6 +519,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     #endif
 
+    /// Claude Desktop's session link, opened in Desktop itself (another app
+    /// may also claim `claude://`), read back through the join's resolver.
+    private static func liveClaudeDesktopFocuser(
+        resolver: ClaudeSessionJoinResolver,
+        sleep: @escaping @Sendable (Duration) async -> Void
+    ) -> ClaudeDesktopSessionPaneFocuser {
+        let runningDesktop = {
+            NSRunningApplication.runningApplications(withBundleIdentifier: ClaudeDesktopAllowlist.bundleID).first
+        }
+        return ClaudeDesktopSessionPaneFocuser(
+            desktopPID: { runningDesktop()?.processIdentifier },
+            frontmostPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
+            open: { link in
+                guard let appURL = runningDesktop()?.bundleURL else { return false }
+                NSWorkspace.shared.open([link], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+                    if error != nil {
+                        Log.claudeContext.error("go to session: Claude Desktop refused its session link")
+                    }
+                }
+                return true
+            },
+            shownSessionID: { pid in
+                await resolver.sessionShown(
+                    target: TerminalScreenTarget(pid: pid, bundleID: ClaudeDesktopAllowlist.bundleID)
+                )
+            },
+            sleep: sleep
+        )
+    }
+
     /// The needs-you cue (#717). Its own resolver asks only the local
     /// questions (`sessionShown`): nothing here can open a forward, stamp a
     /// herdr panel or dial cmux. A terminal it has no Automation consent for
@@ -544,7 +574,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         let settings = viewModel.settings
         let tracker = AgentAttentionTracker(
-            isEnabled: { settings.answerAgentShortcut != nil },
+            isEnabled: { settings.agentAttentionEnabled },
             isWatching: { session in
                 guard let target = TerminalScreenContextSource.frontmostTarget() else { return false }
                 return await paneResolver.sessionShown(target: target) == session.sessionID
@@ -672,7 +702,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             viewModel.session.sessionNavigator = SessionNavigator(
                 liveSessions: { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() },
                 repositoryRoot: SessionNavigator.liveRepositoryRoot,
-                focuser: TerminalSessionPaneFocuser.live(ttyReader: ttyReader),
+                focuser: SessionPaneFocuserRouter(
+                    terminal: TerminalSessionPaneFocuser.live(ttyReader: ttyReader),
+                    claudeDesktop: Self.liveClaudeDesktopFocuser(
+                        resolver: resolver,
+                        sleep: viewModel.session.dependencies.clock.sleep
+                    )
+                ),
                 sleep: viewModel.session.dependencies.clock.sleep,
                 nicknames: .userDefaults(.standard, key: "session_navigation.nicknames")
             )
@@ -860,14 +896,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A remote project's terms come from a run on its host (#641); the
         // proposer marks the session, the listener asks and takes the answer.
         let projectTerms: RemoteProjectTermRequests? = registry.flatMap { hosts in
-            viewModel.learnedTermStore.map { RemoteProjectTermRequests(store: $0, hosts: hosts) }
+            viewModel.learnedTermStore.map {
+                RemoteProjectTermRequests(store: $0, hosts: hosts, usageRecorder: viewModel.engines.usageLedger)
+            }
         }
         viewModel.session.projectTermProposer?.attachRemote(projectTerms)
         // Quick capture's README summaries and drafts for remote projects
         // (#745), on the same channel.
         let quickCapture: RemoteQuickCaptureRequests? = registry.flatMap { hosts in
             viewModel.learnedTermStore.map {
-                RemoteQuickCaptureRequests(store: $0, hosts: hosts, registry: claudeSessionRegistry)
+                RemoteQuickCaptureRequests(
+                    store: $0, hosts: hosts, registry: claudeSessionRegistry,
+                    usageRecorder: viewModel.engines.usageLedger
+                )
             }
         }
         viewModel.quickCapture?.attachRemote(quickCapture)

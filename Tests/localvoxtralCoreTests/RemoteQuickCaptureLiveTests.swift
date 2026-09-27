@@ -23,6 +23,9 @@ final class RemoteQuickCaptureLiveTests: XCTestCase {
         func recordSummary(_ summary: String?, projectKey: String) {
             memory.withLock { _ = $0.recordSummary(summary, projectKey: projectKey, now: Date()) }
         }
+        func recordRemoteReport(project: LearnedTermProjectIdentity, asRepository: Bool) {
+            memory.withLock { _ = $0.recordRemoteReport(project: project, asRepository: asRepository, now: Date()) }
+        }
     }
 
     private final class Shared: Sendable {

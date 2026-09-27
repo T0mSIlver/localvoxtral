@@ -6,6 +6,7 @@ import Synchronization
 package protocol RemoteProjectSummaryStoring: Sendable {
     func snapshot() -> LearnedTerms
     func recordSummary(_ summary: String?, projectKey: String)
+    func recordRemoteReport(project: LearnedTermProjectIdentity, asRepository: Bool)
 }
 
 /// Quick capture for remote projects (#745), on #641's channel: the Mac
@@ -53,6 +54,9 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
     package static let askLifetime: TimeInterval = 600
     /// A draft's run: the host's 240 s watchdog and 20 s for `gh`, with room.
     package static let draftRunLifetime: TimeInterval = 600
+    /// A project a hook names is recorded at most this often (#819): hooks
+    /// come several times a minute, and the file is written on each record.
+    package static let reportInterval: TimeInterval = 3_600
 
     private struct ReadmeAsk {
         let projectKey: String
@@ -79,6 +83,9 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
         var readmeAsks: [String: ReadmeAsk] = [:]
         var readmeAsked: [String: Date] = [:]
         var drafts: [String: Draft] = [:]
+        /// Keyed by project: when a hook's report of it was last recorded,
+        /// and whether as a repository.
+        var reported: [String: (at: Date, asRepository: Bool)] = [:]
     }
 
     private let state = Mutex(State())
@@ -88,6 +95,7 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
     private let now: @Sendable () -> Date
     private let sleep: @Sendable (TimeInterval) async -> Void
     private let makeID: @Sendable () -> String
+    private let usageRecorder: (any UsageRecording)?
 
     package init(
         store: any RemoteProjectSummaryStoring,
@@ -99,8 +107,10 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
         },
         makeID: @escaping @Sendable () -> String = {
             UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-        }
+        },
+        usageRecorder: (any UsageRecording)? = nil
     ) {
+        self.usageRecorder = usageRecorder
         self.store = store
         self.hosts = hosts
         self.registry = registry
@@ -147,6 +157,36 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
               project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix)
         else { return nil }
         return project.key
+    }
+
+    // MARK: Which projects the hooks name
+
+    /// Records the project an accepted remote hook's session is in, so quick
+    /// capture lists the repositories sessions run in and not a label none
+    /// reports any more (#819). Every shim version counts: an old one names
+    /// its cwd label, which only stamps a project already held.
+    package func noteReport(for snapshot: ClaudeSessionSnapshot) {
+        guard case .remote = snapshot.origin,
+              case .remoteOpaque(let label)? = snapshot.learnedTermWorkspace,
+              let project = LearnedTermProjectResolver.resolve(
+                  repositoryRoot: .unknown, workspace: snapshot.learnedTermWorkspace
+              ),
+              project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix)
+        else { return }
+        let asRepository = snapshot.remoteSessionEnvironment?.project == label
+        let moment = now()
+        let due = state.withLock { state -> Bool in
+            if let last = state.reported[project.key],
+               moment.timeIntervalSince(last.at) < Self.reportInterval,
+               last.asRepository || !asRepository
+            {
+                return false
+            }
+            state.reported[project.key] = (moment, asRepository)
+            return true
+        }
+        guard due else { return }
+        store.recordRemoteReport(project: project, asRepository: asRepository)
     }
 
     // MARK: The asks, on an accepted hook's reply
@@ -279,6 +319,10 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
     private func finish(_ id: String, with outcome: QuickCaptureDraft.Outcome, because reason: String) {
         guard let draft = state.withLock({ $0.drafts.removeValue(forKey: id) }) else { return }
         Log.backends.error("Quick capture draft: remote draft ended: \(reason, privacy: .public)")
+        // A host that fetched the prompt started its agent, answer or not.
+        if draft.prompted, let agent = draft.agent {
+            QuickCaptureDraft.recordUsage(of: outcome, agent: agent, date: now(), to: usageRecorder)
+        }
         draft.continuation.resume(returning: outcome)
     }
 
@@ -315,6 +359,7 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
         guard let taken, let outcome = Self.outcome(exit: exit, output: output, agent: agent, openIssues: taken.openIssues ?? [])
         else { return false }
         guard let draft = state.withLock({ $0.drafts.removeValue(forKey: draftID) }) else { return false }
+        QuickCaptureDraft.recordUsage(of: outcome, agent: agent, date: now(), to: usageRecorder)
         switch outcome {
         case .draft(let result, let usage):
             Log.backends.info(

@@ -333,7 +333,7 @@ private struct MistralUsageRow: View {
     private var summary: MistralUsageSummary {
         // Read so a ledger write re-renders the row.
         _ = viewModel.engines.mistralUsageRevision
-        return viewModel.engines.mistralUsageLedger?.summary(for: period.wrappedValue)
+        return viewModel.engines.usageLedger?.summary(for: period.wrappedValue)
             ?? MistralUsageSummary()
     }
 

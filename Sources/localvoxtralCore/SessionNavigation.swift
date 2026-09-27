@@ -305,14 +305,25 @@ package enum SessionPaneFocusRoute: Equatable, Sendable {
     /// A local session in a plain terminal tab or split, found by its tty.
     /// `termProgram` names the terminal to ask first.
     case terminalTTY(String, termProgram: String?)
+    /// A Claude Desktop Code-tab session, on this Mac or on an ssh host
+    /// Desktop runs it on (#834), found by the `local_<uuid>` id its hooks
+    /// reported. Desktop's own link brings it forward.
+    case claudeDesktop(URL)
     case unsupported(SessionPaneFocusUnsupported)
 
     package static func of(_ snapshot: ClaudeSessionSnapshot) -> SessionPaneFocusRoute {
+        // Either origin: the id is Desktop's, and the session's view lives
+        // in Desktop on this Mac wherever its process runs.
+        if let desktopSessionID = snapshot.desktopSessionID {
+            guard let link = ClaudeDesktopSessionLink.continueURL(desktopSessionID: desktopSessionID) else {
+                return .unsupported(.claudeDesktop)
+            }
+            return .claudeDesktop(link)
+        }
         guard snapshot.origin.isLocalAuthenticated else { return .unsupported(.remote) }
         let process = snapshot.process
         // A herdr pane's or cmux surface's tty belongs to the multiplexer, not
-        // to a terminal tab, and Desktop hosts its sessions in a web view.
-        if process?.desktopSessionID != nil { return .unsupported(.claudeDesktop) }
+        // to a terminal tab.
         if process?.herdrPaneID != nil { return .unsupported(.herdr) }
         if process?.cmuxSurfaceID != nil { return .unsupported(.cmux) }
         guard let tty = process?.tty, !tty.isEmpty else { return .unsupported(.noTTY) }
@@ -416,6 +427,13 @@ package final class SessionNavigator {
             }
         }
         return SessionNameResolver.resolve(spokenName: spokenName, candidates: candidates)
+    }
+
+    /// Whether `bundleID`'s focused pane, read back the way the join reads
+    /// it, shows the live session `sessionID`; false once it is not live.
+    package func focusedPaneShows(sessionID: String, bundleID: String) async -> Bool {
+        guard let session = liveSessions().first(where: { $0.sessionID == sessionID }) else { return false }
+        return await focuser.focusedPaneShows(session, bundleID: bundleID)
     }
 
     /// Brings a live session's pane forward by registry id; nil when the

@@ -138,6 +138,23 @@ there is not.
   only by its own bundle ID on `ReturnSubmitsAppList` (the AX probe reads the
   element focused NOW, which need not be the commit target's), and the Return
   follows only a commit that reported `.succeeded`.
+- **A voice stop is the stop key, never a second commit path** (#839).
+  An Overlay Buffer dictation whose words (settled segments plus the
+  partial in flight: the Mistral API sends no final before the stop) end in
+  a send phrase, followed by `SpokenStopRule.silenceWindow` (3 s) with no
+  new words, calls `stopDictation` like the key; the stop's commit then
+  cuts the phrase and sends as above. It arms only when the commit would
+  send (`planOverlaySpokenSend`, asked again when the timer fires), so a
+  phrase the commit would keep as text never ends the dictation. A held
+  dictation never arms: its release is the stop, and a stop while the key
+  is down would leave a release with nothing to stop (#840). A quick
+  capture stops the same way, saves without the phrase and presses
+  nothing. The window is measured, not guessed: on the owner's 138
+  dictations with audio, 5.6 % of speech pauses reach 3 s and the one
+  mid-sentence "send it" was followed by 2.4 s; a false stop sends half a
+  prompt, a late one costs a key press. The user's phrase list
+  (`SendTriggerPhrases`) refuses one common word and anything over four
+  words, and a stored list that no longer validates loads as the default.
 - **"Go to <name>" is a command only when the name resolves** (#723 step
   1). An Overlay Buffer dictation (a Live Auto-Paste segment, #747) that
   is only "go to" plus at most four words is looked up against the live registry's default names (the git
@@ -1888,7 +1905,32 @@ there is not.
     outside the set publishes nothing, and a record without one is dropped
     at decode. The reply text (`last_assistant_message`) stays out of the
     app too (owner ruling on #717, 2026-09-26): nothing reads it aloud, and
-    the answer hotkey brings the pane forward to read it there.
+    the answer hotkey brings the pane forward to read it there. It stays on
+    the remote host as well (#818): the shim rebuilds a `Stop` from the
+    checked session id and the cwd, copied only when its JSON string token
+    passes a strict grammar check, since the shim has no JSON tool to
+    re-escape it.
+  - **A Claude Desktop session comes forward through Desktop's own link,
+    and counts as forward only when the join reads it back** (#834). A
+    session that reports a Desktop view id, local or from an ssh host, is
+    brought forward by opening `claude://code/continue?session=local_<uuid>`
+    in the running Desktop (never the default `claude://` handler, and never
+    when Desktop is not running: the link would launch it). Read from
+    Desktop 2.9939.2's handler (2026-09-27): it takes the id only when it
+    matches `^local_[A-Za-z0-9-]{1,64}$` and routes to the session's
+    `/epitaxy/` view. MEASURED the same day, from Finder and from Desktop
+    showing another session: an ssh-host session came forward and the join's
+    Desktop reader read it back from its prompt 0.2 s after the open. The
+    sidebar exposes no session id to Accessibility (rows are titles), so
+    clicking a row cannot be tied to a session. `.focused` requires Desktop
+    frontmost and `sessionShown` to resolve the focused view to this
+    registry session: focus in the primary pane's prompt, and the id
+    reported by this session alone. An ambiguous id, focus left in the
+    sidebar or a second pane, or no answer within 2 s is `.unverified`, and
+    the answer shortcut starts no dictation. "Send that to" keeps refusing
+    Desktop: its Return exception is ruled for terminal tabs only. The link
+    and the id are UNDOCUMENTED; a Desktop update that drops them leaves the
+    read-back failing, never a dictation in the wrong session.
   - **"Were you looking at it" asks only local questions** (#717). A turn's
     end queues a finished entry only when the user was not looking at the
     session's pane (`AgentAttentionTracker`), and that is answered by
@@ -2225,6 +2267,17 @@ there is not.
   malicious process running as the user on the REMOTE host can still read
   `~/.claude/` and therefore the plugin's token no matter what we do. Say so
   rather than implying the token bounds it.
+- **A host installs the remote plugin from the app's own copy, never from
+  GitHub** (#836). The setup writes the bundled marketplace to
+  `~/.local/share/localvoxtral/claude-marketplace` on the host and registers
+  that directory, then demands the read-back equal the version this build
+  ships. A GitHub marketplace tracks main, so every shipped app failed that
+  read-back (exit 43) on every host the day main bumped the plugin. Don't
+  relax the read-back instead: the shim's wire contract is versioned. Don't
+  `claude plugin marketplace remove` to switch sources either: it uninstalls
+  the plugin and deletes the token, which the update path cannot resend;
+  `marketplace add` on the existing name replaces the source and keeps both
+  (Claude Code 2.1.283).
 - **The Mac asks a host to spend, and the host's answer is a label source**
   (#641). A remote project's terms come from a run on the host, because the
   Mac holds only a label for the repository and a label never becomes a path,
@@ -2269,7 +2322,12 @@ there is not.
   (`--permission-mode dontAsk --allowedTools Read(./**)`; without it Read
   opens any file, measured 2026-09-27; Vibe's tools are workspace-bound) and
   the shim allows one draft at a time and 20 a day. `capture.sh` never runs
-  `gh` for anything but `issue list`.
+  `gh` for anything but `issue list`. Which remote projects the router sees
+  (#819): a hook adds a project only for a name its host sent as
+  `X-Lvx-Env-Project`; a cwd label only stamps a project already held,
+  because each worktree has its own, and a label no hook has named since is
+  not listed, since no session will report it again. Nothing guesses which
+  repository an old label belonged to.
 - **The SendEnv probe uses a random value that is never logged and never
   interpreted beyond equality.** `probeRemoteEnvironment` mints a fresh nonce
   per call (a UUID by default, injected in tests), exports it into that one

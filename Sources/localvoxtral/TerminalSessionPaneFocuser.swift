@@ -78,6 +78,9 @@ final class TerminalSessionPaneFocuser: SessionPaneFocusing {
         case .unsupported(let reason):
             Log.claudeContext.info("go to session: no route to the pane (\(reason.rawValue, privacy: .public))")
             return .unsupported(reason)
+        case .claudeDesktop:
+            // `ClaudeDesktopSessionPaneFocuser`'s route, never a terminal's.
+            return .unsupported(.claudeDesktop)
         case .terminalTTY(let sessionTTY, let program):
             tty = sessionTTY
             termProgram = program

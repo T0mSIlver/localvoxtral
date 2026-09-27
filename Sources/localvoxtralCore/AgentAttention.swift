@@ -61,9 +61,14 @@ package struct AgentAttentionQueue: Equatable, Sendable {
 
     /// The session the answer hotkey goes to: the oldest wait, else the
     /// oldest finished turn.
-    package var next: AgentAttentionEntry? {
-        entries.filter { $0.kind == .waiting }.min { $0.since < $1.since }
-            ?? entries.min { $0.since < $1.since }
+    package var next: AgentAttentionEntry? { answerOrder.first }
+
+    /// Every entry in the order the answer hotkey reaches them: the waits,
+    /// oldest first, then the finished turns, oldest first. The overlay's
+    /// destinations (#840) list them in this order.
+    package var answerOrder: [AgentAttentionEntry] {
+        let byAge = entries.sorted { ($0.since, $0.sessionID) < ($1.since, $1.sessionID) }
+        return byAge.filter { $0.kind == .waiting } + byAge.filter { $0.kind != .waiting }
     }
 
     /// A wait. Cues every time, even for a session already waiting: a second
@@ -129,8 +134,8 @@ package final class AgentAttentionTracker {
     private var lastSequence: [String: UInt64] = [:]
 
     /// - Parameters:
-    ///   - isEnabled: whether the user turned the feature on (an answer
-    ///     hotkey is set). Off, nothing is queued and the queue empties.
+    ///   - isEnabled: whether the user turned the feature on ("Tell me when
+    ///     an agent needs you"). Off, nothing is queued and the queue empties.
     ///   - isWatching: whether the user is looking at the session's pane now.
     ///     Asked only at a turn's end.
     package init(

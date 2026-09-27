@@ -42,6 +42,7 @@ extension DictationSessionController {
         sessionConnectionGeneration = .none
         sessionOutputMode = nil
         sessionIsQuickCapture = false
+        sessionCommitGuard = nil
         sessionStartedAt = nil
         sessionProvider = nil
         sessionModelName = nil
@@ -445,6 +446,7 @@ extension DictationSessionController {
         clearLatchedSessionMetadata()
         sessionOutputMode = requestedOutputMode
         sessionIsQuickCapture = requestedQuickCapture && requestedOutputMode == .overlayBuffer
+        sessionStoppedBySpokenPhrase = false
         requestedQuickCapture = false
         sessionStartedAt = Date()
         latchSessionAudio(outputMode: requestedOutputMode)
@@ -545,6 +547,7 @@ extension DictationSessionController {
             isConnectingRealtimeSession = false
             isDictating = false
             escapeCancelHandler.stop()
+            endDestinations()
             audio.healthMonitor.stop()
             audio.stopSessionAudioCapture()
             audio.audioDucking.restoreAfterSession()
@@ -683,6 +686,7 @@ extension DictationSessionController {
         cancelConnectTimeout()
         cancelRealtimeReconnect()
         disarmSilenceAutoStop()
+        disarmSpokenStop()
         finalizationWatchdogTask?.cancel()
         finalizationWatchdogTask = nil
         shortcuts.clearPushToTalkShortcutSessionAttempt()
@@ -693,6 +697,7 @@ extension DictationSessionController {
         // session and silently skips its overlay commit.
         wasCancelled = false
         escapeCancelHandler.stop()
+        endDestinations()
         isAwaitingMicrophonePermission = false
         isCompletingStoppedSession = false
         polishAndCommitTask = nil
@@ -1034,6 +1039,7 @@ extension DictationSessionController {
             // commit re-checks secure input and falls back to the clipboard.
             overlayBufferCoordinator.showSecureInputWarning()
         }
+        beginDestinations()
     }
 
     func beginOverlayFinalization() {

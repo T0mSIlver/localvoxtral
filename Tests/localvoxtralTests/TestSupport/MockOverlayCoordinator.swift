@@ -36,6 +36,8 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     var lastDismissAfterHoldMinimumVisibility: TimeInterval? { dismissHoldVisibilities.last }
     var resetCallCount = 0
     var markPolishedCalls: [Bool] = []
+    /// Every destination strip the overlay was asked to show (#840).
+    var shownDestinations: [OverlayDestinationStrip?] = []
 
     func resolveAnchorNow() -> OverlayAnchor {
         OverlayAnchor(
@@ -86,6 +88,10 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     }
 
     func captureLiveCommitTargetAppPID() {}
+
+    func showDestinations(_ strip: OverlayDestinationStrip?) {
+        shownDestinations.append(strip)
+    }
 
     func markPolished(_ polished: Bool) {
         markPolishedCalls.append(polished)

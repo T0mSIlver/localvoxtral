@@ -39,7 +39,7 @@ final class EnginesModel {
     /// without runtime services (tests), so a unit test never writes the
     /// user's ledger.
     @ObservationIgnored
-    private(set) var mistralUsageLedger: MistralUsageLedger?
+    private(set) var usageLedger: UsageLedger?
     /// Bumped on every ledger write so the Usage row re-reads the ledger.
     private(set) var mistralUsageRevision = 0
 
@@ -115,8 +115,8 @@ final class EnginesModel {
 
     /// The ledger the Usage row sums. The owner wires the same ledger into the
     /// two Mistral request paths it holds.
-    func installUsageLedger(_ ledger: MistralUsageLedger) {
-        mistralUsageLedger = ledger
+    func installUsageLedger(_ ledger: UsageLedger) {
+        usageLedger = ledger
     }
 
     /// A ledger write landed: the Usage row reads the ledger again.

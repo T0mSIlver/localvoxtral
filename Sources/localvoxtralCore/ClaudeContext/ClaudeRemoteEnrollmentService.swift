@@ -12,16 +12,10 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     public static let defaultRemoteSetupTimeout: TimeInterval = 60
     package static let maxCapturedOutputBytes = 64 * 1024
 
-    /// Marketplace reference for a remote host, which has no app bundle to
-    /// register a local directory from. `claude plugin marketplace add` accepts
-    /// an `owner/repo` shorthand, and the repo root carries a
-    /// `.claude-plugin/marketplace.json` listing both plugins for exactly this.
-    public static let repositoryMarketplaceReference = "T0mSIlver/localvoxtral"
-
     /// Kept next to the installer that verifies it. A manifest contract test
     /// pins this value to the remote plugin's plugin.json, and another pins
     /// the shim's `X-Lvx-Plugin-Version` header to the same number.
-    public static let remotePluginVersion = "1.17.0"
+    public static let remotePluginVersion = "1.18.0"
 
     /// The plugin's sensitive userConfig key. Claude Code exposes it to the
     /// plugin's COMMAND-hook shim as `CLAUDE_PLUGIN_OPTION_TOKEN`; the shim

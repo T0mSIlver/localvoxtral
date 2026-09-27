@@ -908,6 +908,10 @@ sentence names the local files and enrolled SSH alias, and **Set Up** runs the
 same seven-step flow as enrollment. The app never uses the display name in
 place of the alias. A host enrolled before aliases were recorded must be
 re-enrolled before the app can update it.
+The app does not install from GitHub: it writes its own copy of this
+marketplace to `~/.local/share/localvoxtral/claude-marketplace` on the host
+and registers that directory, so the host gets the plugin version the app
+was built for even when main has moved on.
 Non-interactive SSH skips your login shell's rc, so the app's version of these
 commands first sets `PATH` to the usual `claude` install locations. Add that
 yourself if `claude` is off the PATH a plain `ssh host 'claude …'` sees.
@@ -1023,6 +1027,8 @@ overrides, and zero-width characters before it is stored, so foreign text
 stays text and cannot act on anything.
 
 Transcript contents, `Bash` command strings, and anything claiming to be trusted
-still never cross, exactly as locally. A `Notification` is the one event whose
-body the shim rebuilds instead of posting as-is: it sends the session id and
-the `notification_type`, and its `message` and `title` never leave the host.
+still never cross, exactly as locally. The shim rebuilds two events' bodies
+instead of posting them as-is. A `Notification` sends the session id and the
+`notification_type`, so its `message` and `title` never leave the host. A
+`Stop` sends the session id and cwd, so the agent's reply
+(`last_assistant_message`) never leaves it either.
