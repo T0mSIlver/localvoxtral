@@ -201,6 +201,30 @@ final class TerminalTargetDetectorTests: XCTestCase {
         XCTAssertEqual(decision.reason, .bundleMatch)
     }
 
+    func testCaptureUsesUserTerminalAppsFromSettings() {
+        // The original cmux field case (2026-07-07): a terminal host with a
+        // writable AX value that only the user's added-apps entry can
+        // classify. cmux itself is built-in now, so an unknown stand-in keeps
+        // this capture path exercised.
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.example.myterminal" }
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueSettable }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+
+        let viewModel = makeViewModel(
+            outputMode: .liveAutoPaste,
+            terminalAppBundleIDs: ["com.example.myterminal"]
+        )
+        viewModel.session.captureSessionTargetVerdict()
+        viewModel.session.applyPreCapturedSessionTargetVerdict()
+        XCTAssertTrue(viewModel.session.sessionTargetIsTerminalLike)
+
+        // Without the added app the same target stays non-terminal.
+        let unconfigured = makeViewModel(outputMode: .liveAutoPaste)
+        unconfigured.session.captureSessionTargetVerdict()
+        unconfigured.session.applyPreCapturedSessionTargetVerdict()
+        XCTAssertFalse(unconfigured.session.sessionTargetIsTerminalLike)
+    }
+
     // MARK: - Insertion scalar tracing (marker-file gate)
 
     func testScalarTracingFollowsMarkerFilePresence() throws {
@@ -750,6 +774,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
 
     private func makeViewModel(
         outputMode: DictationOutputMode,
+        terminalAppBundleIDs: [String] = [],
         coordinator: MockOverlayCoordinator = MockOverlayCoordinator()
     ) -> DictationViewModel {
         let suiteName = "localvoxtral.TerminalTargetDetectorTests.\(UUID().uuidString)"
@@ -760,6 +785,12 @@ final class TerminalTargetDetectorTests: XCTestCase {
         }
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
         settings.dictationOutputMode = outputMode
+        // The user-added apps list is settings-backed now (the TOML is a
+        // one-shot migration source at launch), so the fixture stages it the
+        // way the app would have it after that import.
+        settings.userTerminalApps = terminalAppBundleIDs.map {
+            UserTerminalApp(bundleID: $0, displayName: $0)
+        }
         // Never let a process-global launchd service decide these tests. The
         // managed default resolves to port 8000 and can be live on the persistent
         // runner after an integration job, turning a session-start test into a
@@ -777,7 +808,9 @@ final class TerminalTargetDetectorTests: XCTestCase {
         viewModel.session.realtimeAPIClient.debugSkipSocketCreationForTesting()
         // Keep tests hermetic: capture reads the terminal-apps config through
         // the store, which must never touch the real config directory here.
-        viewModel.appConfigStore = MockAppConfigStore()
+        viewModel.appConfigStore = MockAppConfigStore(
+            terminalAppBundleIDs: terminalAppBundleIDs
+        )
         return viewModel
     }
 }
