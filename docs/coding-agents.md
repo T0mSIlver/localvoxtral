@@ -450,9 +450,10 @@ A capture then goes through three steps.
    duplicates (see [How the draft is written](#how-the-draft-is-written)).
 3. **Review.** On the Inbox page you edit the draft, move the capture to
    another project, or discard it. **File** creates the issue with your
-   GitHub CLI, with your dictated words quoted under the draft. Your coding
-   agent can also file it with its own `gh`
-   ([Quick captures](#quick-captures)). Nothing else files.
+   GitHub CLI, with your dictated words quoted under the draft. The Inbox
+   fills in the repository `origin` points at, so a fork's captures go to
+   the fork, not its upstream. Your coding agent can also file it with its
+   own `gh` ([Quick captures](#quick-captures)). Nothing else files.
 
 ### Which projects a capture can go to
 

@@ -55,9 +55,11 @@ final class QuickCaptureInboxTests: XCTestCase {
 
     private func model(
         answer: [String: Double],
+        github: (any QuickCaptureGitHub)? = nil,
+        projects: [QuickCaptureProject]? = nil,
         remote: (@Sendable (String, QuickCaptureProject) async -> QuickCaptureDraft.Outcome)? = nil
     ) -> QuickCaptureInboxModel {
-        let github = github, runner = runner, projects = projects
+        let github = github ?? self.github, runner = runner, projects = projects ?? self.projects
         let model = QuickCaptureInboxModel(
             fileURL: fileURL,
             makeRouter: { QuickCaptureRouter(classifiers: [Classifier(answer)]) },
@@ -68,7 +70,7 @@ final class QuickCaptureInboxTests: XCTestCase {
                     runner: runner,
                     openIssues: { await github.openIssues(ofCheckout: $0) },
                     trackedFiles: { _ in [] },
-                    directoryExists: { $0.hasPrefix("/w/") },
+                    directoryExists: { $0.hasPrefix("/w/") || FileManager.default.fileExists(atPath: $0) },
                     remote: remote
                 )
             },
@@ -180,6 +182,72 @@ final class QuickCaptureInboxTests: XCTestCase {
         sleeper.wakeAll()
         await task.value
         XCTAssertEqual(model.items.first?.note, "No session of this project answered on its host.")
+    }
+
+    /// A checkout at `tool` with these remotes, and a `gh` on the returned
+    /// PATH that answers `upstream/tool` as its pick, the way gh picks with an
+    /// `upstream` remote (#919), and logs its arguments to `gh-argv`.
+    private func checkout(remotes: [(String, String)]) async throws -> (path: String, ghPATH: String, log: String) {
+        let root = fileURL.deletingLastPathComponent()
+        let checkout = root.appendingPathComponent("tool").path
+        let bin = root.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(atPath: checkout, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        for arguments in [["init", "-q"]] + remotes.map({ ["remote", "add", $0.0, $0.1] }) {
+            let output = await RepoGitRunner.run(arguments: arguments, root: checkout, timeoutSeconds: 60)
+            XCTAssertEqual(output?.exitCode, 0, arguments.joined(separator: " "))
+        }
+        let log = root.appendingPathComponent("gh-argv").path
+        let gh = bin.appendingPathComponent("gh")
+        try """
+        #!/bin/sh
+        echo "$*" >>'\(log)'
+        case "$1" in repo) echo upstream/tool ;; issue) echo '[]' ;; esac
+        """.write(to: gh, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: gh.path)
+        return (checkout, bin.path, log)
+    }
+
+    /// A fork: the repository comes from `origin`, for filing and for the
+    /// duplicate check alike.
+    func testAForkCheckoutFilesInTheForkNotItsUpstream() async throws {
+        let fork = try await checkout(remotes: [
+            ("origin", "git@github.com:me/tool.git"), ("upstream", "https://github.com/upstream/tool.git"),
+        ])
+        let project = QuickCaptureProject(key: fork.path, name: "tool", summary: nil, terms: [], userLine: nil)
+
+        let model = model(
+            answer: ["tool": 0.9], github: QuickCaptureGHClient(environment: ["PATH": fork.ghPATH]), projects: [project]
+        )
+        await model.capture(text: "Add a verbose flag", historyRecordID: nil).value
+
+        XCTAssertEqual(model.items.first?.repository, "me/tool")
+        let calls = try String(contentsOfFile: fork.log, encoding: .utf8).split(separator: "\n")
+        XCTAssertEqual(calls.filter { $0.hasPrefix("issue list") }.map { $0.contains("--repo me/tool ") }, [true])
+    }
+
+    func testACheckoutWithNoOriginTakesGhsPick() async throws {
+        let clone = try await checkout(remotes: [("upstream", "https://github.com/upstream/tool.git")])
+        let client = QuickCaptureGHClient(environment: ["PATH": clone.ghPATH])
+        let repository = await client.repository(ofCheckout: clone.path)
+        XCTAssertEqual(repository, "upstream/tool")
+    }
+
+    func testARemoteURLNamesItsGitHubRepository() {
+        for url in [
+            "https://github.com/me/tool", "https://github.com/me/tool.git", "https://github.com/me/tool/\n",
+            "git@github.com:me/tool.git", "git@github.com:me/tool", "ssh://git@github.com/me/tool.git",
+            "ssh://git@GitHub.com:22/me/tool.git", "https://user@github.com/me/tool.git",
+        ] {
+            XCTAssertEqual(QuickCaptureFiling.repository(fromRemoteURL: url), "me/tool", url)
+        }
+        for url in [
+            "https://gitlab.com/me/tool.git", "git@gitlab.com:me/tool.git", "https://github.com.evil.io/me/tool",
+            "https://github.com/me", "https://github.com/me/tool/tree/main", "/srv/git/tool.git",
+            "file:///srv/git/tool.git", "github.com-work:me/tool.git", "",
+        ] {
+            XCTAssertNil(QuickCaptureFiling.repository(fromRemoteURL: url), url)
+        }
     }
 
     func testACaptureInterruptedByAQuitWaitsWithItsWords() throws {
