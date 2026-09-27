@@ -49,14 +49,19 @@ set -euo pipefail
 #                        process — no cold reload every few seconds.
 #   * `reap`           — the idle-reaper LaunchAgent
 #                        (com.localvoxtral.testservers-reaper) runs this on a
-#                        StartInterval. If the newest activity stamp is older
-#                        than the idle window it removes the trigger and sends
-#                        the job an explicit SIGTERM, stopping the server and
-#                        releasing its RAM.
+#                        StartInterval. An open client connection counts as
+#                        use and refreshes the reaper's own stamp. If the
+#                        newest stamp is older than the idle window and no
+#                        client connects while it watches the port, it removes
+#                        the trigger and sends the job an explicit SIGTERM,
+#                        stopping the server and releasing its RAM.
 #   * `stop <name>`    — a person unloading NOW, without waiting for the idle
 #                        window (same stop path as reap: trigger removed,
 #                        TERM→KILL, blocks until the port closes).
 #   * `status`         — human/CI readout of trigger + activity + port state.
+#   * `diagnose <name>`— after a failed live lane: says whether the service is
+#                        up, gone (reaped or stopped), down, or its port taken
+#                        by another process, with the evidence.
 #
 # The trigger design is deliberately cross-user: launchd watches an absolute
 # path in the owner's domain, but any account that can write the run dir (the
@@ -91,6 +96,11 @@ READY_TIMEOUT="${LV_TEST_SERVER_READY_TIMEOUT:-180}"
 # escalates to SIGKILL. The MLX server drains gracefully in ~2-3s; this is the
 # ceiling before we stop being polite.
 STOP_GRACE="${LV_TEST_SERVER_STOP_GRACE:-8}"
+# Before stopping a server whose stamps are past the idle window, reap watches
+# its port this long for a client. Consumers that only `ensure` once (the
+# gate's eval-e2e, a long CI lane) send a request at least this often, so a
+# request counts as use even when it falls between two reaper runs.
+USE_WATCH_SECONDS="${LV_TEST_SERVER_USE_WATCH_SECONDS:-60}"
 PORT_TIMEOUT=2
 
 # Stable installed copy of the packaged .app whose Metal-capable helper
@@ -120,6 +130,8 @@ else
 fi
 LAUNCH_AGENTS_DIR="${LV_TEST_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 LOG_DIR="${LV_TEST_SERVER_LOG_DIR:-/Users/Shared/localvoxtral}"
+# Where the reaper LaunchAgent's output lands (scripts/mac/README.md).
+REAPER_LOG="${LV_TEST_SERVER_REAPER_LOG:-$LOG_DIR/testservers-reaper.log}"
 
 # Print each row of the list as "name port repo revision". A malformed row is
 # an error rather than a skip, so a typo cannot silently drop a model. Ports
@@ -268,6 +280,26 @@ healthy() {
   esac
 }
 
+# Established TCP connections whose server side is this port. netstat reads the
+# kernel's socket table, so it counts every account's clients without root.
+open_connections() {
+  local port="$1"
+  netstat -an -p tcp 2>/dev/null \
+    | awk -v suffix=".$port" '
+        $6 == "ESTABLISHED" && length($4) > length(suffix) \
+          && substr($4, length($4) - length(suffix) + 1) == suffix { n++ }
+        END { print n + 0 }' || true
+}
+
+# "pid user command" of the process listening on the port, or nothing when
+# this account cannot see it (lsof shows only its own processes without root).
+port_holder() {
+  local port="$1" pid
+  pid="$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -1 || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  ps -o pid= -o user= -o command= -p "$pid" 2>/dev/null | sed 's/^ *//' || true
+}
+
 # Newest activity mtime (epoch secs) across this service's stamps + trigger, or
 # empty if none exists. The trigger is included as a fallback so a
 # manually-created trigger with no stamp still ages out.
@@ -284,6 +316,23 @@ newest_activity() {
 }
 
 # ---- commands ----------------------------------------------------------------
+
+# Write the caller's own activity stamp. The run dir is world writable, so a
+# symlink planted at the stamp path would make touch write through it; refuse
+# one. Neither step follows a link swapped in after the check: noclobber
+# creates with O_EXCL, and touch -h updates the path itself.
+touch_stamp() {
+  local stamp="$1"
+  if [[ -L "$stamp" ]]; then
+    echo "lv-test-servers: refusing symlinked activity stamp $stamp" >&2
+    return 1
+  fi
+  ( set -C; : >"$stamp" ) 2>/dev/null || true
+  touch -h "$stamp" 2>/dev/null || {
+    echo "lv-test-servers: cannot write activity stamp $stamp" >&2
+    return 1
+  }
+}
 
 ensure_one() {
   local name="$1" cname trigger port stamp
@@ -318,20 +367,8 @@ MSG
     return 1
   fi
   # Stamp our own activity file — always permitted (we own it) — to reset the
-  # idle window regardless of who created the trigger. The run dir is world
-  # writable, so a symlink planted at our stamp path would make touch write
-  # through it; refuse one.
-  if [[ -L "$stamp" ]]; then
-    echo "lv-test-servers: refusing symlinked activity stamp $stamp" >&2
-    return 1
-  fi
-  # Neither step follows a link swapped in after the check: noclobber creates
-  # with O_EXCL, and touch -h updates the path itself.
-  ( set -C; : >"$stamp" ) 2>/dev/null || true
-  touch -h "$stamp" 2>/dev/null || {
-    echo "lv-test-servers: cannot write activity stamp $stamp" >&2
-    return 1
-  }
+  # idle window regardless of who created the trigger.
+  touch_stamp "$stamp" || return 1
 
   # Warm path: already serving — return immediately so bursts are cheap.
   if healthy "$cname"; then
@@ -419,20 +456,54 @@ stop_one() {
   fi
 }
 
+# One timestamped line per decision, so the reaper log can be matched against
+# a failed run's clock.
+reap_log() {
+  printf '%s reap %s: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2"
+}
+
+# Poll the port for a client for up to USE_WATCH_SECONDS. Prints the seconds
+# waited and succeeds when one connects.
+watch_for_client() {
+  local port="$1" waited=0
+  while (( waited < USE_WATCH_SECONDS )); do
+    if (( $(open_connections "$port") > 0 )); then
+      echo "$waited"
+      return 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 1
+}
+
 cmd_reap() {
-  # Stop any server idle longer than the window; leave the rest warm.
-  local now newest age trigger
-  now="$(date +%s)"
+  # Stop any server idle longer than the window; leave the rest warm. A client
+  # connection counts as use: it refreshes the reaper's own stamp, so the idle
+  # window restarts from the last connection the reaper saw.
+  local now newest age trigger port clients waited stamp
   for name in $(all_services); do
     trigger="$(trigger_for "$name")"
     [[ -e "$trigger" ]] || continue
+    port="$(port_for "$name")"
+    stamp="$(stamp_prefix_for "$name")$(id -u)"
+    clients="$(open_connections "$port")"
+    if (( clients > 0 )); then
+      touch_stamp "$stamp" || true
+      reap_log "$name" "in use ($clients open connection(s) on port $port) — kept warm"
+      continue
+    fi
+    now="$(date +%s)"
     newest="$(newest_activity "$name")"
     [[ "$newest" =~ ^[0-9]+$ ]] || newest=0
     age=$((now - newest))
-    if (( age >= IDLE_SECONDS )); then
-      printf 'reap %s: idle %ss >= %ss — %s\n' "$name" "$age" "$IDLE_SECONDS" "$(stop_one "$name")"
+    if (( age < IDLE_SECONDS )); then
+      reap_log "$name" "active (idle ${age}s < ${IDLE_SECONDS}s) — kept warm"
+    elif tcp_ok "$port" && waited="$(watch_for_client "$port")"; then
+      touch_stamp "$stamp" || true
+      reap_log "$name" "idle ${age}s, but a client connected after ${waited}s — kept warm"
     else
-      echo "reap $name: active (idle ${age}s < ${IDLE_SECONDS}s) — kept warm"
+      reap_log "$name" "idle ${age}s >= ${IDLE_SECONDS}s, no client in ${USE_WATCH_SECONDS}s — $(stop_one "$name")"
     fi
   done
 }
@@ -469,9 +540,72 @@ cmd_status() {
       [[ "$newest" =~ ^[0-9]+$ ]] && idle="$((now - newest))s"
     fi
     healthy "$name" && health_state="up"
-    printf '%-18s trigger=%-8s idle=%-8s port %s: %s\n' \
-      "$name" "$trig_state" "$idle" "$port" "$health_state"
+    printf '%-18s trigger=%-8s idle=%-8s clients=%-3s port %s: %s\n' \
+      "$name" "$trig_state" "$idle" "$(open_connections "$port")" "$port" "$health_state"
   done
+}
+
+# Name why a service is or isn't serving, for the log of a failed live lane:
+# the first line is the verdict (up, TAKEN, GONE or DOWN), the rest the
+# evidence. Always exits 0 for a known service: it explains a failure, it
+# isn't one.
+cmd_diagnose() {
+  local cname port trigger log helper holder command verdict now newest
+  cname="$(canonical "${1:-speechd}")" || { echo "unknown service: ${1:-}" >&2; return 2; }
+  port="$(port_for "$cname")"
+  trigger="$(trigger_for "$cname")"
+  log="$(log_for "$cname")"
+  case "$cname" in
+    polishd) helper=localvoxtral-polishd ;;
+    *) helper=localvoxtral-speechd ;;
+  esac
+
+  local trig_state="absent" idle="-"
+  if [[ -e "$trigger" ]]; then
+    trig_state="present"
+    now="$(date +%s)"
+    newest="$(newest_activity "$cname")"
+    [[ "$newest" =~ ^[0-9]+$ ]] && idle="$((now - newest))s"
+  fi
+  local last_log=""
+  [[ -f "$log" ]] && last_log="$(grep -v '^[[:space:]]*$' "$log" 2>/dev/null | tail -1 || true)"
+
+  if tcp_ok "$port"; then
+    holder="$(port_holder "$port")"
+    command="$(awk '{ $1 = ""; $2 = ""; sub(/^  /, ""); print }' <<<"$holder")"
+    if [[ -z "$holder" ]]; then
+      verdict="up? port $port answers, but $(id -un) cannot see which process holds it (run: sudo lsof -nP -iTCP:$port -sTCP:LISTEN)"
+    elif [[ "${command%% *}" == */"$helper" && "$command" != *--parent-pid* ]]; then
+      verdict="up: the test service serves port $port"
+    elif [[ "$command" == *--parent-pid* ]]; then
+      verdict="TAKEN: port $port is held by a localvoxtral app's own helper, not the test service"
+    else
+      verdict="TAKEN: port $port is held by another process, not the test service"
+    fi
+  elif [[ "$trig_state" == absent ]]; then
+    verdict="GONE: nothing listens on port $port and its trigger is gone — the reaper or a stop removed it"
+  elif [[ "$last_log" == *"Address already in use"* ]]; then
+    verdict="TAKEN: nothing listens on port $port now, but the last start failed with Address already in use"
+  else
+    verdict="DOWN: its trigger is present but nothing listens on port $port — still loading, or crash-looping"
+  fi
+
+  echo "diagnose $cname: $verdict"
+  echo "  trigger: $trig_state, idle $idle (window ${IDLE_SECONDS}s)"
+  echo "  clients: $(open_connections "$port") open connection(s) on port $port"
+  echo "  listener: ${holder:-none visible}"
+  echo "  reaper ($REAPER_LOG):"
+  if [[ -f "$REAPER_LOG" ]]; then
+    grep -F "reap $cname:" "$REAPER_LOG" 2>/dev/null | tail -3 | sed 's/^/    /' || true
+  else
+    echo "    no log"
+  fi
+  echo "  log ($log, last 5 lines):"
+  if [[ -f "$log" ]]; then
+    tail -5 "$log" | sed 's/^/    /'
+  else
+    echo "    no log"
+  fi
 }
 
 # Install/refresh the stable .app copy whose helper binaries the plists run.
@@ -648,15 +782,18 @@ cmd_install_speech_models() {
 usage() {
   cat >&2 <<'MSG'
 usage: lv-test-servers.sh <ensure [<service>|all] | stop [<service>|all]
-                            | reap | status | install-helpers <path-to-.app>
+                            | reap | status | diagnose [<service>]
+                            | install-helpers <path-to-.app>
                             | install-speech-models [<name>]>
   ensure  start (if down) and block until the named server(s) are warm;
           resets the idle window. Default target: all.
   stop    unload the named server(s) NOW regardless of the idle window, freeing
           the weights (block until the port closes; TERM→KILL). Default: all.
-  reap    stop any server idle longer than the idle window (reaper LaunchAgent;
-          must run as the run-dir owner).
-  status  print trigger + activity + port health for every service.
+  reap    stop any server idle longer than the idle window with no client
+          connected (reaper LaunchAgent; must run as the run-dir owner).
+  status  print trigger + activity + clients + port health for every service.
+  diagnose  say whether a service is up, gone, down or its port taken, with the
+          evidence. Default: speechd.
   install-helpers  copy a packaged .app's helper binaries to the stable path
           the plists run ($LV_TEST_SERVER_APP; default
           /Users/Shared/localvoxtral/testservers/localvoxtral.app).
@@ -675,6 +812,7 @@ case "${1:-}" in
   stop)   shift; cmd_stop "${1:-all}" ;;
   reap)   cmd_reap ;;
   status) cmd_status ;;
+  diagnose) shift; cmd_diagnose "${1:-speechd}" ;;
   install-helpers) shift; cmd_install_helpers "${1:-}" ;;
   install-speech-models) shift; cmd_install_speech_models "${1:-}" ;;
   ""|-h|--help) usage; exit 2 ;;

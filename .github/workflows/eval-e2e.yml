@@ -131,6 +131,7 @@ jobs:
           fi
 
       - name: Run agent-dictation E2E eval
+        id: eval
         if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         # About 2x a normal run. A hung run held the Mac for the whole job
         # timeout, past the end of the night window (#821).
@@ -142,10 +143,11 @@ jobs:
         run: |
           mkdir -p logs
           set -o pipefail
-          # The reaper stops the on-demand server 20 min after the last
-          # `ensure`, and requests don't count as use, so an eval longer than
-          # that loses its server mid-run (#821). Keep ours fresh until the
-          # step ends.
+          # An older reaper stops the on-demand server 20 min after the last
+          # `ensure` even while a client uses it, so an eval longer than that
+          # lost its server mid-run (#821). The reaper counts clients since
+          # #829, but runs from the owner's checkout on the Mac: keep ours
+          # fresh until that checkout has it.
           if [ -d /Users/Shared/localvoxtral/run ]; then
             while sleep 300; do
               ./scripts/mac/lv-test-servers.sh ensure speechd >/dev/null 2>&1 || true
@@ -159,6 +161,17 @@ jobs:
           # unit step rebuilt it back — the same flag-flip PR #157 fixed
           # inside ci.yml (PR #157 review finding).
           swift test --build-system native --filter AgentDictationE2EEvalTests --enable-code-coverage 2>&1 | tee logs/eval-e2e.log
+
+      - name: Name the STT service's state
+        # A stalled eval reads the same whether the reaper stopped the server
+        # or another process held port 8000 (#829).
+        if: failure() && steps.eval.outcome == 'failure'
+        run: |
+          {
+            echo '```'
+            ./scripts/mac/lv-test-servers.sh diagnose speechd
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Scoreboard to step summary
         # Extract the section between the scoreboard markers (kept in sync
