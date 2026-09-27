@@ -712,6 +712,31 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.map(\.rawText), ["run the tests"])
     }
 
+    /// A generation that ends mid-word (#536): "sen" then "d it." reads as
+    /// "send it." and stops like the phrase said in one piece.
+    func testASendPhraseSplitAcrossSegmentsStops() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        var returns: [pid_t] = []
+        targetClaudeDesktop(pipeline, returns: { returns.append($0) })
+
+        await startAndSpeak(pipeline)
+        // Words arrive space-prefixed, as vLLM streams them; that is what
+        // tells a segment without a leading space from a new word.
+        await sendDelta(pipeline, "run the tests,")
+        await sendDelta(pipeline, " sen")
+        pipeline.server.send(["type": "transcription.done", "text": "run the tests, sen"])
+        await sendDelta(pipeline, "d")
+        await sendDelta(pipeline, " it.")
+        let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "overlay: \(pipeline.overlay.refreshCalls.last?.displayText.debugDescription ?? "")")
+        await pipeline.clock.waitForSleepers(3)
+        pipeline.clock.advance(by: 3)
+        await armed.value
+        await finishStoppedSession(pipeline, finalText: "d it.")
+
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["run the tests"])
+        XCTAssertEqual(returns, [Self.desktopPID])
+    }
+
     /// "send it" in the middle of a sentence never arms the stop.
     func testASendPhraseMidSentenceNeverStops() async throws {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
