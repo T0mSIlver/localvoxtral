@@ -535,7 +535,8 @@ jobs:
           # Accessibility grant, so the app's startup prompt pops a REAL
           # dialog on the runner's GUI session on every run (2026-07-24).
           # Suppress only the startup prompts; the launch path stays
-          # production-shaped.
+          # production-shaped, except that the flag also keeps this copy off
+          # the owner's hook sockets and ssh forwards (#892).
           LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS: "1"
         run: |
           # Launch a COPY of the packaged app from outside the workspace with
@@ -1412,7 +1413,8 @@ jobs:
           # Accessibility grant, so the app's startup prompt pops a REAL
           # dialog on the runner's GUI session on every run (2026-07-24).
           # Suppress only the startup prompts; the launch path stays
-          # production-shaped.
+          # production-shaped, except that the flag also keeps this copy off
+          # the owner's hook sockets and ssh forwards (#892).
           LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS: "1"
         run: |
           # Launch a COPY of the packaged app from outside the workspace with
