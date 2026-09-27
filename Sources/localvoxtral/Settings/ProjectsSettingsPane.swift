@@ -158,7 +158,9 @@ struct ProjectDetailSheet: View {
 
     private var row: ProjectsPaneRow? {
         _ = viewModel.learnedTermRevision
-        return inbox?.projectRows(dictationProjectKeys: dictationProjectKeys).first { $0.key == projectKey }
+        // Any of its keys: the leading checkout changes when the Mac's
+        // folder goes or comes back.
+        return inbox?.projectRows(dictationProjectKeys: dictationProjectKeys).first { $0.keys.contains(projectKey) }
     }
 
     var body: some View {

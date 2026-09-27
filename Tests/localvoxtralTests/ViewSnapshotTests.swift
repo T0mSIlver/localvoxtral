@@ -199,7 +199,10 @@ final class ViewSnapshotTests: XCTestCase {
                 ProjectDetailSheet(
                     projectKey: "/work/demo", settings: settings, viewModel: viewModel, inbox: inbox,
                     dictationProjectKeys: Array(repeating: "/work/demo", count: 142) + ["remote:demo", nil],
-                    openInbox: {}, onDone: {}),
+                    openInbox: {}, onDone: {})
+                // A sheet draws on its window's background; the snapshot
+                // window has none.
+                .background(Color(nsColor: .windowBackgroundColor)),
                 name: "projects-sheet-\(theme)",
                 width: 560, height: 760, growToFit: false, appearance: appearance)
         }
