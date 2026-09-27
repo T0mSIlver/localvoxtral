@@ -292,9 +292,9 @@ final class TerminalTargetDetectorTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         await viewModel.session.beginDictationSession(outputMode: .overlayBuffer)
-        XCTAssertFalse(
-            viewModel.audio.hasInitializedMicrophone,
-            "connecting must not eagerly initialize CoreAudio"
+        XCTAssertTrue(
+            viewModel.fakeMicrophone.isCapturing(),
+            "the dial opens the microphone, so speech during the connect is kept (#527)"
         )
 
         XCTAssertEqual(
@@ -307,8 +307,8 @@ final class TerminalTargetDetectorTests: XCTestCase {
 
         viewModel.session.abortConnectingSession()
         XCTAssertFalse(
-            viewModel.audio.hasInitializedMicrophone,
-            "aborting before audio starts must not register CoreAudio listeners"
+            viewModel.fakeMicrophone.isCapturing(),
+            "aborting the connect stops the microphone"
         )
     }
 

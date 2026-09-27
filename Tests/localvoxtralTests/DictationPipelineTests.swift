@@ -1406,7 +1406,7 @@ final class DictationPipelineTests: XCTestCase {
 
     // MARK: - The two halves every scenario shares
 
-    /// Start, connect, open the microphone, and get one captured chunk to the
+    /// Start, open the microphone, connect, and get one captured chunk to the
     /// server through the chunk buffer and the send loop.
     private func startAndSpeak(
         _ pipeline: Pipeline,
@@ -1415,19 +1415,20 @@ final class DictationPipelineTests: XCTestCase {
     ) async {
         if let start { start(pipeline.viewModel) } else { pipeline.viewModel.startDictation() }
         await pipeline.microphone.waitUntilCapturing(file: file, line: line)
-        XCTAssertTrue(pipeline.viewModel.isDictating, file: file, line: line)
-        XCTAssertEqual(pipeline.viewModel.statusText, "Listening...", file: file, line: line)
 
         let update = await pipeline.server.awaitFrame("session.update", file: file, line: line) {
             $0.type == "session.update"
         }
         XCTAssertEqual(update?.json["model"] as? String, Self.model, file: file, line: line)
+        // The send loop and the periodic commit start at connect, and sleep
+        // on the clock: armed, they say the session is listening.
+        await pipeline.clock.waitForSleepers(2, file: file, line: line)
+        XCTAssertTrue(pipeline.viewModel.isDictating, file: file, line: line)
+        XCTAssertEqual(pipeline.viewModel.statusText, "Listening...", file: file, line: line)
 
         let spoken = Self.speech(seed: 1)
         XCTAssertTrue(pipeline.microphone.deliver(spoken), file: file, line: line)
-        // The send loop and the periodic commit sleep on the clock. One send
-        // interval later the loop drains what the capture buffered.
-        await pipeline.clock.waitForSleepers(2, file: file, line: line)
+        // One send interval later the loop drains what the capture buffered.
         pipeline.clock.advance(by: TimingConstants.audioSendInterval)
         await pipeline.server.awaitFrame("the captured audio", file: file, line: line) {
             $0.audio == spoken
