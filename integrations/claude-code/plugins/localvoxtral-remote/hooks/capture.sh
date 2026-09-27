@@ -74,6 +74,19 @@ command -v curl >/dev/null 2>&1 || exit 0
 WORK="$(mktemp -d 2>/dev/null)" || exit 0
 cd "$PROJECT" || exit 0
 
+# vibe_usage <vibe-home>: the newest run's token counts under that home, as
+# "<input> <cached input> <output>", or nothing. Vibe's unified harness keeps
+# them in the session log (VibeSessionUsage.swift); the same file holds the
+# prompt, so only the three numbers are read out of it.
+vibe_usage() {
+  current="$(ls -t "$1"/logs/session/unified/*/CURRENT 2>/dev/null | head -n 1)"
+  [ -n "$current" ] || return 0
+  generation="$(sed -n 's/.*"generation":"\([0-9]\{1,20\}\)".*/\1/p' "$current" 2>/dev/null | head -n 1)"
+  [ -n "$generation" ] || return 0
+  sed -n 's/.*"tokenUsage":{"cachedInputTokens":\([0-9]\{1,10\}\),"inputTokens":\([0-9]\{1,10\}\),"outputTokens":\([0-9]\{1,10\}\)[,}].*/\2 \1 \3/p' \
+    "${current%/CURRENT}/generations/$generation/projection-state.json" 2>/dev/null | head -n 1
+}
+
 # Heredoc through a redirected `cat`, not printf/echo: an external printf
 # would put the token into an argv.
 cat >"$WORK/header" <<HEADER || exit 0
@@ -150,9 +163,16 @@ fi
 STATUS="$(post /v1/draft/prompt "$WORK/issues" "$WORK/prompt")" || STATUS=""
 [ "$STATUS" = 200 ] && [ -s "$WORK/prompt" ] || exit 0
 
-# answer <exit>: posts the capped output with how the run ended.
+# answer <exit>: posts the capped output with how the run ended, and a Vibe
+# run's token counts.
 answer() {
   echo "X-Lvx-Draft-Exit: $1" >>"$WORK/header" || exit 0
+  if [ "$AGENT" = vibe ] && [ -n "${VIBE_RUN_HOME:-}" ]; then
+    USAGE="$(vibe_usage "$VIBE_RUN_HOME")"
+    case "$USAGE" in
+    [0-9]*" "[0-9]*" "[0-9]*) echo "X-Lvx-Usage: $USAGE" >>"$WORK/header" || exit 0 ;;
+    esac
+  fi
   post /v1/draft "$WORK/answer" /dev/null >/dev/null
   exit 0
 }

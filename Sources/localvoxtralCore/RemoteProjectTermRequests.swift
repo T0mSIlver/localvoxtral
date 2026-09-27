@@ -23,8 +23,14 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
     /// answers for: the id the hook sent, before the Mac scoped it.
     package static let answerPath = "/v1/terms"
     package static let answerSessionHeaderName = "X-Lvx-Terms-Session"
-    /// The runner posts the first 8 KiB of the agent's stdout.
-    package static let maxAnswerBytes = 8 * 1024
+    /// The runner posts the first 16 KiB of the agent's stdout. Claude
+    /// Code's result object carries the terms twice beside its usage: 3.4 KiB
+    /// for 40 terms on this repository (2026-09-27).
+    package static let maxAnswerBytes = 16 * 1024
+    /// A Vibe run's token counts, from its host's shim (1.19.0 plugin, 1.4.0
+    /// Vibe hooks) on `/v1/terms` and `/v1/draft`: `<input> <cached input>
+    /// <output>`, decimal. Claude Code's ride in its result object instead.
+    package static let usageHeaderName = "X-Lvx-Usage"
     /// A mark waits this long for its session's next hook, and an asked
     /// session this long for the answer (the runner's watchdog is 180 s).
     package static let markLifetime: TimeInterval = 600
@@ -161,22 +167,53 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
         }
     }
 
-    /// Reads an answer body (`{"terms": [...]}`, bare or in one code fence)
-    /// and stores its term-shaped entries as `slot`'s proposals. Nil when the
-    /// body is not that shape; nothing is stored then.
-    package func accept(answer: Data, slot: Pending) -> Int? {
+    /// Reads an answer body and stores its term-shaped entries as `slot`'s
+    /// proposals. The body is Claude Code's result object from a 1.19.0
+    /// shim, or `{"terms": [...]}`, bare or in one code fence (Vibe, and an
+    /// older shim). `reportedUsage` is a Vibe run's `X-Lvx-Usage`. Nil when
+    /// the body is neither shape; nothing is stored then.
+    package func accept(answer: Data, slot: Pending, reportedUsage: ProjectTermProposal.Usage? = nil) -> Int? {
         #if DEBUG
         debugAnswerObserver.withLock { $0 }?(answer.count)
         #endif
-        // The host ran the agent whatever it answered. Its shim sends the
-        // answer text only, so the run is counted without its usage.
-        usageRecorder?.record(.agentRun(date: now(), feature: .projectTerms, agent: slot.agent, usage: nil))
-        guard let text = String(data: answer, encoding: .utf8),
-              let raw = ProjectTermProposal.termsObject(in: text)
-        else { return nil }
+        let (terms, usage) = Self.parse(answer: answer, agent: slot.agent)
+        // The host ran the agent whatever it answered; a run that reported
+        // nothing (an older shim) is counted, unpriced.
+        usageRecorder?.record(
+            .agentRun(date: now(), feature: .projectTerms, agent: slot.agent, usage: usage ?? reportedUsage))
+        guard let raw = terms else { return nil }
         let accepted = ProjectTermProposal.acceptedTerms(raw)
         store.recordProposal(accepted, agent: slot.agent, project: slot.project, excluding: slot.excluding)
         return accepted.count
+    }
+
+    /// The terms and usage in a host's answer. Only Claude Code's result
+    /// object (`"type": "result"`) carries usage.
+    static func parse(answer: Data, agent: ProjectTermProposal.Agent) -> (terms: [String]?, usage: ProjectTermProposal.Usage?) {
+        if agent == .claude,
+           let object = try? JSONSerialization.jsonObject(with: answer) as? [String: Any],
+           object["type"] as? String == "result"
+        {
+            switch ProjectTermProposal.parseClaude(stdout: answer, exitCode: 0) {
+            case .terms(let terms, let usage): return (terms, usage)
+            case .failed: return (nil, nil)
+            }
+        }
+        guard let text = String(data: answer, encoding: .utf8) else { return (nil, nil) }
+        return (ProjectTermProposal.termsObject(in: text), nil)
+    }
+
+    /// A Vibe run's counts from `X-Lvx-Usage`: three decimal numbers of at
+    /// most ten digits, one space apart. Anything else reads as no usage.
+    package static func reportedUsage(in headers: [String: String]) -> ProjectTermProposal.Usage? {
+        guard let value = headers[usageHeaderName.lowercased()] else { return nil }
+        let fields = value.split(separator: " ", omittingEmptySubsequences: false)
+        guard fields.count == 3,
+              fields.allSatisfy({ (1...10).contains($0.utf8.count) && $0.utf8.allSatisfy { $0 >= 48 && $0 <= 57 } })
+        else { return nil }
+        let numbers = fields.compactMap { Int($0) }
+        guard numbers.count == 3 else { return nil }
+        return VibeSessionUsage.usage(inputTokens: numbers[0], cachedInputTokens: numbers[1], outputTokens: numbers[2])
     }
 
     #if DEBUG

@@ -564,9 +564,14 @@ label for it, never a path it could hand to ssh. The run goes like this:
    project, which holds only links to your config.toml and .env, so no Vibe
    hook fires.
 
-   The runner posts the first 8 KiB of the answer to the listener's terms
+   The runner posts the first 16 KiB of the answer to the listener's terms
    endpoint, with the token in a header file and the session id in a header. A
    200 marks the project done.
+
+   From plugin 1.19.0 and Vibe hooks 1.4.0, the answer also carries the run's
+   usage for the Mac's usage log. Claude Code sends its whole result object.
+   A Vibe run adds the input, cached input and output token counts it read
+   from its session log, in a header.
 5. **Mac, terms endpoint.** The listener authenticates the token, scopes the
    session id under that host, and accepts only an answer for a live session
    it asked, from the agent it asked, once.
@@ -576,7 +581,9 @@ label for it, never a path it could hand to ssh. The run goes like this:
    refused with a status and a log line that names the reason, never the body.
 
 Only the answer crosses the tunnel, as a JSON list of terms: about 120 bytes in
-the measured runs.
+the measured runs. With Claude Code's result object around it, about 3.4 KiB
+for 40 terms, the answer adds only token counts, the cost and the run's
+timings.
 
 The run bills the host's Claude Code login or Mistral key, under the same caps
 as the local run. A process that squats the forward port could send the header
@@ -626,7 +633,8 @@ It then runs the Mac's drafting command in the project:
 - or Vibe with its read-only tools, hooks and MCP off, capped at $0.30.
 
 Both get 20 turns and a 240-second watchdog. The run posts the output, at most
-60 KiB, to the listener with how the run ended.
+60 KiB, to the listener with how the run ended. A Vibe run (hooks 1.4.0) adds
+its token counts in a header; Claude Code's output already carries its usage.
 
 **What crosses and what can't.** Each route takes one answer, only from the
 host, session and agent the Mac asked, and files it under the project the Mac
