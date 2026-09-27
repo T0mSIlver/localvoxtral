@@ -724,7 +724,9 @@ public final class ClaudeRemoteContextListener: Sendable {
             guard let session = registry.snapshot(sessionID: sessionID), session.agent == hookAgent,
                   let slot = projectTerms.takeAnswerSlot(sessionID: sessionID, agent: agent)
             else { return .notAsked }
-            return projectTerms.accept(answer: body, slot: slot).map(Verdict.accepted) ?? .notTerms
+            let usage = agent == .vibe ? RemoteProjectTermRequests.reportedUsage(in: request.headers) : nil
+            return projectTerms.accept(answer: body, slot: slot, reportedUsage: usage).map(Verdict.accepted)
+                ?? .notTerms
         }) else {
             Log.claudeContext.error("Rejected remote connection: host was revoked before ingest")
             respond(fd: fd, status: 401)
@@ -829,7 +831,8 @@ public final class ClaudeRemoteContextListener: Sendable {
                     .map { .accepted(Data($0.utf8)) } ?? .notAsked
             case .answer(let id):
                 return quickCapture.acceptDraft(
-                    draftID: id, sessionID: sessionID, agent: agent, exit: exit, output: body
+                    draftID: id, sessionID: sessionID, agent: agent, exit: exit, output: body,
+                    reportedUsage: agent == .vibe ? RemoteProjectTermRequests.reportedUsage(in: request.headers) : nil
                 ) ? .accepted(nil) : .notAsked
             }
         }) else {

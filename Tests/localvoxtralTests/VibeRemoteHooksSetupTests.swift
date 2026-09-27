@@ -415,7 +415,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
 
     func testTheShippedFilesCarryOneVersionAndTheRemoteBlock() throws {
         let files = try shippedFiles()
-        XCTAssertEqual(files.version, "1.3.0")
+        XCTAssertEqual(files.version, "1.4.0")
         XCTAssertNotNil(VibeHooksBlockEditor.remote.snippet(fromBundled: files.hooksBlock))
         let names = files.hooksBlock.split(separator: "\n").filter { $0.hasPrefix("name = ") }
             .map { String($0.dropFirst("name = \"".count).dropLast()) }

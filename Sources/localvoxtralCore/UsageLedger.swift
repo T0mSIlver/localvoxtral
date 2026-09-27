@@ -81,6 +81,9 @@ package struct UsageEntry: Codable, Equatable, Sendable {
     /// What an agent run reported it would cost at API prices. On a
     /// subscription it comes out of the plan's limits, not a bill.
     package var agentCostUSD: Double?
+    /// A call priced here in USD from its token counts: Jev, at its list
+    /// price when the answer reports them.
+    package var costUSD: Double?
 
     package init(
         date: Date,
@@ -92,7 +95,8 @@ package struct UsageEntry: Codable, Equatable, Sendable {
         cachedPromptTokens: Int? = nil,
         completionTokens: Int? = nil,
         costEUR: Double? = nil,
-        agentCostUSD: Double? = nil
+        agentCostUSD: Double? = nil,
+        costUSD: Double? = nil
     ) {
         self.date = date
         self.feature = feature
@@ -104,6 +108,7 @@ package struct UsageEntry: Codable, Equatable, Sendable {
         self.completionTokens = completionTokens
         self.costEUR = costEUR
         self.agentCostUSD = agentCostUSD
+        self.costUSD = costUSD
     }
 
     /// A Mistral request in the ledger's first terms.
@@ -155,7 +160,7 @@ package struct UsageEntry: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case date, feature, backend, kind, model, audioSeconds, promptTokens,
-            cachedPromptTokens, completionTokens, costEUR, agentCostUSD
+            cachedPromptTokens, completionTokens, costEUR, agentCostUSD, costUSD
     }
 
     package init(from decoder: any Decoder) throws {
@@ -174,6 +179,7 @@ package struct UsageEntry: Codable, Equatable, Sendable {
         completionTokens = try container.decodeIfPresent(Int.self, forKey: .completionTokens)
         costEUR = try container.decodeIfPresent(Double.self, forKey: .costEUR)
         agentCostUSD = try container.decodeIfPresent(Double.self, forKey: .agentCostUSD)
+        costUSD = try container.decodeIfPresent(Double.self, forKey: .costUSD)
     }
 
     package func encode(to encoder: any Encoder) throws {
@@ -189,6 +195,7 @@ package struct UsageEntry: Codable, Equatable, Sendable {
         try container.encodeIfPresent(completionTokens, forKey: .completionTokens)
         try container.encodeIfPresent(costEUR, forKey: .costEUR)
         try container.encodeIfPresent(agentCostUSD, forKey: .agentCostUSD)
+        try container.encodeIfPresent(costUSD, forKey: .costUSD)
     }
 }
 
@@ -563,6 +570,7 @@ package struct FeatureUsage: Equatable, Sendable {
         package var calls = 0
         package var costEUR: Double = 0
         package var agentCostUSD: Double = 0
+        package var costUSD: Double = 0
         /// Calls on a paid backend that carry no price.
         package var unpricedCalls = 0
 
@@ -578,9 +586,11 @@ package struct FeatureUsage: Equatable, Sendable {
     package var costEUR: Double = 0
     /// What agent runs reported at API prices.
     package var agentCostUSD: Double = 0
+    /// USD priced here from token counts (Jev).
+    package var costUSD: Double = 0
     /// Calls that reached a paid backend and carry no price: a Mistral model
-    /// missing from the table, a timed-out request, a Jev call, an agent run
-    /// that reported nothing.
+    /// missing from the table, a timed-out request, a Jev answer with no
+    /// token counts, an agent run that reported nothing.
     package var unpricedPaidCalls = 0
     /// Per backend, so a view can say who paid what.
     package var backends: [UsageEntry.Backend: Share] = [:]
@@ -605,8 +615,10 @@ package struct FeatureUsage: Equatable, Sendable {
             share.costEUR += entry.costEUR ?? 0
             usage.agentCostUSD += entry.agentCostUSD ?? 0
             share.agentCostUSD += entry.agentCostUSD ?? 0
+            usage.costUSD += entry.costUSD ?? 0
+            share.costUSD += entry.costUSD ?? 0
             let isPaid = entry.backend != .bundledHelper && entry.backend != .userServer
-            if isPaid && entry.costEUR == nil && entry.agentCostUSD == nil {
+            if isPaid && entry.costEUR == nil && entry.agentCostUSD == nil && entry.costUSD == nil {
                 usage.unpricedPaidCalls += 1
                 share.unpricedCalls += 1
             }
@@ -630,7 +642,8 @@ package struct FeatureUsage: Equatable, Sendable {
                 Self.priced(mistral, cost: mistral.costEUR, format: WidgetFormat.cost, on: "Mistral", locale: locale))
         }
         if let jev = backends[.jev] {
-            parts.append(Self.unpriced(jev.calls, on: "Jev", locale: locale))
+            parts.append(
+                Self.priced(jev, cost: jev.costUSD, format: { "\(Self.usd($0)) on Jev" }, on: "Jev", locale: locale))
         }
         let free = (backends[.bundledHelper]?.calls ?? 0) + (backends[.userServer]?.calls ?? 0)
         if free > 0 {

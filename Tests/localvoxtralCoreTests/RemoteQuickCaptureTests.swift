@@ -130,11 +130,13 @@ final class RemoteQuickCaptureTests: XCTestCase {
         agent: ProjectTermProposal.Agent = .claude,
         draftID: String? = nil,
         exit: String? = nil,
+        usage: String? = nil,
         body: String,
         token: String? = nil
     ) throws -> RemoteListenerResponse {
         var headers = ["Authorization": "Bearer \(token ?? self.token)", "X-Lvx-Capture-Session": session]
         if agent == .vibe { headers["X-Lvx-Agent"] = "vibe" }
+        if let usage { headers["X-Lvx-Usage"] = usage }
         if let draftID { headers["X-Lvx-Draft-Id"] = draftID }
         if let exit { headers["X-Lvx-Draft-Exit"] = exit }
         return try postToRemoteListener(port: port, path: path, headers: headers, body: Data(body.utf8))
@@ -380,6 +382,48 @@ final class RemoteQuickCaptureTests: XCTestCase {
         )
     }
 
+    func testAVibeDraftRecordsTheCountsItsHostSent() async throws {
+        try hook("SessionStart", session: "v1", agent: .vibe)
+        let task = await startDraft()
+        XCTAssertEqual(try hook(session: "v1", agent: .vibe).headers[draftHeader], draftID)
+        XCTAssertEqual(try answer(RemoteQuickCaptureRequests.draftPromptPath, session: "v1", agent: .vibe, draftID: draftID, body: Self.issues).status, 200)
+        let text = #"{"title":"Page numbers in the footer","body":"Scope: footer.","relation":"none","issue":null}"#
+        XCTAssertEqual(
+            try answer(
+                RemoteQuickCaptureRequests.draftAnswerPath, session: "v1", agent: .vibe, draftID: draftID, exit: "0",
+                usage: "13626 10944 16", body: text
+            ).status,
+            200
+        )
+        guard case .draft(_, let usage) = await task.value else { return XCTFail() }
+        XCTAssertEqual(usage, AgentUsageFixtures.vibeUsage)
+        XCTAssertEqual(
+            self.usage.entries(),
+            [.agentRun(date: clock.now(), feature: .quickCaptureDrafting, agent: .vibe, usage: AgentUsageFixtures.vibeUsage)]
+        )
+    }
+
+    /// The shipped runner drafts with a fake `vibe` against this listener
+    /// and sends the counts the run left in its session log.
+    func testTheShippedRunnerSendsAVibeDraftsCounts() async throws {
+        let text = #"{"title":"Page numbers in the footer","body":"Scope: footer.","relation":"none","issue":null}"#
+        let host = try AgentUsageFixtures.Host(agents: ["vibe": AgentUsageFixtures.fakeVibe(printing: text)], testCase: self)
+        let lock = host.home.appendingPathComponent("state/capture/draft-running", isDirectory: true)
+        try FileManager.default.createDirectory(at: lock, withIntermediateDirectories: true)
+        try hook("SessionStart", session: "v1", agent: .vibe)
+        let task = await startDraft()
+        XCTAssertEqual(try hook(session: "v1", agent: .vibe).headers[draftHeader], draftID)
+
+        let arguments = ["draft", "vibe", "\(port)", "v1", host.project.path, draftID, lock.path, host.userVibe.path]
+        let token = token
+        try await Task.detached { try host.run("capture.sh", arguments, token: token) }.value
+
+        guard case .draft(let draft, let usage) = await task.value else { return XCTFail() }
+        XCTAssertEqual(draft.title, "Page numbers in the footer")
+        XCTAssertEqual(usage, AgentUsageFixtures.vibeUsage)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lock.path), "the runner releases the draft lock")
+    }
+
     // MARK: Nothing to ask, or nobody answers
 
     func testWithNoLiveSessionOrOnlyAnOldShimNothingWaits() async throws {
@@ -477,7 +521,12 @@ final class RemoteQuickCaptureTests: XCTestCase {
             ClaudeRemoteEnrollmentService.remotePluginVersion, olderThan: RemoteQuickCaptureRequests.minimumPluginVersion
         ))
         XCTAssertTrue(claudeShim.contains("X-Lvx-Plugin-Version: \(ClaudeRemoteEnrollmentService.remotePluginVersion)"))
-        XCTAssertTrue(vibeShim.contains("X-Lvx-Vibe-Hooks-Version: \(RemoteQuickCaptureRequests.minimumVibeHooksVersion)"))
+        let vibeVersion = try XCTUnwrap(VibeRemoteHooksFiles(
+            postScript: vibeShim, compactScript: "", hooksBlock: "", termsScript: "", captureScript: ""
+        ).version)
+        XCTAssertFalse(ClaudeRemotePluginVersionCodec.isVersion(
+            vibeVersion, olderThan: RemoteQuickCaptureRequests.minimumVibeHooksVersion
+        ))
         for shim in [claudeShim, vibeShim] {
             XCTAssertTrue(shim.contains("/^[Xx]-[Ll][Vv][Xx]-[Rr][Ee][Aa][Dd][Mm][Ee]: \(ClaudeRemoteHTTPCodec.readmeHeaderValue)$/"))
             XCTAssertTrue(shim.contains(#"s/^[Xx]-[Ll][Vv][Xx]-[Dd][Rr][Aa][Ff][Tt]: \([0123456789abcdef]\{32\}\)$/draft \1/p"#))
