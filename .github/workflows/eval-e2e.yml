@@ -132,6 +132,9 @@ jobs:
 
       - name: Run agent-dictation E2E eval
         if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
+        # About 2x a normal run. A hung run held the Mac for the whole job
+        # timeout, past the end of the night window (#821).
+        timeout-minutes: 60
         env:
           LV_AGENT_EVAL_E2E_ENABLE: "1"
           LV_AGENT_EVAL_E2E_HELPER_PATH: PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd
@@ -139,6 +142,17 @@ jobs:
         run: |
           mkdir -p logs
           set -o pipefail
+          # The reaper stops the on-demand server 20 min after the last
+          # `ensure`, and requests don't count as use, so an eval longer than
+          # that loses its server mid-run (#821). Keep ours fresh until the
+          # step ends.
+          if [ -d /Users/Shared/localvoxtral/run ]; then
+            while sleep 300; do
+              ./scripts/mac/lv-test-servers.sh ensure speechd >/dev/null 2>&1 || true
+            done &
+            keepalive=$!
+            trap 'kill "$keepalive" 2>/dev/null || true' EXIT
+          fi
           # --enable-code-coverage matches ci.yml's build flags in the SHARED
           # .build (clean: false): without it this nightly rebuilt the whole
           # app+test module uninstrumented, and the next morning's ci.yml
