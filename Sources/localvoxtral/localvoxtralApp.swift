@@ -592,6 +592,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             now: { Date() }
         )
         let announcer = AgentAttentionAnnouncer()
+        if settings.agentAttentionEnabled { announcer.requestSoundIfMissing() }
         viewModel.agentAttention = AgentAttentionModel(tracker: tracker, announcer: announcer)
         // The registry calls this on whichever socket thread ingested; the
         // sequence it stamps under its lock puts a session's events back in
