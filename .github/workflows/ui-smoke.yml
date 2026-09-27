@@ -167,7 +167,7 @@ jobs:
 
       - name: Package dogfood app bundle (dictates from a file)
         # The e2e dictation check needs the instrumented build: only it can
-        # dictate from a WAV in place of the microphone (docs/dogfood-builds.md).
+        # dictate from a WAV in place of the microphone (docs/test-harness.md).
         # Enablement is the step env, never the .dogfood-capture-enable marker
         # file, for the reason ci.yml gives: this workspace is persistent.
         if: steps.guard.outputs.run != 'false'

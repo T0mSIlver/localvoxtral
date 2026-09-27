@@ -39,7 +39,7 @@ through it or called as a pure step:
 - `StopCommitCoordinator.swift`: everything in the stop-commit that decides
   what reaches the polisher. The transcript's preparation, the profile and
   templates, the pre-task sample (clipboard, screen, join, pane), the
-  gather-assemble-send step, the overlay commit, the dogfood capture record
+  gather-assemble-send step, the overlay commit, the diagnostic record
 - `TranscriptAccumulator.swift` (in `localvoxtralCore`): the transcript the
   realtime events build. Partials, finals, the live insertion a final still
   owes, promotion

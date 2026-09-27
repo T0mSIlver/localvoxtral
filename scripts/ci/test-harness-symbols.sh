@@ -47,6 +47,21 @@ for token in "${ALL[@]}"; do
   expect 1 "a release binary holding $token fails" "$leaked" absent
 done
 
+# An unstripped binary lists each object file that contributed code, for
+# dsymutil. With whole-module optimization a gated-out file's object can hold
+# compiler-made code, so its path names the file but no harness type.
+objpath() {
+  local path="$TMP_DIR/$1"
+  binary "$1" 26DictationSessionControllerC >/dev/null
+  printf '/w/.build/release/localvoxtral.build/%s.swift.o\x00' "$2" >>"$path"
+  printf '%s' "$path"
+}
+pathonly="$(objpath pathonly DogfoodAudioFileSource)"
+expect 0 "an object-file path that only names a harness file passes absent" "$pathonly" absent
+pathandtype="$(objpath pathandtype DogfoodAudioFileSource)"
+printf '$s12localvoxtral22DogfoodAudioFileSourceC\x00' >>"$pathandtype"
+expect 1 "the type itself beside that path still fails absent" "$pathandtype" absent
+
 harness="$(binary harness 26DictationSessionControllerC "${ALL[@]}")"
 expect 0 "a harness binary with every name passes present" "$harness" present
 expect 1 "a harness binary fails absent" "$harness" absent

@@ -630,11 +630,9 @@ enum RepoVocabularyService {
         ) else {
             return nil
         }
-        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         // The exact term pool matching runs against, which the returned
-        // outcome no longer carries — see `DogfoodCaptureTap`.
-        DogfoodCaptureTap.shared.noteRepoVocabularyHarvest(vocabulary.terms)
-        #endif
+        // outcome no longer carries — see `DiagnosticCaptureTap`.
+        DiagnosticCaptureTap.shared.noteRepoVocabularyHarvest(vocabulary.terms)
         // Carries provenance, not just entries: whether these came from the
         // exact / edit-distance-one tiers or from the bounded aligned fallback
         // decides who yields when another context source covers the same heard

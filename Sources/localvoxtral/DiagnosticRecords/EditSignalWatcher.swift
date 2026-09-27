@@ -1,5 +1,3 @@
-#if DEBUG || LOCALVOXTRAL_E2E_HARNESS
-
 import AppKit
 import Carbon.HIToolbox
 import Foundation
@@ -19,7 +17,7 @@ import Foundation
 /// guarantees that: the enum has two cases, and the only other things recorded
 /// are bucketed. No key content, no text, no timestamps finer than a bucket, and
 /// nothing at all about keys that are neither of these two.
-enum DogfoodEditSignal: String, Codable, Equatable, Sendable {
+enum EditSignal: String, Codable, Equatable, Sendable {
     /// Backspace / forward delete: the user is erasing what we inserted.
     case backspace
     /// ⌘A: almost always the first half of select-all-then-retype or
@@ -33,7 +31,7 @@ enum DogfoodEditSignal: String, Codable, Equatable, Sendable {
     /// ⌘A only with Command held and no other command-class modifier: ⌥⌘A /
     /// ⌃⌘A / ⇧⌘A are app shortcuts, not select-all, and counting them would
     /// inflate the signal with ordinary navigation.
-    static func from(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> DogfoodEditSignal? {
+    static func from(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> EditSignal? {
         let relevant = modifiers.intersection(.deviceIndependentFlagsMask)
         switch Int(keyCode) {
         case kVK_Delete, kVK_ForwardDelete:
@@ -55,7 +53,7 @@ enum DogfoodEditSignal: String, Codable, Equatable, Sendable {
 /// patches its record with it, including the negative — without the "clean"
 /// denominator an edit rate is not computable, and "no behavior block" would be
 /// indistinguishable from "the watch never armed".
-enum DogfoodEditSignalOutcome: String, Codable, Equatable, Sendable {
+enum EditSignalOutcome: String, Codable, Equatable, Sendable {
     case edited
     case clean
     /// The window was cut short — a new dictation began, or the app quit.
@@ -66,7 +64,7 @@ enum DogfoodEditSignalOutcome: String, Codable, Equatable, Sendable {
 
 /// The window ladder and the buckets. Pure, so the boundaries are testable
 /// without a clock, a monitor, or a record.
-enum DogfoodEditSignalPolicy {
+enum EditSignalPolicy {
     /// How long to watch after a commit, by transcript length.
     ///
     /// The ladder scales with how long the insertion takes to READ: a five-word
@@ -128,7 +126,7 @@ enum DogfoodEditSignalPolicy {
 /// worth testing, and none of them should need a real event stream or a real
 /// Accessibility grant.
 @MainActor
-protocol DogfoodEditKeyMonitoring: AnyObject {
+protocol EditKeyMonitoring: AnyObject {
     /// Begins delivering recognized signals, reporting whether an observer
     /// actually went up. Called at most once per watch; `stop()` always follows
     /// a `true`, including when the window closed unobserved.
@@ -136,7 +134,7 @@ protocol DogfoodEditKeyMonitoring: AnyObject {
     /// A `false` is not a failure to handle — it is the answer "this dictation
     /// was never observed", and the watcher refuses to arm on it rather than
     /// reporting an unwatched window as clean.
-    func start(_ handler: @escaping @MainActor (DogfoodEditSignal) -> Void) -> Bool
+    func start(_ handler: @escaping @MainActor (EditSignal) -> Void) -> Bool
     func stop()
 }
 
@@ -154,16 +152,16 @@ protocol DogfoodEditKeyMonitoring: AnyObject {
 ///   hotkey mode is active, and its handler deliberately discards the event
 ///   (it needs "a key happened", not which). Widening its callback would fork a
 ///   production signature for a capture that shipped builds do not compile —
-///   the same trade `DogfoodCaptureTap` documents, decided the same way.
+///   the same trade `DiagnosticCaptureTap` documents, decided the same way.
 /// * **No new permission.** Global `NSEvent` monitors need the Accessibility
 ///   trust the app already holds for insertion; without it, this reports
 ///   `false` and the dictation gets NO behavior block at all — see
-///   `DogfoodEditSignalWatcher.arm`.
+///   `EditSignalWatcher.arm`.
 @MainActor
-final class DogfoodEditKeyNSEventMonitor: DogfoodEditKeyMonitoring {
+final class EditKeyNSEventMonitor: EditKeyMonitoring {
     private var monitor: Any?
 
-    func start(_ handler: @escaping @MainActor (DogfoodEditSignal) -> Void) -> Bool {
+    func start(_ handler: @escaping @MainActor (EditSignal) -> Void) -> Bool {
         stop()
 
         #if DEBUG
@@ -176,11 +174,11 @@ final class DogfoodEditKeyNSEventMonitor: DogfoodEditKeyMonitoring {
         #endif
 
         guard AXIsProcessTrusted() else {
-            // Loud, per the repo's rule about silent failure paths: a dogfood
-            // build that quietly never observes an edit would read as "the
-            // owner never edits".
+            // Loud, per the repo's rule about silent failure paths: a watcher
+            // that quietly never observes an edit would read as "the user
+            // never edits".
             Log.diagnostics.notice(
-                "Dogfood edit signal: Accessibility not trusted; no watch installed"
+                "Edit signal: Accessibility not trusted; no watch installed"
             )
             return false
         }
@@ -190,7 +188,7 @@ final class DogfoodEditKeyNSEventMonitor: DogfoodEditKeyMonitoring {
             // an unrecognized key is not retained, forwarded, or counted.
             let keyCode = event.keyCode
             let rawFlags = event.modifierFlags.rawValue
-            guard let signal = DogfoodEditSignal.from(
+            guard let signal = EditSignal.from(
                 keyCode: keyCode,
                 modifiers: NSEvent.ModifierFlags(rawValue: rawFlags)
             ) else { return }
@@ -199,7 +197,7 @@ final class DogfoodEditKeyNSEventMonitor: DogfoodEditKeyMonitoring {
 
         guard monitor != nil else {
             Log.diagnostics.notice(
-                "Dogfood edit signal: keyDown monitor installation failed; no watch"
+                "Edit signal: keyDown monitor installation failed; no watch"
             )
             return false
         }
@@ -220,7 +218,7 @@ final class DogfoodEditKeyNSEventMonitor: DogfoodEditKeyMonitoring {
 /// Lifecycle of one watch:
 ///
 /// 1. `arm` — the commit just landed. Installs the monitor and starts the
-///    window. Called only after `writeDogfoodCaptureIfArmed` cleared the runtime
+///    window. Called only after `writeDiagnosticRecordIfEnabled` cleared the runtime
 ///    opt-in, so a build that is not armed never observes anything.
 /// 2. `attachRecord` — the record finished being written and now has a location
 ///    to patch. Assembly runs off-actor, so this can arrive after the window
@@ -238,11 +236,11 @@ final class DogfoodEditKeyNSEventMonitor: DogfoodEditKeyMonitoring {
 /// Cross-session contamination is impossible by construction rather than by
 /// timing: a watch patches the ONE record URL it was handed, and arming a new
 /// watch supersedes the old one (which still flushes its own record, with
-/// `superseded`). This is the same discipline as `DogfoodCaptureTap`'s
+/// `superseded`). This is the same discipline as `DiagnosticCaptureTap`'s
 /// generation, arrived at the same way — a late producer must not describe a
 /// session that has ended.
 @MainActor
-final class DogfoodEditSignalWatcher {
+final class EditSignalWatcher {
     typealias DateProvider = () -> Date
     typealias SleepClosure = (Duration) async -> Void
 
@@ -253,13 +251,13 @@ final class DogfoodEditSignalWatcher {
         let wordCount: Int
         let outputMode: String
 
-        var store: DogfoodCaptureStore?
+        var store: DiagnosticRecordStore?
         var recordURL: URL?
         /// Set when the window closed; nil while it is still open.
-        var result: (outcome: DogfoodEditSignalOutcome, signal: DogfoodEditSignal?, elapsed: Double)?
+        var result: (outcome: EditSignalOutcome, signal: EditSignal?, elapsed: Double)?
     }
 
-    private let monitor: any DogfoodEditKeyMonitoring
+    private let monitor: any EditKeyMonitoring
     // Injected for the same reason the overlay coordinator injects them: window
     // timing and elapsed-time bucketing must be assertable without wall-clock.
     private let now: DateProvider
@@ -283,7 +281,7 @@ final class DogfoodEditSignalWatcher {
     private(set) var flushTask: Task<Void, Never>?
 
     init(
-        monitor: any DogfoodEditKeyMonitoring = DogfoodEditKeyNSEventMonitor(),
+        monitor: any EditKeyMonitoring = EditKeyNSEventMonitor(),
         now: @escaping DateProvider = Date.init,
         sleepFor: @escaping SleepClosure = { duration in
             try? await Task.sleep(for: duration)
@@ -334,12 +332,12 @@ final class DogfoodEditSignalWatcher {
         supersede()
         parkClosedWatchAwaitingAttach()
 
-        let wordCount = DogfoodEditSignalPolicy.wordCount(of: committedText)
+        let wordCount = EditSignalPolicy.wordCount(of: committedText)
         guard wordCount > 0 else { return nil }
 
         generation &+= 1
         let generation = generation
-        let windowSeconds = DogfoodEditSignalPolicy.windowSeconds(wordCount: wordCount)
+        let windowSeconds = EditSignalPolicy.windowSeconds(wordCount: wordCount)
 
         // Install BEFORE the watch exists, so an observer that never went up
         // leaves no watch behind to flush a misleading `clean`.
@@ -393,7 +391,7 @@ final class DogfoodEditSignalWatcher {
     /// record write is `await`ed, so a second dictation can arm in between, and
     /// without the token this call would hand session A's record to session B's
     /// open window — which would then patch A's record with B's behavior.
-    func attachRecord(url: URL, store: DogfoodCaptureStore, token: WatchToken) {
+    func attachRecord(url: URL, store: DiagnosticRecordStore, token: WatchToken) {
         if var watch, watch.generation == token.generation {
             watch.recordURL = url
             watch.store = store
@@ -433,13 +431,13 @@ final class DogfoodEditSignalWatcher {
         )
     }
 
-    private func handle(signal: DogfoodEditSignal, generation: UInt64) {
+    private func handle(signal: EditSignal, generation: UInt64) {
         closeWindow(outcome: .edited, signal: signal, generation: generation)
     }
 
     private func closeWindow(
-        outcome: DogfoodEditSignalOutcome,
-        signal: DogfoodEditSignal?,
+        outcome: EditSignalOutcome,
+        signal: EditSignal?,
         generation: UInt64,
         inline: Bool = false
     ) {
@@ -477,24 +475,23 @@ final class DogfoodEditSignalWatcher {
               let store = watch.store
         else { return }
 
-        let behavior = DogfoodCaptureRecord.Behavior(
+        let behavior = DiagnosticRecord.Behavior(
             outcome: result.outcome,
             signal: result.signal,
             secondsSinceCommitBucket: result.outcome == .edited
-                ? DogfoodEditSignalPolicy.secondsSinceCommitBucket(result.elapsed) : nil,
-            wordCountBucket: DogfoodEditSignalPolicy.wordCountBucket(watch.wordCount),
+                ? EditSignalPolicy.secondsSinceCommitBucket(result.elapsed) : nil,
+            wordCountBucket: EditSignalPolicy.wordCountBucket(watch.wordCount),
             watchWindowSeconds: watch.windowSeconds,
             outputMode: watch.outputMode
         )
 
         guard !inline else {
-            DogfoodCaptureWriter.attachSynchronously(behavior, toRecordAt: url, store: store)
+            DiagnosticRecordWriter.attachSynchronously(behavior, toRecordAt: url, store: store)
             return
         }
         flushTask = Task {
-            await DogfoodCaptureWriter.attach(behavior, toRecordAt: url, store: store)
+            await DiagnosticRecordWriter.attach(behavior, toRecordAt: url, store: store)
         }
     }
 }
 
-#endif
