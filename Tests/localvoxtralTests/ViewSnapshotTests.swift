@@ -179,6 +179,23 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
+    /// Context → Quick capture → Project descriptions → Edit… (#811): one
+    /// line written, one project showing its README summary as the
+    /// placeholder, one with neither.
+    func testQuickCaptureProjectLinesSheet() throws {
+        let (settings, _) = makeViewModel()
+        settings.setQuickCaptureProjectLine("Dictation app; shortcuts, quick capture, Inbox, polish", for: "remote:demo")
+        let projects = [
+            QuickCaptureProject(key: "remote:demo", name: "demo", summary: "Realtime dictation for the menu bar.", terms: [], userLine: nil),
+            QuickCaptureProject(key: "/work/site", name: "site", summary: "A personal site and blog built with Astro.", terms: [], userLine: nil),
+            QuickCaptureProject(key: "remote:notes", name: "notes", summary: nil, terms: [], userLine: nil),
+        ]
+        try record(
+            QuickCaptureProjectLinesSheet(settings: settings, projects: projects, onDone: {}),
+            name: "quick-capture-project-lines",
+            width: 620, height: 420, growToFit: false)
+    }
+
     /// Dictation → Output → Phrases that press Return (#839): the saved
     /// list, and a refused one with its reason under the row.
     func testSendPhrasesRow() throws {
