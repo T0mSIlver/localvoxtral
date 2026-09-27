@@ -21,10 +21,6 @@ package struct SpeechModelOption: Equatable, Sendable {
     /// download bar's ByteCountFormatter units — HF model cards quote GiB,
     /// don't copy them (same trap as `PolishModelOption.sizeOnDiskGB`).
     package let sizeOnDiskGB: Double
-    /// Whether the Engines pane shows Memory limit for this model. `--cache-limit-mb`
-    /// caps MLX's buffer cache; measure the model with `speechd-bench` before
-    /// claiming the limit binds (#486).
-    package let showsMemoryLimit: Bool
 }
 
 package enum SpeechModelCatalog {
@@ -39,9 +35,7 @@ package enum SpeechModelCatalog {
             revision: "247f2eeccf962fbcaf85e361731a5e75b2d8cac1",
             displayName: "Voxtral Mini 4B Realtime (4-bit, quantized head)",
             engine: .voxtral,
-            sizeOnDiskGB: 2.6,
-            // Its cache fills to whatever limit is set: 4.9 GB total at 2 GB, 10.9 GB at 8 GB.
-            showsMemoryLimit: true
+            sizeOnDiskGB: 2.6
         ),
         // NVIDIA's cache-aware streaming RNN-T, 8-bit. A third of Voxtral's weights,
         // which is what matters on an 8 or 16 GB Mac where the speech model and the
@@ -58,9 +52,7 @@ package enum SpeechModelCatalog {
             revision: "7279359e4481b5e9e185a318bd618e429c6d86cd",
             displayName: "Nemotron 3.5 ASR Streaming 0.6B (8-bit)",
             engine: .nemotron,
-            sizeOnDiskGB: 0.8,
-            // Its cache never passes ~10 MB, so every limit gives the same 0.75 GB.
-            showsMemoryLimit: false
+            sizeOnDiskGB: 0.8
         ),
     ]
 
