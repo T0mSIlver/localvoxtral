@@ -1,11 +1,10 @@
 import SwiftUI
 
 /// One line per project quick capture can route to (#811): what the project
-/// is and what it has, in the user's words. The router reads it before the
-/// README summary, which says what a project is but rarely what it has
-/// (localvoxtral's never names quick capture or the Inbox). The field shows
-/// that summary as its placeholder, so the user sees what the router already
-/// knows.
+/// is and what it has. Each field starts filled (#891) with the line the
+/// project's agent wrote, else its README summary, which is what the router
+/// reads. An edit becomes the user's line and replaces the agent's; an
+/// emptied field, or one set back to that text, returns to it.
 struct QuickCaptureProjectLinesSheet: View {
     @Bindable var settings: SettingsStore
     let projects: [QuickCaptureProject]
@@ -26,8 +25,8 @@ struct QuickCaptureProjectLinesSheet: View {
                             .frame(width: 140, alignment: .leading)
                             .lineLimit(1)
                         TextField(
-                            project.summary ?? "What it is and what it has",
-                            text: line(for: project.key),
+                            "What it is and what it has",
+                            text: line(for: project),
                             axis: .vertical
                         )
                         .textFieldStyle(.roundedBorder)
@@ -46,10 +45,13 @@ struct QuickCaptureProjectLinesSheet: View {
         .frame(width: 620, height: 420)
     }
 
-    private func line(for key: String) -> Binding<String> {
+    private func line(for project: QuickCaptureProject) -> Binding<String> {
         Binding(
-            get: { settings.quickCaptureProjectLines[key] ?? "" },
-            set: { settings.setQuickCaptureProjectLine($0, for: key) }
+            get: { settings.quickCaptureProjectLines[project.key] ?? project.automaticLine ?? "" },
+            set: { text in
+                let isAutomatic = text.trimmingCharacters(in: .whitespacesAndNewlines) == project.automaticLine
+                settings.setQuickCaptureProjectLine(isAutomatic ? "" : text, for: project.key)
+            }
         )
     }
 }

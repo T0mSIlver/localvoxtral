@@ -146,6 +146,14 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
     /// True once a host named it through `X-Lvx-Env-Project`: the name of a
     /// repository, not of the directory a session happened to run in.
     package var reportedAsRepository: Bool? = nil
+    /// The project's agent's one sentence about it (#891), asked with its
+    /// terms: what the project is and what it has. Quick capture's router
+    /// reads it when the user wrote no line.
+    package var agentLine: String? = nil
+    /// When an answer to the prompt that asks for that sentence landed,
+    /// with or without one. Nil on a project answered before #891, which
+    /// is asked once more.
+    package var agentLineAt: Date? = nil
 
     package init(
         key: String,
@@ -274,9 +282,6 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
             .map(\.term)
     }
 
-    /// Whether a joined dictation in this project should ask its agent for
-    /// terms: never asked, or the last attempt failed at least
-    /// `ProjectTermProposal.retryAfter` ago.
     /// Whether a remote project's host should be asked for its README
     /// (#745): a project a dictation has shown the app, with no report or
     /// one older than `LearnedTerms.summaryRefreshDays`.
@@ -326,9 +331,49 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         return added
     }
 
-    package func needsProposal(projectKey: String, now: Date) -> Bool {
+    /// Whether a joined dictation in this project should ask its agent:
+    /// never answered, or answered before the prompt asked for the
+    /// project's sentence and `asksLine` says this ask would (#891). A
+    /// failed attempt waits `ProjectTermProposal.retryAfter`.
+    /// A remote working-directory name is listed this long after a hook
+    /// last named it. Only a host older than plugin 1.13.0 (#652) sends one
+    /// for a session in a repository, and there each worktree has its own:
+    /// listed while its sessions run, gone a week after.
+    package static let remoteLabelListedDays = 7
+
+    /// The projects, most recent first: what the learned-terms sheet groups
+    /// terms under and what quick capture routes to (#891). A local main
+    /// checkout; a remote project a hook named as a repository, or whose
+    /// host sent its README in the last 90 days (only a 1.17.0 shim does,
+    /// and it names the repository); an old shim's working-directory name within
+    /// `remoteLabelListedDays` of its last hook (#819). A remote name no
+    /// hook has named, such as a worktree's from before #652, is no project,
+    /// and neither is the shared bucket; their terms still apply.
+    package func listedProjects(now: Date) -> [LearnedTermProject] {
+        func recency(_ project: LearnedTermProject) -> Date {
+            max(project.lastSeen, project.reportedAt ?? project.lastSeen)
+        }
+        return projects
+            .filter { !$0.key.isEmpty && !$0.name.isEmpty && Self.isListed($0, now: now) }
+            .sorted { recency($0) != recency($1) ? recency($0) > recency($1) : $0.key < $1.key }
+    }
+
+    private static func isListed(_ project: LearnedTermProject, now: Date) -> Bool {
+        if project.key.hasPrefix("/") { return true }
+        guard project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix) else { return false }
+        if project.reportedAsRepository == true { return true }
+        if let summaryAt = project.summaryAt,
+           now.timeIntervalSince(summaryAt) < Double(staleAfterDays) * 86_400
+        {
+            return true
+        }
+        guard let reported = project.reportedAt else { return false }
+        return now.timeIntervalSince(reported) < Double(remoteLabelListedDays) * 86_400
+    }
+
+    package func needsProposal(projectKey: String, now: Date, asksLine: Bool = false) -> Bool {
         guard let project = projects.first(where: { $0.key == projectKey }) else { return true }
-        if project.proposedAt != nil { return false }
+        if project.proposedAt != nil, !asksLine || project.agentLineAt != nil { return false }
         guard let attempted = project.proposalAttemptedAt else { return true }
         return now.timeIntervalSince(attempted) >= ProjectTermProposal.retryAfter
     }
@@ -475,10 +520,13 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// project already holds, in any state, or one in `excluding` (the
     /// user's own list and the suggestions they refused) is dropped. The
     /// project is stamped even when nothing is added, so it is not asked
-    /// again. Returns how many terms were added.
+    /// again. `line` is the answer's sentence (#891), empty when the prompt
+    /// asked for one and none came, nil when the answer is from a runner
+    /// that did not ask. Returns how many terms were added.
     @discardableResult
     package mutating func recordProposal(
         _ raw: [String],
+        line: String? = nil,
         agent: ProjectTermProposal.Agent,
         project: LearnedTermProjectIdentity,
         excluding: [String] = [],
@@ -496,6 +544,10 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         }
         projects[index].proposedAt = now
         projects[index].proposalAttemptedAt = nil
+        if let line {
+            projects[index].agentLine = ProjectTermProposal.acceptedLine(line)
+            projects[index].agentLineAt = now
+        }
         prune(now: now)
         return added
     }

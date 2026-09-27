@@ -536,15 +536,18 @@ label for it, never a path it could hand to ssh. The run goes like this:
 1. **Mac, at commit.** A dictation joins a remote Claude Code or Vibe session
    whose project (shown as `remote:<label>`) has no answer and no attempt in the
    last 24 hours. The host must have reported localvoxtral-remote 1.15.0 or
-   Vibe hooks 1.2.0. The Mac marks that session in memory for 10 minutes and
-   records an attempt on the project.
+   Vibe hooks 1.2.0. A project answered before the answer carried its
+   sentence is asked once more, on a host that has reported
+   localvoxtral-remote 1.20.0 or Vibe hooks 1.5.0. The Mac marks that session
+   in memory for 10 minutes and records an attempt on the project.
 2. **Mac, next hook.** The reply to that session's next hook carries a
    terms-wanted header, once. The body stays the constant one.
 3. **Host hook script.** The
    [hook script](../integrations/claude-code/plugins/localvoxtral-remote/hooks/post.sh)
    matches the header exactly and takes a per-project stamp in its state
    directory by an atomic mkdir. The state directory is
-   `$XDG_RUNTIME_DIR/localvoxtral/terms/`, else `~/.cache/localvoxtral/terms/`.
+   `$XDG_RUNTIME_DIR/localvoxtral/terms-2/`, else
+   `~/.cache/localvoxtral/terms-2/`.
 
    The project is the git toplevel of the hook's working directory, or that
    directory outside git. A project marked done, or attempted in the last 24
@@ -577,11 +580,12 @@ label for it, never a path it could hand to ssh. The run goes like this:
    it asked, from the agent it asked, once.
 
    It files the terms under the project it recorded in step 1, never one the
-   host names, through the same filter as a local answer. Anything else is
+   host names, through the same filters as a local answer, and keeps the
+   sentence on the project for quick capture's classifier. Anything else is
    refused with a status and a log line that names the reason, never the body.
 
-Only the answer crosses the tunnel, as a JSON list of terms: about 120 bytes in
-the measured runs. With Claude Code's result object around it, about 3.4 KiB
+Only the answer crosses the tunnel, as a JSON list of terms and one sentence:
+a few hundred bytes. With Claude Code's result object around it, about 3.4 KiB
 for 40 terms, the answer adds only token counts, the cost and the run's
 timings.
 

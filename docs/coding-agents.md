@@ -431,7 +431,8 @@ A capture then goes through three steps.
 
 ### Which projects a capture can go to
 
-The classifier picks from:
+The classifier picks from the projects **Settings → Text Processing → Terms
+learned from polishing** lists:
 
 - a checkout on this Mac that a dictation joined;
 - a repository on an ssh host where a session has run, when the host runs
@@ -446,17 +447,22 @@ not offered
 
 ### Describe your projects
 
-The classifier reads each project's name, the opening of its README, and its
-learned terms. It reads the README from a checkout on this Mac, or from what
-a remote project's host reports.
+The classifier reads each project's name, a description, the opening of its
+README, and its learned terms. It reads the README from a checkout on this
+Mac, or from what a remote project's host reports.
 
-A README says what a project is, rarely what it has, so the classifier also
-reads a line you write per project:
+A README says what a project is, rarely what it has, so each project also
+gets a one-sentence description, up to 200 characters. With **Ask the coding
+agent for each new project's terms** on, the agent writes it in the same run
+as the terms
+([Terms from your coding agent](dictation.md#terms-from-your-coding-agent)).
+Until it answers, or with that setting off, the description is the README
+opening.
 
-1. Open **Settings → Context → Quick capture → Project descriptions**. Each
-   field shows the README opening the classifier already reads.
-2. Say what the project has, in up to 200 characters. For example: "Menu bar
-   dictation app: shortcuts, polishing, quick capture and its Inbox".
+**Settings → Context → Quick capture → Project descriptions** shows each
+one. Edit a field to replace it with your own, such as "Menu bar dictation
+app: shortcuts, polishing, quick capture and its Inbox". Empty the field to
+go back to the automatic one.
 
 ### Choose the classifier
 

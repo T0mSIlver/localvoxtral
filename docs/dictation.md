@@ -527,13 +527,16 @@ local Claude Code, Mistral Vibe or opencode session in a new project starts
 that agent once, headless, in the project's repository.
 
 The agent reads a few files and answers with up to 40 of the project's own
-names: modules, types, commands, environment variables. Your session never
-sees the request, so it cannot interrupt a turn.
+names (modules, types, commands, environment variables) and one sentence on
+what the project is and has, which quick capture's classifier reads
+([Quick capture](coding-agents.md#quick-capture)). Your session never sees
+the request, so it cannot interrupt a turn.
 
 The app asks once per repository, whichever agent joins first. Joining a
 session in another worktree of the same repository does not ask again (see
-[One project per repository](#one-project-per-repository)). The app retries
-a run that fails a day later.
+[One project per repository](#one-project-per-repository)). A repository
+asked before that sentence existed is asked once more. The app retries a run
+that fails a day later.
 
 The names show in **Terms learned from polishing → Show** as "Proposed by
 Claude Code", "Proposed by Mistral Vibe" or "Proposed by opencode". They are

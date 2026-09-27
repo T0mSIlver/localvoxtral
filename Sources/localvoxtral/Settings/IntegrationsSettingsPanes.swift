@@ -22,11 +22,12 @@ struct IntegrationsContextSettingsPane: View {
     let viewModel: DictationViewModel
     @State private var isShowingProjectLines = false
 
-    /// Lines for the projects the router lists now; a line kept for a
-    /// project that dropped off the list is not counted.
+    /// The projects the router lists now that have a description, the
+    /// user's or an automatic one (#891).
     private var projectLineCount: Int {
-        let keys = Set((viewModel.quickCapture?.model.projectChoices ?? []).map(\.key))
-        return settings.quickCaptureProjectLines.keys.filter(keys.contains).count
+        (viewModel.quickCapture?.model.projectChoices ?? [])
+            .filter { settings.quickCaptureProjectLines[$0.key] != nil || $0.automaticLine != nil }
+            .count
     }
 
     /// Where the group's Learn more link lands.

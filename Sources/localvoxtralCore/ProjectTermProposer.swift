@@ -9,6 +9,7 @@ package protocol ProjectTermProposalStoring: Sendable {
     func snapshot() -> LearnedTerms
     func recordProposal(
         _ terms: [String],
+        line: String?,
         agent: ProjectTermProposal.Agent,
         project: LearnedTermProjectIdentity,
         excluding: [String]
@@ -103,7 +104,7 @@ package final class ProjectTermProposer: @unchecked Sendable {
         ), project.key.hasPrefix("/") else { return }
 
         let started = now()
-        guard store.snapshot().needsProposal(projectKey: project.key, now: started),
+        guard store.snapshot().needsProposal(projectKey: project.key, now: started, asksLine: true),
               claim(project.key, at: started)
         else { return }
 
@@ -125,14 +126,16 @@ package final class ProjectTermProposer: @unchecked Sendable {
             "Project terms: asking \(request.agent.rawValue, privacy: .public) for a new project's terms"
         )
         switch await runner.run(invocation) {
-        case .terms(let raw, let usage):
+        case .terms(let raw, let usage, let line):
             usageRecorder?.record(.agentRun(date: now(), feature: .projectTerms, agent: request.agent, usage: usage))
             let accepted = ProjectTermProposal.acceptedTerms(raw)
             Log.backends.info(
-                "Project terms: \(request.agent.rawValue, privacy: .public) answered \(raw.count, privacy: .public) terms, \(accepted.count, privacy: .public) term-shaped (\(usage?.summary ?? "usage not reported", privacy: .public))"
+                "Project terms: \(request.agent.rawValue, privacy: .public) answered \(raw.count, privacy: .public) terms, \(accepted.count, privacy: .public) term-shaped, \(line.flatMap(ProjectTermProposal.acceptedLine) == nil ? "no" : "a", privacy: .public) description (\(usage?.summary ?? "usage not reported", privacy: .public))"
             )
             asked.withLock { $0[project.key] = .distantFuture }
-            store.recordProposal(accepted, agent: request.agent, project: project, excluding: excluding)
+            // This run's prompt asked for the sentence: an answer without one
+            // still counts as answered, so the project is not asked daily.
+            store.recordProposal(accepted, line: line ?? "", agent: request.agent, project: project, excluding: excluding)
         case .failed(let failure):
             if failure.agentRan {
                 usageRecorder?.record(.agentRun(date: now(), feature: .projectTerms, agent: request.agent, usage: nil))
