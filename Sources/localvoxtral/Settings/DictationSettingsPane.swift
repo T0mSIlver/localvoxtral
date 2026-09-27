@@ -114,6 +114,7 @@ struct DictationSettingsPane: View {
                     viewModel.agentAttention?.announcer?.requestPermission()
                 } else {
                     viewModel.agentAttention?.tracker.clear()
+                    viewModel.agentAttention?.clearDrafts()
                 }
             }
         )

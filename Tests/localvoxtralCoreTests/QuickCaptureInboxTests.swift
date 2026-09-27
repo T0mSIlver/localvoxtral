@@ -7,44 +7,10 @@ import localvoxtralTestSupport
 
 @MainActor
 final class QuickCaptureInboxTests: XCTestCase {
-    private final class GitHub: QuickCaptureGitHub, @unchecked Sendable {
-        let created = Mutex<[[String]]>([])
-        var createResult: Result<String, QuickCaptureFiling.Failure> = .success("https://github.com/o/reach/issues/9")
-        func repository(ofCheckout path: String) async -> String? { path == "/w/reach" ? "o/reach" : nil }
-        let issuesListed = Mutex<[String?]>([])
-        func openIssues(ofCheckout path: String, repository: String?) async -> [QuickCaptureDraft.OpenIssue]? {
-            issuesListed.withLock { $0.append(repository) }
-            return []
-        }
-        func repositoryFacts(_ repository: String) async -> GitHubRepositoryFacts? { nil }
-        func createIssue(repository: String, title: String, body: String) async -> Result<String, QuickCaptureFiling.Failure> {
-            created.withLock { $0.append([repository, title, body]) }
-            return createResult
-        }
-    }
-
-    private final class Classifier: QuickCaptureClassifying, @unchecked Sendable {
-        let answer: [String: Double]
-        init(_ answer: [String: Double]) { self.answer = answer }
-        var kind: QuickCaptureRoute.Classifier { .jev }
-        func classify(capture: String, options: [QuickCaptureOption]) async throws -> [String: Double] { answer }
-    }
-
-    private final class Runner: QuickCaptureDraftRunning, @unchecked Sendable {
-        let runs = Mutex(0)
-        func run(_ invocation: ProjectTermProposal.Invocation, openIssues: [Int]) async -> QuickCaptureDraft.Outcome {
-            runs.withLock { $0 += 1 }
-            return .draft(.init(title: "Dark mode", body: "## Scope\nAll pages.", relation: .none, issue: nil), usage: nil)
-        }
-    }
-
-    private let projects = [
-        QuickCaptureProject(key: "/w/reach", name: "reach", summary: nil, terms: [], userLine: nil),
-        QuickCaptureProject(key: "remote:website", name: "website", summary: nil, terms: [], userLine: nil),
-    ]
+    private let projects = QuickCaptureFixture.projects
     private var fileURL: URL!
-    private let github = GitHub()
-    private let runner = Runner()
+    private let github = FakeQuickCaptureGitHub()
+    private let runner = FakeQuickCaptureDraftRunner()
     private var statuses: [String] = []
     private var routed: [String] = []
 
@@ -64,23 +30,9 @@ final class QuickCaptureInboxTests: XCTestCase {
         projects: [QuickCaptureProject]? = nil,
         remote: (@Sendable (String, QuickCaptureProject) async -> QuickCaptureDraft.Outcome)? = nil
     ) -> QuickCaptureInboxModel {
-        let github = github ?? self.github, runner = runner, projects = projects ?? self.projects
-        let model = QuickCaptureInboxModel(
-            fileURL: fileURL,
-            makeRouter: { QuickCaptureRouter(classifiers: [Classifier(answer)]) },
-            projects: { projects },
-            agents: { [.claude] },
-            drafter: {
-                QuickCaptureDrafter(
-                    runner: runner,
-                    openIssues: { await github.openIssues(ofCheckout: $0, repository: $1) },
-                    trackedFiles: { _ in [] },
-                    directoryExists: { $0.hasPrefix("/w/") || FileManager.default.fileExists(atPath: $0) },
-                    remote: remote
-                )
-            },
-            github: github,
-            now: { Date(timeIntervalSince1970: 1_000_000) }
+        let model = QuickCaptureFixture.model(
+            fileURL: fileURL, answer: answer, github: github ?? self.github, runner: runner,
+            projects: projects ?? self.projects, remote: remote
         )
         model.onStatus = { [weak self] in self?.statuses.append($0) }
         model.onRouted = { [weak self] _, destination in self?.routed.append(destination) }

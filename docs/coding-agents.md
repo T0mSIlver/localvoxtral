@@ -454,7 +454,31 @@ A capture then goes through three steps.
    fills in the project's repository (see
    [Each project's repository](#each-projects-repository)). Your coding
    agent can also file it with its own `gh` ([Quick captures](#quick-captures)).
-   Nothing else files.
+   You can also [review it by voice](#review-a-draft-by-voice). Nothing
+   else files.
+
+### Review a draft by voice
+
+With **Tell me when an agent needs you** on, a finished draft lights the
+menu bar mark and the popover says "Draft ready: Inbox for localvoxtral".
+There is no banner and no sound, and the cue waits for your next break: the
+end of a dictation, or the end of a turn in the agent pane you are looking
+at. An agent that needs you keeps the popover line; drafts add to its count.
+
+When no agent waits, the **Answer the agent that needs you** shortcut opens
+the oldest ready draft in the overlay and starts a dictation. The overlay
+shows that one draft. When you stop, what you said decides:
+
+- "file it" files the draft as the overlay shows it. It files nothing if
+  the draft changed on the Inbox page in the meantime.
+- "drop it" discards it.
+- Anything else is a change, such as "make it only the popover part". The
+  agent drafts again from your first words, the draft and your change, and
+  the new draft waits for your next break.
+
+With [Press Return with "send it"](dictation.md#press-return-with-send-it)
+on, "file it" or "drop it" alone, or a change followed by "send it", stops
+the dictation after 3 seconds of silence.
 
 ### Which projects a capture can go to
 

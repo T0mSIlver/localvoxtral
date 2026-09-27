@@ -10,7 +10,10 @@ import Foundation
 @MainActor
 package final class QuickCaptureInboxModel {
     package private(set) var inbox: QuickCaptureInbox {
-        didSet { onChange?() }
+        didSet {
+            noteDraftsThatFinished(from: oldValue)
+            onChange?()
+        }
     }
     /// Every change to `inbox`.
     package var onChange: (@MainActor () -> Void)?
@@ -24,6 +27,9 @@ package final class QuickCaptureInboxModel {
     private let now: @MainActor () -> Date
     /// One short sentence for the menu bar popover.
     package var onStatus: (@MainActor (String) -> Void)?
+    /// A draft finished: an item went from drafting to a ready draft (#927).
+    /// Called before `onChange`.
+    package var onDraftReady: (@MainActor (QuickCaptureItem) -> Void)?
     /// Where the capture went, for its History record.
     package var onRouted: (@MainActor (_ historyRecordID: UUID, _ destination: String) -> Void)?
     /// The user typed `owner/name` for a project that has no repository
@@ -180,6 +186,92 @@ package final class QuickCaptureInboxModel {
         }
     }
 
+    // MARK: Spoken review (#927)
+
+    /// The draft as the overlay shows it, nil unless `id` is a ready draft.
+    package func reviewSnapshot(_ id: UUID) -> QuickCaptureDraftSnapshot? {
+        guard let item = inbox.items.first(where: { $0.id == id }), item.isReadyDraft, let projectName = item.projectName
+        else { return nil }
+        return QuickCaptureDraftSnapshot(id: id, projectName: projectName, title: item.title, body: item.body)
+    }
+
+    /// What the review's words did, as the popover's sentence. "file it"
+    /// files only the draft the overlay showed, unchanged since; the returned
+    /// task is the filing or the redraft, for tests to await.
+    package func applySpokenReview(
+        _ review: QuickCaptureSpokenReview, to shown: QuickCaptureDraftSnapshot
+    ) -> (status: String, task: Task<Void, Never>?) {
+        guard let item = inbox.items.first(where: { $0.id == shown.id }), item.isReadyDraft else {
+            Log.backends.notice("Quick capture review: the draft left the Inbox; nothing done")
+            return (QuickCaptureReviewStatus.gone, nil)
+        }
+        switch review {
+        case .nothing:
+            return (QuickCaptureReviewStatus.kept, nil)
+        case .drop:
+            discard(shown.id)
+            Log.backends.notice("Quick capture review: dropped")
+            return (QuickCaptureReviewStatus.dropped, nil)
+        case .file:
+            guard item.title == shown.title, item.body == shown.body else {
+                Log.backends.notice("Quick capture review: the draft changed since it was shown; not filed")
+                return (QuickCaptureReviewStatus.changedSinceShown, nil)
+            }
+            guard item.canFile, let task = file(shown.id) else {
+                Log.backends.notice("Quick capture review: the draft cannot be filed")
+                return (QuickCaptureReviewStatus.cannotFile, nil)
+            }
+            Log.backends.notice("Quick capture review: filing")
+            let reported = Task { @MainActor [weak self] in
+                await task.value
+                guard let self else { return }
+                let filed = self.inbox.items.first { $0.id == shown.id }?.state == .filed
+                self.onStatus?(filed ? QuickCaptureReviewStatus.filed : QuickCaptureReviewStatus.filingFailed)
+            }
+            return (QuickCaptureReviewStatus.filing, reported)
+        case .change(let change):
+            guard let task = redraft(shown.id, change: change) else {
+                return (QuickCaptureReviewStatus.gone, nil)
+            }
+            Log.backends.notice("Quick capture review: redrafting with a change")
+            return (QuickCaptureReviewStatus.redrafting, task)
+        }
+    }
+
+    /// Reruns the drafter with the dictated words, the current draft and
+    /// every change asked for so far.
+    @discardableResult
+    package func redraft(_ id: UUID, change: String) -> Task<Void, Never>? {
+        guard let item = inbox.items.first(where: { $0.id == id }), item.isReadyDraft, let key = item.projectKey else {
+            return nil
+        }
+        let changes = (item.changes ?? []) + [change]
+        // Drafting at once: the cue drops it, and a second review finds no
+        // ready draft until the redraft lands.
+        mutate { inbox in
+            inbox.update(id) {
+                $0.changes = changes
+                $0.state = .drafting
+            }
+        }
+        let text = QuickCaptureSpokenReview.redraftCapture(
+            original: item.text, title: item.title, body: item.body, changes: changes
+        )
+        let projects = projects()
+        return Task { @MainActor [weak self] in
+            await self?.draft(id, text: text, destination: .project(key), projects: projects)
+        }
+    }
+
+    private func noteDraftsThatFinished(from old: QuickCaptureInbox) {
+        guard let onDraftReady else { return }
+        let drafting = Set(old.items.filter { $0.state == .drafting }.map(\.id))
+        guard !drafting.isEmpty else { return }
+        for item in inbox.items where drafting.contains(item.id) && item.isReadyDraft {
+            onDraftReady(item)
+        }
+    }
+
     /// A coding agent filed the capture itself (#923). Its History record
     /// says so, as after File.
     package func markFiled(_ id: UUID, url: String) -> Result<QuickCaptureItem, QuickCaptureInbox.MarkFiledRefusal> {
@@ -204,4 +296,18 @@ package final class QuickCaptureInboxModel {
             Log.persistence.error("Quick capture inbox: save failed: \(error.localizedDescription, privacy: .public)")
         }
     }
+}
+
+/// The popover's sentences for what a spoken review did (#927), within its
+/// 44 characters.
+package enum QuickCaptureReviewStatus {
+    package static let filing = "Filing the draft"
+    package static let filed = "Draft filed"
+    package static let filingFailed = "Filing failed; see the Inbox"
+    package static let dropped = "Draft dropped"
+    package static let redrafting = "Redrafting with your change"
+    package static let kept = "Draft kept in the Inbox"
+    package static let gone = "That draft left the Inbox"
+    package static let changedSinceShown = "The draft changed; nothing filed"
+    package static let cannotFile = "Can't file it; open the Inbox"
 }

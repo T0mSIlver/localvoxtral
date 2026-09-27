@@ -329,7 +329,9 @@ Press Tab during a dictation until the overlay shows the session, as in
 The optional **Answer the agent that needs you** shortcut does it in one
 press. It brings forward the pane of the session that has waited longest, or
 else the one that finished first, and starts a dictation there. Press it
-again to stop; the next press goes to the next session.
+again to stop; the next press goes to the next session. With no session
+waiting, it opens the oldest ready quick capture draft instead
+([Review a draft by voice](coding-agents.md#review-a-draft-by-voice)).
 
 Like "go to", both reach sessions in Ghostty, iTerm2 and Terminal.app on
 this Mac, and Claude Desktop Code-tab sessions, local or over ssh. For a
