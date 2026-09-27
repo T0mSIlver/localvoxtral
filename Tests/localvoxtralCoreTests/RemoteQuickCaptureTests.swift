@@ -107,6 +107,7 @@ final class RemoteQuickCaptureTests: XCTestCase {
         version: String? = nil,
         project: String = "quill",
         sendsProject: Bool = true,
+        cwd: String? = nil,
         token: String? = nil
     ) throws -> RemoteListenerResponse {
         var headers = ["Authorization": "Bearer \(token ?? self.token)", "Content-Type": "application/json"]
@@ -120,7 +121,7 @@ final class RemoteQuickCaptureTests: XCTestCase {
             preconditionFailure("opencode has no remote shim")
         }
         if sendsProject { headers["X-Lvx-Env-Project"] = project }
-        let body = #"{"hook_event_name":"\#(event)","session_id":"\#(session)","cwd":"/srv/work/\#(project)-fix","prompt":"hello"}"#
+        let body = #"{"hook_event_name":"\#(event)","session_id":"\#(session)","cwd":"\#(cwd ?? "/srv/work/\(project)-fix")","prompt":"hello"}"#
         return try postToRemoteListener(port: port, path: "/v1/hook/\(event)", headers: headers, body: Data(body.utf8))
     }
 
@@ -231,6 +232,19 @@ final class RemoteQuickCaptureTests: XCTestCase {
         try hook("SessionStart", session: "s1", version: "1.12.0", sendsProject: false)
         XCTAssertEqual(store.snapshot().projects.map(\.key), ["remote:quill"])
         XCTAssertNil(store.snapshot().projects.first?.reportedAt)
+    }
+
+    /// A Claude Desktop session started before the host's plugin update
+    /// keeps its old shim, which names only its worktree. Claude Code's
+    /// worktree layout names the repository, so that is the project listed.
+    func testAnOldShimInAClaudeCodeWorktreeListsItsRepository() throws {
+        try hook(
+            "SessionStart", session: "s1", version: "1.11.0", sendsProject: false,
+            cwd: "/home/dev/work/localvoxtral/.claude/worktrees/ci-speed-optimizations-7ffef0"
+        )
+        let project = try XCTUnwrap(store.snapshot().projects.first { $0.key == "remote:localvoxtral" })
+        XCTAssertEqual(project.reportedAsRepository, true)
+        XCTAssertFalse(store.snapshot().projects.contains { $0.key == "remote:ci-speed-optimizations-7ffef0" })
     }
 
     /// #891: a cwd label's hook before the dictation that adds its project
