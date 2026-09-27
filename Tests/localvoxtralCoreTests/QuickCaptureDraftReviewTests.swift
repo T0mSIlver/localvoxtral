@@ -75,8 +75,10 @@ final class QuickCaptureDraftReviewTests: XCTestCase {
         XCTAssertLessThanOrEqual(excerpt.count, QuickCaptureDraftSnapshot.maxExcerptCharacters + 1)
         XCTAssertTrue(excerpt.hasSuffix("word…"))
         XCTAssertEqual(
-            QuickCaptureDraftSnapshot(id: UUID(), projectName: "p", title: "t", body: "## Scope\nAll pages.").bodyExcerpt,
-            "## Scope All pages."
+            QuickCaptureDraftSnapshot(
+                id: UUID(), projectName: "p", title: "t", body: "## Scope\nAll pages.\n\n## Proof\n- A test\n* Another"
+            ).bodyExcerpt,
+            "All pages. A test Another"
         )
     }
 

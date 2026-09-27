@@ -86,14 +86,21 @@ package struct QuickCaptureDraftSnapshot: Equatable, Sendable {
         self.body = body
     }
 
-    /// The overlay's lines of the body: the first `maxExcerptCharacters`,
-    /// cut at a word, so the panel's height can be measured from the text.
+    /// The overlay's lines of the body: its prose without Markdown headings
+    /// or list markers, the first `maxExcerptCharacters` of it cut at a word,
+    /// so the panel's height can be measured from the text.
     package static let maxExcerptCharacters = 240
 
     package var bodyExcerpt: String {
         let flat = body.split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+            .map { line in
+                for marker in ["- ", "* ", "+ "] where line.hasPrefix(marker) {
+                    return String(line.dropFirst(marker.count))
+                }
+                return line
+            }
             .joined(separator: " ")
         guard flat.count > Self.maxExcerptCharacters else { return flat }
         let cut = flat.prefix(Self.maxExcerptCharacters)
