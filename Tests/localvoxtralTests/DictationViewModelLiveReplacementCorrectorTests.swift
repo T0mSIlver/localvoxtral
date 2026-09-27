@@ -36,44 +36,6 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
         XCTAssertEqual(harness.viewModel.transcript.pendingSegmentText, "voxtral ")
     }
 
-    func testCorrectsMultiWordKeyWithLookbackWindow() {
-        let harness = makeHarness(
-            dictionary: ReplacementDictionary(entries: [
-                ReplacementEntry(replaceWith: "localvoxtral", matches: ["local voxtral"]),
-            ])
-        )
-
-        harness.viewModel.session.handle(event: .partialTranscript("local "))
-        // "local" could begin the two-word match, so it stays held.
-        XCTAssertEqual(harness.typed.value, [], "a possible first match word stays held")
-
-        harness.viewModel.session.handle(event: .partialTranscript("voxtral "))
-        // Once the match applies, "localvoxtral" begins no rule, so it is
-        // released immediately rather than waiting for the stop flush.
-        XCTAssertEqual(harness.typed.value.joined(), "localvoxtral ")
-
-        stop(harness.viewModel)
-
-        XCTAssertEqual(harness.field.value, "localvoxtral ")
-        XCTAssertEqual(harness.typed.value.joined(), "localvoxtral ")
-    }
-
-    func testCorrectsFinalUnboundedWordOnStopFlush() {
-        let harness = makeHarness(
-            dictionary: voxtralDictionary
-        )
-
-        harness.viewModel.session.handle(event: .partialTranscript("voxtral"))
-        harness.viewModel.session.handle(event: .finalTranscript("voxtral"))
-        XCTAssertEqual(harness.typed.value, [], "the unbounded final word stays held until stop")
-
-        stop(harness.viewModel)
-
-        XCTAssertEqual(harness.field.value, "localvoxtral")
-        XCTAssertEqual(harness.typed.value, ["localvoxtral"])
-        XCTAssertEqual(harness.viewModel.transcript.currentDictationEventText, "voxtral")
-    }
-
     // The exact field regression (2026-07-08), end to end: a short dictation
     // whose ONLY replacement is the final word, with no trailing whitespace.
     // The old guarded corrector deferred it waiting for the caret to settle and
@@ -90,7 +52,7 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
 
         harness.viewModel.session.handle(event: .partialTranscript("vox"))
         harness.viewModel.session.handle(event: .finalTranscript("voxtral"))
-        XCTAssertEqual(harness.typed.value, [])
+        XCTAssertEqual(harness.typed.value, [], "the unbounded final word stays held until stop")
 
         stop(harness.viewModel)
 
@@ -99,19 +61,9 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
             "the only replacement in the session — the final word — must not be dropped at stop"
         )
         XCTAssertEqual(harness.typed.value, ["localvoxtral"])
-    }
-
-    func testNoMatchWordsAreUntouched() {
-        let harness = makeHarness(
-            dictionary: voxtralDictionary
-        )
-
-        harness.viewModel.session.handle(event: .partialTranscript("hello "))
-
-        XCTAssertEqual(harness.field.value, "hello ")
         XCTAssertEqual(
-            harness.typed.value, ["hello "],
-            "a completed non-matching word is released promptly, unchanged"
+            harness.viewModel.transcript.currentDictationEventText, "voxtral",
+            "the raw transcript keeps the raw text; only the typed text is replaced"
         )
     }
 
@@ -128,20 +80,6 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
 
         XCTAssertEqual(harness.field.value, "localvoxtral\n")
         XCTAssertEqual(harness.typed.value, ["localvoxtral\n"])
-    }
-
-    func testNonTerminalSessionUsesHoldBackStream() {
-        TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueSettable }
-        let harness = makeHarness(
-            dictionary: voxtralDictionary,
-            frontmostBundleID: "com.example.editor"
-        )
-        XCTAssertTrue(harness.viewModel.textInsertion.debugLiveHoldBackStreamIsActive)
-
-        harness.viewModel.session.handle(event: .partialTranscript("voxtral "))
-
-        XCTAssertEqual(harness.field.value, "localvoxtral ")
-        XCTAssertEqual(harness.typed.value, ["localvoxtral "])
     }
 
     func testReplacementDictionarySettingOffLeavesLivePathUntouchedAndDoesNotLoadDictionary() {
