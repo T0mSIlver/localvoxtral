@@ -190,6 +190,11 @@ final class BackendProcessSupervisorTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let countFile = directory.appendingPathComponent("count")
+        // Each child stays alive after writing its count until the test
+        // releases it: the ordering #753 hit under load, where the count
+        // exists but the exit has not reached the supervisor yet.
+        let release = directory.appendingPathComponent("release")
+        XCTAssertEqual(mkfifo(release.path, 0o600), 0)
         let script = try writeScript(
             in: directory,
             name: "backend.sh",
@@ -201,11 +206,12 @@ final class BackendProcessSupervisorTests: XCTestCase {
             fi
             count=$((count + 1))
             echo "$count" > "\(countFile.path)"
+            read _ < "\(release.path)"
             echo "fatal backend failure $count" >&2
             exit 7
             """
         )
-        let sleeps = SpawnAwareRecordingSleep(countFile: countFile)
+        let sleeps = SpawnAwareRecordingSleep(countFile: countFile, onAwaitingExit: { releaseOneReader(of: release) })
         let supervisor = makeSupervisor(
             executableURL: script,
             readinessPollInterval: .milliseconds(10),
@@ -586,6 +592,16 @@ private final class StateWatcher: @unchecked Sendable {
 
 private struct WaitTimeout: Error {}
 
+/// Ends one child's `read _ < fifo` by opening the fifo for writing and
+/// closing it. The open blocks until the child opens its end, so it runs off
+/// the caller's thread.
+private func releaseOneReader(of fifo: URL) {
+    DispatchQueue.global().async {
+        let descriptor = open(fifo.path, O_WRONLY)
+        if descriptor >= 0 { close(descriptor) }
+    }
+}
+
 private final class LockedValue<Value>: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: Value
@@ -637,7 +653,7 @@ private final class SpawnAwareRecordingSleep: @unchecked Sendable {
     private let lastObservedCount = LockedValue(0)
     private let awaitingNextSpawn = LockedValue(true)
 
-    init(countFile: URL) {
+    init(countFile: URL, onAwaitingExit: @escaping @Sendable () -> Void) {
         self.countFile = countFile
     }
 
