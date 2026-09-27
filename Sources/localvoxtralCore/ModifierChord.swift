@@ -1,0 +1,241 @@
+import Foundation
+
+/// One physical modifier key, told apart from its twin on the other side
+/// (#831). The raw values are what Settings stores.
+package enum SidedModifier: String, CaseIterable, Codable, Sendable, Comparable {
+    case leftShift = "left_shift"
+    case rightShift = "right_shift"
+    case leftControl = "left_control"
+    case rightControl = "right_control"
+    case leftOption = "left_option"
+    case rightOption = "right_option"
+    case leftCommand = "left_command"
+    case rightCommand = "right_command"
+
+    /// The device-dependent bit macOS sets in an event's modifier flags while
+    /// this key is down (IOKit's `NX_DEVICE*KEYMASK`). The device-independent
+    /// `.shift` flag can't say which Shift is down; these bits can.
+    package var deviceFlag: UInt {
+        switch self {
+        case .leftControl: 0x0000_0001
+        case .leftShift: 0x0000_0002
+        case .rightShift: 0x0000_0004
+        case .leftCommand: 0x0000_0008
+        case .rightCommand: 0x0000_0010
+        case .leftOption: 0x0000_0020
+        case .rightOption: 0x0000_0040
+        case .rightControl: 0x0000_2000
+        }
+    }
+
+    /// The keys an event's modifier flags say are down.
+    package static func held(inDeviceFlags flags: UInt) -> Set<SidedModifier> {
+        Set(allCases.filter { flags & $0.deviceFlag != 0 })
+    }
+
+    package var displayName: String {
+        switch self {
+        case .leftShift: "Left ⇧"
+        case .rightShift: "Right ⇧"
+        case .leftControl: "Left ⌃"
+        case .rightControl: "Right ⌃"
+        case .leftOption: "Left ⌥"
+        case .rightOption: "Right ⌥"
+        case .leftCommand: "Left ⌘"
+        case .rightCommand: "Right ⌘"
+        }
+    }
+
+    package static func < (lhs: SidedModifier, rhs: SidedModifier) -> Bool {
+        allCases.firstIndex(of: lhs)! < allCases.firstIndex(of: rhs)!
+    }
+}
+
+/// A shortcut made of modifier keys only, pressed together, such as left
+/// Shift + right Shift (#831). It needs two keys at least: one modifier on
+/// its own is the dictation key's gesture, and a chord of one would fire
+/// every time someone typed a capital.
+package struct ModifierChord: Hashable, Sendable {
+    package let keys: Set<SidedModifier>
+
+    package init?(keys: Set<SidedModifier>) {
+        guard keys.count >= 2 else { return nil }
+        self.keys = keys
+    }
+
+    package static let bothShifts = ModifierChord(keys: [.leftShift, .rightShift])!
+
+    /// `left_shift+right_shift`: the form Settings stores.
+    package var storageValue: String {
+        keys.sorted().map(\.rawValue).joined(separator: "+")
+    }
+
+    package init?(storageValue: String) {
+        let parts = storageValue.split(separator: "+").map(String.init)
+        let keys = parts.compactMap(SidedModifier.init(rawValue:))
+        guard keys.count == parts.count else { return nil }
+        self.init(keys: Set(keys))
+    }
+
+    package var displayName: String {
+        keys.sorted().map(\.displayName).joined(separator: " + ")
+    }
+}
+
+/// Decides when a `ModifierChord` fires, from the modifier keys held at each
+/// modifier change and the key presses in between (#831).
+///
+/// The chord fires when its keys are all released, and only if:
+/// - every key of the chord went down within `window` of the first,
+/// - no other key, modifier or not, was pressed from the first key down to
+///   the last key up.
+///
+/// So holding one Shift while typing never fires it: a letter cancels the
+/// attempt, and a Shift held longer than `window` before the other goes
+/// down is too slow to count. Firing on release rather than on the last key
+/// down is what lets a key typed with both Shifts still held cancel it.
+///
+/// Times are the events' own timestamps, so the detector never reads a clock.
+package struct ModifierChordDetector: Sendable {
+    /// How far apart the chord's keys may go down, in seconds. People who
+    /// mean to press two keys at once land them within 60 ms of each other;
+    /// chord keyboards decode presses within that as simultaneous and
+    /// tolerate up to 100 ms (US 4,680,572). The detector logs every gap it
+    /// measures, so the value can be checked against real presses.
+    package static let defaultWindow: TimeInterval = 0.100
+
+    package enum Outcome: Equatable, Sendable {
+        case none
+        /// All keys of the chord are down; the gap between the first and the
+        /// last down, in seconds. It fires on release unless something
+        /// cancels it before.
+        case armed(gap: TimeInterval)
+        /// Every key was down, but the last one came too late.
+        case tooSlow(gap: TimeInterval)
+        case fire
+    }
+
+    private enum Phase: Sendable {
+        case idle
+        /// Some keys of the chord are down, the first at `since`.
+        case pressing(since: TimeInterval)
+        /// Every key is down within the window; fires once all are up.
+        case armed
+        /// This attempt can't fire; waits for every modifier to go up.
+        case cancelled
+    }
+
+    package let chord: ModifierChord
+    package let window: TimeInterval
+    private var phase = Phase.idle
+
+    package init(chord: ModifierChord, window: TimeInterval = Self.defaultWindow) {
+        self.chord = chord
+        self.window = window
+    }
+
+    /// A modifier went down or up.
+    /// - Parameters:
+    ///   - held: the sided modifiers down after the change.
+    ///   - otherModifierHeld: a modifier with no side is down, Fn or Caps Lock.
+    ///   - time: the event's timestamp, in seconds.
+    package mutating func modifiersChanged(
+        held: Set<SidedModifier>,
+        otherModifierHeld: Bool = false,
+        at time: TimeInterval
+    ) -> Outcome {
+        let nothingHeld = held.isEmpty && !otherModifierHeld
+        let foreign = otherModifierHeld || !held.isSubset(of: chord.keys)
+
+        switch phase {
+        case .idle:
+            if nothingHeld { return .none }
+            if foreign {
+                phase = .cancelled
+                return .none
+            }
+            phase = .pressing(since: time)
+            return completeIfAllDown(held: held, since: time, at: time)
+        case .pressing(let since):
+            if nothingHeld {
+                phase = .idle
+                return .none
+            }
+            if foreign {
+                phase = .cancelled
+                return .none
+            }
+            return completeIfAllDown(held: held, since: since, at: time)
+        case .armed:
+            if nothingHeld {
+                phase = .idle
+                return .fire
+            }
+            if foreign { phase = .cancelled }
+            return .none
+        case .cancelled:
+            if nothingHeld { phase = .idle }
+            return .none
+        }
+    }
+
+    /// A non-modifier key went down: any attempt in progress is cancelled.
+    package mutating func keyPressed() {
+        if case .idle = phase { return }
+        phase = .cancelled
+    }
+
+    /// Forget the attempt in progress, as if every key were up.
+    package mutating func reset() {
+        phase = .idle
+    }
+
+    private mutating func completeIfAllDown(
+        held: Set<SidedModifier>, since: TimeInterval, at time: TimeInterval
+    ) -> Outcome {
+        guard held == chord.keys else { return .none }
+        let gap = time - since
+        guard gap <= window else {
+            phase = .cancelled
+            return .tooSlow(gap: gap)
+        }
+        phase = .armed
+        return .armed(gap: gap)
+    }
+}
+
+/// Records a modifier-only chord in a shortcut field (#831): press the keys
+/// together and let go. It reports the chord once every key is up, when two
+/// keys or more were down at once and no other key was pressed. One modifier
+/// on its own reports nothing, so the field keeps listening for a
+/// modifier+key shortcut.
+package struct ModifierChordRecorder: Sendable {
+    private var mostHeld = Set<SidedModifier>()
+    private var anyHeld = false
+    private var spoiled = false
+
+    package init() {}
+
+    package mutating func modifiersChanged(
+        held: Set<SidedModifier>, otherModifierHeld: Bool = false
+    ) -> ModifierChord? {
+        if otherModifierHeld { spoiled = true }
+        mostHeld.formUnion(held)
+        anyHeld = !held.isEmpty || otherModifierHeld
+        guard !anyHeld else { return nil }
+        defer { reset() }
+        return spoiled ? nil : ModifierChord(keys: mostHeld)
+    }
+
+    /// A key that isn't a modifier went down. With modifiers held, that is a
+    /// modifier+key shortcut, not a chord.
+    package mutating func keyPressed() {
+        if anyHeld { spoiled = true }
+    }
+
+    package mutating func reset() {
+        mostHeld = []
+        anyHeld = false
+        spoiled = false
+    }
+}

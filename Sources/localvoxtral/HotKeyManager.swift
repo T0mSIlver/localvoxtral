@@ -94,7 +94,7 @@ final class HotKeyManager {
     /// dictation triggers: re-registering or switching the triggers, the
     /// single-modifier gesture included, leaves them alone.
     /// The raw value is the Carbon hotkey ID.
-    enum ActionHotKey: UInt32, CaseIterable {
+    enum ActionHotKey: UInt32, CaseIterable, Sendable {
         case copyLastDictation = 3
         case quickCapture = 4
         case answerAgent = 5
@@ -112,6 +112,9 @@ final class HotKeyManager {
 
     private var actionHotKeyRefs: [UInt32: EventHotKeyRef] = [:]
     private var registeredActionHotKeyIDs: Set<UInt32> = []
+    /// Action shortcuts set to a modifier-only chord (#831) fire from here,
+    /// not from Carbon.
+    let chordMonitor = ModifierChordHotKeyMonitor()
 
     #if DEBUG
     private(set) var debugCurrentRegistrationKind: DebugRegistrationKind = .none
@@ -122,6 +125,9 @@ final class HotKeyManager {
 
     init() {
         Self.hotKeyTarget = self
+        chordMonitor.onChord = { [weak self] action in
+            self?.handleHotKeyEvent(kind: UInt32(kEventHotKeyPressed), hotKeyID: action.id)
+        }
     }
 
     /// Register a modifier-only key (Fn, Right Command, etc.) as the hotkey.
@@ -340,9 +346,15 @@ final class HotKeyManager {
             UnregisterEventHotKey(existing)
         }
         registeredActionHotKeyIDs.remove(action.id)
+        _ = chordMonitor.setChord(nil, for: action)
 
         guard let shortcut else {
             removeHandlerIfUnused()
+            return .success
+        }
+        if let chord = shortcut.modifierChord {
+            removeHandlerIfUnused()
+            guard chordMonitor.setChord(chord, for: action) else { return .failure(action.failure) }
             return .success
         }
         if !installHandlerIfNeeded() {
@@ -371,9 +383,15 @@ final class HotKeyManager {
         return .success
     }
 
-    var isCopyLastDictationShortcutRegistered: Bool { registeredActionHotKeyIDs.contains(Self.copyLastDictationHotKeyID) }
-    var isAnswerAgentShortcutRegistered: Bool { registeredActionHotKeyIDs.contains(Self.answerAgentHotKeyID) }
-    var isQuickCaptureShortcutRegistered: Bool { registeredActionHotKeyIDs.contains(Self.quickCaptureHotKeyID) }
+    var isCopyLastDictationShortcutRegistered: Bool {
+        registeredActionHotKeyIDs.contains(Self.copyLastDictationHotKeyID) || chordMonitor.chords[.copyLastDictation] != nil
+    }
+    var isAnswerAgentShortcutRegistered: Bool {
+        registeredActionHotKeyIDs.contains(Self.answerAgentHotKeyID) || chordMonitor.chords[.answerAgent] != nil
+    }
+    var isQuickCaptureShortcutRegistered: Bool {
+        registeredActionHotKeyIDs.contains(Self.quickCaptureHotKeyID) || chordMonitor.chords[.quickCapture] != nil
+    }
 
     /// The Carbon handler serves every hotkey here, so it goes only with the
     /// last of them.
