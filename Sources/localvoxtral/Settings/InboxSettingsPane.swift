@@ -79,11 +79,6 @@ private struct InboxCaptureRow: View {
                 .labelsHidden()
                 .fixedSize()
                 .disabled(!isEditable)
-                if item.isSuggested {
-                    Text("Suggested")
-                        .foregroundStyle(.orange)
-                        .accessibilityIdentifier("inbox.row.suggested")
-                }
             }
         }
         .font(.callout)
@@ -130,11 +125,12 @@ private struct InboxCaptureRow: View {
 
     private var actions: some View {
         HStack(spacing: 8) {
-            // The router guessed the project (#938): File waits for this
-            // click or a move.
-            if item.isSuggested {
-                Button("Confirm project") { model.confirmSuggestion(item.id) }
-                    .accessibilityIdentifier("inbox.row.confirm")
+            // The router's guess under its bar (#938); nothing drafts
+            // until this click or a move.
+            if let suggestion = item.suggestion, item.projectKey == nil {
+                Button("Move to \(suggestion.projectName)") { _ = model.acceptSuggestion(item.id) }
+                    .disabled(!isEditable)
+                    .accessibilityIdentifier("inbox.row.suggestion")
             }
             Button("File") { _ = model.file(item.id) }
                 .disabled(!item.canFile)

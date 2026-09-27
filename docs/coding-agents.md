@@ -444,10 +444,9 @@ A capture then goes through three steps.
 
 1. **Route.** A classifier picks one of your projects (see
    [Which projects a capture can go to](#which-projects-a-capture-can-go-to)).
-   When it is unsure, or two projects tie, the capture goes to its best
-   guess marked **Suggested**, and **File** waits until you click **Confirm
-   project** or move it. A capture that fits none of your projects, such as
-   a personal note, stays unplaced.
+   When it is unsure, or two projects tie, the capture stays unplaced with
+   a **Move to** button for its best guess; nothing is drafted until you
+   click it or move the capture yourself.
 2. **Draft.** An agent drafts an issue: title, scope, constraints and proof,
    following the repository's AGENTS.md, and naming any open issue it
    duplicates (see [How the draft is written](#how-the-draft-is-written)).
@@ -456,8 +455,7 @@ A capture then goes through three steps.
    GitHub CLI, with your dictated words quoted under the draft. The Inbox
    fills in the project's repository (see
    [Each project's repository](#each-projects-repository)). Your coding
-   agent can also file it with its own `gh` ([Quick captures](#quick-captures));
-   it sees a suggested capture as unplaced.
+   agent can also file it with its own `gh` ([Quick captures](#quick-captures)).
    Nothing else files.
 
 ### Which projects a capture can go to

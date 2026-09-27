@@ -71,10 +71,9 @@ package final class QuickCaptureInboxModel {
             guard let self else { return }
             self.mutate { $0.applyRoute(route, to: item.id, projects: projects) }
             let name = self.inbox.items.first { $0.id == item.id }?.projectName
-            let suggested = route.isSuggestion && name != nil
-            self.onStatus?(name.map { suggested ? "Suggested for \($0)" : "Sent to \($0) inbox" } ?? "Sent to inbox")
+            self.onStatus?(name.map { "Sent to \($0) inbox" } ?? "Sent to inbox")
             if let recordID = historyRecordID {
-                self.onRouted?(recordID, name.map { suggested ? "\($0), suggested" : $0 } ?? "Inbox")
+                self.onRouted?(recordID, name ?? "Inbox")
             }
             await self.draft(item.id, text: text, destination: route.destination, projects: projects)
         }
@@ -143,14 +142,12 @@ package final class QuickCaptureInboxModel {
         }
     }
 
-    /// One click on a suggested project: File no longer waits for it.
-    package func confirmSuggestion(_ id: UUID) {
-        mutate { $0.confirmSuggestion(id) }
-        if let item = inbox.items.first(where: { $0.id == id }), let recordID = item.historyRecordID,
-           let name = item.projectName
-        {
-            onRouted?(recordID, name)
-        }
+    /// One click on the router's guess (#938): the capture moves there and
+    /// drafts, as after a move.
+    @discardableResult
+    package func acceptSuggestion(_ id: UUID) -> Task<Void, Never>? {
+        guard let key = inbox.items.first(where: { $0.id == id })?.suggestion?.projectKey else { return nil }
+        return move(id, toProjectKey: key)
     }
 
     package func discard(_ id: UUID) {

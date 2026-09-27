@@ -5,9 +5,9 @@ import XCTest
 
 /// Replays labelled captures through the production router (#730) and
 /// prints the scoreboard: the right-project rate, the catch-all count and
-/// the captures sent to a wrong project. A suggestion (#938) counts as the
-/// catch-all there, as before suggestions existed, and again in its own
-/// counts. Spends real tokens, so it runs only through
+/// the captures sent to a wrong project. A capture kept in the catch-all
+/// with a suggestion (#938) counts as the catch-all there, and its
+/// suggestion in its own counts. Spends real tokens, so it runs only through
 /// `scripts/linux/quick-capture-replay.sh`, on Linux.
 ///
 /// Inputs (paths, from the script's flags):
@@ -125,13 +125,13 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
         for capture in captures {
             let expected = projectNames.contains(capture.expected) ? capture.expected : "inbox"
             let route = await router.route(capture: capture.text, projects: projects)
-            let picked: String
+            let got: String
             switch route.destination {
-            case .project(let key): picked = names[key] ?? key
-            case .catchAll: picked = "inbox"
+            case .project(let key): got = names[key] ?? key
+            case .catchAll: got = "inbox"
             }
-            let got = route.isSuggestion ? "inbox" : picked
-            if route.isSuggestion {
+            let picked = route.suggestion.map { names[$0] ?? $0 } ?? got
+            if route.suggestion != nil {
                 suggested += 1
                 if picked == expected { suggestedRight += 1 }
             }
@@ -144,7 +144,7 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
             }
             if got == "inbox" { catchAll += 1 } else if got != expected { wrongProject += 1 }
             if route.reason == .classifierFailed { failed += 1 }
-            let mark = route.isSuggestion
+            let mark = route.suggestion != nil
                 ? (picked == expected ? "sug" : "SUG")
                 : got == expected ? "ok " : (got == "inbox" ? "inb" : "BAD")
             let probability = route.topProbability.map { String(format: "%.2f", $0) } ?? "-"

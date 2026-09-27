@@ -155,53 +155,37 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(model.markFiled(id, url: "https://github.com/o/reach/issues/13"), .failure(.notReady(.filed)))
     }
 
-    /// #938: under the bar the capture drafts in its best project, marked,
-    /// and File waits for one click.
-    func testASuggestedCaptureDraftsInItsProjectAndFilesOnlyOnceConfirmed() async throws {
-        let recordID = UUID()
+    /// #938: an unsure capture waits unplaced with the router's guess; no
+    /// agent runs until one click moves it there.
+    func testAnUnsureCaptureWaitsWithASuggestionAndDraftsOnlyOnceAccepted() async throws {
         let model = model(answer: ["reach": 0.85])
-        await model.capture(text: "Add a dark mode", historyRecordID: recordID).value
+        await model.capture(text: "Add a dark mode", historyRecordID: UUID()).value
         let id = try XCTUnwrap(model.items.first?.id)
         var item = try XCTUnwrap(model.items.first)
-        XCTAssertEqual(item.projectName, "reach")
-        XCTAssertEqual(item.title, "Dark mode")
-        XCTAssertTrue(item.isSuggested)
-        XCTAssertFalse(item.canFile)
-        XCTAssertEqual(statuses, ["Suggested for reach"])
-        XCTAssertEqual(routed, ["reach, suggested"])
-        XCTAssertNil(model.file(id))
-        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).items.first?.isSuggested, true)
+        XCTAssertNil(item.projectKey)
+        XCTAssertEqual(item.suggestion, .init(projectKey: "/w/reach", projectName: "reach"))
+        XCTAssertEqual(item.note, "Not routed to a project. Move it to one.")
+        XCTAssertEqual(statuses, ["Sent to inbox"])
+        XCTAssertEqual(routed, ["Inbox"])
+        XCTAssertEqual(runner.runs.withLock { $0 }, 0, "no agent spend on a guess")
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).items.first?.suggestion?.projectKey, "/w/reach")
 
-        model.confirmSuggestion(id)
+        await model.acceptSuggestion(id)?.value
         item = try XCTUnwrap(model.items.first)
-        XCTAssertFalse(item.isSuggested)
+        XCTAssertEqual(item.projectName, "reach")
+        XCTAssertNil(item.suggestion)
+        XCTAssertEqual(item.title, "Dark mode")
+        XCTAssertEqual(runner.runs.withLock { $0 }, 1)
         XCTAssertTrue(item.canFile)
-        XCTAssertEqual(routed.last, "reach")
-        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).items.first?.isSuggested, false)
-        await model.file(id)?.value
-        XCTAssertEqual(github.created.withLock { $0.map(\.first) }, ["o/reach"])
     }
 
-    func testMovingASuggestedCaptureConfirmsTheNewPlace() async throws {
+    func testMovingElsewhereDropsTheSuggestion() async throws {
         let model = model(answer: ["reach": 0.5])
         await model.capture(text: "Add a dark mode", historyRecordID: nil).value
         let id = try XCTUnwrap(model.items.first?.id)
-        await model.move(id, toProjectKey: nil)?.value
-        XCTAssertFalse(try XCTUnwrap(model.items.first).isSuggested)
-        XCTAssertNil(model.items.first?.projectKey)
-    }
-
-    /// An agent files with its own gh before it marks the capture: on a
-    /// suggestion, where it filed is the user's answer, not a refusal.
-    func testAnAgentFilingASuggestedCaptureElsewhereIsRecorded() async throws {
-        let model = model(answer: ["reach": 0.5])
-        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
-        let id = try XCTUnwrap(model.items.first?.id)
-        XCTAssertNil(AgentCLICaptureLookup.capture(try XCTUnwrap(model.items.first), detail: false).project)
-
-        let filed = try model.markFiled(id, url: "https://github.com/o/other/issues/3").get()
-        XCTAssertEqual(filed.repository, "o/other")
-        XCTAssertFalse(filed.isSuggested)
+        await model.move(id, toProjectKey: "remote:website")?.value
+        XCTAssertNil(model.items.first?.suggestion)
+        XCTAssertNil(model.acceptSuggestion(id))
     }
 
     func testAFailedFilingKeepsTheCaptureAndARemoteProjectNeedsARepository() async throws {
