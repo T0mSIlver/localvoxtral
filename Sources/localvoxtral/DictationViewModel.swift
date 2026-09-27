@@ -740,12 +740,13 @@ final class DictationViewModel {
         }
     }
 
-    /// Points the realtime socket, the second pass and the polishing service
+    /// Points both realtime clients, the second pass and the polishing service
     /// (polishes and term suggestions) at `ledger`. Replaces `llmPolishingService`, so a test that
     /// substitutes a fake does so after this.
     func installUsageLedger(_ ledger: UsageLedger) {
         engines.installUsageLedger(ledger)
         session.mistralRealtimeClient.setUsageRecorder(ledger)
+        session.realtimeAPIClient.setUsageRecorder(ledger)
         session.secondPassUsageRecorder = ledger
         llmPolishingService = LLMPolishingService(usageRecorder: ledger)
     }

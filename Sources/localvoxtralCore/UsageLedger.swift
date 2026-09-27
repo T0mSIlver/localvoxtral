@@ -822,16 +822,19 @@ package final class UsageLedger: UsageRecording, @unchecked Sendable {
     }
 }
 
-extension UsageLedger: MistralRealtimeUsageRecording {
-    package func recordRealtimeDictation(date: Date, model: String, audioSeconds: Double) {
+extension UsageLedger: RealtimeUsageRecording {
+    package func recordRealtimeDictation(
+        date: Date, backend: UsageEntry.Backend, model: String, audioSeconds: Double
+    ) {
         record(
             UsageEntry(
                 date: date,
                 feature: .dictation,
-                backend: .mistral,
+                backend: backend,
                 model: model,
                 audioSeconds: audioSeconds,
-                costEUR: MistralPricing.dictationCost(model: model, audioSeconds: audioSeconds)
+                costEUR: backend == .mistral
+                    ? MistralPricing.dictationCost(model: model, audioSeconds: audioSeconds) : nil
             )
         )
     }

@@ -89,8 +89,8 @@ AppKit:
 - the realtime clients: the `RealtimeClient` protocol, its event types and
   both websocket clients (#637). On Linux they speak through
   `FoundationNetworking`, whose upgrade and cancel differ from Apple's; the
-  base client's comments say how. The Mistral client reports usage through
-  `MistralRealtimeUsageRecording`, which the usage ledger implements.
+  base client's comments say how. Both report the audio each socket sent
+  through `RealtimeUsageRecording`, which the usage ledger implements.
 - the usage ledger (`UsageLedger`, #837): one line per model call, charged
   to the feature that asked and the backend that answered, with Mistral's
   price table.
