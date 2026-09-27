@@ -4,20 +4,33 @@ import Foundation
 import ShortcutRecorder
 
 /// Fires the action shortcuts set to a modifier-only chord, such as left
-/// Shift + right Shift (#831). No Carbon hotkey can express one, so like
-/// `ModifierOnlyHotKeyManager` this watches NSEvent flagsChanged and keyDown
-/// monitors, which need Accessibility trust. `ModifierChordDetector` decides
-/// when a chord fires; this feeds it each event with the event's timestamp.
+/// Shift + right Shift (#831), and the dictation key set to one (#863). No
+/// Carbon hotkey can express one, so like `ModifierOnlyHotKeyManager` this
+/// watches NSEvent flagsChanged and keyDown monitors, which need
+/// Accessibility trust. `ModifierChordDetector` decides when an action chord
+/// fires and `ModifierChordGesture` whether the dictation chord is a tap or a
+/// hold; this feeds them each event with the event's timestamp.
 @MainActor
 final class ModifierChordHotKeyMonitor {
     typealias Action = HotKeyManager.ActionHotKey
 
     var onChord: ((Action) -> Void)?
+    /// The dictation chord was tapped: a toggle.
+    var onDictationTap: (() -> Void)?
+    /// The dictation chord is still down after the hold delay: push to talk.
+    var onDictationHoldStart: (() -> Void)?
+    var onDictationHoldEnd: (() -> Void)?
+    /// Runs the hold delay. Tests replace it to play the timer.
+    var holdScheduler: ModifierOnlyHotKeyManager.HoldScheduler = ModifierOnlyHotKeyManager.defaultHoldScheduler
 
     private var detectors: [Action: ModifierChordDetector] = [:]
+    private var dictationGesture: ModifierChordGesture?
+    private var holdDelay = 0.35
     private var monitors: [Any] = []
 
     var chords: [Action: ModifierChord] { detectors.mapValues(\.chord) }
+    var dictationChord: ModifierChord? { dictationGesture?.chord }
+    private var hasAnyChord: Bool { !detectors.isEmpty || dictationGesture != nil }
 
     /// Sets the chord for one action, nil to remove it. Installs the event
     /// monitors with the first chord and removes them with the last. False
@@ -28,18 +41,41 @@ final class ModifierChordHotKeyMonitor {
         } else {
             detectors[action] = nil
         }
-        guard !detectors.isEmpty else {
+        guard hasAnyChord else {
             removeMonitors()
             return true
         }
         guard installMonitorsIfNeeded() else {
             detectors[action] = nil
-            if detectors.isEmpty { removeMonitors() }
+            if !hasAnyChord { removeMonitors() }
             return false
         }
         if let chord {
             Log.modifierKeys.notice(
                 "\(String(describing: action), privacy: .public) set to the \(chord.storageValue, privacy: .public) chord"
+            )
+        }
+        return true
+    }
+
+    /// Sets the dictation key's chord, nil to remove it, under the rules of
+    /// `setChord`. A hold in progress ends without `onDictationHoldEnd`, as
+    /// when the single-modifier gesture stops.
+    func setDictationChord(_ chord: ModifierChord?, holdDelay: Double) -> Bool {
+        dictationGesture = chord.map { ModifierChordGesture(chord: $0) }
+        self.holdDelay = holdDelay
+        guard hasAnyChord else {
+            removeMonitors()
+            return true
+        }
+        guard installMonitorsIfNeeded() else {
+            dictationGesture = nil
+            if !hasAnyChord { removeMonitors() }
+            return false
+        }
+        if let chord {
+            Log.modifierKeys.notice(
+                "dictation key set to the \(chord.storageValue, privacy: .public) chord, hold delay \(Int(holdDelay * 1000), privacy: .public) ms"
             )
         }
         return true
@@ -95,12 +131,14 @@ final class ModifierChordHotKeyMonitor {
         }
         monitors = []
         for action in detectors.keys { detectors[action]?.reset() }
+        dictationGesture?.reset()
     }
 
     private func handleFlagsChanged(rawFlags: UInt, timestamp: TimeInterval) {
         // Recording a chord in Settings must not also fire the one it replaces.
         if let recorder = NSApp?.keyWindow?.firstResponder as? RecorderControl, recorder.isRecording {
             for action in Array(detectors.keys) { detectors[action]!.reset() }
+            dictationGesture?.reset()
             return
         }
         let held = SidedModifier.held(inDeviceFlags: rawFlags)
@@ -125,10 +163,42 @@ final class ModifierChordHotKeyMonitor {
                 onChord?(action)
             }
         }
+        if let outcome = dictationGesture?.modifiersChanged(
+            held: held, otherModifierHeld: otherHeld, at: timestamp)
+        {
+            handleDictation(outcome)
+        }
     }
 
     private func handleKeyDown() {
         for action in Array(detectors.keys) { detectors[action]!.keyPressed() }
+        if let outcome = dictationGesture?.keyPressed() { handleDictation(outcome) }
+    }
+
+    private func handleDictation(_ outcome: ModifierChordGesture.Outcome) {
+        switch outcome {
+        case .none:
+            break
+        case .armed(let gap, let attempt):
+            Log.modifierKeys.notice(
+                "dictation chord: all keys down, gap \(Int(gap * 1000), privacy: .public) ms")
+            holdScheduler(holdDelay) { [weak self] in
+                guard let self, let outcome = self.dictationGesture?.holdDelayElapsed(attempt: attempt) else { return }
+                self.handleDictation(outcome)
+            }
+        case .tooSlow(let gap):
+            Log.modifierKeys.notice(
+                "dictation chord: gap \(Int(gap * 1000), privacy: .public) ms is over the window, ignored")
+        case .tap:
+            Log.modifierKeys.notice("dictation chord tapped")
+            onDictationTap?()
+        case .holdStart:
+            Log.modifierKeys.notice("dictation chord held: push to talk starts")
+            onDictationHoldStart?()
+        case .holdEnd:
+            Log.modifierKeys.notice("dictation chord hold ended")
+            onDictationHoldEnd?()
+        }
     }
 
     #if DEBUG

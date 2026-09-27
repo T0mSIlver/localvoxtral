@@ -60,7 +60,16 @@ extension SettingsStore {
     /// the popover still polishes via the session-time ensureReady backstop,
     /// paying the polishd cold start.
     var isOverlayBufferSessionReachable: Bool {
-        modifierOnlyHotKeyEnabled || overlayBufferShortcut != nil
+        (modifierOnlyHotKeyEnabled && (modifierOnlyHotKeyModifier != .chord || dictationChord != nil))
+            || overlayBufferShortcut != nil
+    }
+
+    /// The dictation key when it is a chord (#863): the modifier-key trigger
+    /// set to Chord, with one recorded. A tap toggles and a hold is push to
+    /// talk, as with a single modifier key.
+    var dictationChord: ModifierChord? {
+        guard modifierOnlyHotKeyEnabled, modifierOnlyHotKeyModifier == .chord else { return nil }
+        return ModifierChord(storageValue: modifierOnlyHotKeyChord)
     }
 
     var livePasteShortcut: DictationShortcut? {

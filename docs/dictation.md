@@ -5,7 +5,10 @@
 One key dictates. You pick it in **Settings → Dictation**, as one of two
 triggers.
 
-**Single modifier key.** Fn/Globe, Right Command, or Right Option.
+**Modifier keys.** Fn/Globe, Right Command, Right Option, or a chord: two
+modifier keys or more pressed together, such as left Shift and right Shift.
+Left Shift + right Shift is the chord until you record another under
+**Chord keys**.
 
 | Gesture | Behavior |
 |---|---|
@@ -13,8 +16,11 @@ triggers.
 | Hold (past the hold delay, default 350 ms) | Dictate while held; letting go stops |
 
 Pressing any other key while the modifier is down cancels the gesture, so
-your usual shortcuts with that modifier still work. This trigger needs
-Accessibility permission.
+your usual shortcuts with that modifier still work. A chord counts only when
+its keys go down within 100 ms of each other, so holding one Shift while
+typing never starts a dictation. The hold delay starts once the last key of
+the chord is down, and a hold ends as soon as one of them goes up. This
+trigger needs Accessibility permission.
 
 **Keyboard shortcut.** One dictation shortcut, and the `Toggle` / `Push to
 Talk` setting decides how it behaves. A shortcut needs at least one modifier,
@@ -58,7 +64,8 @@ modifier keys, such as left Shift and right Shift together. To record one,
 click the field, press the keys together and let go. The chord fires when you
 let go, and only if its keys went down within 100 ms of each other with no
 other key pressed in between, so holding one Shift while typing never fires
-it. Like the single modifier key, a chord needs Accessibility permission.
+it. A chord needs Accessibility permission, and one chord does one job: the
+dictation key's chord can't also be one of these.
 
 ## Output modes
 
@@ -76,7 +83,7 @@ it. Like the single modifier key, a chord needs Accessibility permission.
   applies dictionary replacements before typing, and never backspaces over
   text an app has already drawn. It is off unless you set it up under
   **Settings → Dictation → Advanced**: **Hold the key for Live Auto-Paste**
-  with the single modifier key, or a **Live Auto-Paste shortcut** with
+  with modifier keys, or a **Live Auto-Paste shortcut** with
   keyboard shortcuts. It has no overlay, so Tab does not apply.
 
 ### Voice commands
@@ -279,7 +286,7 @@ History; the panes sit under the sidebar's Settings header.
   polishing, enter either a base URL such as `http://127.0.0.1:8080` or the
   full chat completions URL; the app appends `/v1/chat/completions` to a base
   URL.
-- **Dictation**: the trigger (single modifier key, or a keyboard shortcut),
+- **Dictation**: the trigger (modifier keys, or a keyboard shortcut),
   copy on stop, the [phrases](#voice-commands) that press Return, the
   needs-you cue and the two destination shortcuts, ducking other audio, the
   overlay's font size, how many lines it shows before scrolling, whether it
