@@ -2,54 +2,149 @@ import ClaudeContextWire
 import Foundation
 import Synchronization
 
-// Going to a joined session by voice (#723 step 1): "go to payments" brings
-// that session's pane to the front. Nothing is typed and no Return is
-// pressed. The pieces here are pure: the command parse, a session's default
-// names, the name lookup and which route can focus a session's pane. The
-// Apple events live in the app (`TerminalSessionPaneFocuser`).
+// Going to a joined session by voice (#723): "go to payments" brings that
+// session's pane to the front, and "call this session payments" gives the
+// session dictated into that name; neither types anything. "… send that to
+// payments" (step 3) sends the rest of the dictation to that session. The
+// pieces here are pure: the command parse, a session's names, the name
+// lookup and which route can focus a session's pane. The Apple events live
+// in the app (`TerminalSessionPaneFocuser`).
 
-package enum GoToSessionCommandParser {
-    /// A longer tail is a sentence that happens to start with "go to", not a
-    /// session name.
+/// A spoken session command (#723): the whole dictation, or in Live
+/// Auto-Paste a whole segment.
+package enum SessionVoiceCommand: Equatable, Sendable {
+    /// "go to <name>": bring that session's pane forward (step 1).
+    case goTo(String)
+    /// "call this session <name>": nickname the session dictated into
+    /// (step 2).
+    case nameThisSession(String)
+}
+
+/// An Overlay Buffer dictation that ended in "send that to <name>" (#723
+/// step 3).
+package struct AddressedDictation: Equatable, Sendable {
+    /// What is sent: everything before the phrase.
+    package var text: String
+    package var spokenName: String
+
+    package init(text: String, spokenName: String) {
+        self.text = text
+        self.spokenName = spokenName
+    }
+}
+
+package enum SessionVoiceCommandParser {
+    /// A longer tail is a sentence that happens to start with the opening,
+    /// not a session name.
     package static let maxNameWords = 4
 
     private static let edgePunctuation = CharacterSet(charactersIn: ".,;:!?…\"'")
 
-    /// The spoken name when the WHOLE dictation is "go to <name>" (or
-    /// "goto <name>"), else nil. Case and edge punctuation do not count.
-    package static func spokenName(in text: String) -> String? {
+    /// Not "call this one": "call this one fetchUser" is a coding prompt.
+    private enum Kind: Sendable {
+        case goTo, nameThisSession
+    }
+
+    private static let openings: [(words: [String], kind: Kind)] = [
+        (["go", "to"], .goTo),
+        (["goto"], .goTo),
+        (["call", "this", "session"], .nameThisSession),
+        (["name", "this", "session"], .nameThisSession),
+    ]
+
+    /// The command when the WHOLE text is an opening plus one to
+    /// `maxNameWords` name words, else nil. Case and edge punctuation do not
+    /// count.
+    package static func command(in text: String) -> SessionVoiceCommand? {
         let words = text
             .split(whereSeparator: \.isWhitespace)
             .map { String($0).trimmingCharacters(in: edgePunctuation) }
             .filter { !$0.isEmpty }
-        let nameWords: ArraySlice<String>
-        if words.count >= 3,
-           words[0].caseFoldedForMatching == "go",
-           words[1].caseFoldedForMatching == "to"
-        {
-            nameWords = words.dropFirst(2)
-        } else if words.count >= 2, words[0].caseFoldedForMatching == "goto" {
-            nameWords = words.dropFirst(1)
-        } else {
-            return nil
+        let folded = words.map(\.caseFoldedForMatching)
+        for opening in openings where folded.starts(with: opening.words) {
+            let nameWords = words.dropFirst(opening.words.count)
+            guard !nameWords.isEmpty, nameWords.count <= maxNameWords else { return nil }
+            let name = nameWords.joined(separator: " ")
+            guard !SessionNameMatching.key(name).isEmpty else { return nil }
+            switch opening.kind {
+            case .goTo: return .goTo(name)
+            case .nameThisSession: return .nameThisSession(name)
+            }
         }
-        guard nameWords.count <= maxNameWords else { return nil }
+        return nil
+    }
+
+    /// The spoken name when the whole text is "go to <name>" (or "goto
+    /// <name>").
+    package static func spokenName(in text: String) -> String? {
+        guard case .goTo(let name)? = command(in: text) else { return nil }
+        return name
+    }
+
+    /// "send that to <name>" as the last words of an Overlay Buffer
+    /// dictation (#723 step 3): the text before it goes to that session.
+    package static let addressingWords = ["send", "that", "to"]
+
+    /// The dictation and the session it is addressed to, when the text ends
+    /// in "send that to" plus one to `maxNameWords` name words and has text
+    /// before it. The text keeps its own casing and inner punctuation; the
+    /// punctuation and spaces before the phrase are dropped.
+    package static func addressedDictation(in text: String) -> AddressedDictation? {
+        let words = wordRanges(in: text)
+        let folded = words.map { text[$0].trimmingCharacters(in: edgePunctuation).caseFoldedForMatching }
+        let count = addressingWords.count
+        guard folded.count > count else { return nil }
+        let lastOpening = (0...(folded.count - count)).last { start in
+            Array(folded[start..<(start + count)]) == addressingWords
+        }
+        guard let start = lastOpening, start > 0 else { return nil }
+        let nameWords = words[(start + count)...]
+            .map { text[$0].trimmingCharacters(in: edgePunctuation) }
+            .filter { !$0.isEmpty }
+        guard !nameWords.isEmpty, nameWords.count <= maxNameWords else { return nil }
         let name = nameWords.joined(separator: " ")
-        return SessionNameMatching.key(name).isEmpty ? nil : name
+        guard !SessionNameMatching.key(name).isEmpty else { return nil }
+        let drop = edgePunctuation.union(.whitespacesAndNewlines)
+        var body = text[..<words[start].lowerBound]
+        while let last = body.last, last.unicodeScalars.allSatisfy({ drop.contains($0) }) {
+            body = body.dropLast()
+        }
+        body = body.drop { $0.isWhitespace }
+        guard !body.isEmpty else { return nil }
+        return AddressedDictation(text: String(body), spokenName: name)
+    }
+
+    private static func wordRanges(in text: String) -> [Range<String.Index>] {
+        var ranges: [Range<String.Index>] = []
+        var start: String.Index?
+        var index = text.startIndex
+        while index < text.endIndex {
+            if text[index].isWhitespace {
+                if let wordStart = start {
+                    ranges.append(wordStart..<index)
+                    start = nil
+                }
+            } else if start == nil {
+                start = index
+            }
+            index = text.index(after: index)
+        }
+        if let start { ranges.append(start..<text.endIndex) }
+        return ranges
     }
 
     /// What a Live Auto-Paste segment heard so far can still become (#747).
     package enum SegmentPrefix: Equatable, Sendable {
-        /// "g", "Go", "go t": it may yet read "go to".
+        /// "g", "Go", "go t", "call this": it may yet open a command.
         case undecided
-        /// It opens with "go to" (or "goto") and no more name words than a
-        /// command takes: only its final can say.
+        /// It opens a command and has no more name words than a command
+        /// takes: only its final can say.
         case possibleCommand
-        /// No go-to phrase can come of it.
+        /// No command can come of it.
         case ordinary
     }
 
-    /// Case and edge punctuation do not count, as in `spokenName(in:)`.
+    /// Case and edge punctuation do not count, as in `command(in:)`.
     package static func segmentPrefix(_ text: String) -> SegmentPrefix {
         let words = text
             .split(whereSeparator: \.isWhitespace)
@@ -58,11 +153,11 @@ package enum GoToSessionCommandParser {
         let endsInSpace = text.last?.isWhitespace == true
         var heard = words.joined(separator: " ")
         if endsInSpace, !heard.isEmpty { heard += " " }
-        let openings = ["go to ", "goto "]
-        if openings.contains(where: { $0.hasPrefix(heard) }) { return .undecided }
-        guard let opening = openings.first(where: { heard.hasPrefix($0) }) else { return .ordinary }
-        let nameWords = words.count - opening.split(separator: " ").count
-        return nameWords > maxNameWords ? .ordinary : .possibleCommand
+        let spokenOpenings = openings.map { $0.words.joined(separator: " ") + " " }
+        if spokenOpenings.contains(where: { $0.hasPrefix(heard) }) { return .undecided }
+        guard let opening = openings.first(where: { words.starts(with: $0.words) && words.count > $0.words.count })
+        else { return .ordinary }
+        return words.count - opening.words.count > maxNameWords ? .ordinary : .possibleCommand
     }
 }
 
@@ -135,10 +230,13 @@ package struct SessionDefaultNames: Equatable, Sendable {
 package struct SessionNameCandidate: Equatable, Sendable {
     package var snapshot: ClaudeSessionSnapshot
     package var names: SessionDefaultNames
+    /// What the user called it (#723 step 2), matched ahead of `names`.
+    package var nickname: String?
 
-    package init(snapshot: ClaudeSessionSnapshot, names: SessionDefaultNames) {
+    package init(snapshot: ClaudeSessionSnapshot, names: SessionDefaultNames, nickname: String? = nil) {
         self.snapshot = snapshot
         self.names = names
+        self.nickname = nickname
     }
 }
 
@@ -151,8 +249,8 @@ package enum SessionNameResolution: Equatable, Sendable {
 }
 
 package enum SessionNameResolver {
-    /// A match on a git root's name wins over a match on a repository's
-    /// name, so "go to cool-roentgen" reaches that worktree even while three
+    /// A nickname wins over any default name. A match on a git root's name
+    /// wins over a match on a repository's name, so "go to cool-roentgen" reaches that worktree even while three
     /// other worktrees of the same repository are open. Sessions on one local
     /// tty are one pane: the most recently active one stands for it.
     package static func resolve(
@@ -162,9 +260,10 @@ package enum SessionNameResolver {
         let spoken = SessionNameMatching.key(spokenName)
         guard !spoken.isEmpty else { return .unknown }
         let panes = onePerPane(candidates)
-        for tier in [\SessionDefaultNames.primary, \SessionDefaultNames.repository] {
+        let tiers: [(SessionNameCandidate) -> String?] = [\.nickname, \.names.primary, \.names.repository]
+        for tier in tiers {
             let matches = panes.filter { candidate in
-                guard let name = candidate.names[keyPath: tier] else { return false }
+                guard let name = tier(candidate) else { return false }
                 return SessionNameMatching.key(name) == spoken
             }
             switch matches.count {
@@ -206,14 +305,25 @@ package enum SessionPaneFocusRoute: Equatable, Sendable {
     /// A local session in a plain terminal tab or split, found by its tty.
     /// `termProgram` names the terminal to ask first.
     case terminalTTY(String, termProgram: String?)
+    /// A Claude Desktop Code-tab session, on this Mac or on an ssh host
+    /// Desktop runs it on (#834), found by the `local_<uuid>` id its hooks
+    /// reported. Desktop's own link brings it forward.
+    case claudeDesktop(URL)
     case unsupported(SessionPaneFocusUnsupported)
 
     package static func of(_ snapshot: ClaudeSessionSnapshot) -> SessionPaneFocusRoute {
+        // Either origin: the id is Desktop's, and the session's view lives
+        // in Desktop on this Mac wherever its process runs.
+        if let desktopSessionID = snapshot.desktopSessionID {
+            guard let link = ClaudeDesktopSessionLink.continueURL(desktopSessionID: desktopSessionID) else {
+                return .unsupported(.claudeDesktop)
+            }
+            return .claudeDesktop(link)
+        }
         guard snapshot.origin.isLocalAuthenticated else { return .unsupported(.remote) }
         let process = snapshot.process
         // A herdr pane's or cmux surface's tty belongs to the multiplexer, not
-        // to a terminal tab, and Desktop hosts its sessions in a web view.
-        if process?.desktopSessionID != nil { return .unsupported(.claudeDesktop) }
+        // to a terminal tab.
         if process?.herdrPaneID != nil { return .unsupported(.herdr) }
         if process?.cmuxSurfaceID != nil { return .unsupported(.cmux) }
         guard let tty = process?.tty, !tty.isEmpty else { return .unsupported(.noTTY) }
@@ -247,6 +357,10 @@ package enum SessionPaneFocusOutcome: Equatable, Sendable {
 @MainActor
 package protocol SessionPaneFocusing: AnyObject {
     func focusPane(of session: ClaudeSessionSnapshot) async -> SessionPaneFocusOutcome
+    /// Whether `bundleID`'s focused pane, read back the way the join reads
+    /// it, still carries the session's tty. Asked again right before a Return
+    /// into a pane `focusPane` answered `.focused` for (#723 step 3).
+    func focusedPaneShows(_ session: ClaudeSessionSnapshot, bundleID: String) async -> Bool
 }
 
 /// Registry sessions by name, and their panes brought forward.
@@ -260,22 +374,36 @@ package final class SessionNavigator {
     private let liveSessions: @Sendable () -> [ClaudeSessionSnapshot]
     private let repositoryRoot: @Sendable (String) -> LearnedTermProjectResolver.RepositoryRoot
     private let sleep: @Sendable (Duration) async -> Void
+    private let nicknames: SessionNicknameStore?
     package let focuser: any SessionPaneFocusing
 
     /// - Parameters:
     ///   - repositoryRoot: the git root and main checkout above a local
     ///     directory. Runs off the main actor.
     ///   - sleep: the clock the name bound runs on.
+    ///   - nicknames: spoken nicknames; nil, and no session has one.
     package init(
         liveSessions: @escaping @Sendable () -> [ClaudeSessionSnapshot],
         repositoryRoot: @escaping @Sendable (String) -> LearnedTermProjectResolver.RepositoryRoot,
         focuser: any SessionPaneFocusing,
-        sleep: @escaping @Sendable (Duration) async -> Void
+        sleep: @escaping @Sendable (Duration) async -> Void,
+        nicknames: SessionNicknameStore? = nil
     ) {
         self.liveSessions = liveSessions
         self.repositoryRoot = repositoryRoot
         self.focuser = focuser
         self.sleep = sleep
+        self.nicknames = nicknames
+    }
+
+    /// Gives a live session a nickname. False when the session is no longer
+    /// live or there is no store.
+    package func name(sessionID: String, nickname: String) -> Bool {
+        guard let nicknames, liveSessions().contains(where: { $0.sessionID == sessionID }) else {
+            return false
+        }
+        nicknames.setNickname(nickname, for: sessionID)
+        return true
     }
 
     /// Whether any session is live: with none, no dictation can be a go-to,
@@ -287,13 +415,25 @@ package final class SessionNavigator {
     package func resolve(spokenName: String) async -> SessionNameResolution {
         let sessions = liveSessions()
         guard !sessions.isEmpty else { return .unknown }
-        let candidates = await Self.candidates(
+        var candidates = await Self.candidates(
             for: sessions,
             bound: Self.repositoryRootBound,
             sleep: sleep,
             repositoryRoot: repositoryRoot
         )
+        if let nicknames {
+            for index in candidates.indices {
+                candidates[index].nickname = nicknames.nickname(for: candidates[index].snapshot.sessionID)
+            }
+        }
         return SessionNameResolver.resolve(spokenName: spokenName, candidates: candidates)
+    }
+
+    /// Whether `bundleID`'s focused pane, read back the way the join reads
+    /// it, shows the live session `sessionID`; false once it is not live.
+    package func focusedPaneShows(sessionID: String, bundleID: String) async -> Bool {
+        guard let session = liveSessions().first(where: { $0.sessionID == sessionID }) else { return false }
+        return await focuser.focusedPaneShows(session, bundleID: bundleID)
     }
 
     /// Brings a live session's pane forward by registry id; nil when the

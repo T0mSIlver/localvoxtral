@@ -53,6 +53,10 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
     /// this, it is by construction the *prior* prompt.
     public var latestPriorUserPrompt: String?
     public var latestPriorUserPromptAt: Date?
+    /// Every submit the session reported, with or without its text: the
+    /// evidence that a prompt holding the app's last commit is still unsent
+    /// (#802).
+    public var promptsSubmitted: Int
     public var recentFiles: [ClaudeRecentFile]
     /// Bounded, sanitized excerpts of what the session's tools just handled.
     ///
@@ -178,6 +182,7 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
         self.workspace = nil
         self.latestPriorUserPrompt = nil
         self.latestPriorUserPromptAt = nil
+        self.promptsSubmitted = 0
         self.recentFiles = []
         self.recentSnippets = []
         self.activity = .idle
@@ -251,6 +256,7 @@ public enum ClaudeSessionReducer {
         case .sessionStart:
             snapshot.activity = .idle
         case .userPromptSubmit:
+            snapshot.promptsSubmitted += 1
             if let prompt = record.prompt, !prompt.isEmpty {
                 snapshot.latestPriorUserPrompt = prompt
                 snapshot.latestPriorUserPromptAt = now

@@ -61,6 +61,12 @@ AppKit:
 - the clipboard reader's rules (`PolishContextClipboardReader`; its
   pasteboard half stays in the app)
 - the model catalogs (`BackendCatalog`, `SpeechModelCatalog`, `PolishModelCatalog`)
+- a managed backend's status (`ManagedBackendStatus`, `ModelDownloadProgress`)
+  and the onboarding wizard's download items built from it
+  (`OnboardingBootstrapDriving`); `BackendManager` and the live driver stay
+  in the app
+- the Settings sidebar's status dots (`SettingsStatusDot`,
+  `IntegrationsSidebarStatus`); their rendering stays in the app
 - the Claude session snapshot and its reducer (`ClaudeSessionState`)
 - the config store (`AppConfigStore`, `BundledConfigDefaultHistory`,
   `SpeakerTerms`). The app hands it the resource bundle, and on Linux it
@@ -84,8 +90,10 @@ AppKit:
   both websocket clients (#637). On Linux they speak through
   `FoundationNetworking`, whose upgrade and cancel differ from Apple's; the
   base client's comments say how. The Mistral client reports usage through
-  `MistralRealtimeUsageRecording`, so the ledger and its price table stay in
-  the app.
+  `MistralRealtimeUsageRecording`, which the usage ledger implements.
+- the usage ledger (`UsageLedger`, #837): one line per model call, charged
+  to the feature that asked and the backend that answered, with Mistral's
+  price table.
 
 `Sources/localvoxtralCore/ClaudeContext` holds the part of the Claude context
 path that needs no AppKit (#591): the join resolver and its arms, the session
@@ -209,7 +217,11 @@ Key subsystems:
     to run. `RemoteProjectTermRequests` marks a joined session, the next
     hook's reply carries `X-Lvx-Terms: wanted`, and the shim starts
     `hooks/terms.sh` detached. Its answer comes back on `POST /v1/terms` and
-    is filed under the project the Mac recorded.
+    is filed under the project the Mac recorded. Quick capture (#745) asks
+    the same way (`RemoteQuickCaptureRequests`): `X-Lvx-Readme` for a
+    project's README summary and `X-Lvx-Draft` for a routed capture's draft,
+    both run by `hooks/capture.sh` and answered on `/v1/readme`,
+    `/v1/draft/prompt` and `/v1/draft`.
 
     A per-host opt-in (`ClaudeRemoteForwardSupervisor` +
     `ClaudeRemoteForwardCoordinator`, default off) lets the app hold that

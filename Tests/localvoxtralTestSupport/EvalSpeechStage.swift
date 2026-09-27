@@ -13,9 +13,45 @@ import localvoxtralCore
 package enum EvalSpeechStage {
     package struct Failure: Error, CustomStringConvertible {
         package let description: String
+        /// The service never answered: a socket error or no final transcript
+        /// within the timeout. An empty transcript is an answer.
+        package let serviceStalled: Bool
 
-        package init(_ description: String) {
+        package init(_ description: String, serviceStalled: Bool = false) {
             self.description = description
+            self.serviceStalled = serviceStalled
+        }
+    }
+
+    /// Ends a live eval once the STT service stops answering. Each utterance
+    /// otherwise waits out its own timeout, and a corpus of ~150 at 90 s each
+    /// held the Mac for two hours with no output (#821).
+    package struct ServiceWatch {
+        package let endpoint: URL
+        package let limit: Int
+        package private(set) var consecutiveStalls = 0
+
+        package init(endpoint: URL, limit: Int = 3) {
+            self.endpoint = endpoint
+            self.limit = limit
+        }
+
+        package mutating func recordAnswer() {
+            consecutiveStalls = 0
+        }
+
+        /// Throws once `limit` utterances in a row got no answer. Any other
+        /// error (a failed `say`, an empty transcript) leaves the count.
+        package mutating func record(_ error: any Error) throws {
+            guard let failure = error as? Failure, failure.serviceStalled else { return }
+            consecutiveStalls += 1
+            if consecutiveStalls >= limit {
+                throw Failure(
+                    "STT service at \(endpoint) stopped answering: \(consecutiveStalls) utterances "
+                        + "in a row got no transcript; last: \(failure.description)",
+                    serviceStalled: true
+                )
+            }
         }
     }
 
@@ -252,13 +288,17 @@ package enum EvalSpeechStage {
         }
         let errors = socketErrors.snapshot()
         if !errors.isEmpty {
-            throw Failure("realtime socket error: \(errors.joined(separator: " | "))")
+            throw Failure(
+                "realtime socket error: \(errors.joined(separator: " | "))", serviceStalled: true
+            )
         }
         if allowsEmptyTranscript, !finalized.snapshot().isEmpty {
             return ""
         }
         if outcome != .completed {
-            throw Failure("no final transcript within \(Int(timeout))s from \(endpoint.url)")
+            throw Failure(
+                "no final transcript within \(Int(timeout))s from \(endpoint.url)", serviceStalled: true
+            )
         }
         throw Failure("empty final transcript from \(endpoint.url)")
     }

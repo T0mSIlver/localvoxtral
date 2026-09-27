@@ -12,8 +12,10 @@ import XCTest
 /// - `QC_CAPTURES`: JSON lines `{"id", "expected", "text"}`; `expected` is a
 ///   project name, or `inbox` for the catch-all. A name missing from the
 ///   project set expects the catch-all.
-/// - `QC_PROJECTS`: `[{"key", "name", "terms", "userLine"?}]`; a key that is
-///   a path gets its README read, as the app does for a local checkout.
+/// - `QC_PROJECTS`: `[{"key", "name", "terms", "userLine"?, "hostReadme"?}]`;
+///   a key that is a path gets its README read, as the app does for a local
+///   checkout, and `hostReadme` is the README a remote project's host would
+///   report (#745), summarized as the Mac summarizes that report.
 /// - `QC_JEV_HOST` + `QC_JEV_KEY_FILE`, and/or `QC_CHAT_URL` + `QC_CHAT_MODEL`
 ///   (+ `QC_CHAT_KEY_FILE`, `QC_CHAT_EXTRA` as a JSON object), in router order.
 final class QuickCaptureReplayLiveTests: XCTestCase {
@@ -28,18 +30,29 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
         let name: String
         let terms: [String]
         let userLine: String?
+        let hostReadme: String?
     }
 
-    /// Prints a classifier's error: `Log` is silent on Linux.
+    /// Prints a classifier's error (`Log` is silent on Linux), and retries a
+    /// 429 up to five times with backoff: the replay measures the routing,
+    /// not the provider's load at that minute. The app itself falls back on
+    /// the first failure.
     private struct Printing: QuickCaptureClassifying {
         let inner: any QuickCaptureClassifying
         var kind: QuickCaptureRoute.Classifier { inner.kind }
         func classify(capture: String, options: [QuickCaptureOption]) async throws -> [String: Double] {
-            do {
-                return try await inner.classify(capture: capture, options: options)
-            } catch {
-                print("QC error \(inner.kind.rawValue): \(error)")
-                throw error
+            var attempt = 0
+            while true {
+                do {
+                    return try await inner.classify(capture: capture, options: options)
+                } catch Jev.Failure.http(status: 429, _) where attempt < 5 {
+                    attempt += 1
+                    print("QC retry \(inner.kind.rawValue): 429, attempt \(attempt)")
+                    try await Task.sleep(nanoseconds: UInt64(attempt) * 3_000_000_000)
+                } catch {
+                    print("QC error \(inner.kind.rawValue): \(error)")
+                    throw error
+                }
             }
         }
     }
@@ -61,8 +74,10 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
                 key: entry.key,
                 name: entry.name,
                 summary: entry.key.hasPrefix("/")
-                    ? QuickCaptureProjects.readme(atRoot: entry.key).flatMap(QuickCaptureProjects.firstParagraph(ofReadme:))
-                    : nil,
+                    ? QuickCaptureProjects.readme(atRoot: entry.key).flatMap(QuickCaptureProjects.summary(ofReadme:))
+                    : entry.hostReadme
+                        .flatMap { FileManager.default.contents(atPath: $0) }
+                        .flatMap(QuickCaptureProjects.summary(ofRemoteReadme:)),
                 terms: entry.terms,
                 userLine: entry.userLine
             )

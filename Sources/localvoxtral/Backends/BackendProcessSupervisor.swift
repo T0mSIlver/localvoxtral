@@ -53,6 +53,12 @@ final class BackendProcessSupervisor {
     @ObservationIgnored private var recentErrorOutput: [String] = []
     @ObservationIgnored private var stoppingIntentionally = false
 
+    #if DEBUG
+    /// Called with the child's pid once its exit is handled, so a test's fake
+    /// sleep can hold the readiness poll until then (#753).
+    @ObservationIgnored var debugProcessExitHandled: ((pid_t) -> Void)?
+    #endif
+
     init(
         configuration: BackendProcessConfiguration,
         probe: @escaping Probe = BackendProcessSupervisor.defaultProbe,
@@ -340,6 +346,9 @@ final class BackendProcessSupervisor {
         let continuation = processExitContinuation
         processExitContinuation = nil
         continuation?.resume(returning: status)
+        #if DEBUG
+        debugProcessExitHandled?(pid)
+        #endif
 
         Log.backends.info(
             "\(self.configuration.name, privacy: .public) backend exited pid=\(pid, privacy: .public) status=\(status, privacy: .public)"

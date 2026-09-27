@@ -20,10 +20,19 @@ import SwiftUI
 struct IntegrationsContextSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
+    @State private var isShowingProjectLines = false
+
+    /// Lines for the projects the router lists now; a line kept for a
+    /// project that dropped off the list is not counted.
+    private var projectLineCount: Int {
+        let keys = Set((viewModel.quickCapture?.model.projectChoices ?? []).map(\.key))
+        return settings.quickCaptureProjectLines.keys.filter(keys.contains).count
+    }
 
     /// Where the group's Learn more link lands.
     private enum LearnMore {
         static let polishContext = DocsLink.page("docs/coding-agents/#polish-context-what-each-toggle-sends")
+        static let quickCapture = DocsLink.page("docs/coding-agents/#quick-capture")
     }
 
     /// Same gate as the Text Processing polishing rows: context is only ever
@@ -84,6 +93,45 @@ struct IntegrationsContextSettingsPane: View {
                 }
                 .disabled(!isLLMPolishingReachable)
                 .opacity(isLLMPolishingReachable ? 1.0 : 0.5)
+            }
+
+            // Its own group: a capture is not polish context. The key row
+            // stays whatever the toggle says, so the group never changes
+            // shape (owner rule, 2026-07-04).
+            SettingsGroup(title: "Quick capture", learnMoreURL: LearnMore.quickCapture) {
+                SettingsFieldRow(title: "Send quick captures to Jev for routing") {
+                    Toggle("", isOn: $settings.quickCaptureJevEnabled)
+                        .labelsHidden()
+                }
+
+                SettingsFieldRow(title: "Jev API key") {
+                    SecureField("TypeSafe or Vercel AI Gateway key", text: $settings.jevAPIKey)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: SettingsLayout.textFieldWidth)
+                }
+
+                // Routing reads these lines with or without Jev, so the row
+                // stays whatever the toggle says.
+                SettingsFieldRow(
+                    title: "Project descriptions",
+                    status: "\(projectLineCount)"
+                ) {
+                    Button("Edit…") { isShowingProjectLines = true }
+                        .accessibilityIdentifier("settings.quickCaptureProjectLines.edit")
+                }
+                .sheet(isPresented: $isShowingProjectLines) {
+                    QuickCaptureProjectLinesSheet(
+                        settings: settings,
+                        projects: viewModel.quickCapture?.model.projectChoices ?? []
+                    ) {
+                        isShowingProjectLines = false
+                    }
+                }
+            }
+            .onAppear {
+                // Read from the Keychain only for someone who turned routing
+                // on: opening this pane must not prompt anyone else.
+                if settings.quickCaptureJevEnabled { settings.ensureSecretsLoaded([.jevAPIKey]) }
             }
         }
     }

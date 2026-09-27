@@ -23,6 +23,15 @@ there is not.
   `testPrePopulatedFieldTextCannotRescueTheTrailingSpace`). Single-component
   tokens naming an EXISTING absolute path (`/tmp `) abstain via a
   filesystem-existence seam; non-existing ones (`/compact`) stay commands.
+- **An Overlay Buffer commit starts with a space only when it continues
+  the unsent prompt** (#802, owner ruling). The commit text is trimmed and
+  the app cannot read the field, so the evidence is the join: the previous
+  commit went to the same app pid and joined session, and that session's
+  submit count (`ClaudeSessionSnapshot.promptsSubmitted`, every
+  `UserPromptSubmit` with or without text) has not moved since. A failed
+  commit, one the spoken trigger sent, one with no join, or a Live Auto-Paste
+  dictation clears it. Anything looser puts a space in front of `/compact`
+  in a fresh prompt. No trailing space after a commit.
 - **A mid-dictation reconnect resumes the session; it never replays it.**
   When the realtime socket drops without the user asking
   (`DictationSessionController+Reconnect.swift`, #380), the mic keeps recording and the
@@ -104,7 +113,8 @@ there is not.
   promotion a stop or dropped socket does), then Return is pressed. That is
   the owner's accepted cost (2026-09-24), shown next to the toggle. The
   Return is pressed only in the PID the session pinned, only while that PID
-  is frontmost (it never activates an app for a Return), never under Secure
+  is frontmost (it never activates an app for a Return; the one exception
+  is the named session of "Send that to <name>" below), never under Secure
   Keyboard Entry, and only once the hold-back stream has released every
   word — a Return ahead of the last word would submit half a prompt. Every
   Live decision is taken when it is needed, from the app frontmost THEN
@@ -137,6 +147,23 @@ there is not.
   only by its own bundle ID on `ReturnSubmitsAppList` (the AX probe reads the
   element focused NOW, which need not be the commit target's), and the Return
   follows only a commit that reported `.succeeded`.
+- **A voice stop is the stop key, never a second commit path** (#839).
+  An Overlay Buffer dictation whose words (settled segments plus the
+  partial in flight: the Mistral API sends no final before the stop) end in
+  a send phrase, followed by `SpokenStopRule.silenceWindow` (3 s) with no
+  new words, calls `stopDictation` like the key; the stop's commit then
+  cuts the phrase and sends as above. It arms only when the commit would
+  send (`planOverlaySpokenSend`, asked again when the timer fires), so a
+  phrase the commit would keep as text never ends the dictation. A held
+  dictation never arms: its release is the stop, and a stop while the key
+  is down would leave a release with nothing to stop (#840). A quick
+  capture stops the same way, saves without the phrase and presses
+  nothing. The window is measured, not guessed: on the owner's 138
+  dictations with audio, 5.6 % of speech pauses reach 3 s and the one
+  mid-sentence "send it" was followed by 2.4 s; a false stop sends half a
+  prompt, a late one costs a key press. The user's phrase list
+  (`SendTriggerPhrases`) refuses one common word and anything over four
+  words, and a stored list that no longer validates loads as the default.
 - **"Go to <name>" is a command only when the name resolves** (#723 step
   1). An Overlay Buffer dictation (a Live Auto-Paste segment, #747) that
   is only "go to" plus at most four words is looked up against the live registry's default names (the git
@@ -155,7 +182,8 @@ there is not.
   `.unverified`.
 - **Live Auto-Paste holds back only what may still read "go to"** (#747).
   Typed words cannot be taken back, so while a session is live a segment is
-  held while its words so far may still become "go to" ("G", "Go", "go t"),
+  held while its words so far may still become "go to" ("G", "Go", "go t")
+  or "call this session",
   and one that opens with "go to" and at most four more words is held until
   its final. Any other segment is released the moment a letter rules the
   phrase out, then typed live; with no session live nothing is held. Only
@@ -167,6 +195,47 @@ there is not.
   pane is the old one. Segments that end while the go-to resolves and
   focuses wait and land after it, in order; a stop waits for them too.
   History keeps the live dictation whole, the phrase included.
+- **"Call this session <name>" names only a session the dictation is
+  in** (#723 step 2). The phrase ("call this session" or "name this
+  session", then at most four words; never "call this one", a coding
+  prompt) is parsed and held back like go-to. Its target is the session the
+  dictation joined or, in Live Auto-Paste after a go-to, the session whose
+  pane read back as `.focused`; after an `.unverified` go-to there is none.
+  No target, or one no longer live: the phrase is text. A nickname is
+  matched ahead of every default name, one session holds it at a time (the
+  last one named), and it is kept per registry session id in
+  `UserDefaults`, at most 100.
+- **"Send that to <name>" writes only into the named session** (#723
+  step 3; owner rulings on #723, 2026-09-26). An Overlay Buffer dictation
+  ending in "send that to" plus at most four words, with text before it, is
+  looked up like go-to after the go-to check and before the spoken send
+  cut, the dictionary and the polisher. No match: it commits as dictated.
+  Ambiguous: nothing is typed anywhere and the text goes to History. A
+  match: the phrase is cut, the rest is polished, and the commit goes to
+  that session and is submitted there; the spoken send trigger is not
+  applied, so "send it" inside the text stays text. The focused app never
+  gets the text or a key. Routes, in order:
+  (1) opencode's prompt relay, from a fresh declaration by the session's
+  pid; (2) the herdr pane the session's own hooks reported, only when it is
+  the one live local herdr, the registry maps the pane to that session
+  alone, and herdr lists the session's pid in the pane's foreground (the
+  route asks again before Enter); (3) a Ghostty, iTerm2 or Terminal.app
+  tab. Anything else, cmux included (its route can prove a surface only
+  while it is the focused one), is refused in one sentence. Every route
+  refusal is `keepInHistory`, never `typeInstead`: keys would go to the
+  focused app. **The Return exception** (owner ruling): in a terminal tab,
+  and only there, Return may be pressed in an app the app itself brought
+  forward. The pane must first read back `.focused` (its tty through the
+  join's reader, never a window title); only then is the text typed, into
+  the terminal pid that is frontmost and carries the focused bundle ID.
+  After the typing the tty is read back again, and Return is pressed only
+  if it still matches, that pid is frontmost and on `ReturnSubmitsAppList`,
+  and Secure Keyboard Entry is off. A failed check before the typing types
+  nothing and keeps the text in History; one after it leaves the text
+  unsubmitted, and the popover says so. Correction learning and term
+  proposals skip an addressed dictation: they key on the join of the pane
+  it started in. Live Auto-Paste has no addressed send: its words are
+  typed before the phrase at the end is heard.
 - **The Mistral second pass holds the text back, never the world** (#317).
   An Overlay Buffer dictation in Mistral API mode is sent whole to the batch
   endpoint on stop (`DictationSessionController+StopCommit.swift`,
@@ -392,7 +461,14 @@ there is not.
   verdict categories only. `CorrectionDiffClassifier` favours precision: one
   substitution of at most 4 words, few other changed words, a spelling that
   sounds like what it replaced, and a capital that is not a sentence start, a
-  digit or an inner joiner, unless the spelling is already a known term. A
+  digit or an inner joiner, unless the spelling is already a known term. An
+  edit that only moves the space after a sentence end, comma or semicolon
+  before a capital (`doing. Usually` ↔
+  `doing.Usually`), or a span holding a sentence end, is never a term: two
+  Overlay Buffer dictations sent in one prompt arrive glued while the learner
+  joins them with a space (#801). Nor is a case-only fix of a word of two
+  letters or fewer (`i` → `I`, `ok` → `OK`), or dots put between
+  a word's letters (`eg` → `e.g`), unless already a known term (#803). A
   hand fix is confirmed at once (`confirmedByCorrection`), bypassing the
   three-dictation bar, because that bar guards against polish repeating
   itself and a hand fix is not polish. Undo, or a later fix that changes a
@@ -473,7 +549,11 @@ there is not.
   and each adds its own below:
   (1) *One route, resolved at start.* `SessionContextResolver.resolveAgentPromptRoute()`
   picks at most one route per dictation, next to the join, for the session
-  the join resolved and nothing else. It is dropped with the join.
+  the join resolved and nothing else. It is dropped with the join. The one
+  exception is a dictation addressed by name ("Send that to <name>" above):
+  its route is resolved at commit, for the named session, by
+  `ClaudeSessionJoinResolver.addressedRoute(for:)`, and never falls back
+  to keys.
   (2) *Append and submit only* (`AgentPromptCall`). Widening a route (clear,
   commands, another session or pane) is a new capability and needs the
   owner's decision.
@@ -555,6 +635,43 @@ there is not.
     never kept as a join, reads nothing from the pane, never reaches a
     remote or federated herdr, and asks the focused TTY only while a live
     local session sits in a herdr pane.
+  - *cmux surfaces* (#727, `CmuxSurfaceRoute`). *Exactly two calls:*
+    `surface.send_text` with `surface_id` and `text`, and `surface.send_key`
+    with `surface_id` and `key: "enter"`. Never a call without `surface_id`:
+    cmux then writes to whatever surface is focused. Never `surface.focus`,
+    another key, or another surface.
+    *Only the resolved surface:* the route exists only for a `.cmuxSurface`
+    join (`ClaudeSessionJoinResolver.cmuxSurfaceRoute(for:frontmostPID:)`).
+    Writing needs none of the context join's gates, so when no context
+    join ran (context settings off, no permitted polishing endpoint), the
+    route asks the cmux arm alone, behind the cmux opt-in; that join reads
+    the surface's id and tty, never its text, and no context ships from it.
+    The route
+    names its binding's surface id, and dials only a socket whose peer is
+    the cmux process the join was about, with the join's password, one
+    connection per call. Before every call it re-reads the opt-in
+    (`cmuxSurfaceJoinEnabled`) and whether the joined session still holds
+    the surface in the registry: once the agent exits, the surface is a
+    shell, and an Enter there runs the dictation as a command.
+    *Only the dictation in progress:* armed at start, dropped at stop.
+    *No control characters:* cmux turns `\n` and `\r` into Return and Tab,
+    Escape and Backspace into keys, so text with any C0 or C1 control is
+    never sent.
+    *Delivery:* cmux answers `queued: false` (sent) or `queued: true` (the
+    terminal is starting and gets it then); either is delivered, wherever
+    focus is. A success without `queued` comes from a build that can drop
+    text sent to a surface whose tab is not focused (manaflow-ai/cmux#3129),
+    so it counts only while the surface is cmux's focused one, and is
+    otherwise `keepInHistory`. An error answer or a request never written
+    types instead while cmux is frontmost, unless cmux says another of its
+    surfaces is focused; with another app frontmost it is `keepInHistory`.
+    A request written with no clean answer, or a success naming another
+    surface, is `keepInHistory`.
+    *Never asks for password mode* (owner ruling, 2026-09-26): the route
+    exists only because the user already put cmux in `password` mode for
+    the join. In cmux's default `cmuxOnly` mode there is no join and so no
+    route, and dictation types as before, with no alert and no setting. A
+    connection refused mid-dictation falls back to keystrokes the same way.
 - **Claude Code context reaches the prompt only through a positive join.**
   The joined session's repository (status, uncommitted diffs, contents
   of files the agent just touched) and its prior user prompt are attached as
@@ -738,8 +855,8 @@ there is not.
     mode with a password (cmux's default `cmuxOnly` mode does a peer-ancestry
     check we cannot pass — we are not a cmux child). The password lives in the
     Keychain (`CmuxSocketPasswordStore`); the socket is dialed by
-    `CmuxSocketClient` (hand-written, read-only — cmux is GPL-3, never vendor
-    its code), which asks `system.tree` for the focused surface (and its tty)
+    `CmuxSocketClient` (hand-written — cmux is GPL-3, never vendor its code;
+    its two writes are the cmux route's, above), which asks `system.tree` for the focused surface (and its tty)
     and `surface.read_text` for that one surface's VIEWPORT (never
     `scrollback`, and never `lines` — in cmux that parameter implies
     scrollback). Auth is per CONNECTION, not per message: `auth.login` is the
@@ -1797,7 +1914,43 @@ there is not.
     outside the set publishes nothing, and a record without one is dropped
     at decode. The reply text (`last_assistant_message`) stays out of the
     app too (owner ruling on #717, 2026-09-26): nothing reads it aloud, and
-    the answer hotkey brings the pane forward to read it there.
+    the answer hotkey brings the pane forward to read it there. It stays on
+    the remote host as well (#818): the shim rebuilds a `Stop` from the
+    checked session id and the cwd, copied only when its JSON string token
+    passes a strict grammar check, since the shim has no JSON tool to
+    re-escape it.
+  - **A Claude Desktop session comes forward through Desktop's own link,
+    and counts as forward only when the join reads it back** (#834). A
+    session that reports a Desktop view id, local or from an ssh host, is
+    brought forward by opening `claude://code/continue?session=local_<uuid>`
+    in the running Desktop (never the default `claude://` handler, and never
+    when Desktop is not running: the link would launch it). Read from
+    Desktop 2.9939.2's handler (2026-09-27): it takes the id only when it
+    matches `^local_[A-Za-z0-9-]{1,64}$` and routes to the session's
+    `/epitaxy/` view. MEASURED the same day, from Finder and from Desktop
+    showing another session: an ssh-host session came forward and the join's
+    Desktop reader read it back from its prompt 0.2 s after the open. The
+    sidebar exposes no session id to Accessibility (rows are titles), so
+    clicking a row cannot be tied to a session. `.focused` requires Desktop
+    frontmost and `sessionShown` to resolve the focused view to this
+    registry session: focus in the primary pane's prompt, and the id
+    reported by this session alone. An ambiguous id, focus left in the
+    sidebar or a second pane, or no answer within 2 s is `.unverified`, and
+    the answer shortcut starts no dictation. "Send that to" keeps refusing
+    Desktop: its Return exception is ruled for terminal tabs only. The link
+    and the id are UNDOCUMENTED; a Desktop update that drops them leaves the
+    read-back failing, never a dictation in the wrong session.
+  - **"Were you looking at it" asks only local questions** (#717). A turn's
+    end queues a finished entry only when the user was not looking at the
+    session's pane (`AgentAttentionTracker`), and that is answered by
+    `ClaudeSessionJoinResolver.sessionShown(target:)`: the focused TTY, a
+    local herdr's focused pane, Claude Desktop's focused session view. It
+    runs on every turn's end with no dictation behind it, so it never opens
+    a forward, stamps a herdr panel, dials cmux or reads a screen; an answer
+    it cannot give (an ssh session, cmux) counts as not looking, which costs
+    an extra cue and never a missed one. A turn's end that finds the
+    session's next event already applied (a new prompt, a wait, the user
+    reaching it) while the pane was being checked changes nothing.
   - Apart from that, transcripts are never scraped (the Claude Code parser
     drops `transcript_path`), and a
     LOCAL session never attaches hook-quoted tool excerpts: its files are
@@ -2123,6 +2276,17 @@ there is not.
   malicious process running as the user on the REMOTE host can still read
   `~/.claude/` and therefore the plugin's token no matter what we do. Say so
   rather than implying the token bounds it.
+- **A host installs the remote plugin from the app's own copy, never from
+  GitHub** (#836). The setup writes the bundled marketplace to
+  `~/.local/share/localvoxtral/claude-marketplace` on the host and registers
+  that directory, then demands the read-back equal the version this build
+  ships. A GitHub marketplace tracks main, so every shipped app failed that
+  read-back (exit 43) on every host the day main bumped the plugin. Don't
+  relax the read-back instead: the shim's wire contract is versioned. Don't
+  `claude plugin marketplace remove` to switch sources either: it uninstalls
+  the plugin and deletes the token, which the update path cannot resend;
+  `marketplace add` on the existing name replaces the source and keeps both
+  (Claude Code 2.1.283).
 - **The Mac asks a host to spend, and the host's answer is a label source**
   (#641). A remote project's terms come from a run on the host, because the
   Mac holds only a label for the repository and a label never becomes a path,
@@ -2148,6 +2312,31 @@ there is not.
   term filter, stored only as unconfirmed proposals. A refusal logs its reason,
   never a byte of the body. What stays as it was: the stdout gate, the hook's
   fail-open exit, the forward, and what is sent to herdr.
+- **Quick capture asks a host the way #641 does, and the capture goes only
+  to the session asked** (#745, `RemoteQuickCaptureRequests`). Two more fixed
+  reply headers: `X-Lvx-Readme: wanted` (a remote project the learned terms
+  hold, no summary or a week-old one, once per project per day this launch)
+  and `X-Lvx-Draft: <32 hex>` (the next accepted hook from a live session in
+  the routed project). Both go only to a request whose own shim reads them.
+  `/v1/readme`, `/v1/draft/prompt` and `/v1/draft` authenticate like a hook,
+  scope the session id under the authenticating host and the named agent, and
+  take one answer from exactly the session and agent asked; unlike
+  `/v1/terms` the session need not still be live, since the ask recorded all
+  three. The capture text leaves the Mac only in the prompt reply. The
+  README bytes are only summarized, the host's issue list only quoted into
+  the prompt (a related issue counts only if listed there), the output read
+  as a local draft. A squatter on the port can send both headers and answer
+  the prompt request with a prompt of its own, so the host's run is the
+  Mac's drafting command with Claude Code's reads confined to the checkout
+  (`--permission-mode dontAsk --allowedTools Read(./**)`; without it Read
+  opens any file, measured 2026-09-27; Vibe's tools are workspace-bound) and
+  the shim allows one draft at a time and 20 a day. `capture.sh` never runs
+  `gh` for anything but `issue list`. Which remote projects the router sees
+  (#819): a hook adds a project only for a name its host sent as
+  `X-Lvx-Env-Project`; a cwd label only stamps a project already held,
+  because each worktree has its own, and a label no hook has named since is
+  not listed, since no session will report it again. Nothing guesses which
+  repository an old label belonged to.
 - **The SendEnv probe uses a random value that is never logged and never
   interpreted beyond equality.** `probeRemoteEnvironment` mints a fresh nonce
   per call (a UUID by default, injected in tests), exports it into that one
@@ -2234,3 +2423,22 @@ there is not.
   does not stamp the project, because it is a few names, not the project's
   list. The hook receipt (`ClaudeBrokerResponse`) is untouched and still
   carries nothing a hook could print.
+
+- **A quick capture never reaches the focused app, and only File reaches
+  GitHub** (#725). A session started by the quick capture shortcut latches
+  `sessionIsQuickCapture` with its output mode (always Overlay Buffer), and
+  its stop takes `commitQuickCapture` before any polish, second pass, screen
+  or clipboard sample, or insertion: the History record is written first,
+  the overlay closes as a cancelled one does, and the words go to
+  `QuickCaptureInboxModel`, which writes them to its 0600 file before
+  routing. The router sends a low or tied answer to the catch-all, never a
+  guessed project. Jev and the chat model both need 0.9: on the replay
+  (#741, #744) every right project came at 0.95 or more, and nearly every
+  wrong one under 0.9. The drafting agent has
+  read-only tools and no shell, so it cannot run `gh`; the open issues reach
+  it through the prompt, from the app's own `gh issue list`. Its answer is
+  untrusted text: a one-line capped title, a body without control
+  characters, a related issue only if it was listed. `QuickCaptureInboxModel.file`
+  is the one call to `gh issue create`, reached only from the Inbox's File
+  button. A remote project is drafted on its host (#745, below): a remote
+  label never becomes a working directory here.

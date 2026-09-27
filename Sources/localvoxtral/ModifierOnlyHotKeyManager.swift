@@ -6,8 +6,8 @@ import IOKit.hid
 
 /// Captures modifier-only key presses (Fn/Globe, Right Command, Right Option)
 /// with NSEvent monitors. A quick tap starts/stops overlay-buffer dictation;
-/// holding past the configured threshold starts live auto-paste push-to-talk
-/// dictation until the modifier is released.
+/// holding past the configured threshold starts push-to-talk dictation until
+/// the modifier is released.
 @MainActor
 final class ModifierOnlyHotKeyManager {
     enum ModifierKey: String, CaseIterable, Identifiable, Codable {

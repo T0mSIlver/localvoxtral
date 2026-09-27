@@ -1,7 +1,8 @@
 import Foundation
 import XCTest
 
-@testable import localvoxtral
+@testable import localvoxtralCore
+import localvoxtralTestSupport
 
 final class VibeHooksInstallServiceTests: XCTestCase {
     private static let shim = Data("#!/bin/sh\n# fixture shim\n".utf8)

@@ -97,6 +97,36 @@ final class GoToSessionWiringTests: XCTestCase {
         XCTAssertEqual(harness.overlay.committedTexts, [])
     }
 
+    // MARK: - Naming this session (#723 step 2)
+
+    func testNamingThisSessionGivesTheJoinedSessionANicknameAndTypesNothing() async {
+        let worktree = session("wt", cwd: "/r/localvoxtral/.claude/worktrees/cool-roentgen")
+        let harness = makeHarness(
+            text: "Call this session payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001"), worktree]
+        )
+        harness.viewModel.session.context.claudeSessionJoin = join(worktree)
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.overlay.committedTexts, [], "the command is not inserted")
+        XCTAssertEqual(harness.returns.value, [])
+        XCTAssertEqual(harness.records.value.count, 0)
+        XCTAssertEqual(harness.viewModel.statusText, DictationSessionController.GoToSessionStatus.named)
+        XCTAssertEqual(harness.nicknames.nickname(for: "wt"), "payments")
+        let resolution = await harness.viewModel.session.sessionNavigator?.resolve(spokenName: "payments")
+        XCTAssertEqual(resolution, .resolved(worktree), "the nickname wins over the other session's name")
+    }
+
+    func testNamingWithNoJoinedSessionIsCommittedAsText() async {
+        let harness = makeHarness(text: "call this session payments", sessions: [session("pay", cwd: "/r/payments")])
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.overlay.committedTexts, ["call this session payments"])
+        XCTAssertNil(harness.nicknames.nickname(for: "pay"))
+    }
+
     // MARK: - Harness
 
     private struct Harness {
@@ -105,6 +135,7 @@ final class GoToSessionWiringTests: XCTestCase {
         let focuser: FakeSessionPaneFocuser
         let returns: Box<[pid_t]>
         let records: Box<[DictationSessionRecord]>
+        let nicknames: SessionNicknameStore
 
         @MainActor
         func stop() async {
@@ -120,6 +151,15 @@ final class GoToSessionWiringTests: XCTestCase {
         snapshot.workspace = ClaudeWorkspaceReference.make(rawCwd: cwd, origin: local)
         snapshot.process = ClaudeHookProcessInfo(hookPID: 1, claudePID: 2, tty: tty, termProgram: "ghostty")
         return snapshot
+    }
+
+    private func join(_ snapshot: ClaudeSessionSnapshot) -> ClaudeSessionJoin {
+        ClaudeSessionJoin(
+            target: TerminalScreenTarget(pid: Self.terminalPID, bundleID: TerminalScreenAllowlist.ghosttyBundleID),
+            snapshot: snapshot,
+            windowID: 101,
+            mechanism: .ttyDevice
+        )
     }
 
     private func makeHarness(
@@ -163,15 +203,24 @@ final class GoToSessionWiringTests: XCTestCase {
         TerminalTargetDetector.debugSecureEventInputOverride = { false }
 
         let focuser = FakeSessionPaneFocuser(outcome: outcome)
+        let nicknames = SessionNicknameStore(load: []) { _ in }
         viewModel.session.sessionNavigator = SessionNavigator(
             liveSessions: { sessions },
             repositoryRoot: { _ in .unknown },
             focuser: focuser,
-            sleep: ManualSessionClock().sleep
+            sleep: ManualSessionClock().sleep,
+            nicknames: nicknames
         )
         viewModel.session.sessionOutputMode = .overlayBuffer
         viewModel.transcript.currentDictationEventText = text
-        return Harness(viewModel: viewModel, overlay: overlay, focuser: focuser, returns: returns, records: records)
+        return Harness(
+            viewModel: viewModel,
+            overlay: overlay,
+            focuser: focuser,
+            returns: returns,
+            records: records,
+            nicknames: nicknames
+        )
     }
 }
 

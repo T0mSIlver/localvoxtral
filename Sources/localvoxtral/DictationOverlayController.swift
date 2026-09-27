@@ -326,7 +326,8 @@ final class DictationOverlayController {
             secureInputActive: snapshot.secureInputActive,
             metrics: metrics,
             polished: snapshot.polished,
-            claudeJoin: snapshot.claudeJoin
+            claudeJoin: snapshot.claudeJoin,
+            destinations: snapshot.destinations
         )
 
         let contentHeight = metrics.contentHeight(
