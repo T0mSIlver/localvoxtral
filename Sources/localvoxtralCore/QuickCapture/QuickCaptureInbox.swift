@@ -210,12 +210,19 @@ package enum QuickCaptureInboxFile {
         return result
     }
 
-    /// The file holds dictated words, so it is never readable by anyone
-    /// else, not even for a moment: a 0600 temporary file renamed over it.
     package static func save(_ inbox: QuickCaptureInbox, to url: URL) throws {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try PrivateFile.write(encoder.encode(inbox), to: url)
+    }
+}
+
+/// A file that holds the user's words or audio names.
+package enum PrivateFile {
+    /// Never readable by anyone else, not even for a moment: a 0600
+    /// temporary file renamed over the old one.
+    package static func write(_ data: Data, to url: URL) throws {
         let fileManager = FileManager.default
         let directory = url.deletingLastPathComponent()
         if !fileManager.fileExists(atPath: directory.path) {
@@ -231,7 +238,7 @@ package enum QuickCaptureInboxFile {
         }
         do {
             let handle = try FileHandle(forWritingTo: temporary)
-            try handle.write(contentsOf: encoder.encode(inbox))
+            try handle.write(contentsOf: data)
             try handle.close()
             // rename(2) replaces the old file in one step, on both platforms.
             guard rename(temporary.path, url.path) == 0 else {
