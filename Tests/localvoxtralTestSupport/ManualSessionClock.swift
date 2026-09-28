@@ -59,6 +59,9 @@ package final class ManualSessionClock: Sendable {
     /// Sleeps in progress: timers armed and not yet due.
     package var pendingSleepers: Int { state.withLock { $0.sleepers.count } }
 
+    /// When each sleep in progress ends, soonest first.
+    package var pendingDeadlines: [Date] { state.withLock { $0.sleepers.map(\.deadline).sorted() } }
+
     package func sleep(_ duration: Duration) async {
         let id = state.withLock { state -> UInt64 in
             state.nextID += 1

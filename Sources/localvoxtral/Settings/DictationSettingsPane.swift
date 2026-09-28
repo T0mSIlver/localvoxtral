@@ -14,21 +14,7 @@ struct DictationSettingsPane: View {
     private static let overlayWordHoldDocsURL = DocsLink.page("docs/dictation/#keeping-words-on-their-line")
     /// The Output group's Learn more: the send phrases, where they press
     /// Return, and how a dictation stops on one.
-    private static let sendingByVoiceDocsURL = DocsLink.page("docs/dictation/#voice-commands")
-
-    /// Each mode's toggle names the first send phrase, so it stays true
-    /// after the user replaces "send it".
-    private var spokenSendToggleTitle: String {
-        let phrase = settings.spokenSendTriggerPhrases.first ?? "send it"
-        return "Say \u{201C}\(phrase)\u{201D} to press Return in terminals and Claude Desktop"
-    }
-
-    /// Live Auto-Paste's toggle sits under Advanced (#840), apart from the
-    /// Overlay Buffer one, so its title names the mode.
-    private var liveSpokenSendToggleTitle: String {
-        let phrase = settings.spokenSendTriggerPhrases.first ?? "send it"
-        return "Say \u{201C}\(phrase)\u{201D} in Live Auto-Paste to press Return"
-    }
+    private static let agentsDocsURL = DocsLink.page("docs/agents/")
 
     private var dictationOutputModeBinding: Binding<DictationOutputMode> {
         Binding(
@@ -297,13 +283,25 @@ struct DictationSettingsPane: View {
                 }
             }
 
-            SettingsGroup(title: "Output", learnMoreURL: Self.sendingByVoiceDocsURL) {
+            SettingsGroup(title: "Output", learnMoreURL: Self.agentsDocsURL) {
                 SettingsFieldRow(title: "Copy on stop") {
                     Toggle("", isOn: $settings.autoCopyEnabled)
                         .labelsHidden()
                 }
 
                 SendPhrasesRow(settings: settings)
+
+                // Overlay Buffer only: Live Auto-Paste presses Return on the
+                // segment's final and never waits (#1009).
+                SettingsFieldRow(title: "Wait before pressing Return") {
+                    Picker("", selection: $settings.spokenStopWait) {
+                        ForEach(SpokenStopWait.allCases) { wait in
+                            Text(wait.displayName).tag(wait)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                }
 
                 // The needs-you cue (#717): a sound, a banner and the menu
                 // bar icon when a coding agent waits for you, and the waiting
@@ -441,7 +439,7 @@ struct DictationSettingsPane: View {
                     .labelsHidden()
                 }
 
-                SettingsFieldRow(title: spokenSendToggleTitle) {
+                SettingsFieldRow(title: "Say a send phrase to press Return in terminals and Claude Desktop") {
                     Toggle("", isOn: $settings.overlaySpokenSendEnabled)
                         .labelsHidden()
                 }
@@ -486,7 +484,9 @@ struct DictationSettingsPane: View {
                     }
                 }
 
-                SettingsFieldRow(title: liveSpokenSendToggleTitle) {
+                // Under Advanced (#840), apart from the Overlay Buffer
+                // toggle, so its title names the mode.
+                SettingsFieldRow(title: "Say a send phrase in Live Auto-Paste to press Return") {
                     Toggle("", isOn: $settings.liveSpokenSendEnabled)
                         .labelsHidden()
                 }
@@ -567,7 +567,7 @@ struct SendPhrasesRow: View {
     private var saved: String { settings.spokenSendTriggerPhrases.joined(separator: ", ") }
 
     var body: some View {
-        SettingsFieldRow(title: "Phrases that press Return") {
+        SettingsFieldRow(title: "Send phrases") {
             TextField("send it, send now", text: Binding(
                 get: { draft ?? saved },
                 set: { draft = $0 }

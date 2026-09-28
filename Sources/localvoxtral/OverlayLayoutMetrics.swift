@@ -156,7 +156,12 @@ struct OverlayLayoutMetrics: Equatable {
     /// Full panel content height: header + spacing + body + optional error +
     /// padding. Mirrors `DictationOverlayView.body` exactly.
     @MainActor
-    func contentHeight(text: String, errorMessage: String?, draftReview: QuickCaptureDraftSnapshot? = nil) -> CGFloat {
+    func contentHeight(
+        text: String,
+        errorMessage: String?,
+        draftReview: QuickCaptureDraftSnapshot? = nil,
+        destinations: OverlayDestinationStrip? = nil
+    ) -> CGFloat {
         let displayText = text.trimmed.isEmpty ? "" : text
 
         var total = Self.contentPadding * 2
@@ -166,6 +171,8 @@ struct OverlayLayoutMetrics: Equatable {
 
         if let draftReview {
             total += Self.stackSpacing + draftReviewHeight(draftReview)
+        } else if let destinations, destinations.isOpen {
+            total += Self.stackSpacing + destinationListHeight(rows: destinations.items.count)
         }
 
         if let errorMessage, !errorMessage.trimmed.isEmpty {
@@ -179,6 +186,19 @@ struct OverlayLayoutMetrics: Equatable {
 }
 
 extension OverlayLayoutMetrics {
+    /// The open destination list (#1015) shows this many rows, then scrolls.
+    static let maximumVisibleDestinationRows = 6
+    static let destinationRowSpacing: CGFloat = 2
+
+    /// One destination row: a pill's text plus its padding.
+    var destinationRowHeight: CGFloat { ceil(16 * scale) }
+
+    /// The open destination list, as `DictationOverlayView` draws it.
+    func destinationListHeight(rows: Int) -> CGFloat {
+        let visible = CGFloat(min(max(rows, 1), Self.maximumVisibleDestinationRows))
+        return visible * destinationRowHeight + (visible - 1) * Self.destinationRowSpacing
+    }
+
     /// Spacing between the draft's title, excerpt and hint.
     static let draftReviewSpacing: CGFloat = 2
     static let draftReviewHint = "Say \u{201C}file it\u{201D}, \u{201C}drop it\u{201D}, or a change"

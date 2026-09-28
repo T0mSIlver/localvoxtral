@@ -125,7 +125,7 @@ package final class CorrectionLearning {
                 return
             }
             let folded = term.caseFoldedForMatching
-            // A spelling the user typed into Names and terms is already theirs
+            // A spelling the user typed into Global terms is already theirs
             // everywhere; remembering it per project adds nothing.
             guard !speakerTerms.contains(where: { $0.caseFoldedForMatching == folded }) else {
                 Log.polishing.info("Correction learning: fix was already a listed term")

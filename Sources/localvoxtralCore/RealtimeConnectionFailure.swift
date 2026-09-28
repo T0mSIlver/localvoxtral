@@ -181,6 +181,13 @@ package enum RealtimeConnectionFailureClassifier {
         }
     }
 
+    /// A raw realtime error without its text, which a server may have filled
+    /// with what it was sent: its kind and length, the part safe to log
+    /// public (#936).
+    package static func publicLogDescription(of rawError: String?) -> String {
+        "\(classify(socketErrorMessage: rawError)), \(rawError?.count ?? 0) characters"
+    }
+
     /// Classifies a raw socket/system error message string into a failure kind.
     ///
     /// `BaseRealtimeWebSocketClient.describeSocketError` formats errors as

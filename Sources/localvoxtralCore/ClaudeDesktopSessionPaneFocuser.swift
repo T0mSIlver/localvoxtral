@@ -83,21 +83,30 @@ package final class ClaudeDesktopSessionPaneFocuser: SessionPaneFocusing {
 }
 
 /// The one focus primitive "go to <name>" and the answer shortcut share,
-/// dispatched on the session's route: a terminal tab or a Claude Desktop
-/// session.
+/// dispatched on the session's route: a terminal tab, a Claude Desktop
+/// session or a herdr pane.
 @MainActor
 package final class SessionPaneFocuserRouter: SessionPaneFocusing {
     private let terminal: any SessionPaneFocusing
     private let claudeDesktop: any SessionPaneFocusing
+    private let herdr: any SessionPaneFocusing
 
-    package init(terminal: any SessionPaneFocusing, claudeDesktop: any SessionPaneFocusing) {
+    package init(
+        terminal: any SessionPaneFocusing,
+        claudeDesktop: any SessionPaneFocusing,
+        herdr: any SessionPaneFocusing
+    ) {
         self.terminal = terminal
         self.claudeDesktop = claudeDesktop
+        self.herdr = herdr
     }
 
     private func focuser(for session: ClaudeSessionSnapshot) -> any SessionPaneFocusing {
-        if case .claudeDesktop = SessionPaneFocusRoute.of(session) { return claudeDesktop }
-        return terminal
+        switch SessionPaneFocusRoute.of(session) {
+        case .claudeDesktop: claudeDesktop
+        case .herdrPane: herdr
+        case .terminalTTY, .unsupported: terminal
+        }
     }
 
     package func focusPane(of session: ClaudeSessionSnapshot) async -> SessionPaneFocusOutcome {

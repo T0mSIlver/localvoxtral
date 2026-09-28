@@ -7,6 +7,9 @@ import SwiftUI
 /// project close the table as "No project" (#972), so this pane is the one
 /// place learned terms are seen, pinned and forgotten.
 ///
+/// Import… and Export… under Learned terms move every project's terms at
+/// once, so they sit below the table, not in a project's sheet (#999).
+///
 /// Opening the pane asks GitHub again for every project's description.
 struct ProjectsSettingsPane: View {
     @Bindable var settings: SettingsStore
@@ -18,6 +21,7 @@ struct ProjectsSettingsPane: View {
     /// History when the pane opens.
     @State private var dictationProjectKeys: [String?] = []
     @State private var openProject: OpenProject?
+    @State private var transferMessage: String?
 
     enum OpenProject: Identifiable, Hashable {
         case project(key: String)
@@ -29,6 +33,13 @@ struct ProjectsSettingsPane: View {
     private var rows: [ProjectsPaneRow] {
         _ = viewModel.learnedTermRevision
         return inbox?.projectRows(dictationProjectKeys: dictationProjectKeys) ?? []
+    }
+
+    /// Reading `learnedTermRevision` re-renders Export… after a dictation
+    /// or an import: the store is a plain class, so nothing else observes it.
+    private var hasLearnedTerms: Bool {
+        _ = viewModel.learnedTermRevision
+        return !(viewModel.learnedTermStore?.snapshot().projects.isEmpty ?? true)
     }
 
     var body: some View {
@@ -97,6 +108,28 @@ struct ProjectsSettingsPane: View {
                     }
                 }
             }
+
+            SettingsGroup(title: "Learned terms", learnMoreURL: ProjectsLearnMore.learnedTerms) {
+                SettingsFieldRow(title: "Move to another Mac", status: transferMessage) {
+                    HStack(spacing: 8) {
+                        // Enabled with no terms: a new machine imports (#523).
+                        Button("Import…") {
+                            LearnedTermsTransfer.importTerms(into: viewModel.learnedTermStore) {
+                                transferMessage = $0
+                            }
+                        }
+                        .accessibilityIdentifier("projects.learnedTerms.import")
+                        if hasLearnedTerms {
+                            Button("Export…") {
+                                LearnedTermsTransfer.exportTerms(from: viewModel.learnedTermStore) {
+                                    transferMessage = $0
+                                }
+                            }
+                            .accessibilityIdentifier("projects.learnedTerms.export")
+                        }
+                    }
+                }
+            }
         }
         .sheet(item: $openProject) { open in
             switch open {
@@ -137,6 +170,7 @@ struct ProjectsSettingsPane: View {
 
 enum ProjectsLearnMore {
     static let projects = DocsLink.page("docs/coding-agents/#projects")
+    static let learnedTerms = DocsLink.page("docs/dictation/#terms-learned-from-polishing")
 }
 
 /// The table's five columns, the header's and each row's alike.
@@ -195,6 +229,10 @@ struct ProjectDetailSheet: View {
     @State private var repositoryDraft = ""
     @State private var isEditingDescription = false
     @State private var descriptionDraft = ""
+    private var tokenCounter: PolishPromptTokenCounter {
+        PolishPromptTokenCounter(settings: settings, ledger: viewModel.engines.usageLedger)
+    }
+
     private var row: ProjectsPaneRow? {
         _ = viewModel.learnedTermRevision
         // Any of its keys: the leading checkout changes when the Mac's
@@ -211,7 +249,9 @@ struct ProjectDetailSheet: View {
                     VStack(alignment: .leading, spacing: SettingsLayout.pageSpacing) {
                         repositoryGroup(row)
                         descriptionGroup(row)
-                        ProjectTermsGroup(terms: row.terms, keys: row.keys, store: viewModel.learnedTermStore)
+                        ProjectTermsGroup(
+                            terms: row.terms, keys: row.keys, store: viewModel.learnedTermStore,
+                            tokenCounter: tokenCounter)
                         activityGroup(row)
                     }
                 }
@@ -438,7 +478,9 @@ struct UnlistedTermsSheet: View {
                 // Forgetting the last term empties the group rather than
                 // closing the sheet under the pointer.
                 ProjectTermsGroup(
-                    terms: unlisted?.terms ?? [], keys: unlisted?.keys ?? [], store: viewModel.learnedTermStore)
+                    terms: unlisted?.terms ?? [], keys: unlisted?.keys ?? [], store: viewModel.learnedTermStore,
+                    tokenCounter: PolishPromptTokenCounter(
+                        settings: viewModel.settings, ledger: viewModel.engines.usageLedger))
             }
             .settingsScrollEdgeEffectHidden()
             HStack {
@@ -462,6 +504,9 @@ struct ProjectTermsGroup: View {
     let terms: [LearnedTerm]
     let keys: [String]
     let store: LearnedTermStore?
+    /// Sizes the terms in the polish prompt; nil shows no size.
+    var tokenCounter: PolishPromptTokenCounter? = nil
+    @State private var sentTermsTokens: String?
     @State private var query = ""
     @State private var isConfirmingForgetAll = false
 
@@ -480,6 +525,11 @@ struct ProjectTermsGroup: View {
                         .foregroundStyle(.secondary)
                 }
             } else {
+                if let sentTermsTokens {
+                    SettingsFieldRow(title: "Polish prompt", status: sentTermsTokens) {
+                        EmptyView()
+                    }
+                }
                 if terms.count > ProjectsPane.searchAbove {
                     SettingsGroupRow {
                         TextField("Search \(terms.count) terms", text: $query)
@@ -506,6 +556,11 @@ struct ProjectTermsGroup: View {
                 }
             }
         }
+        .task(id: sentTerms) {
+            guard let tokenCounter else { return }
+            sentTermsTokens = await tokenCounter.count(PolishPromptParts.projectTermText(sentTerms), termList: true)
+                .map(PolishPromptTokenText.projectTerms)
+        }
         .confirmationDialog(
             "Forget all \(terms.count) terms of this project?", isPresented: $isConfirmingForgetAll
         ) {
@@ -521,6 +576,11 @@ struct ProjectTermsGroup: View {
         guard let store else { return false }
         let terms = store.snapshot()
         return keys.contains { terms.canPin(projectKey: $0) }
+    }
+
+    /// The terms a dictation may send: the confirmed ones.
+    private var sentTerms: [String] {
+        terms.filter { $0.isConfirmed(minimumDictations: LearnedTerms.confirmedDictations) }.map(\.term)
     }
 
     private func row(_ term: LearnedTerm) -> some View {

@@ -67,11 +67,14 @@ final class ClaudeStatuslineCombineTests: XCTestCase {
             let input = Pipe(), output = Pipe()
             process.standardInput = input
             process.standardOutput = output
+            // A termination handler, not `waitUntilExit()`: 4 ms against 73 ms a spawn.
+            let exited = DispatchSemaphore(value: 0)
+            process.terminationHandler = { _ in exited.signal() }
             try process.run()
             input.fileHandleForWriting.write(Data("{\"session_id\":\"s1\"}".utf8))
             try input.fileHandleForWriting.close()
             let data = output.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
+            exited.wait()
             return String(decoding: data, as: UTF8.self)
         }
 

@@ -199,7 +199,18 @@ final class SessionNavigationTests: XCTestCase {
 
         var herdr = localSession("h", cwd: "/p", tty: "/dev/ttys004")
         herdr.process?.herdrPaneID = "p1"
-        XCTAssertEqual(SessionPaneFocusRoute.of(herdr), .unsupported(.herdr))
+        XCTAssertEqual(SessionPaneFocusRoute.of(herdr), .unsupported(.herdr), "no socket to ask")
+        herdr.process?.herdrSocketPath = "/tmp/h.sock"
+        XCTAssertEqual(SessionPaneFocusRoute.of(herdr), .herdrPane(.local(paneID: "p1", socketPath: "/tmp/h.sock")))
+
+        var remoteHerdr = ClaudeSessionSnapshot(
+            sessionID: "rh", origin: .remote(channel: ClaudeRemoteSessionScope.channel(hostID: "h1")), firstSeen: epoch
+        )
+        remoteHerdr.remoteEnvironment = ClaudeRemoteSessionEnvironment(herdrPaneID: "w1:p3", herdrSocketPath: "/s")
+        XCTAssertEqual(
+            SessionPaneFocusRoute.of(remoteHerdr),
+            .herdrPane(.remote(hostID: "h1", paneID: "w1:p3", remoteSocketPath: "/s"))
+        )
 
         var cmux = localSession("c", cwd: "/p", tty: "/dev/ttys004")
         cmux.process?.cmuxSurfaceID = "s1"

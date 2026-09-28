@@ -94,22 +94,20 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
         )
     }
 
-    func testServiceThreadsItsPublisherURLIntoTheInstallCommand() throws {
+    func testInstallRegistersMarketplaceThenInstallsAndThreadsItsPublisherURL() throws {
+        let plain = RecordingRunner()
+        try makeService(runner: plain).installPlugin()
+        XCTAssertEqual(plain.argumentLists, [
+            ["plugin", "marketplace", "add", marketplace.path],
+            ["plugin", "install", "localvoxtral@localvoxtral"],
+        ])
+
         let runner = RecordingRunner()
         let publisher = URL(fileURLWithPath: "/Users/me/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook")
         try makeService(runner: runner, publisherURL: publisher).installPlugin()
         XCTAssertEqual(runner.argumentLists, [
             ["plugin", "marketplace", "add", marketplace.path],
             ["plugin", "install", "localvoxtral@localvoxtral", "--config", "publisher_path=\(publisher.path)"],
-        ])
-    }
-
-    func testInstallRegistersMarketplaceThenInstalls() throws {
-        let runner = RecordingRunner()
-        try makeService(runner: runner).installPlugin()
-        XCTAssertEqual(runner.argumentLists, [
-            ["plugin", "marketplace", "add", marketplace.path],
-            ["plugin", "install", "localvoxtral@localvoxtral"],
         ])
     }
 
@@ -277,7 +275,7 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
     // installed, so a probe against the real filesystem would pass or fail by
     // accident rather than by logic.
 
-    func testCandidatesCoverTheUsualInstallLocations() {
+    func testCandidatesCoverTheUsualInstallLocationsAndTolerateMissingHomeAndPath() {
         let candidates = ClaudePluginInstallService.claudeCLICandidates(
             environment: ["HOME": "/Users/tester", "PATH": "/opt/bin:/usr/bin"]
         )
@@ -289,40 +287,35 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
             "/opt/homebrew/bin/claude",
             "/usr/local/bin/claude",
         ])
+        XCTAssertEqual(
+            ClaudePluginInstallService.claudeCLICandidates(environment: [:]),
+            ["/opt/homebrew/bin/claude", "/usr/local/bin/claude"],
+            "a missing HOME and PATH leave only the fixed fallbacks"
+        )
     }
 
-    func testCandidatesTolerateMissingHomeAndPath() {
-        let candidates = ClaudePluginInstallService.claudeCLICandidates(environment: [:])
-        XCTAssertEqual(candidates, ["/opt/homebrew/bin/claude", "/usr/local/bin/claude"])
-    }
-
-    func testLocateReturnsFirstExecutableCandidateInProbeOrder() {
+    func testLocateReturnsTheFirstExecutableCandidateInProbeOrder() {
+        let environment = ["HOME": "/Users/tester", "PATH": "/opt/bin"]
         let located = ClaudePluginInstallService.locateClaudeCLI(
-            environment: ["HOME": "/Users/tester", "PATH": "/opt/bin"],
+            environment: environment,
             isExecutable: { $0 == "/opt/bin/claude" || $0 == "/usr/local/bin/claude" }
         )
         XCTAssertEqual(located?.path, "/opt/bin/claude", "PATH must win over the fixed fallbacks")
-    }
-
-    func testLocatePrefersUserInstallOverPath() {
-        let located = ClaudePluginInstallService.locateClaudeCLI(
-            environment: ["HOME": "/Users/tester", "PATH": "/opt/bin"],
-            isExecutable: { _ in true }
+        XCTAssertEqual(
+            ClaudePluginInstallService.locateClaudeCLI(
+                environment: environment, isExecutable: { _ in true }
+            )?.path,
+            "/Users/tester/.claude/local/claude",
+            "the user install wins over PATH"
         )
-        XCTAssertEqual(located?.path, "/Users/tester/.claude/local/claude")
-    }
-
-    func testLocateReturnsNilWhenNothingIsExecutable() {
-        let located = ClaudePluginInstallService.locateClaudeCLI(
-            environment: ["HOME": "/Users/tester", "PATH": "/opt/bin"],
-            isExecutable: { _ in false }
-        )
-        XCTAssertNil(located)
+        XCTAssertNil(ClaudePluginInstallService.locateClaudeCLI(
+            environment: environment, isExecutable: { _ in false }
+        ))
     }
 
     // MARK: Subprocess runner — real child processes
 
-    func testProcessRunnerCapturesOutputAndExitCode() throws {
+    func testProcessRunnerCapturesOutputAndExitCodeAndMergesStderr() throws {
         let runner = ClaudePluginInstallService.processRunner(
             executableURL: URL(fileURLWithPath: "/bin/sh")
         )
@@ -330,14 +323,9 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
         XCTAssertEqual(result.exitCode, 3)
         XCTAssertEqual(result.message, "hello")
         XCTAssertFalse(result.succeeded)
-    }
 
-    func testProcessRunnerMergesStderr() throws {
-        let runner = ClaudePluginInstallService.processRunner(
-            executableURL: URL(fileURLWithPath: "/bin/sh")
-        )
-        let result = try runner(.init(arguments: ["-c", "echo oops >&2; exit 1"]))
-        XCTAssertEqual(result.message, "oops")
+        let stderrOnly = try runner(.init(arguments: ["-c", "echo oops >&2; exit 1"]))
+        XCTAssertEqual(stderrOnly.message, "oops")
     }
 
     /// A `claude` that hangs — on a network fetch, or a prompt we did not

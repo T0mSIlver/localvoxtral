@@ -12,7 +12,7 @@ package protocol AgentCLIDataSource: Sendable {
     func dictations(matching text: String, since: Date?, limit: Int) async -> [AgentCLIDictation]
     /// The last dictation, inserted or not, whether or not History holds it.
     func lastDictation() async -> AgentCLIDictation?
-    /// Settings' Names and terms.
+    /// Settings' Global terms.
     func userTerms() async -> [String]
     /// Term suggestions the user refused; a proposal never repeats them.
     func refusedTerms() async -> [String]
