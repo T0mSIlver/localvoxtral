@@ -76,7 +76,7 @@ package enum AgentCLICaptureLookup {
             relatedIssue: item.relatedIssue,
             note: item.note,
             filedURL: item.filedURL,
-            text: detail ? item.text : nil,
+            text: detail ? item.words : nil,
             body: detail && drafted ? item.body : nil,
             issueBody: detail ? item.bodyToFile : nil
         )

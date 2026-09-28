@@ -107,8 +107,9 @@ final class ViewSnapshotTests: XCTestCase {
             appearance: appearance)
     }
 
-    /// The Inbox with a drafted capture, one no project took, and one filed
-    /// (#725). Made-up words: the artifacts are public.
+    /// The Inbox with a drafted capture that has a follow-up and extends an
+    /// issue (#965), one no project took, and one filed (#725). Made-up
+    /// words: the artifacts are public.
     func testInboxWithCaptures() async throws {
         try await recordSettings(pane: .inbox, name: "settings-inbox-captures", setUp: false) { viewModel in
             let directory = FileManager.default.temporaryDirectory
@@ -124,6 +125,12 @@ final class ViewSnapshotTests: XCTestCase {
             drafted.repository = "example/demo"
             drafted.title = "Remember the overlay's size per display"
             drafted.body = "## Scope\nStore the overlay's size with its position, per display.\n\n## Proof\nA test that restores both."
+            drafted.followUps = [.init(
+                id: UUID(), capturedAt: now.addingTimeInterval(-120),
+                text: "also when a display is unplugged and plugged back", historyRecordID: nil, draftBefore: nil
+            )]
+            drafted.relation = .extends
+            drafted.relatedIssue = 8
             var unplaced = QuickCaptureItem(capturedAt: now.addingTimeInterval(-3_600), text: "renew the passport before December")
             unplaced.state = .ready
             unplaced.note = "Not routed to a project. Move it to one."

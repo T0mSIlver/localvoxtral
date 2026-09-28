@@ -25,6 +25,16 @@ package final class FakeQuickCaptureGitHub: QuickCaptureGitHub, @unchecked Senda
         created.withLock { $0.append([repository, title, body]) }
         return createResult
     }
+
+    /// Every `gh issue comment`: repository, issue number, body.
+    package let comments = Mutex<[[String]]>([])
+    package var commentResult: Result<String, QuickCaptureFiling.Failure> =
+        .success("https://github.com/o/reach/issues/7#issuecomment-1")
+
+    package func commentOnIssue(repository: String, issue: Int, body: String) async -> Result<String, QuickCaptureFiling.Failure> {
+        comments.withLock { $0.append([repository, String(issue), body]) }
+        return commentResult
+    }
 }
 
 /// A router's classifier that always gives `answer`.
@@ -33,6 +43,19 @@ package final class FixedQuickCaptureClassifier: QuickCaptureClassifying, @unche
     package init(_ answer: [String: Double]) { self.answer = answer }
     package var kind: QuickCaptureRoute.Classifier { .jev }
     package func classify(capture: String, options: [QuickCaptureOption]) async throws -> [String: Double] { answer }
+}
+
+/// A router's classifier that gives `answers` in turn (the last one
+/// repeats), and records the options of each call.
+package final class ScriptedQuickCaptureClassifier: QuickCaptureClassifying, @unchecked Sendable {
+    private let answers: Mutex<[[String: Double]]>
+    package let calls = Mutex<[[QuickCaptureOption]]>([])
+    package init(_ answers: [[String: Double]]) { self.answers = Mutex(answers) }
+    package var kind: QuickCaptureRoute.Classifier { .chatModel }
+    package func classify(capture: String, options: [QuickCaptureOption]) async throws -> [String: Double] {
+        calls.withLock { $0.append(options) }
+        return answers.withLock { $0.count > 1 ? $0.removeFirst() : $0[0] }
+    }
 }
 
 /// Drafts "Dark mode", then each title in `nextTitles` in turn, and records
@@ -106,13 +129,16 @@ package enum QuickCaptureFixture {
         fileURL: URL?,
         answer: [String: Double],
         github: any QuickCaptureGitHub,
-        runner: FakeQuickCaptureDraftRunner,
+        runner: any QuickCaptureDraftRunning,
         projects: [QuickCaptureProject] = projects,
-        remote: QuickCaptureDrafter.Remote? = nil
+        remote: QuickCaptureDrafter.Remote? = nil,
+        classifier: (any QuickCaptureClassifying)? = nil,
+        now: @escaping @MainActor () -> Date = { Date(timeIntervalSince1970: 1_000_000) }
     ) -> QuickCaptureInboxModel {
+        let classifier = classifier ?? FixedQuickCaptureClassifier(answer)
         return QuickCaptureInboxModel(
             fileURL: fileURL,
-            makeRouter: { QuickCaptureRouter(classifiers: [FixedQuickCaptureClassifier(answer)]) },
+            makeRouter: { QuickCaptureRouter(classifiers: [classifier]) },
             projects: { projects },
             agents: { [.claude] },
             drafter: {
@@ -125,7 +151,7 @@ package enum QuickCaptureFixture {
                 )
             },
             github: github,
-            now: { Date(timeIntervalSince1970: 1_000_000) }
+            now: now
         )
     }
 }
