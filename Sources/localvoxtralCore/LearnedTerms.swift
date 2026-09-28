@@ -850,9 +850,14 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
             }
         }
         // A linked checkout no dictation or hook has touched for as long as a
-        // term lasts goes; its repository keeps the terms.
+        // term lasts goes once its repository has no terms left either:
+        // while it has, the checkout must keep pointing there, or its next
+        // dictation would start an empty record of its own.
+        let repositoriesWithTerms = Set(projects.filter { $0.isRepositoryRecord && !$0.terms.isEmpty }.map(\.key))
         projects.removeAll {
-            $0.isLinkedCheckout && $0.terms.isEmpty && max($0.lastSeen, $0.reportedAt ?? $0.lastSeen) < cutoff
+            $0.isLinkedCheckout && $0.terms.isEmpty
+                && max($0.lastSeen, $0.reportedAt ?? $0.lastSeen) < cutoff
+                && !repositoriesWithTerms.contains($0.repositoryRecordKey ?? "")
         }
         // A stamped project stays with no terms: dropping it would ask its
         // agent again at the next dictation. A reported one stays until its

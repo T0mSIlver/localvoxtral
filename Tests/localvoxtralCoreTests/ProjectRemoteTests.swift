@@ -175,6 +175,22 @@ final class ProjectRemoteTests: XCTestCase {
 
     /// The linker reads the Mac's origin after the host already reported:
     /// the Mac's first terms, kept under its path meanwhile, join the host's.
+    /// A checkout idle for a season stays linked while its repository still
+    /// holds terms, so its next dictation reads them (review P3).
+    func testAnIdleCheckoutStaysLinkedWhileItsRepositoryHasTerms() {
+        var learned = tomsRecords()
+        learned.projects[1].terms = [term("herdr", dictations: 1, pinned: true)]
+        learned.linkCheckoutsToRepositories(now: now)
+        let later = now.addingTimeInterval(Double(LearnedTerms.staleAfterDays + 1) * 86_400)
+
+        learned.prune(now: later)
+
+        XCTAssertEqual(learned.confirmedTerms(projectKey: "/Users/tom/Desktop/projects/supervoxtral"), ["herdr"])
+        learned.projects.removeAll { $0.isRepositoryRecord }
+        learned.prune(now: later)
+        XCTAssertEqual(learned.projects.map(\.key), [], "with no terms left, the idle checkouts go")
+    }
+
     func testAnOriginReadLaterFoldsTheCheckoutsTermsIn() {
         var learned = LearnedTerms()
         let mac = LearnedTermProjectIdentity(key: "/w/supervoxtral", name: "supervoxtral")
