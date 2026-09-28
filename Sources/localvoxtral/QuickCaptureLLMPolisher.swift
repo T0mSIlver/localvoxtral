@@ -1,9 +1,10 @@
 import Foundation
 
-/// A quick capture's one polish (#970): the user's polishing configuration,
-/// replacement rules and standard prompt, as a dictation's polish uses, with
-/// the Inbox's vocabulary in the `{{replacement_dictionary}}` slot. No
-/// screen, clipboard or session context: the capture goes to no app.
+/// A quick capture's one polish (#970): the request
+/// `QuickCapturePolishPrompt.request` builds from Settings and the config
+/// files, sent through `LLMPolishingService` with the user's polishing
+/// configuration. No screen, clipboard or session context: the capture goes
+/// to no app.
 @MainActor
 final class QuickCaptureLLMPolisher: QuickCapturePolishing {
     private let settings: SettingsStore
@@ -24,31 +25,36 @@ final class QuickCaptureLLMPolisher: QuickCapturePolishing {
     /// without waiting.
     var isConfigured: Bool { settings.llmPolishingConfiguration != nil }
 
-    func polish(_ text: String, vocabulary: [String]) async -> QuickCapturePolish? {
-        guard let configuration = settings.llmPolishingConfiguration else { return nil }
-        let appConfigStore = appConfigStore()
-        let replaced = StopCommitCoordinator.effectiveReplacementDictionary(
-            settings: settings, appConfigStore: appConfigStore
-        )?.apply(to: text) ?? text
-        let templates = StopCommitCoordinator.promptTemplates(
-            profile: .standard, settings: settings, appConfigStore: appConfigStore
+    /// What Settings and the config files give the request: the standard
+    /// profile, as a capture goes to no terminal.
+    static func inputs(settings: SettingsStore, appConfigStore: any AppConfigServing) -> QuickCapturePolishInputs {
+        QuickCapturePolishInputs(
+            templates: appConfigStore.loadLLMPromptTemplates(profile: .standard),
+            speakerProfile: settings.polishSpeakerProfile,
+            speakerTerms: settings.polishSpeakerTerms,
+            replacementDictionary: settings.replacementDictionaryEnabled
+                ? appConfigStore.loadReplacementDictionary() : nil
         )
-        let rendersDictionary = templates.supportsReplacementDictionary
-        let prepared = await Task.detached(priority: .userInitiated) {
-            QuickCapturePolishPrompt.prepare(
-                transcript: replaced, vocabulary: vocabulary, rendersDictionary: rendersDictionary
-            )
-        }.value
-        let request = LLMPolishingRequest(
-            inputText: prepared.workingText,
-            systemPrompt: templates.systemContent,
-            userPrompts: templates.renderedUserPrompts(
-                inputText: prepared.workingText, replacementDictionary: prepared.dictionarySection
-            ),
+    }
+
+    /// The request as the app sends it.
+    static func request(_ built: QuickCapturePolishRequest) -> LLMPolishingRequest {
+        LLMPolishingRequest(
+            inputText: built.inputText,
+            systemPrompt: built.systemPrompt,
+            userPrompts: built.userPrompts,
             usageFeature: .quickCapturePolish
         )
+    }
+
+    func polish(_ text: String, vocabulary: [String]) async -> QuickCapturePolish? {
+        guard let configuration = settings.llmPolishingConfiguration else { return nil }
+        let inputs = Self.inputs(settings: settings, appConfigStore: appConfigStore())
+        let built = await Task.detached(priority: .userInitiated) {
+            QuickCapturePolishPrompt.request(transcript: text, vocabulary: vocabulary, inputs: inputs)
+        }.value
         do {
-            let result = try await service().polish(request: request, configuration: configuration)
+            let result = try await service().polish(request: Self.request(built), configuration: configuration)
             Log.polishing.info(
                 "Quick capture polish: done in \(String(format: "%.2f", result.durationSeconds), privacy: .public) s, \(vocabulary.count, privacy: .public) terms offered"
             )

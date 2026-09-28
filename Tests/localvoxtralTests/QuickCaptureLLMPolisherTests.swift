@@ -53,6 +53,54 @@ final class QuickCaptureLLMPolisherTests: XCTestCase {
         XCTAssertEqual(request.usageFeature, .quickCapturePolish)
     }
 
+    /// The app sends the core builder's request byte for byte, as a
+    /// dictation's polish assembles its own (`StopCommitCoordinator`'s
+    /// templates and replacement rules), and the replay's chat body carries
+    /// the same messages as `LLMPolishingService`'s.
+    func testTheAppSendsTheCoreBuildersRequestByteForByte() async throws {
+        let settings = configuredSettings()
+        settings.replacementDictionaryEnabled = true
+        settings.polishSpeakerProfile = "I work on localvoxtral."
+        let vocabulary = ["localvoxtral", "reach"]
+        let service = FakePolishingService()
+        let polisher = QuickCaptureLLMPolisher(settings: settings, appConfigStore: { self.config }, service: { service })
+
+        _ = await polisher.polish(raw, vocabulary: vocabulary)
+        let last = await service.lastRequest
+        let sent = try XCTUnwrap(last)
+
+        let core = QuickCapturePolishPrompt.request(
+            transcript: raw, vocabulary: vocabulary,
+            inputs: QuickCaptureLLMPolisher.inputs(settings: settings, appConfigStore: config)
+        )
+        XCTAssertEqual(sent.inputText, core.inputText)
+        XCTAssertEqual(sent.systemPrompt, core.systemPrompt)
+        XCTAssertEqual(sent.userPrompts, core.userPrompts)
+
+        let templates = StopCommitCoordinator.promptTemplates(profile: .standard, settings: settings, appConfigStore: config)
+        let replaced = StopCommitCoordinator.effectiveReplacementDictionary(settings: settings, appConfigStore: config)?
+            .apply(to: raw) ?? raw
+        let prepared = QuickCapturePolishPrompt.prepare(
+            transcript: replaced, vocabulary: vocabulary, rendersDictionary: templates.supportsReplacementDictionary
+        )
+        XCTAssertEqual(sent.systemPrompt, templates.systemContent)
+        XCTAssertEqual(sent.inputText, prepared.workingText)
+        XCTAssertEqual(
+            sent.userPrompts,
+            templates.renderedUserPrompts(inputText: prepared.workingText, replacementDictionary: prepared.dictionarySection)
+        )
+
+        let configuration = try XCTUnwrap(settings.llmPolishingConfiguration)
+        let appBody = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: LLMPolishingService.requestBody(request: sent, configuration: configuration))
+                as? [String: Any])
+        let replayBody = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: QuickCaptureChatPolisher.body(model: "m", request: core, extraBody: [:]))
+                as? [String: Any])
+        XCTAssertEqual(appBody["messages"] as? [[String: String]], core.messages)
+        XCTAssertEqual(replayBody["messages"] as? [[String: String]], core.messages)
+    }
+
     func testAFailedRequestOrNoConfigurationGivesNothing() async throws {
         let failing = FakePolishingService(failing: URLError(.timedOut))
         let settings = configuredSettings()
