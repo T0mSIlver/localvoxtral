@@ -15,38 +15,47 @@ final class DesktopSessionPolishTests: XCTestCase {
 
     // MARK: - Profile
 
-    func testADesktopSessionJoinSelectsTheAgentProfile() async throws {
-        let join = try await desktopJoin(origin: local)
-        let run = await runCommit(join: join)
+    /// The stop-commit's polish profile follows the join and the toggle: a
+    /// Claude Desktop join selects the agent profile — local or remote, the
+    /// session still runs with a coding agent — while without a join nothing
+    /// says the dictation goes to a coding agent, and the agent-profile toggle
+    /// off wins over a join.
+    func testTheCommitPolishProfileFollowsTheJoinAndTheToggle() async throws {
+        let cases: [
+            (label: String, origin: ClaudeTransportOrigin?,
+             agentProfileEnabled: Bool, expected: PolishPromptProfile)
+        ] = [
+            ("a desktop session join selects the agent profile", local, true, .agent),
+            (
+                "a remote desktop session join is still a coding agent",
+                remote, true, .agent
+            ),
+            (
+                "without a join nothing says the dictation goes to a coding agent",
+                nil, true, .standard
+            ),
+            ("the agent-profile toggle off wins over a desktop join", local, false, .standard),
+        ]
 
-        XCTAssertEqual(run.appConfigStore.requestedProfiles, [.agent])
-        XCTAssertEqual(run.record?.polishProfile, "agent")
-    }
+        for testCase in cases {
+            var join: ClaudeSessionJoin?
+            if let origin = testCase.origin {
+                join = try await desktopJoin(origin: origin)
+            }
+            let run = await runCommit(
+                join: join,
+                agentProfileEnabled: testCase.agentProfileEnabled
+            )
 
-    /// Claude Desktop runs the session on an ssh host: still a coding agent.
-    func testARemoteDesktopSessionJoinSelectsTheAgentProfile() async throws {
-        let join = try await desktopJoin(origin: remote)
-        let run = await runCommit(join: join)
-
-        XCTAssertEqual(run.appConfigStore.requestedProfiles, [.agent])
-        XCTAssertEqual(run.record?.polishProfile, "agent")
-    }
-
-    /// The same app hosts plain chat: without a join, nothing says the
-    /// dictation goes to a coding agent.
-    func testClaudeDesktopWithoutAJoinKeepsTheStandardProfile() async {
-        let run = await runCommit(join: nil)
-
-        XCTAssertEqual(run.appConfigStore.requestedProfiles, [.standard])
-        XCTAssertEqual(run.record?.polishProfile, "standard")
-    }
-
-    func testTheAgentProfileToggleStillWinsOverADesktopJoin() async throws {
-        let join = try await desktopJoin(origin: local)
-        let run = await runCommit(join: join, agentProfileEnabled: false)
-
-        XCTAssertEqual(run.appConfigStore.requestedProfiles, [.standard])
-        XCTAssertEqual(run.record?.polishProfile, "standard")
+            XCTAssertEqual(
+                run.appConfigStore.requestedProfiles, [testCase.expected], testCase.label
+            )
+            XCTAssertEqual(
+                run.record?.polishProfile,
+                testCase.expected == .agent ? "agent" : "standard",
+                testCase.label
+            )
+        }
     }
 
     // MARK: - Vocabulary

@@ -137,6 +137,7 @@ package struct StoredClaudeSessions: Codable {
         package var activity: String
         package var process: ClaudeHookProcessInfo?
         package var remoteEnvironment: RemoteEnvironment?
+        package var worktreeRepository: String?
         package var firstSeen: Date
         package var lastActivity: Date
 
@@ -144,6 +145,7 @@ package struct StoredClaudeSessions: Codable {
             case sessionID = "session_id"
             case origin, agent, workspace, activity, process
             case remoteEnvironment = "remote_environment"
+            case worktreeRepository = "worktree_repository"
             case firstSeen = "first_seen"
             case lastActivity = "last_activity"
         }
@@ -156,6 +158,7 @@ package struct StoredClaudeSessions: Codable {
             activity: String,
             process: ClaudeHookProcessInfo? = nil,
             remoteEnvironment: RemoteEnvironment? = nil,
+            worktreeRepository: String? = nil,
             firstSeen: Date,
             lastActivity: Date
         ) {
@@ -166,6 +169,7 @@ package struct StoredClaudeSessions: Codable {
             self.activity = activity
             self.process = process
             self.remoteEnvironment = remoteEnvironment
+            self.worktreeRepository = worktreeRepository
             self.firstSeen = firstSeen
             self.lastActivity = lastActivity
         }

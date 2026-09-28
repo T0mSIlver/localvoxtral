@@ -23,3 +23,27 @@ change that moves one updates the pin and quotes both lines in its PR.
 Only pre-application is scored. A withheld term is offered to the polish
 model, and whether the model then applies it where it belongs is not
 measured here.
+
+# Project-terms proposals
+
+`project-term-proposals.json` holds what Claude Code and Vibe proposed as the
+terms of ten public repositories (#914): the owner's public repositories and
+three well-known ones. Each agent answered twice, once with the prompt before
+#914, which asked for the code's names, and once with the one after it, which
+asks for names people say. A blind judge (GLM 5.3, never told which prompt or
+agent proposed a term) labeled every term `say` or `no`: would a builder who
+talks to coding agents and does not read the code say it aloud?
+
+`ProjectTermProposalEvalTests` (localvoxtralCore, runs on Linux) prints, per
+agent and prompt, the share of proposed terms labeled `say`, before and after
+`ProjectTermProposal.acceptedTerms` filters the answer. It also pins the terms
+labeled `say` that the filter drops:
+
+```bash
+./scripts/core-tests-linux.sh --filter ProjectTermProposalEvalTests
+```
+
+The judge gets some names wrong: it labels `herdr` and `mlx-audio-swift`
+`no`. The labels are kept as it gave them; the shares are a comparison
+between prompts, not a precision figure. `scripts/linux/project-terms-eval.py`
+rebuilds the file from live runs.

@@ -13,13 +13,21 @@ private final class MemoryLedgerStore: ClaudeRemoteHostStoreIO {
 /// actually end the process. No wall clock anywhere — the reaper polls on an
 /// injected sleep that returns immediately.
 private final class ProcessTableFake: @unchecked Sendable {
-    private let live = Mutex<ClaudeRemoteForwardPidRecord?>(nil)
+    private let live = Mutex<[Int32: ClaudeRemoteForwardPidRecord]>([:])
     private let sent = Mutex<[Int32]>([])
     private let signalTargets = Mutex<[pid_t]>([])
     private let lethalSignals: Set<Int32>
 
-    init(live record: ClaudeRemoteForwardPidRecord?, dyingOn lethalSignals: Set<Int32>) {
-        live.withLock { $0 = record }
+    /// - Parameter running: other live processes, such as the app copies that
+    ///   spawned the forwards. Signals end only the process they target.
+    init(
+        live record: ClaudeRemoteForwardPidRecord?,
+        running: [ClaudeRemoteForwardPidRecord] = [],
+        dyingOn lethalSignals: Set<Int32>
+    ) {
+        live.withLock { table in
+            for process in running + [record].compactMap({ $0 }) { table[process.pid] = process }
+        }
         self.lethalSignals = lethalSignals
     }
 
@@ -27,14 +35,14 @@ private final class ProcessTableFake: @unchecked Sendable {
     var targets: [pid_t] { signalTargets.withLock { $0 } }
 
     func inspect(_ pid: pid_t) -> ClaudeRemoteForwardPidRecord? {
-        live.withLock { $0?.pid == Int32(pid) ? $0 : nil }
+        live.withLock { $0[Int32(pid)] }
     }
 
     func sendSignal(_ pid: pid_t, _ signalNumber: Int32) {
         signalTargets.withLock { $0.append(pid) }
         sent.withLock { $0.append(signalNumber) }
         if lethalSignals.contains(signalNumber) {
-            live.withLock { $0 = nil }
+            _ = live.withLock { $0.removeValue(forKey: abs(Int32(pid))) }
         }
     }
 }
@@ -52,10 +60,13 @@ final class ClaudeRemoteForwardOrphanReaperTests: XCTestCase {
     }
 
     private func makeReaper(
-        ledger: ClaudeRemoteForwardPidLedger, table: ProcessTableFake
+        ledger: ClaudeRemoteForwardPidLedger,
+        table: ProcessTableFake,
+        ownCopy: ClaudeRemoteForwardOwner? = nil
     ) -> ClaudeRemoteForwardOrphanReaper {
         ClaudeRemoteForwardOrphanReaper(
             ledger: ledger,
+            ownCopy: ownCopy,
             inspect: { table.inspect($0) },
             sendSignal: { table.sendSignal($0, $1) },
             sleepFor: { _ in }
@@ -160,6 +171,83 @@ final class ClaudeRemoteForwardOrphanReaperTests: XCTestCase {
         await makeReaper(ledger: ledger, table: table).reap()
         XCTAssertEqual(table.signals, [SIGTERM], "only the live orphan is signalled")
         XCTAssertTrue(ledger.records().isEmpty)
+    }
+
+    // MARK: - Which copy of the app spawned the forward (#892)
+
+    private let installed = "/Applications/localvoxtral.app/Contents/MacOS/localvoxtral"
+    private let smokeCopy = "/private/var/folders/xy/T/tmp.K2wQ/localvoxtral.app/Contents/MacOS/localvoxtral"
+
+    private func copy(pid: Int32, at path: String) -> ClaudeRemoteForwardPidRecord {
+        ClaudeRemoteForwardPidRecord(pid: pid, startSeconds: 222, startMicroseconds: 3, executablePath: path)
+    }
+
+    private func forward(pid: Int32, spawnedBy owner: ClaudeRemoteForwardPidRecord) -> ClaudeRemoteForwardPidRecord {
+        var forward = record(pid: pid)
+        forward.owner = ClaudeRemoteForwardOwner(owner)
+        return forward
+    }
+
+    /// Two copies of the same install share Application Support, so the
+    /// second copy's ledger reads the first's record. The reap that runs
+    /// before the second copy's first forward starts must not touch it.
+    func testASecondCopysForwardStartLeavesARunningCopysForwardAlone() async {
+        let store = MemoryLedgerStore()
+        let fileURL = URL(fileURLWithPath: "/tmp/lvx-reaper-test/\(UUID().uuidString).json")
+        let first = copy(pid: 29_873, at: installed)
+        let firstForward = forward(pid: 96_199, spawnedBy: first)
+        ClaudeRemoteForwardPidLedger(fileURL: fileURL, io: store).remember(hostID: "ha2c72ef6", record: firstForward)
+
+        let second = copy(pid: 68_513, at: installed)
+        let secondLedger = ClaudeRemoteForwardPidLedger(fileURL: fileURL, io: store)
+        let table = ProcessTableFake(live: firstForward, running: [first, second], dyingOn: [SIGTERM, SIGKILL])
+        await makeReaper(ledger: secondLedger, table: table, ownCopy: ClaudeRemoteForwardOwner(second)).reap()
+
+        XCTAssertTrue(table.signals.isEmpty, "the first copy's forward is not an orphan")
+        XCTAssertEqual(secondLedger.records(), ["ha2c72ef6": firstForward], "its record stays for its own copy")
+    }
+
+    /// The field case: a CI launch smoke, a temporary copy, ran after the
+    /// copy that spawned the forward had quit.
+    func testAnotherInstallsLeftoverForwardIsLeftAlone() async {
+        let quit = copy(pid: 29_873, at: installed)
+        let leftover = forward(pid: 96_199, spawnedBy: quit)
+        let ledger = makeLedger(with: ["ha2c72ef6": leftover])
+        let table = ProcessTableFake(live: leftover, dyingOn: [SIGTERM, SIGKILL])
+        await makeReaper(
+            ledger: ledger, table: table, ownCopy: ClaudeRemoteForwardOwner(copy(pid: 19_523, at: smokeCopy))
+        ).reap()
+
+        XCTAssertTrue(table.signals.isEmpty)
+        XCTAssertEqual(ledger.records(), ["ha2c72ef6": leftover])
+    }
+
+    func testThisInstallsForwardIsReapedOnceTheCopyThatSpawnedItIsGone() async {
+        let crashed = copy(pid: 29_873, at: installed)
+        let orphan = forward(pid: 96_199, spawnedBy: crashed)
+        let ledger = makeLedger(with: ["ha2c72ef6": orphan])
+        let table = ProcessTableFake(live: orphan, dyingOn: [SIGTERM])
+        await makeReaper(
+            ledger: ledger, table: table, ownCopy: ClaudeRemoteForwardOwner(copy(pid: 68_513, at: installed))
+        ).reap()
+
+        XCTAssertEqual(table.signals, [SIGTERM])
+        XCTAssertTrue(ledger.records().isEmpty)
+    }
+
+    /// A pid reused by another process does not keep the dead copy alive.
+    func testACopyWhosePidWasReusedCountsAsGone() async {
+        let crashed = copy(pid: 29_873, at: installed)
+        let orphan = forward(pid: 96_199, spawnedBy: crashed)
+        var reused = crashed
+        reused.startSeconds = 999
+        let ledger = makeLedger(with: ["ha2c72ef6": orphan])
+        let table = ProcessTableFake(live: orphan, running: [reused], dyingOn: [SIGTERM])
+        await makeReaper(
+            ledger: ledger, table: table, ownCopy: ClaudeRemoteForwardOwner(copy(pid: 68_513, at: installed))
+        ).reap()
+
+        XCTAssertEqual(table.signals, [SIGTERM])
     }
 
     func testPollCountCoversTheGraceWindow() {

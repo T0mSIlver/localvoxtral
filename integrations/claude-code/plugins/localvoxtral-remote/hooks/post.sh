@@ -2,8 +2,9 @@
 # localvoxtral-remote Claude Code hook shim — strict POSIX sh, needs only curl.
 #
 # Claude Code runs this once per hook event with the event JSON on stdin. Its
-# ONLY job is to POST that JSON, unchanged, to the tunnelled loopback listener
-# on the Mac, authenticated with the enrolled host's bearer token, and to print
+# ONLY job is to POST that JSON (a Notification or a Stop rebuilt, see below)
+# to the tunnelled loopback listener on the Mac, authenticated with the
+# enrolled host's bearer token, and to print
 # the listener's 200 response body on stdout for Claude Code to act on — but
 # only after gating it against the exact allowlisted ClaudeHookOutput grammar
 # (see the stdout gate at the bottom); anything else prints nothing.
@@ -107,6 +108,61 @@ case "$SESSION_ID" in
 "" | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-]*) SESSION_ID="" ;;
 *) [ "${#SESSION_ID}" -le 64 ] || SESSION_ID="" ;;
 esac
+
+# --- Notification: the type and nothing else (#717) ---------------------------
+# A Notification's `message` and `title` quote tool names and command text, so
+# its body is REBUILT here instead of posted as-is: the session id checked
+# above and a `notification_type` from a closed set, nothing more. A payload
+# missing either posts nothing.
+if [ "$EVENT" = "Notification" ]; then
+  NOTIFICATION_TYPE="$(LC_ALL=C awk '
+    match($0, /"notification_type"[[:space:]]*:[[:space:]]*"[^"]*"/) {
+      value = substr($0, RSTART, RLENGTH)
+      sub(/^"notification_type"[[:space:]]*:[[:space:]]*"/, "", value)
+      sub(/"$/, "", value)
+      print value
+      exit
+    }
+  ' "$WORK/event" 2>/dev/null)" || NOTIFICATION_TYPE=""
+  case "$NOTIFICATION_TYPE" in
+  permission_prompt | elicitation_dialog | elicitation_url_dialog | agent_needs_input) ;;
+  *) exit 0 ;;
+  esac
+  [ -n "$SESSION_ID" ] || exit 0
+  cat 2>/dev/null >"$WORK/event" <<EOF || exit 0
+{"hook_event_name":"Notification","session_id":"$SESSION_ID","notification_type":"$NOTIFICATION_TYPE"}
+EOF
+fi
+
+# --- Stop: the session and its cwd, never the reply (#818) ---------------------
+# A Stop carries `last_assistant_message`, the agent's whole reply, and the
+# owner ruling on #717 keeps that text on this host. The body is REBUILT from
+# the fields the Mac reads for a Stop: the session id checked above and the
+# payload's `cwd`. The cwd is copied as the JSON string token it already is,
+# quotes and escapes included, and only when that token matches strict JSON
+# string grammar: no raw quote, backslash or control byte, and only the
+# escapes JSON defines. A token that fails, or is over 4096 bytes, is dropped
+# and the Mac keeps the session's last known workspace. A payload without a
+# usable session id still dials, so the backoff and status stamps stay
+# current, and the Mac drops the record.
+if [ "$EVENT" = "Stop" ]; then
+  STOP_BODY='"hook_event_name":"Stop"'
+  if [ -n "$SESSION_ID" ]; then
+    STOP_BODY="$STOP_BODY,\"session_id\":\"$SESSION_ID\""
+    STOP_CWD="$(LC_ALL=C awk '
+      match($0, /"cwd"[[:space:]]*:[[:space:]]*"([^"\\[:cntrl:]]|\\["\\\/bfnrt]|\\u[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f])*"/) {
+        value = substr($0, RSTART, RLENGTH)
+        sub(/^"cwd"[[:space:]]*:[[:space:]]*/, "", value)
+        if (length(value) <= 4096) print value
+        exit
+      }
+    ' "$WORK/event" 2>/dev/null)" || STOP_CWD=""
+    [ -z "$STOP_CWD" ] || STOP_BODY="$STOP_BODY,\"cwd\":$STOP_CWD"
+  fi
+  cat 2>/dev/null >"$WORK/event" <<EOF || exit 0
+{$STOP_BODY}
+EOF
+fi
 
 SESSION_STAMP_DIR="$STAMP_DIR/sessions"
 if [ "$EVENT" = "SessionEnd" ] && [ -n "$STAMP_DIR" ] && [ -n "$SESSION_ID" ]; then
@@ -215,7 +271,7 @@ fi
 # the app validates the shape and trusts nothing else about it.
 cat 2>/dev/null >"$WORK/header" <<EOF || fail_open
 Authorization: Bearer $TOKEN
-X-Lvx-Plugin-Version: 1.15.0
+X-Lvx-Plugin-Version: 1.25.0
 EOF
 
 # --- Allowlisted environment enrichment --------------------------------------
@@ -319,6 +375,16 @@ lvx_project() {
   echo "$_lvx_name"
 }
 LVX_PROJECT="$(lvx_project 2>/dev/null)" || LVX_PROJECT=""
+
+# --- Repository (#926) --------------------------------------------------------
+# The owner/name of the repository's origin when it is on github.com, from
+# capture.sh's parser, the one the draft run lists issues with. Asked only
+# inside a repository; anything else, or an origin off GitHub, sends no
+# header. The Mac keeps it on the project as its filing repository.
+LVX_REPOSITORY=""
+if [ -n "$LVX_PROJECT" ] && [ -r "${0%/*}/capture.sh" ]; then
+  LVX_REPOSITORY="$(sh "${0%/*}/capture.sh" repository </dev/null 2>/dev/null)" || LVX_REPOSITORY=""
+fi
 
 # --- Claude Desktop session id ------------------------------------------------
 # Claude Desktop runs each Code-tab session it opens on this host as a direct
@@ -436,6 +502,7 @@ lvx_claude_is_desktop_session() {
   # is a pid in this machine's namespace and the Mac treats it as a label only.
   lvx_env_header 'X-Lvx-Env-Hook-Parent-Pid' "${PPID:-}"
   lvx_env_header 'X-Lvx-Env-Project' "${LVX_PROJECT:-}"
+  lvx_env_header 'X-Lvx-Env-Repository' "${LVX_REPOSITORY:-}"
 ) 2>/dev/null || :
 
 # --- Project terms (#641) ----------------------------------------------------
@@ -453,7 +520,10 @@ lvx_claude_is_desktop_session() {
 # included: a per-project stamp directory, taken by an atomic mkdir, holds the
 # attempt time, and terms.sh writes `done` there after the Mac accepts the
 # answer. The project is the git toplevel of this hook's cwd, or the cwd
-# outside git; its stamp is named by the cksum of that path.
+# outside git; its stamp is named by the cksum of that path. The stamps move
+# to a new directory whenever the prompt asks for something new: `terms-2`
+# for the project's sentence (#891), `terms-3` for names people say (#914).
+# A project answered under an older prompt is asked once more.
 lvx_terms_start() {
   _lvx_agent="$1"
   _lvx_session="$2"
@@ -468,7 +538,7 @@ lvx_terms_start() {
   _lvx_crc="${_lvx_sum%% *}"
   _lvx_len="${_lvx_sum##* }"
   case "$_lvx_crc$_lvx_len" in "" | *[!0-9]*) return 0 ;; esac
-  _lvx_terms="$STAMP_DIR/terms"
+  _lvx_terms="$STAMP_DIR/terms-3"
   { mkdir -p "$_lvx_terms" && chmod 700 "$STAMP_DIR" "$_lvx_terms"; } 2>/dev/null || return 0
   _lvx_stamp="$_lvx_terms/$_lvx_crc-$_lvx_len"
   if ! mkdir "$_lvx_stamp" 2>/dev/null; then
@@ -507,6 +577,103 @@ $TOKEN
 TERMS
   fi
   return 0
+}
+
+# --- Quick capture (#745) -----------------------------------------------------
+# Two more asks on a 200 reply, matched as exactly as the terms one:
+# `X-Lvx-Readme: wanted` asks for the project's README opening, and
+# `X-Lvx-Draft: <32 hex digits>` asks this host to draft a dictated idea in
+# the project. Both start capture.sh, next to this file, detached and in the
+# clean environment terms.sh gets, with the token on stdin.
+#
+# Whatever answers on the port can send them, so the shim bounds what it
+# spends: one README per project per 24 hours, by the same kind of mkdir
+# stamp as terms, and one draft at a time (a lock capture.sh removes when it
+# ends, taken over after 10 minutes), at most 20 a day.
+lvx_capture_start() {
+  _lvx_mode="$1"
+  _lvx_agent="$2"
+  _lvx_session="$3"
+  _lvx_runner="$4"
+  _lvx_draft="${5:-}"
+  _lvx_vibe="${6:-}"
+  [ -n "$STAMP_DIR" ] && [ -n "$NOW" ] && [ -n "$_lvx_session" ] && [ -n "${HOME:-}" ] || return 0
+  [ -r "$_lvx_runner" ] || return 0
+  _lvx_dir="$(git rev-parse --show-toplevel 2>/dev/null)" || _lvx_dir=""
+  case "$_lvx_dir" in /*) ;; *) _lvx_dir="$(pwd -P 2>/dev/null)" || return 0 ;; esac
+  case "$_lvx_dir" in /*) ;; *) return 0 ;; esac
+  _lvx_base="$STAMP_DIR/capture"
+  { mkdir -p "$_lvx_base" && chmod 700 "$STAMP_DIR" "$_lvx_base"; } 2>/dev/null || return 0
+  _lvx_lock=""
+  if [ "$_lvx_mode" = readme ]; then
+    _lvx_sum="$(echo "$_lvx_dir" | cksum 2>/dev/null)" || return 0
+    _lvx_crc="${_lvx_sum%% *}"
+    _lvx_len="${_lvx_sum##* }"
+    case "$_lvx_crc$_lvx_len" in "" | *[!0-9]*) return 0 ;; esac
+    _lvx_stamp="$_lvx_base/readme-$_lvx_crc-$_lvx_len"
+    _lvx_last="$(cat "$_lvx_stamp" 2>/dev/null)" || _lvx_last=""
+    case "$_lvx_last" in "" | *[!0-9]* | ?????????????*) _lvx_last=0 ;; esac
+    if [ "$_lvx_last" -le "$NOW" ] && [ $((NOW - _lvx_last)) -lt 86400 ]; then
+      return 0
+    fi
+    # rename(2) lets one hook's stamp win; a second one a moment later reads it.
+    { echo "$NOW" >"$_lvx_stamp.$$" && mv -f "$_lvx_stamp.$$" "$_lvx_stamp"; } 2>/dev/null || return 0
+  else
+    case "$_lvx_draft" in "" | *[!0123456789abcdef]*) return 0 ;; esac
+    [ "${#_lvx_draft}" -eq 32 ] || return 0
+    _lvx_lock="$_lvx_base/draft-running"
+    if ! mkdir "$_lvx_lock" 2>/dev/null; then
+      [ -n "$(find "$_lvx_lock" -prune -mmin +10 2>/dev/null)" ] || return 0
+      mv "$_lvx_lock" "$_lvx_lock.$$" 2>/dev/null || return 0
+      rm -rf "$_lvx_lock.$$" 2>/dev/null
+      mkdir "$_lvx_lock" 2>/dev/null || return 0
+    fi
+    # The day's starts, one time per line; the lock serializes this.
+    _lvx_day="$_lvx_base/draft-starts"
+    _lvx_count=0
+    : >"$_lvx_day.$$" 2>/dev/null || { rmdir "$_lvx_lock"; return 0; }
+    if [ -r "$_lvx_day" ]; then
+      while IFS= read -r _lvx_start; do
+        case "$_lvx_start" in "" | *[!0-9]* | ?????????????*) continue ;; esac
+        [ "$_lvx_start" -le "$NOW" ] && [ $((NOW - _lvx_start)) -lt 86400 ] || continue
+        echo "$_lvx_start" >>"$_lvx_day.$$"
+        _lvx_count=$((_lvx_count + 1))
+      done <"$_lvx_day"
+    fi
+    if [ "$_lvx_count" -ge 20 ]; then
+      rm -f "$_lvx_day.$$"
+      rmdir "$_lvx_lock" 2>/dev/null
+      return 0
+    fi
+    { echo "$NOW" >>"$_lvx_day.$$" && mv -f "$_lvx_day.$$" "$_lvx_day"; } 2>/dev/null \
+      || { rm -f "$_lvx_day.$$"; rmdir "$_lvx_lock"; return 0; } 2>/dev/null
+  fi
+  if command -v setsid >/dev/null 2>&1; then
+    setsid env -i HOME="$HOME" PATH="${PATH:-}" LANG="${LANG:-}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" sh "$_lvx_runner" \
+      "$_lvx_mode" "$_lvx_agent" "$PORT" "$_lvx_session" "$_lvx_dir" "$_lvx_draft" "$_lvx_lock" "$_lvx_vibe" \
+      >/dev/null 2>&1 <<CAPTURE &
+$TOKEN
+CAPTURE
+  else
+    (
+      trap '' HUP
+      exec env -i HOME="$HOME" PATH="${PATH:-}" LANG="${LANG:-}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" sh "$_lvx_runner" \
+        "$_lvx_mode" "$_lvx_agent" "$PORT" "$_lvx_session" "$_lvx_dir" "$_lvx_draft" "$_lvx_lock" "$_lvx_vibe"
+    ) >/dev/null 2>&1 <<CAPTURE &
+$TOKEN
+CAPTURE
+  fi
+  return 0
+}
+
+# lvx_capture_asks <response-headers>: prints `readme` and/or `draft <id>`,
+# one per line, for the asks the reply carries.
+lvx_capture_asks() {
+  LC_ALL=C sed -n \
+    -e 's/\r$//' \
+    -e '/^[Xx]-[Ll][Vv][Xx]-[Rr][Ee][Aa][Dd][Mm][Ee]: wanted$/s/.*/readme/p' \
+    -e 's/^[Xx]-[Ll][Vv][Xx]-[Dd][Rr][Aa][Ff][Tt]: \([0123456789abcdef]\{32\}\)$/draft \1/p' \
+    "$1" 2>/dev/null
 }
 
 # --max-time 1 mirrors the old http hooks' one-second fail-open ceiling: a
@@ -557,6 +724,13 @@ if [ -n "$STAMP_DIR" ] && [ -n "$NOW" ]; then
       if [ -n "$TERMS_WANTED" ]; then
         lvx_terms_start claude "$SESSION_ID" "${0%/*}/terms.sh"
       fi
+      lvx_capture_asks "$WORK/response-headers" >"$WORK/asks" 2>/dev/null || :
+      while read -r ASK ASK_ID; do
+        case "$ASK" in
+        readme) lvx_capture_start readme claude "$SESSION_ID" "${0%/*}/capture.sh" ;;
+        draft) lvx_capture_start draft claude "$SESSION_ID" "${0%/*}/capture.sh" "$ASK_ID" ;;
+        esac
+      done <"$WORK/asks" 2>/dev/null
       ;;
     [0-9][0-9][0-9]) write_status "http-$STATUS" ;;
     esac

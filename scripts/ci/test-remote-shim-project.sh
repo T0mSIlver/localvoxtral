@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Regression test for the X-Lvx-Env-Project header both remote shims send
-# (#652): the Claude Code plugin's hooks/post.sh and the Vibe remote post.sh.
+# (#652), and X-Lvx-Env-Repository beside it (#926): the Claude Code plugin's
+# hooks/post.sh and the Vibe remote post.sh.
 #
 # Builds real repositories with git (a main checkout, a worktree inside it, one
 # outside it, a submodule, a bare repository's worktree, and names outside the
 # label charset), runs each shim from inside them with a stub curl that keeps
-# the header file it was handed, and checks the header's value, or that there
-# is none.
+# the header file it was handed, and checks the headers' values, or that there
+# are none. The repository is origin's on github.com, a fork's included.
 #
 # Needs git and python3 (the Vibe shim's compactor), no network:
 #   ./scripts/ci/test-remote-shim-project.sh
@@ -14,6 +15,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd -P)"
 CLAUDE_SHIM="$ROOT_DIR/integrations/claude-code/plugins/localvoxtral-remote/hooks/post.sh"
+CAPTURE_SH="$ROOT_DIR/integrations/claude-code/plugins/localvoxtral-remote/hooks/capture.sh"
 VIBE_DIR_SRC="$ROOT_DIR/integrations/vibe/remote"
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lv-shim-project-test.XXXXXX")"
@@ -35,12 +37,16 @@ new_repo() {
 
 # --- Fixtures ----------------------------------------------------------------
 new_repo "$TMP_DIR/work/repo"
+# A fork: origin is the user's, upstream someone else's.
+git -C "$TMP_DIR/work/repo" remote add origin git@github.com:me/repo.git
+git -C "$TMP_DIR/work/repo" remote add upstream https://github.com/them/repo.git
 mkdir -p "$TMP_DIR/work/repo/Sources/deep"
 git -C "$TMP_DIR/work/repo" worktree add -q "$TMP_DIR/work/repo/.claude/worktrees/bold-bose" 2>/dev/null
 git -C "$TMP_DIR/work/repo" worktree add -q "$TMP_DIR/elsewhere/repo-fix" 2>/dev/null
 mkdir -p "$TMP_DIR/elsewhere/repo-fix/Sources"
 
 new_repo "$TMP_DIR/work/lib"
+git -C "$TMP_DIR/work/lib" remote add origin https://gitlab.com/me/lib.git
 git -C "$TMP_DIR/work/repo" -c protocol.file.allow=always \
   submodule add -q "$TMP_DIR/work/lib" vendor/lib 2>/dev/null
 
@@ -70,7 +76,7 @@ chmod +x "$STUB/curl"
 # --- Vibe shim's private dir ---------------------------------------------------
 VIBE_DIR="$TMP_DIR/vibe"
 mkdir -p "$VIBE_DIR"
-cp "$VIBE_DIR_SRC/post.sh" "$VIBE_DIR_SRC/compact.py" "$VIBE_DIR/"
+cp "$VIBE_DIR_SRC/post.sh" "$VIBE_DIR_SRC/compact.py" "$CAPTURE_SH" "$VIBE_DIR/"
 echo token >"$VIBE_DIR/token"
 echo 18473 >"$VIBE_DIR/port"
 TRANSCRIPT="$TMP_DIR/messages.jsonl"
@@ -88,8 +94,9 @@ if [ -n "$BASH_BIN" ] && [ "$(readlink -f /bin/sh)" != "$(readlink -f "$BASH_BIN
   SHELLS+=("$TMP_DIR/bash-as-sh/sh")
 fi
 
-# project_header <claude|vibe> <cwd>: the header's value, empty when absent.
-project_header() {
+# run_shim <claude|vibe> <cwd>: runs the shim there; the header file it
+# handed curl is left in $TMP_DIR/capture-<agent>.
+run_shim() {
   local capture="$TMP_DIR/capture-$1"
   rm -f "$capture"
   (
@@ -98,36 +105,43 @@ project_header() {
       printf '{"session_id":"s1"}' | env -i PATH="$STUB:$PATH" HOME="$TMP_DIR" \
         XDG_RUNTIME_DIR="$TMP_DIR/run" CAPTURE="$capture" \
         GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
-        CLAUDE_PLUGIN_OPTION_TOKEN=unit-test-token LVX_PROJECT=inherited \
+        CLAUDE_PLUGIN_OPTION_TOKEN=unit-test-token LVX_PROJECT=inherited LVX_REPOSITORY=me/inherited \
         "$SH" "$CLAUDE_SHIM" Stop >/dev/null
     else
       printf '%s' "$VIBE_PAYLOAD" | env -i PATH="$STUB:$PATH" HOME="$TMP_DIR" \
         XDG_RUNTIME_DIR="$TMP_DIR/run" CAPTURE="$capture" \
         GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
         LOCALVOXTRAL_VIBE_REMOTE_DIR="$VIBE_DIR" LOCALVOXTRAL_VIBE_WATCHER=off \
-        LVX_PROJECT=inherited "$SH" "$VIBE_DIR/post.sh" >/dev/null
+        LVX_PROJECT=inherited LVX_REPOSITORY=me/inherited "$SH" "$VIBE_DIR/post.sh" >/dev/null
     fi
   )
   [ -r "$capture" ] || fail "$1 shim in $2 never reached curl"
-  sed -n 's/^X-Lvx-Env-Project: //p' "$capture"
 }
 
+# expect <agent> <cwd> <project> [<repository>]: both headers' values, empty
+# for none.
 expect() {
-  local agent="$1" dir="$2" want="$3" got
-  got="$(project_header "$agent" "$dir")"
+  local agent="$1" dir="$2" want="$3" want_repo="${4:-}" got got_repo
+  run_shim "$agent" "$dir"
+  got="$(sed -n 's/^X-Lvx-Env-Project: //p' "$TMP_DIR/capture-$agent")"
+  got_repo="$(sed -n 's/^X-Lvx-Env-Repository: //p' "$TMP_DIR/capture-$agent")"
   [ "$got" = "$want" ] \
     || fail "$agent shim under $SH_NAME in ${dir#"$TMP_DIR"/}: X-Lvx-Env-Project '$got', want '$want'"
-  pass "$agent shim under $SH_NAME in ${dir#"$TMP_DIR"/}: '${want}'"
+  [ "$got_repo" = "$want_repo" ] \
+    || fail "$agent shim under $SH_NAME in ${dir#"$TMP_DIR"/}: X-Lvx-Env-Repository '$got_repo', want '$want_repo'"
+  pass "$agent shim under $SH_NAME in ${dir#"$TMP_DIR"/}: '${want}' '${want_repo}'"
 }
 
 for SH in "${SHELLS[@]}"; do
 case "$SH" in */bash-as-sh/sh) SH_NAME=bash ;; *) SH_NAME=/bin/sh ;; esac
 for agent in claude vibe; do
-  expect "$agent" "$TMP_DIR/work/repo" repo
-  expect "$agent" "$TMP_DIR/work/repo/Sources/deep" repo
-  expect "$agent" "$TMP_DIR/work/repo/.claude/worktrees/bold-bose" repo
-  expect "$agent" "$TMP_DIR/elsewhere/repo-fix/Sources" repo
+  expect "$agent" "$TMP_DIR/work/repo" repo me/repo
+  expect "$agent" "$TMP_DIR/work/repo/Sources/deep" repo me/repo
+  expect "$agent" "$TMP_DIR/work/repo/.claude/worktrees/bold-bose" repo me/repo
+  expect "$agent" "$TMP_DIR/elsewhere/repo-fix/Sources" repo me/repo
+  # A submodule is its own repository, here with an origin off GitHub.
   expect "$agent" "$TMP_DIR/work/repo/vendor/lib" lib
+  # The bare repository's origin is the seed's path: no GitHub repository.
   expect "$agent" "$TMP_DIR/work/api-feature" api.git
   # No repository, or a name outside the label charset: no header, and an
   # inherited LVX_PROJECT is never sent in its place.
@@ -141,4 +155,7 @@ done
 grep -q 'case .project: return "X-Lvx-Env-Project"' \
   "$ROOT_DIR/Sources/ClaudeContextWire/ClaudeRemoteSessionEnvironment.swift" \
   || fail "the Swift allowlist no longer reads X-Lvx-Env-Project"
-pass "the header name matches the Swift allowlist"
+grep -q 'case .repository: return "X-Lvx-Env-Repository"' \
+  "$ROOT_DIR/Sources/ClaudeContextWire/ClaudeRemoteSessionEnvironment.swift" \
+  || fail "the Swift allowlist no longer reads X-Lvx-Env-Repository"
+pass "the header names match the Swift allowlist"

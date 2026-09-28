@@ -13,7 +13,8 @@ extension SettingsStore {
                 apiKey: "",
                 model: model,
                 samplingDefaults: option?.samplingDefaults,
-                chatTemplateArguments: option?.chatTemplateArguments
+                chatTemplateArguments: option?.chatTemplateArguments,
+                usageBackend: .bundledHelper
             )
         }
         if polishingBackendMode == .mistralAPI {

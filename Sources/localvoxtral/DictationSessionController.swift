@@ -210,17 +210,16 @@ final class DictationSessionController {
     var llmPolishingService: any LLMPolishingServicing = LLMPolishingService()
     @ObservationIgnored
     var appConfigStore: any AppConfigServing = AppConfigStore()
-    #if LOCALVOXTRAL_DOGFOOD
-    /// `var` for the same reason `llmPolishingService` is: tests point it at a
-    /// temp directory. Production uses the Application Support default.
+    /// Where diagnostic records go. Nil without runtime services (tests), so
+    /// a unit test never writes the user's folder; the tests that want one
+    /// point it at a temp directory.
     @ObservationIgnored
-    var dogfoodCaptureStore = DogfoodCaptureStore()
+    var diagnosticRecordStore: DiagnosticRecordStore?
     /// Watches the seconds after a commit for an immediate erase, and patches
     /// that dictation's record with what it saw. `var` for the same reason as
     /// the store: tests inject the clock and the event source.
     @ObservationIgnored
-    var dogfoodEditSignalWatcher = DogfoodEditSignalWatcher()
-    #endif
+    var editSignalWatcher = EditSignalWatcher()
 
     @ObservationIgnored
     var sessionStore: DictationSessionStore?
@@ -233,6 +232,10 @@ final class DictationSessionController {
     /// dictation to the joined session. Nil without runtime services.
     @ObservationIgnored
     var correctionLearning: CorrectionLearning?
+    /// Where the last Overlay Buffer commit landed while its prompt may
+    /// still be unsent; the next commit there starts with a space (#802).
+    @ObservationIgnored
+    var lastOverlayCommitLanding: OverlayCommitLanding?
     /// Asks a new project's coding agent for its terms after the first
     /// joined dictation there (#609). Nil without runtime services; tests
     /// inject one over a fake runner.
@@ -323,6 +326,17 @@ final class DictationSessionController {
     /// watch can resume without re-reading Settings. Nil: no watch.
     @ObservationIgnored
     var silenceAutoStopThreshold: TimeInterval?
+    /// Stops an Overlay Buffer dictation that ended in a send phrase
+    /// (`DictationSessionController+SpokenStop.swift`), and the words it
+    /// was armed on.
+    @ObservationIgnored
+    var spokenStopTask: Task<Void, Never>?
+    @ObservationIgnored
+    var spokenStopArmedWords: [Substring]?
+    /// This session was stopped by its send phrase: a quick capture then
+    /// saves without it.
+    @ObservationIgnored
+    var sessionStoppedBySpokenPhrase = false
     @ObservationIgnored
     var isResolvingConnectTimeout = false
     /// The connect snapshot THIS session opened with. A mid-session reconnect
@@ -379,6 +393,38 @@ final class DictationSessionController {
     /// then an Overlay Buffer dictation is never a command.
     @ObservationIgnored
     var sessionNavigator: SessionNavigator?
+    /// The needs-you queue (#717). Nil until the app installs it. Observed:
+    /// the menu bar icon and the popover read its queue.
+    var agentAttention: AgentAttentionModel?
+    @ObservationIgnored
+    var answerAgentTask: Task<Void, Never>?
+    /// Asked for by the start that is under way; latched into
+    /// `sessionIsQuickCapture` with the output mode, so a start that never
+    /// got that far leaves nothing for the next dictation.
+    @ObservationIgnored
+    var requestedQuickCapture = false
+    /// This session is a quick capture (#725): its words go to the Inbox,
+    /// never into the focused app.
+    @ObservationIgnored
+    var sessionIsQuickCapture = false
+    /// Asked for by the answer shortcut's start (#927); latched into
+    /// `sessionDraftReview` like `requestedQuickCapture`.
+    @ObservationIgnored
+    var requestedDraftReview: QuickCaptureDraftSnapshot?
+    /// This session reviews the one draft the overlay shows (#927): its
+    /// words file, drop or change it, and are never inserted.
+    @ObservationIgnored
+    var sessionDraftReview: QuickCaptureDraftSnapshot?
+    /// The filing or redraft the last review started, for tests to await.
+    @ObservationIgnored
+    var draftReviewTask: Task<Void, Never>?
+    /// The Inbox the review acts on. The view model installs it.
+    @ObservationIgnored
+    var quickCaptureInbox: QuickCaptureInboxModel?
+    /// Where a stopped quick capture's words go, with its History record's
+    /// id when History kept it. The view model points it at the Inbox.
+    @ObservationIgnored
+    var onQuickCapture: (@MainActor (_ text: String, _ historyRecordID: UUID?) -> Void)?
     @ObservationIgnored
     var polishAndCommitTask: Task<Void, Never>?
     /// Saves the dictation `polishAndCommitTask` is polishing, as not
@@ -395,8 +441,26 @@ final class DictationSessionController {
     var wasCancelled = false
     @ObservationIgnored
     let escapeCancelHandler = EscapeCancelHandler()
+    /// Tab and ⇧Tab while an Overlay Buffer dictation runs (#840).
+    @ObservationIgnored
+    let destinationKeyHandler = DestinationKeyHandler()
+    /// The running overlay's destinations; nil outside an Overlay Buffer
+    /// dictation. `sessionIsQuickCapture` follows its pick: the Inbox is a
+    /// quick capture.
+    @ObservationIgnored
+    var destinations: SessionDestinations?
+    /// Brings a picked pane forward, or the focused app back.
+    @ObservationIgnored
+    var destinationFocusTask: Task<Void, Never>?
+    /// What the commit checks when the stopped dictation's picks moved the
+    /// focus, kept from the stop to the commit.
+    @ObservationIgnored
+    var sessionCommitGuard: DestinationCommitGuard?
     @ObservationIgnored
     var sessionStartedAt: Date?
+    /// This start's press → socket → microphone → first buffer line (#527).
+    @ObservationIgnored
+    var sessionCaptureTimeline: CaptureTimeline?
     @ObservationIgnored
     var sessionProvider: SettingsStore.RealtimeProvider?
     @ObservationIgnored
@@ -413,7 +477,7 @@ final class DictationSessionController {
     /// Where the second pass reports what it cost; the realtime client and
     /// the polishing service hold the same ledger.
     @ObservationIgnored
-    var secondPassUsageRecorder: (any MistralUsageRecording)?
+    var secondPassUsageRecorder: (any UsageRecording)?
     /// Live Auto-Paste spoken send trigger state
     /// (`DictationSessionController+SpokenSend.swift`), reset per session.
     enum LiveSpokenSendSegmentMode {
@@ -439,6 +503,23 @@ final class DictationSessionController {
     /// The "text went to another app" line is logged once per dictation.
     @ObservationIgnored
     var liveSpokenSendBlockLogged = false
+    /// Live Auto-Paste "go to <name>" state
+    /// (`DictationSessionController+LiveGoToSession.swift`), reset per session.
+    @ObservationIgnored
+    var liveGoToSegmentMode = LiveGoToSegmentMode.undecided
+    /// The current segment's deltas the go-to hold-back has not typed.
+    @ObservationIgnored
+    var liveGoToHeldText = ""
+    /// Resolves a spoken name and brings its pane forward; later segments
+    /// wait for it.
+    @ObservationIgnored
+    var liveGoToTask: Task<Void, Never>?
+    /// Segments that ended while `liveGoToTask` ran, in order.
+    @ObservationIgnored
+    var liveGoToQueuedSegments: [LiveGoToQueuedSegment] = []
+    /// Where the last go-to of this dictation moved the words, if one did.
+    @ObservationIgnored
+    var liveGoToLanding: LiveGoToLanding?
     @ObservationIgnored
     var firstChunkPreprocessor = FirstChunkPreprocessor()
 
@@ -590,8 +671,7 @@ final class DictationSessionController {
         guard audio.selectMicrophoneInput(id: id) else { return }
 
         guard isDictating else { return }
-        stopDictation(reason: "input device changed by user", finalizeRemainingAudio: false)
-        startDictation()
+        restartOnNewInput(reason: "input device changed by user")
     }
 
     var selectedInputDeviceChannelCount: UInt32 { audio.selectedInputDeviceChannelCount }
@@ -602,11 +682,42 @@ final class DictationSessionController {
         guard audio.selectMicrophoneInputChannel(channel) else { return }
 
         guard isDictating else { return }
-        stopDictation(reason: "input channel changed by user", finalizeRemainingAudio: false)
-        startDictation()
+        restartOnNewInput(reason: "input channel changed by user")
+    }
+
+    /// Stops the running session and starts the same kind again: a quick
+    /// capture restarts as a capture, never as a dictation into the app.
+    private func restartOnNewInput(reason: String) {
+        let quickCapture = sessionIsQuickCapture
+        let draftReview = sessionDraftReview
+        stopDictation(reason: reason, finalizeRemainingAudio: false)
+        startDictation(
+            outputMode: quickCapture || draftReview != nil ? .overlayBuffer : nil,
+            quickCapture: quickCapture,
+            draftReview: draftReview
+        )
     }
 
     func startDictation(outputMode: DictationOutputMode? = nil) {
+        startDictation(outputMode: outputMode, quickCapture: false)
+    }
+
+    /// The quick capture shortcut: an Overlay Buffer capture, or the stop of
+    /// the one running. During an Overlay Buffer dictation it picks the
+    /// Inbox, as Tab would (#840); during Live Auto-Paste it does nothing,
+    /// since words already typed cannot go to the Inbox.
+    func toggleQuickCapture() {
+        if isDictating {
+            if pickInboxOrStop() { return }
+            Log.dictation.info("quick capture: pressed during a Live Auto-Paste dictation; ignored")
+            return
+        }
+        startDictation(outputMode: .overlayBuffer, quickCapture: true)
+    }
+
+    func startDictation(
+        outputMode: DictationOutputMode?, quickCapture: Bool, draftReview: QuickCaptureDraftSnapshot? = nil
+    ) {
         guard !isDictating else { return }
         onDictationStartRequested?()
         guard !isConnectingRealtimeSession else {
@@ -649,6 +760,10 @@ final class DictationSessionController {
 
         switch currentMicrophoneAuthorizationStatus() {
         case .authorized:
+            // Set only where the start goes ahead: a start refused above must
+            // leave nothing for the next one (#732 review).
+            requestedQuickCapture = quickCapture
+            requestedDraftReview = draftReview
             beginDictationAfterManagedBackendIfNeeded(outputMode: outputMode)
         case .notDetermined:
             isAwaitingMicrophonePermission = true
@@ -670,6 +785,10 @@ final class DictationSessionController {
                         self.shortcuts.clearPushToTalkShortcutSessionAttempt()
                         return
                     }
+                    // This start's kind, not whatever a press made of the
+                    // flag while the prompt was up.
+                    self.requestedQuickCapture = quickCapture
+                    self.requestedDraftReview = draftReview
                     self.beginDictationAfterManagedBackendIfNeeded(outputMode: outputMode)
                     // The grant may land long after the initiating tap ended
                     // (toggle taps have no release event). If secure input
@@ -717,6 +836,7 @@ final class DictationSessionController {
         debugLog("stopDictation reason=\(reason)")
         shortcuts.clearPushToTalkShortcutSessionAttempt()
         disarmSilenceAutoStop()
+        disarmSpokenStop()
 
         // Before anything else: a reconnect run still in flight must not be
         // allowed to hand this session a socket after the user stopped it.
@@ -732,6 +852,7 @@ final class DictationSessionController {
         audio.flushBufferedAudio(to: activeRealtimeClient)
         isDictating = false
         escapeCancelHandler.stop()
+        endDestinations()
 
         guard finalizeRemainingAudio else {
             activeRealtimeClient.disconnect()
@@ -770,15 +891,14 @@ final class DictationSessionController {
         statusText = "Transcript copied."
     }
 
-    func copyLatestSegment(updateStatus: Bool = true) {
+    /// Live Auto-Paste with "Copy on stop" on: after each final, the
+    /// dictation so far goes to the clipboard, so it holds the whole
+    /// dictation once the session stops. Silent, since the status line
+    /// belongs to the running session.
+    func autoCopyDictationSoFar() {
         let segment = lastFinalSegment.trimmed
         guard !segment.isEmpty else { return }
-
         writeToPasteboard(segment)
-
-        if updateStatus {
-            statusText = "Latest segment copied."
-        }
     }
 
     /// Copies the RAW (pre-polish) transcript of the last polish-changed commit
@@ -899,30 +1019,6 @@ final class DictationSessionController {
         }
     }
 
-    func pasteLatestSegment() {
-        let segment = lastFinalSegment.trimmed
-        guard !segment.isEmpty else { return }
-
-        textInsertion.refreshAccessibilityTrustState()
-
-        let directInsertResult = textInsertion.insertText(segment)
-        if directInsertResult.isSuccess {
-            statusText = "Pasted latest segment."
-            return
-        }
-
-        if textInsertion.pasteUsingCommandV(segment) {
-            statusText = "Pasted latest segment."
-            return
-        }
-
-        if !textInsertion.isAccessibilityTrusted {
-            statusText = StatusStrings.pasteBlockedByAccessibilityPermission
-        } else {
-            statusText = "Unable to paste latest segment."
-        }
-    }
-
     var acceptsRealtimeEvents: Bool {
         isDictating || isFinalizingStop
     }
@@ -979,13 +1075,12 @@ extension DictationSessionController {
     /// describes the one resolved join, so the overlay cannot disagree with
     /// the context that ships.
     func captureTerminalScreenContextForSession() async {
-        #if LOCALVOXTRAL_DOGFOOD
         // The previous dictation's post-commit edit watch closes here rather
         // than reading this session's keys. It still flushes its own record,
         // as `superseded`.
-        dogfoodEditSignalWatcher.supersede()
-        #endif
+        editSignalWatcher.supersede()
         sessionClaudeJoinBadge = await context.captureAtStart()
+        noteDictationJoinedAgentSession(context.claudeSessionJoin?.snapshot.sessionID)
         await context.resolveAgentPromptRoute()
     }
 }

@@ -2,16 +2,6 @@ import Darwin
 import Foundation
 import Synchronization
 
-struct ModelDownloadProgress: Equatable, Sendable {
-    var downloadedBytes: Int64
-    var totalBytes: Int64?
-
-    var fraction: Double? {
-        guard let totalBytes, totalBytes > 0 else { return nil }
-        return min(1, Double(downloadedBytes) / Double(totalBytes))
-    }
-}
-
 struct ModelPreparationRequest: Equatable, Sendable {
     let backendID: String
     let displayName: String

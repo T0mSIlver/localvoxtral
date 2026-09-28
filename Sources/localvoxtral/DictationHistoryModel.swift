@@ -16,6 +16,7 @@ final class DictationHistoryModel {
     private(set) var hasLoaded = false
     /// Recordings on disk and their size, for the Storage group.
     private(set) var audioSummary: (recordings: Int, bytes: Int) = (0, 0)
+    private(set) var diagnosticRecordSummary: (records: Int, bytes: Int) = (0, 0)
 
     var searchText = ""
     var filter = DictationHistoryQuery.Filter.all
@@ -84,8 +85,9 @@ final class DictationHistoryModel {
         }
     }
 
-    func reloadAudioSummary() async {
+    func reloadStorageSummary() async {
         audioSummary = await store()?.audioSummary() ?? (0, 0)
+        diagnosticRecordSummary = await store()?.diagnosticRecordSummary() ?? (0, 0)
     }
 
     func showMore() async {

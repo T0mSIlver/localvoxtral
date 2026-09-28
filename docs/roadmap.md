@@ -1,9 +1,13 @@
 # Roadmap
 
+Planned work on localvoxtral, then smaller issues that are ready for a PR.
+
+## Planned
+
 - [ ] Developer ID signing and notarization, so installing needs no
       Gatekeeper workarounds
-- [ ] Hotword boosting in the speech model itself, to bias transcription (not
-      only polishing) toward your repo's vocabulary
+- [ ] Hotword boosting in the speech model itself, to bias transcription
+      toward your repo's vocabulary, not only polishing
       ([#316](https://github.com/T0mSIlver/localvoxtral/issues/316), waiting on
       the eval corpus in
       [#315](https://github.com/T0mSIlver/localvoxtral/issues/315))
@@ -22,8 +26,8 @@
 
 ## Specified and open
 
-These are smaller than the items above. Each issue already states its scope,
-the constraints this repo adds, and the proof a PR must carry.
+These are smaller than the planned items. Each issue already states its
+scope, the constraints this repo adds, and the proof a PR must carry.
 
 - [Duck other audio while dictating, and fade it back](https://github.com/T0mSIlver/localvoxtral/issues/375)
 - [A dropped WebSocket ends the dictation instead of reconnecting](https://github.com/T0mSIlver/localvoxtral/issues/380)
@@ -32,5 +36,5 @@ the constraints this repo adds, and the proof a PR must carry.
 
 Several of these came from people who forked the repo and solved the problem
 for themselves. The
-[`from-fork`](https://github.com/T0mSIlver/localvoxtral/labels/from-fork)
-label tracks them, and a PR that takes one up credits the original author.
+[from-fork label](https://github.com/T0mSIlver/localvoxtral/labels/from-fork)
+tracks them. A PR that takes one up credits the original author.

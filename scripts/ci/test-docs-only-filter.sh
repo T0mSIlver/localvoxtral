@@ -4,8 +4,8 @@
 # like the filter, so build-test runs both under macOS's bash 3.2.
 #
 # What it pins:
-#   - the allowlist's two sides (a docs page takes the fast path; workflow,
-#     source and empty diffs do not)
+#   - the allowlist's two sides (a docs page and the PR template take the
+#     fast path; workflow, source and empty diffs do not)
 #   - #707: a Markdown file a Swift test reads runs full CI, whether the test
 #     names its path, joins a bare file name onto a directory
 #     (scripts/ci/test-reads.txt) or walks docs/ for screenshot references
@@ -66,6 +66,9 @@ expect true "a docs page no test reads keeps the fast path" docs/roadmap.md
 expect true "an integration README no test reads keeps the fast path" \
   integrations/vibe/README.md
 expect false "a workflow edit runs full CI" .github/workflows/ci.yml
+expect true "the PR template keeps the fast path" .github/pull_request_template.md
+expect false "the PR template with a workflow runs full CI" \
+  .github/pull_request_template.md .github/workflows/ci.yml
 expect false "a Swift source edit runs full CI" Sources/localvoxtral/App.swift
 expect false "an empty diff fails open"
 

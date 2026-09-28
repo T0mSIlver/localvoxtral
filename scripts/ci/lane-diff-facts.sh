@@ -6,7 +6,7 @@
 #                           part the Mac runs: the `mac-lanes` job, or the
 #                           file's head before `jobs:` (triggers, concurrency,
 #                           env, permissions). Most ci.yml edits touch only
-#                           build-test, linux or dogfood.
+#                           build-test or linux.
 #   package_deps_changed    whether the root Package.swift changed a line that
 #                           can declare a dependency or its pin, the tools
 #                           version, the platforms or a build setting. Moving

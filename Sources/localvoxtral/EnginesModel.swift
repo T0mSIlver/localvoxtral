@@ -39,7 +39,7 @@ final class EnginesModel {
     /// without runtime services (tests), so a unit test never writes the
     /// user's ledger.
     @ObservationIgnored
-    private(set) var mistralUsageLedger: MistralUsageLedger?
+    private(set) var usageLedger: UsageLedger?
     /// Bumped on every ledger write so the Usage row re-reads the ledger.
     private(set) var mistralUsageRevision = 0
 
@@ -115,8 +115,8 @@ final class EnginesModel {
 
     /// The ledger the Usage row sums. The owner wires the same ledger into the
     /// two Mistral request paths it holds.
-    func installUsageLedger(_ ledger: MistralUsageLedger) {
-        mistralUsageLedger = ledger
+    func installUsageLedger(_ ledger: UsageLedger) {
+        usageLedger = ledger
     }
 
     /// A ledger write landed: the Usage row reads the ledger again.
@@ -283,20 +283,12 @@ final class EnginesModel {
         localNetworkPermissionPreflight.preflight(endpoint: endpoint, reason: reason)
     }
 
-    /// Managed speechd's launch arguments carry this setting; a running engine
-    /// keeps its argv, so apply a change by restarting it (same eager UX as
-    /// `applyLLMPolishingModelChange`: stop, then warm back up with progress
-    /// in the status row). Outside Managed local mode only the stored value
-    /// changes — the next managed start reads current settings.
-    func applySpeechdCacheLimitChange(_ limit: SpeechdCacheLimit) {
-        guard settings.speechdCacheLimit != limit else { return }
-        settings.speechdCacheLimit = limit
-        restartManagedDictationEngineForSettingChange(reason: "memory limit changed")
-    }
-
-    /// Same restart contract again, and the same reason: speechd loads its
-    /// checkpoint once, at launch. The new model downloads (with progress in
-    /// the status row) as part of that restart.
+    /// Managed speechd's launch arguments carry the model and loads its
+    /// checkpoint once, at launch, so a running engine keeps it: apply a change
+    /// by restarting (same eager UX as `applyLLMPolishingModelChange`: stop,
+    /// then warm back up with progress in the status row). The new model
+    /// downloads as part of that restart. Outside Managed local mode only the
+    /// stored value changes; the next managed start reads current settings.
     func applyManagedSpeechModelChange(_ repoID: String) {
         guard let option = SpeechModelCatalog.option(forRepoID: repoID),
               settings.managedSpeechModel != option.repoID

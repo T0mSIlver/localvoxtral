@@ -57,7 +57,7 @@ extension ClaudeSessionJoinResolver {
     /// mic indicator, exactly like the `.remoteHerdrPane` panel path.
     ///
     /// Every failure is a distinct content-free cause through
-    /// `abstainedFederatedHerdrJoin` — log plus dogfood tap — and every one
+    /// `abstainedFederatedHerdrJoin` — log plus diagnostic tap — and every one
     /// abstains: with the surface positively bound to herdr there is no weaker
     /// arm underneath to fall through to.
     package func resolveViaFederatedHerdr(

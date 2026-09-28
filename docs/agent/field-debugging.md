@@ -2,33 +2,37 @@
 
 Learned the hard way (2026-07-04) — use these instead of manual steps:
 
+- **First, ask the install itself**: `localvoxtral doctor --json` on the
+  Mac (permissions, engines, every agent's hooks and note, the command link,
+  remote hosts, the last five join lines) and on an enrolled host (tunnel,
+  token, the plugin version each running session loaded). `localvoxtral logs
+  --join --since 3h` prints the persisted join lines without a predicate to
+  remember. Their fixes name Settings panes; `AgentCLIDoctorSettingsPaneTests`
+  keeps those names real.
+
 - **Trying a PR build on the Mac**: `./scripts/try-pr.sh <pr-number|main>`
   downloads the exact CI-built artifact and launches it. No checkout, no
   build. Push → CI (~1.5 min) → try-pr.sh is the whole owner iteration loop.
   Pushes to main build no bundle, so `main` takes the newest dispatched
-  build and, when it is behind main, offers to dispatch one and wait.
-  `--dogfood` fetches the instrumented `localvoxtral-app-dogfood` artifact
-  instead, verifies its `LVXDogfoodCapture` stamp, arms the runtime capture
-  default, and launches — the one-command dogfood install. That artifact is
-  opt-in in CI (`[dogfood-package]` in the PR body / head commit message, or
-  a `workflow_dispatch` with `dogfood=true`); when the target run lacks it,
-  the script offers to trigger a dispatch build and shows the latest run
-  that has one.
-  `--ui-gate` (composable with `--dogfood`) installs the bundle into the SSH
+  build and, when it is behind main, offers to dispatch one and wait. It
+  refuses a bundle stamped `LVXE2EHarness` — that build is UI Smoke's, not
+  a release bundle.
+  `--ui-gate` installs the bundle into the SSH
   UI gate's artifact root instead of leaving it in `/tmp`, and stops short of
   launching it — `ssh lv-ui 'launch ...'` is what starts it, and what records
   the pid every other gate verb addresses. The gate's roots are owner-writable
   only on purpose, so the install destination moves rather than the roots
   (`scripts/mac/install-ui-artifact.sh`, runbook `scripts/mac/README.md`).
-  An agent driving the gate has no shell on that account: for it, the install
-  is `gh workflow run CI --ref <branch> -f dogfood=true -f herdr=false`
-  (`herdr=false` because a dispatch otherwise forces the live herdr lane on,
-  and its fixture refuses to start beside the herdr the owner runs all day).
-  The self-hosted
-  runner is a launchd agent in the owner's GUI session, so its `$HOME` is the
-  artifact root's home, and that dispatch (and ONLY a dispatch — the
-  `[dogfood-package]` marker must never write into the owner's home) installs
-  the bundle and prints the `launch` command in the run summary.
+  A build with the test harness (the gate's `app` verbs) comes from
+  dispatching UI Smoke on the branch instead
+  (`scripts/ui-smoke-dispatch.sh --override "harness build for the UI gate" <branch>`): its e2e-dictation job
+  packages a harness build and installs it into the gate's artifact root
+  itself, then prints the `launch --harness` command in the run summary
+  (`docs/test-harness.md`). That run takes over the owner's screen, so ask
+  the owner before dispatching it. An agent driving the gate has no shell on that
+  account, so this dispatch is how it gets a harness build installed; the
+  self-hosted runner is a launchd agent in the owner's GUI session, so its
+  `$HOME` is the artifact root's home.
 - **Driving the UI gate from the dev box**: `./scripts/mac-ui.sh <verb…>`
   passes one gate verb through a multiplexed ssh connection that stays open
   between calls (ControlMaster/ControlPersist, 600 s idle), so a
@@ -113,7 +117,7 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
 
   `--json` prints one line: `arm`, `abstentionReason`, `origin`, `terminal`,
   `herdrBound`, `workspaceIsLocal` — the same six fields, from the same
-  mapper, as a dogfood record's `join` block
+  mapper, as a diagnostic record's `join` block
   (`ClaudeSessionJoinSummary`). Exit status is 0 when an arm joined, 1 when
   none did, 2 on a usage error.
 
@@ -161,15 +165,15 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   reached this Mac. The line carries no id, path or host, so it is safe to
   paste into an issue.
 
-  Both of those limits are gone in a **dogfood build with the control socket
-  armed** (`docs/dogfood-builds.md`): `surface probe` runs the same
+  Both of those limits are gone in a **build with the control socket armed**
+  (`docs/test-harness.md`): `surface probe` runs the same
   `ClaudeSurfaceProbe.summarize` decision INSIDE the app, so it resolves
   against the registry the broker has been filling since launch and against
   the app's full-capability resolver. `registry list` beside it answers the
   question the one-shot probe cannot — whether the chain reads that way
   because the registry is empty or because the surface was not identified. Use
-  the verb here when you have the shipping binary and the socket when you are
-  dogfooding; they print the same six fields from the same mapper.
+  the verb here when you have the shipping binary and the socket when you
+  have a harness build; they print the same six fields from the same mapper.
 - **README demo video**: `./scripts/record-demo.sh` on the Mac (GUI session)
   stages the scene, drives the real Right-Command tap/hold gesture with
   synthetic CGEvents, records, and encodes `dist/demo/demo.mp4`; the operator
@@ -183,33 +187,11 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   `DEMO_TERMINAL_AGENT=herdr` (explicit only, never auto) records the herdr
   pane-join scene — split panes in an isolated named herdr session, dictation
   into the focused Claude pane, log-asserted herdr join + pane.read context.
-- **Dogfooding context capture** (`Sources/localvoxtral/Dogfood`): the app logs
-  context COUNTS only, on purpose, which also makes a retrieval miss
-  unattributable after the fact. The capture is the gated exception — it records
-  the join outcome, the screen decision and its cause, each source's harvest and
-  proposals, budget demands vs. grants, the rendered prompts, and the model's
-  reply, so a wrong term can be blamed on exactly one of four stages
-  (retrieval / matcher / conflict / budget). Records also carry a content-free
-  behavioral signal (`DogfoodEditSignalWatcher`): a bounded post-commit window
-  — 2 s for 1–5 words up to 15 s for very long transcripts — watching for the
-  user immediately erasing what was inserted (Backspace, forward delete, or ⌘A).
-  Only the gesture, a bucketed delay, the word-count bucket, and the output mode are
-  recorded; no key content and no other key at all. It is a GLOBAL `NSEvent`
-  keyDown observer (no new permission — the same Accessibility trust insertion
-  already needs), installed only while a window is open and torn down the
-  instant it closes, and the record is patched in place afterwards rather than
-  held back for the window (a held record is lost to any quit). The `clean` and
-  `superseded` outcomes are recorded too: without the negative there is no
-  denominator. It is behind a COMPILE flag
-  (`LOCALVOXTRAL_DOGFOOD`, or the gitignored `.dogfood-capture-enable` marker
-  that crosses the build gate) plus a runtime opt-in
-  (`defaults write com.localvoxtral.app debug.dogfood_capture_enabled -bool true`).
-  Shipped releases do not contain it, and there is deliberately no uploader —
-  records are local files under Application Support. Fastest install:
-  `./scripts/try-pr.sh main --dogfood` (CI-built opt-in artifact, stamp
-  verified, capture default armed automatically). `dogfood-package` remains
-  the local-build equivalent; both keep the bundle id so the TCC grant
-  survives and stamp `LVXDogfoodCapture` into Info.plist so you can tell
-  which binary you are running — as does Settings > About's constant "Build"
-  row (`DogfoodBuildStatus`), which also shows whether capture is armed in
-  this process. User-facing docs: `docs/dogfood-builds.md`.
+- **Diagnostic records** (`Sources/localvoxtral/DiagnosticRecords`): the app
+  logs context counts only, and each polished dictation also writes a local
+  JSON record of what the context pipeline saw and decided, named by its
+  History id, with the post-commit edit signal patched in. On by default in
+  every build (History > Storage). Ask the user for the record of the
+  dictation that went wrong: `~/Library/Application
+  Support/localvoxtral/diagnostic-records/`, newest last by name. Format,
+  redaction and the edit signal: `docs/agent/diagnostic-records.md`.

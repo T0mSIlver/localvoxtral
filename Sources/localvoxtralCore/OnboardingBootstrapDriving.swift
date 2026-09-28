@@ -1,0 +1,94 @@
+import Foundation
+
+/// The managed downloads the onboarding wizard can kick off. Each maps to one
+/// managed backend + its model weights.
+package enum OnboardingItemID: String, CaseIterable, Identifiable, Sendable {
+    /// Bundled speechd + the Voxtral realtime dictation model.
+    case dictation
+    /// The bundled polishing engine's LLM model.
+    case polishing
+
+    package var id: String { rawValue }
+
+    package var title: String {
+        switch self {
+        case .dictation:
+            return "Dictation engine"
+        case .polishing:
+            return "Polishing model"
+        }
+    }
+
+}
+
+/// UI-facing state of a single onboarding download item. Deliberately decoupled
+/// from `ManagedBackendStatus` so the wizard compiles against today's backend
+/// API and the mapping (see `OnboardingItemState.init(managedStatus:)`) is the
+/// single place that absorbs backend-status changes (e.g. PR #62).
+package enum OnboardingItemState: Equatable, Sendable {
+    case pending
+    /// In progress. `fraction` drives a determinate bar when non-nil, otherwise
+    /// the UI shows an indeterminate spinner alongside `detail`.
+    case working(detail: String, fraction: Double?)
+    case ready
+    case failed(summary: String)
+}
+
+/// Drives the wizard's Downloads page. The wizard depends ONLY on this small
+/// surface, so the live implementation can evolve with the backend API without
+/// the wizard changing. `LiveOnboardingBootstrapDriver` wraps `BackendManager`;
+/// tests use `FakeOnboardingBootstrapDriver`.
+@MainActor
+package protocol OnboardingBootstrapDriving: AnyObject {
+    /// Observable per-item state. Empty until `start` is called.
+    var itemStates: [OnboardingItemID: OnboardingItemState] { get }
+
+    /// Kick off model download for the requested items. Nothing runs
+    /// until this is called (preserves the app's lazy-bootstrap invariant).
+    func start(dictation: Bool, polishing: Bool)
+
+    /// Cancel any in-flight work. Item states are left as last observed.
+    func cancel()
+}
+
+extension OnboardingItemState {
+    /// Map a live `ManagedBackendStatus` into the wizard's item state. This is
+    /// the single seam that absorbs backend-status shape changes.
+    package init(managedStatus status: ManagedBackendStatus) {
+        switch status {
+        case .stopped:
+            self = .pending
+        case .preparingModel(let progress):
+            self = .working(
+                detail: Self.modelDownloadDetail(progress),
+                fraction: progress.fraction
+            )
+        case .pausedModelDownload(let progress):
+            // Only reachable when the download is paused from Settings while
+            // the wizard is open. `.working` is the one case that keeps the
+            // bar, and the detail says plainly that nothing is moving.
+            self = .working(detail: "Paused", fraction: progress.fraction)
+        case .starting:
+            // Managed servers download the model weights internally before
+            // /health responds, so "starting" can be a long, opaque wait.
+            self = .working(detail: "Loading the model…", fraction: nil)
+        case .ready:
+            self = .ready
+        case .failed(let summary, _):
+            self = .failed(summary: summary)
+        }
+    }
+
+    private static func modelDownloadDetail(_ progress: ModelDownloadProgress) -> String {
+        guard let totalBytes = progress.totalBytes, totalBytes > 0 else {
+            // Bytes moving but no total (CDN sent no length): show movement
+            // rather than pretending we are still checking.
+            if progress.downloadedBytes > 0 {
+                let megabytes = progress.downloadedBytes / 1_048_576
+                return "Downloading model, \(megabytes) MB"
+            }
+            return "Checking model..."
+        }
+        return "Downloading model \(Int(((progress.fraction ?? 0) * 100).rounded()))%"
+    }
+}

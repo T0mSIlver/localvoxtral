@@ -24,4 +24,17 @@ package enum LLMPolishingError: Error, LocalizedError, Sendable {
             return "LLM request timed out after \(Int(seconds.rounded())) s."
         }
     }
+
+    /// `errorDescription` without the response body, which can quote the
+    /// request and so the dictated text: the part safe to log public.
+    package var publicLogDescription: String {
+        if case .requestFailed(let statusCode, _) = self { return "LLM request failed (HTTP \(statusCode))." }
+        return errorDescription ?? "LLM error."
+    }
+
+    /// Any polish error's public part: an `LLMPolishingError` without its
+    /// body, anything else by its description.
+    package static func publicLogDescription(of error: any Error) -> String {
+        (error as? LLMPolishingError)?.publicLogDescription ?? error.localizedDescription
+    }
 }

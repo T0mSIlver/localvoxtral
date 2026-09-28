@@ -167,12 +167,27 @@ extension ClaudeSessionJoinResolver {
         guard mechanism == .herdrPane
             || mechanism == .remoteHerdrPane
             || mechanism == .federatedHerdrPane,
-            let binding = join.herdrPane,
-            let writer = herdrPaneWriter,
-            let panes = herdrPanes
+            let binding = join.herdrPane
         else { return nil }
-        let snapshot = join.snapshot
-        let terminalPID = join.target.pid
+        return herdrPromptRoute(
+            binding: binding,
+            snapshot: join.snapshot,
+            mechanism: mechanism,
+            terminalPID: join.target.pid,
+            frontmostPID: frontmostPID
+        )
+    }
+
+    /// The route over one herdr pane binding, found by a join or by the
+    /// local lookup without one (#759).
+    package func herdrPromptRoute(
+        binding: ClaudeHerdrPaneBinding,
+        snapshot: ClaudeSessionSnapshot,
+        mechanism: ClaudeSessionJoinMechanism,
+        terminalPID: pid_t,
+        frontmostPID: @escaping @MainActor () -> pid_t?
+    ) -> HerdrPanePromptRoute? {
+        guard let writer = herdrPaneWriter, let panes = herdrPanes else { return nil }
         return HerdrPanePromptRoute(
             binding: binding,
             writer: writer,

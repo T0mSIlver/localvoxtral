@@ -27,7 +27,55 @@ final class SessionNavigationTests: XCTestCase {
             ("", nil),
         ]
         for (text, expected) in cases {
-            XCTAssertEqual(GoToSessionCommandParser.spokenName(in: text), expected, text)
+            XCTAssertEqual(SessionVoiceCommandParser.spokenName(in: text), expected, text)
+        }
+    }
+
+    /// #723 step 2. Not "call this one": that is a coding prompt.
+    func testNamingThisSessionIsACommandOnlyAsTheWholeText() {
+        let cases: [(String, SessionVoiceCommand?)] = [
+            ("call this session payments", .nameThisSession("payments")),
+            ("Name this session Payments API.", .nameThisSession("Payments API")),
+            ("go to payments", .goTo("payments")),
+            ("call this one payments", nil),
+            ("call this session", nil),
+            ("call this session the one that fixes the build", nil),
+            ("please call this session payments", nil),
+        ]
+        for (text, expected) in cases {
+            XCTAssertEqual(SessionVoiceCommandParser.command(in: text), expected, text)
+        }
+        XCTAssertNil(SessionVoiceCommandParser.spokenName(in: "call this session payments"))
+    }
+
+    /// #747: Live Auto-Paste holds a segment only while it may read "go to".
+    func testALiveSegmentIsHeldOnlyWhileItMayReadGoTo() {
+        let cases: [(String, SessionVoiceCommandParser.SegmentPrefix)] = [
+            ("", .undecided),
+            (" G", .undecided),
+            (" Go", .undecided),
+            ("Go ", .undecided),
+            ("go t", .undecided),
+            ("Go to", .undecided),
+            ("Got", .undecided),
+            ("Go to p", .possibleCommand),
+            ("go to local voxtral", .possibleCommand),
+            ("Goto pay", .possibleCommand),
+            ("go to cool roentgen twenty one", .possibleCommand),
+            // Five name words: a sentence, typed from here on.
+            ("go to the tests folder and f", .ordinary),
+            ("Good", .ordinary),
+            ("Go ahead", .ordinary),
+            ("Gotta", .ordinary),
+            ("run the tests", .ordinary),
+            ("please go to payments", .ordinary),
+            // #723 step 2's phrase is held the same way.
+            ("Call this", .undecided),
+            ("call this session pay", .possibleCommand),
+            ("Call the tests", .ordinary),
+        ]
+        for (text, expected) in cases {
+            XCTAssertEqual(SessionVoiceCommandParser.segmentPrefix(text), expected, text)
         }
     }
 
@@ -96,6 +144,31 @@ final class SessionNavigationTests: XCTestCase {
         XCTAssertEqual(resolvedID("local voxtral", candidates), "wt")
     }
 
+    func testANicknameWinsOverEveryDefaultName() {
+        var named = candidate("wt", tty: "/dev/ttys002", primary: "cool-roentgen", repository: "localvoxtral")
+        named.nickname = "payments"
+        let candidates = [candidate("pay", tty: "/dev/ttys001", primary: "payments"), named]
+        XCTAssertEqual(resolvedID("payments", candidates), "wt")
+        XCTAssertEqual(resolvedID("cool roentgen", candidates), "wt", "the default names still work")
+    }
+
+    @MainActor
+    func testANamedSessionIsFoundByItsNickname() async {
+        let session = localSession("s", cwd: "/r/localvoxtral", tty: "/dev/ttys002")
+        let store = SessionNicknameStore(load: []) { _ in }
+        let navigator = SessionNavigator(
+            liveSessions: { [session] },
+            repositoryRoot: { _ in .unknown },
+            focuser: FakeSessionPaneFocuser(),
+            sleep: ManualSessionClock().sleep,
+            nicknames: store
+        )
+        XCTAssertFalse(navigator.name(sessionID: "gone", nickname: "payments"), "only a live session")
+        XCTAssertTrue(navigator.name(sessionID: "s", nickname: "payments"))
+        let resolution = await navigator.resolve(spokenName: "Payments")
+        XCTAssertEqual(resolution, .resolved(session))
+    }
+
     func testTwoPanesOnOneNameAreAmbiguous() {
         let candidates = [
             candidate("wt1", tty: "/dev/ttys001", primary: "wt-a", repository: "localvoxtral"),
@@ -117,7 +190,7 @@ final class SessionNavigationTests: XCTestCase {
 
     // MARK: - Focus route
 
-    func testOnlyALocalSessionInAPlainTerminalHasARoute() {
+    func testALocalTerminalTabOrAnyClaudeDesktopSessionHasARoute() {
         XCTAssertEqual(
             SessionPaneFocusRoute.of(localSession("a", cwd: "/p", tty: "/dev/ttys004", termProgram: "ghostty")),
             .terminalTTY("/dev/ttys004", termProgram: "ghostty")
@@ -132,13 +205,34 @@ final class SessionNavigationTests: XCTestCase {
         cmux.process?.cmuxSurfaceID = "s1"
         XCTAssertEqual(SessionPaneFocusRoute.of(cmux), .unsupported(.cmux))
 
+        let desktopID = "local_6d880b94-4414-4764-a024-c95df1af4456"
+        let link = URL(string: "claude://code/continue?session=\(desktopID)")!
         var desktop = localSession("d", cwd: "/p", tty: "/dev/ttys004")
-        desktop.process?.desktopSessionID = "local_x"
-        XCTAssertEqual(SessionPaneFocusRoute.of(desktop), .unsupported(.claudeDesktop))
+        desktop.process?.desktopSessionID = desktopID
+        XCTAssertEqual(SessionPaneFocusRoute.of(desktop), .claudeDesktop(link))
+
+        var remoteDesktop = ClaudeSessionSnapshot(sessionID: "rd", origin: remote, firstSeen: epoch)
+        remoteDesktop.remoteEnvironment = ClaudeRemoteSessionEnvironment(desktopSessionID: desktopID)
+        XCTAssertEqual(SessionPaneFocusRoute.of(remoteDesktop), .claudeDesktop(link), "Desktop shows an ssh session on this Mac")
 
         var remoteSession = ClaudeSessionSnapshot(sessionID: "r", origin: remote, firstSeen: epoch)
         remoteSession.process = ClaudeHookProcessInfo(hookPID: 1, claudePID: 2, tty: "/dev/ttys004")
         XCTAssertEqual(SessionPaneFocusRoute.of(remoteSession), .unsupported(.remote))
+    }
+
+    /// Desktop's handler takes `local_` plus 1 to 64 letters, digits and
+    /// dashes; anything else would land on its empty Code tab.
+    func testTheDesktopLinkCarriesOnlyAnIDDesktopsHandlerTakes() {
+        XCTAssertEqual(
+            ClaudeDesktopSessionLink.continueURL(desktopSessionID: "local_0f3a-b2")?.absoluteString,
+            "claude://code/continue?session=local_0f3a-b2"
+        )
+        for bad in ["local_", "local_a_b", "local_a&x=1", "local_é", "session_abc", "local_" + String(repeating: "a", count: 65)] {
+            XCTAssertNil(ClaudeDesktopSessionLink.continueURL(desktopSessionID: bad), bad)
+        }
+        var odd = localSession("d", cwd: "/p")
+        odd.process?.desktopSessionID = "local_a_b"
+        XCTAssertEqual(SessionPaneFocusRoute.of(odd), .unsupported(.claudeDesktop))
     }
 
     // MARK: - Navigator

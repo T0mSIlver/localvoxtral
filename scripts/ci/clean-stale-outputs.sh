@@ -26,7 +26,7 @@ fi
 
 rm -rf dist logs format-lint.txt default.profraw
 
-# The dogfood capture suite's own cache. The suite built there on this
+# The removed dogfood suite's cache (#792). It built there on this
 # runner until #545 moved it to a hosted job; nothing builds there now.
 rm -rf .build-dogfood
 

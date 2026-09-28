@@ -29,6 +29,35 @@ enum MenuBarStatusIcon {
         return image
     }
 
+    /// The session-active orange, which the colored PNGs carry.
+    static let accentColor = NSColor(srgbRed: 255 / 255, green: 130 / 255, blue: 4 / 255, alpha: 1)
+
+    /// The mic in the menu bar's text color with an orange mark right of its
+    /// head: an agent needs you (#717). Drawn per appearance, like the others.
+    ///
+    /// The mark's cells sit on the mic's pixel grid: 1 pt each, which the
+    /// @2x art offsets by half a point.
+    static func withAttentionMark(template: NSImage, mark: AgentAttentionMark) -> NSImage {
+        let size = template.size
+        let image = NSImage(size: size, flipped: false) { rect in
+            template.draw(in: rect)
+            NSColor.labelColor.set()
+            rect.fill(using: .sourceAtop)
+            let cell = rect.width / 22
+            accentColor.setFill()
+            for (x, y) in mark.cells {
+                NSRect(
+                    x: rect.minX + (0.5 + CGFloat(x)) * cell,
+                    y: rect.maxY - (1.5 + CGFloat(y)) * cell,
+                    width: cell, height: cell
+                ).fill()
+            }
+            return true
+        }
+        image.isTemplate = false
+        return image
+    }
+
     /// The colored pixels alone: the colored icon with the template's mic cut
     /// out of it.
     private static func accentOnly(colored: NSImage, template: NSImage, size: NSSize) -> NSImage {

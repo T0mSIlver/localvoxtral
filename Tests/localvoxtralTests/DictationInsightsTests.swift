@@ -12,14 +12,33 @@ final class DictationInsightsTests: XCTestCase {
         polishSeconds: Double? = nil,
         bundleID: String? = nil,
         status: DictationSessionStatus = .completed,
-        commitSucceeded: Bool = true
+        commitSucceeded: Bool = true,
+        editOutcome: EditSignalOutcome? = nil
     ) -> DictationHistoryEntry {
         DictationHistoryEntry(
             id: UUID(), startedAt: origin, finishedAt: origin.addingTimeInterval(seconds),
             rawText: rawText, polishedText: polished, polishingDurationSeconds: polishSeconds,
             provider: "p", model: "m", outputMode: "overlay_buffer", targetAppBundleID: bundleID,
             status: status, commitSucceeded: commitSucceeded, polishProfile: nil,
-            polishContextSummary: nil)
+            polishContextSummary: nil, editOutcome: editOutcome?.rawValue)
+    }
+
+    /// The "edited soon after insertion" share: erased over watched. A window
+    /// a new dictation cut short, and a dictation nothing watched, are in
+    /// neither count.
+    func testEditedSoonCountsErasedInsertionsOverWatchedOnes() {
+        let insights = DictationInsights(entries: [
+            entry("one", editOutcome: .edited),
+            entry("two", editOutcome: .clean),
+            entry("three", editOutcome: .clean),
+            entry("four", editOutcome: .clean),
+            entry("five", editOutcome: .superseded),
+            entry("six"),
+        ])
+
+        XCTAssertEqual(insights.dictations, 6)
+        XCTAssertEqual(insights.editWatched, 4)
+        XCTAssertEqual(insights.editedSoon, 1)
     }
 
     func testNoDictationsIsAllZeroesAndNoRatios() {
@@ -166,6 +185,35 @@ final class DictationInsightsTests: XCTestCase {
         XCTAssertEqual(DictationInsightsText.duration(2 * 3_600 + 14 * 60), "2 h 14 min")
         XCTAssertEqual(DictationInsightsText.duration(3 * 3_600), "3 h")
         XCTAssertEqual(DictationInsightsText.share(1, of: 0), "—")
+    }
+
+    /// Usage by feature sums the ledger over the period the pane's picker
+    /// selects, and lists only the features that made a call in it.
+    @MainActor
+    func testUsageByFeatureFollowsThePeriod() async throws {
+        let suite = "insights-usage-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: suite) }
+        let ledger = [
+            UsageEntry(date: origin.addingTimeInterval(-3_600), feature: .polish, backend: .mistral,
+                       model: "m", costEUR: 0.01),
+            UsageEntry(date: origin.addingTimeInterval(-10 * 86_400), feature: .polish, backend: .bundledHelper,
+                       model: "m"),
+            UsageEntry(date: origin.addingTimeInterval(-10 * 86_400), feature: .quickCaptureDrafting,
+                       backend: .claudeCode, model: "sonnet", agentCostUSD: 0.1),
+        ]
+        let model = DictationInsightsModel(
+            defaults: defaults, store: { nil }, terms: { [] }, usage: { ledger })
+
+        model.period = .week
+        model.reloadUsage(now: origin)
+        XCTAssertEqual(model.featureUsage.map(\.feature), [.polish])
+        XCTAssertEqual(model.featureUsage.first?.calls, 1)
+
+        model.period = .month
+        model.reloadUsage(now: origin)
+        XCTAssertEqual(model.featureUsage.map(\.feature), [.polish, .quickCaptureDrafting])
+        XCTAssertEqual(model.featureUsage.first?.calls, 2)
     }
 }
 

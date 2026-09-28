@@ -85,7 +85,8 @@ public struct DictationNoteInstallService: Sendable {
         transcription errors: misheard names, homophones, a word split or merged. \
         Correct an obvious one yourself. When a likely error changes what I am \
         asking, ask me before acting. When you create or rename something I will \
-        say aloud, run `localvoxtral terms propose` with its name.
+        say aloud, run `localvoxtral terms propose` with its name. If dictation \
+        misbehaves, run `localvoxtral doctor`.
         \(block.markerEnd)
         """
 

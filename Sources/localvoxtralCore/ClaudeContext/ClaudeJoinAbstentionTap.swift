@@ -3,11 +3,10 @@ import Synchronization
 /// Collects the resolver's abstention causes for the duration of one resolve.
 ///
 /// The resolver reduces every abstention to a log line and returns `nil`, so by
-/// the time an answer comes back the reason it took that answer is gone. A
-/// dogfood build already taps that (`DogfoodCaptureTap`), but that tap does not
-/// exist in a shipping build — and both `--probe-surface` and the dictation's
-/// persisted join line have to work in one, because a diagnostic that requires
-/// a special binary cannot diagnose the binary the user is actually running.
+/// the time an answer comes back the reason it took that answer is gone. The
+/// app's `DiagnosticCaptureTap` keeps them for the diagnostic record, which the
+/// user can turn off; `--probe-surface` and the dictation's persisted join line
+/// have to work either way, so they read this tap.
 ///
 /// Disarmed by default and therefore inert in normal operation: `note` takes an
 /// uncontended lock, sees no collector, and returns. Nothing accumulates when
@@ -16,7 +15,7 @@ import Synchronization
 ///
 /// Scoped rather than global-with-a-reset (`collecting(_:)` arms, runs, and
 /// disarms) so a collection can never outlive the call that wanted it — the
-/// failure mode of the leaked-slot kind that `DogfoodCaptureTap.beginSession`
+/// failure mode of the leaked-slot kind that `DiagnosticCaptureTap.beginSession`
 /// exists to bound.
 package enum ClaudeJoinAbstentionTap {
     private struct State {
@@ -30,18 +29,16 @@ package enum ClaudeJoinAbstentionTap {
 
     private static let state = Mutex(State())
 
-    #if LOCALVOXTRAL_DOGFOOD
-    /// Where a dogfood build's capture record also takes each cause. The app's
-    /// `DogfoodCaptureTap` sets it when it is created; the core can't see that
+    /// Where the diagnostic record also takes each cause. The app's
+    /// `DiagnosticCaptureTap` sets it when it is created; the core can't see that
     /// tap. A cause noted before then would have been cleared by the tap's
     /// `beginSession` before any record read it.
-    package static let dogfoodSink = Mutex<(@Sendable (String) -> Void)?>(nil)
+    package static let diagnosticSink = Mutex<(@Sendable (String) -> Void)?>(nil)
 
-    /// Hands one cause to the dogfood capture, if it exists yet.
-    package static func noteForDogfood(_ cause: String) {
-        dogfoodSink.withLock { $0 }?(cause)
+    /// Hands one cause to the diagnostic record's tap, if it exists yet.
+    package static func noteForDiagnostics(_ cause: String) {
+        diagnosticSink.withLock { $0 }?(cause)
     }
-    #endif
 
     /// Records one arm's abstention cause, e.g. `"tty: stale"`. A no-op unless
     /// a `collecting(_:)` call is in progress.

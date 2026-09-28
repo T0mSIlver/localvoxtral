@@ -28,6 +28,9 @@ struct LLMPolishingRequest: Sendable {
     /// model to think before answering (`MistralReasoningEffort.high`);
     /// self-hosted shapes ignore it and keep their configured behaviour.
     let prefersDeepReasoning: Bool
+    /// The feature the usage ledger charges this request to. Nil records
+    /// nothing: the warmup's one-token throwaway on the bundled helper.
+    let usageFeature: UsageEntry.Feature?
 
     init(
         inputText: String,
@@ -35,7 +38,8 @@ struct LLMPolishingRequest: Sendable {
         userPrompts: [String],
         maxTokens: Int? = nil,
         timeoutSeconds: TimeInterval? = nil,
-        prefersDeepReasoning: Bool = false
+        prefersDeepReasoning: Bool = false,
+        usageFeature: UsageEntry.Feature? = .polish
     ) {
         self.inputText = inputText
         self.systemPrompt = systemPrompt
@@ -43,6 +47,7 @@ struct LLMPolishingRequest: Sendable {
         self.maxTokens = maxTokens
         self.timeoutSeconds = timeoutSeconds
         self.prefersDeepReasoning = prefersDeepReasoning
+        self.usageFeature = usageFeature
     }
 }
 
@@ -93,6 +98,9 @@ struct LLMPolishingConfiguration: Sendable {
     /// reasoning model; Settings passes the catalog's answer so a model
     /// without reasoning gets no field at all.
     let mistralReasoningEffort: MistralReasoningEffort?
+    /// Who answers, for the usage ledger. Settings names the bundled helper;
+    /// otherwise the shape decides: Mistral's, or a server the user configured.
+    let usageBackend: UsageEntry.Backend
 
     init(
         endpointURL: URL,
@@ -103,7 +111,8 @@ struct LLMPolishingConfiguration: Sendable {
         thinkingBudgetTokens: Int? = nil,
         passthroughExtraParameters: Bool = false,
         requestShape: LLMPolishingRequestShape = .openAICompatible,
-        mistralReasoningEffort: MistralReasoningEffort? = nil
+        mistralReasoningEffort: MistralReasoningEffort? = nil,
+        usageBackend: UsageEntry.Backend? = nil
     ) {
         self.endpointURL = endpointURL
         self.apiKey = apiKey
@@ -114,6 +123,7 @@ struct LLMPolishingConfiguration: Sendable {
         self.passthroughExtraParameters = passthroughExtraParameters
         self.requestShape = requestShape
         self.mistralReasoningEffort = mistralReasoningEffort
+        self.usageBackend = usageBackend ?? (requestShape == .mistral ? .mistral : .userServer)
     }
 }
 
@@ -136,74 +146,12 @@ struct LLMPolishingResult: Sendable {
     var usage: LLMTokenUsage? = nil
 }
 
-/// A chat/completions response's `usage` object, plus the model that answered.
-struct LLMTokenUsage: Equatable, Sendable {
-    let model: String?
-    let promptTokens: Int
-    let cachedPromptTokens: Int
-    let completionTokens: Int
-
-    init(model: String?, promptTokens: Int, cachedPromptTokens: Int = 0, completionTokens: Int) {
-        self.model = model
-        self.promptTokens = promptTokens
-        self.cachedPromptTokens = cachedPromptTokens
-        self.completionTokens = completionTokens
-    }
-
-    /// Nil when the response carries no `usage` with at least the prompt and
-    /// completion counts.
-    init?(responseObject json: [String: Any]) {
-        guard let usage = json["usage"] as? [String: Any],
-            let prompt = (usage["prompt_tokens"] as? NSNumber)?.intValue,
-            let completion = (usage["completion_tokens"] as? NSNumber)?.intValue
-        else { return nil }
-        let details = usage["prompt_tokens_details"] as? [String: Any]
-        self.init(
-            model: (json["model"] as? String).flatMap { $0.trimmed.isEmpty ? nil : $0.trimmed },
-            promptTokens: prompt,
-            cachedPromptTokens: (details?["cached_tokens"] as? NSNumber)?.intValue ?? 0,
-            completionTokens: completion
-        )
-    }
-}
-
-extension MistralUsageEntry {
-    /// A polish request's entry. The answering model prices it when the
-    /// response names one the price table knows, the requested model
-    /// otherwise (an alias that starts answering with a newer id keeps its
-    /// price); a request with no usage is counted, unpriced.
-    static func polish(date: Date, requestedModel: String, usage: LLMTokenUsage?) -> Self {
-        let requested = requestedModel.trimmed
-        let model = usage?.model ?? requested
-        guard let usage else {
-            return MistralUsageEntry(date: date, kind: .polish, model: model)
-        }
-        let cost = { (id: String) in
-            MistralPricing.polishCost(
-                model: id,
-                promptTokens: usage.promptTokens,
-                cachedPromptTokens: usage.cachedPromptTokens,
-                completionTokens: usage.completionTokens
-            )
-        }
-        return MistralUsageEntry(
-            date: date,
-            kind: .polish,
-            model: model,
-            promptTokens: usage.promptTokens,
-            cachedPromptTokens: usage.cachedPromptTokens,
-            completionTokens: usage.completionTokens,
-            costEUR: cost(model) ?? cost(requested)
-        )
-    }
-}
-
 struct LLMPolishingService: LLMPolishingServicing {
-    /// Receives one entry per request sent in the Mistral shape — the only
-    /// shape that reaches a billed API. Nil records nothing.
-    var usageRecorder: (any MistralUsageRecording)?
+    /// Receives one entry per request that carries a usage feature, on every
+    /// backend; only Mistral's are priced. Nil records nothing.
+    var usageRecorder: (any UsageRecording)?
 
-    init(usageRecorder: (any MistralUsageRecording)? = nil) {
+    init(usageRecorder: (any UsageRecording)? = nil) {
         self.usageRecorder = usageRecorder
     }
 
@@ -260,7 +208,7 @@ struct LLMPolishingService: LLMPolishingServicing {
             // rather than let it vanish. One that never left costs nothing
             // either way — it only shows in the unpriced count.
             if Self.mayHaveBeenBilled(transportError: error) {
-                recordMistralUsage(configuration: configuration, usage: nil)
+                recordUsage(request: request, configuration: configuration, usage: nil)
             }
             throw polishingError
         }
@@ -281,7 +229,7 @@ struct LLMPolishingService: LLMPolishingServicing {
         // A 2xx is billed whether or not its content is usable, so usage is
         // recorded before the content is judged.
         let usage = json.flatMap(LLMTokenUsage.init(responseObject:))
-        recordMistralUsage(configuration: configuration, usage: usage)
+        recordUsage(request: request, configuration: configuration, usage: usage)
 
         guard let json, let content = Self.assistantText(inResponseObject: json) else {
             throw LLMPolishingError.invalidResponse
@@ -314,14 +262,20 @@ struct LLMPolishingService: LLMPolishingServicing {
         }
     }
 
-    private func recordMistralUsage(
+    private func recordUsage(
+        request: LLMPolishingRequest,
         configuration: LLMPolishingConfiguration,
         usage: LLMTokenUsage?
     ) {
-        guard configuration.requestShape == .mistral, let usageRecorder else { return }
+        guard let feature = request.usageFeature, let usageRecorder else { return }
         usageRecorder.record(
-            MistralUsageEntry.polish(
-                date: Date(), requestedModel: configuration.model, usage: usage))
+            UsageEntry.chat(
+                date: Date(),
+                feature: feature,
+                backend: configuration.usageBackend,
+                requestedModel: configuration.model,
+                usage: usage
+            ))
     }
 
     /// Extracts the assistant's answer from a decoded chat/completions

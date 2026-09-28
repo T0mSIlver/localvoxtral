@@ -28,7 +28,7 @@ DerivedData/
 .opencode/
 
 # Transient enable markers written by remote-build.sh eval-llm /
-# integration-polishd / integration-speechd / eval-e2e / dogfood
+# integration-polishd / integration-speechd / eval-e2e
 /.llm-polish-eval-enable.json
 /.polishd-integration-enable.json
 /.polishd-bench-enable.json
@@ -39,8 +39,7 @@ DerivedData/
 /.agent-eval-e2e-enable.json
 /.term-recall-eval-enable.json
 /.agent-eval-asr-enable.json
-# Compile gate for the dogfooding context capture (Package.swift reads it).
-# Never commit: its presence changes what the app is compiled to do.
+# Left behind by the removed dogfood build (#792); never commit either.
 /.dogfood-capture-enable
 .fastcontext/
 

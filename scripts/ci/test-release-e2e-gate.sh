@@ -135,7 +135,7 @@ grep -q "Refused: the e2e dictation check has not passed on main at aaaaaaaaa" "
 grep -q "gh workflow run ui-smoke.yml --ref main" "$dir/out" \
   || fail "the refusal says how to run the check: $(cat "$dir/out")"
 grep -q "head_sha=$HEAD_SHA" "$dir/runs-url" || fail "the runs are looked up by the release commit"
-grep -q "per_page=100" "$dir/runs-url" || fail "a week of evening runs on an unmoved main fits the lookup"
+grep -q "per_page=100" "$dir/runs-url" || fail "a week of runs on an unmoved main fits the lookup"
 [[ ! -f "$dir/dispatched" ]] || fail "a refused release dispatched"
 
 dir="$(scenario unscored 11:absent 12:skipped)"
@@ -155,6 +155,13 @@ grep -q "commits/t%2Ffeature" "$dir/calls" || fail "the branch name is URI-encod
 
 dir="$(scenario nightly)"
 expect 0 "a nightly is not gated" "$dir" --dry-run nightly
+dir="$(scenario daily)"
+expect 0 "a daily release is left to the workflow's own gate" "$dir" --dry-run daily
+grep -q "the workflow picks a commit that passed it" "$dir/out" || fail "the daily skip says why: $(cat "$dir/out")"
+grep -q "Dry run: would dispatch Release App (daily, ref=main, publish=true)" "$dir/out" \
+  || fail "the daily dry run says what it would dispatch: $(cat "$dir/out")"
+dir="$(scenario daily-branch)"
+expect 1 "a daily release from a branch is refused" "$dir" --dry-run daily t/feature
 dir="$(scenario rehearsal)"
 expect 0 "a rehearsal is not gated" "$dir" --dry-run rehearse patch
 grep -q "not required for a nightly or a rehearsal" "$dir/out" || fail "the skip says why"

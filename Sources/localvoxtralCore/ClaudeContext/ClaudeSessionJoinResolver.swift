@@ -294,8 +294,8 @@ package struct ClaudeSessionJoinResolver {
         let snapshot: ClaudeSessionSnapshot
         if case .resolved(let resolved) = registry.resolve(tty: tty) {
             snapshot = resolved
-        } else if let pane = await localHerdrPaneSessionForRelay(surfaceTTY: tty) {
-            snapshot = pane
+        } else if let found = await focusedLocalHerdrPane(surfaceTTY: tty, purpose: "opencode prompt relay") {
+            snapshot = found.snapshot
         } else {
             return nil
         }
@@ -303,13 +303,65 @@ package struct ClaudeSessionJoinResolver {
         return registry.opencodePromptRelay(sessionID: snapshot.sessionID)
     }
 
-    /// The session in the focused pane of a LOCAL herdr (#733): inside herdr
+    /// The id of the live session `target`'s focused pane shows, or nil (#717:
+    /// a finished turn cues only when the user was not looking at it). The
+    /// relay's local questions (the focused TTY, then a local herdr's focused
+    /// pane) plus Claude Desktop's focused session view. Never the remote,
+    /// federated, ssh or cmux arms: this runs on every turn's end, with no
+    /// dictation to justify a forward or a socket. A nil makes the cue fire,
+    /// so an answer this cannot give costs a cue, never a missed one.
+    package func sessionShown(target: TerminalScreenTarget) async -> String? {
+        if ClaudeDesktopAllowlist.isSupported(target.bundleID) {
+            guard let address = await focusedDesktopSessionURL(target.pid),
+                  let desktopSessionID = ClaudeDesktopSessionURL.sessionID(inWebAreaURL: address),
+                  case .resolved(let snapshot) = registry.resolve(desktopSessionID: desktopSessionID)
+            else { return nil }
+            return snapshot.sessionID
+        }
+        guard TerminalScreenAllowlist.isSupported(target.bundleID),
+              let tty = await focusedTerminalTTY(target.bundleID)
+        else { return nil }
+        if case .resolved(let snapshot) = registry.resolve(tty: tty) {
+            return snapshot.sessionID
+        }
+        return await focusedLocalHerdrPane(surfaceTTY: tty, purpose: "needs-you pane check")?.snapshot.sessionID
+    }
+
+    /// The herdr pane route for the focused pane of a LOCAL herdr, found
+    /// without a context join (#759): for a dictation with polishing off,
+    /// which resolves no join. The same local question as the relay lookup,
+    /// and nothing is read from the pane. Asked only while some live local
+    /// session sits in a herdr pane, so a Mac without herdr sends no Apple
+    /// event for it.
+    package func localHerdrPromptRoute(
+        target: TerminalScreenTarget,
+        frontmostPID: @escaping @MainActor () -> pid_t?
+    ) async -> HerdrPanePromptRoute? {
+        guard TerminalScreenAllowlist.isSupported(target.bundleID),
+              herdrPaneWriter != nil,
+              !registry.liveLocalHerdrSocketPaths().isEmpty,
+              let tty = await focusedTerminalTTY(target.bundleID),
+              let found = await focusedLocalHerdrPane(surfaceTTY: tty, purpose: "herdr pane route")
+        else { return nil }
+        return herdrPromptRoute(
+            binding: ClaudeHerdrPaneBinding(paneID: found.pane.paneID, socketPath: found.socketPath),
+            snapshot: found.snapshot,
+            mechanism: .herdrPane,
+            terminalPID: target.pid,
+            frontmostPID: frontmostPID
+        )
+    }
+
+    /// The session in the focused pane of a LOCAL herdr, for the write
+    /// routes that run without a context join (#733, #759): inside herdr
     /// the focused TTY is herdr's client, not the pane. Asks only what the
     /// local herdr arm asks (`focusedLocalHerdrPaneSession`), and only when
     /// the surface binds to a herdr client showing this machine. Never the
     /// federated or remote arms: they read another machine's herdr, over a
     /// forward opened on a context consent writing does not have.
-    private func localHerdrPaneSessionForRelay(surfaceTTY tty: String) async -> ClaudeSessionSnapshot? {
+    private func focusedLocalHerdrPane(
+        surfaceTTY tty: String, purpose: String
+    ) async -> (pane: HerdrFocusedPane, snapshot: ClaudeSessionSnapshot, socketPath: String)? {
         guard herdrClientProbe(tty) else { return nil }
         switch herdrFederation() {
         case .notFederated:
@@ -321,10 +373,9 @@ package struct ClaudeSessionJoinResolver {
         case .showingMachine, .unreadable:
             return nil
         }
-        let found = await focusedLocalHerdrPaneSession { outcome in
-            Log.claudeContext.info("opencode prompt relay: herdr pane not resolved (\(outcome, privacy: .public))")
+        return await focusedLocalHerdrPaneSession { outcome in
+            Log.claudeContext.info("\(purpose, privacy: .public): herdr pane not resolved (\(outcome, privacy: .public))")
         }
-        return found?.snapshot
     }
 
     private func resolveSurface(target: TerminalScreenTarget) async -> ClaudeSessionJoin? {
@@ -440,15 +491,13 @@ package struct ClaudeSessionJoinResolver {
     /// Where an abstention cause leaves this resolver as a value rather than as
     /// a log line (`HerdrPanelBindingProbe` has the one other such point).
     ///
-    /// Both consumers are diagnostics — the dogfood capture record and
+    /// Both consumers are diagnostics — the diagnostic record and
     /// `--probe-surface` — and both need the SAME string, so they read it from
     /// here rather than each deriving one. `cause` is already the content-free
     /// category the log line above carries; nothing else may be passed in.
     package static func noteAbstention(_ cause: String) {
         ClaudeJoinAbstentionTap.note(cause)
-        #if LOCALVOXTRAL_DOGFOOD
-        ClaudeJoinAbstentionTap.noteForDogfood(cause)
-        #endif
+        ClaudeJoinAbstentionTap.noteForDiagnostics(cause)
     }
 
     /// Re-checks at commit that the join resolved at start still names one live

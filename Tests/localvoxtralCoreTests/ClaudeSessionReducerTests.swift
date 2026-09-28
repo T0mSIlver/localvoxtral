@@ -83,6 +83,17 @@ final class ClaudeSessionReducerTests: XCTestCase {
         XCTAssertEqual(snapshot.latestPriorUserPrompt, "kept")
     }
 
+    /// A submit counts even with no text: it is what says a prompt holding
+    /// the app's last commit was sent (#802).
+    func testEverySubmitIsCountedWithOrWithoutItsText() {
+        var snapshot = newSnapshot()
+        XCTAssertEqual(snapshot.promptsSubmitted, 0)
+        reduce(&snapshot, record(.userPromptSubmit, prompt: "first"), at: 1)
+        reduce(&snapshot, record(.userPromptSubmit, prompt: nil), at: 2)
+        reduce(&snapshot, record(.stop), at: 3)
+        XCTAssertEqual(snapshot.promptsSubmitted, 2)
+    }
+
     func testStopReturnsToIdle() {
         var snapshot = newSnapshot()
         reduce(&snapshot, record(.userPromptSubmit, prompt: "go"), at: 1)

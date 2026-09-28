@@ -14,30 +14,35 @@ set -euo pipefail
 #   ./scripts/release.sh 1.2.3-rc.1 <branch>  # prerelease from a branch,
 #                                             # installable for hand-testing
 #                                             # before the branch merges
-#   ./scripts/release.sh nightly              # a nightly prerelease of main,
-#                                             # on demand (the cron does this
-#                                             # every night at 03:15 UTC)
+#   ./scripts/release.sh daily                # what the 03:15 UTC cron does:
+#                                             # a minor release of the newest
+#                                             # main commit the e2e dictation
+#                                             # check passed on, if any
+#   ./scripts/release.sh nightly              # a prerelease of main's head,
+#                                             # on demand, no e2e gate
 #   ./scripts/release.sh rehearse [target] [ref]
 #                                             # every gate, no tag, no
 #                                             # release: the artifacts land on
 #                                             # the run instead. Any ref.
 #                                             # target defaults to patch and
-#                                             # may be nightly.
+#                                             # may be daily or nightly.
 #   ./scripts/release.sh --dry-run ...        # check, print what would be
 #                                             # dispatched, dispatch nothing
 #
-# A stable release (every form but nightly and rehearse) needs the e2e
-# dictation check to have passed on the release commit. That check
+# A stable release (every form but daily, nightly and rehearse) needs the
+# e2e dictation check to have passed on the release commit. That check
 # (scripts/e2e-dictation.sh) is the only one where the packaged app dictates
 # into another app's window; it holds the owner's Mac and keyboard, so it
 # runs here, when the owner is at the Mac, rather than on every PR (#574).
 # Run it with the Mac unlocked:
 #   gh workflow run ui-smoke.yml --ref <ref>
-# The evening UI Smoke runs on main count too, while main has not moved.
+# A daily release applies the same rule inside the workflow
+# (scripts/ci/daily-release-plan.sh), which picks the commit, so this script
+# does not check it.
 #
-# The channels: stable follows GitHub's /releases/latest and is cut by hand
-# when the owner decides; nightly is a prerelease of main that never touches
-# that pointer. Same pipeline, same gates.
+# The channels: stable and daily follow GitHub's /releases/latest; stable is
+# cut by hand, daily by the cron. nightly is a prerelease of main that never
+# touches that pointer. Same pipeline, same gates.
 
 DRY_RUN=false
 if [[ "${1:-}" == "--dry-run" ]]; then
@@ -56,23 +61,23 @@ REF="${2:-main}"
 
 DISPATCH_ARGS=()
 case "$ARG" in
-  nightly)
-    DISPATCH_ARGS=(-f channel=nightly) ;;
+  daily|nightly)
+    DISPATCH_ARGS=(-f "channel=$ARG") ;;
   patch|minor|major)
     DISPATCH_ARGS=(-f channel=stable -f "bump=$ARG") ;;
   *)
     if [[ "$ARG" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
       DISPATCH_ARGS=(-f channel=stable -f "version=$ARG")
     else
-      echo "Usage: $0 [--dry-run] [patch|minor|major|X.Y.Z|X.Y.Z-rc.N [ref]|nightly] | $0 [--dry-run] rehearse [patch|minor|major|X.Y.Z|X.Y.Z-rc.N|nightly] [ref]" >&2
+      echo "Usage: $0 [--dry-run] [patch|minor|major|X.Y.Z|X.Y.Z-rc.N [ref]|daily|nightly] | $0 [--dry-run] rehearse [patch|minor|major|X.Y.Z|X.Y.Z-rc.N|daily|nightly] [ref]" >&2
       exit 1
     fi
     ;;
 esac
 DISPATCH_ARGS+=(-f "publish=$PUBLISH")
 
-if [[ "$ARG" == "nightly" && "$PUBLISH" == "true" && "$REF" != "main" ]]; then
-  echo "Nightly releases publish from main only. Use 'rehearse nightly $REF' to exercise the pipeline from that ref." >&2
+if [[ ( "$ARG" == "daily" || "$ARG" == "nightly" ) && "$PUBLISH" == "true" && "$REF" != "main" ]]; then
+  echo "$ARG releases publish from main only. Use 'rehearse $ARG $REF' to exercise the pipeline from that ref." >&2
   exit 1
 fi
 
@@ -82,7 +87,7 @@ fi
 E2E_STEP="E2E dictation scored"
 
 GATE_E2E=false
-if [[ "$PUBLISH" == "true" && "$ARG" != "nightly" ]]; then
+if [[ "$PUBLISH" == "true" && "$ARG" != "daily" && "$ARG" != "nightly" ]]; then
   GATE_E2E=true
 fi
 RELEASE_SHA=""
@@ -109,7 +114,10 @@ if $GATE_E2E; then
   fi
   echo "e2e dictation check: passed on ${RELEASE_SHA:0:9} in UI Smoke run $scored_run"
 else
-  echo "e2e dictation check: not required for a nightly or a rehearsal"
+  case "$ARG" in
+    daily) echo "e2e dictation check: the workflow picks a commit that passed it" ;;
+    *) echo "e2e dictation check: not required for a nightly or a rehearsal" ;;
+  esac
 fi
 
 if $DRY_RUN; then
@@ -159,8 +167,10 @@ echo "Watching run $RUN_ID (Ctrl+C detaches; the release continues remotely)"
 gh run watch "$RUN_ID" --exit-status
 if [[ "$PUBLISH" != "true" ]]; then
   echo "Rehearsal done. Artifacts: https://github.com/T0mSIlver/localvoxtral/actions/runs/$RUN_ID"
-elif [[ "$ARG" == "nightly" ]]; then
-  echo "Done. Nightly: https://github.com/T0mSIlver/localvoxtral/releases"
+elif [[ "$ARG" == "nightly" || "$ARG" == "daily" ]]; then
+  # A daily run with nothing to ship ends green without a release; its
+  # summary says why.
+  echo "Done. Releases: https://github.com/T0mSIlver/localvoxtral/releases (run $RUN_ID's summary says what shipped)"
 elif [[ "$ARG" =~ ^[0-9] ]]; then
   echo "Done. Release page: https://github.com/T0mSIlver/localvoxtral/releases/tag/v$ARG"
 else

@@ -75,11 +75,18 @@ package final class FakeHerdrSocket: @unchecked Sendable {
     private let directory: URL
     private let listener: Int32
     private let answer: @Sendable (Request) -> Answer
+    private let afterAnswer: @Sendable () -> Void
     private typealias Watch = (reached: @Sendable ([Request]) -> Bool, wait: BoundedWait)
     private let state = Mutex<(requests: [Request], watches: [Watch], stopped: Bool)>(([], [], false))
 
-    package init(answer: @escaping @Sendable (Request) -> Answer = { _ in .ok }) throws {
+    /// `afterAnswer` runs on the fake's thread once the reply is written
+    /// (or withheld), before the next connection is taken.
+    package init(
+        answer: @escaping @Sendable (Request) -> Answer = { _ in .ok },
+        afterAnswer: @escaping @Sendable () -> Void = {}
+    ) throws {
         self.answer = answer
+        self.afterAnswer = afterAnswer
         // Short and unique: `sun_path` is 104 bytes on macOS, and test
         // classes run in several processes at once.
         directory = URL(fileURLWithPath: "/tmp/lvx-fh-\(UUID().uuidString.prefix(8))")
@@ -189,6 +196,16 @@ package final class FakeHerdrSocket: @unchecked Sendable {
             text: params?["text"] as? String,
             keys: params?["keys"] as? [String]
         )
+        // Recorded before the reply: a caller that has its answer must find
+        // its request in `requests` (#808).
+        let ready = state.withLock { state -> [BoundedWait] in
+            state.requests.append(request)
+            let requests = state.requests
+            let reached = state.watches.filter { $0.reached(requests) }.map(\.wait)
+            state.watches.removeAll { $0.reached(requests) }
+            return reached
+        }
+        for wait in ready { wait.resolve() }
         let reply: String? = switch answer(request) {
         case .ok: #"{"id":"\#(id)","result":{"type":"ok"}}"#
         case .error(let code): #"{"id":"\#(id)","error":{"code":"\#(code)","message":"fake"}}"#
@@ -202,13 +219,6 @@ package final class FakeHerdrSocket: @unchecked Sendable {
                 send(connection, pointer.baseAddress, pointer.count, POSIXSocket.sendFlags)
             }
         }
-        let ready = state.withLock { state -> [BoundedWait] in
-            state.requests.append(request)
-            let requests = state.requests
-            let reached = state.watches.filter { $0.reached(requests) }.map(\.wait)
-            state.watches.removeAll { $0.reached(requests) }
-            return reached
-        }
-        for wait in ready { wait.resolve() }
+        afterAnswer()
     }
 }
