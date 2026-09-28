@@ -636,7 +636,8 @@ there is not.
     and a submit is `pane.send_keys {pane_id, keys: ["enter"]}`
     (`HerdrPaneWriting`; wire shapes from herdr 0.9.0, the version installed
     when this was written). Never `pane.run`, never another key, never
-    `agent.prompt`, `agent.send_keys`, `pane.send_input` or a focus call.
+    `agent.prompt`, `agent.send_keys`, `pane.send_input` or a focus call
+    (navigation's focus, below, is its own bounded write).
     *Only the joined pane:* the route exists only for a herdr pane join
     (local, remote or federated) and is keyed by the binding the arm captured
     (`ClaudeSessionJoinResolver.herdrPromptRoute(for:)`), so it writes to
@@ -666,21 +667,35 @@ there is not.
     never kept as a join, reads nothing from the pane, never reaches a
     remote or federated herdr, and asks the focused TTY only while a live
     local session sits in a herdr pane.
-  - *herdr focus for navigation* (#1012; the rule waits on the owner's OK
-    there, and until then the app sends no focus call). What herdr
-    offers, measured on 0.9.0 and 0.9.1: the socket method `pane.focus
-    {pane_id}` answers `pane_info` with `focused: true`, or `pane_not_found`.
-    It switches workspace and tab itself. The CLI has no command for it
-    (`herdr pane focus` is directional only). `agent.focus {target}` refuses
-    a pane herdr does not see as an agent (`agent_not_found`). The read-back
-    is `pane.current`. Focus is per server, not per client: every attached
-    TUI client moves to the pane, and an explicit focus marks the agent seen
-    (`done` becomes `idle`). A remote server takes the same request through
-    the join's `ssh -L` forward. herdr cannot say which terminal shows it (no
-    client introspection), so the Mac window comes from the join's
-    process-table probes, never a title: a local TTY whose foreground ssh
-    goes to that host with a plain herdr client command, or a local herdr
-    client whose federation selection shows that host.
+  - *herdr focus for navigation* (#1012, `HerdrSessionPaneFocuser`; owner
+    ruling on #1012, 2026-09-28). *One call, nothing else:* `pane.focus
+    {pane_id}` (`HerdrPaneFocusing`), only for the pane of the session the
+    user asked to reach (Tab, the answer shortcut, "go to"), over the pane's
+    local socket or the join's `ssh -L` forward. No keys, no text, no layout,
+    tab, workspace or pane creation, no `agent.focus`, no machine switch.
+    *Confirmed by reading back:* `.focused`, the only outcome that starts a
+    dictation, needs herdr's `pane.current` to name that pane AND the
+    terminal's focused tty to be the window raised; the answer to
+    `pane.focus` alone never is.
+    *The window, never by title:* herdr has no client introspection, so
+    `HerdrWindowLocator` takes the join's process-table evidence and wants
+    exactly one tty. For a local pane: the one live local herdr socket is the
+    pane's, the machine selection shows Local (a lone client once machines
+    are saved), and one tty runs a herdr client. For a remote pane: a tty
+    whose foreground ssh goes to exactly that enrolled host with a plain herdr
+    client of that socket's session and no competing herdr view, or the lone
+    herdr client whose selection names that host and session. Several
+    candidates raise none, even though clients of one server mirror it.
+    Not reached: `ssh host` then a typed `herdr` (only the panel nonce could
+    prove that window, and it needs the window frontmost first), argv an ssh
+    wrapper hides, and a client showing another machine.
+    *herdr's side, measured on 0.9.0 and 0.9.1:* `pane.focus` answers
+    `pane_info` with `focused: true`, or `pane_not_found`, and switches
+    workspace and tab itself. The CLI has no command for it (`herdr pane
+    focus` is directional only); `agent.focus {target}` refuses a pane herdr
+    does not see as an agent (`agent_not_found`). Focus is per server: every
+    attached TUI client moves to the pane, and an explicit focus marks the
+    agent seen (`done` becomes `idle`).
   - *cmux surfaces* (#727, `CmuxSurfaceRoute`). *Exactly two calls:*
     `surface.send_text` with `surface_id` and `text`, and `surface.send_key`
     with `surface_id` and `key: "enter"`. Never a call without `surface_id`:
@@ -816,8 +831,9 @@ there is not.
     `HerdrSocketClient` (hand-written and capability-bounded — reads are only
     `pane.current`, `pane.process_info`, and `pane.read`; its mutations are
     the remote panel probe's short-lived `lvmark` through
-    `pane.report_metadata` and the herdr pane route's two writes, bounded in
-    "The app writes into an agent only through its routes". herdr was AGPL when this
+    `pane.report_metadata`, the herdr pane route's two writes, bounded in
+    "The app writes into an agent only through its routes", and navigation's
+    `pane.focus`, bounded in "herdr focus for navigation". herdr was AGPL when this
     was written and is Apache-2.0 since v0.8.0, repo `herdrdev/herdr`, so its
     docs and source are freely readable; the client stays hand-written anyway,
     because a vendored dependency would be a second implementation of the trust

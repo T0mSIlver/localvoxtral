@@ -529,6 +529,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     #endif
 
+    /// A herdr pane (#1012): the window found with the join's process-table
+    /// probes, herdr reached over its local socket or the join's `ssh -L`
+    /// forward, the window raised with the terminal focuser's tty path.
+    private func liveHerdrFocuser(
+        terminal: TerminalSessionPaneFocuser,
+        ttyReader: AppleScriptTerminalTTYReader,
+        herdrClient: HerdrSocketClient,
+        canonicalizer: SSHDestinationCanonicalizer
+    ) -> HerdrSessionPaneFocuser {
+        let locator = HerdrWindowLocator(
+            herdrClientTTYs: { HerdrWindowLocator.liveForegroundTTYs(named: "herdr") },
+            sshClientTTYs: { HerdrWindowLocator.liveForegroundTTYs(named: "ssh") },
+            sshConnection: { SSHDestinationTTYProbe.connection(onTTYDevicePath: $0) },
+            federation: { HerdrMachineFederationReader.live().federation() },
+            liveLocalHerdrSockets: { [claudeSessionRegistry] in claudeSessionRegistry.liveLocalHerdrSocketPaths() },
+            enrolledHosts: { [weak self] destination in
+                self?.claudeRemoteHosts?.hosts(matchingSSHDestination: destination) ?? []
+            },
+            canonicalizedEnrolledHosts: { [weak self] destination in
+                guard let hosts = self?.claudeRemoteHosts?.hosts() else { return [] }
+                return await canonicalizer.matchingHosts(destination: destination, enrolledHosts: hosts)
+            }
+        )
+        return HerdrSessionPaneFocuser(
+            windowTTY: { await locator.windowTTY(for: $0) },
+            openSocket: { [weak self] target in
+                switch target {
+                case .local(_, let socketPath):
+                    return HerdrFocusSocket(path: socketPath)
+                case .remote(let hostID, _, let remoteSocketPath):
+                    guard let self,
+                          let host = self.claudeRemoteHosts?.host(id: hostID),
+                          !host.isRevoked,
+                          let alias = host.sshHostAlias,
+                          let forward = await self.claudeRemoteHerdrForwards.open(
+                              alias: alias, remoteSocketPath: remoteSocketPath
+                          )
+                    else { return nil }
+                    return HerdrFocusSocket(path: forward.localSocketPath, release: { forward.close() })
+                }
+            },
+            // A write waits longer than a read, like the pane route's.
+            focuser: HerdrSocketClient(timeout: 2),
+            panes: herdrClient,
+            raiseTTY: { await terminal.focus(tty: $0, termProgram: $1) },
+            focusedTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) }
+        )
+    }
+
     /// Claude Desktop's session link, opened in Desktop itself (another app
     /// may also claim `claude://`), read back through the join's resolver.
     private static func liveClaudeDesktopFocuser(
@@ -723,14 +772,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // forward by the evidence the join trusts.
             let nicknames = SessionNicknameStore.userDefaults(.standard, key: "session_navigation.nicknames")
             let desktopTitles = ClaudeDesktopSessionTitles.live()
+            let terminalFocuser = TerminalSessionPaneFocuser.live(ttyReader: ttyReader)
             viewModel.session.sessionNavigator = SessionNavigator(
                 liveSessions: { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() },
                 repositoryRoot: SessionNavigator.liveRepositoryRoot,
                 focuser: SessionPaneFocuserRouter(
-                    terminal: TerminalSessionPaneFocuser.live(ttyReader: ttyReader),
+                    terminal: terminalFocuser,
                     claudeDesktop: Self.liveClaudeDesktopFocuser(
                         resolver: resolver,
                         sleep: viewModel.session.dependencies.clock.sleep
+                    ),
+                    herdr: liveHerdrFocuser(
+                        terminal: terminalFocuser,
+                        ttyReader: ttyReader,
+                        herdrClient: herdrClient,
+                        canonicalizer: sshDestinationCanonicalizer
                     )
                 ),
                 sleep: viewModel.session.dependencies.clock.sleep,

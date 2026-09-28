@@ -62,9 +62,15 @@ and bringing the terminal forward would only show the session's pane.
   runs them on. Desktop switches to the session, and the words go there once
   its prompt has focus.
 
-herdr and cmux panes can't come forward yet
-([#1012](https://github.com/T0mSIlver/localvoxtral/issues/1012)). For those,
-and any other session, the popover says it can't bring that session forward.
+- herdr panes, on this Mac or on an enrolled ssh host. herdr focuses the
+  pane, then the terminal window showing that herdr comes forward. It has to
+  be the only window showing it: a local herdr client, an `ssh host herdr`
+  (typed as one command), or a herdr client that federates the host and
+  currently shows it. herdr moves every window attached to it to that pane.
+
+cmux panes can't come forward yet. For those, a herdr started by hand
+inside an ssh shell, and any other session, the popover says it can't bring
+that session forward.
 ["Go to"](#go-to-a-session-by-voice) reaches the same sessions.
 
 ## Name a session
