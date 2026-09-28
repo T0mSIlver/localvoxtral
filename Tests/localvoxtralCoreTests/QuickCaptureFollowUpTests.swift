@@ -106,6 +106,21 @@ final class QuickCaptureFollowUpTests: XCTestCase {
         XCTAssertEqual(runner.runs.withLock { $0 }, 2, "nothing drafted on an unsure pick")
     }
 
+    /// A capture with no project takes the follow-up's words and drafts
+    /// nothing; the join is reported once, as a join.
+    func testTheRouterJoinsAnUnplacedCaptureWithoutDrafting() async throws {
+        let classifier = ScriptedQuickCaptureClassifier([["inbox": 0.9], ["capture-1": 0.95]])
+        let runner = FakeQuickCaptureDraftRunner()
+        let model = model(classifier: classifier, runner: runner)
+        await model.capture(text: "Renew the passport", historyRecordID: UUID()).value
+        await model.capture(text: "Before December", historyRecordID: UUID()).value
+        XCTAssertEqual(model.items.count, 1)
+        XCTAssertEqual(model.items.first?.words, "Renew the passport\n\nBefore December")
+        XCTAssertEqual(statuses, ["Sent to inbox", "Added to an earlier capture"])
+        XCTAssertEqual(routed, ["Inbox", "Added to an Inbox capture"])
+        XCTAssertEqual(runner.runs.withLock { $0 }, 0)
+    }
+
     func testOnlyUnfiledCapturesFromTheLastHourAreOffered() async throws {
         let classifier = ScriptedQuickCaptureClassifier([["reach": 0.95]])
         let model = model(classifier: classifier, runner: FakeQuickCaptureDraftRunner())

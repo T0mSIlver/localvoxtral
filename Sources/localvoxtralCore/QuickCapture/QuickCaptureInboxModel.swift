@@ -139,8 +139,8 @@ package final class QuickCaptureInboxModel {
 
     /// Joins capture `id` to `target` as its follow-up, and redrafts the
     /// target in its project: from the draft it has, which may hold the
-    /// user's edits, else from all its words. Nil, with nothing changed, when
-    /// the target was filed or discarded meanwhile.
+    /// user's edits, else from all its words. Nil, with nothing changed, only
+    /// when the target was filed or discarded meanwhile.
     private func join(_ id: UUID, into target: UUID) -> Task<Void, Never>? {
         guard let before = inbox.items.first(where: { $0.id == target }),
               before.state == .ready || before.state == .drafting,
@@ -152,7 +152,8 @@ package final class QuickCaptureInboxModel {
         if let recordID = capture.historyRecordID {
             onRouted?(recordID, "Added to \(before.projectName.map { "a \($0) capture" } ?? "an Inbox capture")")
         }
-        guard let key = before.projectKey else { return nil }
+        // A capture with no project keeps the words and drafts nothing.
+        guard let key = before.projectKey else { return Task {} }
         let projects = projects()
         let input: String
         if let draft = before.draftSnapshot {
