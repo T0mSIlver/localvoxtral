@@ -2,7 +2,7 @@ import Foundation
 import os
 
 /// Stopping by voice (#839): an Overlay Buffer dictation whose words end in
-/// a send phrase, with no new text for `SpokenStopRule.silenceWindow`, stops
+/// a send phrase, with no new text for `settings.spokenStopWait`, stops
 /// exactly as the stop key would (`stopDictation`). The stop then cuts the
 /// phrase, polishes, commits and sends through the one commit path
 /// (`stripOverlaySpokenSendTrigger`); a quick capture saves to the Inbox
@@ -35,7 +35,7 @@ extension DictationSessionController {
         spokenStopArmedWords = words
         let clock = dependencies.clock
         spokenStopTask = Task { @MainActor [weak self] in
-            await clock.sleep(SpokenStopRule.silenceWindow)
+            await clock.sleep(SpokenStopWait.default.duration)
             guard let self, !Task.isCancelled else { return }
             self.spokenStopTask = nil
             self.spokenStopArmedWords = nil
@@ -60,7 +60,7 @@ extension DictationSessionController {
         }
         sessionStoppedBySpokenPhrase = true
         Log.dictation.notice(
-            "spoken stop: a send phrase and \(Int(SpokenStopRule.silenceWindow.components.seconds), privacy: .public)s without new text; stopping as if pressed quick_capture=\(self.sessionIsQuickCapture, privacy: .public)"
+            "spoken stop: a send phrase and \(SpokenStopWait.default.displayName, privacy: .public) without new text; stopping as if pressed quick_capture=\(self.sessionIsQuickCapture, privacy: .public)"
         )
         stopDictation(reason: "spoken stop")
     }

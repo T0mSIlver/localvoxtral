@@ -1202,9 +1202,9 @@ final class DictationPipelineTests: XCTestCase {
 
     // MARK: - Stopping by voice (#839)
 
-    /// A trailing "send it" and three seconds without new words stop the
-    /// dictation as the key would: the stop's commit inserts the text
-    /// without the phrase, once, then presses Return once.
+    /// A trailing "send it" and three seconds without new words, the
+    /// default wait, stop the dictation as the key would: the stop's commit
+    /// inserts the text without the phrase, once, then presses Return once.
     func testATrailingSendPhraseAndSilenceStopsCommitsAndSendsOnce() async throws {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
         var returns: [pid_t] = []
@@ -1282,6 +1282,60 @@ final class DictationPipelineTests: XCTestCase {
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask)
         await pipeline.clock.waitForSleepers(3)
         pipeline.clock.advance(by: 2.9)
+        await sendDelta(pipeline, " and then report.")
+        await armed.value
+        XCTAssertNil(pipeline.viewModel.session.spokenStopTask, "new words cancelled the stop")
+        pipeline.clock.advance(by: 10)
+        XCTAssertTrue(pipeline.viewModel.isDictating)
+
+        let said = "run the tests, send it. and then report."
+        await stopAndFinalize(pipeline, finalText: said)
+        XCTAssertEqual(pipeline.overlay.committedTexts, [said])
+        XCTAssertEqual(returns, [])
+    }
+
+    /// The wait is the user's (#1009): at 1 s the stop fires one second
+    /// after the phrase, not a hundredth sooner, and sends as the 3 s
+    /// default does.
+    func testAConfiguredWaitStopsAtThatWait() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.settings.spokenStopWait = .oneSecond
+        var returns: [pid_t] = []
+        targetClaudeDesktop(pipeline, returns: { returns.append($0) })
+
+        await startAndSpeak(pipeline)
+        await sendDelta(pipeline, "run the tests, send it.")
+        let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "armed by the trailing phrase")
+        await pipeline.clock.waitForSleepers(3)
+        let sleepers = pipeline.clock.pendingSleepers
+        pipeline.clock.advance(by: 1 - 0.01)
+        XCTAssertTrue(pipeline.viewModel.isDictating, "one hundredth short, still dictating")
+
+        pipeline.clock.advance(by: 0.01)
+        guard pipeline.clock.pendingSleepers < sleepers else {
+            return XCTFail("the wait did not end at 1 s")
+        }
+        await armed.value
+        XCTAssertFalse(pipeline.viewModel.isDictating)
+        await finishStoppedSession(pipeline, finalText: "run the tests, send it.")
+
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["run the tests"])
+        XCTAssertEqual(returns, [Self.desktopPID])
+    }
+
+    /// New words inside a configured 1.5 s wait cancel the stop, as they do
+    /// inside the default 3 s.
+    func testSpeechWithinAConfiguredWaitKeepsTheDictationGoing() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.settings.spokenStopWait = .oneAndAHalfSeconds
+        var returns: [pid_t] = []
+        targetClaudeDesktop(pipeline, returns: { returns.append($0) })
+
+        await startAndSpeak(pipeline)
+        await sendDelta(pipeline, "run the tests, send it.")
+        let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask)
+        await pipeline.clock.waitForSleepers(3)
+        pipeline.clock.advance(by: 1.4)
         await sendDelta(pipeline, " and then report.")
         await armed.value
         XCTAssertNil(pipeline.viewModel.session.spokenStopTask, "new words cancelled the stop")
