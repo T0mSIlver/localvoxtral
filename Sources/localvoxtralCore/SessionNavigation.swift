@@ -162,6 +162,12 @@ package enum SessionVoiceCommandParser {
 }
 
 package enum SessionNameMatching {
+    /// The words of `text`, each a `key`: "Fix: the overlay's list" is
+    /// ["fix", "the", "overlays", "list"].
+    package static func words(_ text: String) -> [String] {
+        text.split(whereSeparator: \.isWhitespace).map { key(String($0)) }.filter { !$0.isEmpty }
+    }
+
     /// Letters and digits only, case-folded: "local voxtral", "Localvoxtral"
     /// and `localvoxtral` are one key, and so are "payments api" and
     /// `payments-api`.
@@ -172,7 +178,8 @@ package enum SessionNameMatching {
     }
 }
 
-/// The names a session answers to until it has a nickname (#723 step 2).
+/// The names a session answers to until it has a nickname (#723 step 2,
+/// #1013).
 package struct SessionDefaultNames: Equatable, Sendable {
     /// The session's git root directory name: the worktree's name in a linked
     /// worktree, the repository's in its main checkout. The cwd's name when
@@ -181,10 +188,17 @@ package struct SessionDefaultNames: Equatable, Sendable {
     /// The repository's name, when it differs from `primary` (a linked
     /// worktree, or a remote host's project name).
     package var repository: String?
+    /// The harness's own title for the session: Claude Desktop's today
+    /// (`ClaudeDesktopSessionTitles`).
+    package var title: String?
+    /// The branch checked out at the git root, local sessions only.
+    package var branch: String?
 
-    package init(primary: String?, repository: String?) {
+    package init(primary: String?, repository: String?, title: String? = nil, branch: String? = nil) {
         self.primary = primary
         self.repository = repository
+        self.title = title
+        self.branch = branch
     }
 
     /// - Parameter repositoryRoot: what a git-root walk from the session's
@@ -192,7 +206,9 @@ package struct SessionDefaultNames: Equatable, Sendable {
     ///   the cwd.
     package static func of(
         _ snapshot: ClaudeSessionSnapshot,
-        repositoryRoot: LearnedTermProjectResolver.RepositoryRoot
+        repositoryRoot: LearnedTermProjectResolver.RepositoryRoot,
+        title: String? = nil,
+        branch: String? = nil
     ) -> SessionDefaultNames {
         switch snapshot.workspace {
         case .local(let path)?:
@@ -208,17 +224,63 @@ package struct SessionDefaultNames: Equatable, Sendable {
             let repository = lastComponent(mainCheckout)
             return SessionDefaultNames(
                 primary: primary,
-                repository: repository == primary ? nil : repository
+                repository: repository == primary ? nil : repository,
+                title: title,
+                branch: branch
             )
         case .remoteOpaque(let label)?:
             let project = snapshot.remoteProject
             return SessionDefaultNames(
                 primary: label,
-                repository: project == label ? nil : project
+                repository: project == label ? nil : project,
+                title: title
             )
         case nil:
-            return SessionDefaultNames(primary: nil, repository: nil)
+            return SessionDefaultNames(primary: nil, repository: nil, title: title)
         }
+    }
+
+    /// `primary` without the random suffix a worktree gets when Claude
+    /// creates it: `zealous-chaplygin-aa1a02` reads "zealous-chaplygin".
+    /// The suffix is six hex digits, at least one a digit, after at least
+    /// two words, so `release-202609` stays whole.
+    package var readablePrimary: String? {
+        guard let primary else { return nil }
+        let parts = primary.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count >= 3, let suffix = parts.last, suffix.count == 6,
+              suffix.allSatisfy({ $0.isHexDigit && ($0.isNumber || $0.isLowercase) }),
+              suffix.contains(where: \.isNumber)
+        else { return primary }
+        let rest = parts.dropLast().joined(separator: "-")
+        return SessionNameMatching.key(rest).isEmpty ? primary : rest
+    }
+
+    /// The branch when a person named it: its last component, unless that is
+    /// a trunk or the worktree folder the branch was named after
+    /// (`t/zealous-chaplygin-aa1a02`).
+    package var namedBranch: String? {
+        guard let branch, !branch.isEmpty else { return nil }
+        var leaf = String(branch.split(separator: "/").last ?? Substring(branch))
+        if !leaf.contains(where: \.isLetter) { leaf = branch }
+        let key = SessionNameMatching.key(leaf)
+        guard !key.isEmpty, !Self.trunks.contains(key) else { return nil }
+        let folders = [primary, readablePrimary, repository].compactMap { $0.map(SessionNameMatching.key) }
+        return folders.contains(key) ? nil : leaf
+    }
+
+    private static let trunks: Set<String> = ["main", "master", "trunk", "develop", "development", "head"]
+
+    /// The name without a title or nickname: a linked worktree's named
+    /// branch, else its folder without the random suffix; a main checkout's
+    /// folder.
+    package var fallback: String? {
+        if repository != nil, let namedBranch { return namedBranch }
+        return readablePrimary
+    }
+
+    /// What the session is shown as before duplicates are told apart.
+    package var shown: String? {
+        title ?? fallback
     }
 
     private static func lastComponent(_ path: String) -> String? {
@@ -249,10 +311,15 @@ package enum SessionNameResolution: Equatable, Sendable {
 }
 
 package enum SessionNameResolver {
-    /// A nickname wins over any default name. A match on a git root's name
-    /// wins over a match on a repository's name, so "go to cool-roentgen" reaches that worktree even while three
-    /// other worktrees of the same repository are open. Sessions on one local
-    /// tty are one pane: the most recently active one stands for it.
+    /// Tiers, first match wins: a nickname; the name the session goes by
+    /// with duplicates told apart ("localvoxtral · 2"); its folder, readable
+    /// folder or named branch; its repository; its whole title; the first
+    /// two to four words of its title. A title never beats a folder name,
+    /// since the session can set its own title. A match on a git root's
+    /// name wins over a match on a repository's name, so "go to
+    /// cool-roentgen" reaches that worktree even while three other worktrees
+    /// of the same repository are open. Sessions on one local tty are one
+    /// pane: the most recently active one stands for it.
     package static func resolve(
         spokenName: String,
         candidates: [SessionNameCandidate]
@@ -260,22 +327,40 @@ package enum SessionNameResolver {
         let spoken = SessionNameMatching.key(spokenName)
         guard !spoken.isEmpty else { return .unknown }
         let panes = onePerPane(candidates)
-        let tiers: [(SessionNameCandidate) -> String?] = [\.nickname, \.names.primary, \.names.repository]
+        let distinct = SessionShownNames.distinct(panes, name: \.names.fallback)
+        let tiers: [(SessionNameCandidate) -> [String]] = [
+            { [$0.nickname].compactMap { $0 } },
+            { SessionShownNames.spokenForms(distinct[$0.snapshot.sessionID]) },
+            { [$0.names.primary, $0.names.readablePrimary, $0.names.namedBranch].compactMap { $0 } },
+            { [$0.names.repository].compactMap { $0 } },
+            { [$0.names.title].compactMap { $0 } },
+        ]
         for tier in tiers {
             let matches = panes.filter { candidate in
-                guard let name = tier(candidate) else { return false }
-                return SessionNameMatching.key(name) == spoken
+                tier(candidate).contains { SessionNameMatching.key($0) == spoken }
             }
-            switch matches.count {
-            case 0: continue
-            case 1: return .resolved(matches[0].snapshot)
-            default: return .ambiguous(count: matches.count)
+            if let resolution = resolution(matches) { return resolution }
+        }
+        let words = SessionNameMatching.words(spokenName)
+        if words.count >= 2 {
+            let matches = panes.filter { candidate in
+                guard let title = candidate.names.title else { return false }
+                return SessionNameMatching.words(title).starts(with: words)
             }
+            if let resolution = resolution(matches) { return resolution }
         }
         return .unknown
     }
 
-    private static func onePerPane(_ candidates: [SessionNameCandidate]) -> [SessionNameCandidate] {
+    private static func resolution(_ matches: [SessionNameCandidate]) -> SessionNameResolution? {
+        switch matches.count {
+        case 0: nil
+        case 1: .resolved(matches[0].snapshot)
+        default: .ambiguous(count: matches.count)
+        }
+    }
+
+    package static func onePerPane(_ candidates: [SessionNameCandidate]) -> [SessionNameCandidate] {
         var byPane: [String: SessionNameCandidate] = [:]
         var order: [String] = []
         for candidate in candidates {
@@ -292,12 +377,95 @@ package enum SessionNameResolver {
         return order.compactMap { byPane[$0] }
     }
 
-    private static func paneKey(_ snapshot: ClaudeSessionSnapshot) -> String {
+    package static func paneKey(_ snapshot: ClaudeSessionSnapshot) -> String {
         if snapshot.origin.isLocalAuthenticated, let tty = snapshot.process?.tty {
             return "tty:" + tty
         }
         return "session:" + snapshot.sessionID
     }
+}
+
+/// What each live session is called on screen (#1013): the overlay's
+/// destinations, the popover's "… needs you", banners.
+package enum SessionShownNames {
+    package static let separator = " · "
+
+    /// Session id to name: its nickname, else its harness's title, else its
+    /// folder or branch (`SessionDefaultNames.fallback`), with duplicates
+    /// told apart. Every session on one pane gets that pane's name.
+    package static func of(_ candidates: [SessionNameCandidate]) -> [String: String] {
+        let panes = SessionNameResolver.onePerPane(candidates)
+        let names = distinct(panes) { $0.nickname ?? $0.names.shown }
+        var byPane: [String: String] = [:]
+        for pane in panes {
+            byPane[SessionNameResolver.paneKey(pane.snapshot)] = names[pane.snapshot.sessionID]
+        }
+        var result: [String: String] = [:]
+        for candidate in candidates {
+            result[candidate.snapshot.sessionID] = byPane[SessionNameResolver.paneKey(candidate.snapshot)]
+        }
+        return result
+    }
+
+    /// Names made unique among `panes`: of the panes that share one, the one
+    /// with a nickname, else the first seen, keeps it; each other one gets
+    /// its agent's name when no other pane of the group runs that agent
+    /// ("localvoxtral · Codex"), else the next number ("localvoxtral · 2").
+    package static func distinct(
+        _ panes: [SessionNameCandidate],
+        name: (SessionNameCandidate) -> String?
+    ) -> [String: String] {
+        var groups: [String: [(candidate: SessionNameCandidate, name: String)]] = [:]
+        for pane in panes {
+            guard let base = name(pane), !SessionNameMatching.key(base).isEmpty else { continue }
+            groups[SessionNameMatching.key(base), default: []].append((pane, base))
+        }
+        var result: [String: String] = [:]
+        for group in groups.values {
+            let ordered = group.sorted { lhs, rhs in
+                let lhsNamed = lhs.candidate.nickname != nil, rhsNamed = rhs.candidate.nickname != nil
+                if lhsNamed != rhsNamed { return lhsNamed }
+                if lhs.candidate.snapshot.firstSeen != rhs.candidate.snapshot.firstSeen {
+                    return lhs.candidate.snapshot.firstSeen < rhs.candidate.snapshot.firstSeen
+                }
+                return lhs.candidate.snapshot.sessionID < rhs.candidate.snapshot.sessionID
+            }
+            let agentCounts = Dictionary(grouping: ordered, by: \.candidate.snapshot.agent).mapValues(\.count)
+            var ordinal = 1
+            for (index, member) in ordered.enumerated() {
+                let id = member.candidate.snapshot.sessionID
+                guard index > 0 else {
+                    result[id] = member.name
+                    continue
+                }
+                let agent = member.candidate.snapshot.agent
+                let suffix: String
+                if agentCounts[agent] == 1, agent != ordered[0].candidate.snapshot.agent {
+                    suffix = AgentAttentionText.agentName(agent)
+                } else {
+                    ordinal += 1
+                    suffix = String(ordinal)
+                }
+                result[id] = member.name + separator + suffix
+            }
+        }
+        return result
+    }
+
+    /// A distinct name as it may be heard: "localvoxtral · 2" is also
+    /// "localvoxtral two".
+    package static func spokenForms(_ name: String?) -> [String] {
+        guard let name else { return [] }
+        guard let range = name.range(of: separator, options: .backwards),
+              let number = Int(name[range.upperBound...]),
+              number < numberWords.count
+        else { return [name] }
+        return [name, name[..<range.lowerBound] + " " + numberWords[number]]
+    }
+
+    private static let numberWords = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    ]
 }
 
 /// How a session's pane can be brought to the front.
@@ -373,6 +541,8 @@ package final class SessionNavigator {
 
     private let liveSessions: @Sendable () -> [ClaudeSessionSnapshot]
     private let repositoryRoot: @Sendable (String) -> LearnedTermProjectResolver.RepositoryRoot
+    private let branch: @Sendable (String) -> String?
+    private let title: @Sendable (ClaudeSessionSnapshot) -> String?
     private let sleep: @Sendable (Duration) async -> Void
     private let nicknames: SessionNicknameStore?
     package let focuser: any SessionPaneFocusing
@@ -382,15 +552,23 @@ package final class SessionNavigator {
     ///     directory. Runs off the main actor.
     ///   - sleep: the clock the name bound runs on.
     ///   - nicknames: spoken nicknames; nil, and no session has one.
+    ///   - branch: the branch checked out at a git root. Runs off the main
+    ///     actor.
+    ///   - title: the harness's title for a session (#1013). Runs off the
+    ///     main actor.
     package init(
         liveSessions: @escaping @Sendable () -> [ClaudeSessionSnapshot],
         repositoryRoot: @escaping @Sendable (String) -> LearnedTermProjectResolver.RepositoryRoot,
         focuser: any SessionPaneFocusing,
         sleep: @escaping @Sendable (Duration) async -> Void,
-        nicknames: SessionNicknameStore? = nil
+        nicknames: SessionNicknameStore? = nil,
+        branch: @escaping @Sendable (String) -> String? = { _ in nil },
+        title: @escaping @Sendable (ClaudeSessionSnapshot) -> String? = { _ in nil }
     ) {
         self.liveSessions = liveSessions
         self.repositoryRoot = repositoryRoot
+        self.branch = branch
+        self.title = title
         self.focuser = focuser
         self.sleep = sleep
         self.nicknames = nicknames
@@ -419,7 +597,9 @@ package final class SessionNavigator {
             for: sessions,
             bound: Self.repositoryRootBound,
             sleep: sleep,
-            repositoryRoot: repositoryRoot
+            repositoryRoot: repositoryRoot,
+            branch: branch,
+            title: title
         )
         if let nicknames {
             for index in candidates.indices {
@@ -449,7 +629,9 @@ package final class SessionNavigator {
         for sessions: [ClaudeSessionSnapshot],
         bound: Duration,
         sleep: @escaping @Sendable (Duration) async -> Void,
-        repositoryRoot: @escaping @Sendable (String) -> LearnedTermProjectResolver.RepositoryRoot
+        repositoryRoot: @escaping @Sendable (String) -> LearnedTermProjectResolver.RepositoryRoot,
+        branch: @escaping @Sendable (String) -> String?,
+        title: @escaping @Sendable (ClaudeSessionSnapshot) -> String?
     ) async -> [SessionNameCandidate] {
         let lexical = sessions.map {
             SessionNameCandidate(snapshot: $0, names: SessionDefaultNames.of($0, repositoryRoot: .unknown))
@@ -463,9 +645,13 @@ package final class SessionNavigator {
             Task.detached {
                 let named = sessions.map { session in
                     let root = session.localWorkspacePath.map { repositoryRoot($0.path) } ?? .unknown
+                    var checkedOut: String?
+                    if case .root(let gitRoot, _) = root { checkedOut = branch(gitRoot) }
                     return SessionNameCandidate(
                         snapshot: session,
-                        names: SessionDefaultNames.of(session, repositoryRoot: root)
+                        names: SessionDefaultNames.of(
+                            session, repositoryRoot: root, title: title(session), branch: checkedOut
+                        )
                     )
                 }
                 answer.resume(named)

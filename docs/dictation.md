@@ -230,9 +230,22 @@ Say only "go to payments" and the app brings the pane of the joined coding
 agent session named payments to the front instead of typing anything. In
 Live Auto-Paste, say it as a phrase between pauses.
 
-A session answers to its repository's name and, in a linked worktree, to the
-worktree's name. It also answers to a
-[name you gave it](#name-a-session).
+A session answers to, in this order:
+
+1. a [name you gave it](#name-a-session);
+2. its folder: the repository's, or in a linked worktree the worktree's,
+   with the random ending of a worktree Claude created left off
+   ("zealous chaplygin" for `zealous-chaplygin-aa1a02`), or the branch when
+   you named it (`fix/overlay-names` answers to "overlay names");
+3. its repository's name;
+4. its Claude Desktop title, whole or its first two to four words
+   ("go to better session names").
+
+The overlay, the popover and the banners show the name you gave it, else its
+Claude Desktop title, else its folder or branch. When two sessions would show
+the same name, the later one gets its agent ("localvoxtral · Codex") or a
+number ("localvoxtral · 2"), and answers to that too ("go to localvoxtral
+two").
 
 "Go to" works for sessions in these places:
 
