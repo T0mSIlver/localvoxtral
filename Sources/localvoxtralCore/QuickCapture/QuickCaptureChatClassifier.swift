@@ -27,10 +27,11 @@ package enum QuickCaptureChatRouting {
     /// Added to `systemPrompt` only when open captures are options (#965),
     /// so a request with none is what it was before.
     package static let followUpInstruction = """
-        Some options are earlier notes the speaker has not filed yet. Pick one \
-        of those only when this note adds to that same idea: a detail, a \
-        correction or a second thought about it. A new idea for the same \
-        project picks the project.
+        Some options are earlier notes the speaker made in the last hour and \
+        has not filed. When this note continues one of them (a detail, a \
+        correction or a second thought about the same thing), pick that \
+        earlier note, not its project. A new idea for the same project picks \
+        the project.
         """
 
     package static func systemPrompt(for options: [QuickCaptureOption]) -> String {
