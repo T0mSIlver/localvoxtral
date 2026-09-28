@@ -9,8 +9,9 @@ its code.
 - [Dictating](dictation.md): shortcuts, output modes, settings reference,
   screenshots
 - [Terminals & coding agents](coding-agents.md): dictating into Claude Code
-  and other CLI agents, jumping to the agent that needs you, session joins,
-  the SSH remote plugin
+  and other CLI agents, session joins, the SSH remote plugin
+- [Work with several agents](agents.md): being told an agent needs you,
+  jumping to it, and naming, reaching and sending to sessions by voice
 - [Integration matrix](integration-matrix.md): for each coding agent and
   terminal, what joins, what context is attached, and why the gaps exist
 - [Under the hood](under-the-hood.md): privacy, the managed local engines

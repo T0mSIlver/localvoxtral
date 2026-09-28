@@ -48,7 +48,7 @@ On first launch, a setup wizard asks for permissions and downloads the engine. I
 
 ## Features
 
-- **Jump to the agent that needs you.** When one of your coding agents waits for an answer, localvoxtral tells you. Press Tab while you dictate, and that agent's pane comes to the front so you can read its question while you answer. Your words go there ([details](docs/coding-agents.md#jump-to-the-agent-that-needs-you)).
+- **Jump to the agent that needs you.** When one of your coding agents waits for an answer, localvoxtral tells you. Press Tab while you dictate, and that agent's pane comes to the front so you can read its question while you answer. Your words go there ([details](docs/agents.md)).
 - **Built for coding agents.** Dictate prompts straight into any CLI agent ([opencode](integrations/opencode/README.md), [Mistral Vibe](integrations/vibe/README.md) and [Codex](integrations/codex/README.md) get their own integrations), in any terminal: Warp, WezTerm, kitty, Alacritty, and more. Polishing understands developer speech: "dash dash force" becomes `--force`, "use auth dot t s" becomes `useAuth.ts` ([details](docs/coding-agents.md)).
 - **Claude Code aware.** Dictation joins the exact session under your cursor: Ghostty, iTerm2, Terminal.app, a single [herdr](https://herdr.dev) or [cmux](https://github.com/manaflow-ai/cmux) pane, over SSH, or a [claude.ai/code](https://claude.ai/code) Remote Control tab in your browser. Polishing is grounded in that session's screen, your last prompt, the files Claude just touched, and the repo's vocabulary ([details](docs/coding-agents.md#dictating-into-claude-code)).
 - **One key.** Tap or hold to dictate into an overlay you can review, with optional LLM polishing. Press Tab to save the words to your Inbox instead ([shortcuts](docs/dictation.md)).
@@ -64,7 +64,8 @@ On first launch, a setup wizard asks for permissions and downloads the engine. I
 
 - [Install](docs/install.md): install, update, Gatekeeper fixes, nightly builds
 - [Dictating](docs/dictation.md): shortcuts, output modes, settings, screenshots
-- [Terminals & coding agents](docs/coding-agents.md): jumping to the agent that needs you, Claude Code session joins, the SSH remote plugin, repo vocabulary
+- [Terminals & coding agents](docs/coding-agents.md): Claude Code session joins, the SSH remote plugin, repo vocabulary
+- [Work with several agents](docs/agents.md): being told an agent needs you, jumping to it, reaching sessions by name
 - [Integration matrix](docs/integration-matrix.md): what each coding agent and terminal gets, and why the gaps exist
 - [Under the hood](docs/under-the-hood.md): privacy, the bundled engines and their pinned models, hosted and self-hosted alternatives
 - [Building from source](docs/building.md) · [Roadmap](docs/roadmap.md)
