@@ -2486,8 +2486,11 @@ there is not.
   (`QuickCapturePolishVocabulary`, capped per project and in total; no
   proposals), matched against the words as a dictation's learned terms are.
   The router, drafter and follow-ups read the polished words; History keeps
-  the raw ones and gets the polished text on the same record. A failed
-  polish, or none configured, routes the raw words. The router sends a low or tied answer to the catch-all, never a
+  the raw ones and gets the polished text on the same record, which
+  Insights leaves out of its polish waits. A failed
+  polish, or none configured, routes the raw words. Polishes run side by
+  side, but captures join or route in the order they were made: an "also"
+  whose polish answers first waits for the capture before it. The router sends a low or tied answer to the catch-all, never a
   guessed project: the guess is kept as the route's `suggestion`, and
   nothing drafts until the user accepts it (#938). Jev and the chat model both need 0.9: on the replay
   (#741, #744) every right project came at 0.95 or more, and nearly every

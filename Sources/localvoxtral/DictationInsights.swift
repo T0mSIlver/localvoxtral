@@ -114,12 +114,16 @@ struct DictationInsights: Equatable, Sendable {
             if Task.isCancelled { break }
             dictations += 1
             words += TranscriptDiff.wordRanges(in: entry.finalText).count
+            // A quick capture is polished in the Inbox after its record
+            // is written (#970): its polish is not in its duration, and
+            // nobody waited on it, so it is left out of the polish counts.
+            let isQuickCapture = entry.outputMode == DictationSessionRecord.quickCaptureOutputMode
             let elapsed = entry.finishedAt.timeIntervalSince(entry.startedAt)
-                - (entry.polishingDurationSeconds ?? 0)
+                - (isQuickCapture ? 0 : entry.polishingDurationSeconds ?? 0)
             dictatingSeconds += min(max(0, elapsed), Self.maxDictationSeconds)
             if !entry.commitSucceeded { notInserted += 1 }
             if entry.status == .llmFailed { polishFailed += 1 }
-            if entry.polishRan, let seconds = entry.polishingDurationSeconds {
+            if entry.polishRan, !isQuickCapture, let seconds = entry.polishingDurationSeconds {
                 polishRan += 1
                 polishSeconds.append(seconds)
             }
@@ -136,7 +140,7 @@ struct DictationInsights: Equatable, Sendable {
                 appCounts[bundleID, default: 0] += 1
             }
             if entry.polishRan, entry.textWasChanged {
-                polishChanged += 1
+                if !isQuickCapture { polishChanged += 1 }
                 // A set: the same fix twice in one dictation is one dictation.
                 let fixes = Self.fixes(in: entry).map { FixKey(heard: $0.heard, written: $0.written) }
                 for fix in Set(fixes) { fixDictations[fix, default: 0] += 1 }

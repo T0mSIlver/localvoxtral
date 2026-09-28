@@ -146,6 +146,42 @@ final class QuickCapturePolishTests: XCTestCase {
         XCTAssertTrue(prompts(runner).contains("Add what the user said next: Also, the settings window."))
     }
 
+    /// Captures are placed in the order they were made: an "also" whose
+    /// polish answers first waits for the capture before it, then joins it.
+    func testAFollowUpWhosePolishEndsFirstStillJoinsTheCaptureBeforeIt() async throws {
+        let classifier = ScriptedQuickCaptureClassifier([["reach": 0.95]])
+        let runner = FakeQuickCaptureDraftRunner()
+        let polisher = FakeQuickCapturePolisher(gatedCalls: [0, 1]) { text in
+            text == "add a dark mode" ? "Add a dark mode." : "Also, the settings window."
+        }
+        let model = model(classifier: classifier, runner: runner, polisher: polisher)
+        let second = UUID()
+        var secondPolished: CheckedContinuation<Void, Never>?
+        model.onPolished = { id, _, _ in if id == second { secondPolished?.resume() } }
+
+        let first = model.capture(text: "add a dark mode", historyRecordID: UUID())
+        clock += 60
+        let followUp = model.capture(text: "also the settings window", historyRecordID: second)
+        let firstGate = try XCTUnwrap(polisher.callGates[0])
+        let secondGate = try XCTUnwrap(polisher.callGates[1])
+        await firstGate.waitForSleepers(1)
+        await secondGate.waitForSleepers(1)
+
+        await withCheckedContinuation { continuation in
+            secondPolished = continuation
+            secondGate.wakeAll()
+        }
+        XCTAssertTrue(classifier.captures.withLock { $0 }.isEmpty, "the follow-up waits for the first capture")
+        firstGate.wakeAll()
+        await first.value
+        await followUp.value
+
+        XCTAssertEqual(model.items.count, 1)
+        XCTAssertEqual(model.items.first?.text, "Add a dark mode.")
+        XCTAssertEqual(model.items.first?.followUps?.map(\.text), ["Also, the settings window."])
+        XCTAssertEqual(classifier.captures.withLock { $0 }, ["Add a dark mode."])
+    }
+
     // MARK: Vocabulary
 
     private func confirmed(_ terms: [String], in project: LearnedTermProjectIdentity, _ memory: inout LearnedTerms) {

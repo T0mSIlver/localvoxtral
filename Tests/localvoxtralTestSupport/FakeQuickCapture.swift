@@ -120,21 +120,26 @@ package final class FakeQuickCaptureFirstDrafter: QuickCaptureFirstDrafting, @un
 
 /// The capture's polish (#970): `answer` maps the words it gets to the
 /// words it returns, else nil, as a failed request does. Records each call;
-/// when `gate` is set, it waits on it before answering.
+/// when `gate` is set, every call waits on it before answering, and a call
+/// whose index is in `callGates` waits on its own gate.
 @MainActor
 package final class FakeQuickCapturePolisher: QuickCapturePolishing {
     package let answer: (String) -> String?
     package let gate: ManualSleeper?
+    package let callGates: [Int: ManualSleeper]
     package private(set) var calls: [(text: String, vocabulary: [String])] = []
 
-    package init(gated: Bool = false, answer: @escaping (String) -> String?) {
+    package init(gated: Bool = false, gatedCalls: [Int] = [], answer: @escaping (String) -> String?) {
         self.answer = answer
         gate = gated ? ManualSleeper() : nil
+        callGates = Dictionary(uniqueKeysWithValues: gatedCalls.map { ($0, ManualSleeper()) })
     }
 
     package func polish(_ text: String, vocabulary: [String]) async -> QuickCapturePolish? {
+        let index = calls.count
         calls.append((text, vocabulary))
         if let gate { await gate.sleep(0) }
+        if let callGate = callGates[index] { await callGate.sleep(0) }
         return answer(text).map { QuickCapturePolish(text: $0, durationSeconds: 1.5) }
     }
 }
