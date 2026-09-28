@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import localvoxtralCore
+import localvoxtralTestSupport
 
 // MARK: - Git-root walk + HEAD/branch parsing (fixture dirs, no git binary)
 
@@ -35,19 +36,17 @@ final class RepoIndexingWalkTests: XCTestCase {
         XCTAssertNil(RepoIndexing.findGitRoot(startingAt: dir.path))
     }
 
-    func testBranchParsedFromHead() {
-        let repo = makeTempDir()
-        write("ref: refs/heads/feature/foo\n", to: repo.appendingPathComponent(".git/HEAD"))
-        XCTAssertEqual(RepoIndexing.branch(root: repo.path), "feature/foo")
-    }
+    func testBranchParsedFromHeadAndDetachedHeadYieldsNil() {
+        let named = makeTempDir()
+        write("ref: refs/heads/feature/foo\n", to: named.appendingPathComponent(".git/HEAD"))
+        XCTAssertEqual(RepoIndexing.branch(root: named.path), "feature/foo")
 
-    func testDetachedHeadYieldsNilBranch() {
-        let repo = makeTempDir()
+        let detached = makeTempDir()
         write(
             "9fceb02d0ae598e95dc970b74767f19372d61af8\n",
-            to: repo.appendingPathComponent(".git/HEAD")
+            to: detached.appendingPathComponent(".git/HEAD")
         )
-        XCTAssertNil(RepoIndexing.branch(root: repo.path))
+        XCTAssertNil(RepoIndexing.branch(root: detached.path))
     }
 
     func testWorktreeGitdirPointerFollowedToHead() {
@@ -164,9 +163,8 @@ final class RepoIndexingMainCheckoutTests: XCTestCase {
         process.environment = ["PATH": ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"]
         let output = Pipe()
         process.standardOutput = output
-        try process.run()
+        try process.runUntilExit()
         let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
         XCTAssertEqual(process.terminationStatus, 0, "git \(arguments.joined(separator: " "))")
         return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -175,30 +173,19 @@ final class RepoIndexingMainCheckoutTests: XCTestCase {
 // MARK: - ls-files parsing + vocabulary build (synthesized bytes)
 
 final class RepoIndexingParsingTests: XCTestCase {
-    func testParsesCleanNullDelimitedPaths() {
-        let data = "a/b.ts\u{0}c/d.swift\u{0}".data(using: .utf8)!
-        XCTAssertEqual(
-            RepoIndexing.parseNullDelimitedPaths(data),
-            ["a/b.ts", "c/d.swift"]
-        )
-    }
-
-    func testDropsTruncatedFinalEntry() {
-        // No trailing NUL: the final entry was cut mid-write (timeout/cap).
-        let data = "a/b.ts\u{0}c/d.sw".data(using: .utf8)!
-        XCTAssertEqual(RepoIndexing.parseNullDelimitedPaths(data), ["a/b.ts"])
-    }
-
-    func testCapsAtMaxEntries() {
-        let data = "x\u{0}y\u{0}z\u{0}".data(using: .utf8)!
-        XCTAssertEqual(
-            RepoIndexing.parseNullDelimitedPaths(data, maxEntries: 2),
-            ["x", "y"]
-        )
-    }
-
-    func testEmptyDataYieldsNoPaths() {
-        XCTAssertEqual(RepoIndexing.parseNullDelimitedPaths(Data()), [])
+    func testParseNullDelimitedPaths() {
+        let cases: [(name: String, data: Data, maxEntries: Int?, expected: [String])] = [
+            ("CleanNullDelimitedPaths", Data("a/b.ts\u{0}c/d.swift\u{0}".utf8), nil, ["a/b.ts", "c/d.swift"]),
+            // No trailing NUL: the final entry was cut mid-write (timeout/cap).
+            ("TruncatedFinalEntryDropped", Data("a/b.ts\u{0}c/d.sw".utf8), nil, ["a/b.ts"]),
+            ("CapsAtMaxEntries", Data("x\u{0}y\u{0}z\u{0}".utf8), 2, ["x", "y"]),
+            ("EmptyDataYieldsNoPaths", Data(), nil, []),
+        ]
+        for (name, data, maxEntries, expected) in cases {
+            let parsed = maxEntries.map { RepoIndexing.parseNullDelimitedPaths(data, maxEntries: $0) }
+                ?? RepoIndexing.parseNullDelimitedPaths(data)
+            XCTAssertEqual(parsed, expected, name)
+        }
     }
 
     func testBuildVocabularyBasenamesComponentsAndBranch() {
