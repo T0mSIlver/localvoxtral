@@ -236,6 +236,7 @@ jobs:
             ./scripts/ci/test-ui-smoke-guard.sh \
             ./scripts/ci/test-ui-smoke-dispatch.sh \
             ./scripts/ci/test-ui-smoke-owner-app.sh \
+            ./scripts/ci/test-owner-defaults-backup.sh \
             ./scripts/ci/test-runner-node-resign.sh \
             ./scripts/ci/test-launch-app-shim.sh \
             ./scripts/ci/test-word-accuracy.sh \

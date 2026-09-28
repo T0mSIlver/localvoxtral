@@ -86,9 +86,9 @@ fresh_account() {
 # the lane's exit status; 137 is the stub's SIGKILL.
 lane() {
   local status=0
-  HOME="$WORK/home" PATH="$BIN:$PATH" bash -c '
+  HOME="$WORK/home" PATH="${LANE_PATH:-$BIN:$PATH}" bash -c '
     set -uo pipefail
-    BUNDLE_ID=com.localvoxtral.app
+    BUNDLE_ID="${LANE_BUNDLE_ID:-com.localvoxtral.app}"
     record_fail() { echo "record_fail: $*" >&2; }
     source "$1"; shift
     for step in "$@"; do
@@ -177,5 +177,28 @@ printf '<plist version="1.0">\n<!-- forced external_url -->\n' >"$LIVE"
 assert_live_is_golden "after recovering a legacy backup without its marker"
 assert_no_leftovers "after recovering a legacy backup"
 pass "a legacy backup whose marker was never written is imported, not discarded"
+
+# 7. On macOS, the same lane against the real `defaults` and `plutil`, on a
+#    throwaway domain: the stubs above encode two facts about them (the
+#    "does not exist" error of an absent domain, and `plutil -lint -s`).
+if [[ "$(uname)" == Darwin ]]; then
+  export LANE_PATH="$PATH" LANE_BUNDLE_ID="com.localvoxtral.test-owner-defaults-backup.$$"
+  trap '/usr/bin/defaults delete "$LANE_BUNDLE_ID" >/dev/null 2>&1 || :; rm -rf "$WORK"' EXIT
+  rm -rf "$WORK/home"
+  mkdir -p "$WORK/home"
+  /usr/bin/defaults write "$LANE_BUNDLE_ID" settings.dictation_backend_mode -string "the owner own mode"
+  /usr/bin/defaults export "$LANE_BUNDLE_ID" "$WORK/real-golden.plist"
+  [[ "$(lane recover snapshot force restore)" == 0 ]] || fail "real defaults: the lane failed: $(cat "$WORK/lane.out")"
+  /usr/bin/defaults export "$LANE_BUNDLE_ID" "$WORK/real-after.plist"
+  cmp -s "$WORK/real-golden.plist" "$WORK/real-after.plist" \
+    || fail "real defaults: the domain is not byte-identical after the lane:
+$(cat "$WORK/real-after.plist")"
+  /usr/bin/defaults delete "$LANE_BUNDLE_ID"
+  [[ "$(lane snapshot force restore)" == 0 ]] || fail "real defaults: the lane on an absent domain failed: $(cat "$WORK/lane.out")"
+  /usr/bin/defaults read "$LANE_BUNDLE_ID" >/dev/null 2>&1 \
+    && fail "real defaults: an absent domain exists after the lane"
+  [[ -z "$(ls -A "$WORK/home")" ]] || fail "real defaults: files left in HOME: $(ls -A "$WORK/home")"
+  pass "real defaults and plutil: a present domain comes back byte-identical, an absent one absent"
+fi
 
 echo "owner defaults backup tests passed"
