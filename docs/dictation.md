@@ -364,7 +364,9 @@ list, newest first.
   list holds the only copy.
 - **A row** opens the whole text. When polishing or a replacement changed
   it, the transcript appears under it with the removed words marked.
-  **Copy Transcript** copies the unchanged version.
+  **Copy Transcript** copies the unchanged version. The line beside the
+  buttons names the model, the polish time and the prompt tokens the polish
+  request sent, as the polishing backend reported them.
 - **Delete** removes the dictation from the store. **Delete All…** removes
   every one.
 
@@ -686,6 +688,29 @@ in [the bundled config folder](../Sources/localvoxtral/Resources/Config).
 To stop sending the dictionary to the LLM, remove
 `{{replacement_dictionary}}` from a user prompt template.
 
+### What the prompt costs
+
+Settings shows the approximate size of each part of the polish prompt, in
+tokens:
+
+- **Text Processing → Advanced → Polishing instructions**: the prompt files
+  and the reference guide, sent with every polish. With the agent prompt
+  profile on, both profiles are shown.
+- **Text Processing → About you → Global terms**: what your terms add to
+  every polish.
+- **Projects**, in a project's Terms: the most that project's terms add. A
+  learned term is sent only when you say something that sounds like it, so
+  most dictations carry a few of them or none.
+
+No polishing backend counts tokens before a request is sent, so these are
+estimates: each part's characters times the tokens per character your
+polishing backend reported over its last 20 polish requests. Before the
+first request, the app assumes 4.6 characters a token, what the Qwen3.5, GLM
+and Mistral tokenizers measured on the bundled prompts. A list of terms
+counts 1.6 times as many tokens per character as prose, because names and
+identifiers split into short pieces. The exact count of each dictation's
+request is in [History](#history).
+
 When an update ships better defaults, the app refreshes the files you
 haven't edited. It never changes a file you edited without asking. It offers
 to update the file and keeps your version alongside as a backup file.
@@ -734,7 +759,8 @@ History; the panes sit under the sidebar's Settings header.
   agent prompt profile and spoken clipboard paste. **Advanced** holds
   [learned terms](#terms-learned-from-polishing),
   [the coding agent's terms](#terms-from-your-coding-agent), the legacy
-  replacement dictionary and [the prompt files](#edit-the-polishing-prompts-and-dictionary).
+  replacement dictionary, [the instructions' size](#what-the-prompt-costs)
+  and [the prompt files](#edit-the-polishing-prompts-and-dictionary).
 - **Context**: what the polisher may see (repo vocabulary, clipboard, the
   agent's screen and session). Each toggle's title names what leaves this
   Mac. The full terms are in

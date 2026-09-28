@@ -4,6 +4,7 @@ import SwiftUI
 struct TextProcessingSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
+    @State private var instructionsTokens: String?
 
     static let speakerProfileExample = """
         Backend engineer at Acme, mostly Swift and Python.
@@ -19,6 +20,23 @@ struct TextProcessingSettingsPane: View {
 
     private var isLLMPolishingReachable: Bool {
         settings.isOverlayBufferSessionReachable
+    }
+
+    private var tokenRatio: PolishPromptTokenRatio {
+        PolishPromptTokenText.ratio(settings: settings, ledger: viewModel.engines.usageLedger)
+    }
+
+    /// Read from the prompt files once per visit, not on every render.
+    private func instructionsTokenText() -> String {
+        let ratio = tokenRatio
+        let tokens = { (profile: PolishPromptProfile) in
+            ratio.tokens(proseCharacters: PolishPromptParts.instructionCharacters(
+                viewModel.appConfigStore.loadLLMPromptTemplates(profile: profile).withReferenceGuide()))
+        }
+        return PolishPromptTokenText.instructions(
+            standard: tokens(.standard),
+            agent: settings.agentPolishProfileEnabled ? tokens(.agent) : nil
+        )
     }
 
     private var llmPolishingEnabledBinding: Binding<Bool> {
@@ -76,6 +94,7 @@ struct TextProcessingSettingsPane: View {
 
                 SettingsFieldRow(
                     title: "Global terms",
+                    status: PolishPromptTokenText.globalTerms(settings.polishSpeakerTerms, ratio: tokenRatio),
                     layout: .stacked
                 ) {
                     SpeakerTermsField(terms: $settings.polishSpeakerTerms)
@@ -156,6 +175,13 @@ struct TextProcessingSettingsPane: View {
                 SettingsFieldRow(title: "Replacement dictionary (legacy)") {
                     Toggle("", isOn: $settings.replacementDictionaryEnabled)
                         .labelsHidden()
+                }
+
+                SettingsFieldRow(title: "Polishing instructions", status: instructionsTokens) {
+                    EmptyView()
+                }
+                .task(id: settings.agentPolishProfileEnabled) {
+                    instructionsTokens = instructionsTokenText()
                 }
 
                 SettingsFieldRow(title: "Config folder") {

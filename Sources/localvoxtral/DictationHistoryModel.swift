@@ -207,6 +207,9 @@ enum DictationHistoryRowText {
         if entry.polishProfile == PolishPromptProfile.agent.rawValue {
             parts.append("agent")
         }
+        if let tokens = entry.polishPromptTokens {
+            parts.append("\(tokens.formatted()) prompt tokens")
+        }
         return parts.joined(separator: " · ")
     }
 }

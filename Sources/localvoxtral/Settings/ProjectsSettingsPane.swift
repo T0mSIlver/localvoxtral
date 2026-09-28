@@ -223,6 +223,10 @@ struct ProjectDetailSheet: View {
     @State private var repositoryDraft = ""
     @State private var isEditingDescription = false
     @State private var descriptionDraft = ""
+    private var tokenRatio: PolishPromptTokenRatio {
+        PolishPromptTokenText.ratio(settings: settings, ledger: viewModel.engines.usageLedger)
+    }
+
     private var row: ProjectsPaneRow? {
         _ = viewModel.learnedTermRevision
         // Any of its keys: the leading checkout changes when the Mac's
@@ -239,7 +243,9 @@ struct ProjectDetailSheet: View {
                     VStack(alignment: .leading, spacing: SettingsLayout.pageSpacing) {
                         repositoryGroup(row)
                         descriptionGroup(row)
-                        ProjectTermsGroup(terms: row.terms, keys: row.keys, store: viewModel.learnedTermStore)
+                        ProjectTermsGroup(
+                            terms: row.terms, keys: row.keys, store: viewModel.learnedTermStore,
+                            tokenRatio: tokenRatio)
                         activityGroup(row)
                     }
                 }
@@ -466,7 +472,9 @@ struct UnlistedTermsSheet: View {
                 // Forgetting the last term empties the group rather than
                 // closing the sheet under the pointer.
                 ProjectTermsGroup(
-                    terms: unlisted?.terms ?? [], keys: unlisted?.keys ?? [], store: viewModel.learnedTermStore)
+                    terms: unlisted?.terms ?? [], keys: unlisted?.keys ?? [], store: viewModel.learnedTermStore,
+                    tokenRatio: PolishPromptTokenText.ratio(
+                        settings: viewModel.settings, ledger: viewModel.engines.usageLedger))
             }
             .settingsScrollEdgeEffectHidden()
             HStack {
@@ -490,6 +498,8 @@ struct ProjectTermsGroup: View {
     let terms: [LearnedTerm]
     let keys: [String]
     let store: LearnedTermStore?
+    /// Sizes the terms in the polish prompt; nil shows no size.
+    var tokenRatio: PolishPromptTokenRatio? = nil
     @State private var query = ""
     @State private var isConfirmingForgetAll = false
 
@@ -508,6 +518,11 @@ struct ProjectTermsGroup: View {
                         .foregroundStyle(.secondary)
                 }
             } else {
+                if let tokenRatio, let tokens = PolishPromptTokenText.projectTerms(terms, ratio: tokenRatio) {
+                    SettingsFieldRow(title: "Polish prompt", status: tokens) {
+                        EmptyView()
+                    }
+                }
                 if terms.count > ProjectsPane.searchAbove {
                     SettingsGroupRow {
                         TextField("Search \(terms.count) terms", text: $query)
