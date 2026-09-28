@@ -17,7 +17,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd -P)"
-FIXTURE="$ROOT_DIR/scripts/herdr-integration-fixture.sh"
+# LV_HERDR_FIXTURE points it at another copy of the fixture, which is how the
+# pre-#991 failures were shown.
+FIXTURE="${LV_HERDR_FIXTURE:-$ROOT_DIR/scripts/herdr-integration-fixture.sh}"
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lv-herdr-fixture-recovery.XXXXXX")"
 DECOY_PID=""
@@ -262,6 +264,103 @@ $(cat "$TMP_DIR/stub-env.log")"
   || fail "the fixture server's config file is not under the run's config home"
 assert_account_is_pristine "after fixture herdr calls"
 pass "fixture herdr calls run on the workdir's socket and config/state homes"
+
+# --- 6d. An unbalanced marker stops the restore; the config is not cut -----
+# A begin marker whose end a human deleted used to drop every line after it,
+# the account's own included (#991). The restore must refuse and leave both
+# the config and the hold as they are.
+
+setup_home
+simulate_up_then_kill "$TMP_DIR/lvx-herdr-fixture-unbalanced"
+sed -e "/^$SSH_CONFIG_END\$/d" "$SSH_CONFIG_FILE" > "$TMP_DIR/unbalanced"
+printf 'Host added-by-the-human\n  HostName later.example\n' >> "$TMP_DIR/unbalanced"
+cp "$TMP_DIR/unbalanced" "$SSH_CONFIG_FILE"
+if ( command_recover ) 2>/dev/null; then
+  fail "recover stripped an ssh config whose fixture markers do not balance"
+fi
+cmp -s "$TMP_DIR/unbalanced" "$SSH_CONFIG_FILE" \
+  || fail "an unbalanced config was rewritten:
+$(cat "$SSH_CONFIG_FILE")"
+hold_is_present || fail "a failed restore dropped the hold it would retry from"
+pass "an unbalanced fixture marker stops the restore with the ssh config byte-identical"
+
+# --- 6e. A run killed while rewriting the config leaves it whole -----------
+# SIGKILL just before the rename: the config is the one before the rewrite,
+# byte for byte, and the next recover finishes the job.
+
+setup_home
+simulate_up_then_kill "$TMP_DIR/lvx-herdr-fixture-midstrip"
+cp "$SSH_CONFIG_FILE" "$TMP_DIR/before-strip"
+# The outer subshell swallows bash's "Killed" report on the inner one; the
+# command after the inner one keeps bash from exec'ing it in the outer's place.
+( (
+  mv() { sh -c 'kill -KILL $PPID'; }
+  command_recover
+); exit $? ) 2>/dev/null && fail "the kill before the rename did not fire"
+cmp -s "$TMP_DIR/before-strip" "$SSH_CONFIG_FILE" \
+  || fail "a kill mid-rewrite changed the ssh config:
+$(cat "$SSH_CONFIG_FILE")"
+command_recover 2>/dev/null
+assert_account_is_pristine "after a recover killed mid-rewrite"
+leftover="$(find "$HOME/.ssh" -name '.config.lvx-fixture.*' | head -1)"
+[[ -z "$leftover" ]] || fail "recover left the killed run's staged config behind: $leftover"
+pass "a run killed mid-rewrite leaves the ssh config whole, and recover finishes"
+
+# --- 6f. A config edited while the fixture rewrites it is left alone --------
+
+setup_home
+simulate_up_then_kill "$TMP_DIR/lvx-herdr-fixture-race"
+(
+  chmod() { command chmod "$@"; printf 'Host typed-meanwhile\n' >> "$SSH_CONFIG_FILE"; }
+  command_recover
+) 2>/dev/null && fail "recover replaced an ssh config that changed under it"
+grep -qx 'Host typed-meanwhile' "$SSH_CONFIG_FILE" \
+  || fail "the rename discarded an edit made while the fixture rewrote the config"
+hold_is_present || fail "a refused rewrite dropped the hold"
+pass "an ssh config edited mid-rewrite is not replaced"
+
+# --- 6g. A config without a final newline comes back byte-identical --------
+# The fixture's append terminates the account's last line so its begin marker
+# starts a line of its own; the restore takes that newline back.
+
+setup_home
+printf 'Host prod\n  HostName prod.example' > "$HOME/.ssh/config"
+cp "$HOME/.ssh/config" "$GOLDEN/ssh_config"
+mkdir -p "$TMP_DIR/lvx-herdr-fixture-noeol"
+hold_account_files "$TMP_DIR/lvx-herdr-fixture-noeol" 2>/dev/null
+printf '%s\nHost lvx-herdr-fixture\n%s\n' "$SSH_CONFIG_BEGIN" "$SSH_CONFIG_END" | append_ssh_config_block
+printf '%s\nHost lvx-herdr-fixture-fed\n%s\n' "$SSH_CONFIG_FED_BEGIN" "$SSH_CONFIG_FED_END" | append_ssh_config_block
+grep -qx "$SSH_CONFIG_BEGIN" "$SSH_CONFIG_FILE" \
+  || fail "the begin marker was glued onto the account's unterminated last line"
+release_account_files 2>/dev/null
+assert_account_is_pristine "after a run on a config without a final newline"
+
+# The account adds an unterminated line after the fixture's blocks: it stays.
+setup_home
+mkdir -p "$TMP_DIR/lvx-herdr-fixture-noeol2"
+hold_account_files "$TMP_DIR/lvx-herdr-fixture-noeol2" 2>/dev/null
+printf '%s\nHost lvx-herdr-fixture\n%s\n' "$SSH_CONFIG_BEGIN" "$SSH_CONFIG_END" | append_ssh_config_block
+printf 'Host later\n  HostName later.example' >> "$SSH_CONFIG_FILE"
+release_account_files 2>/dev/null
+printf '%sHost later\n  HostName later.example' "$PRISTINE_SSH" > "$GOLDEN/ssh_config"
+assert_account_is_pristine "after the account added an unterminated line mid-run"
+pass "a missing final newline survives the fixture's append and strip"
+
+# --- 6h. A symlinked config stays a symlink --------------------------------
+
+setup_home
+mkdir -p "$HOME/dotfiles"
+/bin/mv "$HOME/.ssh/config" "$HOME/dotfiles/ssh_config"
+ln -s ../dotfiles/ssh_config "$HOME/.ssh/config"
+mkdir -p "$TMP_DIR/lvx-herdr-fixture-link"
+hold_account_files "$TMP_DIR/lvx-herdr-fixture-link" 2>/dev/null
+printf '%s\nHost lvx-herdr-fixture\n%s\n' "$SSH_CONFIG_BEGIN" "$SSH_CONFIG_END" | append_ssh_config_block
+[[ -L "$HOME/.ssh/config" ]] || fail "the append replaced the symlinked config with a file"
+grep -qx "$SSH_CONFIG_BEGIN" "$HOME/dotfiles/ssh_config" || fail "the append did not reach the link's target"
+release_account_files 2>/dev/null
+[[ -L "$HOME/.ssh/config" ]] || fail "the restore replaced the symlinked config with a file"
+assert_account_is_pristine "after a run on a symlinked config"
+pass "a symlinked ssh config stays a symlink and comes back byte-identical"
 
 # --- 7. A SIGKILL between `machine add` and federation.json still stops the
 # daemon-started remote server ---------------------------------------------

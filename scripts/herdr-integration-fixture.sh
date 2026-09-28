@@ -56,7 +56,8 @@
 # `SSHDestinationCanonicalizer.live()` both run `ssh` / `ssh -G` against the
 # user's default configuration chain, so an alias that only existed in a
 # fixture-local file would exercise an invocation shape the app never
-# produces.
+# produces. Each change writes a whole new config and renames it into place,
+# and the restore refuses a config whose markers do not balance (#991).
 #
 # Because a run can be SIGKILLed (a torn-down runner, a sleeping Mac, a manual
 # kill of a wedged xctest), the pristine originals do NOT live in the run's own
@@ -235,11 +236,12 @@ record_hold_field() {
   # Never silent: a federation step with no hold to record into would reopen
   # the orphan window this record exists to close (review-2 NEW-4).
   [[ -f "$HOLD_MANIFEST" ]] || die "cannot record $key: no hold manifest at $HOLD_MANIFEST (run \`up\` first)"
-  tmp="$(mktemp "${TMPDIR:-/tmp}/lvx-hold.XXXXXX")"
+  # Staged beside the manifest and renamed over it: rewriting it in place
+  # would leave a truncated manifest if the run died mid-write (#991).
+  tmp="$(mktemp "$HOLD_DIR/manifest.XXXXXX")"
   grep -v "^${key}=" "$HOLD_MANIFEST" > "$tmp" || true
   printf '%s=%s\n' "$key" "$value" >> "$tmp"
-  cat "$tmp" > "$HOLD_MANIFEST"
-  rm -f "$tmp"
+  mv -f "$tmp" "$HOLD_MANIFEST"
 }
 
 # Is the process that took the hold still running THIS script? A pid alone
@@ -267,7 +269,8 @@ hold_account_files() {
   fi
   mkdir -p "$HOLD_DIR"
   chmod 700 "$HOLD_DIR"
-  rm -f "$HOLD_DIR"/*.pristine "$HOLD_DIR"/*.absent "$HOLD_DIR"/*.created 2>/dev/null || true
+  rm -f "$HOLD_DIR"/*.pristine "$HOLD_DIR"/*.absent "$HOLD_DIR"/*.created \
+    "$HOLD_DIR"/*.newline-added "$HOLD_DIR"/*.before-strip 2>/dev/null || true
 
   mkdir -p "$(dirname "$SSH_CONFIG_FILE")"
   chmod 700 "$(dirname "$SSH_CONFIG_FILE")"
@@ -276,6 +279,8 @@ hold_account_files() {
     # delimited blocks, never by writing this copy back, so an edit the user
     # makes while the lane runs survives.
     cp "$SSH_CONFIG_FILE" "$HOLD_DIR/ssh-config.pristine"
+    cmp -s "$SSH_CONFIG_FILE" "$HOLD_DIR/ssh-config.pristine" \
+      || die "the copy of $SSH_CONFIG_FILE in $HOLD_DIR does not match it; refusing to modify it"
   else
     : > "$HOLD_DIR/ssh-config.created"
   fi
@@ -293,25 +298,181 @@ hold_account_files() {
   log "holding this account's ssh config (backup in $HOLD_DIR)"
 }
 
-# Drop our delimited blocks from the ssh config in place. Idempotent, and it
-# leaves anything the user added while the lane ran untouched.
-strip_ssh_config_blocks() {
-  [[ -f "$SSH_CONFIG_FILE" ]] || return 0
-  local tmp
-  tmp="$(mktemp "${TMPDIR:-/tmp}/lvx-sshcfg.XXXXXX")"
+# ---------------------------------------------------------- ssh config
+#
+# Every change to the account's ssh config is a whole new file, checked for
+# balanced fixture markers, staged in the config's own directory and renamed
+# over it, and only if the config has not changed since it was read. A run
+# killed mid-write leaves the old file or the new one, never a truncated one
+# (#991).
+
+# The file a rename must replace: the config itself, or what a symlinked
+# config (a dotfile manager's) points at, so the link survives.
+ssh_config_target() {
+  local path="$SSH_CONFIG_FILE" link
+  while [[ -L "$path" ]]; do
+    link="$(readlink "$path")"
+    case "$link" in
+      /*) path="$link" ;;
+      *) path="$(dirname "$path")/$link" ;;
+    esac
+  done
+  printf '%s\n' "$path"
+}
+
+ssh_config_fingerprint() {
+  if [[ -e "$SSH_CONFIG_FILE" ]]; then
+    cksum < "$SSH_CONFIG_FILE" | awk '{ print $1 " " $2 }'
+  else
+    printf 'absent\n'
+  fi
+}
+
+# Every fixture begin marker is closed by its own end marker before the next
+# marker of any kind. Anything else means a human or a dead run edited the
+# blocks, and stripping by marker could drop the account's own lines.
+ssh_config_blocks_balanced() {
   awk -v b1="$SSH_CONFIG_BEGIN" -v e1="$SSH_CONFIG_END" \
       -v b2="$SSH_CONFIG_ALT_BEGIN" -v e2="$SSH_CONFIG_ALT_END" \
       -v b3="$SSH_CONFIG_FED_BEGIN" -v e3="$SSH_CONFIG_FED_END" '
-    $0 == b1 || $0 == b2 || $0 == b3 { skip = 1; next }
+    $0 == b1 || $0 == b2 || $0 == b3 {
+      if (open != "") exit 1
+      open = ($0 == b1) ? e1 : ($0 == b2) ? e2 : e3
+      next
+    }
+    $0 == e1 || $0 == e2 || $0 == e3 {
+      if ($0 != open) exit 1
+      open = ""
+    }
+    END { if (open != "") exit 1 }
+  ' "$1"
+}
+
+# replace_ssh_config <new-content> <fingerprint the config had when read>
+replace_ssh_config() {
+  local content="$1" read_fingerprint="$2" target staged
+  target="$(ssh_config_target)"
+  staged="$(mktemp "$(dirname "$target")/.config.lvx-fixture.XXXXXX")"
+  if ! cat "$content" > "$staged" || ! chmod 600 "$staged" || ! cmp -s "$content" "$staged"; then
+    rm -f "$staged"
+    log "ERROR: could not stage the new $SSH_CONFIG_FILE; left it as it was"
+    return 1
+  fi
+  if [[ "$(ssh_config_fingerprint)" != "$read_fingerprint" ]]; then
+    rm -f "$staged"
+    log "ERROR: $SSH_CONFIG_FILE changed while the fixture was rewriting it; left it as it was"
+    return 1
+  fi
+  mv -f "$staged" "$target"
+}
+
+# Append the block on stdin to the ssh config.
+append_ssh_config_block() {
+  local block combined read_fingerprint status=0
+  block="$(mktemp "${TMPDIR:-/tmp}/lvx-sshblock.XXXXXX")"
+  combined="$(mktemp "${TMPDIR:-/tmp}/lvx-sshcfg.XXXXXX")"
+  cat > "$block"
+  read_fingerprint="$(ssh_config_fingerprint)"
+  if [[ -f "$SSH_CONFIG_FILE" ]]; then
+    cat "$SSH_CONFIG_FILE" > "$combined"
+    # A config whose last line has no newline would glue the begin marker
+    # onto it. The newline goes in, and strip takes it back out.
+    if [[ -s "$combined" && -n "$(tail -c 1 "$combined")" ]]; then
+      printf '\n' >> "$combined"
+      : > "$HOLD_DIR/ssh-config.newline-added"
+    fi
+  fi
+  cat "$block" >> "$combined"
+  if ! ssh_config_blocks_balanced "$combined"; then
+    log "ERROR: $SSH_CONFIG_FILE would have unbalanced fixture markers; left it as it was"
+    status=1
+  elif ! replace_ssh_config "$combined" "$read_fingerprint"; then
+    status=1
+  fi
+  rm -f "$block" "$combined"
+  (( status == 0 )) || die "could not add the fixture's block to $SSH_CONFIG_FILE"
+}
+
+# Drop our delimited blocks from the ssh config. Idempotent, and it leaves
+# anything the user added while the lane ran untouched, down to a missing
+# final newline. Refuses, leaving the config and the hold as they are, when
+# the markers do not balance.
+strip_ssh_config_blocks() {
+  # A run killed between staging and renaming left its staged copy.
+  rm -f "$(dirname "$(ssh_config_target)")"/.config.lvx-fixture.* 2>/dev/null || true
+  [[ -f "$SSH_CONFIG_FILE" ]] || return 0
+  local read_fingerprint stripped unterminated=0 newline_added=0
+  read_fingerprint="$(ssh_config_fingerprint)"
+  if ! ssh_config_blocks_balanced "$SSH_CONFIG_FILE"; then
+    log "ERROR: the fixture's markers in $SSH_CONFIG_FILE do not balance; left it as it was.
+  Remove the fixture's blocks by hand (a copy from before the run is in
+  $HOLD_DIR/ssh-config.pristine), then run: $(recovery_hint)"
+    return 1
+  fi
+  cp "$SSH_CONFIG_FILE" "$HOLD_DIR/ssh-config.before-strip"
+  if ! cmp -s "$SSH_CONFIG_FILE" "$HOLD_DIR/ssh-config.before-strip"; then
+    log "ERROR: could not back up $SSH_CONFIG_FILE before stripping it; left it as it was"
+    return 1
+  fi
+  [[ -n "$(tail -c 1 "$SSH_CONFIG_FILE")" ]] && unterminated=1
+  [[ -f "$HOLD_DIR/ssh-config.newline-added" ]] && newline_added=1
+  stripped="$(mktemp "${TMPDIR:-/tmp}/lvx-sshcfg.XXXXXX")"
+  # A line is written only once the next kept line (or the end) shows whether
+  # its newline belongs to the account: the input's own unterminated last
+  # line gets none, and neither does the line append_ssh_config_block
+  # terminated when nothing the account wrote follows the fixture's blocks.
+  awk -v b1="$SSH_CONFIG_BEGIN" -v e1="$SSH_CONFIG_END" \
+      -v b2="$SSH_CONFIG_ALT_BEGIN" -v e2="$SSH_CONFIG_ALT_END" \
+      -v b3="$SSH_CONFIG_FED_BEGIN" -v e3="$SSH_CONFIG_FED_END" \
+      -v unterminated="$unterminated" -v newline_added="$newline_added" '
+    $0 == b1 || $0 == b2 || $0 == b3 { skip = 1; seen_block = 1; last_kept = 0; next }
     $0 == e1 || $0 == e2 || $0 == e3 { skip = 0; next }
-    !skip { print }
-  ' "$SSH_CONFIG_FILE" > "$tmp"
-  cat "$tmp" > "$SSH_CONFIG_FILE"
-  rm -f "$tmp"
-  chmod 600 "$SSH_CONFIG_FILE"
+    skip { next }
+    {
+      if (have) printf "%s\n", held
+      held = $0; have = 1; last_kept = 1
+      if (seen_block) kept_after_block = 1
+    }
+    END {
+      if (!have) exit
+      if ((unterminated && last_kept) || (newline_added && seen_block && !kept_after_block))
+        printf "%s", held
+      else
+        printf "%s\n", held
+    }
+  ' "$SSH_CONFIG_FILE" > "$stripped"
+  if cmp -s "$stripped" "$SSH_CONFIG_FILE"; then
+    rm -f "$stripped"
+    return 0
+  fi
   # Only remove the file if the fixture is the reason it exists at all.
-  if [[ ! -s "$SSH_CONFIG_FILE" && -f "$HOLD_DIR/ssh-config.created" ]]; then
+  if [[ ! -s "$stripped" && -f "$HOLD_DIR/ssh-config.created" ]]; then
+    rm -f "$stripped"
+    if [[ "$(ssh_config_fingerprint)" != "$read_fingerprint" ]]; then
+      log "ERROR: $SSH_CONFIG_FILE changed while the fixture was removing it; left it as it was"
+      return 1
+    fi
     rm -f "$SSH_CONFIG_FILE"
+    return 0
+  fi
+  if ! replace_ssh_config "$stripped" "$read_fingerprint"; then
+    rm -f "$stripped"
+    return 1
+  fi
+  rm -f "$stripped"
+}
+
+# restore_held_file <pristine copy> <account path>: staged beside the
+# account path and renamed over it.
+restore_held_file() {
+  local held="$1" path="$2" staged
+  mkdir -p "$(dirname "$path")"
+  staged="$(mktemp "$(dirname "$path")/.$(basename "$path").lvx-fixture.XXXXXX")"
+  if cp "$held" "$staged" && cmp -s "$held" "$staged"; then
+    mv -f "$staged" "$path"
+  else
+    rm -f "$staged"
+    return 1
   fi
 }
 
@@ -321,18 +482,17 @@ strip_ssh_config_blocks() {
 release_account_files() {
   hold_is_present || return 0
   if [[ -f "$HOLD_DIR/herdr-config.pristine" ]]; then
-    mkdir -p "$(dirname "$LEGACY_HERDR_CONFIG_FILE")"
-    cp "$HOLD_DIR/herdr-config.pristine" "$LEGACY_HERDR_CONFIG_FILE"
+    restore_held_file "$HOLD_DIR/herdr-config.pristine" "$LEGACY_HERDR_CONFIG_FILE" || return 1
   elif [[ -f "$HOLD_DIR/herdr-config.absent" ]]; then
     rm -f "$LEGACY_HERDR_CONFIG_FILE"
   fi
   if [[ -f "$HOLD_DIR/herdr-session.pristine" ]]; then
-    mkdir -p "$(dirname "$LEGACY_HERDR_SESSION_FILE")"
-    cp "$HOLD_DIR/herdr-session.pristine" "$LEGACY_HERDR_SESSION_FILE"
+    restore_held_file "$HOLD_DIR/herdr-session.pristine" "$LEGACY_HERDR_SESSION_FILE" || return 1
   elif [[ -f "$HOLD_DIR/herdr-session.absent" ]]; then
     rm -f "$LEGACY_HERDR_SESSION_FILE"
   fi
-  strip_ssh_config_blocks
+  # The hold stays until the config is back: it is what `recover` retries from.
+  strip_ssh_config_blocks || return 1
   rm -rf "$HOLD_DIR"
   log "restored this account's ssh config"
 }
@@ -604,7 +764,7 @@ EOF
     printf '  UserKnownHostsFile %s\n' "$dir/known_hosts"
     printf '  StrictHostKeyChecking yes\n'
     printf '%s\n' "$SSH_CONFIG_END"
-  } >> "$SSH_CONFIG_FILE"
+  } | append_ssh_config_block
   # The federation alias: same loopback sshd, the federation key (whose entry
   # forces XDG_CONFIG_HOME and HERDR_SOCKET_PATH onto every remote herdr
   # invocation over the `-fed` alias — see the authorized_keys entry above).
@@ -622,8 +782,7 @@ EOF
     printf '  UserKnownHostsFile %s\n' "$dir/known_hosts"
     printf '  StrictHostKeyChecking yes\n'
     printf '%s\n' "$SSH_CONFIG_FED_END"
-  } >> "$SSH_CONFIG_FILE"
-  chmod 600 "$SSH_CONFIG_FILE"
+  } | append_ssh_config_block
   printf '%s\n' "$port" > "$dir/sshd.port"
 }
 
@@ -668,8 +827,7 @@ write_canonicalization_aliases() {
     printf '  HostName %s\n' "$hostname"
     printf '  Port %s\n' "$other_port"
     printf '%s\n' "$SSH_CONFIG_ALT_END"
-  } >> "$SSH_CONFIG_FILE"
-  chmod 600 "$SSH_CONFIG_FILE"
+  } | append_ssh_config_block
 }
 
 start_surface() {
