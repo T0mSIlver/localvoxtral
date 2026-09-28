@@ -56,6 +56,11 @@ final class DictationSessionRecord {
     /// build. Additive optional field, like the ones above.
     var editOutcome: String?
 
+    /// The prompt tokens the dictation's polish request sent, as the backend
+    /// reported them. Nil when no polish answered or the backend reported no
+    /// usage. Additive optional field, like the ones above.
+    var polishPromptTokens: Int?
+
     init(
         id: UUID = UUID(),
         startedAt: Date,

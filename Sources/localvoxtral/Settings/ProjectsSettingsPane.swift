@@ -223,6 +223,10 @@ struct ProjectDetailSheet: View {
     @State private var repositoryDraft = ""
     @State private var isEditingDescription = false
     @State private var descriptionDraft = ""
+    private var tokenCounter: PolishPromptTokenCounter {
+        PolishPromptTokenCounter(settings: settings, ledger: viewModel.engines.usageLedger)
+    }
+
     private var row: ProjectsPaneRow? {
         _ = viewModel.learnedTermRevision
         // Any of its keys: the leading checkout changes when the Mac's
@@ -239,7 +243,9 @@ struct ProjectDetailSheet: View {
                     VStack(alignment: .leading, spacing: SettingsLayout.pageSpacing) {
                         repositoryGroup(row)
                         descriptionGroup(row)
-                        ProjectTermsGroup(terms: row.terms, keys: row.keys, store: viewModel.learnedTermStore)
+                        ProjectTermsGroup(
+                            terms: row.terms, keys: row.keys, store: viewModel.learnedTermStore,
+                            tokenCounter: tokenCounter)
                         activityGroup(row)
                     }
                 }
@@ -466,7 +472,9 @@ struct UnlistedTermsSheet: View {
                 // Forgetting the last term empties the group rather than
                 // closing the sheet under the pointer.
                 ProjectTermsGroup(
-                    terms: unlisted?.terms ?? [], keys: unlisted?.keys ?? [], store: viewModel.learnedTermStore)
+                    terms: unlisted?.terms ?? [], keys: unlisted?.keys ?? [], store: viewModel.learnedTermStore,
+                    tokenCounter: PolishPromptTokenCounter(
+                        settings: viewModel.settings, ledger: viewModel.engines.usageLedger))
             }
             .settingsScrollEdgeEffectHidden()
             HStack {
@@ -490,6 +498,9 @@ struct ProjectTermsGroup: View {
     let terms: [LearnedTerm]
     let keys: [String]
     let store: LearnedTermStore?
+    /// Sizes the terms in the polish prompt; nil shows no size.
+    var tokenCounter: PolishPromptTokenCounter? = nil
+    @State private var sentTermsTokens: String?
     @State private var query = ""
     @State private var isConfirmingForgetAll = false
 
@@ -508,6 +519,11 @@ struct ProjectTermsGroup: View {
                         .foregroundStyle(.secondary)
                 }
             } else {
+                if let sentTermsTokens {
+                    SettingsFieldRow(title: "Polish prompt", status: sentTermsTokens) {
+                        EmptyView()
+                    }
+                }
                 if terms.count > ProjectsPane.searchAbove {
                     SettingsGroupRow {
                         TextField("Search \(terms.count) terms", text: $query)
@@ -534,6 +550,11 @@ struct ProjectTermsGroup: View {
                 }
             }
         }
+        .task(id: sentTerms) {
+            guard let tokenCounter else { return }
+            sentTermsTokens = await tokenCounter.count(PolishPromptParts.projectTermText(sentTerms), termList: true)
+                .map(PolishPromptTokenText.projectTerms)
+        }
         .confirmationDialog(
             "Forget all \(terms.count) terms of this project?", isPresented: $isConfirmingForgetAll
         ) {
@@ -545,7 +566,12 @@ struct ProjectTermsGroup: View {
         }
     }
 
-    private func row(_ term: LearnedTerm) -> some View {
+    /// The terms a dictation may send: the confirmed ones.
+    private var sentTerms: [String] {
+        terms.filter { $0.isConfirmed(minimumDictations: LearnedTerms.confirmedDictations) }.map(\.term)
+    }
+
+        private func row(_ term: LearnedTerm) -> some View {
         SettingsGroupRow {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {

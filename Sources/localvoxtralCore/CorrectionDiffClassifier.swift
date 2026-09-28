@@ -57,7 +57,7 @@ package enum CorrectionDiffClassifier {
     ///   - inserted: exactly what the app inserted.
     ///   - submitted: the prompt the user sent.
     ///   - knownTerms: spellings already known to be the user's vocabulary
-    ///     (Names and terms, learned terms). A plain capitalized word is
+    ///     (Global terms, learned terms). A plain capitalized word is
     ///     learned only when it is one of these.
     ///   - learnedTerms: remembered spellings. Replacing one of them with a
     ///     sound-alike is a revert, and the remembered spelling is forgotten.

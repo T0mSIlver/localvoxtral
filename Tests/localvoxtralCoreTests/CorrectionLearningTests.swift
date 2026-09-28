@@ -126,7 +126,7 @@ final class CorrectionLearningTests: XCTestCase {
         XCTAssertEqual(presenter.shown, [])
     }
 
-    /// A spelling already in Names and terms is the user's everywhere.
+    /// A spelling already in Global terms is the user's everywhere.
     func testListedTermIsNotRememberedAgain() async {
         speakerTerms = ["Qwen"]
         let (learner, store, presenter) = makeLearner()

@@ -337,8 +337,14 @@ struct SettingsFieldRow<Content: View, Footer: View>: View {
 
     private var stackedRow: some View {
         VStack(alignment: .leading, spacing: 8) {
-            label
-                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                label
+
+                if let status {
+                    statusText(status)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 6) {
                 content

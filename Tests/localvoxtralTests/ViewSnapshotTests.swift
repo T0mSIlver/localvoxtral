@@ -190,6 +190,53 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
+    /// The polish prompt's sizes (#1007): Global terms with a count and
+    /// tokens, and the instructions under Advanced for both profiles, at the
+    /// ratio twenty measured Mistral requests give.
+    func testTextProcessingPromptSizes() async throws {
+        try await recordSettings(pane: .textProcessing, name: "settings-textProcessing-prompt-sizes", setUp: false) {
+            viewModel in
+            let settings = viewModel.settings
+            settings.polishSpeakerTerms = [
+                "Qwen", "Claude Code", "vLLM", "Ghostty", "SwiftPM", "herdr", "Voxtral", "MLX",
+                "Tailscale", "PostgreSQL", "Kubernetes", "OpenTelemetry",
+            ]
+            settings.agentPolishProfileEnabled = true
+            settings.polishingBackendMode = .mistralAPI
+            let ledger = UsageLedger(fileURL: nil)
+            for _ in 0..<20 {
+                ledger.record(UsageEntry(
+                    date: Date(), feature: .polish, backend: .mistral, model: "zai-glm-5-3",
+                    promptTokens: 1_949, promptCharacters: 9_100))
+            }
+            viewModel.installUsageLedger(ledger)
+        }
+    }
+
+    /// A History row opened: its details line ends with the prompt tokens
+    /// the polish request sent (#1007). Made-up words.
+    func testHistoryEntryDetails() async throws {
+        let (settings, viewModel) = makeViewModel()
+        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let dictation = DictationSessionRecord(
+            startedAt: Date().addingTimeInterval(-120), finishedAt: Date().addingTimeInterval(-110),
+            rawText: "the mac queue is stuck again, check the runner",
+            polishedText: "The Mac queue is stuck again; check the runner.",
+            polishingDurationSeconds: 0.84, provider: "mistral", model: "zai-glm-5-3",
+            outputMode: "overlay_buffer", targetAppBundleID: "com.mitchellh.ghostty", status: .completed,
+            commitSucceeded: true, polishProfile: PolishPromptProfile.agent.rawValue)
+        dictation.polishPromptTokens = 1_949
+        await store.save(dictation).value
+        viewModel.sessionStore = store
+        let model = DictationHistoryModel(store: { store })
+        await model.reload()
+        model.expandedEntryID = dictation.id
+        try record(
+            HistorySettingsPane(settings: settings, viewModel: viewModel, model: model),
+            name: "settings-history-entry-details",
+            width: Self.settingsSize.width, height: Self.settingsSize.height, growToFit: true)
+    }
+
     private func projectsLearnedTerms() -> LearnedTerms {
         let now = Date()
         func term(_ spelling: String, _ dictations: Int, sources: [String] = ["repo"], pinned: Bool? = nil) -> LearnedTerm {

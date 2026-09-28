@@ -1,6 +1,6 @@
 import Foundation
 
-/// The user's own list of names and terms, written the way they should appear
+/// The user's own list of global terms, written the way they should appear
 /// ("Qwen", "Claude Code", "vLLM"). Only the CORRECT spelling is stored — never
 /// how the recognizer mishears it; working that out is the polish model's job.
 ///

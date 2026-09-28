@@ -10,7 +10,7 @@ import Foundation
 ///   default.store            a consistent copy of the history store
 ///   dictation-audio/<id>.wav the opt-in recordings, one per dictation
 ///   learned-terms.json       the learned terms, as the app stores them
-///   speaker-terms.json       Names and terms, a JSON array of strings
+///   speaker-terms.json       Global terms, a JSON array of strings
 enum DictationReplaySupport {
     struct ReplaySetError: Error, CustomStringConvertible {
         let description: String
@@ -21,7 +21,7 @@ enum DictationReplaySupport {
         let audioDirectory: URL
         /// Confirmed learned terms from every project: what "today" adds.
         let learnedTerms: [String]
-        /// Names and terms, given to both arms.
+        /// Global terms, given to both arms.
         let speakerTerms: [String]
     }
 

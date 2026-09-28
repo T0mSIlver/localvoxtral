@@ -657,7 +657,7 @@ Whether localvoxtral learns a user is measured on that user's own recordings,
 run twice on identical input. With **Keep dictation audio on this Mac** on (Settings →
 History), each saved dictation keeps its WAV. On the Mac that dictated, as
 that user, `./scripts/export-dictation-replay.sh <dir>` copies the history
-store, the recordings, the learned terms and Names and terms into a set.
+store, the recordings, the learned terms and Global terms into a set.
 Copy it to the gitignored `EvalRecordings/replay/<set>/` of a checkout. The run
 below rsyncs the checkout, set included, to the build host, so the
 dictations' text and audio land there too. Then:
@@ -670,7 +670,7 @@ dictations' text and audio land there too. Then:
 `AgentDictationE2EEvalTests.testReplayStoredDictations` transcribes each
 Overlay Buffer dictation once on the live speech service, then polishes the
 transcript through the production stop-commit path twice: **day 0** with
-Names and terms only, **today** with every confirmed learned term added. It
+Global terms only, **today** with every confirmed learned term added. It
 scores the transcript and both arms against the text the dictation inserted
 at the time: word accuracy, and recall of the terms that text spells. That
 text is what polishing produced then, not a checked reference, so a gain
