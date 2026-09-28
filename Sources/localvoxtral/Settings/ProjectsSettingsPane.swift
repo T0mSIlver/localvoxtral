@@ -483,7 +483,9 @@ struct ProjectTermsGroup: View {
                             .accessibilityIdentifier("projects.terms.search")
                     }
                 }
-                let shown = ProjectsPane.matching(terms, query: query)
+                // Only while the field shows: a forget that drops the list to
+                // the threshold hides the field, and with it the query.
+                let shown = terms.count > Self.searchAbove ? ProjectsPane.matching(terms, query: query) : terms
                 if shown.isEmpty {
                     SettingsGroupRow {
                         Text("No term matches.")
