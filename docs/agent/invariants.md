@@ -422,6 +422,31 @@ there is not.
   the Global terms is listed there only, and Settings offers to remove such
   a term; nothing removes it without a click.
 
+- **A host's skill names reach every polish, as names only** (#1024). The
+  remote shims send `X-Lvx-Skills`: the Claude Code plugin on SessionStart,
+  Vibe's at each turn's end (it has no start hook). The value is the names of
+  the skill folders (holding `SKILL.md`) and command files under the host's
+  Claude Code, Codex, opencode, Vibe and `~/.agents` folders, the installed
+  Claude Code plugins' skills, and the session folder's `.claude/`. Never a
+  file's contents, never a path. The Mac lists the same folders on itself
+  (`AgentSkillDirectories`). It is its own header, not an `X-Lvx-Env-*`
+  one: a list outgrows the environment's 200-byte values, and it is content,
+  not a label about where a session runs. It is untrusted text a host
+  writes into the prompt, so `AgentSkillNamesCodec` keeps only folder-shaped
+  names (ASCII letters, digits, `.`, `_`, `-`, 64 bytes, no leading dot or
+  dash), at most 80, and reports nothing for a value over 2 KiB. The
+  listener passes them on only after the re-authentication, so a revoked
+  host's list is never kept. `AgentSkillStore` keeps one list per host id in
+  `agent-skills.json`, rewrites it at most daily while a list is unchanged,
+  never overwrites a file it could not read, and drops a host after 30 days
+  without a report. Every polish gets the union, sorted, as `Skills they
+  invoke in their coding agents: …` after the project line, whichever
+  harness the dictation joined: the joined harness's list alone would change
+  the system prompt at every join and break the cached prefix, and the #1024
+  eval found no cost in sending 43 names where 11 were used (no control got
+  a name written into it). Built-in commands that exist on no disk are not
+  listed.
+
 - **A learned term does not rewrite ordinary words** (#522). The exact tier
   pre-applies any span that normalizes to a term, so a learned `useAuth`
   would turn "we should use auth tokens" into code. For the `.learned`

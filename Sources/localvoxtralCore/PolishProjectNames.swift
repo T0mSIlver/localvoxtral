@@ -10,6 +10,8 @@ import Foundation
 /// block of the system prompt, which must stay the same from one dictation to
 /// the next to keep the helper's cached prefix: the names are sorted, not
 /// ordered by recency, so using another project does not change the prompt.
+/// Only a project entering or leaving the list does, and past `maxProjects`
+/// that includes one of the 30 most recent giving way to another.
 package enum PolishProjectNames {
     /// The most recent projects, if there are more.
     package static let maxProjects = 30
@@ -25,8 +27,12 @@ package enum PolishProjectNames {
                 names.append(name)
             }
         }
-        return SpeakerTerms.sanitized(names)
-            .sorted { $0.caseFoldedForMatching < $1.caseFoldedForMatching }
+        // Sorted before the dedupe, so the spelling kept for two that differ
+        // only in case does not depend on which project was used last.
+        return SpeakerTerms.sanitized(names.sorted { lhs, rhs in
+            lhs.caseFoldedForMatching != rhs.caseFoldedForMatching
+                ? lhs.caseFoldedForMatching < rhs.caseFoldedForMatching : lhs < rhs
+        })
     }
 
     /// The names not already in `terms`, compared as `key` compares them.

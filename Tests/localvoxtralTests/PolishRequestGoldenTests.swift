@@ -117,6 +117,8 @@ final class PolishRequestGoldenTests: XCTestCase {
         var learnedTerms: [String] = []
         /// Local projects the learned terms know, by name (#1024).
         var projects: [String] = []
+        /// Skill names a host reported (#1024).
+        var skills: [String] = []
         var standardUserTemplate =
             "Clean this up.\n{{replacement_dictionary}}\nWorking text:\n{{input_text}}"
         var agentUserTemplate =
@@ -182,6 +184,16 @@ final class PolishRequestGoldenTests: XCTestCase {
         scenario.speakerTerms = ["working set"]
         scenario.projects = ["vidtheque", "working-set"]
         try await assertGolden("03b-project-names", scenario)
+    }
+
+    /// #1024: a host's skill names ride the same block, after the projects,
+    /// and a name already listed is not repeated.
+    func testSkillNamesReachTheSystemPrompt() async throws {
+        var scenario = Scenario()
+        scenario.transcript = "run the unslap skill on the herdr readme"
+        scenario.projects = ["herdr"]
+        scenario.skills = ["herdr", "unslop", "gh-stack"]
+        try await assertGolden("03c-skill-names", scenario)
     }
 
     func testReplacementDictionaryOffStillCasesSpeakerTerms() async throws {
@@ -495,6 +507,13 @@ final class PolishRequestGoldenTests: XCTestCase {
             )
         }
         store.waitForPendingWrites()
+        let skillStore = AgentSkillStore(
+            fileURL: nil,
+            home: FileManager.default.temporaryDirectory.appendingPathComponent("no-home-\(UUID().uuidString)")
+        )
+        skillStore.record(hostID: "box", names: scenario.skills)
+        skillStore.waitForPendingWork()
+        viewModel.session.agentSkillStore = skillStore
 
         var savedRecord: DictationSessionRecord?
         viewModel.dependencies.onSessionRecord = { savedRecord = $0 }

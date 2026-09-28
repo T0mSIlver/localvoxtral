@@ -464,7 +464,7 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
             settings: settings,
             recentDictations: { [.init(raw: "the vid tech page", final: "the Vidtheque page")] },
             learnedTerms: { ["vidtheque", "polishd"] },
-            projectNames: { ["vidtheque"] },
+            sentNames: { ["vidtheque"] },
             service: { service }
         )
 

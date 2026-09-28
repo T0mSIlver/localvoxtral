@@ -198,7 +198,8 @@ extension DictationSessionController {
                 profile: polishProfile,
                 settings: settings,
                 appConfigStore: appConfigStore,
-                projectNames: polishProjectNames()
+                projectNames: polishProjectNames(),
+                skillNames: polishSkillNames()
             )
 
             statusText = StatusStrings.polishing

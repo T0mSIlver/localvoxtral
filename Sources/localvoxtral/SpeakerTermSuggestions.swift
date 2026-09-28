@@ -211,9 +211,9 @@ final class SpeakerTermSuggestionModel {
     /// Offered with no model call and no API credits — the evidence is
     /// already on this machine.
     private let learnedTerms: @MainActor () -> [String]
-    /// The user's project names (`PolishProjectNames`): every polish already
-    /// carries them, so they are known like the user's own terms (#1024).
-    private let projectNames: @MainActor () -> [String]
+    /// The project and skill names every polish already carries (#1024),
+    /// known like the user's own terms.
+    private let sentNames: @MainActor () -> [String]
     private let service: @MainActor () -> any LLMPolishingServicing
     /// Why the button cannot be used right now, or nil. Measured on the
     /// owner's history (2026-09-19): the bundled 4B took 177 s, listed the
@@ -231,7 +231,7 @@ final class SpeakerTermSuggestionModel {
         settings: SettingsStore,
         recentDictations: @escaping @MainActor () async -> [TermSuggestionScreen.Dictation],
         learnedTerms: @escaping @MainActor () -> [String] = { [] },
-        projectNames: @escaping @MainActor () -> [String] = { [] },
+        sentNames: @escaping @MainActor () -> [String] = { [] },
         service: @escaping @MainActor () -> any LLMPolishingServicing,
         unavailableReason: @escaping @MainActor () -> String? = { nil },
         now: @escaping @MainActor () -> Date = { Date() }
@@ -239,16 +239,16 @@ final class SpeakerTermSuggestionModel {
         self.settings = settings
         self.recentDictations = recentDictations
         self.learnedTerms = learnedTerms
-        self.projectNames = projectNames
+        self.sentNames = sentNames
         self.service = service
         self.unavailableReasonProvider = unavailableReason
         self.now = now
     }
 
     /// What a suggestion must not repeat: the user's terms and the project
-    /// names.
+    /// and skill names.
     private var knownTerms: [String] {
-        settings.polishSpeakerTerms + projectNames()
+        settings.polishSpeakerTerms + sentNames()
     }
 
     /// Chips the app can offer for free: terms it has already watched the

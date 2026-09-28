@@ -32,6 +32,9 @@ struct TextProcessingSettingsPane: View {
         let backend: BackendMode
         let agentProfile: Bool
         let terms: [String]
+        /// The project and skill names sent with them (#1024).
+        let projects: [String]
+        let skills: [String]
         /// With About-you text, the header is its, not the terms'.
         let hasProfile: Bool
     }
@@ -41,6 +44,8 @@ struct TextProcessingSettingsPane: View {
             backend: settings.polishingBackendMode,
             agentProfile: settings.agentPolishProfileEnabled,
             terms: settings.polishSpeakerTerms,
+            projects: viewModel.session.polishProjectNames(),
+            skills: viewModel.session.polishSkillNames(),
             hasProfile: !settings.polishSpeakerProfile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
@@ -55,9 +60,14 @@ struct TextProcessingSettingsPane: View {
         let agentText = settings.agentPolishProfileEnabled ? instructions(.agent) : nil
         let terms = SpeakerTerms.sanitized(settings.polishSpeakerTerms)
         // What the terms add does not depend on the instructions.
+        let projects = viewModel.session.polishProjectNames()
+        let skills = viewModel.session.polishSkillNames()
         let termText = PolishPromptParts.globalTermText(
             LLMPromptTemplates(systemContent: "", userContent: ""),
-            profile: settings.polishSpeakerProfile, terms: terms)
+            profile: settings.polishSpeakerProfile, terms: terms, projects: projects, skills: skills)
+        // What the block lists besides the terms, after its dedupe.
+        let termKeys = Set(terms.map(PolishProjectNames.key))
+        let names = Set((projects + skills).map(PolishProjectNames.key)).subtracting(termKeys).count
 
         if let standard = await counter.count(standardText) {
             var agent: PolishPromptTokenCounter.Count?
@@ -65,7 +75,7 @@ struct TextProcessingSettingsPane: View {
             instructionsTokens = PolishPromptTokenText.instructions(standard: standard, agent: agent)
         }
         globalTermsTokens = await counter.count(termText, termList: true).map {
-            PolishPromptTokenText.globalTerms(count: terms.count, tokens: $0)
+            PolishPromptTokenText.globalTerms(count: terms.count, names: names, tokens: $0)
         }
     }
 
@@ -130,12 +140,13 @@ struct TextProcessingSettingsPane: View {
                     SpeakerTermsField(terms: $settings.polishSpeakerTerms)
                 }
 
-                // Every polish sends the project names already (#1024).
+                // Every polish sends the project and skill names already (#1024).
                 let repeated = PolishProjectNames.globalTerms(
-                    settings.polishSpeakerTerms, repeating: viewModel.session.polishProjectNames())
+                    settings.polishSpeakerTerms,
+                    repeating: viewModel.session.polishProjectNames() + viewModel.session.polishSkillNames())
                 if !repeated.isEmpty {
                     SettingsFieldRow(
-                        title: "Global terms that repeat a project name",
+                        title: "Global terms that repeat a project or skill name",
                         status: repeated.joined(separator: ", ")
                     ) {
                         Button("Remove") {
