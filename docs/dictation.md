@@ -242,10 +242,10 @@ A session answers to, in this order:
    ("go to better session names").
 
 The overlay, the popover and the banners show the name you gave it, else its
-Claude Desktop title, else its folder or branch. When two sessions would show
-the same name, the later one gets its agent ("localvoxtral · Codex") or a
-number ("localvoxtral · 2"), and answers to that too ("go to localvoxtral
-two").
+Claude Desktop title, else its folder or branch. When sessions would show the
+same name, each gets its agent ("localvoxtral · Codex") or a number
+("localvoxtral · 2") added, and answers to that ("go to localvoxtral two").
+The shared name alone then matches more than one session and does nothing.
 
 "Go to" works for sessions in these places:
 

@@ -50,7 +50,7 @@ final class SessionShownNamesTests: XCTestCase {
             "desktop": "Better session names than the worktree folder (#1013)",
             "worktree": "ci-speed-optimizations",
             "dev-checkout": "localvoxtral",
-            "mac-claude": "supervoxtral",
+            "mac-claude": "supervoxtral · 1",
             "mac-codex": "supervoxtral · Codex",
             "mac-claude-2": "supervoxtral · 2",
             "branch": "overlay-names",
@@ -61,13 +61,15 @@ final class SessionShownNamesTests: XCTestCase {
             ("zealous chaplygin", "desktop"),
             ("zealous chaplygin aa1a02", "desktop"),
             ("ci speed optimizations", "worktree"),
-            ("supervoxtral", "mac-claude"),
+            ("supervoxtral one", "mac-claude"),
             ("supervoxtral codex", "mac-codex"),
             ("supervoxtral two", "mac-claude-2"),
             ("supervoxtral 2", "mac-claude-2"),
             ("overlay names", "branch"),
             ("wt 17", "branch"),
             ("billing", "branch"),
+            // Three panes share it: which one is meant is unknown.
+            ("supervoxtral", nil),
             // One title word is too little to be a name.
             ("better", nil),
         ]
@@ -87,7 +89,7 @@ final class SessionShownNamesTests: XCTestCase {
         var named = candidate(localSession("late", cwd: "/r/payments", tty: "/dev/ttys002", seen: 9))
         named.nickname = "payments"
         let first = candidate(localSession("first", cwd: "/r/payments", tty: "/dev/ttys001", seen: 0))
-        XCTAssertEqual(SessionShownNames.of([first, named]), ["late": "payments", "first": "payments · 2"])
+        XCTAssertEqual(SessionShownNames.of([first, named]), ["late": "payments", "first": "payments · 1"])
     }
 
     func testATitleNeverBeatsAFolderName() {
@@ -139,6 +141,7 @@ final class SessionShownNamesTests: XCTestCase {
         let first = localSession("a", cwd: "/r/payments", tty: "/dev/ttys001", seen: 0)
         let second = localSession("b", cwd: "/r/payments", tty: "/dev/ttys002", seen: 1)
         XCTAssertEqual(AgentAttentionText.name(of: second, among: [first, second]), "payments · 2")
+        XCTAssertEqual(AgentAttentionText.name(of: first, among: [first, second]), "payments · 1")
         XCTAssertEqual(
             AgentAttentionText.name(of: second, among: [first, second], nickname: { $0 == "b" ? "billing" : nil }),
             "billing"

@@ -312,7 +312,8 @@ package enum SessionNameResolution: Equatable, Sendable {
 
 package enum SessionNameResolver {
     /// Tiers, first match wins: a nickname; the name the session goes by
-    /// with duplicates told apart ("localvoxtral · 2"); its folder, readable
+    /// with duplicates told apart ("localvoxtral · 2", while the bare
+    /// "localvoxtral" stays ambiguous); its folder, readable
     /// folder or named branch; its repository; its whole title; the first
     /// two to four words of its title. A title never beats a folder name,
     /// since the session can set its own title. A match on a git root's
@@ -407,10 +408,12 @@ package enum SessionShownNames {
         return result
     }
 
-    /// Names made unique among `panes`: of the panes that share one, the one
-    /// with a nickname, else the first seen, keeps it; each other one gets
-    /// its agent's name when no other pane of the group runs that agent
-    /// ("localvoxtral · Codex"), else the next number ("localvoxtral · 2").
+    /// Names made unique among `panes`. A name only one pane has stays as
+    /// it is. When several share one, the pane whose nickname it is keeps
+    /// it, and every other gets its agent's name when no other pane of the
+    /// group runs that agent ("localvoxtral · Codex"), else a number by
+    /// first seen ("localvoxtral · 1", "localvoxtral · 2"). The bare name
+    /// then stays ambiguous, as go-to requires: it could mean any of them.
     package static func distinct(
         _ panes: [SessionNameCandidate],
         name: (SessionNameCandidate) -> String?
@@ -422,25 +425,29 @@ package enum SessionShownNames {
         }
         var result: [String: String] = [:]
         for group in groups.values {
+            guard group.count > 1 else {
+                result[group[0].candidate.snapshot.sessionID] = group[0].name
+                continue
+            }
             let ordered = group.sorted { lhs, rhs in
-                let lhsNamed = lhs.candidate.nickname != nil, rhsNamed = rhs.candidate.nickname != nil
-                if lhsNamed != rhsNamed { return lhsNamed }
                 if lhs.candidate.snapshot.firstSeen != rhs.candidate.snapshot.firstSeen {
                     return lhs.candidate.snapshot.firstSeen < rhs.candidate.snapshot.firstSeen
                 }
                 return lhs.candidate.snapshot.sessionID < rhs.candidate.snapshot.sessionID
             }
             let agentCounts = Dictionary(grouping: ordered, by: \.candidate.snapshot.agent).mapValues(\.count)
-            var ordinal = 1
-            for (index, member) in ordered.enumerated() {
+            var ordinal = 0
+            for member in ordered {
                 let id = member.candidate.snapshot.sessionID
-                guard index > 0 else {
+                if let nickname = member.candidate.nickname,
+                   SessionNameMatching.key(nickname) == SessionNameMatching.key(member.name)
+                {
                     result[id] = member.name
                     continue
                 }
                 let agent = member.candidate.snapshot.agent
                 let suffix: String
-                if agentCounts[agent] == 1, agent != ordered[0].candidate.snapshot.agent {
+                if agentCounts[agent] == 1 {
                     suffix = AgentAttentionText.agentName(agent)
                 } else {
                     ordinal += 1
