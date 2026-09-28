@@ -38,6 +38,7 @@ final class VoiceMemoIntakeTests: XCTestCase {
     private var trashed: [String] = []
     private var downloadRequests: [String] = []
     private var trashFails = false
+    private var captureFails = false
 
     override func setUp() async throws {
         workDirectory = FileManager.default.temporaryDirectory
@@ -69,6 +70,7 @@ final class VoiceMemoIntakeTests: XCTestCase {
             },
             inboxHas: { [unowned self] id in captured.contains { $0.id == id } },
             capture: { [unowned self] id, text, recordedAt, pcm in
+                if captureFails { throw CocoaError(.fileWriteOutOfSpace) }
                 captured.append(Captured(id: id, text: text, recordedAt: recordedAt, pcm16: pcm))
             }
         )
@@ -139,6 +141,26 @@ final class VoiceMemoIntakeTests: XCTestCase {
         XCTAssertEqual(captured.map(\.text), ["words of a.m4a", "words of b.m4a"])
     }
 
+    /// #988: a capture whose audio or words could not be written leaves
+    /// the memo for a later scan, like an engine failure.
+    func testAFailedCaptureLeavesTheMemoAndStopsThePass() async {
+        let intake = intake()
+        var statuses: [String] = []
+        intake.onStatus = { statuses.append($0) }
+        captureFails = true
+        files = [memo("a.m4a", minute: 1), memo("b.m4a", minute: 2)]
+        _ = await intake.scan()
+        _ = await intake.scan()
+        XCTAssertEqual(transcriber.calls.withLock { $0 }, ["a.m4a"], "b would fail the same way")
+        XCTAssertEqual(trashed, [])
+        XCTAssertEqual(statuses, ["A voice memo could not be saved."])
+
+        captureFails = false
+        _ = await intake.scan()
+        XCTAssertEqual(captured.map(\.text), ["words of a.m4a", "words of b.m4a"])
+        XCTAssertEqual(trashed, ["a.m4a", "b.m4a"])
+    }
+
     func testUnreadableAndSilentMemosStayInTheFolderAndAreNotTriedAgain() async {
         let intake = intake()
         transcriber.results.withLock {
@@ -182,6 +204,38 @@ final class VoiceMemoIntakeTests: XCTestCase {
         _ = await relaunched.scan()
         XCTAssertEqual(transcriber.calls.withLock { $0 }, ["lost.m4a"])
         XCTAssertEqual(captured.map(\.text), ["words of saved.m4a", "words of lost.m4a"])
+    }
+
+    /// #988: a memo whose capture never reached the Inbox file stays in the
+    /// folder, and the ledger does not call it captured.
+    func testAMemoWhoseCaptureIsNotOnDiskStaysInTheFolder() async throws {
+        let inboxURL = workDirectory.appendingPathComponent("quick-captures.json")
+        let model = QuickCaptureFixture.model(
+            fileURL: inboxURL, answer: [:], github: FakeQuickCaptureGitHub(), runner: FakeQuickCaptureDraftRunner()
+        )
+        // A folder where the Inbox file goes: every save fails, even as root.
+        try FileManager.default.createDirectory(
+            at: inboxURL.appendingPathComponent("blocker"), withIntermediateDirectories: true)
+        files = [memo("walk.m4a")]
+        let intake = VoiceMemoIntake(
+            directory: directory, ledgerURL: ledgerURL, transcriber: transcriber,
+            list: { [unowned self] _ in files },
+            removeTranscribed: { [unowned self] url in trashed.append(url.lastPathComponent) },
+            inboxHas: { id in model.holds(id) },
+            capture: { id, text, recordedAt, _ in
+                try model.captureVoiceMemo(text: text, historyRecordID: nil, id: id, capturedAt: recordedAt)
+            }
+        )
+        _ = await intake.scan()
+        let taken = await intake.scan()
+
+        XCTAssertEqual(taken, 0)
+        XCTAssertEqual(trashed, [], "the original stays until its capture is on disk")
+        let entry = try XCTUnwrap(VoiceMemoLedger.load(from: ledgerURL).entries["walk.m4a"])
+        guard case .transcribing(let itemID) = entry.state else {
+            return XCTFail("the ledger says \(entry.state), not transcribing")
+        }
+        XCTAssertEqual(model.items.map(\.id), [itemID], "the words wait in the Inbox for the next save")
     }
 
     func testANewMemoSavedUnderAnOldNameIsANewMemo() async {

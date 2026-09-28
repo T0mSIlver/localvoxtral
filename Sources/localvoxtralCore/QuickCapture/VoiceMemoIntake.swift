@@ -27,8 +27,9 @@ package struct VoiceMemoUnreadable: Error {
 /// A file is taken once its bytes are on this Mac and its size and date held
 /// still across two scans, so a memo iCloud is still writing is never read
 /// half-done. Each file becomes one capture: the ledger records the Inbox
-/// item a file was handed to before the engine runs, and a transcribed file
-/// moves to the Trash. A Mac that was asleep catches up on its next scan.
+/// item a file was handed to before the engine runs, and a file moves to
+/// the Trash once its capture's words and audio are on disk. A Mac that was
+/// asleep catches up on its next scan.
 @MainActor
 package final class VoiceMemoIntake {
     package static let scanInterval: Duration = .seconds(30)
@@ -41,7 +42,7 @@ package final class VoiceMemoIntake {
     private let requestDownload: @MainActor (URL) -> Void
     private let removeTranscribed: @MainActor (URL) throws -> Void
     private let inboxHas: @MainActor (UUID) -> Bool
-    private let capture: @MainActor (_ itemID: UUID, _ text: String, _ recordedAt: Date, _ pcm16: Data) -> Void
+    private let capture: @MainActor (_ itemID: UUID, _ text: String, _ recordedAt: Date, _ pcm16: Data) throws -> Void
 
     /// False while a dictation runs: the memo waits rather than share the engine.
     package var canTranscribe: @MainActor () -> Bool = { true }
@@ -77,7 +78,9 @@ package final class VoiceMemoIntake {
         requestDownload: @escaping @MainActor (URL) -> Void = VoiceMemoFolder.requestDownload,
         removeTranscribed: @escaping @MainActor (URL) throws -> Void = VoiceMemoFolder.removeTranscribed,
         inboxHas: @escaping @MainActor (UUID) -> Bool,
-        capture: @escaping @MainActor (_ itemID: UUID, _ text: String, _ recordedAt: Date, _ pcm16: Data) -> Void
+        /// Throws when the capture's words or audio are not on disk: the
+        /// memo then stays in the folder (#988).
+        capture: @escaping @MainActor (_ itemID: UUID, _ text: String, _ recordedAt: Date, _ pcm16: Data) throws -> Void
     ) {
         self.directory = directory
         self.ledgerURL = ledgerURL
@@ -174,18 +177,23 @@ package final class VoiceMemoIntake {
             }
             guard file.size > 0, previous[file.name] == file else { continue }
             guard canTranscribe() else { break }
-            if await take(file, at: url) {
-                captured += 1
-            } else if ledger.entries[file.name] == nil {
-                // The engine failed; the rest would fail the same way.
-                break
-            }
+            let outcome = await take(file, at: url)
+            if outcome == .captured { captured += 1 }
+            // The engine or the disk failed; the rest would fail the same way.
+            if outcome == .stopPass { break }
         }
         return captured
     }
 
-    /// True when the memo became a capture.
-    private func take(_ file: VoiceMemoFile, at url: URL) async -> Bool {
+    private enum Outcome {
+        case captured
+        /// Left in the folder: unreadable or silent.
+        case left
+        /// Left for a later scan, and the rest of this pass waits too.
+        case stopPass
+    }
+
+    private func take(_ file: VoiceMemoFile, at url: URL) async -> Outcome {
         let itemID = UUID()
         record(file, .transcribing(itemID: itemID))
         Log.backends.info("Voice memos: transcribing a \(file.size, privacy: .public)-byte memo")
@@ -196,20 +204,28 @@ package final class VoiceMemoIntake {
             Log.backends.error("Voice memos: a memo is not audio this Mac can decode; left in the folder")
             record(file, .unreadable)
             onStatus?("A voice memo could not be read.")
-            return false
+            return .left
         } catch {
             Log.backends.error("Voice memos: transcription failed, retrying on the next scan: \(String(describing: error), privacy: .public)")
             ledger.entries[file.name] = nil
             saveLedger()
             onStatus?("Voice memo waits for the speech engine.")
-            return false
+            return .stopPass
         }
         guard !transcript.text.isEmpty else {
             Log.backends.info("Voice memos: no words in a memo; left in the folder")
             record(file, .noSpeech)
-            return false
+            return .left
         }
-        capture(itemID, transcript.text, file.modifiedAt, transcript.pcm16)
+        do {
+            try capture(itemID, transcript.text, file.modifiedAt, transcript.pcm16)
+        } catch {
+            // The ledger keeps `.transcribing`: a relaunch retries the memo
+            // unless its words reached the Inbox file meanwhile.
+            Log.persistence.error("Voice memos: capture not saved, the memo stays in the folder: \(error.localizedDescription, privacy: .public)")
+            onStatus?("A voice memo could not be saved.")
+            return .stopPass
+        }
         record(file, .captured(itemID: itemID))
         Log.backends.info("Voice memos: \(transcript.text.count, privacy: .public) chars to the inbox")
         do {
@@ -218,7 +234,7 @@ package final class VoiceMemoIntake {
             // The ledger keeps it from being captured twice.
             Log.backends.error("Voice memos: could not move a transcribed memo to the Trash: \(error.localizedDescription, privacy: .public)")
         }
-        return true
+        return .captured
     }
 
     private func record(_ file: VoiceMemoFile, _ state: VoiceMemoLedger.State) {

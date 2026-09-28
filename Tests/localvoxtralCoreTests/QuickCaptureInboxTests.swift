@@ -196,6 +196,26 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(done, [memo, other])
     }
 
+    /// #988: a discard or filing the Inbox file never recorded leaves the
+    /// capture's audio, since a relaunch brings the capture back.
+    func testACaptureIsNotDoneWhileItsInboxFileCannotBeWritten() async throws {
+        let model = model(answer: ["reach": 0.9])
+        var done: [UUID] = []
+        model.onDone = { done.append($0) }
+        let filed = UUID(), discarded = UUID()
+        await model.capture(text: "Add a dark mode", historyRecordID: nil, id: filed).value
+        await model.capture(text: "Add a light mode", historyRecordID: nil, id: discarded).value
+        // A folder where the Inbox file goes: every save fails, even as root.
+        try FileManager.default.removeItem(at: fileURL)
+        try FileManager.default.createDirectory(
+            at: fileURL.appendingPathComponent("blocker"), withIntermediateDirectories: true)
+
+        github.createResult = .success("https://github.com/o/reach/issues/9")
+        await model.file(filed)?.value
+        model.discard(discarded)
+        XCTAssertEqual(done, [])
+    }
+
     /// #926: the project's repository files and lists issues without
     /// asking gh, a fork set to file upstream does both upstream, and an
     /// `owner/name` typed for a project with none is kept on it.

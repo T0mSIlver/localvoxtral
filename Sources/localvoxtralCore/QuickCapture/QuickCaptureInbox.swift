@@ -174,6 +174,12 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
         ([text] + (followUps ?? []).map(\.text)).joined(separator: "\n\n")
     }
 
+    /// The ids of its captures: its own, then each follow-up's. A voice
+    /// memo's recording is kept under one of them (#988).
+    package var captureIDs: [UUID] {
+        [id] + (followUps ?? []).map(\.id)
+    }
+
     /// When the last of its captures was made.
     package var lastCapturedAt: Date {
         (followUps ?? []).map(\.capturedAt).reduce(capturedAt, max)
@@ -249,6 +255,17 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
 
     package init(items: [QuickCaptureItem] = []) {
         self.items = items
+    }
+
+    /// The captures whose recordings stay: every capture not yet filed,
+    /// and each of its follow-ups (#988).
+    package var recordingIDsToKeep: Set<UUID> {
+        Set(items.filter { $0.state != .filed }.flatMap(\.captureIDs))
+    }
+
+    /// Whether capture `id` is listed, on its own or as a follow-up.
+    package func holds(_ id: UUID) -> Bool {
+        items.contains { $0.captureIDs.contains(id) }
     }
 
     package mutating func add(_ item: QuickCaptureItem) {

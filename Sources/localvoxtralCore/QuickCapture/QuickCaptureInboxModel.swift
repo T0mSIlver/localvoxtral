@@ -84,6 +84,12 @@ package final class QuickCaptureInboxModel {
 
     package var items: [QuickCaptureItem] { inbox.items }
 
+    /// Whether capture `id` is in the Inbox, on its own or as a follow-up.
+    package func holds(_ id: UUID) -> Bool { inbox.holds(id) }
+
+    /// The voice memo recordings a sweep keeps (#988).
+    package var recordingIDsToKeep: Set<UUID> { inbox.recordingIDsToKeep }
+
     /// Points each capture at its project as the list has it now: a checkout
     /// merged into its repository (#971) moves to the key and name the
     /// project leads with. Called at load and whenever the projects change.
@@ -124,9 +130,26 @@ package final class QuickCaptureInboxModel {
         let item = QuickCaptureItem(
             id: id, capturedAt: capturedAt ?? now(), text: text, historyRecordID: historyRecordID)
         mutate { $0.add(item) }
+        return polishAndPlace(item)
+    }
+
+    /// A voice memo's capture (#988), as `capture`, but throws when the
+    /// Inbox refuses it or its file could not be written, so the memo's
+    /// original stays. After a failed write the words still wait in the
+    /// Inbox, and the next save that succeeds keeps them.
+    package func captureVoiceMemo(text: String, historyRecordID: UUID?, id: UUID, capturedAt: Date) throws {
+        guard storeProblem == nil else { throw StoreRefused() }
+        let item = QuickCaptureItem(id: id, capturedAt: capturedAt, text: text, historyRecordID: historyRecordID)
+        let failure = mutate { $0.add(item) }
+        _ = polishAndPlace(item)
+        if let failure { throw failure }
+    }
+
+    /// Polishes a new capture, then joins or routes it.
+    private func polishAndPlace(_ item: QuickCaptureItem) -> Task<Void, Never> {
         let polisher = polisher()
         guard polisher != nil || pendingPlacements > 0 else {
-            return track(place(item, rawText: text))
+            return track(place(item, rawText: item.text))
         }
         // Captures are placed in the order they were made (#970 review):
         // polishes run side by side, but a capture joins or routes only once
@@ -138,7 +161,7 @@ package final class QuickCaptureInboxModel {
             Log.backends.notice("Quick capture: saved, polishing with \(vocabulary.count, privacy: .public) terms")
         }
         let placement = Task { @MainActor [weak self] () -> Placement? in
-            let polished = await polisher?.polish(text, vocabulary: vocabulary)
+            let polished = await polisher?.polish(item.text, vocabulary: vocabulary)
             let words = polished?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if let polished, !words.isEmpty, let self,
                self.inbox.items.contains(where: { $0.id == item.id && $0.state == .routing })
@@ -147,7 +170,7 @@ package final class QuickCaptureInboxModel {
                 Log.backends.notice(
                     "Quick capture: polished in \(String(format: "%.2f", polished.durationSeconds), privacy: .public) s"
                 )
-                if let recordID = historyRecordID {
+                if let recordID = item.historyRecordID {
                     self.onPolished?(recordID, words, polished.durationSeconds)
                 }
             } else if polisher != nil {
@@ -159,7 +182,7 @@ package final class QuickCaptureInboxModel {
                 Log.backends.notice("Quick capture: discarded before it was placed")
                 return nil
             }
-            return self.place(current, rawText: text)
+            return self.place(current, rawText: item.text)
         }
         return track(Placement(
             placed: Task { await placement.value?.placed.value },
@@ -460,11 +483,12 @@ package final class QuickCaptureInboxModel {
     }
 
     package func discard(_ id: UUID) {
-        let followUps = inbox.items.first { $0.id == id }?.followUps ?? []
-        mutate { $0.discard(id) }
+        let captureIDs = inbox.items.first { $0.id == id }?.captureIDs ?? [id]
+        let saveFailure = mutate { $0.discard(id) }
         draftRuns[id] = nil
-        onDone?(id)
-        for followUp in followUps { onDone?(followUp.id) }
+        // Unsaved, the capture comes back at launch: its audio stays (#988).
+        guard saveFailure == nil else { return }
+        for captureID in captureIDs { onDone?(captureID) }
     }
 
     /// The History records of a capture and its follow-ups.
@@ -484,7 +508,7 @@ package final class QuickCaptureInboxModel {
         return Task { @MainActor [weak self] in
             guard let self else { return }
             let result = await self.github.createIssue(repository: repository, title: title, body: body)
-            self.mutate { inbox in
+            let saveFailure = self.mutate { inbox in
                 inbox.update(id) { item in
                     switch result {
                     case .success(let url):
@@ -501,8 +525,9 @@ package final class QuickCaptureInboxModel {
                 }
             }
             guard case .success = result else { return }
-            self.onDone?(id)
-            for followUp in item.followUps ?? [] { self.onDone?(followUp.id) }
+            if saveFailure == nil {
+                for captureID in item.captureIDs { self.onDone?(captureID) }
+            }
             for recordID in self.historyRecordIDs(item) {
                 self.onRouted?(recordID, "Filed in \(repository)")
             }
@@ -521,7 +546,7 @@ package final class QuickCaptureInboxModel {
         return Task { @MainActor [weak self] in
             guard let self else { return }
             let result = await self.github.commentOnIssue(repository: repository, issue: issue, body: body)
-            self.mutate { inbox in
+            let saveFailure = self.mutate { inbox in
                 inbox.update(id) { item in
                     switch result {
                     case .success(let url):
@@ -539,8 +564,9 @@ package final class QuickCaptureInboxModel {
                 }
             }
             guard case .success = result else { return }
-            self.onDone?(id)
-            for followUp in item.followUps ?? [] { self.onDone?(followUp.id) }
+            if saveFailure == nil {
+                for captureID in item.captureIDs { self.onDone?(captureID) }
+            }
             for recordID in self.historyRecordIDs(item) {
                 self.onRouted?(recordID, "Commented on \(repository)#\(issue)")
             }
@@ -665,17 +691,26 @@ package final class QuickCaptureInboxModel {
         return aside
     }
 
-    private func mutate(_ change: (inout QuickCaptureInbox) -> Void) {
+    /// Why a change was not taken: the Inbox file could not be loaded.
+    package struct StoreRefused: Error {}
+
+    /// Applies `change` and writes the inbox file. Returns why the write
+    /// failed; the change stays in memory either way. A refused Inbox
+    /// takes no change and returns `StoreRefused`.
+    @discardableResult
+    private func mutate(_ change: (inout QuickCaptureInbox) -> Void) -> (any Error)? {
         guard storeProblem == nil else {
             Log.persistence.error("Quick capture inbox: a change was refused, the file could not be loaded")
-            return
+            return StoreRefused()
         }
         change(&inbox)
-        guard let fileURL else { return }
+        guard let fileURL else { return nil }
         do {
             try QuickCaptureInboxFile.save(inbox, to: fileURL)
+            return nil
         } catch {
             Log.persistence.error("Quick capture inbox: save failed: \(error.localizedDescription, privacy: .public)")
+            return error
         }
     }
 }
