@@ -12,7 +12,7 @@ struct SessionDestinations {
     let originLabel: String
     let originJoined: Bool?
     /// Names of the sessions listed, kept once a session leaves the queue:
-    /// picking it answers it, and its pill still needs a name.
+    /// picking it answers it, and its row still needs a name.
     var names: [String: String] = [:]
     /// What is in front as far as the picks know. Anything but `.origin`
     /// means going back to the focused app has to bring it back.

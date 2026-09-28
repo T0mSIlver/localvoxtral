@@ -105,7 +105,7 @@ package struct OverlayDestinationStrip: Equatable, Sendable {
     }
 
     package struct Item: Equatable, Sendable {
-        /// What a click on this pill picks.
+        /// What a click on this entry picks.
         package let destination: DictationDestination
         package let label: String
         package let kind: Kind

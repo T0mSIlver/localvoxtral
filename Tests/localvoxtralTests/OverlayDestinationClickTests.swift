@@ -67,7 +67,7 @@ final class OverlayDestinationClickTests: XCTestCase {
         XCTAssertEqual(Array(controller.destinationFramesForTesting(inList: false).keys), [.focusedApp])
         XCTAssertEqual(controller.destinationFramesForTesting(inList: true), [:])
         let pill = try XCTUnwrap(controller.destinationFramesForTesting(inList: false)[.focusedApp])
-        XCTAssertLessThan(pill.maxY, controller.contentHeightForTesting / 3, "\(pill) is in the header")
+        XCTAssertLessThan(pill.maxY, controller.contentHeightForTesting / 2, "\(pill) is in the top line")
 
         controller.clickForTesting(at: try center(of: .focusedApp, inList: false))
         XCTAssertEqual(clicked, [.focusedApp])

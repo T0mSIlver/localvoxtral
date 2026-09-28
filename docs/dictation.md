@@ -133,21 +133,27 @@ The committed text is the same either way.
 
 ## Where the words go
 
-While you dictate, the top of the overlay lists where the words can go.
-**Tab** moves to the next one and **⇧Tab** to the previous:
+While you dictate, the top of the overlay names where the words go, and
+"2 of 5" says how many places they could go. **Tab** moves to the next one
+and **⇧Tab** to the previous, in this order:
 
 - **The app you started in**, named after its coding agent session when it
   has one. A dictation goes here unless you press Tab.
+- **Inbox**: a [quick capture](coding-agents.md#quick-capture). The words are
+  saved there and never typed anywhere.
 - **Each coding agent session that needs you**, oldest first, when
   [Tell me when an agent needs you](agents.md#when-an-agent-needs-you)
   is on. Picking one brings its pane forward, and your words go there when
   you stop.
-- **Inbox**: a [quick capture](coding-agents.md#quick-capture). The words are
-  saved there and never typed anywhere.
 
-**→** and **←** move the same way, and a click on a destination picks it.
-None of these keys reach the app you are dictating into while the overlay is
-open. With nobody waiting, one Tab therefore sends the dictation to the Inbox.
+**→** and **←** move the same way. None of these keys reach the app you are
+dictating into while the overlay is open. One Tab therefore always sends the
+dictation to the Inbox, and a second reaches the session that has waited
+longest.
+
+While you move, the overlay lists every destination under its top line. The
+list closes two seconds after your last move. A click on a destination in
+the list picks it, and a click on the name at the top opens the list.
 
 The optional **Quick capture to Inbox** shortcut under **Settings →
 Dictation → Output** starts a dictation with the Inbox already picked.

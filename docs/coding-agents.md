@@ -479,7 +479,7 @@ drafts it for one of your projects. Your words never reach the focused app.
 They are saved in History, then shown on the **Inbox** page of the
 localvoxtral window.
 
-To capture, press Tab during a dictation until the overlay shows **Inbox**
+To capture, press Tab once during a dictation: the overlay shows **Inbox**
 ([Where the words go](dictation.md#where-the-words-go)). You can also set the
 optional **Quick capture to Inbox** shortcut in **Settings → Dictation**.
 

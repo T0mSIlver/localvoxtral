@@ -208,7 +208,7 @@ final class DictationOverlayController {
     /// hosting view, as the view last reported it.
     private var destinationFrames: [OverlayDestinationTarget: CGRect] = [:]
 
-    /// A click, not a drag, on a destination pill (#880). The panel keeps
+    /// A click, not a drag, on a destination (#880). The panel keeps
     /// swallowing the click, so the target app keeps the focus.
     var onDestinationClick: ((DictationDestination) -> Void)?
 
@@ -431,7 +431,7 @@ final class DictationOverlayController {
         let topLeft = hostingView.isFlipped ? local : NSPoint(x: local.x, y: hostingView.bounds.height - local.y)
         guard let destination = destinationFrames.first(where: { $0.value.contains(topLeft) })?.key.destination
         else { return }
-        Log.overlay.info("click: destination pill")
+        Log.overlay.info("click: destination")
         onDestinationClick?(destination)
     }
 
