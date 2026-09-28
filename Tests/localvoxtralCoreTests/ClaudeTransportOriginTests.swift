@@ -230,6 +230,38 @@ final class ClaudeRemoteProjectLabelTests: XCTestCase {
         }
     }
 
+    /// A host whose shim predates the header names only the worktree. A
+    /// Claude Code worktree's cwd still gives the repository: a Desktop
+    /// session keeps the plugin it started with for days.
+    func testAClaudeCodeWorktreeKeysItsRepositoryWithoutTheHeader() {
+        func reduced(_ cwd: String) -> ClaudeSessionSnapshot {
+            var snapshot = ClaudeSessionSnapshot(
+                sessionID: "s1", origin: remote, firstSeen: Date(timeIntervalSince1970: 0)
+            )
+            ClaudeSessionReducer.reduce(
+                &snapshot,
+                record: ClaudeHookRecord(event: .stop, sessionID: "s1", timestamp: 0, rawCwd: cwd),
+                origin: remote,
+                now: Date(timeIntervalSince1970: 0)
+            )
+            return snapshot
+        }
+        for cwd in [
+            "/home/dev/work/localvoxtral/.claude/worktrees/ci-speed-optimizations-7ffef0",
+            "/home/dev/work/localvoxtral/.claude/worktrees/bold-bose-fac585/Sources",
+        ] {
+            XCTAssertEqual(reduced(cwd).learnedTermWorkspace, .remoteOpaque(label: "localvoxtral"), cwd)
+        }
+        XCTAssertEqual(
+            reduced("/home/dev/work/localvoxtral/.claude/worktrees/ci-speed-optimizations-7ffef0").workspace,
+            .remoteOpaque(label: "ci-speed-optimizations-7ffef0"),
+            "the session keeps showing its own cwd label"
+        )
+        for cwd in ["/srv/wt/bold-bose", "/srv/api/.claude/worktrees", "/.claude/worktrees/x", "/srv/a b/.claude/worktrees/x"] {
+            XCTAssertEqual(reduced(cwd).learnedTermWorkspace, reduced(cwd).workspace, cwd)
+        }
+    }
+
     /// A remote header never renames a local path.
     func testALocalSessionIgnoresTheHeader() {
         let local = snapshot(

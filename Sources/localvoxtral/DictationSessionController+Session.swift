@@ -41,7 +41,11 @@ extension DictationSessionController {
         // it just gave up still emits is refused from here on (#417).
         sessionConnectionGeneration = .none
         sessionOutputMode = nil
+        sessionIsQuickCapture = false
+        sessionDraftReview = nil
+        sessionCommitGuard = nil
         sessionStartedAt = nil
+        sessionCaptureTimeline = nil
         sessionProvider = nil
         sessionModelName = nil
         sessionReplacementDictionary = nil
@@ -309,6 +313,7 @@ extension DictationSessionController {
         // Mistral session the external key to api.mistral.ai (GLM review,
         // 2026-09-16). One mode, one snapshot: client, endpoint, model, key.
         let apiKey = settings.trimmedAPIKey
+        let usageBackend = Self.usageBackend(for: settings.dictationBackendMode)
         // Pick THIS session's client before anything else touches one: from
         // here to the stop, every send, poll and disconnect goes to the latched
         // client, whatever Settings does in the meantime.
@@ -383,8 +388,19 @@ extension DictationSessionController {
         return RealtimeSessionConfiguration(
             endpoint: endpoint,
             apiKey: apiKey,
-            model: model
+            model: model,
+            usageBackend: usageBackend
         )
+    }
+
+    /// Who the usage ledger charges a dictation in `mode` to. The Mistral
+    /// client files its own sockets under `.mistral`.
+    static func usageBackend(for mode: BackendMode) -> UsageEntry.Backend {
+        switch mode {
+        case .managedLocal: return .bundledHelper
+        case .externalURL: return .userServer
+        case .mistralAPI: return .mistral
+        }
     }
 
     /// Opens the socket for a prepared start, and arms its timeout. It dials
@@ -406,6 +422,37 @@ extension DictationSessionController {
             abortConnectingSession(disconnectSocket: false)
             handleConnectFailure(reason: .connectThrew(rawError: error.localizedDescription))
             debugLog("beginDictationSession failed error=\(error.localizedDescription)")
+            return
+        }
+        startSessionMicrophone()
+    }
+
+    /// Opens the microphone while the socket opens, not after (#527): people
+    /// speak as they press, and nothing before the first buffer is ever
+    /// captured. Measured on the owner's Mac, waiting for the socket cost
+    /// 0.25–0.65 s of speech on the Mistral API. Until the connect lands, the
+    /// chunks wait in the chunk buffer, whose send loop starts at connect,
+    /// and every failed or cancelled connect stops the microphone again in
+    /// `abortConnectingSession`.
+    private func startSessionMicrophone() {
+        let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
+        let chunkBuffer = audio.audioChunkBuffer
+        let recording = audio.sessionRecording
+        let timeline = sessionCaptureTimeline
+        do {
+            try audio.startSessionAudioCapture(preferredDeviceID: preferredInputID) { chunk in
+                timeline?.markFirstBuffer()
+                chunkBuffer.append(chunk)
+                recording.append(chunk)
+            }
+            timeline?.markMicStarted()
+        } catch {
+            abortConnectingSession()
+            setRealtimeIndicatorIdle()
+            statusText = "Failed to start dictation."
+            lastError = error.localizedDescription
+            Log.dictation.error("Failed to start microphone at session start: \(error.localizedDescription, privacy: .public)")
+            debugLog("startSessionMicrophone failed error=\(error.localizedDescription)")
         }
     }
 
@@ -418,6 +465,9 @@ extension DictationSessionController {
         lastPolishChangedRawTranscript = nil
         polishAndCommitTask?.cancel()
         polishAndCommitTask = nil
+        // A go-to of the last Live dictation must not focus a pane, or end a
+        // prompt relay, in this one.
+        resetLiveGoToForSession()
         stopFinalizationTask?.cancel()
         stopFinalizationTask = nil
         finalizationWatchdogTask?.cancel()
@@ -440,7 +490,14 @@ extension DictationSessionController {
         sessionClaudeJoinBadge = .hidden
         clearLatchedSessionMetadata()
         sessionOutputMode = requestedOutputMode
+        sessionIsQuickCapture = requestedQuickCapture && requestedOutputMode == .overlayBuffer
+        sessionDraftReview = requestedOutputMode == .overlayBuffer ? requestedDraftReview : nil
+        sessionStoppedBySpokenPhrase = false
+        requestedQuickCapture = false
+        requestedDraftReview = nil
         sessionStartedAt = Date()
+        sessionCaptureTimeline = CaptureTimeline(
+            pressedAt: dependencies.clock.now(), now: dependencies.clock.now)
         latchSessionAudio(outputMode: requestedOutputMode)
         sessionReplacementDictionary = StopCommitCoordinator.effectiveReplacementDictionary(
             settings: settings,
@@ -486,66 +543,45 @@ extension DictationSessionController {
         return accessibilityBlockedAtStart
     }
 
-    func startAudioCaptureAfterConnection() {
-        let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
-        do {
-            let chunkBuffer = audio.audioChunkBuffer
-            let recording = audio.sessionRecording
-            try audio.startSessionAudioCapture(preferredDeviceID: preferredInputID) { chunk in
-                chunkBuffer.append(chunk)
-                recording.append(chunk)
+    /// The socket is open and the microphone already runs
+    /// (`startSessionMicrophone`): start sending what it captured.
+    func beginListeningAfterConnection() {
+        isConnectingRealtimeSession = false
+        isDictating = true
+        // Here, not at connect: a connect that times out or is refused
+        // must never leave other audio down. Both output modes duck.
+        audio.audioDucking.duckForSessionStart()
+        escapeCancelHandler.start()
+        applyPreCapturedSessionTargetVerdict()
+        statusText = "Listening..."
+        audio.restartAudioSendTask(
+            client: activeRealtimeClient,
+            debugLoggingEnabled: debugLoggingEnabled,
+            sleep: dependencies.clock.sleep
+        )
+        audio.restartCommitTask(client: activeRealtimeClient, sleep: dependencies.clock.sleep)
+        if isLiveAutoPasteModeEnabled {
+            textInsertion.restartInsertionRetryTask { [weak self] in
+                self?.acceptsRealtimeEvents ?? false
             }
-
-            isConnectingRealtimeSession = false
-            isDictating = true
-            // Here, not at connect: a connect that times out or is refused
-            // must never leave other audio down. Both output modes duck.
-            audio.audioDucking.duckForSessionStart()
-            escapeCancelHandler.start()
-            applyPreCapturedSessionTargetVerdict()
-            statusText = "Listening..."
-            audio.restartAudioSendTask(
-                client: activeRealtimeClient,
-                debugLoggingEnabled: debugLoggingEnabled,
-                sleep: dependencies.clock.sleep
+        } else {
+            textInsertion.stopInsertionRetryTask()
+        }
+        armSilenceAutoStopIfEnabled()
+        armPromptRelayForSession()
+        if isOverlayBufferModeEnabled {
+            startOverlayBufferSession()
+        } else {
+            overlayBufferCoordinator.reset()
+            configureLiveAutoPasteReplacementCorrectorForSession()
+        }
+        // The monitor's recovery restarts the microphone, which would mix
+        // the room into a session that is fed from a file.
+        if audio.capturesFromMicrophone {
+            audio.healthMonitor.start(
+                microphone: audio.microphone,
+                callbacks: makeHealthMonitorCallbacks()
             )
-            audio.restartCommitTask(client: activeRealtimeClient, sleep: dependencies.clock.sleep)
-            if isLiveAutoPasteModeEnabled {
-                textInsertion.restartInsertionRetryTask { [weak self] in
-                    self?.acceptsRealtimeEvents ?? false
-                }
-            } else {
-                textInsertion.stopInsertionRetryTask()
-            }
-            armSilenceAutoStopIfEnabled()
-            armPromptRelayForSession()
-            if isOverlayBufferModeEnabled {
-                startOverlayBufferSession()
-            } else {
-                overlayBufferCoordinator.reset()
-                configureLiveAutoPasteReplacementCorrectorForSession()
-            }
-            // The monitor's recovery restarts the microphone, which would mix
-            // the room into a session that is fed from a file.
-            if audio.capturesFromMicrophone {
-                audio.healthMonitor.start(
-                    microphone: audio.microphone,
-                    callbacks: makeHealthMonitorCallbacks()
-                )
-            }
-        } catch {
-            statusText = "Failed to start dictation."
-            lastError = error.localizedDescription
-            isConnectingRealtimeSession = false
-            isDictating = false
-            escapeCancelHandler.stop()
-            audio.healthMonitor.stop()
-            audio.stopSessionAudioCapture()
-            audio.audioDucking.restoreAfterSession()
-            activeRealtimeClient.disconnect()
-            setRealtimeIndicatorIdle()
-            Log.dictation.error("Failed to start microphone after realtime connect: \(error.localizedDescription, privacy: .public)")
-            debugLog("startAudioCaptureAfterConnection failed error=\(error.localizedDescription)")
         }
     }
 
@@ -677,6 +713,7 @@ extension DictationSessionController {
         cancelConnectTimeout()
         cancelRealtimeReconnect()
         disarmSilenceAutoStop()
+        disarmSpokenStop()
         finalizationWatchdogTask?.cancel()
         finalizationWatchdogTask = nil
         shortcuts.clearPushToTalkShortcutSessionAttempt()
@@ -687,6 +724,7 @@ extension DictationSessionController {
         // session and silently skips its overlay commit.
         wasCancelled = false
         escapeCancelHandler.stop()
+        endDestinations()
         isAwaitingMicrophonePermission = false
         isCompletingStoppedSession = false
         polishAndCommitTask = nil
@@ -1027,6 +1065,12 @@ extension DictationSessionController {
             // buffering — warn there, not just in the (closed) popover. The
             // commit re-checks secure input and falls back to the clipboard.
             overlayBufferCoordinator.showSecureInputWarning()
+        }
+        // A review shows its one draft and offers no other destination.
+        if let review = sessionDraftReview {
+            overlayBufferCoordinator.showDraftReview(review)
+        } else {
+            beginDestinations()
         }
     }
 

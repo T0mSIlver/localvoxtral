@@ -182,6 +182,8 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
         XCTAssertEqual(host.text(".vibe/localvoxtral/remote/compact.py"), files.compactScript)
         XCTAssertEqual(host.text(".vibe/localvoxtral/remote/terms.sh"), files.termsScript)
         XCTAssertEqual(host.mode(".vibe/localvoxtral/remote/terms.sh"), 0o700)
+        XCTAssertEqual(host.text(".vibe/localvoxtral/remote/capture.sh"), files.captureScript)
+        XCTAssertEqual(host.mode(".vibe/localvoxtral/remote/capture.sh"), 0o700)
         XCTAssertEqual(host.text(".vibe/localvoxtral/remote/token"), Self.token + "\n")
         XCTAssertEqual(host.text(".vibe/localvoxtral/remote/port"), "18473\n")
         XCTAssertEqual(host.mode(".vibe/localvoxtral/remote/token"), 0o600)
@@ -215,7 +217,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
             stage.standardInput.count, ClaudeRemoteEnrollmentService.Invocation.Budget.standard.standardInputBytes,
             "the scripts alone exceed the preload budget every other enrollment script fits in"
         )
-        XCTAssertEqual(stage.budget, ClaudeRemoteEnrollmentService.vibeRunnerBudget)
+        XCTAssertEqual(stage.budget, ClaudeRemoteEnrollmentService.fileWritingRunnerBudget)
 
         // And the standard budget really does refuse it, in the real runner.
         var standard = stage
@@ -375,7 +377,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
         host.beforeScript[3] = {
             let path = host.path(".vibe/localvoxtral/remote/post.sh")
             let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
-            try? text.replacingOccurrences(of: "Hooks-Version: 1.2.0", with: "Hooks-Version: 6.6.6")
+            try? text.replacingOccurrences(of: "Hooks-Version: 1.10.0", with: "Hooks-Version: 6.6.6")
                 .write(toFile: path, atomically: true, encoding: .utf8)
         }
         let failure = try XCTUnwrap(failure { _ = try self.setUp(host) })
@@ -413,7 +415,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
 
     func testTheShippedFilesCarryOneVersionAndTheRemoteBlock() throws {
         let files = try shippedFiles()
-        XCTAssertEqual(files.version, "1.2.0")
+        XCTAssertEqual(files.version, "1.10.0")
         XCTAssertNotNil(VibeHooksBlockEditor.remote.snippet(fromBundled: files.hooksBlock))
         let names = files.hooksBlock.split(separator: "\n").filter { $0.hasPrefix("name = ") }
             .map { String($0.dropFirst("name = \"".count).dropLast()) }

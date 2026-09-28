@@ -58,6 +58,13 @@ import { isMainThread } from "node:worker_threads";
 // Wire constants — must mirror ClaudeHookWire.swift / ClaudeHookLimits. The
 // repo's OpencodePluginManifestTests pin these against the Swift constants.
 const WIRE_VERSION = 2;
+// Bus events that mean the session waits on the user, and the wire's
+// notification_type for each. `permission.updated` is the pre-v2 bus name.
+const WAIT_TYPES = {
+  "permission.asked": "permission_prompt",
+  "permission.updated": "permission_prompt",
+  "question.asked": "elicitation_dialog",
+};
 const AGENT = "opencode";
 const MAX_LINE_BYTES = 64 * 1024;
 const MAX_PROMPT_BYTES = 8 * 1024;
@@ -296,6 +303,9 @@ function record(event, sessionID, fields, tty, relay) {
     result.tool_name = truncateBytes(fields.toolName, MAX_PATH_BYTES);
   }
   if (relay) result.prompt_relay = relay;
+  if (fields && typeof fields.notificationType === "string") {
+    result.notification_type = fields.notificationType;
+  }
   if (fields && Array.isArray(fields.files) && fields.files.length > 0) {
     result.files = fields.files.slice(0, MAX_FILES_PER_RECORD).map((file) => ({
       path: truncateBytes(file.path, MAX_PATH_BYTES),
@@ -370,6 +380,18 @@ const ServerHalf = async () => {
           const sessionID = properties.sessionID;
           if (!sessionID || !topLevelSessions.has(sessionID)) return;
           publish(record("Stop", sessionID, { cwd: directoryFor(sessionID) }));
+          return;
+        }
+        // The session waits on the user (#717): a permission or a question.
+        // Only the kind crosses; what it asks stays here.
+        const waitsFor = WAIT_TYPES[type];
+        if (waitsFor) {
+          const sessionID = properties.sessionID;
+          if (!sessionID || !topLevelSessions.has(sessionID)) return;
+          publish(record("Notification", sessionID, {
+            cwd: directoryFor(sessionID),
+            notificationType: waitsFor,
+          }));
         }
       } catch {}
     },

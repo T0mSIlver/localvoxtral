@@ -14,7 +14,10 @@ on:
     # Sundays only (owner decision 2026-09-25): at ~29 min a run it was the
     # largest scheduled load on the Mac, and prompts and model pins change
     # far less often than nightly. Overnight because this lane needs no GUI
-    # session and the machine is idle then.
+    # session and the machine is idle then. GitHub fires it late, often after
+    # the night window, so the dev box's scheduler dispatches it at 04:45
+    # UTC and this cron is the fallback. The guard step below skips a
+    # scheduled run outside the window or after a run that already covered it.
     - cron: "45 4 * * 0"
 
 concurrency:
@@ -23,6 +26,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read # recent-run-guard.sh lists this workflow's runs
 
 jobs:
   eval-e2e:
@@ -39,26 +43,42 @@ jobs:
           # would force a cold MLX C++ + Metal helper rebuild every night).
           clean: false
 
-      - name: Decide whether this scheduled run proceeds (AC power probe)
+      - name: Decide whether this scheduled run proceeds (night window, AC power)
         # Enforced for schedule events only: workflow_dispatch is explicit
         # operator intent and always runs. The runner is the owner's personal
-        # MacBook — the nightly must not drain the battery when the machine
-        # is unplugged (owner request, 2026-07-24). The decision logic lives
-        # in scripts/ci/ac-power-guard.sh (kept out of the workflow so it is
-        # testable — test-ac-power-guard.sh runs in ci.yml's shell-test
-        # step); it fails OPEN on probe errors so a broken probe can never
-        # silently disable the lane.
+        # MacBook, so a scheduled run needs three things:
+        #  * the night window (night-window-guard.sh): GitHub fires the cron
+        #    hours late (#822), and a run that starts after 06:30 UTC would
+        #    still be polishing when the owner starts work at 07:00. 30 is the
+        #    job's ~29 min, rounded up;
+        #  * no other run on main that succeeded or is running in the last
+        #    20 h (recent-run-guard.sh): the dev box's scheduler dispatches
+        #    this eval at 04:45 UTC and the cron is only its fallback, so a
+        #    cron after a dispatch would measure the same thing twice;
+        #  * AC power (ac-power-guard.sh, owner request 2026-07-24): never
+        #    drain the battery. It fails OPEN on probe errors so a broken
+        #    probe can never silently disable the lane.
+        # All three scripts are tested in ci.yml's shell-test step.
         id: guard
         if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          DECISION="$(./scripts/ci/ac-power-guard.sh)"
+          proceeds() { [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" == "true" ]]; }
+          DECISION="$(./scripts/ci/night-window-guard.sh 30)"
+          if proceeds; then
+            DECISION="$(./scripts/ci/recent-run-guard.sh eval-e2e.yml 20)"
+          fi
+          if proceeds; then
+            DECISION="$(./scripts/ci/ac-power-guard.sh)"
+          fi
           echo "$DECISION" >> "$GITHUB_OUTPUT"
           REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
           if [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" == "true" ]]; then
-            echo "E2E eval nightly: RUNNING ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "E2E eval (scheduled): RUNNING ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           else
-            echo "E2E eval nightly: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "E2E eval (scheduled): SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Clean stale outputs (keep build caches)
@@ -111,7 +131,11 @@ jobs:
           fi
 
       - name: Run agent-dictation E2E eval
+        id: eval
         if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
+        # About 2x a normal run. A hung run held the Mac for the whole job
+        # timeout, past the end of the night window (#821).
+        timeout-minutes: 60
         env:
           LV_AGENT_EVAL_E2E_ENABLE: "1"
           LV_AGENT_EVAL_E2E_HELPER_PATH: PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd
@@ -119,12 +143,35 @@ jobs:
         run: |
           mkdir -p logs
           set -o pipefail
+          # An older reaper stops the on-demand server 20 min after the last
+          # `ensure` even while a client uses it, so an eval longer than that
+          # lost its server mid-run (#821). The reaper counts clients since
+          # #829, but runs a copy of the script on the Mac: keep ours fresh
+          # until that copy is refreshed (scripts/mac/README.md).
+          if [ -d /Users/Shared/localvoxtral/run ]; then
+            while sleep 300; do
+              ./scripts/mac/lv-test-servers.sh ensure speechd >/dev/null 2>&1 || true
+            done &
+            keepalive=$!
+            trap 'kill "$keepalive" 2>/dev/null || true' EXIT
+          fi
           # --enable-code-coverage matches ci.yml's build flags in the SHARED
           # .build (clean: false): without it this nightly rebuilt the whole
           # app+test module uninstrumented, and the next morning's ci.yml
           # unit step rebuilt it back — the same flag-flip PR #157 fixed
           # inside ci.yml (PR #157 review finding).
           swift test --build-system native --filter AgentDictationE2EEvalTests --enable-code-coverage 2>&1 | tee logs/eval-e2e.log
+
+      - name: Name the STT service's state
+        # A stalled eval reads the same whether the reaper stopped the server
+        # or another process held port 8000 (#829).
+        if: failure() && steps.eval.outcome == 'failure'
+        run: |
+          {
+            echo '```'
+            ./scripts/mac/lv-test-servers.sh diagnose speechd
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Scoreboard to step summary
         # Extract the section between the scoreboard markers (kept in sync

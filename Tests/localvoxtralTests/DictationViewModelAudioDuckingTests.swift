@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import XCTest
 
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 /// Every way a session can end has to put the volume back. A user left at a

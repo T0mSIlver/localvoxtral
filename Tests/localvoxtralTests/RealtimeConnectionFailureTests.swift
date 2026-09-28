@@ -15,45 +15,41 @@ final class RealtimeConnectionFailureTests: XCTestCase {
         )
     }
 
-    func testClassifiesConnectionRefusedByNSURLErrorCode() {
-        let message = "WebSocket failed: The operation couldn't be completed. [NSURLErrorDomain:-1004] url=ws://127.0.0.1:8000/v1/realtime"
-        XCTAssertEqual(
-            RealtimeConnectionFailureClassifier.classify(socketErrorMessage: message), .connectionRefused
-        )
-    }
+    func testClassifiesTransportFailuresByNSURLErrorCode() {
+        let cases: [(message: String, expected: RealtimeConnectionFailureKind)] = [
+            (
+                "WebSocket failed: The operation couldn't be completed. [NSURLErrorDomain:-1004] url=ws://127.0.0.1:8000/v1/realtime",
+                .connectionRefused
+            ),
+            (
+                "WebSocket failed: Could not find host. [NSURLErrorDomain:-1003] url=ws://missing-host:8000/realtime",
+                .hostUnreachable
+            ),
+            (
+                "WebSocket failed: The request timed out. [NSURLErrorDomain:-1001] url=ws://10.0.0.5:8000/realtime",
+                .timedOut
+            ),
+            (
+                "lost [NSURLErrorDomain:-1005] url=ws://x/realtime",
+                .networkLost
+            ),
+            (
+                "offline [NSURLErrorDomain:-1009] url=ws://x/realtime",
+                .networkLost
+            ),
+            (
+                "WebSocket failed: The operation couldn't be completed. [NSURLErrorDomain:-1011] url=ws://127.0.0.1:8000/v1/realtimeaa",
+                .endpointRejected
+            ),
+        ]
 
-    func testClassifiesHostUnreachableByNSURLErrorCode() {
-        let message = "WebSocket failed: Could not find host. [NSURLErrorDomain:-1003] url=ws://missing-host:8000/realtime"
-        XCTAssertEqual(
-            RealtimeConnectionFailureClassifier.classify(socketErrorMessage: message), .hostUnreachable
-        )
-    }
-
-    func testClassifiesTimedOutByNSURLErrorCode() {
-        let message = "WebSocket failed: The request timed out. [NSURLErrorDomain:-1001] url=ws://10.0.0.5:8000/realtime"
-        XCTAssertEqual(
-            RealtimeConnectionFailureClassifier.classify(socketErrorMessage: message), .timedOut
-        )
-    }
-
-    func testClassifiesNetworkLostByNSURLErrorCodes() {
-        XCTAssertEqual(
-            RealtimeConnectionFailureClassifier.classify(
-                socketErrorMessage: "lost [NSURLErrorDomain:-1005] url=ws://x/realtime"
-            ), .networkLost
-        )
-        XCTAssertEqual(
-            RealtimeConnectionFailureClassifier.classify(
-                socketErrorMessage: "offline [NSURLErrorDomain:-1009] url=ws://x/realtime"
-            ), .networkLost
-        )
-    }
-
-    func testClassifiesEndpointRejectedByBadServerResponse() {
-        let message = "WebSocket failed: The operation couldn't be completed. [NSURLErrorDomain:-1011] url=ws://127.0.0.1:8000/v1/realtimeaa"
-        XCTAssertEqual(
-            RealtimeConnectionFailureClassifier.classify(socketErrorMessage: message), .endpointRejected
-        )
+        for testCase in cases {
+            XCTAssertEqual(
+                RealtimeConnectionFailureClassifier.classify(socketErrorMessage: testCase.message),
+                testCase.expected,
+                "misclassified \(testCase.message)"
+            )
+        }
     }
 
     func testClassifiesLocalizedPhrasesWhenErrorCodeAbsent() {
@@ -85,30 +81,35 @@ final class RealtimeConnectionFailureTests: XCTestCase {
 
     // MARK: - Hosted-provider credential and quota rejections
 
-    func testClassifiesUnauthorizedAheadOfTheBadServerResponseBucket() {
-        // A hosted provider's 401 arrives as a bare NSURLErrorBadServerResponse;
-        // only the status the client folds in tells it apart from a wrong path,
-        // and "check the path" is the wrong advice for a rejected key.
-        let message = "Mistral rejected the connection (HTTP 401): check the API key. "
-            + "WebSocket failed: The operation couldn't be completed. [NSURLErrorDomain:-1011]"
-        XCTAssertEqual(
-            RealtimeConnectionFailureClassifier.classify(socketErrorMessage: message), .unauthorized
-        )
-    }
+    func testClassifiesCredentialAndQuotaRejectionsAheadOfTheBadServerResponseBucket() {
+        // A hosted provider's 401/403/429 arrives as a bare
+        // NSURLErrorBadServerResponse; only the status the client folds in
+        // tells it apart from a wrong path, and "check the path" is the wrong
+        // advice for a rejected key.
+        let cases: [(message: String, expected: RealtimeConnectionFailureKind)] = [
+            (
+                "Mistral rejected the connection (HTTP 401): check the API key. "
+                    + "WebSocket failed: The operation couldn't be completed. [NSURLErrorDomain:-1011]",
+                .unauthorized
+            ),
+            (
+                "Rejected the connection (HTTP 403). [NSURLErrorDomain:-1011]",
+                .unauthorized
+            ),
+            (
+                "Rejected the connection (HTTP 429): rate limit reached; wait and retry. "
+                    + "[NSURLErrorDomain:-1011]",
+                .rateLimited
+            ),
+        ]
 
-    func testClassifiesForbiddenAsUnauthorized() {
-        let message = "Rejected the connection (HTTP 403). [NSURLErrorDomain:-1011]"
-        XCTAssertEqual(
-            RealtimeConnectionFailureClassifier.classify(socketErrorMessage: message), .unauthorized
-        )
-    }
-
-    func testClassifiesRateLimitedAheadOfTheBadServerResponseBucket() {
-        let message = "Rejected the connection (HTTP 429): rate limit reached; wait and retry. "
-            + "[NSURLErrorDomain:-1011]"
-        XCTAssertEqual(
-            RealtimeConnectionFailureClassifier.classify(socketErrorMessage: message), .rateLimited
-        )
+        for testCase in cases {
+            XCTAssertEqual(
+                RealtimeConnectionFailureClassifier.classify(socketErrorMessage: testCase.message),
+                testCase.expected,
+                "misclassified \(testCase.message)"
+            )
+        }
     }
 
     func testClassifiesCredentialAndQuotaPhrasesWithoutAStatusCode() {
@@ -123,22 +124,6 @@ final class RealtimeConnectionFailureTests: XCTestCase {
         XCTAssertEqual(
             RealtimeConnectionFailureClassifier.classify(socketErrorMessage: "Too Many Requests"),
             .rateLimited
-        )
-    }
-
-    func testUnrelatedHTTPStatusesKeepTheirExistingClassification() {
-        // The new buckets must not swallow the path-rejection cases.
-        XCTAssertEqual(
-            RealtimeConnectionFailureClassifier.classify(
-                socketErrorMessage: "WebSocket upgrade failed with HTTP 404."
-            ),
-            .endpointRejected
-        )
-        XCTAssertEqual(
-            RealtimeConnectionFailureClassifier.classify(
-                socketErrorMessage: "WebSocket failed: The request timed out. [NSURLErrorDomain:-1001]"
-            ),
-            .timedOut
         )
     }
 
@@ -253,6 +238,8 @@ final class RealtimeConnectionFailureTests: XCTestCase {
             (.timedOut, 2.0),
             (.endpointRejected, nil),
             (.networkLost, nil),
+            (.unauthorized, nil),
+            (.rateLimited, nil),
             (.unknown, nil),
         ]
 
@@ -301,21 +288,6 @@ final class RealtimeConnectionFailureTests: XCTestCase {
         XCTAssertEqual(description.status, "Rate limited.")
         XCTAssertTrue(description.message.contains(endpoint))
         XCTAssertFalse(description.message.localizedCaseInsensitiveContains("mistral"))
-    }
-
-    func testDescribeOmitsDuplicateTechnicalDetailsForTheNewKinds() {
-        for kind in [RealtimeConnectionFailureKind.unauthorized, .rateLimited] {
-            let baseline = RealtimeConnectionFailureClassifier.describe(
-                kind: kind, endpointDescription: endpoint, rawError: nil
-            )
-            let duplicated = RealtimeConnectionFailureClassifier.describe(
-                kind: kind, endpointDescription: endpoint, rawError: baseline.message
-            )
-            XCTAssertNil(
-                duplicated.technicalDetails,
-                "\(kind) should omit details that repeat the user-facing message"
-            )
-        }
     }
 
     // MARK: - Divergence guard

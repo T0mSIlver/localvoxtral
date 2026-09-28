@@ -6,7 +6,7 @@ set -euo pipefail
 # tree (no commit needed) and runs the toolchain remotely over SSH.
 #
 # Usage:
-#   ./scripts/remote-build.sh [build|test|test-cost-budgets|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-e2e|eval-term-recall|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
+#   ./scripts/remote-build.sh [build|test|test-cost-budgets|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-e2e|eval-term-recall|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
 #     build        swift build
 #     test         swift build + unit tests (default; needs --filter, or
 #                  LV_ALLOW_HEAVY_MAC_RUN=1 for the full suite; skips live-backend suites
@@ -82,6 +82,8 @@ set -euo pipefail
 #                    mistral/<model>   Mistral's closed request schema; reads the
 #                                      key from MISTRAL_API_KEY on THIS box, e.g.
 #                                      eval-llm https://api.mistral.ai mistral/mistral-medium-3-5
+#                                      A GLM model bills the Vibe plan key instead:
+#                                      VIBE_MISTRAL_API_KEY, else ~/.vibe/.env.
 #     eval-e2e     agent-dictation end-to-end eval: human WAVs or TTS -> live
 #                  speechd ASR -> bundled polishd via the production stop-commit
 #                  path, scored against EvalCorpus/agent-dictation (run
@@ -113,13 +115,6 @@ set -euo pipefail
 #                  score {"id","text"} rows with no speech engine;
 #                  `compare <before> <after>` pairs two runs by label, e.g.
 #                  eval-term-recall --asr nemotron
-#     dogfood     build the instrumented (LOCALVOXTRAL_DOGFOOD) tree and run
-#                  the context-capture suite; the capture is a compile gate, so
-#                  no other lane ever builds it
-#     dogfood-package
-#                  package an instrumented .app for hand-dogfooding (same
-#                  bundle id, so the Accessibility grant survives; the artifact
-#                  is identifiable by LVXDogfoodCapture in its Info.plist)
 #     package      ./scripts/package_app.sh release
 #     exec         run the extra args verbatim in the remote work dir
 #     diag         build-host diagnostic summary (gate v2 required)
@@ -278,9 +273,21 @@ TREE_SYNCED=0
 # build, with a skip message that never mentions the key. Fail here, first,
 # with the reason (GLM review, 2026-09-16).
 require_mistral_api_key_format() {
-  if [[ ! "${MISTRAL_API_KEY:-}" =~ ^[A-Za-z0-9._-]+$ ]]; then
-    echo "MISTRAL_API_KEY must be a plain token ([A-Za-z0-9._-]); check for stray quotes or whitespace" >&2
+  local key="${1-${MISTRAL_API_KEY:-}}" name="${2:-MISTRAL_API_KEY}"
+  if [[ ! "$key" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "$name must be a plain token ([A-Za-z0-9._-]); check for stray quotes or whitespace" >&2
     exit 1
+  fi
+}
+
+# GLM 5.3 on the Mistral API runs on the Vibe plan's monthly allowance, so a
+# GLM eval bills the Vibe key, never an exported MISTRAL_API_KEY: sessions
+# export the pay-per-call Studio key for the other Mistral lanes (#851).
+vibe_mistral_api_key() {
+  if [[ -n "${VIBE_MISTRAL_API_KEY:-}" ]]; then
+    printf '%s' "$VIBE_MISTRAL_API_KEY"
+  else
+    sed -n 's/^MISTRAL_API_KEY=//p' "$HOME/.vibe/.env" 2>/dev/null | tr -d "\"'" || true
   fi
 }
 
@@ -1165,12 +1172,22 @@ case "$CMD" in
       # thinking_budget_tokens, reasoning_effort per model). The key is a secret:
       # it is read from this box's environment into the gitignored marker the
       # EXIT trap removes — never into the SSH command line or the repo.
-      if [[ -z "${MISTRAL_API_KEY:-}" ]]; then
-        echo "eval-llm: a mistral/ model alias needs MISTRAL_API_KEY set in this shell" >&2
-        echo "  e.g. MISTRAL_API_KEY=... $0 eval-llm https://api.mistral.ai mistral/mistral-medium-3-5" >&2
-        exit 1
+      if [[ "$EVAL_MODEL" == mistral/*glm* ]]; then
+        EVAL_KEY="$(vibe_mistral_api_key)"
+        if [[ -z "$EVAL_KEY" ]]; then
+          echo "eval-llm: a GLM model bills the Vibe plan key; log in with vibe --setup or set VIBE_MISTRAL_API_KEY" >&2
+          exit 1
+        fi
+        require_mistral_api_key_format "$EVAL_KEY" "the Vibe key"
+      else
+        EVAL_KEY="${MISTRAL_API_KEY:-}"
+        if [[ -z "$EVAL_KEY" ]]; then
+          echo "eval-llm: a mistral/ model alias needs MISTRAL_API_KEY set in this shell" >&2
+          echo "  e.g. MISTRAL_API_KEY=... $0 eval-llm https://api.mistral.ai mistral/mistral-medium-3-5" >&2
+          exit 1
+        fi
+        require_mistral_api_key_format
       fi
-      require_mistral_api_key_format
       # 0600 before a single byte of the key is written — the same standard as
       # the integration-mistral marker (the redirect below keeps the mode).
       (umask 077; : >"$EVAL_MARKER")
@@ -1178,7 +1195,7 @@ case "$CMD" in
       # sampling defaults (temperature 0.3 + reasoning_effort only), and
       # the eval must score exactly the request shape the app sends.
       printf '{"endpoint": "%s", "model": "%s", "requestShape": "mistral", "apiKey": "%s"}\n' \
-        "$EVAL_ENDPOINT" "${EVAL_MODEL#mistral/}" "$MISTRAL_API_KEY" >"$EVAL_MARKER"
+        "$EVAL_ENDPOINT" "${EVAL_MODEL#mistral/}" "$EVAL_KEY" >"$EVAL_MARKER"
     elif [[ "$EVAL_MODEL" == llamacpp/* ]]; then
       # Bifrost requires the passthrough opt-in for llama.cpp-specific fields;
       # current llama.cpp disables Qwen 3.5 reasoning per request with a zero
@@ -1194,28 +1211,6 @@ case "$CMD" in
     fi
     REMOTE_CMD=(swift test --build-system native --filter LLMPolishPromptEvalTests)
     ;;
-  dogfood|dogfood-package)
-    # The dogfooding capture is a COMPILE gate (Package.swift), and the build
-    # gate allowlists exact payloads, so enablement travels as the same kind of
-    # gitignored marker the eval lanes use rather than an env prefix.
-    #
-    # `dogfood`         — build + run the capture suite in an instrumented tree.
-    # `dogfood-package` — package an instrumented .app for hand-dogfooding.
-    #                     The bundle identifier is unchanged (the TCC grant is
-    #                     part of what is being exercised); the artifact
-    #                     identifies itself through Info.plist's
-    #                     LVXDogfoodCapture, which Settings > About reports.
-    DOGFOOD_MARKER="$ROOT_DIR/.dogfood-capture-enable"
-    # Registered before the marker exists, so no kill window can leave an
-    # instrumented tree behind — locally or in the remote work dir.
-    trap 'cleanup_transient_marker "$DOGFOOD_MARKER"' EXIT
-    printf 'dogfood capture build marker; removed automatically\n' >"$DOGFOOD_MARKER"
-    if [[ "$CMD" == "dogfood-package" ]]; then
-      REMOTE_CMD=(./scripts/package_app.sh release "$@")
-    else
-      REMOTE_CMD=(swift test --build-system native --filter Dogfood "$@")
-    fi
-    ;;
   package) REMOTE_CMD=(./scripts/package_app.sh release "$@") ;;
   exec)
     if [[ $# -eq 0 ]]; then
@@ -1225,7 +1220,7 @@ case "$CMD" in
     REMOTE_CMD=("$@")
     ;;
   *)
-    echo "Usage: $0 [build|test|test-cost-budgets|integration|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-e2e|eval-term-recall|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
+    echo "Usage: $0 [build|test|test-cost-budgets|integration|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-e2e|eval-term-recall|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
     exit 1
     ;;
 esac

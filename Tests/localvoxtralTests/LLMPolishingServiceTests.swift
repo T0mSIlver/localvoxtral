@@ -324,40 +324,35 @@ final class LLMPolishingServiceTests: XCTestCase {
         XCTAssertEqual(normalized.scheme, "mailto")
     }
 
-    /// End-to-end proof that a base-URL configuration produces a request whose
-    /// URL targets `/v1/chat/completions` — the whole point of accepting a base
-    /// URL in Settings.
-    func testMakeURLRequestNormalizesBaseURLConfigurationToChatCompletions() throws {
-        let configuration = LLMPolishingConfiguration(
-            endpointURL: URL(string: "http://127.0.0.1:8080")!,
-            apiKey: "",
-            model: "model"
-        )
-        let urlRequest = try LLMPolishingService.makeURLRequest(
-            request: request,
-            configuration: configuration
-        )
-        XCTAssertEqual(
-            urlRequest.url?.absoluteString,
-            "http://127.0.0.1:8080/v1/chat/completions"
-        )
-    }
-
-    /// A full-URL configuration reaches the wire byte-for-byte unchanged
+    /// End-to-end proof that the configured endpoint reaches the wire through
+    /// `makeURLRequest`'s normalization: a base-URL configuration targets
+    /// `/v1/chat/completions` (the whole point of accepting a base URL in
+    /// Settings), and a full-URL configuration passes through byte-for-byte
     /// (backward compatibility for everyone who already typed the full path).
-    func testMakeURLRequestLeavesFullURLConfigurationUnchanged() throws {
-        let configuration = LLMPolishingConfiguration(
-            endpointURL: URL(string: "https://api.openai.com/v1/chat/completions")!,
-            apiKey: "",
-            model: "model"
-        )
-        let urlRequest = try LLMPolishingService.makeURLRequest(
-            request: request,
-            configuration: configuration
-        )
-        XCTAssertEqual(
-            urlRequest.url?.absoluteString,
-            "https://api.openai.com/v1/chat/completions"
-        )
+    func testMakeURLRequestNormalizesBaseURLAndPassesFullURLThrough() throws {
+        let cases: [(endpoint: String, expected: String)] = [
+            ("http://127.0.0.1:8080", "http://127.0.0.1:8080/v1/chat/completions"),
+            (
+                "https://api.openai.com/v1/chat/completions",
+                "https://api.openai.com/v1/chat/completions"
+            ),
+        ]
+
+        for testCase in cases {
+            let configuration = LLMPolishingConfiguration(
+                endpointURL: URL(string: testCase.endpoint)!,
+                apiKey: "",
+                model: "model"
+            )
+            let urlRequest = try LLMPolishingService.makeURLRequest(
+                request: request,
+                configuration: configuration
+            )
+            XCTAssertEqual(
+                urlRequest.url?.absoluteString,
+                testCase.expected,
+                "configured endpoint \(testCase.endpoint)"
+            )
+        }
     }
 }

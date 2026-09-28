@@ -1,0 +1,883 @@
+import AppKit
+import Foundation
+import Synchronization
+import XCTest
+@testable import localvoxtral
+
+/// The wiring that turns one polished dictation into one on-disk diagnostic
+/// record. Drives the REAL `finishStoppedSession` polish/commit path (the same
+/// harness as the polish-failure diagnostics suite) and reads the record back.
+@MainActor
+final class DiagnosticRecordWiringTests: XCTestCase {
+    /// Switch on (the default): a polished overlay commit writes exactly one
+    /// record whose text stages, session facts, join abstention, and screen
+    /// decision describe the dictation that just committed.
+    func testPolishedCommitWritesOneAttributableRecord() async throws {
+        let harness = try makeHarness(recordsEnabled: true)
+        XCTAssertTrue(
+            makeSettings().diagnosticRecordsEnabled,
+            "records are on until the user turns them off"
+        )
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        let records = try recordsOnDisk(in: harness.captureDirectory)
+        XCTAssertEqual(records.count, 1, "one dictation writes exactly one record")
+        let record = records[0]
+
+        XCTAssertEqual(record.schemaVersion, DiagnosticRecord.currentSchemaVersion)
+
+        // Text stages, in pipeline order.
+        XCTAssertEqual(record.text.rawTranscript, "polish this text")
+        XCTAssertEqual(record.text.workingText, "polish this text")
+        XCTAssertEqual(record.text.groundedText, "polish this text")
+        XCTAssertEqual(record.text.polishedOutput, "polished output text")
+        XCTAssertEqual(record.text.committedText, "polished output text")
+        XCTAssertFalse(record.text.userPrompts.isEmpty, "the rendered prompt is the payload")
+        XCTAssertEqual(
+            record.text.systemPrompt,
+            "system\n\n\(PolishReferenceGuide.systemSection)\n",
+            "the capture holds the system prompt as sent, reference guide included"
+        )
+
+        // Session facts.
+        XCTAssertEqual(record.session.outputMode, DictationOutputMode.overlayBuffer.rawValue)
+        XCTAssertEqual(record.session.endpointClass, "loopback")
+        XCTAssertNotNil(record.session.promptProfile)
+        XCTAssertNotNil(record.session.polishModel)
+
+        // No session start ran, so no join was resolved: the record must say
+        // "none" rather than omitting the block.
+        XCTAssertEqual(record.join?.arm, "none")
+
+        // No start capture: the decision is drop(no-start-capture), and the
+        // record's screen block must carry that exact cause.
+        XCTAssertEqual(record.screen?.decision, "drop")
+        XCTAssertEqual(record.screen?.cause, "no-start-capture")
+
+        // Nothing demanded, so no allocation rows and no sources.
+        XCTAssertEqual(record.allocation, [])
+        XCTAssertEqual(record.sources, [])
+
+        // Timings: the polish duration came from the service; the capture
+        // measured itself.
+        XCTAssertEqual(record.timings.polishSeconds, 0.25)
+        XCTAssertNotNil(record.timings.captureMilliseconds)
+    }
+
+    /// With the switch off, the same commit writes nothing.
+    func testSwitchOffWritesNothing() async throws {
+        let harness = try makeHarness(recordsEnabled: false)
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: harness.captureDirectory.path),
+            "records off must not even create the directory"
+        )
+    }
+
+    /// History "Don't keep" saves no entry, so there is nothing for a record
+    /// to belong to: none is written, whatever the switch says.
+    func testHistoryOffWritesNothing() async throws {
+        let harness = try makeHarness(recordsEnabled: true)
+        harness.viewModel.settings.dictationHistoryRetention = .off
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: harness.captureDirectory.path),
+            "History off must not even create the directory"
+        )
+    }
+
+    /// The record is named by, and carries, its History entry's id, so it
+    /// joins that entry and its audio.
+    func testRecordIDIsTheHistoryEntryID() async throws {
+        let harness = try makeHarness(recordsEnabled: true, withHistory: true)
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        let entries = await harness.history!.entries()
+        XCTAssertEqual(entries.count, 1)
+        let historyID = try XCTUnwrap(entries.first?.id)
+        let records = try recordsOnDisk(in: harness.captureDirectory)
+        XCTAssertEqual(records.map(\.id), [historyID.uuidString])
+        let names = try FileManager.default.contentsOfDirectory(atPath: harness.captureDirectory.path)
+        XCTAssertEqual(names.compactMap { DiagnosticRecordFileName.parse($0)?.id }, [historyID])
+    }
+
+    /// A record whose dictation was deleted before its write ran is not
+    /// written: the write waits behind the History queue and checks the entry.
+    func testARecordWaitingOnADeletedDictationIsNotWritten() async throws {
+        let history = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let wrote = WriteFlag()
+
+        let url = await history.writeDiagnosticRecord(forDictation: UUID()) {
+            wrote.set()
+            return URL(fileURLWithPath: "/tmp/never")
+        }
+
+        XCTAssertNil(url)
+        XCTAssertFalse(wrote.isSet, "the write must not run for a dictation not saved")
+    }
+
+    /// The watch's verdict reaches the History entry too, so Insights can
+    /// count it without reading record files (#519).
+    func testTheEditVerdictIsCopiedOntoTheHistoryEntry() async throws {
+        let signals = EditSignalHarness()
+        let harness = try makeHarness(recordsEnabled: true, withHistory: true, editSignal: signals)
+        let history = try XCTUnwrap(harness.history)
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+        await signals.sleeper.waitForSleepRequest()
+        signals.clock.advance(0.5)
+        signals.monitor.send(.backspace)
+        await signals.watcher.flushTask?.value
+        // Queued behind the patch's History write.
+        await history.removeOrphanedAudio().value
+
+        let entries = await history.entries()
+        XCTAssertEqual(entries.map(\.editOutcome), [EditSignalOutcome.edited.rawValue])
+    }
+
+    /// Records turned off while the window is open: the record is gone, so
+    /// History gets no verdict either.
+    func testNoVerdictReachesHistoryOnceTheRecordIsDeleted() async throws {
+        let signals = EditSignalHarness()
+        let harness = try makeHarness(recordsEnabled: true, withHistory: true, editSignal: signals)
+        let history = try XCTUnwrap(harness.history)
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+        await signals.sleeper.waitForSleepRequest()
+        harness.viewModel.settings.diagnosticRecordsEnabled = false
+        await history.deleteAllDiagnosticRecords().value
+        signals.monitor.send(.backspace)
+        await signals.watcher.flushTask?.value
+        await history.removeOrphanedAudio().value
+
+        let entries = await history.entries()
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertNil(entries.first?.editOutcome)
+    }
+
+    /// A record goes wherever its dictation goes: turning the switch off
+    /// deletes every record and keeps the dictations; deleting an entry, or
+    /// turning History off, deletes its record.
+    func testRecordsAreDeletedWithTheSwitchAndWithTheirDictation() async throws {
+        let harness = try makeHarness(recordsEnabled: true, withHistory: true)
+        let history = try XCTUnwrap(harness.history)
+        func dictate() async {
+            harness.viewModel.isFinalizingStop = true
+            harness.viewModel.transcript.currentDictationEventText = "polish this text"
+            harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+            await harness.viewModel.session.polishAndCommitTask?.value
+        }
+
+        await dictate()
+        await dictate()
+        XCTAssertEqual(try recordsOnDisk(in: harness.captureDirectory).count, 2)
+
+        // Deleting one entry deletes its record only.
+        let before = await history.entries()
+        let first = try XCTUnwrap(before.first)
+        await history.delete(id: first.id).value
+        let after = await history.entries()
+        XCTAssertEqual(
+            try recordsOnDisk(in: harness.captureDirectory).map(\.id),
+            [try XCTUnwrap(after.first).id.uuidString]
+        )
+
+        // The switch turned off: records go, the dictation stays.
+        harness.viewModel.settings.diagnosticRecordsEnabled = false
+        await history.deleteAllDiagnosticRecords().value
+        XCTAssertEqual(try recordsOnDisk(in: harness.captureDirectory).count, 0)
+        let kept = await history.entries()
+        XCTAssertEqual(kept.count, 1)
+
+        // History turned off deletes the entries and whatever records remain.
+        harness.viewModel.settings.diagnosticRecordsEnabled = true
+        await dictate()
+        XCTAssertEqual(try recordsOnDisk(in: harness.captureDirectory).count, 1)
+        // What `applyDictationHistoryRetention` runs for "Don't keep".
+        await history.trim(olderThan: try XCTUnwrap(DictationHistoryRetention.off.cutoff(now: Date()))).value
+        XCTAssertEqual(try recordsOnDisk(in: harness.captureDirectory).count, 0)
+    }
+
+    /// A failing store must cost the record, never the commit: the dictation
+    /// still commits and the session completes.
+    func testCaptureWriteFailureDoesNotBreakTheCommit() async throws {
+        // A file where the capture DIRECTORY should be: every write fails.
+        let harness = try makeHarness(recordsEnabled: true, blockCaptureDirectory: true)
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        XCTAssertFalse(harness.viewModel.session.isCompletingStoppedSession)
+        XCTAssertEqual(
+            harness.viewModel.transcript.currentDictationEventText, "polished output text",
+            "the committed text must be unaffected by a capture-write failure"
+        )
+    }
+
+    /// A join abstention noted at (a would-be) session start is consumed into
+    /// the record; a second dictation does not inherit it.
+    func testJoinAbstentionRidesTheRecordOnceAndIsConsumed() async throws {
+        let harness = try makeHarness(recordsEnabled: true)
+        DiagnosticCaptureTap.shared.beginSession()
+        DiagnosticCaptureTap.shared.noteJoinAbstention("tty: stale")
+        DiagnosticCaptureTap.shared.noteJoinAbstention("marker: no marker in title")
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        let first = try recordsOnDisk(in: harness.captureDirectory)
+        XCTAssertEqual(
+            first.last?.join?.abstentionReason,
+            "tty: stale; marker: no marker in title"
+        )
+
+        // A second commit on a fresh session must not repeat the reason.
+        let second = try makeHarness(recordsEnabled: true)
+        second.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await second.viewModel.session.polishAndCommitTask?.value
+        let records = try recordsOnDisk(in: second.captureDirectory)
+        XCTAssertNil(records.last?.join?.abstentionReason)
+    }
+
+    /// Populated sources ride the commit path into the record: a clipboard
+    /// context produces its allocation row and harvested source row, and a
+    /// repo-vocabulary outcome (with its tapped harvest) produces the
+    /// `repoVocabulary` row AND its pre-application shows in `groundedText`.
+    /// This is the end-to-end lock on the demand/grant/rendered extraction and
+    /// the tap→record path, which the builder unit tests alone cannot see
+    /// (review, 2026-07-25).
+    func testPopulatedSourcesProduceAllocationAndSourceRows() async throws {
+        let harness = try makeHarness(recordsEnabled: true)
+        harness.viewModel.settings.polishClipboardContextEnabled = true
+        harness.viewModel.settings.repoVocabularyEnabled = true
+        harness.viewModel.dependencies.pasteboardReader = {
+            WiringPasteboardStub(text: "error in PolishContextBudget.swift line 40")
+        }
+        harness.viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding { _ in
+            RepoVocabularyMatcher.GroundingOutcome(
+                entries: [ReplacementEntry(replaceWith: "herdr", matches: ["herder"])],
+                isFallbackOnly: false
+            )
+        }
+        DiagnosticCaptureTap.shared.beginSession()
+        DiagnosticCaptureTap.shared.noteRepoVocabularyHarvest(["herdr", "pane.read"])
+        harness.viewModel.transcript.currentDictationEventText = "join the herder pane"
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        let record = try XCTUnwrap(recordsOnDisk(in: harness.captureDirectory).last)
+
+        // Grounding pre-applied the repo entry before the model saw the text.
+        XCTAssertEqual(record.text.groundedText, "join the herdr pane")
+
+        // One allocation row: only the clipboard declared a render demand.
+        XCTAssertEqual(record.allocation.count, 1)
+        let allocation = record.allocation[0]
+        XCTAssertEqual(allocation.source, "clipboard")
+        XCTAssertGreaterThan(allocation.demandedCharacters, 0)
+        XCTAssertEqual(allocation.grantedCharacters, allocation.demandedCharacters)
+        XCTAssertEqual(allocation.renderedCharacters, allocation.demandedCharacters)
+        XCTAssertFalse(allocation.excerptWasSelected)
+
+        let sourceNames = record.sources.map(\.source)
+        XCTAssertEqual(sourceNames, ["repoVocabulary", "clipboard"])
+
+        let repoRow = record.sources[0]
+        XCTAssertEqual(repoRow.harvest, ["herdr", "pane.read"])
+        XCTAssertEqual(repoRow.entries, [.init(term: "herdr", heard: ["herder"])])
+
+        let clipboardRow = record.sources[1]
+        XCTAssertTrue(
+            clipboardRow.harvest.contains("PolishContextBudget.swift"),
+            "the clipboard's technical entities are the harvest: \(clipboardRow.harvest)"
+        )
+        XCTAssertEqual(
+            clipboardRow.renderedExcerpt,
+            "error in PolishContextBudget.swift line 40"
+        )
+    }
+
+    /// The MAJOR from the 2026-07-25 review: a deadline-abandoned repo
+    /// vocabulary pipeline finishing AFTER its session ended must not write its
+    /// harvest into the next session's slot. Notes carry the generation they
+    /// were created under; a stale one is dropped.
+    func testStaleGenerationHarvestNoteIsRejected() {
+        let tap = DiagnosticCaptureTap.shared
+        tap.beginSession()
+        let staleGeneration = tap.currentGeneration
+        tap.beginSession() // the next dictation began; the old pipeline is stale
+
+        DiagnosticCaptureTap.$noteGeneration.withValue(staleGeneration) {
+            tap.noteRepoVocabularyHarvest(["previous-session-term"])
+        }
+        XCTAssertNil(
+            tap.consumeRepoVocabularyHarvest(),
+            "a stale pipeline's harvest must not survive into the new session"
+        )
+
+        DiagnosticCaptureTap.$noteGeneration.withValue(tap.currentGeneration) {
+            tap.noteRepoVocabularyHarvest(["current-session-term"])
+        }
+        XCTAssertEqual(tap.consumeRepoVocabularyHarvest(), ["current-session-term"])
+    }
+
+    /// The generation BINDING itself, through the real pipeline-task path: a
+    /// harvest noted from inside the detached pipeline (via the seam, which
+    /// shares `detachedRepoVocabularyPipeline` with production) carries the
+    /// creation-time generation and lands in the record. Deleting the
+    /// `withValue` binding would not fail this test — the next one exists for
+    /// that (verification review, 2026-07-25).
+    func testPipelineNotedHarvestRidesTheBindingIntoTheRecord() async throws {
+        let harness = try makeHarness(recordsEnabled: true)
+        harness.viewModel.settings.polishClipboardContextEnabled = true
+        harness.viewModel.settings.repoVocabularyEnabled = true
+        harness.viewModel.dependencies.pasteboardReader = {
+            WiringPasteboardStub(text: "clipboard text")
+        }
+        harness.viewModel.session.repoVocabularyPipeline.pipeline = { _ in
+            DiagnosticCaptureTap.shared.noteRepoVocabularyHarvest(["pipeline-term"])
+            return .empty
+        }
+        DiagnosticCaptureTap.shared.beginSession()
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        let record = try XCTUnwrap(recordsOnDisk(in: harness.captureDirectory).last)
+        let repoRow = record.sources.first { $0.source == "repoVocabulary" }
+        XCTAssertEqual(repoRow?.harvest, ["pipeline-term"])
+    }
+
+    /// The MAJOR's end-to-end regression: a pipeline whose session has ended
+    /// (the next dictation's `beginSession` ran) must have its harvest note
+    /// REJECTED — because the detached task carries the creation-time
+    /// generation. This is the test that fails if the `withValue` binding is
+    /// removed from `detachedRepoVocabularyPipeline`: an unbound note fails
+    /// open and the stale harvest would land in the record.
+    func testAbandonedPipelineHarvestIsRejectedByTheBinding() async throws {
+        let harness = try makeHarness(recordsEnabled: true)
+        harness.viewModel.settings.polishClipboardContextEnabled = true
+        harness.viewModel.settings.repoVocabularyEnabled = true
+        harness.viewModel.dependencies.pasteboardReader = {
+            WiringPasteboardStub(text: "clipboard text")
+        }
+        harness.viewModel.session.repoVocabularyPipeline.pipeline = { _ in
+            // The next dictation begins while this pipeline is still running…
+            DiagnosticCaptureTap.shared.beginSession()
+            // …so its late note is stale and must be dropped.
+            DiagnosticCaptureTap.shared.noteRepoVocabularyHarvest(["stale-term"])
+            return .empty
+        }
+        DiagnosticCaptureTap.shared.beginSession()
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        let record = try XCTUnwrap(recordsOnDisk(in: harness.captureDirectory).last)
+        XCTAssertNil(
+            record.sources.first { $0.source == "repoVocabulary" },
+            "a stale pipeline's harvest must not reach any record"
+        )
+    }
+
+    /// A stopped-with-no-speech session writes nothing: there was no polish
+    /// call and there is nothing to attribute.
+    func testEmptyDictationWritesNoRecord() async throws {
+        let harness = try makeHarness(recordsEnabled: true)
+        harness.viewModel.transcript.currentDictationEventText = "   "
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        XCTAssertEqual(try recordsOnDisk(in: harness.captureDirectory).count, 0)
+    }
+
+    // MARK: - Post-commit edit signal
+
+    /// The commit path arms the watch and hands it the record it just wrote: a
+    /// Backspace inside the window patches THAT record, in place.
+    func testCommitArmsTheEditWatchAndPatchesItsOwnRecord() async throws {
+        let signals = EditSignalHarness()
+        let harness = try makeHarness(recordsEnabled: true, editSignal: signals)
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        XCTAssertEqual(signals.monitor.startCount, 1, "the commit opened a window")
+        // "polished output text" is three words: the 1–5 rung of the ladder.
+        await signals.sleeper.waitForSleepRequest()
+        XCTAssertEqual(signals.sleeper.requestedDurations, [.seconds(2.0)])
+
+        signals.clock.advance(0.5)
+        signals.monitor.send(.backspace)
+        await signals.watcher.flushTask?.value
+
+        let records = try recordsOnDisk(in: harness.captureDirectory)
+        XCTAssertEqual(records.count, 1, "the signal patches the record, never adds one")
+        let behavior = try XCTUnwrap(records[0].behavior)
+        XCTAssertEqual(behavior.outcome, .edited)
+        XCTAssertEqual(behavior.signal, .backspace)
+        XCTAssertEqual(behavior.secondsSinceCommitBucket, "0-1")
+        XCTAssertEqual(behavior.wordCountBucket, "1-5")
+        XCTAssertEqual(behavior.outputMode, DictationOutputMode.overlayBuffer.rawValue)
+
+        // The rest of the record is untouched by the patch.
+        XCTAssertEqual(records[0].text.committedText, "polished output text")
+        XCTAssertNotNil(records[0].timings.captureMilliseconds)
+    }
+
+    /// A window that closes unobserved still patches its record: the clean
+    /// outcome is the denominator an edit rate needs.
+    func testUneventfulWindowPatchesTheCleanOutcome() async throws {
+        let signals = EditSignalHarness()
+        let harness = try makeHarness(recordsEnabled: true, editSignal: signals)
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        let windowTask = signals.watcher.windowTask
+        signals.clock.advance(2)
+        signals.sleeper.fireAll()
+        await windowTask?.value
+        await signals.watcher.flushTask?.value
+
+        let record = try XCTUnwrap(recordsOnDisk(in: harness.captureDirectory).last)
+        XCTAssertEqual(record.behavior?.outcome, .clean)
+        XCTAssertNil(record.behavior?.signal)
+    }
+
+    /// The compile flag alone must not watch either: with the runtime opt-in
+    /// off, no observer is ever installed.
+    func testDisarmedRuntimeFlagNeverInstallsAnObserver() async throws {
+        let signals = EditSignalHarness()
+        let harness = try makeHarness(recordsEnabled: false, editSignal: signals)
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        XCTAssertEqual(signals.monitor.startCount, 0)
+        XCTAssertFalse(signals.watcher.isWatching)
+        XCTAssertTrue(signals.sleeper.requestedDurations.isEmpty)
+    }
+
+    /// A stopped-with-no-speech session has nothing to attribute and nothing to
+    /// watch — the guard that skips the record skips the observer too.
+    func testEmptyDictationNeverInstallsAnObserver() async throws {
+        let signals = EditSignalHarness()
+        let harness = try makeHarness(recordsEnabled: true, editSignal: signals)
+        harness.viewModel.transcript.currentDictationEventText = "   "
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        XCTAssertEqual(signals.monitor.startCount, 0)
+    }
+
+    /// A commit that never landed must not be watched: `.failed` leaves nothing
+    /// in the target app to erase, so a Backspace typed there would be recorded
+    /// as erasing an insertion that never happened — and an uneventful window
+    /// would pad the `clean` denominator with unwatchable dictations. The
+    /// record itself is still written; it just carries no behavior block.
+    func testFailedCommitNeverArmsTheWatch() async throws {
+        let signals = EditSignalHarness()
+        let harness = try makeHarness(
+            recordsEnabled: true,
+            editSignal: signals,
+            commitOutcome: .failed(message: "insertion failed")
+        )
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        XCTAssertEqual(signals.monitor.startCount, 0, "nothing was inserted; nothing to watch")
+        XCTAssertFalse(signals.watcher.isWatching)
+        let record = try XCTUnwrap(recordsOnDisk(in: harness.captureDirectory).last)
+        XCTAssertNil(record.behavior, "an unwatched dictation keeps no behavior block")
+    }
+
+    /// Same rule for the Secure Keyboard Entry fallback: the text went to the
+    /// clipboard, not the target app, so post-commit keys say nothing about it.
+    func testClipboardFallbackCommitNeverArmsTheWatch() async throws {
+        let signals = EditSignalHarness()
+        let harness = try makeHarness(
+            recordsEnabled: true,
+            editSignal: signals,
+            commitOutcome: .copiedToClipboard(message: "Copied to clipboard")
+        )
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        XCTAssertEqual(signals.monitor.startCount, 0)
+        XCTAssertFalse(signals.watcher.isWatching)
+        let record = try XCTUnwrap(recordsOnDisk(in: harness.captureDirectory).last)
+        XCTAssertNil(record.behavior)
+    }
+
+    /// The watch window must scale with what was actually inserted. A
+    /// clipboard-payload commit inserts the substituted payload, not the
+    /// placeholder — a 100-word paste takes far longer to judge than one
+    /// placeholder token, so it gets the 15 s rung, not 2 s. The payload
+    /// itself must still never reach the record: only the window length (and
+    /// the bucket it implies) may reflect it.
+    func testClipboardPayloadWindowScalesWithTheInsertedPayload() async throws {
+        let signals = EditSignalHarness()
+        let harness = try makeHarness(recordsEnabled: true, editSignal: signals)
+        harness.viewModel.settings.clipboardPayloadMacroEnabled = true
+        let payload = (0..<100).map { "word\($0)" }.joined(separator: " ")
+        harness.viewModel.dependencies.pasteboardReader = {
+            WiringPasteboardStub(text: payload)
+        }
+        // The polish stub returns text without the placeholder, so the
+        // placeholder-count guard discards the polish and commits the
+        // placeholder-bearing grounded text — payload-substituted at commit.
+        harness.viewModel.transcript.currentDictationEventText = "paste clipboard"
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        await signals.sleeper.waitForSleepRequest()
+        XCTAssertEqual(
+            signals.sleeper.requestedDurations, [.seconds(15.0)],
+            "the window measures the substituted commit, not its placeholder"
+        )
+
+        let record = try XCTUnwrap(recordsOnDisk(in: harness.captureDirectory).last)
+        XCTAssertEqual(
+            record.text.committedText, ClipboardPayloadMacro.placeholder,
+            "measuring the payload must not persist it"
+        )
+
+        signals.clock.advance(1)
+        signals.monitor.send(.backspace)
+        await signals.watcher.flushTask?.value
+        let behavior = try XCTUnwrap(recordsOnDisk(in: harness.captureDirectory).last?.behavior)
+        XCTAssertEqual(behavior.wordCountBucket, "41+", "buckets follow the inserted length")
+        XCTAssertEqual(behavior.watchWindowSeconds, 15)
+    }
+
+    /// FINDING 3, at the notification wiring: the flush must run INLINE in the
+    /// `willTerminateNotification` observer. The observer's synchronous return
+    /// is the last execution the process guarantees — a Task spawned there is
+    /// not guaranteed to run — so the record must already be patched when
+    /// `post` returns, with deliberately no await in between. A private
+    /// notification center keeps the post from reaching every other retained
+    /// view model in the suite.
+    func testWillTerminateNotificationFlushesTheOpenWatchInline() async throws {
+        let signals = EditSignalHarness()
+        let center = NotificationCenter()
+        let harness = try makeHarness(recordsEnabled: true, editSignal: signals, lifecycleCenter: center)
+
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.session.polishAndCommitTask?.value
+        XCTAssertTrue(signals.watcher.isWatching, "the commit opened a window")
+
+        center.post(name: NSApplication.willTerminateNotification, object: nil)
+
+        let record = try XCTUnwrap(recordsOnDisk(in: harness.captureDirectory).last)
+        XCTAssertEqual(
+            record.behavior?.outcome, .superseded,
+            "the patch must be on disk when the observer returns"
+        )
+        XCTAssertFalse(signals.watcher.isWatching)
+    }
+
+    // MARK: - Builder
+
+    func testEndpointClassBuckets() {
+        let cases: [(String, String)] = [
+            ("http://127.0.0.1:8472/v1", "loopback"),
+            ("http://localhost:8080/v1", "loopback"),
+            ("http://[::1]:8080/v1", "loopback"),
+            ("http://192.168.1.183:8080/v1", "lan"),
+            ("http://10.0.0.7/v1", "lan"),
+            ("http://172.20.0.2/v1", "lan"),
+            ("http://mac-studio.local:8080/v1", "lan"),
+            ("http://172.15.0.2/v1", "remote"),
+            ("https://api.example.com/v1", "remote"),
+        ]
+        for (url, expected) in cases {
+            XCTAssertEqual(
+                DiagnosticRecordBuilder.endpointClass(of: URL(string: url)!),
+                expected, url
+            )
+        }
+    }
+
+    func testJoinBuilderMapsResolvedAndAbstainedJoins() {
+        let unresolved = DiagnosticRecordBuilder.join(
+            from: nil, abstentions: ["gate: accessibility not trusted"]
+        )
+        XCTAssertEqual(unresolved.arm, "none")
+        XCTAssertEqual(unresolved.abstentionReason, "gate: accessibility not trusted")
+        XCTAssertNil(unresolved.origin)
+
+        let empty = DiagnosticRecordBuilder.join(from: nil, abstentions: [])
+        XCTAssertEqual(empty.arm, "none")
+        XCTAssertNil(empty.abstentionReason)
+
+        // Every arm needs its own name in the record: a mis-blamed retrieval
+        // stage is exactly the attribution this capture exists to prevent.
+        let snapshot = ClaudeSessionSnapshot(
+            sessionID: "s1",
+            origin: .localAuthenticated(peerUID: 501),
+            firstSeen: Date(timeIntervalSince1970: 1_000_000)
+        )
+        let cmuxJoin = DiagnosticRecordBuilder.join(
+            from: ClaudeSessionJoin(
+                target: TerminalScreenTarget(
+                    pid: 4242, bundleID: TerminalScreenAllowlist.cmuxBundleID
+                ),
+                snapshot: snapshot,
+                windowID: 101,
+                mechanism: .cmuxSurface,
+                cmuxSurface: ClaudeCmuxSurfaceBinding(surfaceID: "surface-a")
+            ),
+            abstentions: []
+        )
+        XCTAssertEqual(cmuxJoin.arm, "cmuxSurface")
+        XCTAssertEqual(
+            cmuxJoin.terminal, "cmux",
+            "the record and `--probe-surface` derive this field from one shared summary, so it "
+                + "carries the terminal's NAME (as this type has always documented) rather than "
+                + "its bundle id"
+        )
+        XCTAssertEqual(cmuxJoin.origin, "local")
+        XCTAssertEqual(
+            cmuxJoin.herdrBound, false,
+            "a cmux join is not a herdr binding, and the record must not imply one"
+        )
+    }
+
+    func testScreenBuilderRouteAndCause() {
+        let vocabOnly = DiagnosticRecordBuilder.screen(
+            from: .vocabularyOnly(
+                startText: "screen text",
+                cause: .screenChanged(stopLength: 10, differingLines: 3, firstDifferingLine: 0)
+            ),
+            targetBundleID: TerminalScreenAllowlist.ghosttyBundleID,
+            socketPaneSwapApplied: false
+        )
+        XCTAssertEqual(vocabOnly.route, "axGrid")
+        XCTAssertEqual(vocabOnly.decision, "vocabularyOnly")
+        XCTAssertEqual(vocabOnly.cause, "screen-changed(stop:10ch lines:3 first:0)")
+        XCTAssertEqual(vocabOnly.sanitizedText, "screen text")
+        XCTAssertEqual(vocabOnly.sanitizedCharacterCount, "screen text".count)
+
+        let appleScript = DiagnosticRecordBuilder.screen(
+            from: .render(excerpt: "e", startText: "s", elidedChurnLines: 0),
+            targetBundleID: TerminalScreenAllowlist.iterm2BundleID,
+            socketPaneSwapApplied: false
+        )
+        XCTAssertEqual(appleScript.route, "appleScriptContents")
+        XCTAssertEqual(appleScript.decision, "render")
+
+        let herdr = DiagnosticRecordBuilder.screen(
+            from: .render(excerpt: "pane", startText: "pane", elidedChurnLines: 0),
+            targetBundleID: TerminalScreenAllowlist.ghosttyBundleID,
+            socketPaneSwapApplied: true
+        )
+        XCTAssertEqual(herdr.route, "herdrPaneRead")
+
+        // Same swap flag, different app: the record must name WHICH socket
+        // answered, or a cmux surface read reads back as a herdr pane read.
+        let cmux = DiagnosticRecordBuilder.screen(
+            from: .render(excerpt: "surface", startText: "surface", elidedChurnLines: 0),
+            targetBundleID: TerminalScreenAllowlist.cmuxBundleID,
+            socketPaneSwapApplied: true
+        )
+        XCTAssertEqual(cmux.route, "cmuxSurfaceRead")
+
+        let dropped = DiagnosticRecordBuilder.screen(
+            from: .drop(reason: .targetChanged),
+            targetBundleID: nil,
+            socketPaneSwapApplied: false
+        )
+        XCTAssertEqual(dropped.decision, "drop")
+        XCTAssertEqual(dropped.cause, "target-changed")
+        XCTAssertNil(dropped.route)
+        XCTAssertNil(dropped.sanitizedText)
+    }
+
+    func testAllocationsKeepZeroGrantsAndDropZeroDemands() {
+        let rows = DiagnosticRecordBuilder.allocations(
+            demands: [.repository: 9000, .terminal: 0, .clipboard: 200],
+            grants: [.repository: 0, .clipboard: 200],
+            rendered: [.clipboard: 180]
+        )
+        XCTAssertEqual(rows.count, 2, "zero-demand sources leave no row")
+
+        let repo = rows[0]
+        XCTAssertEqual(repo.source, "repository")
+        XCTAssertEqual(repo.demandedCharacters, 9000)
+        XCTAssertEqual(repo.grantedCharacters, 0)
+        XCTAssertTrue(
+            repo.excerptWasSelected,
+            "a starved source is exactly what bucket 4 needs recorded"
+        )
+
+        let clipboard = rows[1]
+        XCTAssertEqual(clipboard.source, "clipboard")
+        XCTAssertFalse(clipboard.excerptWasSelected)
+        XCTAssertEqual(clipboard.renderedCharacters, 180)
+    }
+
+    func testHarvestListIsCappedInTheRecordOnly() {
+        let harvest = (0..<(DiagnosticRecordBuilder.harvestTermCap + 7)).map { "term\($0)" }
+        let row = DiagnosticRecordBuilder.source(DiagnosticRecordBuilder.SourceInputs(
+            source: .clipboard,
+            harvest: harvest,
+            outcome: .empty,
+            renderedExcerpt: nil
+        ))
+        XCTAssertEqual(row.harvest.count, DiagnosticRecordBuilder.harvestTermCap)
+        XCTAssertEqual(row.harvestCount, harvest.count, "the true pool size survives the cap")
+        XCTAssertTrue(row.harvestTruncated)
+    }
+
+    func testTapBeginSessionClearsBothSlots() {
+        DiagnosticCaptureTap.shared.beginSession()
+        DiagnosticCaptureTap.shared.noteJoinAbstention("tty: stale")
+        DiagnosticCaptureTap.shared.noteRepoVocabularyHarvest(["Term"])
+        DiagnosticCaptureTap.shared.beginSession()
+        XCTAssertEqual(DiagnosticCaptureTap.shared.consumeJoinAbstentions(), [])
+        XCTAssertNil(DiagnosticCaptureTap.shared.consumeRepoVocabularyHarvest())
+    }
+
+    // MARK: - Harness (mirrors the polish-failure diagnostics suite)
+
+    private struct Harness {
+        let viewModel: DictationViewModel
+        let captureDirectory: URL
+        /// An in-memory History holding the records' store, when asked for.
+        let history: DictationSessionStore?
+    }
+
+    /// The injected seams of the post-commit edit watch, bundled so a test can
+    /// drive the window without wall-clock.
+    @MainActor
+    private struct EditSignalHarness {
+        let monitor = EditSignalTestMonitor()
+        let sleeper = EditSignalManualSleeper()
+        let clock = EditSignalTestClock()
+        let watcher: EditSignalWatcher
+
+        init() {
+            let monitor = self.monitor
+            let sleeper = self.sleeper
+            let clock = self.clock
+            watcher = EditSignalWatcher(
+                monitor: monitor,
+                now: { clock.now() },
+                sleepFor: { await sleeper.sleep($0) }
+            )
+        }
+    }
+
+    private func makeHarness(
+        recordsEnabled: Bool,
+        withHistory: Bool = false,
+        blockCaptureDirectory: Bool = false,
+        editSignal: EditSignalHarness? = nil,
+        commitOutcome: OverlayBufferCommitOutcome = .succeeded,
+        lifecycleCenter: NotificationCenter? = nil
+    ) throws -> Harness {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.llmPolishingEnabled = true
+        settings.polishingBackendMode = .managedLocal
+        settings.diagnosticRecordsEnabled = recordsEnabled
+
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diagnostic-wiring-\(UUID().uuidString)", isDirectory: true)
+        let captureDirectory = base.appendingPathComponent("captures", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        if blockCaptureDirectory {
+            // A regular FILE at the directory path: every store write fails.
+            try Data("not a directory".utf8).write(
+                to: captureDirectory, options: []
+            )
+        }
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: base)
+        }
+
+        let overlayCoordinator = MockOverlayCoordinator()
+        overlayCoordinator.commitOutcome = commitOutcome
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false,
+            dependencies: .init(lifecycleNotificationCenter: lifecycleCenter)
+        )
+        viewModel.appConfigStore = MockAppConfigStore()
+        viewModel.llmPolishingService = FakePolishingService(returning: "polished output text", durationSeconds: 0.25)
+        let recordStore = DiagnosticRecordStore(directoryURL: captureDirectory)
+        viewModel.session.diagnosticRecordStore = recordStore
+        var history: DictationSessionStore?
+        if withHistory {
+            history = try XCTUnwrap(DictationSessionStore(inMemory: true))
+            history?.diagnosticRecordStore = recordStore
+            viewModel.sessionStore = history
+        }
+        // Always injected, even for the tests that ignore it: the production
+        // watcher would arm a REAL 2 s timer on a process-retained view model,
+        // and this suite does not add wall-clock timers (AGENTS.md).
+        let signals = editSignal ?? EditSignalHarness()
+        viewModel.session.editSignalWatcher = signals.watcher
+        let sleeper = signals.sleeper
+        addTeardownBlock {
+            // Release a window the test never closed, so no continuation is
+            // left unresumed behind it.
+            sleeper.fireAll()
+        }
+        viewModel.session.isShowingConnectionFailureAlert = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.session.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.transcript.currentDictationEventText = "polish this text"
+        return Harness(viewModel: viewModel, captureDirectory: captureDirectory, history: history)
+    }
+
+    /// Decoded records, oldest first.
+    private func recordsOnDisk(in directory: URL) throws -> [DiagnosticRecord] {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+        let names = try FileManager.default
+            .contentsOfDirectory(atPath: directory.path).sorted()
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try names.map { name in
+            let data = try Data(contentsOf: directory.appendingPathComponent(name))
+            return try decoder.decode(DiagnosticRecord.self, from: data)
+        }
+    }
+
+}
+
+/// A plain-text pasteboard with no concealed/transient markers.
+private final class WiringPasteboardStub: PasteboardReading {
+    private let text: String
+    init(text: String) { self.text = text }
+    func types() -> [NSPasteboard.PasteboardType]? { [.string] }
+    func string() -> String? { text }
+}
+
+/// Whether a closure that crosses to another task ran.
+private final class WriteFlag: Sendable {
+    private let value = Mutex(false)
+    func set() { value.withLock { $0 = true } }
+    var isSet: Bool { value.withLock { $0 } }
+}

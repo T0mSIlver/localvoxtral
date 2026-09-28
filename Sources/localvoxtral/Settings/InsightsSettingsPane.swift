@@ -32,12 +32,18 @@ struct InsightsSettingsPane: View {
             learningGroup(model.trend ?? DictationLearningTrend())
             recurringFixesGroup(shown)
             appsGroup(shown)
+            usageGroup(model.featureUsage)
         }
         .onAppear { viewModel.applyDictationHistoryRetention() }
         .task(id: ReloadTrigger(
             revision: viewModel.dictationHistoryRevision, period: model.period
         )) {
             await model.reload()
+        }
+        .task(id: ReloadTrigger(
+            revision: viewModel.engines.mistralUsageRevision, period: model.period
+        )) {
+            model.reloadUsage()
         }
     }
 
@@ -144,6 +150,21 @@ struct InsightsSettingsPane: View {
                     InsightRow(
                         title: model.appNames[app.bundleID] ?? app.bundleID,
                         value: DictationInsightsText.share(app.dictations, of: insights.dictations))
+                }
+            }
+        }
+    }
+
+    private func usageGroup(_ features: [FeatureUsage]) -> some View {
+        SettingsGroup(title: "Usage by feature") {
+            if features.isEmpty {
+                SettingsGroupRow {
+                    Text("No model calls in this period.")
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                ForEach(features, id: \.feature) { usage in
+                    InsightRow(title: usage.feature.label, value: usage.line())
                 }
             }
         }

@@ -59,6 +59,14 @@ struct localvoxtralApp: App {
                             "secure-input-warning",
                             "localvoxtral, Secure Keyboard Entry is blocking dictation typing"
                         )
+                    case .agentNeedsYou:
+                        return (
+                            MenuBarIconAsset.attentionIcon(
+                                appDelegate.settingsStore.agentAttentionMark) ?? idleIcon,
+                            .original,
+                            "agent-needs-you-\(appDelegate.settingsStore.agentAttentionMark.rawValue)",
+                            "localvoxtral, an agent needs you"
+                        )
                     case .failure:
                         if let failureIcon = MenuBarIconAsset.failureIcon {
                             return (
@@ -101,6 +109,8 @@ struct localvoxtralApp: App {
                 case .secureInputWarning:
                     Label("localvoxtral", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
+                case .agentNeedsYou:
+                    Label("localvoxtral", systemImage: "bell.badge")
                 }
             }
         }
@@ -201,6 +211,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// records it exists to collect.
     private let claudeSessionRegistry: ClaudeSessionRegistry
     private var claudeContextBroker: ClaudeContextBroker?
+    /// Set only when launch lost a hook socket to another running copy.
+    private var hookSocketTakeover: ClaudeHookSocketTakeover?
     private var terminalConsentPrewarmObserver:
         TerminalAutomationConsentPrewarmSettingsObserver?
     /// The browser half of the same pre-warm, kept separate because it is armed
@@ -245,8 +257,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// update-or-keep decision; held here while onboarding is on screen.
     private var pendingConfigDefaultsPromptFileNames: [String]?
 
-    #if LOCALVOXTRAL_DOGFOOD
-    /// The dogfood-only local control socket and the service behind it.
+    #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
+    /// The harness-only local control socket and the service behind it.
     ///
     /// Owned here for the same reason the broker is: the socket answers
     /// questions about the registry and the resolver, both of which live at
@@ -298,8 +310,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let manager = BackendManager(
             polishingModelProvider: { settings.resolvedManagedLLMPolishingModel },
-            speechModelProvider: { settings.resolvedManagedSpeechModel },
-            speechdCacheLimitProvider: { settings.speechdCacheLimit.megabytes }
+            speechModelProvider: { settings.resolvedManagedSpeechModel }
         )
         settingsStore = settings
         backendManager = manager
@@ -316,10 +327,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             LegacyMLXLMCleanup().run()
             LegacyVoxmlxCleanup().run()
         }
-        startClaudeContextBroker()
-        startClaudeRemoteListener()
+        if StartupPermissionSuppression.leavesHookSocketsAlone() {
+            Log.claudeContext.notice(
+                "Claude hook sockets and remote forwards left alone: a CI copy beside the owner's"
+            )
+        } else {
+            let brokerStart = startClaudeContextBroker()
+            startClaudeRemoteListener()
+            armHookSocketTakeover(brokerStart: brokerStart)
+        }
         maintainLocalClaudePlugin()
-        #if LOCALVOXTRAL_DOGFOOD
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         // After the broker, because the control service's `surface probe` uses
         // the resolver the broker installs on the view model.
         startDogfoodControlSocket()
@@ -344,7 +362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         widgetSnapshotWriter?.writeAppQuit()
         widgetSnapshotWriter = nil
-        #if LOCALVOXTRAL_DOGFOOD
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         // First: `stop()` does not return until the accept loop has unlinked
         // the socket, so nothing that follows can race a client connecting to
         // an app that is halfway through quitting. The service's bounded
@@ -423,11 +441,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    #if LOCALVOXTRAL_DOGFOOD
-    /// Binds the dogfood-only control socket, if the owner armed it.
+    #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
+    /// Binds the harness-only control socket, if the owner armed it.
     ///
-    /// Two gates, both required, exactly like the capture: this file is only
-    /// compiled under `LOCALVOXTRAL_DOGFOOD`, and even then the socket binds
+    /// Two gates, both required, exactly like the capture: this code is only
+    /// compiled under `DEBUG || LOCALVOXTRAL_E2E_HARNESS`, and even then the socket binds
     /// only when `debug.dogfood_control_socket_enabled` is set. A shipped build
     /// contains none of this.
     ///
@@ -511,6 +529,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     #endif
 
+    /// Claude Desktop's session link, opened in Desktop itself (another app
+    /// may also claim `claude://`), read back through the join's resolver.
+    private static func liveClaudeDesktopFocuser(
+        resolver: ClaudeSessionJoinResolver,
+        sleep: @escaping @Sendable (Duration) async -> Void
+    ) -> ClaudeDesktopSessionPaneFocuser {
+        let runningDesktop = {
+            NSRunningApplication.runningApplications(withBundleIdentifier: ClaudeDesktopAllowlist.bundleID).first
+        }
+        return ClaudeDesktopSessionPaneFocuser(
+            desktopPID: { runningDesktop()?.processIdentifier },
+            frontmostPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
+            open: { link in
+                guard let appURL = runningDesktop()?.bundleURL else { return false }
+                NSWorkspace.shared.open([link], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+                    if error != nil {
+                        Log.claudeContext.error("go to session: Claude Desktop refused its session link")
+                    }
+                }
+                return true
+            },
+            shownSessionID: { pid in
+                await resolver.sessionShown(
+                    target: TerminalScreenTarget(pid: pid, bundleID: ClaudeDesktopAllowlist.bundleID)
+                )
+            },
+            sleep: sleep
+        )
+    }
+
+    /// The needs-you cue (#717). Its own resolver asks only the local
+    /// questions (`sessionShown`): nothing here can open a forward, stamp a
+    /// herdr panel or dial cmux. A terminal it has no Automation consent for
+    /// is not asked at all, so a turn's end never raises the consent sheet;
+    /// that answer counts as not looking, and the cue fires.
+    private func installAgentAttention(
+        ttyReader: AppleScriptTerminalTTYReader,
+        desktopSessionReader: AXClaudeDesktopSessionURLReader,
+        herdrClient: HerdrSocketClient
+    ) {
+        let registry = claudeSessionRegistry
+        let paneResolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            focusedTerminalTTY: { bundleID in
+                guard await AutomationConsent.isGranted(bundleID: bundleID) else { return nil }
+                return await ttyReader.focusedTerminalTTY(bundleID: bundleID)
+            },
+            focusedDesktopSessionURL: { await desktopSessionReader.focusedSessionURL(applicationPID: $0) },
+            herdrClientProbe: { HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: $0) },
+            herdrFederation: { HerdrMachineFederationReader.live().federation() },
+            herdrClientSurfaceCount: { HerdrClientTTYProbe.clientSurfaceCount() },
+            herdrPanes: herdrClient
+        )
+        let settings = viewModel.settings
+        let tracker = AgentAttentionTracker(
+            isEnabled: { settings.agentAttentionEnabled },
+            isWatching: { session in
+                guard let target = TerminalScreenContextSource.frontmostTarget() else { return false }
+                return await paneResolver.sessionShown(target: target) == session.sessionID
+            },
+            liveSessionIDs: { Set(registry.liveSessions().map(\.sessionID)) },
+            now: { Date() }
+        )
+        let announcer = AgentAttentionAnnouncer()
+        if settings.agentAttentionEnabled { announcer.requestSoundIfMissing() }
+        viewModel.agentAttention = AgentAttentionModel(tracker: tracker, announcer: announcer)
+        // The registry calls this on whichever socket thread ingested; the
+        // sequence it stamps under its lock puts a session's events back in
+        // order.
+        registry.setTurnObserver { event, session, sequence in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { _ = tracker.receive(event, session: session, sequence: sequence) }
+            }
+        }
+    }
+
     /// Binds the hook socket and installs the pane authorizer that depends on it.
     ///
     /// Failure is non-fatal by design: the app's own dictation does not need the
@@ -520,10 +614,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// only installed on success — so a build where the broker never bound
     /// degrades to vocabulary-only screen context rather than to an unguarded
     /// attachment.
-    private func startClaudeContextBroker() {
+    @discardableResult
+    private func startClaudeContextBroker() -> ClaudeHookSocketTakeover.Outcome {
         guard let socketPath = ClaudeHookSocketPath.resolve() else {
             Log.claudeContext.error("Claude context broker not started: no socket path (HOME unset)")
-            return
+            return .failed
         }
         // The `localvoxtral` command's requests arrive on the same socket
         // (#721) and are answered from the app's own stores.
@@ -613,6 +708,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             )
             viewModel.context.claudeSessionJoinResolver = resolver
+            // "Go to <name>" (#723): the same registry and the same
+            // focused-pane reader as the join, so a pane counts as brought
+            // forward by the evidence the join trusts.
+            viewModel.session.sessionNavigator = SessionNavigator(
+                liveSessions: { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() },
+                repositoryRoot: SessionNavigator.liveRepositoryRoot,
+                focuser: SessionPaneFocuserRouter(
+                    terminal: TerminalSessionPaneFocuser.live(ttyReader: ttyReader),
+                    claudeDesktop: Self.liveClaudeDesktopFocuser(
+                        resolver: resolver,
+                        sleep: viewModel.session.dependencies.clock.sleep
+                    )
+                ),
+                sleep: viewModel.session.dependencies.clock.sleep,
+                nicknames: .userDefaults(.standard, key: "session_navigation.nicknames")
+            )
+            installAgentAttention(
+                ttyReader: ttyReader,
+                desktopSessionReader: desktopSessionReader,
+                herdrClient: herdrClient
+            )
             // Correction learning compares each submitted prompt with the
             // dictation the app inserted into that session. The registry
             // calls this on the ingesting socket thread.
@@ -699,11 +815,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     currentJoin: { [weak viewModel] in viewModel?.context.claudeSessionJoin }
                 )
             )
+            return .bound
         } catch {
             Log.claudeContext.error(
                 "Claude context broker failed to start: \(String(describing: error), privacy: .public)"
             )
+            return ClaudeHookSocketTakeover.Outcome(startError: error)
         }
+    }
+
+    /// A copy launched while another runs (a `try-pr.sh` build, a CI launch
+    /// smoke) loses the broker socket and the listener's port to it. Without
+    /// this it stayed deaf after the other copy quit, and every join abstained
+    /// until a relaunch (#655). The broker step reruns the whole start, since
+    /// everything after the bind is wired only on success.
+    private func armHookSocketTakeover(brokerStart: ClaudeHookSocketTakeover.Outcome) {
+        var steps: [ClaudeHookSocketTakeover.Step] = []
+        if brokerStart == .heldByAnotherCopy {
+            steps.append(.init(name: "broker") { [weak self] in
+                self?.startClaudeContextBroker() ?? .failed
+            })
+        }
+        if let settings = viewModel.claudeIntegrationSettings,
+           case .portConflict = settings.listenerStatus {
+            // On a clock too: the port's holder may be no copy of the app,
+            // and a failed bind touches no one (#892).
+            steps.append(.init(name: "remote listener", retryInterval: .seconds(10)) { [weak settings] in
+                guard let settings else { return .failed }
+                // Through the model, so Settings shows the new status; it
+                // also starts the forwards once the port is bound. The
+                // takeover logs the wait once, not every ten seconds.
+                settings.synchronizeListenerAtLaunch(logsPortConflict: false)
+                switch settings.listenerStatus {
+                case .portConflict: return .heldByAnotherCopy
+                case .failed: return .failed
+                case .idle, .listening: return .bound
+                }
+            })
+        }
+        guard !steps.isEmpty else { return }
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let bundleID = Bundle.main.bundleIdentifier
+        let takeover = ClaudeHookSocketTakeover(
+            steps: steps,
+            otherCopies: {
+                guard let bundleID else { return [] }
+                return NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+                    .map(\.processIdentifier)
+                    .filter { $0 != ownPID }
+            },
+            watchExit: { pid, onExit in ProcessExitWatch(pid: pid, onExit: onExit) }
+        )
+        hookSocketTakeover = takeover
+        takeover.begin()
     }
 
     /// Keeps an installed local Claude Code plugin working without a click:
@@ -792,9 +956,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A remote project's terms come from a run on its host (#641); the
         // proposer marks the session, the listener asks and takes the answer.
         let projectTerms: RemoteProjectTermRequests? = registry.flatMap { hosts in
-            viewModel.learnedTermStore.map { RemoteProjectTermRequests(store: $0, hosts: hosts) }
+            viewModel.learnedTermStore.map {
+                RemoteProjectTermRequests(store: $0, hosts: hosts, usageRecorder: viewModel.engines.usageLedger)
+            }
         }
         viewModel.session.projectTermProposer?.attachRemote(projectTerms)
+        // Quick capture's README summaries and drafts for remote projects
+        // (#745), on the same channel.
+        let quickCapture: RemoteQuickCaptureRequests? = registry.flatMap { hosts in
+            viewModel.learnedTermStore.map {
+                RemoteQuickCaptureRequests(
+                    store: $0, hosts: hosts, registry: claudeSessionRegistry,
+                    usageRecorder: viewModel.engines.usageLedger
+                )
+            }
+        }
+        viewModel.quickCapture?.attachRemote(quickCapture)
+        viewModel.quickCapture?.enrolledHosts = {
+            registry?.hosts().filter { $0.revokedAt == nil }.map { (id: $0.id, name: $0.label) } ?? []
+        }
+        viewModel.quickCapture?.liveSessions = { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() }
 
         let coordinator = registry.map { hosts in
             ClaudeRemoteListenerCoordinator(
@@ -815,7 +996,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         )
                     }
                 },
-                projectTerms: projectTerms
+                projectTerms: projectTerms,
+                quickCapture: quickCapture,
+                doctor: RemoteDoctorRoute { @MainActor [weak viewModel] hostID in
+                    guard let viewModel else { return [] }
+                    return await AgentCLIAppDataSource(viewModel: viewModel).hostDoctorChecks(hostID: hostID)
+                }
             )
         }
         claudeRemoteListenerCoordinator = coordinator
@@ -1263,6 +1449,16 @@ private enum MenuBarIconAsset {
         "MicIconTemplate_failure",
         "MicIconTemplate@2x_failure",
     ])
+
+    private static var attentionIcons: [AgentAttentionMark: NSImage] = [:]
+
+    static func attentionIcon(_ mark: AgentAttentionMark) -> NSImage? {
+        if let icon = attentionIcons[mark] { return icon }
+        guard let template = idleIcon else { return nil }
+        let icon = MenuBarStatusIcon.withAttentionMark(template: template, mark: mark)
+        attentionIcons[mark] = icon
+        return icon
+    }
 
     private static func adaptiveIcon(coloredCandidates: [String]) -> NSImage? {
         guard let template = idleIcon,

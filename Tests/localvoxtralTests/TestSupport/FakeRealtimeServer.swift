@@ -39,6 +39,9 @@ final class FakeRealtimeServer: @unchecked Sendable {
         var isClosed = false
         var closeWaiters: [BoundedWait] = []
         var listenerError: NWError?
+        var holdsConnections = false
+        var heldConnections: [NWConnection] = []
+        var heldWaiters: [BoundedWait] = []
     }
 
     private let listener: NWListener
@@ -90,7 +93,9 @@ final class FakeRealtimeServer: @unchecked Sendable {
 
     func stop() {
         listener.cancel()
-        state.withLock { $0.connection }?.cancel()
+        let (connection, held) = state.withLock { ($0.connection, $0.heldConnections) }
+        connection?.cancel()
+        held.forEach { $0.cancel() }
     }
 
     /// Sends one JSON frame to the connected client.
@@ -102,8 +107,50 @@ final class FakeRealtimeServer: @unchecked Sendable {
         send(json, on: connection)
     }
 
+    /// From now on a new connection waits, with its WebSocket handshake
+    /// unanswered, until `releaseHeldConnections`: the window between the
+    /// dial and the socket opening.
+    func holdConnections() {
+        state.withLock { $0.holdsConnections = true }
+    }
+
+    /// Returns once a held connection is waiting.
+    func awaitHeldConnection(
+        failAfter: TimeInterval = 10,
+        isolation: isolated (any Actor)? = #isolation,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let held = BoundedWait()
+        let isHeld = state.withLock { state -> Bool in
+            if !state.heldConnections.isEmpty { return true }
+            state.heldWaiters.append(held)
+            return false
+        }
+        if isHeld { return }
+        if await held.value(failAfter: failAfter) { return }
+        XCTFail("the client never dialled", file: file, line: line)
+    }
+
+    /// Answers the held connections, and every later one at once.
+    func releaseHeldConnections() {
+        let held = state.withLock { state -> [NWConnection] in
+            state.holdsConnections = false
+            let held = state.heldConnections
+            state.heldConnections = []
+            return held
+        }
+        held.forEach { accept($0) }
+    }
+
     /// Every frame received so far.
     var frames: [Frame] { state.withLock { $0.frames } }
+
+    /// Drops the frames received so far, so the next dictation's waits
+    /// match only what its own socket sends.
+    func forgetFrames() {
+        state.withLock { $0.frames.removeAll() }
+    }
 
     /// Returns the first frame, received already or later, that `matches`.
     /// Nil, and a test failure, if none arrives within `failAfter` seconds of
@@ -153,6 +200,17 @@ final class FakeRealtimeServer: @unchecked Sendable {
     // MARK: - Connection
 
     private func accept(_ connection: NWConnection) {
+        let heldWaiters = state.withLock { state -> [BoundedWait]? in
+            guard state.holdsConnections else { return nil }
+            state.heldConnections.append(connection)
+            let waiters = state.heldWaiters
+            state.heldWaiters = []
+            return waiters
+        }
+        if let heldWaiters {
+            heldWaiters.forEach { $0.resolve() }
+            return
+        }
         let previous = state.withLock { state -> NWConnection? in
             let previous = state.connection
             state.connection = connection

@@ -316,9 +316,7 @@ package struct HerdrPanelBindingProbe {
         )
         let noted = "remoteHerdrPanel: \(cause.rawValue)"
         ClaudeJoinAbstentionTap.note(noted)
-        #if LOCALVOXTRAL_DOGFOOD
-        ClaudeJoinAbstentionTap.noteForDogfood(noted)
-        #endif
+        ClaudeJoinAbstentionTap.noteForDiagnostics(noted)
     }
 }
 

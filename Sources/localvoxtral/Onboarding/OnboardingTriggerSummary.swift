@@ -18,8 +18,10 @@ struct DictationTriggerSummary: Equatable {
     static func make(settings: SettingsStore) -> DictationTriggerSummary {
         if settings.modifierOnlyHotKeyEnabled {
             return DictationTriggerSummary(
-                primary: settings.modifierOnlyHotKeyModifier.displayName,
-                explanation: "Tap for Overlay Buffer, hold for Live Auto-Paste.",
+                primary: settings.dictationChord?.displayName ?? settings.modifierOnlyHotKeyModifier.displayName,
+                explanation: settings.modifierHoldLiveAutoPaste
+                    ? "Tap for Overlay Buffer, hold for Live Auto-Paste."
+                    : "Tap to dictate, or hold and let go when done.",
                 isModifierOnly: true
             )
         }

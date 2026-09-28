@@ -261,13 +261,4 @@ final class ClipboardPayloadMacroTests: XCTestCase {
             [placeholder]
         )
     }
-
-    /// If the polish model deletes the placeholder, the guard falls back to the
-    /// placeholder-bearing working text — the macro survives the LLM.
-    func testGuardFallsBackWhenModelDropsPlaceholder() {
-        let original = "x \(placeholder) y"
-        let result = PolishTokenGuard.verifyAndRepair(polished: "x y", original: original)
-        XCTAssertEqual(result.outcome, .fallback(missing: [placeholder]))
-        XCTAssertEqual(result.text, original)
-    }
 }

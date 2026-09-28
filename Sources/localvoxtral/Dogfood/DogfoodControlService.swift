@@ -1,4 +1,4 @@
-#if LOCALVOXTRAL_DOGFOOD
+#if DEBUG || LOCALVOXTRAL_E2E_HARNESS
 
 import Foundation
 import Synchronization
@@ -263,7 +263,7 @@ final class DogfoodControlService {
         // hotkey at T+60, starts one of their own at T+90, and the cap ends
         // THEIR dictation mid-thought at T+120. The socket verbs cannot see a
         // hotkey stop, so the identity has to be carried rather than observed.
-        let armedGeneration = DogfoodCaptureTap.shared.currentGeneration
+        let armedGeneration = DiagnosticCaptureTap.shared.currentGeneration
         autoStopTask = Task { @MainActor [weak self] in
             guard let self else { return }
             await self.sleepFor(self.autoStopAfter)
@@ -271,7 +271,7 @@ final class DogfoodControlService {
             self.autoStopTask = nil
             guard let viewModel = self.viewModel else { return }
             guard viewModel.isDictating || viewModel.isConnectingRealtimeSession else { return }
-            let running = DogfoodCaptureTap.shared.currentGeneration
+            let running = DiagnosticCaptureTap.shared.currentGeneration
             guard running <= armedGeneration &+ 1 else {
                 Log.claudeContext.info(
                     "Dogfood control: cap expired on a session that already ended; the dictation running now is not ours"
@@ -304,10 +304,10 @@ final class DogfoodControlService {
     /// produced it — read from the tap's durable slot rather than the
     /// consumable one, so asking does not steal the capture record's causes.
     private func joinReport() -> String {
-        let recorded = DogfoodCaptureTap.shared.lastResolvedJoin()
+        let recorded = DiagnosticCaptureTap.shared.lastResolvedJoin()
         return DogfoodControlJSON.object([
             ("present", DogfoodControlJSON.bool(recorded != nil)),
-            ("dictations", DogfoodControlJSON.int(Int(DogfoodCaptureTap.shared.currentGeneration))),
+            ("dictations", DogfoodControlJSON.int(Int(DiagnosticCaptureTap.shared.currentGeneration))),
             ("join", recorded?.jsonLine ?? "null"),
         ])
     }

@@ -51,3 +51,25 @@ package enum ClaudeDesktopSessionURL {
         )
     }
 }
+
+/// The link that brings a Claude Desktop Code-tab session forward (#834):
+/// `claude://code/continue?session=local_<uuid>`, which Desktop routes to the
+/// session's `/epitaxy/local_<uuid>` view. Read from Desktop 2.9939.2's own
+/// handler (2026-09-27): it takes `session` only when it matches
+/// `^local_[A-Za-z0-9-]{1,64}$`, and a session it does not hold lands on the
+/// empty Code tab. UNDOCUMENTED, like the view's address: the read-back, not
+/// this link, decides whether the session came forward.
+package enum ClaudeDesktopSessionLink {
+    private static let maxSuffixCount = 64
+
+    /// Nil when `desktopSessionID` is not a shape Desktop's handler takes.
+    package static func continueURL(desktopSessionID: String) -> URL? {
+        let prefix = "local_"
+        guard desktopSessionID.hasPrefix(prefix) else { return nil }
+        let suffix = desktopSessionID.dropFirst(prefix.count)
+        guard !suffix.isEmpty, suffix.count <= maxSuffixCount,
+              suffix.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") })
+        else { return nil }
+        return URL(string: "claude://code/continue?session=\(desktopSessionID)")
+    }
+}

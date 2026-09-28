@@ -35,9 +35,14 @@ final class SessionContextResolver {
     /// pane did not positively join. Cleared on every session exit.
     var claudeSessionJoin: ClaudeSessionJoin?
     /// The route into the joined agent's prompt, resolved once at start
-    /// next to the join: opencode's prompt relay (#719). Nil unless one
+    /// next to the join: opencode's prompt relay (#719) or the joined cmux
+    /// surface (#727). Nil unless one
     /// resolved. Cleared with the join.
     var agentPromptRoute: (any AgentPromptRoute)?
+    /// Whether this dictation's context join asked the terminal arms, even
+    /// if it found no session. A route resolved without a join asks the
+    /// arms itself only when the join did not: the answer would be the same.
+    private var contextJoinAskedTheArms = false
     /// Panel indicators own their associated remote forward until an explicit
     /// token clear has completed, so teardown cannot close the tunnel before
     /// the clear request reaches herdr.
@@ -63,6 +68,11 @@ final class SessionContextResolver {
         Log.claudeContext.notice("Claude join outcome: \(line, privacy: .public)")
     }
 
+    /// The last lines `joinOutcomeLog` got, most recent first, for
+    /// `localvoxtral doctor`. The unified log keeps them too, but only
+    /// `localvoxtral logs` knows the predicate.
+    private(set) var recentJoinOutcomes: [AgentCLIDoctorFacts.JoinLine] = []
+
     init(settings: SettingsStore, textInsertion: TextInsertionService) {
         self.settings = settings
         self.textInsertion = textInsertion
@@ -82,12 +92,11 @@ final class SessionContextResolver {
     /// means the screen is never read. A nil polishing configuration also means
     /// no read: with no endpoint there is nothing to ground for.
     func captureAtStart() async -> OverlayClaudeJoinBadge {
-        #if LOCALVOXTRAL_DOGFOOD
         // A fresh dictation gets fresh tap slots: an abandoned pipeline's late
         // note from the PREVIOUS session must not describe this one. (The
         // owner supersedes its post-commit edit watch before calling here.)
-        DogfoodCaptureTap.shared.beginSession()
-        #endif
+        DiagnosticCaptureTap.shared.beginSession()
+        contextJoinAskedTheArms = false
         guard let endpointURL = settings.llmPolishingConfiguration?.endpointURL else {
             terminalScreenStartCapture = nil
             claudeSessionJoin = nil
@@ -112,6 +121,7 @@ final class SessionContextResolver {
             await resolveClaudeSessionJoin(endpointURL: endpointURL)
         }
         claudeSessionJoin = attempt.join
+        if case .resolved = attempt { contextJoinAskedTheArms = true }
         noteJoinOutcome(attempt, causes: causes)
         // Ownership of the join's `ssh -L` is taken HERE, at the one place a
         // join is ever assigned, and never given back to whoever happens to
@@ -149,9 +159,9 @@ final class SessionContextResolver {
     /// Resolves where this dictation may write instead of typing: the prompt
     /// relay of the focused opencode pane (#719). Runs after the join. A
     /// join that resolved answers from its own session and asks no surface
-    /// again; without one, the resolver asks the focused TTY, and only while
-    /// some opencode pane has a relay, so a Mac with none sends no Apple
-    /// event for it. Needs none of the join's context gates: nothing is read
+    /// again; without one, the resolver asks the focused TTY (and, inside a
+    /// local herdr, herdr's focused pane, #733), and only while some opencode
+    /// pane has a relay, so a Mac with none sends no Apple event for it. Needs none of the join's context gates: nothing is read
     /// here, and what is written is what the user dictated into that pane.
     private func resolveOpencodePromptRoute() async -> OpencodePromptRoute? {
         guard let resolver = claudeSessionJoinResolver,
@@ -169,12 +179,38 @@ final class SessionContextResolver {
         return relay.map { OpencodePromptRoute(relay: $0) }
     }
 
-    /// The joined herdr pane, written through herdr's socket (#726). Only a
-    /// herdr pane join yields one, so it carries that join's consent and
-    /// reaches only its pane.
-    private func resolveHerdrPaneRoute() -> HerdrPanePromptRoute? {
-        guard let join = claudeSessionJoin else { return nil }
-        return claudeSessionJoinResolver?.herdrPromptRoute(for: join) {
+    /// The joined herdr pane, written through herdr's socket (#726). With
+    /// no context join (polishing off), a pane of a LOCAL herdr, found by
+    /// the route's own lookup and never kept as a join (#759).
+    private func resolveHerdrPaneRoute() async -> HerdrPanePromptRoute? {
+        guard let resolver = claudeSessionJoinResolver else { return nil }
+        let frontmostPID: @MainActor () -> pid_t? = { TerminalScreenContextSource.frontmostTarget()?.pid }
+        if let join = claudeSessionJoin {
+            return resolver.herdrPromptRoute(for: join, frontmostPID: frontmostPID)
+        }
+        guard !contextJoinAskedTheArms,
+              let target = TerminalScreenContextSource.frontmostTarget()
+        else { return nil }
+        return await resolver.localHerdrPromptRoute(target: target, frontmostPID: frontmostPID)
+    }
+
+    /// The joined cmux surface's route (#727). Only for a cmux join, which
+    /// proves the surface and the socket's peer. Writing needs none of the
+    /// context join's gates (context settings, polishing endpoint,
+    /// Accessibility), so with no context join it asks the cmux arm alone,
+    /// behind the cmux opt-in. That join reads the focused surface's id and
+    /// tty, never its text, and is used for the route only: no context
+    /// ships from it.
+    private func resolveCmuxSurfaceRoute() async -> CmuxSurfaceRoute? {
+        guard let resolver = claudeSessionJoinResolver else { return nil }
+        var join = claudeSessionJoin
+        if join == nil, !contextJoinAskedTheArms, resolver.cmuxJoinEnabled(),
+           let target = TerminalScreenContextSource.frontmostTarget(),
+           target.bundleID == TerminalScreenAllowlist.cmuxBundleID {
+            join = await resolver.resolveViaCmux(target: target)
+        }
+        guard let join else { return nil }
+        return resolver.cmuxSurfaceRoute(for: join) {
             TerminalScreenContextSource.frontmostTarget()?.pid
         }
     }
@@ -185,7 +221,10 @@ final class SessionContextResolver {
         if let opencode = await resolveOpencodePromptRoute() {
             agentPromptRoute = opencode
         } else {
-            agentPromptRoute = resolveHerdrPaneRoute()
+            agentPromptRoute = await resolveHerdrPaneRoute()
+            if agentPromptRoute == nil {
+                agentPromptRoute = await resolveCmuxSurfaceRoute()
+            }
         }
         if let route = agentPromptRoute {
             Log.claudeContext.notice("\(route.name, privacy: .public): resolved; dictation writes through it")
@@ -260,19 +299,21 @@ final class SessionContextResolver {
     /// or the gate or abstention chain that stopped it. `.notice`, because
     /// the unified log keeps no `.info` line past the moment, and a join is
     /// only ever questioned after the dictation. Categories only — the same
-    /// `ClaudeSessionJoinSummary` a dogfood record and `--probe-surface`
+    /// `ClaudeSessionJoinSummary` a diagnostic record and `--probe-surface`
     /// print, which carries no id, path, host or address.
     private func noteJoinOutcome(_ attempt: ClaudeJoinAttempt, causes: [String]) {
         var causes = causes
         if case .gated(let gate) = attempt {
             causes.append(gate.rawValue)
-            #if LOCALVOXTRAL_DOGFOOD
-            DogfoodCaptureTap.shared.noteJoinAbstention(gate.rawValue)
-            #endif
+            DiagnosticCaptureTap.shared.noteJoinAbstention(gate.rawValue)
         }
         let summary = ClaudeSessionJoinSummary.summarize(join: attempt.join, abstentions: causes)
+        recentJoinOutcomes = Array(
+            ([AgentCLIDoctorFacts.JoinLine(at: Date(), line: summary.noticeText)] + recentJoinOutcomes)
+                .prefix(AgentCLIDoctorChecks.recentJoinLimit)
+        )
         joinOutcomeLog(summary.noticeText)
-        #if LOCALVOXTRAL_DOGFOOD
+        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         // Snapshotted HERE, at the single resolution, because the commit path
         // consumes both the join and the tap's abstention causes — by the time
         // anything could ask afterwards, neither exists. Recorded for a gated
@@ -474,15 +515,15 @@ final class SessionContextResolver {
     }
 }
 
-#if LOCALVOXTRAL_DOGFOOD
+#if DEBUG || LOCALVOXTRAL_E2E_HARNESS
 extension SessionContextResolver {
     /// Snapshot the resolved join for `join report`, with the abstention chain
     /// as it stands at resolution time, gate included.
     func dogfoodNoteResolvedJoin(_ join: ClaudeSessionJoin?) {
-        DogfoodCaptureTap.shared.noteResolvedJoin(
+        DiagnosticCaptureTap.shared.noteResolvedJoin(
             ClaudeSessionJoinSummary.summarize(
                 join: join,
-                abstentions: DogfoodCaptureTap.shared.peekJoinAbstentions()
+                abstentions: DiagnosticCaptureTap.shared.peekJoinAbstentions()
             )
         )
     }

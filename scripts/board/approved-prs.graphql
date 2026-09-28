@@ -1,0 +1,56 @@
+# The one query merge-approved.sh spends per pass (cost 1): every open PR
+# whose card on the board says Done, with what deciding needs.
+query($owner: String!, $number: Int!) {
+  rateLimit { cost remaining }
+  user(login: $owner) {
+    projectV2(number: $number) {
+      id
+      field(name: "Status") {
+        ... on ProjectV2SingleSelectField { id options { id name } }
+      }
+      items(first: 50, query: "is:pr is:open status:Done") {
+        pageInfo { hasNextPage }
+        nodes {
+          id
+          content {
+            ... on PullRequest {
+              number
+              title
+              body
+              state
+              isDraft
+              isCrossRepository
+              baseRefName
+              headRefName
+              headRefOid
+              mergeable
+              labels(first: 20) { nodes { name } }
+              commits(last: 1) {
+                nodes {
+                  commit {
+                    statusCheckRollup {
+                      contexts(first: 50) {
+                        nodes {
+                          __typename
+                          ... on CheckRun {
+                            name
+                            status
+                            conclusion
+                            startedAt
+                            detailsUrl
+                            checkSuite { workflowRun { databaseId createdAt workflow { name } } }
+                          }
+                          ... on StatusContext { context state targetUrl }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

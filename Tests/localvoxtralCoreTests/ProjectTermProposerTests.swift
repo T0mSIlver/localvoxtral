@@ -31,13 +31,13 @@ final class ProjectTermProposerTests: XCTestCase {
         func snapshot() -> LearnedTerms { memory.withLock { $0 } }
 
         func recordProposal(
-            _ terms: [String],
+            _ terms: [String], line: String?, revision: Int?,
             agent: ProjectTermProposal.Agent,
             project: LearnedTermProjectIdentity,
             excluding: [String]
         ) {
             let moment = now()
-            memory.withLock { $0.recordProposal(terms, agent: agent, project: project, excluding: excluding, now: moment) }
+            memory.withLock { $0.recordProposal(terms, line: line, revision: revision, agent: agent, project: project, excluding: excluding, now: moment) }
         }
 
         func recordProposalFailure(project: LearnedTermProjectIdentity) {
@@ -97,14 +97,16 @@ final class ProjectTermProposerTests: XCTestCase {
     private func proposer(
         _ runner: FakeRunner,
         store: FakeStore? = nil,
-        files: [String] = ["README.md", "src/PageComposer.swift"]
+        files: [String] = ["README.md", "src/PageComposer.swift"],
+        usage: UsageLedger? = nil
     ) -> (ProjectTermProposer, FakeStore) {
         let store = store ?? FakeStore(now: clock.now)
         let proposer = ProjectTermProposer(
             store: store,
             runner: runner,
             now: clock.now,
-            trackedFiles: { _ in files }
+            trackedFiles: { _ in files },
+            usageRecorder: usage
         )
         return (proposer, store)
     }
@@ -206,7 +208,8 @@ final class ProjectTermProposerTests: XCTestCase {
         let runner = FakeRunner(.terms(["inkwell"]))
         let store = FakeStore(now: clock.now)
         store.recordProposal(
-            ["inkwell"], agent: .claude,
+            ["inkwell"], line: "Quillmark renders Markdown to PDF.", revision: ProjectTermProposal.promptRevision,
+            agent: .claude,
             project: LearnedTermProjectIdentity(key: repo, name: "quillmark"), excluding: []
         )
         let (proposer, _) = proposer(runner, store: store)
@@ -292,6 +295,32 @@ final class ProjectTermProposerTests: XCTestCase {
         await commit(relaunched, join(repo))
         XCTAssertEqual(answering.count, 1)
         XCTAssertEqual(store.snapshot().unconfirmedProposals(projectKey: repo), ["inkwell"])
+    }
+
+    // MARK: Usage
+
+    func testEveryRunThatStartedIsChargedToProjectTermsWithWhatItReported() async throws {
+        let reported = ProjectTermProposal.Usage(
+            turns: 5, costUSD: 0.09, inputTokens: 12, cacheWriteTokens: 20_000,
+            cacheReadTokens: 25_000, outputTokens: 900)
+        let cases: [(ProjectTermProposal.Outcome, [UsageEntry])] = [
+            (.terms(["inkwell"], usage: reported), [UsageEntry(
+                date: clock.now(), feature: .projectTerms, backend: .claudeCode, model: "sonnet",
+                promptTokens: 45_012, cachedPromptTokens: 25_000, completionTokens: 900, agentCostUSD: 0.09)]),
+            (.failed(.budgetExceeded), [UsageEntry(
+                date: clock.now(), feature: .projectTerms, backend: .claudeCode, model: "sonnet")]),
+            (.failed(.agentNotFound), []),
+            (.failed(.launchFailed), []),
+        ]
+        for (index, (outcome, expected)) in cases.enumerated() {
+            let repo = try checkout("usage-\(index)")
+            let usage = UsageLedger(fileURL: nil)
+            let (proposer, _) = proposer(FakeRunner(outcome), usage: usage)
+
+            await commit(proposer, join(repo))
+
+            XCTAssertEqual(usage.entries(), expected, "\(outcome)")
+        }
     }
 
     func testADirectoryOutsideARepositoryIsItsOwnProject() async throws {

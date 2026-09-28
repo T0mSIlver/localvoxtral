@@ -1,8 +1,8 @@
 import Foundation
 
 /// The text one dictation builds from the realtime events: the partial in
-/// flight, the dictation event the overlay commits, the latest segment the
-/// copy actions read, and the running transcript the popover shows.
+/// flight, the dictation event the overlay commits and auto-copy reads, and
+/// the running transcript the popover shows.
 ///
 /// Pure: the view model feeds it the preprocessed deltas and finals and acts
 /// on what it returns (the live insertion, the overlay text).
@@ -18,7 +18,8 @@ package struct TranscriptAccumulator: Equatable, Sendable {
     /// The finalized segments of the current dictation event, joined: what
     /// the overlay commits and the polisher is handed.
     package var currentDictationEventText = ""
-    /// What "Copy latest segment" and "Paste latest segment" read.
+    /// `currentDictationEventText` as of the last final, despite the name:
+    /// what auto-copy puts on the clipboard in Live Auto-Paste.
     package var lastFinalSegment = ""
     /// Whether a delta this session started with a space. Only then does a
     /// segment without one start mid-word: a server that strips every

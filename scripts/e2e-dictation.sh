@@ -8,8 +8,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/launch-app.sh"
 # End-to-end dictation check of the PACKAGED app. Run on a macOS GUI session:
 #   ./scripts/e2e-dictation.sh [dist/localvoxtral.app] [scenario-file ...]
 #
-# For each scenario (scripts/e2e/scenarios/*.scenario) it launches the dogfood
-# build with a WAV in place of the microphone (docs/dogfood-builds.md,
+# For each scenario (scripts/e2e/scenarios/*.scenario) it launches the harness
+# build with a WAV in place of the microphone (docs/test-harness.md,
 # "Dictating from a file"), focuses a throwaway target window, runs one
 # dictation through the control socket, and scores the text that landed in the
 # target against the phrase that was spoken. Everything between the capture
@@ -25,7 +25,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/launch-app.sh"
 #   phrase=<what `say` speaks and the score is measured against>
 #   min_word_accuracy=<0..1, scripts/lib/word-accuracy.sh>
 #
-# It needs a dogfood bundle (`LOCALVOXTRAL_DOGFOOD=1 ./scripts/package_app.sh
+# It needs a harness bundle (`LOCALVOXTRAL_E2E_HARNESS=1 ./scripts/package_app.sh
 # release`), an STT server on LV_E2E_REALTIME_ENDPOINT, an unlocked screen and
 # the app's Accessibility grant. It takes the keyboard focus for about half a
 # minute per scenario and says so out loud first (LV_E2E_ANNOUNCE=0 to mute).
@@ -438,14 +438,14 @@ if ! recover_previous_defaults_backup; then
 fi
 
 if [[ ! -d "$APP_PATH" ]]; then
-  record_fail "App bundle not found: $APP_PATH (build with LOCALVOXTRAL_DOGFOOD=1 ./scripts/package_app.sh release)."
+  record_fail "App bundle not found: $APP_PATH (build with LOCALVOXTRAL_E2E_HARNESS=1 ./scripts/package_app.sh release)."
   finish
 fi
 
 # Test seam (test-e2e-dictation-preconditions.sh): no PlistBuddy off macOS.
 PLISTBUDDY="${LV_E2E_PLISTBUDDY:-/usr/libexec/PlistBuddy}"
-if [[ "$("$PLISTBUDDY" -c 'Print :LVXDogfoodCapture' "$APP_PATH/Contents/Info.plist" 2>/dev/null)" != "true" ]]; then
-  record_fail "$APP_PATH is not a dogfood build; only a dogfood build can dictate from a file."
+if [[ "$("$PLISTBUDDY" -c 'Print :LVXE2EHarness' "$APP_PATH/Contents/Info.plist" 2>/dev/null)" != "true" ]]; then
+  record_fail "$APP_PATH is not a harness build; only a harness build can dictate from a file."
   finish
 fi
 

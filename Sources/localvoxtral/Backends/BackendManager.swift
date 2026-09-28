@@ -7,19 +7,6 @@ struct ManagedBackendStatusUpdate: Equatable, Sendable {
     let status: ManagedBackendStatus
 }
 
-enum ManagedBackendStatus: Equatable, Sendable {
-    case preparingModel(progress: ModelDownloadProgress)
-    /// The user paused the model download. The bytes already transferred are
-    /// kept (see `HFModelDownloadTransport.retainedResumeData`), and `progress`
-    /// is the last reading before the pause so the row keeps its bar. Nothing
-    /// resumes on its own: the next `ensureReady` for this backend does.
-    case pausedModelDownload(progress: ModelDownloadProgress)
-    case starting
-    case ready
-    case stopped
-    case failed(summary: String, detail: String?)
-}
-
 enum ManagedBackendManagerError: LocalizedError {
     case backendFailed(name: String, summary: String, detail: String?)
 
@@ -107,9 +94,14 @@ final class BackendManager: ManagedBackendManaging {
     typealias PolishingModelProvider = @MainActor () -> String
     /// Catalog entry the managed dictation helper downloads and loads.
     typealias SpeechModelProvider = @MainActor () -> SpeechModelOption
-    /// Megabytes for the speechd `--cache-limit-mb` flag, or nil to omit it and
-    /// let the helper apply its built-in default.
-    typealias SpeechdCacheLimitProvider = @MainActor () -> Int?
+    /// Megabytes speechd passes to `--cache-limit-mb`. It caps MLX's buffer
+    /// cache (freed GPU buffers kept for reuse), not the weights. Voxtral's cache
+    /// fills to whatever cap is set while time per step stays flat (#486), so a
+    /// higher cap only costs RAM. `speechd-bench` picked this value (#690):
+    /// 1024 MB matches 2048 MB's step time and lag with ~1 GB less footprint,
+    /// and 512 MB lags. Nemotron's cache stays near 10 MB, so the cap never
+    /// binds for it.
+    static let speechdCacheLimitMB = 1024
 
     private(set) var speechdStatus: ManagedBackendStatus
     private(set) var polishdStatus: ManagedBackendStatus
@@ -119,7 +111,6 @@ final class BackendManager: ManagedBackendManaging {
     @ObservationIgnored private let supervisorFactory: SupervisorFactory
     @ObservationIgnored private let polishingModelProvider: PolishingModelProvider
     @ObservationIgnored private let speechModelProvider: SpeechModelProvider
-    @ObservationIgnored private let speechdCacheLimitProvider: SpeechdCacheLimitProvider
     @ObservationIgnored private var speechdSupervisor: (any ManagedBackendSupervising)?
     /// The catalog entry the RUNNING speechd was launched with. A supervisor
     /// captures its argv at creation, so a selection change while the helper is
@@ -158,7 +149,6 @@ final class BackendManager: ManagedBackendManaging {
         speechModelProvider: @escaping SpeechModelProvider = {
             SpeechModelCatalog.defaultOption
         },
-        speechdCacheLimitProvider: @escaping SpeechdCacheLimitProvider = { nil },
         supervisorFactory: @escaping SupervisorFactory = { configuration in
             BackendProcessSupervisor(configuration: configuration)
         }
@@ -167,7 +157,6 @@ final class BackendManager: ManagedBackendManaging {
         self.legacyPortDefense = legacyPortDefense ?? LegacyVoxmlxPortDefense(layout: layout)
         self.polishingModelProvider = polishingModelProvider
         self.speechModelProvider = speechModelProvider
-        self.speechdCacheLimitProvider = speechdCacheLimitProvider
         self.supervisorFactory = supervisorFactory
         self.speechdStatus = .stopped
         self.polishdStatus = .stopped
@@ -260,9 +249,9 @@ final class BackendManager: ManagedBackendManaging {
         await polishdSupervisor?.stop()
         // Drop the supervisors, not just stop them: launch arguments are
         // captured at supervisor creation, so a kept supervisor would relaunch
-        // with stale settings (cache limit / step cadence) — field-hit
-        // 2026-07-17: changing the memory limit and toggling Managed →
-        // External → Managed silently kept the old argv.
+        // with stale settings — field-hit 2026-07-17: changing a launch
+        // setting and toggling Managed → External → Managed silently kept the
+        // old argv.
         speechdSupervisor = nil
         speechdLaunchedModel = nil
         polishdSupervisor = nil
@@ -637,7 +626,7 @@ final class BackendManager: ManagedBackendManaging {
         switch spec.id {
         case BackendCatalog.speechd.id:
             let option = speechModel ?? speechModelProvider()
-            var arguments = [
+            return [
                 "--model",
                 option.repoID,
                 "--model-revision",
@@ -646,12 +635,9 @@ final class BackendManager: ManagedBackendManaging {
                 "\(spec.port)",
                 "--parent-pid",
                 parentPID,
+                "--cache-limit-mb",
+                "\(Self.speechdCacheLimitMB)",
             ]
-            // Auto (nil) omits the flag so the helper's built-in default applies.
-            if let cacheLimitMB = speechdCacheLimitProvider() {
-                arguments.append(contentsOf: ["--cache-limit-mb", "\(cacheLimitMB)"])
-            }
-            return arguments
         case BackendCatalog.polishd.id:
             let repoID = polishingModelProvider()
             var arguments = [

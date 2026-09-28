@@ -10,6 +10,8 @@ public struct AgentCLIRunner: Sendable {
         case refused = 1
         case usage = 2
         case notRunning = 3
+        /// `doctor` answered and at least one check failed.
+        case checkFailed = 4
     }
 
     public struct Outcome: Equatable, Sendable {
@@ -23,10 +25,13 @@ public struct AgentCLIRunner: Sendable {
 
     public var transport: Transport
     public var timeZone: TimeZone
+    /// What a capture's age counts from.
+    public var now: Date
 
-    public init(transport: @escaping Transport, timeZone: TimeZone) {
+    public init(transport: @escaping Transport, timeZone: TimeZone, now: Date = Date()) {
         self.transport = transport
         self.timeZone = timeZone
+        self.now = now
     }
 
     /// Over the hook broker's socket. The deadline covers the app's answer,
@@ -69,6 +74,8 @@ public struct AgentCLIRunner: Sendable {
         let exitCode: ExitCode
         if let error = response.error {
             exitCode = error.code == .notRunning ? .notRunning : .refused
+        } else if response.doctor?.hasFailure == true {
+            exitCode = .checkFailed
         } else {
             exitCode = .answered
         }
@@ -79,7 +86,7 @@ public struct AgentCLIRunner: Sendable {
         if let error = response.error {
             return Outcome(stdout: "", stderr: "localvoxtral: \(error.message)\n", exitCode: exitCode)
         }
-        let text = AgentCLIText(timeZone: timeZone).render(response)
+        let text = AgentCLIText(timeZone: timeZone, now: now).render(response)
         return Outcome(stdout: text, stderr: "", exitCode: exitCode)
     }
 }
@@ -87,9 +94,11 @@ public struct AgentCLIRunner: Sendable {
 /// The human-readable form of an answer. Agents should pass `--json`.
 public struct AgentCLIText: Sendable {
     public var timeZone: TimeZone
+    public var now: Date
 
-    public init(timeZone: TimeZone) {
+    public init(timeZone: TimeZone, now: Date = Date()) {
         self.timeZone = timeZone
+        self.now = now
     }
 
     public func render(_ response: AgentCLIResponse) -> String {
@@ -98,6 +107,9 @@ public struct AgentCLIText: Sendable {
         if let terms = response.terms { lines += render(terms) }
         if let proposal = response.proposal { lines += render(proposal) }
         if let status = response.status { lines += render(status) }
+        if let doctor = response.doctor { lines += render(doctor) }
+        if let captures = response.captures { lines += render(captures) }
+        if let capture = response.capture { lines += render(capture) }
         return lines.map { $0 + "\n" }.joined()
     }
 
@@ -182,6 +194,66 @@ public struct AgentCLIText: Sendable {
             lines.append("Last dictation joined: no session")
         }
         return lines
+    }
+
+    private func render(_ doctor: AgentCLIDoctor) -> [String] {
+        doctor.textLines() + ["", doctor.summaryLine]
+    }
+
+    private func render(_ captures: AgentCLICaptures) -> [String] {
+        guard captures.inboxAvailable else { return ["The Inbox is not available."] }
+        guard !captures.captures.isEmpty else { return ["No captures."] }
+        let rows = captures.captures.map { capture in
+            [
+                String(capture.id.prefix(8)),
+                capture.project?.name ?? "-",
+                capture.kind ?? "-",
+                age(capture.capturedAt),
+                capture.state.rawValue,
+                capture.title,
+            ]
+        }
+        let header = ["ID", "PROJECT", "KIND", "AGE", "STATE", "TITLE"]
+        let widths = (0..<header.count - 1).map { column in
+            ([header] + rows).map { $0[column].count }.max() ?? 0
+        }
+        return ([header] + rows).map { row in
+            row.enumerated().map { column, cell in
+                column < widths.count ? cell.padding(toLength: widths[column], withPad: " ", startingAt: 0) : cell
+            }
+            .joined(separator: "  ")
+        }
+    }
+
+    /// The title, then where it stands, then what `gh issue create` would
+    /// take as its body.
+    private func render(_ capture: AgentCLICapture) -> [String] {
+        var lines = [capture.title]
+        var facts = ["id \(capture.id)", "captured \(timestamp(capture.capturedAt))"]
+        if let project = capture.project { facts.append("project \(project.name)") }
+        if let kind = capture.kind { facts.append("kind \(kind)") }
+        facts.append(capture.state.rawValue)
+        lines.append(facts.joined(separator: "  "))
+        lines.append("Repository: " + (capture.repository ?? "unknown"))
+        if let relation = capture.relation, let issue = capture.relatedIssue {
+            lines.append("\(relation == "duplicate" ? "Duplicate of" : "Extends") #\(issue)")
+        }
+        if let url = capture.filedURL { lines.append("Filed: \(url)") }
+        if let note = capture.note { lines.append("Note: \(note)") }
+        if let body = capture.issueBody {
+            lines.append("")
+            lines.append(body)
+        }
+        return lines
+    }
+
+    private func age(_ date: Date) -> String {
+        let seconds = max(0, now.timeIntervalSince(date))
+        switch seconds {
+        case ..<3_600: return "\(Int(seconds / 60))m"
+        case ..<86_400: return "\(Int(seconds / 3_600))h"
+        default: return "\(Int(seconds / 86_400))d"
+        }
     }
 
     private func timestamp(_ date: Date) -> String {

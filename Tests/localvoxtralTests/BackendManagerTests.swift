@@ -6,31 +6,6 @@ import XCTest
 
 @MainActor
 final class BackendManagerTests: XCTestCase {
-    func testBundledDictationBackendRecordsStartSequence() async throws {
-        let supervisorFactory = FakeSupervisorFactory()
-        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [
-            .launching,
-            .waitingForReady,
-            .running,
-        ]
-        let manager = makeManager(supervisorFactory: supervisorFactory)
-        var speechdStatuses: [ManagedBackendStatus] = []
-        manager.debugStatusChangeSink = { spec, status in
-            guard spec.id == BackendCatalog.speechd.id else { return }
-            speechdStatuses.append(status)
-        }
-
-        try await manager.ensureReady(dictation: true, polishing: false)
-
-        XCTAssertEqual(manager.speechdStatus, .ready)
-        XCTAssertTrue(speechdStatuses.contains {
-            if case .preparingModel = $0 { return true }
-            return false
-        })
-        XCTAssertTrue(speechdStatuses.contains(.starting))
-        XCTAssertEqual(speechdStatuses.last, .ready)
-    }
-
     func testSpeechdConfigurationUsesBundlePathPinnedModelRevisionAndHFFileSet() async throws {
         let modelPreparer = FakeModelPreparer()
         let supervisorFactory = FakeSupervisorFactory()
@@ -74,9 +49,7 @@ final class BackendManagerTests: XCTestCase {
             configuration.arguments.firstIndex(of: "--model-revision")
         )
         XCTAssertEqual(configuration.arguments[revisionIndex + 1], option.revision)
-        // Default providers are Auto: the cache-limit and step-cadence flags
-        // are omitted so the helper's built-in defaults apply.
-        XCTAssertFalse(configuration.arguments.contains("--cache-limit-mb"))
+        // The step cadence is the helper's own default, so its flag is omitted.
         XCTAssertFalse(configuration.arguments.contains("--step-ms"))
     }
 
@@ -214,106 +187,61 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(supervisorFactory.createdConfigurations.count, 1)
     }
 
-    func testSpeechdCacheLimitNilOmitsFlagAndPresetsAppendMegabytes() async throws {
+    /// The cap is fixed (#690): no setting feeds it, so every launch passes the
+    /// same `--cache-limit-mb` after the model / revision / port / parent-pid.
+    func testSpeechdLaunchesWithTheFixedCacheLimit() async throws {
         let option = SpeechModelCatalog.defaultOption
-        let baseArguments = [
-            "--model", option.repoID,
-            "--model-revision", option.revision,
-            "--port", "8471",
-            "--parent-pid", "\(Darwin.getpid())",
-        ]
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
+        let manager = makeManager(supervisorFactory: supervisorFactory)
 
-        // No limit from settings: identical to the base argument list, no cache-limit flag.
-        let autoConfiguration = try await speechdConfiguration(cacheLimitMB: nil)
-        XCTAssertEqual(autoConfiguration.arguments, baseArguments)
+        try await manager.ensureReady(dictation: true, polishing: false)
 
-        // Each preset appends exactly `--cache-limit-mb <value>` and leaves the
-        // model / revision / port / parent-pid arguments untouched.
-        for megabytes in [2048, 4096, 6144, 8192] {
-            let configuration = try await speechdConfiguration(cacheLimitMB: megabytes)
-            XCTAssertEqual(
-                configuration.arguments,
-                baseArguments + ["--cache-limit-mb", "\(megabytes)"]
-            )
-        }
+        let configuration = try XCTUnwrap(
+            supervisorFactory.createdConfigurations
+                .first { $0.name == BackendCatalog.speechd.displayName }
+        )
+        XCTAssertEqual(
+            configuration.arguments,
+            [
+                "--model", option.repoID,
+                "--model-revision", option.revision,
+                "--port", "8471",
+                "--parent-pid", "\(Darwin.getpid())",
+                "--cache-limit-mb", "\(BackendManager.speechdCacheLimitMB)",
+            ]
+        )
     }
 
     /// Regression: launch arguments are captured at supervisor creation, so a
     /// stop must DROP the supervisor — a kept one would relaunch with stale
-    /// settings (field-hit 2026-07-17: changing the memory limit and toggling
-    /// Managed → External → Managed silently kept the old argv).
-    func testStopDictationDropsSupervisorSoNextEnsureRebuildsArguments() async throws {
-        let supervisorFactory = FakeSupervisorFactory()
-        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
-        let cacheLimitMB = ProvidedValueBox()
-        let manager = makeManager(
-            speechdCacheLimitProvider: { cacheLimitMB.value },
-            supervisorFactory: supervisorFactory
-        )
-
-        try await manager.ensureReady(dictation: true, polishing: false)
-        await manager.stopDictation()
-        cacheLimitMB.value = 2048
-        try await manager.ensureReady(dictation: true, polishing: false)
-
-        let configurations = supervisorFactory.createdConfigurations
-            .filter { $0.name == BackendCatalog.speechd.displayName }
-        XCTAssertEqual(
-            configurations.count, 2,
-            "stopDictation must drop the supervisor so the next ensure rebuilds it"
-        )
-        XCTAssertFalse(try XCTUnwrap(configurations.first).arguments.contains("--cache-limit-mb"))
-        XCTAssertEqual(
-            Array(try XCTUnwrap(configurations.last).arguments.suffix(2)),
-            ["--cache-limit-mb", "2048"]
-        )
-    }
-
-    /// Same contract for the full-stop path used when the app switches the
-    /// dictation backend mode away from Managed.
+    /// settings (field-hit 2026-07-17: changing a launch setting and toggling
+    /// Managed → External → Managed silently kept the old argv). Speechd's only
+    /// setting in its argv is the model, which `ensureReady` compares on its
+    /// own, so polishd's model carries the check.
     func testStopAllDropsSupervisorsSoNextEnsureRebuildsArguments() async throws {
         let supervisorFactory = FakeSupervisorFactory()
-        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
-        let cacheLimitMB = ProvidedValueBox()
+        supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
+        let polishingModel = PolishingModelBox(SettingsStore.defaultLLMPolishingModel)
         let manager = makeManager(
-            speechdCacheLimitProvider: { cacheLimitMB.value },
+            polishingModelProvider: { polishingModel.value },
             supervisorFactory: supervisorFactory
         )
 
-        try await manager.ensureReady(dictation: true, polishing: false)
+        try await manager.ensureReady(dictation: false, polishing: true)
         await manager.stopAll()
-        cacheLimitMB.value = 2048
-        try await manager.ensureReady(dictation: true, polishing: false)
+        polishingModel.value = "example/new-polishing-model"
+        try await manager.ensureReady(dictation: false, polishing: true)
 
         let configurations = supervisorFactory.createdConfigurations
-            .filter { $0.name == BackendCatalog.speechd.displayName }
+            .filter { $0.name == BackendCatalog.polishd.displayName }
         XCTAssertEqual(
             configurations.count, 2,
             "stopAll must drop the supervisors so the next ensure rebuilds them"
         )
         XCTAssertEqual(
-            Array(try XCTUnwrap(configurations.last).arguments.suffix(2)),
-            ["--cache-limit-mb", "2048"]
-        )
-    }
-
-    /// Starts speechd with the given cache-limit provider and returns the
-    /// supervisor configuration it was launched with.
-    private func speechdConfiguration(
-        cacheLimitMB: Int? = nil
-    ) async throws -> BackendProcessConfiguration {
-        let supervisorFactory = FakeSupervisorFactory()
-        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
-        let manager = makeManager(
-            speechdCacheLimitProvider: { cacheLimitMB },
-            supervisorFactory: supervisorFactory
-        )
-
-        try await manager.ensureReady(dictation: true, polishing: false)
-
-        return try XCTUnwrap(
-            supervisorFactory.createdConfigurations
-                .first { $0.name == BackendCatalog.speechd.displayName }
+            Array(try XCTUnwrap(configurations.last).arguments.prefix(2)),
+            ["--model", "example/new-polishing-model"]
         )
     }
 
@@ -330,6 +258,8 @@ final class BackendManagerTests: XCTestCase {
         try await manager.ensureReady(dictation: true, polishing: false)
         XCTAssertEqual(supervisorFactory.createdConfigurations.map(\.name), [BackendCatalog.speechd.displayName])
         XCTAssertEqual(modelPreparer.prepareCalls.map(\.backendID), [BackendCatalog.speechd.id])
+        XCTAssertEqual(manager.speechdStatus, .ready)
+        XCTAssertEqual(manager.polishdStatus, .stopped)
 
         try await manager.ensureReady(dictation: true, polishing: true)
         // Set + count, not positional (concurrent ensure tasks): exactly one
@@ -345,6 +275,7 @@ final class BackendManagerTests: XCTestCase {
         )
         XCTAssertEqual(modelPreparer.prepareCalls.count, 2)
         XCTAssertEqual(manager.polishdStatus, .ready)
+        XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.polishd.displayName]?.startCallCount, 1)
 
         let polishdConfiguration = try XCTUnwrap(
             supervisorFactory.createdConfigurations
@@ -447,37 +378,51 @@ final class BackendManagerTests: XCTestCase {
         )
     }
 
-    func testStopAllStopsBothSupervisors() async throws {
-        let supervisorFactory = FakeSupervisorFactory()
-        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
-        supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
-        let manager = makeManager(supervisorFactory: supervisorFactory)
+    /// Each stop scope tears down exactly its own supervisors and leaves the
+    /// other backend running.
+    func testStopScopeStopsExactlyItsOwnSupervisors() async throws {
+        let cases: [
+            (label: String, stopsSpeechd: Bool, stopsPolishd: Bool,
+             stop: (BackendManager) async -> Void)
+        ] = [
+            ("stopAll stops both supervisors", true, true, { await $0.stopAll() }),
+            ("stopPolishing stops only polishd", false, true, { await $0.stopPolishing() }),
+            ("stopDictation stops only speechd", true, false, { await $0.stopDictation() }),
+        ]
 
-        try await manager.ensureReady(dictation: true, polishing: true)
-        await manager.stopAll()
+        for row in cases {
+            let supervisorFactory = FakeSupervisorFactory()
+            supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
+            supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
+            let manager = makeManager(supervisorFactory: supervisorFactory)
 
-        XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.speechd.displayName]?.stopCallCount, 1)
-        XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.polishd.displayName]?.stopCallCount, 1)
-        XCTAssertEqual(manager.speechdStatus, .stopped)
-        XCTAssertEqual(manager.polishdStatus, .stopped)
-    }
+            try await manager.ensureReady(dictation: true, polishing: true)
+            XCTAssertEqual(manager.speechdStatus, .ready, row.label)
+            XCTAssertEqual(manager.polishdStatus, .ready, row.label)
 
-    func testStopPolishingStopsOnlyPolishd() async throws {
-        let supervisorFactory = FakeSupervisorFactory()
-        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
-        supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
-        let manager = makeManager(supervisorFactory: supervisorFactory)
+            await row.stop(manager)
 
-        try await manager.ensureReady(dictation: true, polishing: true)
-        XCTAssertEqual(manager.speechdStatus, .ready)
-        XCTAssertEqual(manager.polishdStatus, .ready)
-
-        await manager.stopPolishing()
-
-        XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.polishd.displayName]?.stopCallCount, 1)
-        XCTAssertEqual(manager.polishdStatus, .stopped)
-        XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.speechd.displayName]?.stopCallCount, 0)
-        XCTAssertEqual(manager.speechdStatus, .ready)
+            XCTAssertEqual(
+                supervisorFactory.supervisors[BackendCatalog.speechd.displayName]?.stopCallCount,
+                row.stopsSpeechd ? 1 : 0,
+                row.label
+            )
+            XCTAssertEqual(
+                supervisorFactory.supervisors[BackendCatalog.polishd.displayName]?.stopCallCount,
+                row.stopsPolishd ? 1 : 0,
+                row.label
+            )
+            XCTAssertEqual(
+                manager.speechdStatus,
+                row.stopsSpeechd ? ManagedBackendStatus.stopped : ManagedBackendStatus.ready,
+                row.label
+            )
+            XCTAssertEqual(
+                manager.polishdStatus,
+                row.stopsPolishd ? ManagedBackendStatus.stopped : ManagedBackendStatus.ready,
+                row.label
+            )
+        }
     }
 
     func testModelChangeStopsSupervisorAndNextEnsureUsesNewModel() async throws {
@@ -582,24 +527,6 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(modelPreparer.prepareCalls.count, 2)
         XCTAssertEqual(manager.polishdStatus, .ready)
         _ = await firstEnsure.result
-    }
-
-    func testStopDictationStopsOnlySpeechd() async throws {
-        let supervisorFactory = FakeSupervisorFactory()
-        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
-        supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
-        let manager = makeManager(supervisorFactory: supervisorFactory)
-
-        try await manager.ensureReady(dictation: true, polishing: true)
-        XCTAssertEqual(manager.speechdStatus, .ready)
-        XCTAssertEqual(manager.polishdStatus, .ready)
-
-        await manager.stopDictation()
-
-        XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.speechd.displayName]?.stopCallCount, 1)
-        XCTAssertEqual(manager.speechdStatus, .stopped)
-        XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.polishd.displayName]?.stopCallCount, 0)
-        XCTAssertEqual(manager.polishdStatus, .ready)
     }
 
     func testSupervisorStateMirrorMarksLaterFailureAndNextEnsureDoesNotShortCircuit() async throws {
@@ -716,22 +643,6 @@ final class BackendManagerTests: XCTestCase {
                 BackendCatalog.polishd.id: SettingsStore.defaultLLMPolishingModel,
             ]
         )
-    }
-
-    func testEnsureReadyWithoutPolishingPreparesOnlySpeechd() async throws {
-        let modelPreparer = FakeModelPreparer()
-        let supervisorFactory = FakeSupervisorFactory()
-        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
-        supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
-        let manager = makeManager(
-            modelPreparer: modelPreparer,
-            supervisorFactory: supervisorFactory
-        )
-
-        try await manager.ensureReady(dictation: true, polishing: false)
-
-        XCTAssertEqual(modelPreparer.prepareCalls.map(\.backendID), [BackendCatalog.speechd.id])
-        XCTAssertEqual(supervisorFactory.createdConfigurations.map(\.name), [BackendCatalog.speechd.displayName])
     }
 
     func testCancellingEnsureReadyDuringModelPreparationTerminatesAndDoesNotMarkReady() async throws {
@@ -1137,23 +1048,6 @@ final class BackendManagerTests: XCTestCase {
         _ = try? await stuckDictation.value
     }
 
-    func testSecondEnsureReadyAddsPolishingAfterDictationOnlyRun() async throws {
-        let supervisorFactory = FakeSupervisorFactory()
-        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
-        supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
-        let manager = makeManager(supervisorFactory: supervisorFactory)
-
-        // First dictation: polishing disabled at the time.
-        try await manager.ensureReady(dictation: true, polishing: false)
-        XCTAssertEqual(manager.speechdStatus, .ready)
-        XCTAssertEqual(manager.polishdStatus, .stopped)
-
-        // User enables polishing, dictates again: polishd must come up now.
-        try await manager.ensureReady(dictation: true, polishing: true)
-        XCTAssertEqual(manager.polishdStatus, .ready)
-        XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.polishd.displayName]?.startCallCount, 1)
-    }
-
     func testUnownedSpeechdPortOccupantSurfacesNormalConflictWithoutStarting() async {
         let supervisorFactory = FakeSupervisorFactory()
         let occupant = ListeningProcess(
@@ -1185,7 +1079,6 @@ final class BackendManagerTests: XCTestCase {
         speechModelProvider: @escaping BackendManager.SpeechModelProvider = {
             SpeechModelCatalog.defaultOption
         },
-        speechdCacheLimitProvider: @escaping BackendManager.SpeechdCacheLimitProvider = { nil },
         supervisorFactory: FakeSupervisorFactory
     ) -> BackendManager {
         BackendManager(
@@ -1194,7 +1087,6 @@ final class BackendManagerTests: XCTestCase {
             legacyPortDefense: legacyPortDefense,
             polishingModelProvider: polishingModelProvider,
             speechModelProvider: speechModelProvider,
-            speechdCacheLimitProvider: speechdCacheLimitProvider,
             supervisorFactory: { configuration in
                 supervisorFactory.makeSupervisor(configuration: configuration)
             }
@@ -1205,11 +1097,16 @@ final class BackendManagerTests: XCTestCase {
 /// Mutable value for settings-provider closures in tests. The providers are
 /// `@MainActor` and the tests mutate on the main actor too, but a captured
 /// `var` still trips the sendable-capture warning — box it instead.
-private final class ProvidedValueBox: @unchecked Sendable {
-    var value: Int?
+@MainActor
+private final class PolishingModelBox {
+    var value: String
+
+    init(_ value: String) {
+        self.value = value
+    }
 }
 
-/// Same idea for the speech-model provider, whose value is not an `Int?`.
+/// Same idea for the speech-model provider.
 @MainActor
 private final class SpeechModelBox {
     var value: SpeechModelOption

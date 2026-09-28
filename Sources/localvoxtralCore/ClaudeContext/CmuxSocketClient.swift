@@ -7,7 +7,8 @@ import Glibc
 #endif
 
 #if canImport(Darwin) || canImport(Glibc)
-/// Minimal read-only client for cmux's newline-delimited JSON control socket.
+/// Minimal client for cmux's newline-delimited JSON control socket: the
+/// join's reads, and the two writes the cmux route makes (#727).
 ///
 /// Hand-written against cmux's wire contract, never derived from its code: cmux
 /// is GPL-3.0-or-later and this app is not. Everything below is the shape of the
@@ -33,7 +34,7 @@ import Glibc
 /// * cmux also drops idle connections after ~30 s and answers some refusals
 ///   with a NON-JSON `ERROR: …` line (access denied, verification failed) which
 ///   may be localized — hence the prefix match rather than a message compare.
-package struct CmuxSocketClient: CmuxSurfaceQuerying {
+package struct CmuxSocketClient: CmuxSurfaceQuerying, CmuxSurfaceWriting {
     private let socketPaths: [String]
     private let password: @Sendable () -> String?
     private let timeout: TimeInterval
@@ -235,6 +236,104 @@ package struct CmuxSocketClient: CmuxSurfaceQuerying {
             }
         }.value
     }
+
+    // MARK: - Writes (#727)
+
+    package func sendText(
+        _ text: String, surfaceID: String, expectedPeerPID: pid_t
+    ) async -> CmuxWriteResult {
+        await write(
+            method: "surface.send_text",
+            params: SurfaceSendTextParams(surfaceID: surfaceID, text: text),
+            surfaceID: surfaceID,
+            expectedPeerPID: expectedPeerPID
+        )
+    }
+
+    package func sendEnter(surfaceID: String, expectedPeerPID: pid_t) async -> CmuxWriteResult {
+        await write(
+            method: "surface.send_key",
+            params: SurfaceSendKeyParams(surfaceID: surfaceID, key: "enter"),
+            surfaceID: surfaceID,
+            expectedPeerPID: expectedPeerPID
+        )
+    }
+
+    /// One write on its own authenticated connection, classified by whether
+    /// it can have landed. Everything before the request's last byte is out
+    /// is `refused`: cmux acts on whole lines only. After that, only a clean
+    /// answer naming this surface counts.
+    private func write<Params: Encodable & Sendable>(
+        method: String,
+        params: Params,
+        surfaceID: String,
+        expectedPeerPID: pid_t
+    ) async -> CmuxWriteResult {
+        await Task.detached(priority: .userInitiated) { [self] in
+            let outcome = openAuthenticated(
+                expectedPeerPID: expectedPeerPID
+            ) { fd, deadline -> CmuxQueryResult<CmuxWriteResult> in
+                let request = Request(id: Self.requestID(), method: method, params: params)
+                guard let line = try? Self.encodedLine(request),
+                      writeAll(fd: fd, data: line, deadline: deadline)
+                else {
+                    Log.backends.error("cmux \(method, privacy: .public): refused, request not written")
+                    return .value(.refused)
+                }
+                guard let response = readLine(fd: fd, deadline: deadline) else {
+                    Log.backends.error("cmux \(method, privacy: .public): unconfirmed, no answer after the write")
+                    return .value(.unconfirmed)
+                }
+                return .value(classifyWrite(response: response, id: request.id, method: method, surfaceID: surfaceID))
+            }
+            switch outcome {
+            case .value(let result):
+                if case .accepted(let queued) = result {
+                    let report = queued.map { $0 ? "queued" : "sent" } ?? "no delivery report"
+                    Log.backends.info("cmux \(method, privacy: .public): accepted, \(report, privacy: .public)")
+                }
+                return result
+            case .authenticationRequired, .unavailable:
+                Log.backends.error("cmux \(method, privacy: .public): refused, socket unavailable or login refused")
+                return .refused
+            }
+        }.value
+    }
+
+    private func classifyWrite(response: Data, id: String, method: String, surfaceID: String) -> CmuxWriteResult {
+        if Self.isPlainTextError(response) {
+            Log.backends.error("cmux \(method, privacy: .public): refused, socket denied access")
+            return .refused
+        }
+        guard let envelope = try? JSONDecoder().decode(Envelope<SurfaceWriteResult>.self, from: response),
+              envelope.id == id
+        else {
+            Log.backends.error("cmux \(method, privacy: .public): unconfirmed, the answer is not this request's")
+            return .unconfirmed
+        }
+        if let code = envelope.errorCode {
+            // cmux answers an error before it writes. Only a code on the
+            // known lists is logged verbatim; see `decode(line:id:resultType:)`.
+            let known = Self.knownErrorCodes.contains(code)
+                || Self.authenticationErrorCodes.contains(code)
+                || Self.writeErrorCodes.contains(code)
+            Log.backends.error(
+                "cmux \(method, privacy: .public): refused, \(known ? code : "unrecognized error code", privacy: .public)"
+            )
+            return .refused
+        }
+        guard let result = envelope.result, result.surfaceID == surfaceID else {
+            // A success about another surface means the text went there.
+            Log.backends.error("cmux \(method, privacy: .public): unconfirmed, the answer names another surface")
+            return .unconfirmed
+        }
+        return .accepted(queued: result.queued)
+    }
+
+    /// The errors cmux gives a write whose surface cannot take input.
+    private static let writeErrorCodes: Set<String> = [
+        "input_queue_full", "surface_unavailable", "process_exited", "unavailable",
+    ]
 
     // MARK: - Exchange
 
@@ -723,6 +822,39 @@ package struct CmuxSocketClient: CmuxSurfaceQuerying {
         enum CodingKeys: String, CodingKey {
             case surfaceID = "surface_id"
             case scrollback
+        }
+    }
+
+    private struct SurfaceSendTextParams: Encodable, Sendable {
+        var surfaceID: String
+        var text: String
+
+        enum CodingKeys: String, CodingKey {
+            case surfaceID = "surface_id"
+            case text
+        }
+    }
+
+    private struct SurfaceSendKeyParams: Encodable, Sendable {
+        var surfaceID: String
+        var key: String
+
+        enum CodingKeys: String, CodingKey {
+            case surfaceID = "surface_id"
+            case key
+        }
+    }
+
+    /// `surface.send_text` and `surface.send_key` success: the surface cmux
+    /// wrote to and its delivery report. The workspace and window fields are
+    /// not decoded.
+    private struct SurfaceWriteResult: Decodable {
+        var surfaceID: String
+        var queued: Bool?
+
+        enum CodingKeys: String, CodingKey {
+            case surfaceID = "surface_id"
+            case queued
         }
     }
 

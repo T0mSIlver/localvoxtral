@@ -202,12 +202,12 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         // prefill — the CI failure mode of 2026-07-11.
         await warmPromptPrefixes(configStore: configStore, configuration: polishConfiguration)
 
-        let enVoice = recordedAudio == nil
+        let enVoice = try recordedAudio == nil
             ? Self.resolveVoice(
                 languagePrefix: "en", preferred: EvalSpeechStage.englishVoicePreference
             )
             : nil
-        let frVoice = recordedAudio == nil
+        let frVoice = try recordedAudio == nil
             ? Self.resolveVoice(
                 languagePrefix: "fr", preferred: EvalSpeechStage.frenchVoicePreference
             )
@@ -220,8 +220,8 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             )
         } else {
             print(
-                "agent-e2e: audio=tts voices en=\(enVoice ?? "<system default>") "
-                    + "fr=\(frVoice ?? "<none — fr TTS cases skip>")"
+                "agent-e2e: audio=tts voices en=\(enVoice ?? "-") "
+                    + "fr=\(frVoice ?? "-")"
             )
         }
 
@@ -249,6 +249,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         var reports: [Support.CaseReportRecord] = []
         var reportSystemPrompts: [String] = []
         var caseIndex = 0
+        var sttWatch = EvalSpeechStage.ServiceWatch(endpoint: asrConfiguration.endpoint)
 
         for loaded in strata {
             let stratum = loaded.stratum
@@ -257,6 +258,9 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                 if let selectedCaseIDs, !selectedCaseIDs.contains(evalCase.id) { continue }
                 caseIndex += 1
                 print("agent-e2e [\(caseIndex)/\(totalCases)] \(evalCase.id)")
+                // stdout is a pipe under CI: unflushed, the whole run's output
+                // reached the log only at exit, and a hung run showed nothing.
+                fflush(nil)
                 let run = await runCase(
                     evalCase,
                     stratumName: stratum.stratum,
@@ -272,6 +276,11 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                     frVoice: frVoice
                 )
                 results.append(run.result)
+                if let speechError = run.capture.speechError {
+                    try sttWatch.record(speechError)
+                } else if run.capture.transcript != nil {
+                    sttWatch.recordAnswer()
+                }
 
                 var systemPromptIndex: Int?
                 if let prompt = run.capture.polishSystemPrompt {
@@ -297,7 +306,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             results: results,
             header: "polish model: \(polishConfiguration.model), "
                 + "asr: \(asrConfiguration.model) @ \(asrConfiguration.endpoint), "
-                + "audio: \(recordedAudio.map(\.audioLabel) ?? "macOS say"), "
+                + "audio: \(recordedAudio.map(\.audioLabel) ?? "macOS say en=\(enVoice ?? "-") fr=\(frVoice ?? "-")"), "
                 + "polish backend: \(polishBackend)"
         )
         print(board.text)
@@ -381,7 +390,12 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                     }
                     pcm = try synthesizedPCM16(text: evalCase.spokenForm, voice: voice)
                 }
-                polishInput = try await transcribe(pcm: pcm, enablement: enablement)
+                do {
+                    polishInput = try await transcribe(pcm: pcm, enablement: enablement)
+                } catch {
+                    capture.speechError = error
+                    throw error
+                }
                 capture.transcript = polishInput
             }
 
@@ -671,8 +685,8 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         try EvalSpeechStage.synthesizedPCM16(text: text, voice: voice)
     }
 
-    private static func resolveVoice(languagePrefix: String, preferred: [String]) -> String? {
-        EvalSpeechStage.resolveVoice(languagePrefix: languagePrefix, preferred: preferred)
+    private static func resolveVoice(languagePrefix: String, preferred: [String]) throws -> String {
+        try EvalSpeechStage.resolveVoice(languagePrefix: languagePrefix, preferred: preferred)
     }
 
     // MARK: - ASR (production websocket client vs live speechd STT service)

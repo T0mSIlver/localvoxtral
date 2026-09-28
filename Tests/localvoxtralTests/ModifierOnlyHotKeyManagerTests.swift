@@ -19,6 +19,7 @@ final class ModifierOnlyHotKeyManagerTests: XCTestCase {
         XCTAssertEqual(ModifierOnlyHotKeyManager.ModifierKey.fn.rawValue, "fn")
         XCTAssertEqual(ModifierOnlyHotKeyManager.ModifierKey.rightCommand.rawValue, "right_command")
         XCTAssertEqual(ModifierOnlyHotKeyManager.ModifierKey.rightOption.rawValue, "right_option")
+        XCTAssertEqual(ModifierOnlyHotKeyManager.ModifierKey.chord.rawValue, "chord")
     }
 
     func testModifierKeyDisplayNames() {
@@ -27,9 +28,10 @@ final class ModifierOnlyHotKeyManagerTests: XCTestCase {
         XCTAssertEqual(ModifierOnlyHotKeyManager.ModifierKey.rightOption.displayName, "Right Option")
     }
 
-    func testModifierKeyCaseIterableContainsAllThreeCases() {
+    func testModifierKeyCaseIterableContainsAllFourCases() {
         let all = ModifierOnlyHotKeyManager.ModifierKey.allCases
-        XCTAssertEqual(all.count, 3)
+        XCTAssertEqual(all.count, 4)
+        XCTAssertTrue(all.contains(.chord))
         XCTAssertTrue(all.contains(.fn))
         XCTAssertTrue(all.contains(.rightCommand))
         XCTAssertTrue(all.contains(.rightOption))
@@ -358,33 +360,5 @@ final class ModifierOnlyHotKeyManagerTests: XCTestCase {
         XCTAssertEqual(manager.debugGestureSnapshotForTesting().targetModifier, .rightCommand)
         manager.stop()
         XCTAssertNil(manager.debugGestureSnapshotForTesting().targetModifier)
-    }
-}
-
-@MainActor
-private final class HoldSchedulerProbe {
-    private var delays: [Double] = []
-    private var callbacks: [@MainActor @Sendable () -> Void] = []
-
-    var scheduler: ModifierOnlyHotKeyManager.HoldScheduler {
-        { [weak self] delay, fire in
-            self?.delays.append(delay)
-            self?.callbacks.append(fire)
-        }
-    }
-
-    var scheduledDelays: [Double] {
-        delays
-    }
-
-    func fire(at index: Int) {
-        let callback = callbacks.remove(at: index)
-        callback()
-    }
-
-    func fireAll() {
-        let callbacks = callbacks
-        self.callbacks.removeAll()
-        callbacks.forEach { $0() }
     }
 }

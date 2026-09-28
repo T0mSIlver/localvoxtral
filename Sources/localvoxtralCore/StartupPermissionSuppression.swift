@@ -34,6 +34,11 @@ package enum StartupPermissionSuppression {
     /// lane that opens the bundle.
     package static let keychainEnvironmentKey = "LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN"
 
+    /// Set to `"1"` by a lane whose copy of the app runs beside the owner's
+    /// and must leave his hook sockets and ssh forwards alone. The launch
+    /// smoke implies it.
+    package static let hookSocketsEnvironmentKey = "LOCALVOXTRAL_LEAVE_HOOK_SOCKETS"
+
     /// True when the startup microphone/Accessibility pass must not run.
     package static func isActive(
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -46,5 +51,19 @@ package enum StartupPermissionSuppression {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
         isActive(environment: environment) || environment[keychainEnvironmentKey] == "1"
+    }
+
+    /// True when this copy must not bind the Claude hook sockets (the
+    /// broker's and the remote listener's port) or start or reap ssh
+    /// forwards. On 2026-09-27 the launch smoke, a temporary copy running for
+    /// two seconds on the owner's Mac, bound the listener port his copy had
+    /// lost, SIGTERMed his forward as an orphan, dialed his dev box with its
+    /// own forward and left that behind when the smoke killed it (#892).
+    /// Lanes that drive the app (UI Smoke, the UI gate) quit the owner's copy
+    /// first and need the join, so they leave this unset.
+    package static func leavesHookSocketsAlone(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        isActive(environment: environment) || environment[hookSocketsEnvironmentKey] == "1"
     }
 }
