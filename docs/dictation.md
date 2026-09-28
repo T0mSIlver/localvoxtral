@@ -138,7 +138,7 @@ While you dictate, the top of the overlay lists where the words can go.
 - **The app you started in**, named after its coding agent session when it
   has one. A dictation goes here unless you press Tab.
 - **Each coding agent session that needs you**, oldest first, when
-  [Tell me when an agent needs you](coding-agents.md#jump-to-the-agent-that-needs-you)
+  [Tell me when an agent needs you](agents.md#when-an-agent-needs-you)
   is on. Picking one brings its pane forward, and your words go there when
   you stop.
 - **Inbox**: a [quick capture](coding-agents.md#quick-capture). The words are
@@ -156,9 +156,9 @@ again, it stops. It can be a
 
 ## Voice commands
 
-Four spoken phrases act instead of being typed: one presses Return, one
-switches sessions, one sends a dictation to another session, and one names a
-session.
+Some spoken phrases act instead of being typed. "Send it" presses Return.
+"Go to", "send that to" and "call this session" reach your coding agent
+sessions by name, in [Work with several agents](agents.md).
 
 ### Press Return with "send it"
 
@@ -205,57 +205,6 @@ nothing until the dictation ends.
 The app treats an app as a terminal only if it is a known terminal or listed
 in **Settings → Terminals**. The app recognizes Claude Desktop on its own.
 Listing it there would make localvoxtral treat its prompt box as a terminal.
-
-### Switch to a session with "go to"
-
-Say only "go to payments" and the app brings the pane of the joined coding
-agent session named payments to the front instead of typing anything. In
-Live Auto-Paste, say it as a phrase between pauses.
-
-A session answers to its repository's name and, in a linked worktree, to the
-worktree's name. It also answers to a
-[name you gave it](#name-a-session).
-
-"Go to" reaches the sessions that Tab can bring forward
-([Which sessions come forward](coding-agents.md#which-sessions-come-forward)).
-
-When no session has that name, the app types the dictation as usual. When
-more than one does, or its pane can't be reached, nothing is typed and the
-menu bar popover says so.
-
-In Live Auto-Paste, what you say next is typed into the session you went to.
-
-### Send to a session with "send that to"
-
-In Overlay Buffer, end a dictation with "send that to payments". The session
-named payments gets the text and presses Enter, and the app you are in gets
-nothing.
-
-The name has one to four words. Sessions answer to names the way they do for
-"go to", your own names first. What happens next depends on the session:
-
-- **A Ghostty, iTerm2 or Terminal.app tab** comes forward and gets the text.
-  Enter is pressed only if that pane is still the one in front.
-- **An opencode session, or a session in a
-  [herdr](../integrations/herdr/README.md) pane on this Mac,** gets the text
-  without coming forward.
-- **A remote, Claude Desktop or cmux session** gets nothing, and the popover
-  says "Can't send to that session yet".
-
-When no session has that name, the app inserts the whole dictation where you
-are, as spoken. When more than one does, nothing is sent and the text stays
-in History.
-
-When a delivery fails, nothing reaches the app you are in. The text stays in
-History, and the popover says whether it was typed without Enter.
-
-### Name a session
-
-While dictating into a joined session, say "call this session payments" (or
-"name this session payments"). Nothing is typed. From then on "go to
-payments" reaches that session, ahead of any repository or worktree name.
-
-Naming another session payments moves the name to it.
 
 ## Recover a dictation
 
@@ -685,7 +634,7 @@ History; the panes sit under the sidebar's Settings header.
 - **Dictation**: the [trigger](#shortcuts), **Copy on stop**, the
   [phrases that press Return](#press-return-with-send-it) and the Overlay
   Buffer "send it" switch, the
-  [needs-you cue and its shortcut](coding-agents.md#jump-to-the-agent-that-needs-you),
+  [needs-you cue and its shortcut](agents.md#jump-to-it),
   the [Quick capture to Inbox shortcut](#where-the-words-go),
   [ducking other audio](#lower-other-audio-while-dictating), and the
   overlay's font size, lines before scrolling,

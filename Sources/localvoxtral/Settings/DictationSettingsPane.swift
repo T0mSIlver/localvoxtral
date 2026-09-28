@@ -14,7 +14,7 @@ struct DictationSettingsPane: View {
     private static let overlayWordHoldDocsURL = DocsLink.page("docs/dictation/#keeping-words-on-their-line")
     /// The Output group's Learn more: the send phrases, where they press
     /// Return, and how a dictation stops on one.
-    private static let sendingByVoiceDocsURL = DocsLink.page("docs/dictation/#voice-commands")
+    private static let agentsDocsURL = DocsLink.page("docs/agents/")
 
     /// Each mode's toggle names the first send phrase, so it stays true
     /// after the user replaces "send it".
@@ -297,7 +297,7 @@ struct DictationSettingsPane: View {
                 }
             }
 
-            SettingsGroup(title: "Output", learnMoreURL: Self.sendingByVoiceDocsURL) {
+            SettingsGroup(title: "Output", learnMoreURL: Self.agentsDocsURL) {
                 SettingsFieldRow(title: "Copy on stop") {
                     Toggle("", isOn: $settings.autoCopyEnabled)
                         .labelsHidden()
