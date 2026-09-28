@@ -69,6 +69,28 @@ final class LearnedTermsIgnoreTests: XCTestCase {
         XCTAssertEqual(learned.projects, others)
     }
 
+    /// Records left from before #975 (Tom, 2026-09-28): a checkout keyed by
+    /// its old folder with no repository, and a checkout that names a
+    /// repository whose record is gone. Forget takes each alone.
+    func testForgetTakesALeftoverFromBeforeOneProjectPerRepository() {
+        var learned = threeProjects()
+        let current = learned.projects
+        var orphan = LearnedTermProject(key: "/w/old-ink", name: "old-ink", terms: [], lastSeen: Self.start)
+        orphan.remote = "github.com/me/gone"
+        learned.projects += [
+            LearnedTermProject(key: "/w/supervoxtral", name: "supervoxtral", terms: [term("Voxtral")], lastSeen: Self.start),
+            orphan,
+        ]
+        let rows = learned.listedProjects(now: Self.start)
+        XCTAssertTrue(rows.contains { $0.key == "/w/supervoxtral" }, "the leftover is listed, so it can be forgotten")
+        XCTAssertTrue(rows.contains { $0.key == "repo:github.com/me/gone" }, "the orphan is listed under its repository")
+
+        learned.forgetProject(keys: ["/w/supervoxtral"])
+        learned.forgetProject(keys: ["/w/old-ink", "repo:github.com/me/gone"])
+
+        XCTAssertEqual(learned.projects, current, "the current projects are untouched")
+    }
+
     // MARK: Ignore
 
     /// Everything that adds a record or a term, after Ignore: nothing stays.
