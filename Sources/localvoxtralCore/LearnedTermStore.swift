@@ -358,7 +358,8 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         let moment = now()
         mutate { terms in
             terms.ignoreProject(key: key, name: name, keys: keys, now: moment)
-            Log.polishing.info("Learned terms: a project ignored, \(terms.ignored.projects.count, privacy: .public) ignored")
+            let count = terms.ignored.projects.count
+            Log.polishing.info("Learned terms: a project ignored, \(count, privacy: .public) ignored")
         }
     }
 
@@ -366,7 +367,8 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     package func unignoreProject(key: String) {
         mutate { terms in
             terms.unignoreProject(key: key)
-            Log.polishing.info("Learned terms: a project un-ignored, \(terms.ignored.projects.count, privacy: .public) ignored")
+            let count = terms.ignored.projects.count
+            Log.polishing.info("Learned terms: a project un-ignored, \(count, privacy: .public) ignored")
         }
     }
 
