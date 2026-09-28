@@ -166,9 +166,14 @@ there is not.
   words, and a stored list that no longer validates loads as the default.
 - **"Go to <name>" is a command only when the name resolves** (#723 step
   1). An Overlay Buffer dictation (a Live Auto-Paste segment, #747) that
-  is only "go to" plus at most four words is looked up against the live registry's default names (the git
-  root's directory name first, then the main checkout's) before the spoken
-  send cut, the dictionary and the polisher. No match: it is ordinary text
+  is only "go to" plus at most four words is looked up against the live
+  registry's names (`SessionNameResolver`: nickname, the folder name with
+  duplicates told apart, the git root's directory or named branch, the main
+  checkout's, the harness's title, the title's first two to four words)
+  before the spoken send cut, the dictionary and the polisher. A title
+  never outranks a folder name: the session sets its own title (Desktop's
+  `titleSource: tool`), so it could otherwise take a name the user meant
+  for another session. No match: it is ordinary text
   and commits as dictated, because "go to the tests" is a prompt too. A
   match: nothing is inserted, no Return is pressed, and nothing is saved to
   History. Two panes on one name is ambiguous and does nothing; sessions on
@@ -180,6 +185,17 @@ there is not.
   `.focused` only when that tty is the session's. A Return after a focus
   (#723 step 3) or #717's answer hotkey must require `.focused`, never
   `.unverified`.
+- **A session's title is a name, never evidence** (#1013). Claude
+  Desktop's title for a session is read from Desktop's own file on this
+  Mac (`ClaudeDesktopSessionTitles`, keyed by the `local_<uuid>` the hooks
+  reported), for an ssh-host session too, so no title crosses the wire.
+  It names the session in the overlay, the popover, banners and go-to,
+  and nothing else: no join, route or capture reads it, the registry file
+  does not keep it, and no log line carries it. Other harnesses' titles
+  (Claude Code's `session_title`, Codex's `thread_name`, opencode's and
+  Vibe's `title`) stay on their host until a wire step carries them: the
+  auto-generated ones summarize the first prompt, which needs an owner
+  ruling (#1013).
 - **Live Auto-Paste holds back only what may still read "go to"** (#747).
   Typed words cannot be taken back, so while a session is live a segment is
   held while its words so far may still become "go to" ("G", "Go", "go t")

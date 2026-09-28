@@ -567,7 +567,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func installAgentAttention(
         ttyReader: AppleScriptTerminalTTYReader,
         desktopSessionReader: AXClaudeDesktopSessionURLReader,
-        herdrClient: HerdrSocketClient
+        herdrClient: HerdrSocketClient,
+        nicknames: SessionNicknameStore,
+        desktopTitles: ClaudeDesktopSessionTitles
     ) {
         let registry = claudeSessionRegistry
         let paneResolver = ClaudeSessionJoinResolver(
@@ -590,7 +592,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return await paneResolver.sessionShown(target: target) == session.sessionID
             },
             liveSessionIDs: { Set(registry.liveSessions().map(\.sessionID)) },
-            now: { Date() }
+            now: { Date() },
+            name: { session in
+                AgentAttentionText.name(
+                    of: session,
+                    among: registry.liveSessions(),
+                    title: desktopTitles.title(of:),
+                    nickname: nicknames.nickname(for:)
+                )
+            }
         )
         let announcer = AgentAttentionAnnouncer()
         if settings.agentAttentionEnabled { announcer.requestSoundIfMissing() }
@@ -711,6 +721,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // "Go to <name>" (#723): the same registry and the same
             // focused-pane reader as the join, so a pane counts as brought
             // forward by the evidence the join trusts.
+            let nicknames = SessionNicknameStore.userDefaults(.standard, key: "session_navigation.nicknames")
+            let desktopTitles = ClaudeDesktopSessionTitles.live()
             viewModel.session.sessionNavigator = SessionNavigator(
                 liveSessions: { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() },
                 repositoryRoot: SessionNavigator.liveRepositoryRoot,
@@ -722,12 +734,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     )
                 ),
                 sleep: viewModel.session.dependencies.clock.sleep,
-                nicknames: .userDefaults(.standard, key: "session_navigation.nicknames")
+                nicknames: nicknames,
+                branch: { RepoIndexing.branch(root: $0) },
+                title: desktopTitles.title(of:)
             )
             installAgentAttention(
                 ttyReader: ttyReader,
                 desktopSessionReader: desktopSessionReader,
-                herdrClient: herdrClient
+                herdrClient: herdrClient,
+                nicknames: nicknames,
+                desktopTitles: desktopTitles
             )
             // Correction learning compares each submitted prompt with the
             // dictation the app inserted into that session. The registry
