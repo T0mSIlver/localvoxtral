@@ -61,8 +61,24 @@ LOCALVOXTRAL_DATA_HOME=/tmp/lv-data lv_open -n /tmp/localvoxtral.app
 [ "$(cat "$ARGV_LOG")" = "open --env LOCALVOXTRAL_DATA_HOME=/tmp/lv-data -n /tmp/localvoxtral.app" ] \
   || fail "the data folder was not forwarded: $(cat "$ARGV_LOG")"
 
+# A data folder that cannot be made fails the lane instead of leaving an
+# empty override, which would mean the owner's stores (#985).
+cat >"$WORK/mktemp" <<'STUB'
+#!/bin/sh
+exit 1
+STUB
+chmod +x "$WORK/mktemp"
+unset LOCALVOXTRAL_DATA_HOME
+if lv_isolate_data lv-test; then fail "lv_isolate_data succeeded without a folder"; fi
+[ -z "${LOCALVOXTRAL_DATA_HOME+set}" ] || fail "a failed lv_isolate_data left LOCALVOXTRAL_DATA_HOME set"
+rm "$WORK/mktemp"
+lv_isolate_data lv-test || fail "lv_isolate_data failed with a working mktemp"
+[ -d "$LOCALVOXTRAL_DATA_HOME" ] || fail "lv_isolate_data exported no folder"
+rm -rf "$LOCALVOXTRAL_DATA_HOME"
+unset LOCALVOXTRAL_DATA_HOME
+
 for script in scripts/ui-smoke.sh scripts/e2e-dictation.sh scripts/record-demo.sh scripts/capture-readme-assets.sh; do
-  grep -q 'export LOCALVOXTRAL_DATA_HOME=' "$ROOT_DIR/$script" \
+  grep -q 'lv_isolate_data ' "$ROOT_DIR/$script" \
     || fail "$script launches the app as the owner without a data folder of its own"
 done
 
