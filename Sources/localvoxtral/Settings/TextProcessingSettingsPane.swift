@@ -4,9 +4,6 @@ import SwiftUI
 struct TextProcessingSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
-    /// Selects the Projects pane, where the learned terms are (#972).
-    var openProjects: () -> Void = {}
-    @State private var learnedTermsFileMessage: String?
 
     static let speakerProfileExample = """
         Backend engineer at Acme, mostly Swift and Python.
@@ -22,14 +19,6 @@ struct TextProcessingSettingsPane: View {
 
     private var isLLMPolishingReachable: Bool {
         settings.isOverlayBufferSessionReachable
-    }
-
-    /// Reading `learnedTermRevision` is what re-renders the row after a
-    /// dictation or an import: the store is a plain class, so nothing else
-    /// observes it.
-    private var hasLearnedTerms: Bool {
-        _ = viewModel.learnedTermRevision
-        return !(viewModel.learnedTermStore?.snapshot().projects.isEmpty ?? true)
     }
 
     private var llmPolishingEnabledBinding: Binding<Bool> {
@@ -156,33 +145,6 @@ struct TextProcessingSettingsPane: View {
                         settings.polishDismissedTermSuggestions = []
                     }
                     .disabled(settings.polishDismissedTermSuggestions.isEmpty)
-                }
-
-                // The terms themselves are in Projects, each under its
-                // project (#972); moving them between machines is here.
-                SettingsFieldRow(
-                    title: "Terms learned from polishing",
-                    status: learnedTermsFileMessage
-                ) {
-                    HStack(spacing: 8) {
-                        Button("Show in Projects", action: openProjects)
-                            .accessibilityIdentifier("settings.learnedTerms.show")
-                        // Enabled with no terms: a new machine imports (#523).
-                        Button("Import…") {
-                            LearnedTermsTransfer.importTerms(into: viewModel.learnedTermStore) {
-                                learnedTermsFileMessage = $0
-                            }
-                        }
-                        .accessibilityIdentifier("settings.learnedTerms.import")
-                        if hasLearnedTerms {
-                            Button("Export…") {
-                                LearnedTermsTransfer.exportTerms(from: viewModel.learnedTermStore) {
-                                    learnedTermsFileMessage = $0
-                                }
-                            }
-                            .accessibilityIdentifier("settings.learnedTerms.export")
-                        }
-                    }
                 }
 
                 SettingsFieldRow(title: "Ask the coding agent for each new project's terms") {

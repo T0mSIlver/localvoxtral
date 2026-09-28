@@ -7,6 +7,9 @@ import SwiftUI
 /// project close the table as "No project" (#972), so this pane is the one
 /// place learned terms are seen, pinned and forgotten.
 ///
+/// Import… and Export… under Learned terms move every project's terms at
+/// once, so they sit below the table, not in a project's sheet (#999).
+///
 /// Opening the pane asks GitHub again for every project's description.
 struct ProjectsSettingsPane: View {
     @Bindable var settings: SettingsStore
@@ -18,6 +21,7 @@ struct ProjectsSettingsPane: View {
     /// History when the pane opens.
     @State private var dictationProjectKeys: [String?] = []
     @State private var openProject: OpenProject?
+    @State private var transferMessage: String?
 
     enum OpenProject: Identifiable, Hashable {
         case project(key: String)
@@ -29,6 +33,13 @@ struct ProjectsSettingsPane: View {
     private var rows: [ProjectsPaneRow] {
         _ = viewModel.learnedTermRevision
         return inbox?.projectRows(dictationProjectKeys: dictationProjectKeys) ?? []
+    }
+
+    /// Reading `learnedTermRevision` re-renders Export… after a dictation
+    /// or an import: the store is a plain class, so nothing else observes it.
+    private var hasLearnedTerms: Bool {
+        _ = viewModel.learnedTermRevision
+        return !(viewModel.learnedTermStore?.snapshot().projects.isEmpty ?? true)
     }
 
     var body: some View {
@@ -91,6 +102,28 @@ struct ProjectsSettingsPane: View {
                     }
                 }
             }
+
+            SettingsGroup(title: "Learned terms", learnMoreURL: ProjectsLearnMore.learnedTerms) {
+                SettingsFieldRow(title: "Move to another Mac", status: transferMessage) {
+                    HStack(spacing: 8) {
+                        // Enabled with no terms: a new machine imports (#523).
+                        Button("Import…") {
+                            LearnedTermsTransfer.importTerms(into: viewModel.learnedTermStore) {
+                                transferMessage = $0
+                            }
+                        }
+                        .accessibilityIdentifier("projects.learnedTerms.import")
+                        if hasLearnedTerms {
+                            Button("Export…") {
+                                LearnedTermsTransfer.exportTerms(from: viewModel.learnedTermStore) {
+                                    transferMessage = $0
+                                }
+                            }
+                            .accessibilityIdentifier("projects.learnedTerms.export")
+                        }
+                    }
+                }
+            }
         }
         .sheet(item: $openProject) { open in
             switch open {
@@ -131,6 +164,7 @@ struct ProjectsSettingsPane: View {
 
 enum ProjectsLearnMore {
     static let projects = DocsLink.page("docs/coding-agents/#projects")
+    static let learnedTerms = DocsLink.page("docs/dictation/#terms-learned-from-polishing")
 }
 
 /// The table's five columns, the header's and each row's alike.
