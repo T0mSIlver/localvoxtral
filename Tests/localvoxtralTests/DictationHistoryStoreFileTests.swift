@@ -178,14 +178,14 @@ final class DictationHistoryStoreFileTests: XCTestCase {
         let legacy = directory.appendingPathComponent("default.store")
         let destination = directory.appendingPathComponent("localvoxtral/history.store")
         try await seedStore(at: legacy, texts: ["one", "two"])
-        let before = try legacyFiles(legacy)
+        let before = try settledLegacyFile(legacy)
 
         XCTAssertEqual(
             DictationHistoryStoreFile.importLegacyStore(from: legacy, to: destination), .imported)
         XCTAssertEqual(
             DictationHistoryStoreFile.importLegacyStore(from: legacy, to: destination), .storeExists)
 
-        XCTAssertEqual(try legacyFiles(legacy), before)
+        try assertUnchanged(legacy, before)
         let store = try DictationSessionStore.open(url: destination).get()
         let entries = await store.entries()
         XCTAssertEqual(entries.map(\.rawText).sorted(), ["one", "two"])
@@ -210,13 +210,13 @@ final class DictationHistoryStoreFileTests: XCTestCase {
         let legacy = directory.appendingPathComponent("default.store")
         try await seedStore(at: legacy, texts: ["one"])
         _ = try rawTexts(ForeignRequestModel.self, at: legacy, \.path)
-        let before = try legacyFiles(legacy)
+        let before = try settledLegacyFile(legacy)
 
         let store = try DictationSessionStore.open(
             directory: directory.appendingPathComponent("localvoxtral"), legacyStore: legacy).get()
 
         XCTAssertEqual(store.legacyImport, .legacyHoldsNoHistory(tables: ["ZFOREIGNREQUESTMODEL"]))
-        XCTAssertEqual(try legacyFiles(legacy), before)
+        try assertUnchanged(legacy, before)
         let count = await store.count()
         XCTAssertEqual(count, 0)
     }
@@ -260,12 +260,21 @@ final class DictationHistoryStoreFileTests: XCTestCase {
         XCTAssertEqual(DictationHistoryStoreFile.defaultDirectoryURL().lastPathComponent, "localvoxtral")
     }
 
-    private func legacyFiles(_ url: URL) throws -> [String: Data] {
-        var files: [String: Data] = [:]
-        for suffix in ["", "-wal"] where FileManager.default.fileExists(atPath: url.path + suffix) {
-            files[suffix] = try Data(contentsOf: URL(fileURLWithPath: url.path + suffix))
-        }
-        return files
+    /// The legacy file with its WAL folded in, so SwiftData releasing the
+    /// seeding store later (it checkpoints on close) cannot change it.
+    private func settledLegacyFile(_ url: URL) throws -> Data {
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &db), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil), SQLITE_OK)
+        sqlite3_close(db)
+        return try Data(contentsOf: url)
+    }
+
+    /// Nothing was written to the file, nor to its WAL.
+    private func assertUnchanged(_ url: URL, _ settled: Data, file: StaticString = #filePath, line: UInt = #line) throws {
+        XCTAssertEqual(try Data(contentsOf: url), settled, file: file, line: line)
+        let wal = (try? FileManager.default.attributesOfItem(atPath: url.path + "-wal"))?[.size] as? Int
+        XCTAssertEqual(wal ?? 0, 0, "something wrote to the legacy file's WAL", file: file, line: line)
     }
 }
 
