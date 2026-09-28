@@ -96,9 +96,10 @@ its words already, so neither stops on silence.
   app reconnects.
 - A change to the setting applies from the next dictation.
 
-**With "send it".** A dictation that ends in a send phrase stops three
-seconds after the last new word, sooner than the shortest silence setting
-(see [Press Return with "send it"](#press-return-with-send-it)). A silence
+**With "send it".** A dictation that ends in a send phrase stops after
+**Wait before pressing Return** (3 s unless you change it), sooner than the
+shortest silence setting (see
+[Press Return with "send it"](#press-return-with-send-it)). A silence
 stop presses Return only when that send-phrase stop would have. Code:
 [silence stop](../Sources/localvoxtral/DictationSessionController+SilenceAutoStop.swift),
 [send-phrase stop](../Sources/localvoxtral/DictationSessionController+SpokenStop.swift).
@@ -170,22 +171,34 @@ keyboard.
 The option is off by default. Turn it on per mode in **Settings →
 Dictation**; the Live Auto-Paste switch is under **Advanced**.
 
-**Your own phrases.** **Settings → Dictation → Output → Phrases that press
-Return** replaces "send it" and "send now" with your list, separated by
-commas, in both modes. A phrase has at most four words. The app refuses a
+**Your own phrases.** **Settings → Dictation → Output → Send phrases**
+replaces "send it" and "send now" with your list, separated by commas, in
+both modes. A phrase has at most four words. The app refuses a
 single common word ("go", "done", "enter"), since you say it in ordinary
 prompts.
 
 **Overlay Buffer stops on its own.** When the words end in a send phrase and
-three seconds pass with no new words, the dictation stops as if you pressed
-the key: polish, commit, then Return.
+the wait passes with no new words, the dictation stops as if you pressed
+the key: polish, commit, then Return. **Settings → Dictation → Output → Wait
+before pressing Return** sets the wait: 1, 1.5, 2 or 3 seconds, 3 by
+default.
 
 - A phrase in the middle of a sentence does nothing.
-- Speaking again within the three seconds keeps the dictation going.
+- Speaking again within the wait keeps the dictation going.
 - The key still stops it at once.
 - A held (push to talk) dictation stops only on release.
 - A quick capture stops the same way and goes to the Inbox without the
   phrase. It never presses Return.
+- Live Auto-Paste does not wait: it presses Return when you finish the
+  phrase.
+
+**Choosing the wait.** A shorter wait sends sooner, but it also ends a
+dictation where you said a send phrase and then paused mid-sentence. In
+measured dictations, about 6 % of pauses in speech last 3 s or more and
+about 9 % last 2 s or more. The choices stop at 1 s because words reach the
+app half a second to a second after you say them: a shorter wait could press
+Return before the end of your sentence arrives, and a sent prompt cannot be
+taken back.
 
 **Overlay Buffer and polishing.** The app removes the phrase before
 polishing, so the polisher never sees it.
@@ -632,15 +645,15 @@ History; the panes sit under the sidebar's Settings header.
   - **Mistral API**: Mistral's hosted models on one API key, entered in the
     pane's Mistral API group.
 - **Dictation**: the [trigger](#shortcuts), **Copy on stop**, the
-  [phrases that press Return](#press-return-with-send-it) and the Overlay
-  Buffer "send it" switch, the
+  [send phrases](#press-return-with-send-it), the wait before pressing
+  Return and the Overlay Buffer send phrase switch, the
   [needs-you cue and its shortcut](agents.md#jump-to-it),
   the [Quick capture to Inbox shortcut](#where-the-words-go),
   [ducking other audio](#lower-other-audio-while-dictating), and the
   overlay's font size, lines before scrolling,
   [word wrapping](#keeping-words-on-their-line) and
   [stop after silence](#stop-after-silence). **Advanced** holds
-  [Live Auto-Paste](#live-auto-paste) and its own "send it" switch, the menu
+  [Live Auto-Paste](#live-auto-paste) and its own send phrase switch, the menu
   bar mode and the [Copy last dictation](#recover-a-dictation) shortcut.
 - **Text Processing**: [About you](#add-your-global-terms),
   [Suggest terms](#get-term-suggestions), the LLM Polishing switch, the

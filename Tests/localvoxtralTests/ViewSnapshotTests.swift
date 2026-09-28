@@ -315,7 +315,7 @@ final class ViewSnapshotTests: XCTestCase {
         return inbox
     }
 
-    /// Dictation → Output → Phrases that press Return (#839): the saved
+    /// Dictation → Output → Send phrases (#839): the saved
     /// list, and a refused one with its reason under the row.
     func testSendPhrasesRow() throws {
         let (settings, _) = makeViewModel()
