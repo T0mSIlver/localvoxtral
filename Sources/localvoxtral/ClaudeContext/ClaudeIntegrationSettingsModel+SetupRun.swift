@@ -133,7 +133,8 @@ extension ClaudeIntegrationSettingsModel {
         // indicator must clear on this run, not at the host's next hook (the
         // host may not run another hook for hours, and the user is looking at
         // the row right now).
-        if pluginOutcome != .claudeNotFound {
+        let claudeFound = pluginOutcome != .claudeNotFound
+        if claudeFound {
             hostsWithoutClaude.remove(hostID)
             registry?.notePluginVersion(
                 hostID: hostID,
