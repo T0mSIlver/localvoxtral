@@ -666,6 +666,21 @@ there is not.
     never kept as a join, reads nothing from the pane, never reaches a
     remote or federated herdr, and asks the focused TTY only while a live
     local session sits in a herdr pane.
+  - *herdr focus for navigation* (#1012; the rule waits on the owner's OK
+    there, and until then the app sends no focus call). What herdr
+    offers, measured on 0.9.0 and 0.9.1: the socket method `pane.focus
+    {pane_id}` answers `pane_info` with `focused: true`, or `pane_not_found`.
+    It switches workspace and tab itself. The CLI has no command for it
+    (`herdr pane focus` is directional only). `agent.focus {target}` refuses
+    a pane herdr does not see as an agent (`agent_not_found`). The read-back
+    is `pane.current`. Focus is per server, not per client: every attached
+    TUI client moves to the pane, and an explicit focus marks the agent seen
+    (`done` becomes `idle`). A remote server takes the same request through
+    the join's `ssh -L` forward. herdr cannot say which terminal shows it (no
+    client introspection), so the Mac window comes from the join's
+    process-table probes, never a title: a local TTY whose foreground ssh
+    goes to that host with a plain herdr client command, or a local herdr
+    client whose federation selection shows that host.
   - *cmux surfaces* (#727, `CmuxSurfaceRoute`). *Exactly two calls:*
     `surface.send_text` with `surface_id` and `text`, and `surface.send_key`
     with `surface_id` and `key: "enter"`. Never a call without `surface_id`:
