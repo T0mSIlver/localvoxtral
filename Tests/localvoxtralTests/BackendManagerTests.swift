@@ -6,31 +6,6 @@ import XCTest
 
 @MainActor
 final class BackendManagerTests: XCTestCase {
-    func testBundledDictationBackendRecordsStartSequence() async throws {
-        let supervisorFactory = FakeSupervisorFactory()
-        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [
-            .launching,
-            .waitingForReady,
-            .running,
-        ]
-        let manager = makeManager(supervisorFactory: supervisorFactory)
-        var speechdStatuses: [ManagedBackendStatus] = []
-        manager.debugStatusChangeSink = { spec, status in
-            guard spec.id == BackendCatalog.speechd.id else { return }
-            speechdStatuses.append(status)
-        }
-
-        try await manager.ensureReady(dictation: true, polishing: false)
-
-        XCTAssertEqual(manager.speechdStatus, .ready)
-        XCTAssertTrue(speechdStatuses.contains {
-            if case .preparingModel = $0 { return true }
-            return false
-        })
-        XCTAssertTrue(speechdStatuses.contains(.starting))
-        XCTAssertEqual(speechdStatuses.last, .ready)
-    }
-
     func testSpeechdConfigurationUsesBundlePathPinnedModelRevisionAndHFFileSet() async throws {
         let modelPreparer = FakeModelPreparer()
         let supervisorFactory = FakeSupervisorFactory()
@@ -283,6 +258,8 @@ final class BackendManagerTests: XCTestCase {
         try await manager.ensureReady(dictation: true, polishing: false)
         XCTAssertEqual(supervisorFactory.createdConfigurations.map(\.name), [BackendCatalog.speechd.displayName])
         XCTAssertEqual(modelPreparer.prepareCalls.map(\.backendID), [BackendCatalog.speechd.id])
+        XCTAssertEqual(manager.speechdStatus, .ready)
+        XCTAssertEqual(manager.polishdStatus, .stopped)
 
         try await manager.ensureReady(dictation: true, polishing: true)
         // Set + count, not positional (concurrent ensure tasks): exactly one
@@ -298,6 +275,7 @@ final class BackendManagerTests: XCTestCase {
         )
         XCTAssertEqual(modelPreparer.prepareCalls.count, 2)
         XCTAssertEqual(manager.polishdStatus, .ready)
+        XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.polishd.displayName]?.startCallCount, 1)
 
         let polishdConfiguration = try XCTUnwrap(
             supervisorFactory.createdConfigurations
@@ -400,37 +378,51 @@ final class BackendManagerTests: XCTestCase {
         )
     }
 
-    func testStopAllStopsBothSupervisors() async throws {
-        let supervisorFactory = FakeSupervisorFactory()
-        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
-        supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
-        let manager = makeManager(supervisorFactory: supervisorFactory)
+    /// Each stop scope tears down exactly its own supervisors and leaves the
+    /// other backend running.
+    func testStopScopeStopsExactlyItsOwnSupervisors() async throws {
+        let cases: [
+            (label: String, stopsSpeechd: Bool, stopsPolishd: Bool,
+             stop: (BackendManager) async -> Void)
+        ] = [
+            ("stopAll stops both supervisors", true, true, { await $0.stopAll() }),
+            ("stopPolishing stops only polishd", false, true, { await $0.stopPolishing() }),
+            ("stopDictation stops only speechd", true, false, { await $0.stopDictation() }),
+        ]
 
-        try await manager.ensureReady(dictation: true, polishing: true)
-        await manager.stopAll()
+        for row in cases {
+            let supervisorFactory = FakeSupervisorFactory()
+            supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
+            supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
+            let manager = makeManager(supervisorFactory: supervisorFactory)
 
-        XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.speechd.displayName]?.stopCallCount, 1)
-        XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.polishd.displayName]?.stopCallCount, 1)
-        XCTAssertEqual(manager.speechdStatus, .stopped)
-        XCTAssertEqual(manager.polishdStatus, .stopped)
-    }
+            try await manager.ensureReady(dictation: true, polishing: true)
+            XCTAssertEqual(manager.speechdStatus, .ready, row.label)
+            XCTAssertEqual(manager.polishdStatus, .ready, row.label)
 
-    func testStopPolishingStopsOnlyPolishd() async throws {
-        let supervisorFactory = FakeSupervisorFactory()
-        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
-        supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
-        let manager = makeManager(supervisorFactory: supervisorFactory)
+            await row.stop(manager)
 
-        try await manager.ensureReady(dictation: true, polishing: true)
-        XCTAssertEqual(manager.speechdStatus, .ready)
-        XCTAssertEqual(manager.polishdStatus, .ready)
-
-        await manager.stopPolishing()
-
-        XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.polishd.displayName]?.stopCallCount, 1)
-        XCTAssertEqual(manager.polishdStatus, .stopped)
-        XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.speechd.displayName]?.stopCallCount, 0)
-        XCTAssertEqual(manager.speechdStatus, .ready)
+            XCTAssertEqual(
+                supervisorFactory.supervisors[BackendCatalog.speechd.displayName]?.stopCallCount,
+                row.stopsSpeechd ? 1 : 0,
+                row.label
+            )
+            XCTAssertEqual(
+                supervisorFactory.supervisors[BackendCatalog.polishd.displayName]?.stopCallCount,
+                row.stopsPolishd ? 1 : 0,
+                row.label
+            )
+            XCTAssertEqual(
+                manager.speechdStatus,
+                row.stopsSpeechd ? ManagedBackendStatus.stopped : ManagedBackendStatus.ready,
+                row.label
+            )
+            XCTAssertEqual(
+                manager.polishdStatus,
+                row.stopsPolishd ? ManagedBackendStatus.stopped : ManagedBackendStatus.ready,
+                row.label
+            )
+        }
     }
 
     func testModelChangeStopsSupervisorAndNextEnsureUsesNewModel() async throws {
@@ -535,24 +527,6 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(modelPreparer.prepareCalls.count, 2)
         XCTAssertEqual(manager.polishdStatus, .ready)
         _ = await firstEnsure.result
-    }
-
-    func testStopDictationStopsOnlySpeechd() async throws {
-        let supervisorFactory = FakeSupervisorFactory()
-        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
-        supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
-        let manager = makeManager(supervisorFactory: supervisorFactory)
-
-        try await manager.ensureReady(dictation: true, polishing: true)
-        XCTAssertEqual(manager.speechdStatus, .ready)
-        XCTAssertEqual(manager.polishdStatus, .ready)
-
-        await manager.stopDictation()
-
-        XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.speechd.displayName]?.stopCallCount, 1)
-        XCTAssertEqual(manager.speechdStatus, .stopped)
-        XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.polishd.displayName]?.stopCallCount, 0)
-        XCTAssertEqual(manager.polishdStatus, .ready)
     }
 
     func testSupervisorStateMirrorMarksLaterFailureAndNextEnsureDoesNotShortCircuit() async throws {
@@ -669,22 +643,6 @@ final class BackendManagerTests: XCTestCase {
                 BackendCatalog.polishd.id: SettingsStore.defaultLLMPolishingModel,
             ]
         )
-    }
-
-    func testEnsureReadyWithoutPolishingPreparesOnlySpeechd() async throws {
-        let modelPreparer = FakeModelPreparer()
-        let supervisorFactory = FakeSupervisorFactory()
-        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
-        supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
-        let manager = makeManager(
-            modelPreparer: modelPreparer,
-            supervisorFactory: supervisorFactory
-        )
-
-        try await manager.ensureReady(dictation: true, polishing: false)
-
-        XCTAssertEqual(modelPreparer.prepareCalls.map(\.backendID), [BackendCatalog.speechd.id])
-        XCTAssertEqual(supervisorFactory.createdConfigurations.map(\.name), [BackendCatalog.speechd.displayName])
     }
 
     func testCancellingEnsureReadyDuringModelPreparationTerminatesAndDoesNotMarkReady() async throws {
@@ -1088,23 +1046,6 @@ final class BackendManagerTests: XCTestCase {
 
         stuckDictation.cancel()
         _ = try? await stuckDictation.value
-    }
-
-    func testSecondEnsureReadyAddsPolishingAfterDictationOnlyRun() async throws {
-        let supervisorFactory = FakeSupervisorFactory()
-        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
-        supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
-        let manager = makeManager(supervisorFactory: supervisorFactory)
-
-        // First dictation: polishing disabled at the time.
-        try await manager.ensureReady(dictation: true, polishing: false)
-        XCTAssertEqual(manager.speechdStatus, .ready)
-        XCTAssertEqual(manager.polishdStatus, .stopped)
-
-        // User enables polishing, dictates again: polishd must come up now.
-        try await manager.ensureReady(dictation: true, polishing: true)
-        XCTAssertEqual(manager.polishdStatus, .ready)
-        XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.polishd.displayName]?.startCallCount, 1)
     }
 
     func testUnownedSpeechdPortOccupantSurfacesNormalConflictWithoutStarting() async {

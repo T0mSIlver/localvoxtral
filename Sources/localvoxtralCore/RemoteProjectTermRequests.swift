@@ -43,13 +43,17 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
     /// (#891). A project answered before is asked again only through them.
     package static let minimumLinePluginVersion = "1.20.0"
     package static let minimumLineVibeHooksVersion = "1.5.0"
+    /// The first shims whose runner asks for names people say (#914,
+    /// `ProjectTermProposal.promptRevision` 3).
+    package static let minimumSpokenPluginVersion = "1.21.0"
+    package static let minimumSpokenVibeHooksVersion = "1.6.0"
 
     package struct Pending: Equatable, Sendable {
         package let agent: ProjectTermProposal.Agent
         package let project: LearnedTermProjectIdentity
         package let excluding: [String]
-        /// The host's runner asks for the project's sentence (#891).
-        package let asksLine: Bool
+        /// The prompt revision the host's runner asks with.
+        package let revision: Int
         package let markedAt: Date
         /// When the header went out; nil while it waits for a hook.
         package var askedAt: Date?
@@ -104,8 +108,8 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
         else { return false }
 
         let moment = now()
-        let asksLine = Self.hostAsksForTheLine(host, agent: agent)
-        guard store.snapshot().needsProposal(projectKey: project.key, now: moment, asksLine: asksLine)
+        let revision = Self.hostPromptRevision(host, agent: agent)
+        guard store.snapshot().needsProposal(projectKey: project.key, now: moment, revision: revision)
         else { return false }
         let claimed = state.withLock { state -> Bool in
             prune(&state, now: moment)
@@ -116,7 +120,7 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
             }
             state.asked[project.key] = moment
             state.pending[join.sessionID] = Pending(
-                agent: agent, project: project, excluding: excluding, asksLine: asksLine, markedAt: moment,
+                agent: agent, project: project, excluding: excluding, revision: revision, markedAt: moment,
                 askedAt: nil
             )
             return true
@@ -145,18 +149,26 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
         }
     }
 
-    /// Whether the host's recorded shim for `agent` asks for the sentence.
-    package static func hostAsksForTheLine(_ host: ClaudeRemoteHost, agent: ProjectTermProposal.Agent) -> Bool {
-        switch agent {
-        case .claude:
-            guard let report = host.reportedPluginVersion else { return false }
-            return report >= .version(minimumLinePluginVersion)
-        case .vibe:
-            guard let version = host.reportedVibeHooksVersion else { return false }
-            return !ClaudeRemotePluginVersionCodec.isVersion(version, olderThan: minimumLineVibeHooksVersion)
-        case .opencode:
-            return false
+    /// The prompt revision the host's recorded shim for `agent` asks with:
+    /// 3 asks for names people say (#914), 2 for the project's sentence too
+    /// (#891), 1 for terms only.
+    package static func hostPromptRevision(_ host: ClaudeRemoteHost, agent: ProjectTermProposal.Agent) -> Int {
+        func atLeast(_ minimum: String) -> Bool {
+            switch agent {
+            case .claude:
+                guard let report = host.reportedPluginVersion else { return false }
+                return report >= .version(minimum)
+            case .vibe:
+                guard let version = host.reportedVibeHooksVersion else { return false }
+                return !ClaudeRemotePluginVersionCodec.isVersion(version, olderThan: minimum)
+            case .opencode:
+                return false
+            }
         }
+        let spoken = agent == .vibe ? minimumSpokenVibeHooksVersion : minimumSpokenPluginVersion
+        let line = agent == .vibe ? minimumLineVibeHooksVersion : minimumLinePluginVersion
+        if atLeast(spoken) { return 3 }
+        return atLeast(line) ? 2 : 1
     }
 
     // MARK: Step 2, the next hook's reply
@@ -211,8 +223,8 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
         // schema flag): still answered, or the host's `done` stamp would
         // leave the Mac asking daily for nothing.
         store.recordProposal(
-            accepted, line: parsed.line ?? (slot.asksLine ? "" : nil), agent: slot.agent, project: slot.project,
-            excluding: slot.excluding)
+            accepted, line: parsed.line ?? (slot.revision >= 2 ? "" : nil), revision: slot.revision,
+            agent: slot.agent, project: slot.project, excluding: slot.excluding)
         return accepted.count
     }
 

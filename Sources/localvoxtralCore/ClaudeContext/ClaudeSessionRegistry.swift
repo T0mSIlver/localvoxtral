@@ -1260,6 +1260,7 @@ public final class ClaudeSessionRegistry: Sendable {
             activity: snapshot.activity.rawValue,
             process: snapshot.origin.isLocalAuthenticated ? snapshot.process : nil,
             remoteEnvironment: snapshot.remoteSessionEnvironment.map(StoredClaudeSessions.RemoteEnvironment.init),
+            worktreeRepository: snapshot.origin.isLocalAuthenticated ? nil : snapshot.remoteWorktreeRepository,
             firstSeen: snapshot.firstSeen,
             lastActivity: snapshot.lastActivity
         )
@@ -1317,6 +1318,12 @@ public final class ClaudeSessionRegistry: Sendable {
         snapshot.activity = activity
         snapshot.process = origin.isLocalAuthenticated ? stored.process : nil
         snapshot.remoteEnvironment = origin.isLocalAuthenticated ? nil : stored.remoteEnvironment?.value
+        if let repository = stored.worktreeRepository {
+            guard !origin.isLocalAuthenticated,
+                  ClaudeWorkspaceReference.make(rawCwd: repository, origin: origin)?.displayName == repository
+            else { return nil }
+            snapshot.remoteWorktreeRepository = repository
+        }
         snapshot.firstSeen = stored.firstSeen
         snapshot.lastActivity = stored.lastActivity
         return snapshot

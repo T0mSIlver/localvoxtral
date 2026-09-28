@@ -230,56 +230,39 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(committer.insertPreferredPIDs.first ?? nil, 111)
     }
 
-    func testCommitWithAutoCopyCopiesTextToPasteboard() {
-        let renderer = MockOverlayRenderer()
-        let anchorResolver = MockOverlayAnchorResolver()
-        var copiedTexts: [String] = []
-        let coordinator = OverlayBufferSessionCoordinator(
-            stateMachine: OverlayBufferStateMachine(),
-            renderer: renderer,
-            anchorResolver: anchorResolver,
-            copyToPasteboard: { copiedTexts.append($0); return true }
-        )
-        let committer = MockOverlayTextCommitter()
-        committer.insertResult = .insertedByAccessibility
+    func testCommitCopiesToPasteboardOnlyWhenAutoCopyIsEnabled() {
+        let rows: [(autoCopyEnabled: Bool, expectedCopiedTexts: [String])] = [
+            (autoCopyEnabled: true, expectedCopiedTexts: ["copy me"]),
+            (autoCopyEnabled: false, expectedCopiedTexts: []),
+        ]
+        for row in rows {
+            let renderer = MockOverlayRenderer()
+            let anchorResolver = MockOverlayAnchorResolver()
+            var copiedTexts: [String] = []
+            let coordinator = OverlayBufferSessionCoordinator(
+                stateMachine: OverlayBufferStateMachine(),
+                renderer: renderer,
+                anchorResolver: anchorResolver,
+                copyToPasteboard: { copiedTexts.append($0); return true }
+            )
+            let committer = MockOverlayTextCommitter()
+            committer.insertResult = .insertedByAccessibility
 
-        anchorResolver.focusedPID = 111
-        coordinator.startSession()
-        coordinator.beginFinalizing(
-            displayBufferText: "copy me",
-            commitBufferText: "copy me"
-        )
+            anchorResolver.focusedPID = 111
+            coordinator.startSession()
+            coordinator.beginFinalizing(
+                displayBufferText: "copy me",
+                commitBufferText: "copy me"
+            )
 
-        let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: true)
+            let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: row.autoCopyEnabled)
 
-        XCTAssertEqual(outcome, .succeeded)
-        XCTAssertEqual(copiedTexts, ["copy me"])
-    }
-
-    func testCommitWithAutoCopyDisabledDoesNotCopyToPasteboard() {
-        let renderer = MockOverlayRenderer()
-        let anchorResolver = MockOverlayAnchorResolver()
-        var copiedTexts: [String] = []
-        let coordinator = OverlayBufferSessionCoordinator(
-            stateMachine: OverlayBufferStateMachine(),
-            renderer: renderer,
-            anchorResolver: anchorResolver,
-            copyToPasteboard: { copiedTexts.append($0); return true }
-        )
-        let committer = MockOverlayTextCommitter()
-        committer.insertResult = .insertedByAccessibility
-
-        anchorResolver.focusedPID = 111
-        coordinator.startSession()
-        coordinator.beginFinalizing(
-            displayBufferText: "do not copy",
-            commitBufferText: "do not copy"
-        )
-
-        let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
-
-        XCTAssertEqual(outcome, .succeeded)
-        XCTAssertTrue(copiedTexts.isEmpty)
+            XCTAssertEqual(outcome, .succeeded, "auto copy enabled: \(row.autoCopyEnabled)")
+            XCTAssertEqual(
+                copiedTexts, row.expectedCopiedTexts,
+                "auto copy enabled: \(row.autoCopyEnabled)"
+            )
+        }
     }
 
     func testResetHidesRenderer() {

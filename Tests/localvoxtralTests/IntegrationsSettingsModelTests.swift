@@ -105,90 +105,44 @@ final class IntegrationsSettingsModelTests: XCTestCase {
 
     // MARK: - Plugin status
 
+    /// One wiring contract, every input class: the row's status and sentence
+    /// follow `claude plugin list` through `refreshIntegrationsStatuses`.
+    /// The derivation itself is `ClaudePluginStatus.derive`'s own suite
+    /// (`ClaudeMarketplaceRegistrationTests`).
+    ///
+    /// Rows that pin a decision worth a comment:
+    /// * a newer install over an older bundled one is "installed", not an
+    ///   update — offering to "update" would install the OLDER marketplace (m7);
+    /// * a failed listing is unknown, never "not installed": absence of
+    ///   evidence is not evidence of absence, and claiming "not installed"
+    ///   would invite an install over a setup we failed to read;
+    /// * only the line carrying our reference may supply a version: a CLI
+    ///   banner or another plugin's number must never read as ours.
     @MainActor
-    func testInstalledPluginReportsItsVersion() async {
-        let model = makeModel(
-            fetchPluginListOutput: {
-                "[{\"id\":\"some-other@market\",\"version\":\"2.0.0\",\"scope\":\"user\",\"enabled\":true},{\"id\":\"localvoxtral@localvoxtral\",\"version\":\"1.4.0\",\"scope\":\"user\",\"enabled\":true}]"
-            },
-            bundledPluginVersion: "1.4.0"
-        )
-        await model.refreshIntegrationsStatuses()
-        XCTAssertEqual(model.localPluginStatus, .installed(version: "1.4.0"))
-        XCTAssertEqual(model.localPluginSentence, "Installed 1.4.0.")
-    }
-
-    @MainActor
-    func testOlderInstalledPluginReportsUpdateAvailable() async {
-        let model = makeModel(
-            fetchPluginListOutput: { "[{\"id\":\"localvoxtral@localvoxtral\",\"version\":\"1.3.0\",\"scope\":\"user\",\"enabled\":true}]" },
-            bundledPluginVersion: "1.4.0"
-        )
-        await model.refreshIntegrationsStatuses()
-        XCTAssertEqual(
-            model.localPluginStatus,
-            .updateAvailable(installed: "1.3.0", bundled: "1.4.0")
-        )
-        XCTAssertEqual(model.localPluginSentence, "Update available.")
-    }
-
-    @MainActor
-    func testNewerInstalledPluginIsNotAnUpdate() async {
-        // m7: a manually installed 1.5.0 over a bundled 1.4.0 is newer, not
-        // stale — offering to "update" it would install the OLDER marketplace.
-        let model = makeModel(
-            fetchPluginListOutput: { "[{\"id\":\"localvoxtral@localvoxtral\",\"version\":\"1.5.0\",\"scope\":\"user\",\"enabled\":true}]" },
-            bundledPluginVersion: "1.4.0"
-        )
-        await model.refreshIntegrationsStatuses()
-        XCTAssertEqual(model.localPluginStatus, .installed(version: "1.5.0"))
-        XCTAssertEqual(model.localPluginSentence, "Installed 1.5.0.")
-    }
-
-    @MainActor
-    func testAbsentPluginReportsNotInstalled() async {
-        let model = makeModel(
-            fetchPluginListOutput: { "[{\"id\":\"some-other@market\",\"version\":\"2.0.0\",\"scope\":\"user\",\"enabled\":true}]" },
-            bundledPluginVersion: "1.4.0"
-        )
-        await model.refreshIntegrationsStatuses()
-        XCTAssertEqual(model.localPluginStatus, .notInstalled)
-        XCTAssertEqual(model.localPluginSentence, "Not installed.")
-    }
-
-    @MainActor
-    func testFailedListingReportsUnknownRatherThanNotInstalled() async {
-        // Absence of evidence is not evidence of absence: claiming "not
-        // installed" would invite an install over a setup we failed to read.
-        let model = makeModel(
-            fetchPluginListOutput: { nil },
-            bundledPluginVersion: "1.4.0"
-        )
-        await model.refreshIntegrationsStatuses()
-        XCTAssertEqual(model.localPluginStatus, .unknown)
-    }
-
-    @MainActor
-    func testInstalledWithoutAVersionIsStillInstalled() async {
-        let model = makeModel(
-            fetchPluginListOutput: { "[{\"id\":\"localvoxtral@localvoxtral\",\"version\":\"unknown\",\"scope\":\"user\",\"enabled\":true}]" },
-            bundledPluginVersion: "1.4.0"
-        )
-        await model.refreshIntegrationsStatuses()
-        XCTAssertEqual(model.localPluginStatus, .installed(version: nil))
-        XCTAssertEqual(model.localPluginSentence, "Installed.")
-    }
-
-    @MainActor
-    func testAnotherPluginsVersionIsNeverOurs() async {
-        // Only the line carrying our reference may supply a version: a CLI
-        // banner or another plugin's number must never read as ours.
-        let model = makeModel(
-            fetchPluginListOutput: { "[{\"id\":\"claude-tools@other\",\"version\":\"2.1.220\",\"scope\":\"user\",\"enabled\":true},{\"id\":\"localvoxtral@localvoxtral\",\"version\":\"unknown\",\"scope\":\"user\",\"enabled\":true}]" },
-            bundledPluginVersion: "2.1.220"
-        )
-        await model.refreshIntegrationsStatuses()
-        XCTAssertEqual(model.localPluginStatus, .installed(version: nil))
+    func testThePluginRowStatusAndSentenceFollowTheListing() async {
+        func ours(_ version: String) -> String {
+            "{\"id\":\"localvoxtral@localvoxtral\",\"version\":\"\(version)\",\"scope\":\"user\",\"enabled\":true}"
+        }
+        let cases: [(name: String, listing: String?, bundled: String, status: ClaudePluginStatus, sentence: String?)] = [
+            ("installed", "[{\"id\":\"some-other@market\",\"version\":\"2.0.0\",\"scope\":\"user\",\"enabled\":true},\(ours("1.4.0"))]", "1.4.0", .installed(version: "1.4.0"), "Installed 1.4.0."),
+            ("older than bundled", "[\(ours("1.3.0"))]", "1.4.0", .updateAvailable(installed: "1.3.0", bundled: "1.4.0"), "Update available."),
+            ("newer than bundled", "[\(ours("1.5.0"))]", "1.4.0", .installed(version: "1.5.0"), "Installed 1.5.0."),
+            ("absent", "[{\"id\":\"some-other@market\",\"version\":\"2.0.0\",\"scope\":\"user\",\"enabled\":true}]", "1.4.0", .notInstalled, "Not installed."),
+            ("failed listing", nil, "1.4.0", .unknown, nil),
+            ("listed without a version", "[\(ours("unknown"))]", "1.4.0", .installed(version: nil), "Installed."),
+            ("another plugin's version is never ours", "[{\"id\":\"claude-tools@other\",\"version\":\"2.1.220\",\"scope\":\"user\",\"enabled\":true},\(ours("unknown"))]", "2.1.220", .installed(version: nil), nil),
+        ]
+        for row in cases {
+            let model = makeModel(
+                fetchPluginListOutput: { row.listing },
+                bundledPluginVersion: row.bundled
+            )
+            await model.refreshIntegrationsStatuses()
+            XCTAssertEqual(model.localPluginStatus, row.status, "\(row.name)")
+            if let sentence = row.sentence {
+                XCTAssertEqual(model.localPluginSentence, sentence, "\(row.name)")
+            }
+        }
     }
 
     func testPluginRowButtonsFollowTheStatus() {

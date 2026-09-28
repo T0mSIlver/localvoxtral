@@ -972,6 +972,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         viewModel.quickCapture?.attachRemote(quickCapture)
+        viewModel.quickCapture?.enrolledHosts = {
+            registry?.hosts().filter { $0.revokedAt == nil }.map { (id: $0.id, name: $0.label) } ?? []
+        }
+        viewModel.quickCapture?.liveSessions = { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() }
 
         let coordinator = registry.map { hosts in
             ClaudeRemoteListenerCoordinator(
@@ -993,7 +997,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 },
                 projectTerms: projectTerms,
-                quickCapture: quickCapture
+                quickCapture: quickCapture,
+                doctor: RemoteDoctorRoute { @MainActor [weak viewModel] hostID in
+                    guard let viewModel else { return [] }
+                    return await AgentCLIAppDataSource(viewModel: viewModel).hostDoctorChecks(hostID: hostID)
+                }
             )
         }
         claudeRemoteListenerCoordinator = coordinator

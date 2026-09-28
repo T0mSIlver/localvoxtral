@@ -226,6 +226,12 @@ public enum ClaudeRemoteSessionScope {
         "ssh:\(hostID)"
     }
 
+    /// The host a `channel(hostID:)` label names, nil for any other label.
+    public static func hostID(fromChannel channel: String) -> String? {
+        guard channel.hasPrefix("ssh:"), channel.count > 4 else { return nil }
+        return String(channel.dropFirst(4))
+    }
+
     /// The host a scoped session id belongs to (`remote:<hostID>:<sessionID>`
     /// → `<hostID>`), or nil for anything else. The inverse of
     /// `scopedSessionID(hostID:sessionID:)`, for read-side surfaces that

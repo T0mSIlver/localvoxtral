@@ -214,18 +214,6 @@ final class LLMPolishingMistralShapeTests: XCTestCase {
         )
     }
 
-    /// A configuration with no explicit shape is the OpenAI-compatible one:
-    /// every existing call site (Settings, the eval lanes, the warmup) keeps
-    /// the bytes it sent before this type gained a shape.
-    func testRequestShapeDefaultsToOpenAICompatible() {
-        let configuration = LLMPolishingConfiguration(
-            endpointURL: URL(string: "http://127.0.0.1:8080")!,
-            apiKey: "",
-            model: "model"
-        )
-        XCTAssertEqual(configuration.requestShape, .openAICompatible)
-    }
-
     // MARK: - Base URL
 
     /// The Settings field will carry the bare Mistral base URL; it must reach

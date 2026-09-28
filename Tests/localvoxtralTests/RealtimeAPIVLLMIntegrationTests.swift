@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 /// The microphone half of the live STT lane's suite. The realtime client half
@@ -8,6 +9,45 @@ import XCTest
 final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
     private static let micCaptureEnableEnv = "LOCALVOXTRAL_MIC_CAPTURE_TEST_ENABLE"
     private static let micCaptureDeviceEnv = "LOCALVOXTRAL_MIC_CAPTURE_DEVICE_UID"
+
+    /// A voice memo as a phone Shortcut saves it (AAC in .m4a) through the
+    /// app's decoder and the file transcriber into the live speech engine
+    /// (#925): the words come back, and faster than the audio lasts.
+    func testAVoiceMemoFileIsTranscribedThroughTheLiveEngine() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["VLLM_REALTIME_TEST_ENABLE"] == "1" else {
+            throw XCTSkip("Live engine test is disabled. Enable with VLLM_REALTIME_TEST_ENABLE=1.")
+        }
+        let endpoint = try XCTUnwrap(URL(string: env["VLLM_REALTIME_TEST_ENDPOINT"] ?? "ws://127.0.0.1:8000/v1/realtime"))
+        let configuration = RealtimeSessionConfiguration(
+            endpoint: endpoint,
+            apiKey: env["VLLM_REALTIME_TEST_API_KEY"] ?? "",
+            model: env["VLLM_REALTIME_TEST_MODEL"] ?? "mistralai/Voxtral-Mini-4B-Realtime-2602"
+        )
+        let phrase = "remember to add a retry button to the inbox page. "
+            + "it should only show when filing failed, and it keeps the draft as it is."
+        let memo = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voice-memo-\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: memo) }
+        let say = Process()
+        say.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+        say.arguments = ["-o", memo.path, "--file-format=m4af", "--data-format=aac", phrase]
+        try say.run()
+        say.waitUntilExit()
+        try XCTSkipUnless(say.terminationStatus == 0, "say could not write an m4a")
+
+        let pcm = try VoiceMemoAudioDecoder.pcm16(from: memo)
+        let audioSeconds = Double(pcm.count) / Double(AudioChunkBuffer.bytesPerSecond)
+        let started = ContinuousClock.now
+        let text = try await RealtimeFileTranscriber(makeClient: { RealtimeAPIWebSocketClient() })
+            .transcribe(pcm16: pcm, configuration: configuration)
+        let elapsed = ContinuousClock.now - started
+        let accuracy = IntegrationTestSupport.wordAccuracy(expected: phrase, actual: text)
+        print(
+            "voice memo integration: \(String(format: "%.1f", audioSeconds)) s of audio in \(elapsed), "
+                + "word accuracy \(String(format: "%.3f", accuracy)); transcript: \(text)")
+        XCTAssertGreaterThanOrEqual(accuracy, 0.55, "Transcript: \(text)")
+    }
 
     func testMicrophoneCaptureProducesPCM16Chunks() async throws {
         let env = ProcessInfo.processInfo.environment

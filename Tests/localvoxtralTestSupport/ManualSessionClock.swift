@@ -31,6 +31,8 @@ package final class ManualSessionClock: Sendable {
         /// ids are never reused, so it can match nothing later.
         var cancelledBeforeSuspending: Set<UInt64> = []
         var countWaiters: [CountWaiter] = []
+        /// What `waitForSleepers` reports when nothing ever arms the timer.
+        var reportFailure: @Sendable (String, StaticString, UInt) -> Void = ManualSessionClock.xctFail
 
         mutating func takeSatisfiedCountWaiters() -> [BoundedWait] {
             let satisfied = countWaiters.filter { $0.count <= sleepers.count }
@@ -111,6 +113,8 @@ package final class ManualSessionClock: Sendable {
     /// code under test is certain to arm. If it never arms one, the test
     /// fails after `failAfter` seconds of wall time instead of hanging the
     /// suite: a bound on a failure, never a wait a passing test relies on.
+    /// The failure goes through the clock's failure reporter, `XCTFail` by
+    /// default (`setWaitForSleepersFailureReporter`).
     package func waitForSleepers(
         _ count: Int,
         failAfter: TimeInterval = 10,
@@ -126,7 +130,26 @@ package final class ManualSessionClock: Sendable {
         }
         if ready { armed.resolve() }
         if await armed.value(failAfter: failAfter) { return }
-        state.withLock { $0.countWaiters.removeAll { $0.wait === armed } }
-        XCTFail("no \(count) timer(s) were ever armed on the session clock", file: file, line: line)
+        let report = state.withLock { state -> @Sendable (String, StaticString, UInt) -> Void in
+            state.countWaiters.removeAll { $0.wait === armed }
+            return state.reportFailure
+        }
+        report("no \(count) timer(s) were ever armed on the session clock", file, line)
+    }
+
+    /// Replaces what `waitForSleepers` reports when nothing ever arms the
+    /// timer, and restores the `XCTFail` default when `reporter` is nil.
+    /// Every consumer suite runs on the default; only a test that asserts the
+    /// failure itself replaces it — an expected XCTest issue pays seconds of
+    /// first-issue symbolication per run — and it must restore the default
+    /// before any later wait it still wants to fail normally.
+    package func setWaitForSleepersFailureReporter(
+        _ reporter: (@Sendable (String, StaticString, UInt) -> Void)? = nil
+    ) {
+        state.withLock { $0.reportFailure = reporter ?? Self.xctFail }
+    }
+
+    private static let xctFail: @Sendable (String, StaticString, UInt) -> Void = { message, file, line in
+        XCTFail(message, file: file, line: line)
     }
 }

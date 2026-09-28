@@ -535,7 +535,7 @@ enum StopCommitCoordinator {
                 endpointURL: input.configuration.endpointURL
             )
             Log.polishing.error(
-                "LLM polishing failed: \(error.localizedDescription, privacy: .public)"
+                "LLM polishing failed: \(LLMPolishingError.publicLogDescription(of: error), privacy: .public) \(error.localizedDescription, privacy: .private)"
             )
             return PolishOutcome(material: material, assembly: assembly, reply: .failed(failure))
         }
