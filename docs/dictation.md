@@ -137,39 +137,20 @@ While you dictate, the top of the overlay lists where the words can go.
 
 - **The app you started in**, named after its coding agent session when it
   has one. A dictation goes here unless you press Tab.
-- **Each coding agent session that needs you**, oldest first, when
-  [Tell me when an agent needs you](#when-a-coding-agent-needs-you) is on.
-  Picking one brings its pane forward so you can read what it asked while
-  you talk. Your words go into that pane when you stop.
+- **Each coding agent session that needs you**, oldest first. Picking one
+  brings its pane forward, and your words go there when you stop
+  ([Jump to the agent that needs you](coding-agents.md#jump-to-the-agent-that-needs-you)).
 - **Inbox**: a [quick capture](coding-agents.md#quick-capture). The words are
   saved there and never typed anywhere.
 
 **→** and **←** move the same way, and a click on a destination picks it.
 None of these keys reach the app you are dictating into while the overlay is
-open.
+open. With nobody waiting, one Tab therefore sends the dictation to the Inbox.
 
-With nobody waiting, one Tab therefore sends the dictation to the Inbox.
-
-The overlay moves to a session only once its terminal confirms the pane is
-in front. Otherwise the overlay stays where it was and the menu bar popover
-says why.
-
-After Tab moves to a session, Tab can bring back the app you started in. The
-app refuses one case: you started in the same terminal app as that session,
-in a pane with no joined session. The app has no way to find that pane
-again, and bringing the terminal forward would only show the session's pane.
-
-### Open the overlay on a destination
-
-Two optional shortcuts under **Settings → Dictation → Output** start a
-dictation with a destination already picked:
-
-- **Answer the agent that needs you** picks the session that has waited
-  longest.
-- **Quick capture to Inbox** picks the Inbox.
-
-Pressed during a dictation, each picks its destination the way Tab would.
-Pressed again, it stops. Both can be a
+The optional **Quick capture to Inbox** shortcut under **Settings →
+Dictation → Output** starts a dictation with the Inbox already picked.
+Pressed during a dictation, it picks the Inbox the way Tab would. Pressed
+again, it stops. It can be a
 [chord of modifier keys](#record-a-chord-of-modifier-keys).
 
 ## Voice commands
@@ -234,11 +215,8 @@ A session answers to its repository's name and, in a linked worktree, to the
 worktree's name. It also answers to a
 [name you gave it](#name-a-session).
 
-"Go to" works for sessions in these places:
-
-- Ghostty, iTerm2 and Terminal.app on this Mac;
-- Claude Desktop Code-tab sessions, on this Mac or on an ssh host Desktop
-  runs them on.
+"Go to" reaches the sessions that Tab can bring forward
+([Which sessions come forward](coding-agents.md#which-sessions-come-forward)).
 
 When no session has that name, the app types the dictation as usual. When
 more than one does, or its pane can't be reached, nothing is typed and the
@@ -299,52 +277,6 @@ shortcut for it under **Settings → Dictation → Advanced**, or a
 
 Older dictations stay in [History](#review-your-dictations) until the
 **Keep dictations** period ends.
-
-## When a coding agent needs you
-
-Turn on **Tell me when an agent needs you** under **Settings → Dictation →
-Output**. localvoxtral then tells you when one of the coding agent sessions
-it joins waits for you.
-
-A wait is a permission prompt or a question, from Claude Code, Codex or
-opencode, on this Mac or an enrolled host. The app also tells you when a
-session finishes its turn while you are looking at another window or pane.
-A Mistral Vibe session tells you only when it finishes, since Vibe reports
-no waits.
-
-Each time, the app shows a macOS banner with a sound, and the menu bar icon
-gets an orange dot. Settings > Dictation > Output can make the dot a square
-or an exclamation mark instead. The sound is your alert sound, and macOS
-controls it: turn off **Play sound for notifications** under **System
-Settings → Notifications → localvoxtral** to keep the banner without it.
-Focus silences both. The popover names the session: "payments needs you"
-or "payments finished". Nothing fires for a turn that ends in the pane you
-are looking at.
-
-### Answer by voice
-
-Press Tab during a dictation until the overlay shows the session, as in
-[Where the words go](#where-the-words-go).
-
-The optional **Answer the agent that needs you** shortcut does it in one
-press. It brings forward the pane of the session that has waited longest, or
-else the one that finished first, and starts a dictation there. Press it
-again to stop; the next press goes to the next session. With no session
-waiting, it opens the oldest ready quick capture draft instead
-([Review a draft by voice](coding-agents.md#review-a-draft-by-voice)).
-
-Like "go to", both reach sessions in Ghostty, iTerm2 and Terminal.app on
-this Mac, and Claude Desktop Code-tab sessions, local or over ssh. For a
-Claude Desktop session, Desktop switches to the session and the words go
-there once its prompt has focus. For any other session, the popover says it
-can't bring that session forward.
-
-### When a session leaves the list
-
-A session leaves the list when you send it a prompt, when it starts working
-again, when it ends, or when you dictate into it.
-
-The app never receives what the agent wrote or asked, only that it waits.
 
 ## Review your dictations
 
@@ -720,8 +652,9 @@ History; the panes sit under the sidebar's Settings header.
     pane's Mistral API group.
 - **Dictation**: the [trigger](#shortcuts), **Copy on stop**, the
   [phrases that press Return](#press-return-with-send-it) and the Overlay
-  Buffer "send it" switch, the [needs-you cue](#when-a-coding-agent-needs-you)
-  and the [two destination shortcuts](#open-the-overlay-on-a-destination),
+  Buffer "send it" switch, the
+  [needs-you cue and its shortcut](coding-agents.md#jump-to-the-agent-that-needs-you),
+  the [Quick capture to Inbox shortcut](#where-the-words-go),
   [ducking other audio](#lower-other-audio-while-dictating), and the
   overlay's font size, lines before scrolling,
   [word wrapping](#keeping-words-on-their-line) and
