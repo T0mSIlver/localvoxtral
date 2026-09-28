@@ -1312,9 +1312,10 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertTrue(pipeline.viewModel.isDictating, "one hundredth short, still dictating")
 
         pipeline.clock.advance(by: 0.01)
-        guard pipeline.clock.pendingSleepers < sleepers else {
-            return XCTFail("the wait did not end at 1 s")
-        }
+        let endedAtOneSecond = pipeline.clock.pendingSleepers < sleepers
+        XCTAssertTrue(endedAtOneSecond, "the wait ended at 1 s")
+        // A longer wait must still end, or the session outlives the test.
+        if !endedAtOneSecond { pipeline.clock.advance(by: 2) }
         await armed.value
         XCTAssertFalse(pipeline.viewModel.isDictating)
         await finishStoppedSession(pipeline, finalText: "run the tests, send it.")
