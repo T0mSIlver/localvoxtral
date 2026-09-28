@@ -376,7 +376,9 @@ there is not.
   enforced by a gate: each term keeps the sources that proposed it, so a
   later setting can drop what one source taught; nothing below the
   three-dictation bar is ever sent unless the user pinned it or fixed it by
-  hand, and an import (`LearnedTerms.merge`, #523) confirms nothing the
+  hand (a quick capture's polish, #970, matches every routable project's
+  confirmed terms, which the router already sends with each project), and
+  an import (`LearnedTerms.merge`, #523) confirms nothing the
   file does not record as earned, taking the max of the counts, never the
   sum; a remembered term never outranks a live
   source (`.learned` is LAST in `PolishContextSource`, so a contested span
@@ -2475,8 +2477,17 @@ there is not.
   its stop takes `commitQuickCapture` before any polish, second pass, screen
   or clipboard sample, or insertion: the History record is written first,
   the overlay closes as a cancelled one does, and the words go to
-  `QuickCaptureInboxModel`, which writes them to its 0600 file before
-  routing. The router sends a low or tied answer to the catch-all, never a
+  `QuickCaptureInboxModel`, which writes them to its 0600 file before it
+  polishes them. The capture is polished once there (#970), before the
+  follow-up check and routing: one request to the polishing endpoint with
+  the standard profile's prompt and the user's terms, and no screen,
+  clipboard or session context. Its vocabulary is every routable project's
+  name, repository name and confirmed learned terms
+  (`QuickCapturePolishVocabulary`, capped per project and in total; no
+  proposals), matched against the words as a dictation's learned terms are.
+  The router, drafter and follow-ups read the polished words; History keeps
+  the raw ones and gets the polished text on the same record. A failed
+  polish, or none configured, routes the raw words. The router sends a low or tied answer to the catch-all, never a
   guessed project: the guess is kept as the route's `suggestion`, and
   nothing drafts until the user accepts it (#938). Jev and the chat model both need 0.9: on the replay
   (#741, #744) every right project came at 0.95 or more, and nearly every

@@ -477,23 +477,30 @@ To capture, press Tab during a dictation until the overlay shows **Inbox**
 ([Where the words go](dictation.md#where-the-words-go)). You can also set the
 optional **Quick capture to Inbox** shortcut in **Settings → Dictation**.
 
-A capture then goes through four steps.
+A capture then goes through five steps.
 
-1. **Route.** A classifier picks one of your projects (see
+1. **Polish.** Your polishing model corrects the words once, with your
+   polish prompt and Names and terms. The project names and confirmed
+   learned terms of every project a capture can go to are matched against
+   your words, and the ones that match go with the request. It gets no
+   screen, clipboard or session context. The later steps read the polished words;
+   History keeps what you said beside them. With polishing off, or when the
+   request fails, the capture goes on with the words as heard.
+2. **Route.** A classifier picks one of your projects (see
    [Which projects a capture can go to](#which-projects-a-capture-can-go-to)).
    When it is unsure, or two projects tie, the capture stays unplaced with
    a **Move to** button for its best guess; nothing is drafted until you
    click it or move the capture yourself.
-2. **First draft.** Your polishing model sorts the capture as an **Issue**, a
+3. **First draft.** Your polishing model sorts the capture as an **Issue**, a
    **Question**, a **Task** or a **Note** and writes a draft within
    seconds (see [How the draft is written](#how-the-draft-is-written)). A
    question shows its answer. A task or a note is restated and stays in the
    Inbox; it is never filed.
-3. **Check against the code**, issues only. An agent reads the code the issue
+4. **Check against the code**, issues only. An agent reads the code the issue
    touches, corrects the draft, and lists the files it read. The row says
    **Checked against the code** when it is done. You don't have to wait for
    it.
-4. **Review.** On the Inbox page you edit the draft, move the capture to
+5. **Review.** On the Inbox page you edit the draft, move the capture to
    another project, or discard it. **File** creates the issue with your
    GitHub CLI, with your dictated words quoted under the draft. The Inbox
    fills in the project's repository (see

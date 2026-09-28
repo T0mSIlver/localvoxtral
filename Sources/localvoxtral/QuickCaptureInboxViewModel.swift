@@ -5,7 +5,8 @@ import Synchronization
 
 /// The Inbox page's observable face (#725). The work is
 /// `QuickCaptureInboxModel`'s, in the core so Linux tests reach it; this
-/// wraps it for SwiftUI and builds its router and drafter from Settings.
+/// wraps it for SwiftUI and builds its polish, router and drafter from
+/// Settings.
 @MainActor
 @Observable
 final class QuickCaptureInboxViewModel {
@@ -29,7 +30,8 @@ final class QuickCaptureInboxViewModel {
         fileURL: URL?,
         applicationSupport: URL,
         github: any QuickCaptureGitHub = QuickCaptureGHClient(),
-        usageRecorder: (any UsageRecording)? = nil
+        usageRecorder: (any UsageRecording)? = nil,
+        polisher: QuickCaptureLLMPolisher? = nil
     ) {
         let remote = RemoteDraftsSlot()
         let drafter = QuickCaptureDrafter(
@@ -68,7 +70,9 @@ final class QuickCaptureInboxViewModel {
             },
             agents: { [.claude, .vibe, .opencode] },
             drafter: { drafter.withFirstDrafter(Self.firstDrafter(settings: settings, usageRecorder: usageRecorder)) },
-            github: github
+            github: github,
+            polisher: { polisher?.isConfigured == true ? polisher : nil },
+            polishVocabulary: { QuickCapturePolishVocabulary.terms(projects: $0, learned: learnedTerms()) }
         )
         store = learnedTermStore
         self.learnedTerms = learnedTerms
