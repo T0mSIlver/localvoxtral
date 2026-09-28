@@ -56,6 +56,7 @@ final class TerminalScreenAppleScriptCaptureTests: XCTestCase {
             let appleScript: Bool
         }
         var rows: [Row] = [
+            Row(bundleID: "com.mitchellh.ghostty", supported: true, ax: true, appleScript: false),
             Row(bundleID: TerminalScreenAllowlist.ghosttyBundleID,
                 supported: true, ax: true, appleScript: false),
             Row(bundleID: TerminalScreenAllowlist.iterm2BundleID,
