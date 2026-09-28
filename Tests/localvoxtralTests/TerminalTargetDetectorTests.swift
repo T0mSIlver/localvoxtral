@@ -76,20 +76,15 @@ final class TerminalTargetDetectorTests: XCTestCase {
             "org.tabby",
             "com.raphaelamorim.rio",
             "com.cmuxterm.app",
+            // Warp's other channels match its bundle-id prefix.
+            "dev.warp.Warp-Preview",
+            "dev.warp.Warp-Dev",
+            "dev.warp.Warp-Beta",
         ]
         for bundleID in knownTerminals {
             XCTAssertTrue(
                 TerminalTargetDetector.isTerminalLikeBundleID(bundleID),
                 "\(bundleID) should be terminal-like"
-            )
-        }
-    }
-
-    func testAllowlistMatchesWarpChannelVariants() {
-        for bundleID in ["dev.warp.Warp-Preview", "dev.warp.Warp-Dev", "dev.warp.Warp-Beta"] {
-            XCTAssertTrue(
-                TerminalTargetDetector.isTerminalLikeBundleID(bundleID),
-                "\(bundleID) should match the Warp prefix"
             )
         }
     }
