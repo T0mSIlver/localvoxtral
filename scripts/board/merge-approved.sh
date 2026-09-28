@@ -162,7 +162,8 @@ dependency_urls() {
             ;;
         esac
       done \
-    | sed -E -e 's#^(ssh://git@|git@|https?://)github\.com[:/]#https://github.com/#' -e 's/\.git$//' \
+    | sed -E -e 's#^(ssh://git@|git@|https?://)github\.com[:/]#https://github.com/#' \
+      -e 's#/+$##' -e 's/\.git$//' -e 's#/+$##' \
     | tr 'A-Z' 'a-z' | grep '^https://github\.com/' | sort -u || true
 }
 
