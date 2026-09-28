@@ -248,7 +248,7 @@ extension DictationSessionController {
             // attempt give up now instead of waiting out its timeout.
             reconnectAttemptDidFail = true
             Log.backends.error(
-                "realtime reconnect attempt reported a socket error: \(message, privacy: .public)"
+                "realtime reconnect attempt reported a socket error: \(RealtimeConnectionFailureClassifier.publicLogDescription(of: message), privacy: .public) \(message, privacy: .private)"
             )
             return
         }
@@ -263,7 +263,9 @@ extension DictationSessionController {
 
         statusText = "Realtime error."
         lastError = message
-        Log.dictation.error("Realtime error: \(message, privacy: .public)")
+        Log.dictation.error(
+            "Realtime error: \(RealtimeConnectionFailureClassifier.publicLogDescription(of: message), privacy: .public) \(message, privacy: .private)"
+        )
     }
 
     /// The backend stopped transcribing mid-dictation and said why in one short sentence
@@ -271,7 +273,9 @@ extension DictationSessionController {
     /// Console for details." would hide the only actionable part. The mic stays open, so
     /// nothing later overwrites it until the user stops.
     private func handleTranscriptionStoppedEvent(_ message: String) {
-        Log.dictation.error("Realtime transcription stopped: \(message, privacy: .public)")
+        Log.dictation.error(
+            "Realtime transcription stopped: \(RealtimeConnectionFailureClassifier.publicLogDescription(of: message), privacy: .public) \(message, privacy: .private)"
+        )
         guard acceptsRealtimeEvents, !isFinalizingStop else { return }
         statusText = message
     }

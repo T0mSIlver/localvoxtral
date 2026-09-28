@@ -6,6 +6,17 @@ import XCTest
 
 @MainActor
 final class BackendProcessSupervisorTests: XCTestCase {
+    /// A helper may print what it transcribes, so its output lines log their
+    /// origin and length public and their text not.
+    func testAHelperOutputLineLogsItsOriginPublicAndItsTextNot() {
+        XCTAssertEqual(
+            BackendProcessSupervisor.publicOutputLogDescription(
+                name: "speechd", source: "stderr", line: "partial: the words I dictated"
+            ),
+            "[speechd stderr] 29 characters"
+        )
+    }
+
     func testHappyPathWaitsForReadinessThenRuns() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
