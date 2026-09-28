@@ -135,6 +135,28 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(whole)>"])
     }
 
+    /// A quick capture is never polished, so no piece of it is sent to the
+    /// polisher while the user speaks (#709).
+    func testAQuickCaptureSendsNoPieceToThePolisher() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish)
+        let captured = QuickCaptures()
+        pipeline.viewModel.session.onQuickCapture = { text, _ in
+            captured.all.append((text, pipeline.records.all.count))
+        }
+
+        await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
+        XCTAssertNil(pipeline.viewModel.session.earlyPolishRun)
+        pipeline.server.send(["type": "transcription.done", "text": Self.settledPiece])
+        await stopAndFinalize(
+            pipeline, finalText: Self.tail, finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved
+        )
+
+        let requests = await polish.requests
+        XCTAssertEqual(requests.count, 0)
+        XCTAssertEqual(captured.all.count, 1)
+    }
+
     /// Quick capture (#725): the shortcut's dictation runs as Overlay Buffer,
     /// but its stop commits nothing to the focused app. The History record
     /// is written first, then the words go to the Inbox.
