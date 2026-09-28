@@ -237,7 +237,13 @@ and that it is not a stable release; a hand-written nightly file lands under
 that header.
 
 The tag is created only after every gate passes, so a failed release leaves
-no orphan tag. Releases are ad-hoc signed on purpose (a local signing cert
+no orphan tag. The Tag step pushes with the `RELEASE_TAG_TOKEN` repo secret,
+a fine-grained token with Contents and Workflows read/write on this repo only,
+because `GITHUB_TOKEN` may not push a tag whose commit touches
+`.github/workflows` (#964). The token expires; when it does, or when the
+secret is missing, the release fails at the Tag step with an error naming the
+secret, or with GitHub's "refusing to allow ... without workflows permission",
+and needs a new token. Releases are ad-hoc signed on purpose (a local signing cert
 means nothing on users' machines); proper distribution signing needs a
 Developer ID cert. Dispatch-only: pushing tags by hand no longer triggers a
 release.

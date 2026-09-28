@@ -429,13 +429,28 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Tag (all gates green)
+        # GITHUB_TOKEN cannot push a tag whose commit changes anything under
+        # .github/workflows (it lacks the workflows permission; #964), so the
+        # tag goes up with RELEASE_TAG_TOKEN, a fine-grained token with
+        # Contents and Workflows write on this repo. The empty extraheader
+        # drops the checkout's persisted GITHUB_TOKEN so git sends this one.
+        # No workflow triggers on tag pushes, so this tag starts no runs.
         if: steps.plan.outputs.proceed != 'false' && steps.plan.outputs.publish == 'true'
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          RELEASE_TAG_TOKEN: ${{ secrets.RELEASE_TAG_TOKEN }}
         run: |
-          TAG="${{ steps.meta.outputs.tag }}"
+          set -euo pipefail
+          if [[ -z "$RELEASE_TAG_TOKEN" ]]; then
+            echo "::error::The RELEASE_TAG_TOKEN repo secret is missing or empty; GITHUB_TOKEN cannot push this tag (#964). Nothing was tagged."
+            exit 1
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "localvoxtral $TAG"
-          git push origin "$TAG"
+          git -c http.https://github.com/.extraheader= push \
+            "https://x-access-token:${RELEASE_TAG_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "refs/tags/$TAG"
 
       - name: Resolve release notes
         # A release can ship a human summary written ahead of time at
