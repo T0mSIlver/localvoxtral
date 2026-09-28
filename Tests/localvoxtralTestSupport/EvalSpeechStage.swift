@@ -2,7 +2,7 @@
 import CryptoKit
 #endif
 import Foundation
-import XCTest
+import Synchronization
 import localvoxtralCore
 
 /// The speech stage the live evals share: `say` audio from the cache both
@@ -277,19 +277,22 @@ package enum EvalSpeechStage {
     /// the final commit's completion (`.transcriptionFinalized`) with no text
     /// returns "", a result the ASR-only eval scores. The end-to-end eval
     /// keeps the failure, since polish has nothing to work on.
+    ///
+    /// `clock` times the wait for an answer and the grace after it; tests
+    /// pass a `ManualSessionClock`.
     package static func transcribe(
         pcm: Data,
         client: any RealtimeClient,
         endpoint: Endpoint,
         timeout: TimeInterval,
-        allowsEmptyTranscript: Bool = false
+        allowsEmptyTranscript: Bool = false,
+        clock: SessionClock = .live
     ) async throws -> String {
         let chunks = IntegrationTestSupport.splitPCM16IntoChunks(pcm, chunkSizeBytes: 3_200)
         let finals = SpeechStageStrings()
         let socketErrors = SpeechStageStrings()
         let finalized = SpeechStageStrings()
-        let firstFinal = XCTestExpectation(description: "final transcript")
-        firstFinal.assertForOverFulfill = false
+        let firstAnswer = SpeechStageWait()
 
         client.setEventHandler { event, _ in
             switch event {
@@ -305,13 +308,13 @@ package enum EvalSpeechStage {
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return }
                 finals.append(trimmed)
-                firstFinal.fulfill()
+                firstAnswer.finish(answered: true)
             case .transcriptionFinalized where allowsEmptyTranscript:
                 finalized.append("")
-                firstFinal.fulfill()
+                firstAnswer.finish(answered: true)
             case .error(let message):
                 socketErrors.append(message)
-                firstFinal.fulfill()  // fail fast, don't wait the full timeout
+                firstAnswer.finish(answered: true)  // fail fast, don't wait the full timeout
             default:
                 break
             }
@@ -324,9 +327,11 @@ package enum EvalSpeechStage {
                 model: endpoint.model
             )
         )
-        let outcome = await XCTWaiter.fulfillment(of: [firstFinal], timeout: timeout)
-        // Short grace so trailing final segments of a longer utterance land.
-        try? await Task.sleep(for: .seconds(1))
+        let answered = await firstAnswer.value(timeout: timeout, clock: clock)
+        if answered {
+            // Short grace so trailing final segments of a longer utterance land.
+            await clock.sleep(.seconds(1))
+        }
         client.disconnect()
 
         let transcript = finals.snapshot().joined(separator: " ")
@@ -342,12 +347,61 @@ package enum EvalSpeechStage {
         if allowsEmptyTranscript, !finalized.snapshot().isEmpty {
             return ""
         }
-        if outcome != .completed {
+        if !answered {
             throw Failure(
                 "no final transcript within \(Int(timeout))s from \(endpoint.url)", serviceStalled: true
             )
         }
         throw Failure("empty final transcript from \(endpoint.url)")
+    }
+}
+
+/// Ends once: `true` on the first answer, `false` when `timeout` passes on
+/// the clock first or the waiting task is cancelled. The timer is armed only
+/// when no answer is in yet, so a test's clock sees no sleep for an answer
+/// that came with `connect`.
+private final class SpeechStageWait: Sendable {
+    private enum State {
+        case waiting(CheckedContinuation<Bool, Never>?)
+        case done(Bool)
+    }
+
+    private let state = Mutex(State.waiting(nil))
+
+    func finish(answered: Bool) {
+        let continuation = state.withLock { state -> CheckedContinuation<Bool, Never>? in
+            guard case .waiting(let continuation) = state else { return nil }
+            state = .done(answered)
+            return continuation
+        }
+        continuation?.resume(returning: answered)
+    }
+
+    func value(timeout: TimeInterval, clock: SessionClock) async -> Bool {
+        let isDone = state.withLock { state in
+            if case .done = state { return true }
+            return false
+        }
+        let timer: Task<Void, Never>? =
+            isDone
+            ? nil
+            : Task { [self] in
+                await clock.sleep(.seconds(timeout))
+                finish(answered: false)
+            }
+        defer { timer?.cancel() }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                let done = state.withLock { state -> Bool? in
+                    if case .done(let answered) = state { return answered }
+                    state = .waiting(continuation)
+                    return nil
+                }
+                if let done { continuation.resume(returning: done) }
+            }
+        } onCancel: {
+            finish(answered: false)
+        }
     }
 }
 

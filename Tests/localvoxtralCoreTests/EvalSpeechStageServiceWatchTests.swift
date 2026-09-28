@@ -40,28 +40,39 @@ final class EvalSpeechStageServiceWatchTests: XCTestCase {
         XCTAssertEqual(watch.consecutiveStalls, 1)
     }
 
-    /// The whole path with the real client: nothing listens on the port, as
-    /// after the reaper stopped speechd mid-run.
+    /// The whole path through `transcribe`, with a client that connects and
+    /// never answers: what the production client does against a dead port on
+    /// macOS, where it waits for connectivity (#953). The timeout runs on a
+    /// manual clock.
     func testDeadServiceStopsTheEvalAfterThreeUtterances() async throws {
-        let port = try unusedLoopbackPort()
-        let deadEndpoint = URL(string: "ws://127.0.0.1:\(port)/v1/realtime")!
+        let deadEndpoint = URL(string: "ws://127.0.0.1:1/v1/realtime")!
         var watch = EvalSpeechStage.ServiceWatch(endpoint: deadEndpoint)
-        let pcm = Data(count: 32_000)
+        let clock = ManualSessionClock()
+        let timeout: TimeInterval = 30
 
         var stopped: EvalSpeechStage.Failure?
-        for _ in 0..<watch.limit {
-            do {
-                _ = try await EvalSpeechStage.transcribe(
-                    pcm: pcm,
-                    client: RealtimeAPIWebSocketClient(),
+        for utterance in 1...3 {
+            let client = FakeRealtimeClient()
+            client.setOnConnect { client.emit(.connected) }
+            let result = Task {
+                try await EvalSpeechStage.transcribe(
+                    pcm: Data(count: 32_000),
+                    client: client,
                     endpoint: .init(url: deadEndpoint, apiKey: "", model: "voxtral"),
-                    timeout: 30
+                    timeout: timeout,
+                    clock: clock.clock
                 )
+            }
+            await clock.waitForSleepers(1)
+            clock.advance(by: timeout)
+            do {
+                _ = try await result.value
                 XCTFail("a dead service returned a transcript")
             } catch {
                 do {
                     try watch.record(error)
                 } catch let failure as EvalSpeechStage.Failure {
+                    XCTAssertEqual(utterance, 3, "the watch stopped the eval early")
                     stopped = failure
                 }
             }
