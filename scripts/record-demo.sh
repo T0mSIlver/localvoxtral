@@ -677,7 +677,7 @@ sleep 1
 LAUNCHED_APP=1
 # The demo app runs as the owner but keeps its History and other stores out
 # of the owner's (#985).
-export LOCALVOXTRAL_DATA_HOME="${LOCALVOXTRAL_DATA_HOME:-$(mktemp -d -t lv-demo-data)}"
+export LOCALVOXTRAL_DATA_HOME="${LOCALVOXTRAL_DATA_HOME:-$(mktemp -d "${TMPDIR:-/tmp}/lv-demo-data.XXXXXX")}"
 lv_open "$APP_PATH"
 for _ in $(seq 1 20); do pgrep -xq "$APP_PROCESS" && break; sleep 0.5; done
 pgrep -xq "$APP_PROCESS" || { echo "$APP_PROCESS did not launch." >&2; exit 1; }

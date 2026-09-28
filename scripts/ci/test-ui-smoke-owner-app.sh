@@ -146,9 +146,12 @@ echo "PASS: the owner's app is quit before defaults change and relaunched after 
 # The app's log is streamed from before its launch (#594): a line logged
 # before the stream attaches is lost.
 stream_line="$(line_of "log stream")"
-launch_line="$(grep -n -m1 "^open --env LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN=1 -n" "$EVENTS" | cut -d: -f1 || true)"
+launch_line="$(grep -nE -m1 "^open --env LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN=1 (--env [^ ]+ )*-n" "$EVENTS" | cut -d: -f1 || true)"
 [ -n "$stream_line" ] || fail "the drill never streamed the app's log"
 [ -n "$launch_line" ] || fail "the drill never launched the app"
+# Its data stays out of the owner's (#985).
+grep -qE "^open .*--env LOCALVOXTRAL_DATA_HOME=/[^ ]+ .*-n" "$EVENTS" \
+  || fail "the drill launched the app on the owner's data"
 [ "$stream_line" -lt "$launch_line" ] || fail "the app's log stream started after the launch"
 echo "PASS: the app's log is streamed from before its launch"
 
