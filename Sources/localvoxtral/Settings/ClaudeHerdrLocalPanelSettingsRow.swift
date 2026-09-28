@@ -38,6 +38,7 @@ struct ClaudeHerdrLocalPanelSettingsRow: View {
             }
             .sheet(isPresented: $isShowingSetup) {
                 ClaudeLocalHerdrPanelSetupSheet(model: model) { isShowingSetup = false }
+                    .opensWithNothingFocused()
             }
         }
     }

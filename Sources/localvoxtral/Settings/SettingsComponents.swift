@@ -68,7 +68,7 @@ struct SettingsGroup<Content: View>: View {
     /// the docs, never in a line under the row.
     var learnMoreURL: URL?
     /// A link-styled button in the header's place of Learn more, for a
-    /// group whose header opens more of its own content ("Show all 23").
+    /// group whose header acts on its whole content ("Forget All…").
     var headerAction: (title: String, action: () -> Void)? = nil
     @ViewBuilder var content: Content
 

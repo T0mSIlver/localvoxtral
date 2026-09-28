@@ -788,6 +788,17 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         projects.removeAll { $0.terms.isEmpty && !$0.isKeptWithoutTerms }
     }
 
+    /// Drops every term of these buckets: a project's Forget All in
+    /// Settings → Projects. A bucket kept for its proposal stamp or its
+    /// host's report stays, empty.
+    package mutating func forgetTerms(projectKeys: [String]) {
+        let keys = Set(projectKeys)
+        for index in projects.indices where keys.contains(projects[index].key) {
+            projects[index].terms = []
+        }
+        projects.removeAll { keys.contains($0.key) && !$0.isKeptWithoutTerms }
+    }
+
     private mutating func projectIndex(
         for project: LearnedTermProjectIdentity,
         now: Date

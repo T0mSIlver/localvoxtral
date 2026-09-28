@@ -3,7 +3,9 @@ import SwiftUI
 
 /// Every project quick capture lists, one table row each (#939): where its
 /// issues go, where it is checked out, when it was last used and the drafts
-/// waiting on it. A row opens the project's sheet.
+/// waiting on it. A row opens the project's sheet. The terms outside every
+/// project close the table as "No project" (#972), so this pane is the one
+/// place learned terms are seen, pinned and forgotten.
 ///
 /// Opening the pane asks GitHub again for every project's description.
 struct ProjectsSettingsPane: View {
@@ -17,8 +19,11 @@ struct ProjectsSettingsPane: View {
     @State private var dictationProjectKeys: [String?] = []
     @State private var openProject: OpenProject?
 
-    struct OpenProject: Identifiable {
-        let id: String
+    enum OpenProject: Identifiable, Hashable {
+        case project(key: String)
+        case unlisted
+
+        var id: Self { self }
     }
 
     private var rows: [ProjectsPaneRow] {
@@ -28,9 +33,10 @@ struct ProjectsSettingsPane: View {
 
     var body: some View {
         let rows = rows
+        let unlisted = inbox?.unlistedTerms()
         SettingsPage(tab: .projects) {
             SettingsGroup(title: "Projects", learnMoreURL: ProjectsLearnMore.projects) {
-                if rows.isEmpty {
+                if rows.isEmpty && unlisted == nil {
                     SettingsGroupRow {
                         Text("No projects. A project appears once you dictate into a coding agent there.")
                             .foregroundStyle(.secondary)
@@ -46,7 +52,7 @@ struct ProjectsSettingsPane: View {
                     }
                     ForEach(rows) { row in
                         Button {
-                            openProject = OpenProject(id: row.key)
+                            openProject = .project(key: row.key)
                         } label: {
                             SettingsGroupRow {
                                 ProjectsTableColumns(
@@ -64,22 +70,39 @@ struct ProjectsSettingsPane: View {
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("projects.row")
                     }
+                    if let unlisted {
+                        Button {
+                            openProject = .unlisted
+                        } label: {
+                            SettingsGroupRow {
+                                ProjectsTableColumns(
+                                    name: Text(LearnedTermProjectResolver.shared.name).fontWeight(.semibold),
+                                    filing: Text("–").foregroundStyle(.secondary),
+                                    checkouts: Text("–").foregroundStyle(.secondary),
+                                    lastUsed: Text(ProjectsPane.lastUsed(unlisted.lastUsed, now: Date()))
+                                        .foregroundStyle(.secondary),
+                                    drafts: Text("–").foregroundStyle(.secondary)
+                                )
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("projects.noProject")
+                    }
                 }
             }
         }
         .sheet(item: $openProject) { open in
-            ProjectDetailSheet(
-                projectKey: open.id,
-                settings: settings,
-                viewModel: viewModel,
-                inbox: inbox,
-                dictationProjectKeys: dictationProjectKeys,
-                openInbox: {
+            switch open {
+            case .project(let key):
+                projectSheet(key)
+                    .opensWithNothingFocused()
+            case .unlisted:
+                UnlistedTermsSheet(viewModel: viewModel, inbox: inbox) {
                     openProject = nil
-                    openInbox()
-                },
-                onDone: { openProject = nil }
-            )
+                }
+                .opensWithNothingFocused()
+            }
         }
         .task {
             if let store = viewModel.sessionStore {
@@ -88,6 +111,21 @@ struct ProjectsSettingsPane: View {
             }
             await inbox?.refreshProjects(force: true)
         }
+    }
+
+    private func projectSheet(_ key: String) -> some View {
+        ProjectDetailSheet(
+            projectKey: key,
+            settings: settings,
+            viewModel: viewModel,
+            inbox: inbox,
+            dictationProjectKeys: dictationProjectKeys,
+            openInbox: {
+                openProject = nil
+                openInbox()
+            },
+            onDone: { openProject = nil }
+        )
     }
 }
 
@@ -151,11 +189,6 @@ struct ProjectDetailSheet: View {
     @State private var repositoryDraft = ""
     @State private var isEditingDescription = false
     @State private var descriptionDraft = ""
-    @State private var isShowingTerms = false
-
-    /// Chips shown before Show all.
-    private static let visibleTerms = 12
-
     private var row: ProjectsPaneRow? {
         _ = viewModel.learnedTermRevision
         // Any of its keys: the leading checkout changes when the Mac's
@@ -172,7 +205,7 @@ struct ProjectDetailSheet: View {
                     VStack(alignment: .leading, spacing: SettingsLayout.pageSpacing) {
                         repositoryGroup(row)
                         descriptionGroup(row)
-                        termsGroup(row)
+                        ProjectTermsGroup(terms: row.terms, keys: row.keys, store: viewModel.learnedTermStore)
                         activityGroup(row)
                     }
                 }
@@ -191,11 +224,6 @@ struct ProjectDetailSheet: View {
         .padding(20)
         .frame(width: 560)
         .frame(minHeight: 420, idealHeight: 640)
-        .sheet(isPresented: $isShowingTerms) {
-            LearnedTermsSheet(viewModel: viewModel, project: row.map { ($0.name, $0.keys) }) {
-                isShowingTerms = false
-            }
-        }
     }
 
     // MARK: Repository
@@ -339,23 +367,6 @@ struct ProjectDetailSheet: View {
         }
     }
 
-    // MARK: Terms
-
-    private func termsGroup(_ row: ProjectsPaneRow) -> some View {
-        let showAll: (title: String, action: () -> Void)? =
-            row.terms.isEmpty ? nil : (title: "Show all \(row.terms.count)", action: { isShowingTerms = true })
-        return SettingsGroup(title: "Terms", headerAction: showAll) {
-            SettingsGroupRow {
-                if row.terms.isEmpty {
-                    Text("No terms yet.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ProjectTermChips(terms: Array(row.terms.prefix(Self.visibleTerms)))
-                }
-            }
-        }
-    }
-
     // MARK: Activity
 
     private func activityGroup(_ row: ProjectsPaneRow) -> some View {
@@ -401,68 +412,138 @@ struct ProjectDetailSheet: View {
     }
 }
 
-/// A project's terms as chips that wrap.
-private struct ProjectTermChips: View {
-    let terms: [String]
+/// The terms outside every project, the table's "No project" entry (#972):
+/// the same Terms group as a project's sheet, alone.
+struct UnlistedTermsSheet: View {
+    let viewModel: DictationViewModel
+    let inbox: QuickCaptureInboxViewModel?
+    let onDone: () -> Void
+
+    private var unlisted: ProjectsPaneUnlisted? {
+        _ = viewModel.learnedTermRevision
+        return inbox?.unlistedTerms()
+    }
 
     var body: some View {
-        ProjectChipFlow(spacing: 6) {
-            ForEach(terms, id: \.self) { term in
-                Text(term)
-                    .font(.callout.monospaced())
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+        VStack(alignment: .leading, spacing: 12) {
+            Text(LearnedTermProjectResolver.shared.name)
+                .font(.headline)
+            ScrollView {
+                // Forgetting the last term empties the group rather than
+                // closing the sheet under the pointer.
+                ProjectTermsGroup(
+                    terms: unlisted?.terms ?? [], keys: unlisted?.keys ?? [], store: viewModel.learnedTermStore)
+            }
+            .settingsScrollEdgeEffectHidden()
+            HStack {
+                Spacer()
+                Button("Done", action: onDone)
+                    .keyboardShortcut(.defaultAction)
             }
         }
+        .padding(20)
+        .frame(width: 560)
+        .frame(minHeight: 420, idealHeight: 640)
     }
 }
 
-/// Lays its children left to right and wraps them onto new lines.
-private struct ProjectChipFlow: Layout {
-    var spacing: CGFloat
+/// Every term of a project, in its sheet (#972): a search field once the
+/// list is long, then each term with how far it has come, a pin and a
+/// forget button. Forget All… in the header clears the project's terms.
+/// A term shows once for all of the project's checkouts, and pin and forget
+/// act on every checkout that holds it.
+struct ProjectTermsGroup: View {
+    let terms: [LearnedTerm]
+    let keys: [String]
+    let store: LearnedTermStore?
+    @State private var query = ""
+    @State private var isConfirmingForgetAll = false
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let width = proposal.width ?? .infinity
-        let rows = arrange(subviews, width: width)
-        let height = rows.last.map { $0.y + $0.height } ?? 0
-        let used = rows.map(\.width).max() ?? 0
-        return CGSize(width: proposal.width ?? used, height: height)
+    /// More rows than this and the list scrolls inside the group, so the
+    /// Activity group below stays in reach.
+    static let scrollAbove = 8
+    static let listHeight: CGFloat = 340
+
+    var body: some View {
+        let forgetAll: (title: String, action: () -> Void)? =
+            terms.isEmpty ? nil : (title: "Forget All…", action: { isConfirmingForgetAll = true })
+        SettingsGroup(title: "Terms", headerAction: forgetAll) {
+            if terms.isEmpty {
+                SettingsGroupRow {
+                    Text("No terms yet.")
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                if terms.count > ProjectsPane.searchAbove {
+                    SettingsGroupRow {
+                        TextField("Search \(terms.count) terms", text: $query)
+                            .textFieldStyle(.roundedBorder)
+                            .accessibilityIdentifier("projects.terms.search")
+                    }
+                }
+                let shown = ProjectsPane.shown(terms, query: query)
+                if shown.isEmpty {
+                    SettingsGroupRow {
+                        Text("No term matches.")
+                            .foregroundStyle(.secondary)
+                    }
+                } else if shown.count > Self.scrollAbove {
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(shown, id: \.term) { row($0) }
+                        }
+                    }
+                    .frame(height: Self.listHeight)
+                    .accessibilityIdentifier("projects.terms.list")
+                } else {
+                    ForEach(shown, id: \.term) { row($0) }
+                }
+            }
+        }
+        .confirmationDialog(
+            "Forget all \(terms.count) terms of this project?", isPresented: $isConfirmingForgetAll
+        ) {
+            Button("Forget All", role: .destructive) {
+                store?.forgetTerms(projectKeys: keys)
+            }
+        } message: {
+            Text("Polishing stops using them until it learns them again.")
+        }
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        for row in arrange(subviews, width: bounds.width) {
-            var x = bounds.minX
-            for index in row.indices {
-                let size = subviews[index].sizeThatFits(.unspecified)
-                subviews[index].place(at: CGPoint(x: x, y: bounds.minY + row.y), proposal: ProposedViewSize(size))
-                x += size.width + spacing
+    private func row(_ term: LearnedTerm) -> some View {
+        SettingsGroupRow {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(term.term)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Self.detail(for: term)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    store?.setPinned(!term.isPinned, term: term.term, projectKeys: keys)
+                } label: {
+                    Image(systemName: term.isPinned ? "pin.fill" : "pin")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(term.isPinned ? "Unpin \(term.term)" : "Pin \(term.term)")
+                Button {
+                    store?.forget(term.term, projectKeys: keys)
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Forget \(term.term)")
             }
         }
     }
 
-    private struct Row {
-        var indices: [Int] = []
-        var y: CGFloat
-        var width: CGFloat = 0
-        var height: CGFloat = 0
-    }
-
-    private func arrange(_ subviews: Subviews, width: CGFloat) -> [Row] {
-        var rows: [Row] = []
-        var current = Row(y: 0)
-        for index in subviews.indices {
-            let size = subviews[index].sizeThatFits(.unspecified)
-            let extra = current.indices.isEmpty ? size.width : current.width + spacing + size.width
-            if !current.indices.isEmpty, extra > width {
-                rows.append(current)
-                current = Row(y: current.y + current.height + spacing)
-            }
-            current.width = current.indices.isEmpty ? size.width : current.width + spacing + size.width
-            current.height = max(current.height, size.height)
-            current.indices.append(index)
-        }
-        if !current.indices.isEmpty { rows.append(current) }
-        return rows
+    private static func detail(for term: LearnedTerm) -> Text {
+        let parts = ProjectsPane.detail(for: term)
+        guard let lastApplied = parts.lastApplied else { return Text(parts.text) }
+        return Text("\(parts.text) \(lastApplied, format: .relative(presentation: .named))")
     }
 }
