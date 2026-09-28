@@ -511,6 +511,10 @@ package enum SessionPaneFocusRoute: Equatable, Sendable {
     /// Desktop runs it on (#834), found by the `local_<uuid>` id its hooks
     /// reported. Desktop's own link brings it forward.
     case claudeDesktop(URL)
+    /// A session in a herdr pane, on this Mac or on an enrolled ssh host
+    /// (#1012): herdr focuses the pane, then the terminal window showing that
+    /// herdr is raised.
+    case herdrPane(HerdrPaneFocusTarget)
     case unsupported(SessionPaneFocusUnsupported)
 
     package static func of(_ snapshot: ClaudeSessionSnapshot) -> SessionPaneFocusRoute {
@@ -522,11 +526,21 @@ package enum SessionPaneFocusRoute: Equatable, Sendable {
             }
             return .claudeDesktop(link)
         }
-        guard snapshot.origin.isLocalAuthenticated else { return .unsupported(.remote) }
+        if case .remote(let channel) = snapshot.origin {
+            guard let environment = snapshot.remoteSessionEnvironment,
+                  let paneID = environment.herdrPaneID,
+                  let socketPath = environment.herdrSocketPath,
+                  let hostID = ClaudeRemoteSessionScope.hostID(fromChannel: channel)
+            else { return .unsupported(.remote) }
+            return .herdrPane(.remote(hostID: hostID, paneID: paneID, remoteSocketPath: socketPath))
+        }
         let process = snapshot.process
         // A herdr pane's or cmux surface's tty belongs to the multiplexer, not
         // to a terminal tab.
-        if process?.herdrPaneID != nil { return .unsupported(.herdr) }
+        if let paneID = process?.herdrPaneID {
+            guard let socketPath = process?.herdrSocketPath else { return .unsupported(.herdr) }
+            return .herdrPane(.local(paneID: paneID, socketPath: socketPath))
+        }
         if process?.cmuxSurfaceID != nil { return .unsupported(.cmux) }
         guard let tty = process?.tty, !tty.isEmpty else { return .unsupported(.noTTY) }
         return .terminalTTY(tty, termProgram: process?.termProgram)
