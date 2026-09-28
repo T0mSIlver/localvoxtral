@@ -294,9 +294,14 @@ final class DictationSessionStore {
     func save(_ record: DictationSessionRecord, audio: Data? = nil) -> Task<Void, Never> {
         let entry = DictationHistoryEntry(record)
         let audioStore = audio == nil ? nil : audioStore
+        let backups = backups
+        let storeURL = storeURL
         return enqueueWrite("save dictation \(entry.id)") { context in
             context.insert(entry.makeRecord())
             try context.save()
+            // The daily copy, for an app that runs for days: the one taken at
+            // launch would be the last. On the write queue, after the save.
+            if let backups, let storeURL { backups.snapshotIfDue(of: storeURL) }
             if let audio, let audioStore {
                 do {
                     try audioStore.write(pcm16: audio, for: entry.id)

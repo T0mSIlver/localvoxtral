@@ -77,10 +77,12 @@ struct DictationHistoryBackups: Sendable {
         }
     }
 
-    /// Takes a daily snapshot when none was taken in the last day.
+    /// Takes a daily snapshot when no daily one was taken in the last day.
+    /// Only daily ones count: rotation keeps seven of those apart from the
+    /// event snapshots, which a busy retention can rotate away in days.
     func snapshotIfDue(of store: URL) {
         let dayAgo = now().addingTimeInterval(-86_400)
-        guard !snapshots().contains(where: { $0.takenAt > dayAgo }) else { return }
+        guard !snapshots().contains(where: { $0.reason == .daily && $0.takenAt > dayAgo }) else { return }
         snapshot(of: store, reason: .daily)
     }
 

@@ -102,6 +102,36 @@ final class DictationHistoryBackupsTests: XCTestCase {
         XCTAssertEqual(count, 0)
     }
 
+    /// An app left running for days still gets its daily copy: the check
+    /// runs on every save, not only at launch.
+    func testARunningAppTakesADailySnapshotOnTheNextSaveOfTheDay() async throws {
+        let directory = makeDirectory()
+        let store = try openStore(in: directory)
+        await store.save(record("one", startedAt: clock.now())).value
+        clock.advance(86_401)
+
+        await store.save(record("two", startedAt: clock.now())).value
+
+        let dailies = backups(in: directory).snapshots().filter { $0.reason == .daily }
+        XCTAssertEqual(dailies.map(\.dictations), [2, 0])
+    }
+
+    /// A delete snapshot within the day does not stand in for the daily one:
+    /// rotation keeps daily copies apart.
+    func testAnEventSnapshotDoesNotSuppressTheDailyOne() async throws {
+        let directory = makeDirectory()
+        let store = try openStore(in: directory)
+        let url = try XCTUnwrap(store.storeURL)
+        let backups = backups(in: directory)
+        clock.advance(86_401)
+        backups.snapshot(of: url, reason: .delete)
+        clock.advance(3_600)
+
+        backups.snapshotIfDue(of: url)
+
+        XCTAssertEqual(backups.snapshots().filter { $0.reason == .daily }.count, 2)
+    }
+
     /// Rotation never drops the newest snapshot that holds dictations, however
     /// many empty ones came after it.
     func testRotationKeepsTheLastSnapshotThatHoldsDictations() throws {
@@ -146,6 +176,26 @@ final class DictationHistoryBackupsTests: XCTestCase {
         let quarantined = try XCTUnwrap(store.quarantine).folder(for: "dictation-audio")
             .appendingPathComponent("\(orphan.uuidString).wav")
         XCTAssertTrue(FileManager.default.fileExists(atPath: quarantined.path))
+    }
+
+    /// A recording already in quarantine is never overwritten: two running
+    /// copies can move the same orphan.
+    func testQuarantineNeverOverwritesAFileAlreadyThere() async throws {
+        let directory = makeDirectory()
+        let store = try openStore(in: directory)
+        let audio = try XCTUnwrap(store.audioStore)
+        await store.save(record("kept", startedAt: clock.now()), audio: pcm).value
+        let orphan = UUID()
+        try audio.write(pcm16: pcm, for: orphan)
+        let folder = try XCTUnwrap(store.quarantine).folder(for: "dictation-audio")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let earlier = folder.appendingPathComponent("\(orphan.uuidString).wav")
+        try Data([9]).write(to: earlier)
+
+        await store.removeOrphanedAudio().value
+
+        XCTAssertEqual(try Data(contentsOf: earlier), Data([9]))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path).count, 2)
     }
 
     /// More orphans than a sweep may move is a store that lost rows: nothing

@@ -105,8 +105,12 @@ final class DictationAudioStore: Sendable {
     private static func move(_ url: URL, into folder: URL) -> Bool {
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let destination = folder.appendingPathComponent(url.lastPathComponent)
-            try? FileManager.default.removeItem(at: destination)
+            // Never over a file already there: another running copy may have
+            // quarantined the same recording a moment ago.
+            var destination = folder.appendingPathComponent(url.lastPathComponent)
+            if FileManager.default.fileExists(atPath: destination.path) {
+                destination = folder.appendingPathComponent("\(UUID().uuidString)-\(url.lastPathComponent)")
+            }
             try FileManager.default.moveItem(at: url, to: destination)
             return true
         } catch {
