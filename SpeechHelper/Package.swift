@@ -42,8 +42,8 @@ let package = Package(
         // (the Nemotron ASR model, its incremental `NemotronASRStreamSession`, and the wider
         // checkpoint loader) — so the second catalog entry needs no pin change.
         .package(
-            url: "https://github.com/Blaizzy/mlx-audio-swift.git",
-            revision: "01dec7c9bdce3088a6b6b7ab9f2e403458195efb"
+            url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
+            revision: "ebdd5581216ddd32e65fbc3d9b4e5280119f8114"
         ),
     ],
     targets: [
