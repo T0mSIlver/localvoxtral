@@ -1,7 +1,7 @@
 import AppKit
 import UniformTypeIdentifiers
 
-/// Text Processing's Import… and Export… (#523): every learned term to or
+/// Projects' Import… and Export… (#523, #999): every learned term to or
 /// from a file, to move them between machines. Each reports one short line
 /// for the row's status.
 @MainActor

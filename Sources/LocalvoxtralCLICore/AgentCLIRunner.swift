@@ -134,7 +134,7 @@ public struct AgentCLIText: Sendable {
     }
 
     private func render(_ terms: AgentCLITerms) -> [String] {
-        var lines = ["Names and terms: " + (terms.userTerms.isEmpty ? "none" : terms.userTerms.joined(separator: ", "))]
+        var lines = ["Global terms: " + (terms.userTerms.isEmpty ? "none" : terms.userTerms.joined(separator: ", "))]
         for project in terms.projects {
             lines.append("")
             let where_ = project.project.key.hasPrefix("/") ? " (\(project.project.key))" : ""
@@ -168,7 +168,7 @@ public struct AgentCLIText: Sendable {
         for skipped in proposal.skipped {
             let reason = switch skipped.reason {
             case .known: "the project already has it"
-            case .userList: "in your names and terms, or a suggestion you refused"
+            case .userList: "in your global terms, or a suggestion you refused"
             case .notTermShaped: "not a term"
             case .overLimit: "over \(AgentCLIWire.maxProposedTerms) terms"
             }

@@ -3,6 +3,7 @@ import Foundation
 import Synchronization
 import XCTest
 @testable import localvoxtralCore
+import localvoxtralTestSupport
 
 /// What `concurrently` hands to its worker threads. `@unchecked`: `body`
 /// captures the test case, whose only state, `marketplace`, is written in
@@ -207,16 +208,6 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         )
     }
 
-    func testShimReadsThePortEnvVarMatchingTheDeclaredUserConfigKey() throws {
-        // Same contract as the token: Claude Code exposes userConfig to command
-        // hooks as CLAUDE_PLUGIN_OPTION_<KEY>, and a mismatch here is silent.
-        // Verified end to end on 2.1.220: a hook run under
-        // `--config port=28777` dialed http://127.0.0.1:28777/v1/hook/…
-        let expected = "CLAUDE_PLUGIN_OPTION_"
-            + ClaudeRemoteEnrollmentService.portConfigKey.uppercased()
-        XCTAssertTrue(try shimSource().contains(expected), "shim must read \(expected)")
-    }
-
     func testNoTokenValueIsBakedIntoTheManifest() throws {
         // The manifest and shim are public, in a public repo. The only token in
         // them is the env var reference; an actual credential would ship to
@@ -322,13 +313,21 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         XCTAssertFalse(source.contains(":8472"))
     }
 
-    func testShimReadsTheTokenEnvVarMatchingTheDeclaredUserConfigKey() throws {
+    func testShimReadsTheEnvVarsMatchingTheDeclaredUserConfigKeys() throws {
         // Claude Code exposes userConfig to command hooks as
         // CLAUDE_PLUGIN_OPTION_<KEY>. The declared key and the variable the
-        // shim reads must agree, or the config silently does nothing.
-        let expected = "CLAUDE_PLUGIN_OPTION_"
-            + ClaudeRemoteEnrollmentService.tokenConfigKey.uppercased()
-        XCTAssertTrue(try shimSource().contains(expected), "shim must read \(expected)")
+        // shim reads must agree, or the config silently does nothing. The port
+        // option (#215) is the same contract: verified end to end on 2.1.220, a
+        // hook run under `--config port=28777` dialed
+        // http://127.0.0.1:28777/v1/hook/…
+        let source = try shimSource()
+        for key in [
+            ClaudeRemoteEnrollmentService.tokenConfigKey,
+            ClaudeRemoteEnrollmentService.portConfigKey,
+        ] {
+            let expected = "CLAUDE_PLUGIN_OPTION_" + key.uppercased()
+            XCTAssertTrue(source.contains(expected), "shim must read \(expected)")
+        }
     }
 
     func testShimKeepsTheTokenOutOfEveryArgv() throws {
@@ -540,16 +539,17 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     }
 
     func testShimNeverCreatesAStampForAHostileSessionID() throws {
-        let state = FileManager.default.temporaryDirectory
-            .appendingPathComponent("hostile-session-state-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: state) }
-
-        for sessionID in [
+        let sessionIDs = [
             "../x",
             String(repeating: "a", count: 65),
             "quoted\\\"id",
-        ] {
+        ]
+        // One state dir per id, so the runs share nothing and can go at once.
+        let leftovers = try concurrently(sessionIDs) { sessionID in
+            let state = FileManager.default.temporaryDirectory
+                .appendingPathComponent("hostile-session-state-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: state) }
             _ = try runShimWithStubCurl(
                 status: "200",
                 body: ClaudeRemoteHTTPCodec.hookResponseBody,
@@ -557,11 +557,12 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
                 extraEnvironment: ["XDG_RUNTIME_DIR": state.path],
                 payload: Data("{\"session_id\":\"\(sessionID)\"}".utf8)
             )
+            let sessions = state.appendingPathComponent("localvoxtral/sessions")
+            return (try? FileManager.default.contentsOfDirectory(atPath: sessions.path)) ?? []
         }
-
-        let sessions = state.appendingPathComponent("localvoxtral/sessions")
-        let contents = (try? FileManager.default.contentsOfDirectory(atPath: sessions.path)) ?? []
-        XCTAssertTrue(contents.isEmpty, "hostile ids must not become paths")
+        for (sessionID, contents) in zip(sessionIDs, leftovers) {
+            XCTAssertTrue(contents.isEmpty, "hostile id \(sessionID) must not become a path")
+        }
     }
 
     func testHooksUseTopLevelSessionIDBeforeNestedToolSessionIDs() throws {
@@ -862,8 +863,10 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             ("unconfigured \(now)", [:], "lvx \(esc)[31m✕\(esc)[0m\n"),
             (nil, [:], "lvx \(esc)[90m○\(esc)[0m\n"),
         ]
-        for (stamp, sessions, expected) in cases {
-            let result = try runStatusLineRenderer(stamp: stamp, sessionStamps: sessions)
+        let results = try concurrently(cases) {
+            try runStatusLineRenderer(stamp: $0.stamp, sessionStamps: $0.sessions)
+        }
+        for ((stamp, _, expected), result) in zip(cases, results) {
             XCTAssertEqual(result.exitCode, 0, "\(stamp ?? "<none>") must exit 0")
             XCTAssertEqual(result.stdout, expected, "wrong rendering for \(stamp ?? "<none>")")
             XCTAssertEqual(result.stderr, "", "the renderer must never be noisy")
@@ -887,14 +890,15 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         // string; unrecognized states render the never-heard-anything default
         // and not one byte of the file.
         let defaultLine = "lvx \u{1B}[90m\u{25CB}\u{1B}[0m\n"
-        for hostile in [
+        let hostileStamps = [
             "$(uname) 1786204746",
             "ok`uname` 1786204746",
             "ok\u{1B}]0;evil\u{07} 1786204746",
             "totally-unknown-state 1786204746",
             String(repeating: "A", count: 100_000),
-        ] {
-            let result = try runStatusLineRenderer(stamp: hostile)
+        ]
+        let results = try concurrently(hostileStamps) { try runStatusLineRenderer(stamp: $0) }
+        for result in results {
             XCTAssertEqual(result.exitCode, 0)
             XCTAssertEqual(
                 result.stdout, defaultLine,
@@ -949,15 +953,16 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
 
     func testStatusLineRendererUsesPlainTextWhenColorIsDisabled() throws {
         let now = 2_000_000_000
-        for (stamp, sessions, environment, expected) in [
+        let cases: [(String, [String: String], [String: String], String)] = [
             ("ok \(now)", ["s1": "joined \(now)"], ["NO_COLOR": ""], "lvx ●\n"),
             ("ok \(now)", [:], ["TERM": "dumb"], "lvx ◐\n"),
             ("down \(now)", [:], ["TERM": "dumb"], "lvx ○\n"),
             ("http-401 \(now)", [:], ["NO_COLOR": "1"], "lvx ✕\n"),
-        ] {
-            let result = try runStatusLineRenderer(
-                stamp: stamp, sessionStamps: sessions, environment: environment
-            )
+        ]
+        let results = try concurrently(cases) {
+            try runStatusLineRenderer(stamp: $0.0, sessionStamps: $0.1, environment: $0.2)
+        }
+        for ((_, _, _, expected), result) in zip(cases, results) {
             XCTAssertEqual(result.exitCode, 0)
             XCTAssertEqual(result.stdout, expected)
             XCTAssertEqual(result.stderr, "")
@@ -966,25 +971,22 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
 
     func testShimFailsOpenSilentlyWithoutATokenAndWithoutCurl() throws {
         // (1) Token unset: must exit 0 with no output BEFORE dialing anything.
-        let noToken = try runShim(environment: [:])
-        XCTAssertEqual(noToken.exitCode, 0, "no token must fail open")
-        XCTAssertEqual(noToken.stdout, "", "fail-open must print nothing on stdout")
-        XCTAssertEqual(noToken.stderr, "", "fail-open must print nothing on stderr")
-
         // (2) Empty token — the userConfig default — is the same as unset.
-        let emptyToken = try runShim(environment: ["CLAUDE_PLUGIN_OPTION_TOKEN": ""])
-        XCTAssertEqual(emptyToken.exitCode, 0)
-        XCTAssertEqual(emptyToken.stdout, "")
-        XCTAssertEqual(emptyToken.stderr, "")
-
         // (3) Token set but no curl on PATH: the documented degraded host.
-        let noCurl = try runShim(environment: [
-            "CLAUDE_PLUGIN_OPTION_TOKEN": "unit-test-token",
-            "PATH": "/nonexistent",
-        ])
-        XCTAssertEqual(noCurl.exitCode, 0, "a host without curl must fail open")
-        XCTAssertEqual(noCurl.stdout, "")
-        XCTAssertEqual(noCurl.stderr, "")
+        let cases: [(name: String, environment: [String: String])] = [
+            ("no token", [:]),
+            ("empty token", ["CLAUDE_PLUGIN_OPTION_TOKEN": ""]),
+            ("no curl on PATH", [
+                "CLAUDE_PLUGIN_OPTION_TOKEN": "unit-test-token",
+                "PATH": "/nonexistent",
+            ]),
+        ]
+        let results = try concurrently(cases) { try runShim(environment: $0.environment) }
+        for (row, result) in zip(cases, results) {
+            XCTAssertEqual(result.exitCode, 0, "\(row.name) must fail open")
+            XCTAssertEqual(result.stdout, "", "\(row.name): fail-open must print nothing on stdout")
+            XCTAssertEqual(result.stderr, "", "\(row.name): fail-open must print nothing on stderr")
+        }
     }
 
     /// Runs the shim under `/bin/sh` with exactly the given extra environment
@@ -1090,34 +1092,28 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             ("oversized body", Data(String(repeating: "a", count: 300).utf8)),
             ("empty body", Data()),
         ]
-        let results = try concurrently(hostileBodies) { _, body in
-            try runShimWithStubCurl(status: "200", body: body)
+        //
+        // The last two rows are the non-body failures: a non-200 status
+        // silences even a perfectly legitimate body, and a "200" whose body
+        // file was never written is the tunnel-down shape. The shell's own
+        // `cannot open` on the body redirection leaked to stderr in the first
+        // gate implementation (caught live 2026-07-27): an input redirection
+        // fails BEFORE the `2>/dev/null` after it is applied, so the guard has
+        // to be `[ -r … ]` plus `{ …; } 2>/dev/null`.
+        let rows: [(name: String, status: String, body: Data?)] =
+            hostileBodies.map { ($0.0, "200", $0.1) } + [
+                ("a non-200 status with a perfectly legitimate body", "401",
+                 ClaudeRemoteHTTPCodec.hookResponseBody),
+                ("a 200 whose body file was never written", "200", nil),
+            ]
+        let results = try concurrently(rows) { row in
+            try runShimWithStubCurl(status: row.status, body: row.body)
         }
-        for ((name, _), result) in zip(hostileBodies, results) {
-            XCTAssertEqual(result.exitCode, 0, "\(name): must still exit 0")
-            XCTAssertEqual(result.stdout, "", "\(name): must print NOTHING on stdout")
-            XCTAssertEqual(result.stderr, "", "\(name): must print NOTHING on stderr")
+        for (row, result) in zip(rows, results) {
+            XCTAssertEqual(result.exitCode, 0, "\(row.name): must still exit 0")
+            XCTAssertEqual(result.stdout, "", "\(row.name): must print NOTHING on stdout")
+            XCTAssertEqual(result.stderr, "", "\(row.name): must print NOTHING on stderr")
         }
-        // And a non-200 status silences even a perfectly legitimate body.
-        let non200 = try runShimWithStubCurl(
-            status: "401", body: ClaudeRemoteHTTPCodec.hookResponseBody
-        )
-        XCTAssertEqual(non200.exitCode, 0)
-        XCTAssertEqual(non200.stdout, "")
-        XCTAssertEqual(non200.stderr, "")
-
-        // A "200" whose body file was never written — the tunnel-down shape.
-        // The shell's own `cannot open` on the body redirection leaked to
-        // stderr in the first gate implementation (caught live 2026-07-27):
-        // an input redirection fails BEFORE the `2>/dev/null` after it is
-        // applied, so the guard has to be `[ -r … ]` plus `{ …; } 2>/dev/null`.
-        let bodyNeverWritten = try runShimWithStubCurl(status: "200", body: nil)
-        XCTAssertEqual(bodyNeverWritten.exitCode, 0)
-        XCTAssertEqual(bodyNeverWritten.stdout, "")
-        XCTAssertEqual(
-            bodyNeverWritten.stderr, "",
-            "a missing body file is the tunnel-down path and must be silent"
-        )
     }
 
     /// Runs the shim with a stub `curl` first on PATH that "answers" with the
@@ -1305,6 +1301,10 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         for field in ClaudeRemoteEnvironmentField.allCases where field != .hookParentPID {
             XCTAssertNil(parsed?[field], "\(field.headerName) must not be sent when unset")
         }
+        // The tty arm has exactly one setup step, and a user who skipped it
+        // must cost nothing: no header, and the connection arm still gets its
+        // turn.
+        XCTAssertFalse(captured.contains("X-Lvx-Env-Local-Tty"))
     }
 
     /// The project label comes from the one part of the shim that runs only
@@ -1325,8 +1325,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             let git = Process()
             git.executableURL = URL(fileURLWithPath: "/usr/bin/env")
             git.arguments = ["git"] + arguments
-            try git.run()
-            git.waitUntilExit()
+            try git.runUntilExit()
             XCTAssertEqual(git.terminationStatus, 0, arguments.joined(separator: " "))
         }
 
@@ -1351,35 +1350,45 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         // Authorization, which the listener's duplicate rejection would then
         // turn into a hard 400 on every hook. The charset whitelist makes it
         // impossible before a byte is written.
-        let hostile: [(String, String)] = [
-            ("CRLF", "pane\r\nAuthorization: Bearer stolen"),
-            ("bare LF", "pane\nX-Evil: 1"),
-            ("bare CR", "pane\rX-Evil: 1"),
-            ("space", "pane 7"),
-            ("tab", "pane\tX-Evil: 1"),
-            ("quote", "pane\"7"),
-            ("backslash", "pane\\7"),
-            ("command substitution", "pane$(id)"),
-            ("backtick", "pane`id`"),
-            ("non-ASCII", "pane-\u{e9}"),
-            ("over the length cap", String(repeating: "a", count: 201)),
+        //
+        // `LC_LVX_TTY` rows: `LC_*` is carried by sshd's stock config, so this
+        // value crosses from whatever the user's shell put in it — the charset
+        // check is what makes that safe, and the app re-checks the SHAPE
+        // afterwards (see the wrong-shaped case below).
+        let hostile: [(name: String, variable: String, header: String, value: String)] = [
+            ("CRLF", "HERDR_PANE_ID", "X-Lvx-Env-Herdr-Pane-Id", "pane\r\nAuthorization: Bearer stolen"),
+            ("bare LF", "HERDR_PANE_ID", "X-Lvx-Env-Herdr-Pane-Id", "pane\nX-Evil: 1"),
+            ("bare CR", "HERDR_PANE_ID", "X-Lvx-Env-Herdr-Pane-Id", "pane\rX-Evil: 1"),
+            ("space", "HERDR_PANE_ID", "X-Lvx-Env-Herdr-Pane-Id", "pane 7"),
+            ("tab", "HERDR_PANE_ID", "X-Lvx-Env-Herdr-Pane-Id", "pane\tX-Evil: 1"),
+            ("quote", "HERDR_PANE_ID", "X-Lvx-Env-Herdr-Pane-Id", "pane\"7"),
+            ("backslash", "HERDR_PANE_ID", "X-Lvx-Env-Herdr-Pane-Id", "pane\\7"),
+            ("command substitution", "HERDR_PANE_ID", "X-Lvx-Env-Herdr-Pane-Id", "pane$(id)"),
+            ("backtick", "HERDR_PANE_ID", "X-Lvx-Env-Herdr-Pane-Id", "pane`id`"),
+            ("non-ASCII", "HERDR_PANE_ID", "X-Lvx-Env-Herdr-Pane-Id", "pane-\u{e9}"),
+            ("over the length cap", "HERDR_PANE_ID", "X-Lvx-Env-Herdr-Pane-Id", String(repeating: "a", count: 201)),
+            ("local tty: CRLF", "LC_LVX_TTY", "X-Lvx-Env-Local-Tty", "/dev/ttys004\r\nAuthorization: Bearer stolen"),
+            ("local tty: bare LF", "LC_LVX_TTY", "X-Lvx-Env-Local-Tty", "/dev/ttys004\nX-Evil: 1"),
+            ("local tty: space", "LC_LVX_TTY", "X-Lvx-Env-Local-Tty", "/dev/ttys 004"),
+            ("local tty: non-ASCII", "LC_LVX_TTY", "X-Lvx-Env-Local-Tty", "/dev/ttys004\u{e9}"),
+            ("local tty: over the length cap", "LC_LVX_TTY", "X-Lvx-Env-Local-Tty", String(repeating: "a", count: 201)),
         ]
         let capturedPerValue = try capturedRequestHeaders(
-            forEach: hostile.map { ["HERDR_PANE_ID": $0.1] }
+            forEach: hostile.map { [$0.variable: $0.value] }
         )
-        for ((name, _), captured) in zip(hostile, capturedPerValue) {
+        for (row, captured) in zip(hostile, capturedPerValue) {
             XCTAssertFalse(
-                captured.contains("X-Lvx-Env-Herdr-Pane-Id"),
-                "\(name): the value must be dropped, not escaped"
+                captured.contains(row.header),
+                "\(row.name): the value must be dropped, not escaped"
             )
-            XCTAssertFalse(captured.contains("X-Evil"), "\(name): forged a header")
+            XCTAssertFalse(captured.contains("X-Evil"), "\(row.name): forged a header")
             XCTAssertFalse(
-                captured.contains("Bearer stolen"), "\(name): forged an Authorization"
+                captured.contains("Bearer stolen"), "\(row.name): forged an Authorization"
             )
             // The request still parses, and still carries exactly one token —
             // fail-open means a bad env value costs a hint, never the hook.
             let request = try parseCapturedHeaders(captured)
-            XCTAssertEqual(request.bearerToken, "unit-test-token", "\(name)")
+            XCTAssertEqual(request.bearerToken, "unit-test-token", "\(row.name)")
         }
     }
 
@@ -1470,69 +1479,64 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         // live OpenSSH session, 2026-09-05:
         // `SSH_CONNECTION=[127.0.0.1 51960 127.0.0.1 2222]`). Space is outside
         // the header charset by design, so the shim re-joins the four fields —
-        // and the app's own parser has to accept what comes out.
-        let captured = try capturedRequestHeaders(environment: [
-            "SSH_CONNECTION": "10.0.0.2 51960 10.0.0.9 22",
-        ])
-        let request = try parseCapturedHeaders(captured)
-        let parsed = try XCTUnwrap(ClaudeRemoteEnvironmentCodec.environment(in: request.headers))
-        let value = try XCTUnwrap(parsed.sshConnection)
+        // and the app's own parser has to accept what comes out. An IPv6 value
+        // comes through unchanged apart from the separator.
+        let values = ["10.0.0.2 51960 10.0.0.9 22", "::1 51960 ::1 2222"]
+        let capturedPerValue = try capturedRequestHeaders(
+            forEach: values.map { ["SSH_CONNECTION": $0] }
+        )
+        let parsed = try capturedPerValue.map {
+            try XCTUnwrap(ClaudeRemoteEnvironmentCodec.environment(in: try parseCapturedHeaders($0).headers))
+        }
+        let value = try XCTUnwrap(parsed[0].sshConnection)
         XCTAssertEqual(value, "10.0.0.2,51960,10.0.0.9,22")
         let report = try XCTUnwrap(ClaudeRemoteSSHConnectionReport.parse(value))
         XCTAssertEqual(report.clientPort, 51_960)
         XCTAssertEqual(report.serverPort, 22)
+        XCTAssertEqual(parsed[1].sshConnection, "::1,51960,::1,2222")
     }
 
-    func testShimSendsAnIPv6SSHConnectionUnchangedApartFromTheSeparator() throws {
-        let captured = try capturedRequestHeaders(environment: [
-            "SSH_CONNECTION": "::1 51960 ::1 2222",
-        ])
-        let request = try parseCapturedHeaders(captured)
-        let parsed = ClaudeRemoteEnvironmentCodec.environment(in: request.headers)
-        XCTAssertEqual(parsed?.sshConnection, "::1,51960,::1,2222")
-    }
-
-    func testShimDropsAnySSHConnectionThatIsNotExactlyFourFields() throws {
+    func testShimDropsAnySSHConnectionThatIsNotExactlyFourCleanFields() throws {
         // Not four fields is not a connection. Dropping beats guessing: the
         // Mac would refuse a malformed value anyway, and a shim that repairs
         // one only moves the refusal.
-        let malformed = [
+        //
+        // The hostile rows: the split makes this variable different from every
+        // other env value, because the pieces are re-assembled by the shim, so
+        // the charset check has to run on what it ASSEMBLED. A CR/LF payload
+        // splits into more than four fields (dropped); a four-field one whose
+        // parts carry forbidden bytes is refused by the charset.
+        //
+        // The oversized row: four fields, each fine on its own, whose JOINED
+        // value is over the 200-byte cap: the cap must apply to what is
+        // written, not to what was read.
+        let chunk = String(repeating: "a", count: 60)
+        let dropped = [
             "three fields only",
             "10.0.0.2 51960 10.0.0.9 22 extra",
             "10.0.0.2",
             "   ",
-        ]
-        let capturedPerValue = try capturedRequestHeaders(
-            forEach: malformed.map { ["SSH_CONNECTION": $0] }
-        )
-        for (value, captured) in zip(malformed, capturedPerValue) {
-            XCTAssertFalse(
-                captured.contains("X-Lvx-Env-Ssh-Connection"),
-                "must be dropped, not repaired: \(value)"
-            )
-        }
-    }
-
-    func testAHostileSSHConnectionCannotForgeAHeaderLine() throws {
-        // The split makes this one different from every other env value: the
-        // pieces are re-assembled by the shim, so the charset check has to run
-        // on what it ASSEMBLED. A CR/LF payload splits into more than four
-        // fields (dropped); a four-field one whose parts carry forbidden bytes
-        // is refused by the charset.
-        let hostile = [
+            "nonsense",
+            "\(chunk) \(chunk) \(chunk) \(chunk)",
             "a\r\nAuthorization: Bearer stolen 1 b 2",
             "a\" 1 b 2",
             "a$(id) 1 b 2",
             "a`id` 1 b 2",
             "a\u{e9} 1 b 2",
         ]
+        // Fail-open, per value: a broken connection variable costs its own
+        // header and nothing else, so its neighbour rides along in every run.
         let capturedPerValue = try capturedRequestHeaders(
-            forEach: hostile.map { ["SSH_CONNECTION": $0] }
+            forEach: dropped.map { ["SSH_CONNECTION": $0, "SSH_TTY": "/dev/pts/3"] }
         )
-        for (value, captured) in zip(hostile, capturedPerValue) {
-            XCTAssertFalse(captured.contains("X-Lvx-Env-Ssh-Connection"), "\(value)")
+        for (value, captured) in zip(dropped, capturedPerValue) {
+            XCTAssertFalse(
+                captured.contains("X-Lvx-Env-Ssh-Connection"),
+                "must be dropped, not repaired: \(value)"
+            )
             XCTAssertFalse(captured.contains("X-Evil"), "\(value)")
             XCTAssertFalse(captured.contains("Bearer stolen"), "\(value)")
+            XCTAssertTrue(captured.contains("X-Lvx-Env-Ssh-Tty: /dev/pts/3"), "\(value)")
             let request = try parseCapturedHeaders(captured)
             XCTAssertEqual(request.bearerToken, "unit-test-token", "\(value)")
         }
@@ -1606,36 +1610,6 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         )
     }
 
-    func testShimSendsNoLocalTTYHeaderWhenTheUserHasNotSetItUp() throws {
-        // The arm has exactly one setup step, and a user who skipped it must
-        // cost nothing: no header, and the connection arm still gets its turn.
-        let captured = try capturedRequestHeaders(environment: [:])
-        XCTAssertFalse(captured.contains("X-Lvx-Env-Local-Tty"))
-    }
-
-    func testAHostileLocalTTYCannotForgeAHeaderLine() throws {
-        // `LC_*` is carried by sshd's stock config, so this value crosses from
-        // whatever the user's shell put in it — the charset check is what makes
-        // that safe, and the app re-checks the SHAPE afterwards.
-        let hostile = [
-            "/dev/ttys004\r\nAuthorization: Bearer stolen",
-            "/dev/ttys004\nX-Evil: 1",
-            "/dev/ttys 004",
-            "/dev/ttys004\u{e9}",
-            String(repeating: "a", count: 201),
-        ]
-        let capturedPerValue = try capturedRequestHeaders(
-            forEach: hostile.map { ["LC_LVX_TTY": $0] }
-        )
-        for (value, captured) in zip(hostile, capturedPerValue) {
-            XCTAssertFalse(captured.contains("X-Lvx-Env-Local-Tty"), "\(value)")
-            XCTAssertFalse(captured.contains("X-Evil"), "\(value)")
-            XCTAssertFalse(captured.contains("Bearer stolen"), "\(value)")
-            let request = try parseCapturedHeaders(captured)
-            XCTAssertEqual(request.bearerToken, "unit-test-token", "\(value)")
-        }
-    }
-
     func testACharsetLegalButWRONGSHAPEDLocalTTYReachesTheAppAndIsRefusedThere() throws {
         // `/etc/passwd` passes the header charset — the shim's job is header
         // safety, not semantics. The app is where the shape is judged, and this
@@ -1647,28 +1621,6 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         XCTAssertFalse(
             ClaudeRemoteLocalTTYPath.isAcceptable("/etc/passwd"), "and the app refuses it"
         )
-    }
-
-    func testShimDropsAnOversizedSSHConnection() throws {
-        // Four fields, each fine on its own, whose JOINED value is over the
-        // 200-byte cap: the cap must apply to what is written, not to what was
-        // read.
-        let chunk = String(repeating: "a", count: 60)
-        let captured = try capturedRequestHeaders(environment: [
-            "SSH_CONNECTION": "\(chunk) \(chunk) \(chunk) \(chunk)",
-        ])
-        XCTAssertFalse(captured.contains("X-Lvx-Env-Ssh-Connection"))
-    }
-
-    func testShimKeepsPublishingItsOtherValuesWhenSSHConnectionIsMalformed() throws {
-        // Fail-open, per value: a broken connection variable costs its own
-        // header and nothing else.
-        let captured = try capturedRequestHeaders(environment: [
-            "SSH_CONNECTION": "nonsense",
-            "SSH_TTY": "/dev/pts/3",
-        ])
-        XCTAssertFalse(captured.contains("X-Lvx-Env-Ssh-Connection"))
-        XCTAssertTrue(captured.contains("X-Lvx-Env-Ssh-Tty: /dev/pts/3"))
     }
 
     func testShimKeepsTheEnvHeadersOutOfArgvAndInThePrivateHeaderFile() throws {
@@ -1770,15 +1722,14 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         )
     }
 
+    /// The kernel reports the daemon's exe with symlinks resolved, and a
+    /// dotfiles setup often links the home directory or `~/.claude`, so the
+    /// session sends its id from a plain home and from a symlinked one.
     func testTheDesktopSessionItselfSendsItsDesktopID() throws {
         XCTAssertEqual(try desktopHeaders(nested: false)?.desktopSessionID, desktopID)
-    }
-
-    /// The kernel reports the daemon's exe with symlinks resolved, and a
-    /// dotfiles setup often links the home directory or `~/.claude`.
-    func testTheDesktopSessionSendsItsIDWhenHomeIsASymlink() throws {
         XCTAssertEqual(
-            try desktopHeaders(nested: false, symlinkedHome: true)?.desktopSessionID, desktopID
+            try desktopHeaders(nested: false, symlinkedHome: true)?.desktopSessionID, desktopID,
+            "a symlinked home must not lose the id"
         )
     }
 
@@ -2130,21 +2081,22 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     /// SessionStart left a session started in the window unknown until its
     /// first prompt, and a backed-off SessionEnd left an ended one joinable.
     func testSessionStartAndSessionEndDialThroughAnArmedBackoff() throws {
-        for event in ["SessionStart", "SessionEnd"] {
+        let events = ["SessionStart", "SessionEnd"]
+        let runs = try concurrently(events) { event in
             let state = try makeBackoffState()
             defer { try? FileManager.default.removeItem(at: state.dir) }
             try writeStamp(freshEpochStamp(), at: state.stamp)
             let log = state.dir.appendingPathComponent("curl.log")
-            let run = try runShimWithStubCurl(
+            let result = try runShimWithStubCurl(
                 event: event, status: "200", body: ClaudeRemoteHTTPCodec.hookResponseBody,
                 extraEnvironment: state.environment.merging(["FAKE_CURL_LOG": log.path]) { _, new in new }
             )
-            XCTAssertEqual(run.exitCode, 0)
-            XCTAssertEqual(run.stderr, "")
-            XCTAssertTrue(
-                FileManager.default.fileExists(atPath: log.path),
-                "\(event) must dial through an armed backoff"
-            )
+            return (result: result, dialed: FileManager.default.fileExists(atPath: log.path))
+        }
+        for (event, run) in zip(events, runs) {
+            XCTAssertEqual(run.result.exitCode, 0)
+            XCTAssertEqual(run.result.stderr, "")
+            XCTAssertTrue(run.dialed, "\(event) must dial through an armed backoff")
         }
     }
 
@@ -2200,18 +2152,28 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         }
     }
 
-    func testArmingReplacesAPrePlantedSymlinkInsteadOfWritingThroughIt() throws {
+    func testArmingReplacesAPrePlantedSymlinkAndTightensALooseStampDirectory() throws {
+        // One arming run, over a stamp directory that pre-existed at 0777 and
+        // holds a symlink planted at the stamp path.
+        //
         // The stamp write must be tempfile + mv: rename(2) replaces a symlink
         // planted at the stamp path, where a direct `>` redirect would follow
         // it and clobber whatever the link points at. Same-user scope, but the
         // shim's own hygiene bar (mktemp, umask 077, 0600 header) demands it.
+        //
+        // `mkdir -p` leaves an existing directory's mode alone, so a stamp dir
+        // that pre-existed at 0777 (misconfig, prior tool) would let another
+        // local user replace the stamp or plant a symlink. Arming must chmod
+        // it to 0700.
         let state = try makeBackoffState()
         defer { try? FileManager.default.removeItem(at: state.dir) }
         let victim = state.dir.appendingPathComponent("victim")
         let victimContents = "precious user data\n"
         try victimContents.write(to: victim, atomically: true, encoding: .utf8)
+        let stampDirectory = state.stamp.deletingLastPathComponent()
         try FileManager.default.createDirectory(
-            at: state.stamp.deletingLastPathComponent(), withIntermediateDirectories: true
+            at: stampDirectory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o777]
         )
         try FileManager.default.createSymbolicLink(at: state.stamp, withDestinationURL: victim)
 
@@ -2233,35 +2195,10 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         let stampText = try String(contentsOf: state.stamp, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         XCTAssertTrue(stampText.allSatisfy(\.isNumber), "the stamp must be epoch seconds: \(stampText)")
-    }
-
-    func testArmingTightensAPreExistingLooseStampDirectory() throws {
-        // `mkdir -p` leaves an existing directory's mode alone, so a stamp dir
-        // that pre-existed at 0777 (misconfig, prior tool) would let another
-        // local user replace the stamp or plant a symlink. Arming must chmod
-        // it to 0700.
-        let state = try makeBackoffState()
-        defer { try? FileManager.default.removeItem(at: state.dir) }
-        let stampDirectory = state.stamp.deletingLastPathComponent()
-        try FileManager.default.createDirectory(
-            at: stampDirectory, withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o777]
-        )
-
-        let result = try runShimWithStubCurl(
-            event: "Stop", status: "", body: nil, curlExitCode: 7,
-            extraEnvironment: state.environment
-        )
-        XCTAssertEqual(result.exitCode, 0)
-        XCTAssertEqual(result.stderr, "")
-        let attributes = try FileManager.default.attributesOfItem(atPath: stampDirectory.path)
+        let directoryAttributes = try FileManager.default.attributesOfItem(atPath: stampDirectory.path)
         XCTAssertEqual(
-            (attributes[.posixPermissions] as? NSNumber)?.int16Value, 0o700,
+            (directoryAttributes[.posixPermissions] as? NSNumber)?.int16Value, 0o700,
             "arming must tighten a pre-existing loose stamp directory to 0700"
-        )
-        XCTAssertTrue(
-            FileManager.default.fileExists(atPath: state.stamp.path),
-            "the stamp must still be armed after the chmod"
         )
     }
 

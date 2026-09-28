@@ -155,15 +155,20 @@ final class ViewSnapshotTests: XCTestCase {
 
     /// Projects (#939), light and dark: the table, with a fork waiting for
     /// a choice, a project with no GitHub repository and the "No project"
-    /// entry (#972), then one project's sheet with its whole term list and
-    /// the "No project" sheet. Made-up projects and hosts: the artifacts are
-    /// public.
+    /// entry (#972), and Import… and Export… under it (#999); then one
+    /// project's sheet with its whole term list and the "No project" sheet.
+    /// Made-up projects and hosts: the artifacts are public.
     func testProjectsPane() async throws {
         for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             try await recordSettings(
                 pane: .projects, name: "settings-projects-\(theme)", setUp: false, appearance: appearance
             ) { viewModel in
                 viewModel.installQuickCaptureInbox(try self.projectsInbox(viewModel.settings))
+                // Export… shows only when the store holds terms (#999).
+                let store = LearnedTermStore(fileURL: nil)
+                store.importProjects(self.projectsLearnedTerms().projects) { _ in }
+                store.waitForPendingWrites()
+                viewModel.learnedTermStore = store
             }
             let (settings, viewModel) = makeViewModel()
             let inbox = try projectsInbox(settings)
@@ -183,6 +188,53 @@ final class ViewSnapshotTests: XCTestCase {
                 name: "projects-no-project-sheet-\(theme)",
                 width: 560, height: 480, growToFit: false, appearance: appearance)
         }
+    }
+
+    /// The polish prompt's sizes (#1007): Global terms with a count and
+    /// tokens, and the instructions under Advanced for both profiles, at the
+    /// ratio twenty measured Mistral requests give.
+    func testTextProcessingPromptSizes() async throws {
+        try await recordSettings(pane: .textProcessing, name: "settings-textProcessing-prompt-sizes", setUp: false) {
+            viewModel in
+            let settings = viewModel.settings
+            settings.polishSpeakerTerms = [
+                "Qwen", "Claude Code", "vLLM", "Ghostty", "SwiftPM", "herdr", "Voxtral", "MLX",
+                "Tailscale", "PostgreSQL", "Kubernetes", "OpenTelemetry",
+            ]
+            settings.agentPolishProfileEnabled = true
+            settings.polishingBackendMode = .mistralAPI
+            let ledger = UsageLedger(fileURL: nil)
+            for _ in 0..<20 {
+                ledger.record(UsageEntry(
+                    date: Date(), feature: .polish, backend: .mistral, model: "zai-glm-5-3",
+                    promptTokens: 1_949, promptCharacters: 9_100))
+            }
+            viewModel.installUsageLedger(ledger)
+        }
+    }
+
+    /// A History row opened: its details line ends with the prompt tokens
+    /// the polish request sent (#1007). Made-up words.
+    func testHistoryEntryDetails() async throws {
+        let (settings, viewModel) = makeViewModel()
+        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let dictation = DictationSessionRecord(
+            startedAt: Date().addingTimeInterval(-120), finishedAt: Date().addingTimeInterval(-110),
+            rawText: "the mac queue is stuck again, check the runner",
+            polishedText: "The Mac queue is stuck again; check the runner.",
+            polishingDurationSeconds: 0.84, provider: "mistral", model: "zai-glm-5-3",
+            outputMode: "overlay_buffer", targetAppBundleID: "com.mitchellh.ghostty", status: .completed,
+            commitSucceeded: true, polishProfile: PolishPromptProfile.agent.rawValue)
+        dictation.polishPromptTokens = 1_949
+        await store.save(dictation).value
+        viewModel.sessionStore = store
+        let model = DictationHistoryModel(store: { store })
+        await model.reload()
+        model.expandedEntryID = dictation.id
+        try record(
+            HistorySettingsPane(settings: settings, viewModel: viewModel, model: model),
+            name: "settings-history-entry-details",
+            width: Self.settingsSize.width, height: Self.settingsSize.height, growToFit: true)
     }
 
     private func projectsLearnedTerms() -> LearnedTerms {

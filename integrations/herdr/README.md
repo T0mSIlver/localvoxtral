@@ -33,7 +33,7 @@ and lands even if you click another window while you speak:
 - In **Overlay Buffer**, the app sends the text once, when it commits.
 - In **Live Auto-Paste**, it sends each finished phrase as you speak.
 - "Send it" presses Enter in that pane
-  ([Voice commands](../../docs/dictation.md#voice-commands)).
+  ([Press Return with "send it"](../../docs/dictation.md#press-return-with-send-it)).
 
 With polishing off, this works in a herdr running on this Mac. On a remote or
 federated herdr (below), it needs the context join, so polishing must be on;
@@ -46,7 +46,8 @@ even with polishing off, so the words don't fall back to keystrokes.
 **"Send that to" a session in another pane.** In Overlay Buffer, ending a
 dictation with "send that to" and a session's name sends it to that session
 and presses Enter there. A session in a local herdr pane receives it without
-its pane coming forward.
+its pane coming forward
+([Send a dictation to another session](../../docs/agents.md#send-a-dictation-to-another-session)).
 
 ## Set up on this Mac
 

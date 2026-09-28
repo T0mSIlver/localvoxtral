@@ -26,10 +26,6 @@ final class TerminalScreenContextTests: XCTestCase {
 
     // MARK: - Allowlist
 
-    func testGhosttyIsSupported() {
-        XCTAssertTrue(TerminalScreenAllowlist.isSupported("com.mitchellh.ghostty"))
-    }
-
     func testUnverifiedTerminalsAreNotSupportedForScreenReads() {
         // These are all terminal-like for INSERTION. Screen reading is a
         // separate privacy question and must not inherit that verdict —
@@ -50,25 +46,6 @@ final class TerminalScreenContextTests: XCTestCase {
                 "\(bundleID) must not be screen-readable"
             )
         }
-    }
-
-    // The regression that matters: VS Code / Cursor surfaces are AX-readable
-    // and hold the user's source, secrets, and unrelated documents. Reusing the
-    // broad terminal allowlist here would read them.
-    func testEditorsAreExcludedFromScreenReads() {
-        for bundleID in TerminalScreenAllowlist.explicitlyExcludedBundleIDs {
-            XCTAssertFalse(
-                TerminalScreenAllowlist.isSupported(bundleID),
-                "\(bundleID) must never be screen-readable"
-            )
-        }
-    }
-
-    func testAllowlistDoesNotPrefixMatchOrAcceptEmptyBundleIDs() {
-        XCTAssertFalse(TerminalScreenAllowlist.isSupported("com.mitchellh.ghostty.evil"))
-        XCTAssertFalse(TerminalScreenAllowlist.isSupported("com.mitchellh.ghost"))
-        XCTAssertFalse(TerminalScreenAllowlist.isSupported(""))
-        XCTAssertFalse(TerminalScreenAllowlist.isSupported(nil))
     }
 
     // MARK: - Sanitization
@@ -115,25 +92,29 @@ final class TerminalScreenContextTests: XCTestCase {
 
     // NBSP is grid padding too: terminals emit U+00A0 for non-wrapping pad
     // cells, and a trailing run of it is as term-free as trailing spaces.
-    func testCompactionTrimsTrailingNonBreakingSpaces() {
-        let raw = "❯ swift build\u{00A0}\u{00A0}\u{00A0}\n\u{00A0}\u{00A0}\n\u{00A0}\t \nBuild complete! \u{00A0}\t"
-        XCTAssertEqual(
-            TerminalScreenText.sanitizedScreenText(raw),
-            "❯ swift build\n\nBuild complete!"
-        )
-    }
-
-    // Wider Unicode space separators are grid padding too: a terminal may emit
-    // U+2000–U+200A (en/em/thin spaces) or U+3000 (ideographic space) for pad
-    // cells. Before the fix only space/tab/NBSP were trimmed, so a row padded
-    // with these carried the pad bytes AND a run of them read as a non-blank
-    // content line — neither trimmed nor collapsed.
-    func testCompactionTrimsTrailingWideUnicodeSpaces() {
-        let raw = "❯ swift build\u{2000}\u{2000}\u{2003}\n\u{2000}\u{2000}\n\u{3000}\t \nBuild complete!\u{2009}\u{3000}"
-        XCTAssertEqual(
-            TerminalScreenText.sanitizedScreenText(raw),
-            "❯ swift build\n\nBuild complete!"
-        )
+    // Wider Unicode space separators are grid padding as well: U+2000-U+200A
+    // (en/em/thin spaces) or U+3000 (ideographic space). Before the fix only
+    // space/tab/NBSP were trimmed, so a row padded with these carried the pad
+    // bytes AND a run of them read as a non-blank content line - neither
+    // trimmed nor collapsed.
+    func testCompactionTrimsTrailingNonBreakingAndWideUnicodeSpaces() {
+        let cases: [(name: String, raw: String)] = [
+            (
+                "NBSP",
+                "❯ swift build\u{00A0}\u{00A0}\u{00A0}\n\u{00A0}\u{00A0}\n\u{00A0}\t \nBuild complete! \u{00A0}\t"
+            ),
+            (
+                "wide Unicode spaces",
+                "❯ swift build\u{2000}\u{2000}\u{2003}\n\u{2000}\u{2000}\n\u{3000}\t \nBuild complete!\u{2009}\u{3000}"
+            ),
+        ]
+        for row in cases {
+            XCTAssertEqual(
+                TerminalScreenText.sanitizedScreenText(row.raw),
+                "❯ swift build\n\nBuild complete!",
+                row.name
+            )
+        }
     }
 
     // Claude Code's EMPTY input frame (separator, bare ❯, separator, and the
@@ -205,15 +186,18 @@ final class TerminalScreenContextTests: XCTestCase {
         )
     }
 
-    func testSanitizationCapsAtAbsoluteCap() {
-        let raw = String(repeating: "x", count: TerminalScreenText.screenCharacterCap + 500)
-        let sanitized = TerminalScreenText.sanitizedScreenText(raw)
-        XCTAssertEqual(sanitized?.count, TerminalScreenText.screenCharacterCap)
-    }
-
-    func testSanitizationKeepsTextAtOrBelowCapIntact() {
-        let raw = String(repeating: "y", count: TerminalScreenText.screenCharacterCap)
-        XCTAssertEqual(TerminalScreenText.sanitizedScreenText(raw)?.count, TerminalScreenText.screenCharacterCap)
+    func testSanitizationCapsAtAbsoluteCapAndKeepsTextAtOrBelowIt() {
+        let cap = TerminalScreenText.screenCharacterCap
+        XCTAssertEqual(
+            TerminalScreenText.sanitizedScreenText(String(repeating: "x", count: cap + 500))?.count,
+            cap,
+            "over the cap is cut to the cap"
+        )
+        XCTAssertEqual(
+            TerminalScreenText.sanitizedScreenText(String(repeating: "y", count: cap))?.count,
+            cap,
+            "exactly at the cap is intact"
+        )
     }
 
     func testEmptyOrWhitespaceOnlyScreenIsNotContext() {
@@ -248,13 +232,28 @@ final class TerminalScreenContextTests: XCTestCase {
 
     // MARK: - Gate
 
-    func testGateAcceptsOnlyWhenEveryConditionHolds() {
+    func testGateAcceptsLoopbackWhenEveryConditionHoldsAndLANOnlyUnderTrustedEndpointOptIn() {
         XCTAssertTrue(TerminalScreenContext.shouldAttemptRead(
             settingEnabled: true,
             endpointURL: loopback,
             bundleID: TerminalScreenAllowlist.ghosttyBundleID,
             isAccessibilityTrusted: true
-        ))
+        ), "every condition holds")
+        // A LAN endpoint is another machine: not local for this purpose.
+        let lan = URL(string: "http://192.168.1.183:8080/v1/chat/completions")!
+        XCTAssertFalse(TerminalScreenContext.shouldAttemptRead(
+            settingEnabled: true,
+            endpointURL: lan,
+            bundleID: TerminalScreenAllowlist.ghosttyBundleID,
+            isAccessibilityTrusted: true
+        ), "LAN endpoint without opt-in")
+        XCTAssertTrue(TerminalScreenContext.shouldAttemptRead(
+            settingEnabled: true,
+            endpointURL: lan,
+            bundleID: TerminalScreenAllowlist.ghosttyBundleID,
+            isAccessibilityTrusted: true,
+            trustedEndpointEnabled: true
+        ), "LAN endpoint under the trusted-endpoint opt-in")
     }
 
     func testGateRejectsDisabledSettingRemoteEndpointUnsupportedAppAndUntrusted() {
@@ -277,28 +276,6 @@ final class TerminalScreenContextTests: XCTestCase {
                 "gate must reject: \(name)"
             )
         }
-    }
-
-    // A LAN endpoint is another machine: not local for this purpose.
-    func testGateRejectsLANEndpoint() {
-        XCTAssertFalse(TerminalScreenContext.shouldAttemptRead(
-            settingEnabled: true,
-            endpointURL: URL(string: "http://192.168.1.183:8080/v1/chat/completions")!,
-            bundleID: TerminalScreenAllowlist.ghosttyBundleID,
-            isAccessibilityTrusted: true
-        ))
-    }
-
-    // The trusted-endpoint opt-in admits a non-loopback endpoint — and ONLY
-    // relaxes the endpoint condition: every other gate condition still holds.
-    func testGateAcceptsLANEndpointUnderTrustedEndpointOptIn() {
-        XCTAssertTrue(TerminalScreenContext.shouldAttemptRead(
-            settingEnabled: true,
-            endpointURL: URL(string: "http://192.168.1.183:8080/v1/chat/completions")!,
-            bundleID: TerminalScreenAllowlist.ghosttyBundleID,
-            isAccessibilityTrusted: true,
-            trustedEndpointEnabled: true
-        ))
     }
 
     func testTrustedEndpointOptInRelaxesOnlyTheEndpointCondition() {

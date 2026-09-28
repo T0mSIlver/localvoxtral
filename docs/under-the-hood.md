@@ -152,7 +152,7 @@ Mini Transcribe 2 (voxtral-mini-latest) with up to 100 terms.
 
 The terms come from:
 
-- your Names and terms;
+- your Global terms;
 - your replacement dictionary's spellings;
 - only with **Send context to non-local polishing servers** on, this
   dictation's context. That is the terms learned from polishing, the ones the

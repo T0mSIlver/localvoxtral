@@ -486,7 +486,7 @@ final class SettingsStore {
         }
     }
 
-    /// The user's names and terms, correct spelling only (`SpeakerTerms`).
+    /// The user's global terms, correct spelling only (`SpeakerTerms`).
     /// An ABSENT key means "never set", which is what lets the one-time import
     /// from the replacement dictionary tell a new install from an emptied list.
     var polishSpeakerTerms: [String] {
