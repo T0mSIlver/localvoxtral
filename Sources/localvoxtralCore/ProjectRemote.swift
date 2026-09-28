@@ -135,7 +135,9 @@ extension LearnedTerms {
         for term in checkout.terms {
             let match = term.term.caseFoldedForMatching
             if let existing = projects[target].terms.firstIndex(where: { $0.term.caseFoldedForMatching == match }) {
-                projects[target].terms[existing] = LearnedTerms.merged(projects[target].terms[existing], term)
+                projects[target].terms[existing] = LearnedTerms.merged(
+                    projects[target].terms[existing], term, pinWins: true
+                )
             } else {
                 projects[target].terms.append(term)
             }

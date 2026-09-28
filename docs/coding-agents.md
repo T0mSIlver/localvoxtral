@@ -446,8 +446,8 @@ may, and three dictations or a **Pin** make it yours. A name written like
 code (a type or function name, a file name, a path, a flag or an environment
 variable) is refused as not a term.
 
-**Show all** under the project's terms in **Settings → Projects** lists it
-as "Proposed by" the agent that ran the command. Claude Code, Codex and
+The project's terms in **Settings → Projects** list it as "Proposed by" the
+agent that ran the command. Claude Code, Codex and
 opencode are detected; Vibe passes `--agent vibe`.
 
 A proposal from the command does not use up the project's one ask. With
@@ -557,7 +557,8 @@ not offered
 ([One project per repository](dictation.md#one-project-per-repository)).
 
 A repository checked out both on this Mac and on a host is one project,
-drafted on this Mac
+drafted on this Mac. Its sheet lists its learned terms once, whichever
+checkout learned them
 ([One project per repository](dictation.md#one-project-per-repository)).
 
 ### Projects
@@ -569,9 +570,11 @@ and the drafts waiting on it. A warning replaces the repository for a fork
 you have not picked a repository for, and for a project with no GitHub
 repository.
 
-Click a project to see its repository and checkouts, its description, its
-learned terms, and its joined sessions, captures and dictations this week.
-**Open Inbox** goes to its drafts.
+Click a project to see its repository and checkouts, its description, every
+learned term with a pin and a forget button, and its joined sessions,
+captures and dictations this week. **Open Inbox** goes to its drafts.
+**No project**, last in the list, holds the terms learned outside any
+project.
 
 ### Each project's repository
 

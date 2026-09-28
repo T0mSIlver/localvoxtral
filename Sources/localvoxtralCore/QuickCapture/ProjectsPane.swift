@@ -51,8 +51,9 @@ package struct ProjectsPaneRow: Equatable, Sendable, Identifiable {
     package let filed: Int
     package let description: String?
     package let descriptionSource: DescriptionSource
-    /// The project's terms, strongest evidence first, each spelling once.
-    package let terms: [String]
+    /// The project's terms, strongest evidence first, each spelling once:
+    /// a pinned copy wins over the other checkouts' copies.
+    package let terms: [LearnedTerm]
     package let sessions: Sessions
     package let dictationsThisWeek: Int
 
@@ -64,6 +65,16 @@ package struct ProjectsPaneRow: Equatable, Sendable, Identifiable {
         if hasUnnamedHost { names.append("A remote host") }
         return names.joined(separator: " · ")
     }
+}
+
+/// The terms outside every row: the buckets no listed project holds, such
+/// as a worktree name from before #652, a remote label no host named, or
+/// the shared bucket. The last entry of the Projects table, "No project".
+package struct ProjectsPaneUnlisted: Equatable, Sendable {
+    /// The buckets, most recent first and the shared bucket last.
+    package let keys: [String]
+    package let terms: [LearnedTerm]
+    package let lastUsed: Date
 }
 
 package enum ProjectsPane {
@@ -142,12 +153,64 @@ package enum ProjectsPane {
         return .none
     }
 
-    static func terms(of members: [LearnedTermProject]) -> [String] {
+    static func terms(of members: [LearnedTermProject]) -> [LearnedTerm] {
         var seen = Set<String>()
         return members.flatMap(\.terms)
             .sorted(by: LearnedTerms.isStrongerEvidence)
-            .map(\.term)
-            .filter { seen.insert($0.caseFoldedForMatching).inserted }
+            .filter { seen.insert($0.term.caseFoldedForMatching).inserted }
+    }
+
+    /// The "No project" entry: every bucket that holds terms and that no
+    /// row's keys name, so each stored term shows under exactly one entry.
+    /// Nil when there is none.
+    package static func unlisted(learned: LearnedTerms, rows: [ProjectsPaneRow]) -> ProjectsPaneUnlisted? {
+        let listed = Set(rows.flatMap(\.keys))
+        let shared = LearnedTermProjectResolver.shared.key
+        let buckets = learned.projects
+            .filter { !listed.contains($0.key) && !$0.terms.isEmpty }
+            .sorted { lhs, rhs in
+                if (lhs.key == shared) != (rhs.key == shared) { return rhs.key == shared }
+                return lhs.lastSeen != rhs.lastSeen ? lhs.lastSeen > rhs.lastSeen : lhs.key < rhs.key
+            }
+        guard let latest = buckets.map(\.lastSeen).max() else { return nil }
+        return ProjectsPaneUnlisted(keys: buckets.map(\.key), terms: terms(of: buckets), lastUsed: latest)
+    }
+
+    /// More terms than this and a project's sheet leads its list with a
+    /// search field.
+    package static let searchAbove = 12
+
+    /// What a project's sheet lists: `matching` while the search field
+    /// shows, every term once a forget has dropped the list to the
+    /// threshold and hidden the field with the query still in it.
+    package static func shown(_ terms: [LearnedTerm], query: String) -> [LearnedTerm] {
+        terms.count > searchAbove ? matching(terms, query: query) : terms
+    }
+
+    /// The sheet's search: the terms whose spelling holds `query`, ignoring
+    /// case; every term for an empty query.
+    package static func matching(_ terms: [LearnedTerm], query: String) -> [LearnedTerm] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).caseFoldedForMatching
+        guard !needle.isEmpty else { return terms }
+        return terms.filter { $0.term.caseFoldedForMatching.contains(needle) }
+    }
+
+    /// The line under a term in the sheet. A term below the bar is still
+    /// being learned, or was proposed by the project's coding agent (#609),
+    /// so it says how far along it is instead.
+    package static func detail(for term: LearnedTerm) -> (text: String, lastApplied: Date?) {
+        guard term.isConfirmed(minimumDictations: LearnedTerms.confirmedDictations) else {
+            let progress = "heard in \(term.dictations) of \(LearnedTerms.confirmedDictations) dictations"
+            if let proposer = term.proposerDisplayName {
+                return ("Proposed by \(proposer): \(progress)", nil)
+            }
+            return ("Learning: \(progress)", nil)
+        }
+        switch term.appliedCount {
+        case 0: return ("Not applied yet", nil)
+        case 1: return ("Applied once,", term.lastApplied)
+        case let count: return ("Applied \(count) times, last", term.lastApplied)
+        }
     }
 
     /// The project a live session works in: a remote one's label key, a

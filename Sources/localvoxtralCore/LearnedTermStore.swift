@@ -108,7 +108,7 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         }
     }
 
-    /// Terms, then projects — what the Settings row states.
+    /// Terms, then the projects that hold them.
     package func summary() -> (terms: Int, projects: Int) {
         let terms = snapshot()
         return (terms.termCount, terms.projects.filter { !$0.terms.isEmpty }.count)
@@ -283,6 +283,29 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         Log.polishing.info("Learned terms: one term \(pinned ? "pinned" : "unpinned", privacy: .public)")
     }
 
+    /// The pin in a project's sheet: every one of the project's buckets
+    /// that holds the spelling, since the sheet shows it once.
+    package func setPinned(_ pinned: Bool, term: String, projectKeys: [String]) {
+        mutate { terms in
+            for key in projectKeys { terms.setPinned(pinned, term: term, projectKey: key) }
+        }
+        Log.polishing.info("Learned terms: one term \(pinned ? "pinned" : "unpinned", privacy: .public)")
+    }
+
+    /// Forget in a project's sheet: the spelling leaves every bucket of it.
+    package func forget(_ term: String, projectKeys: [String]) {
+        mutate { terms in
+            for key in projectKeys { terms.forget(term, projectKey: key) }
+        }
+        Log.polishing.info("Learned terms: one term forgotten")
+    }
+
+    /// A project's Forget All.
+    package func forgetTerms(projectKeys: [String]) {
+        mutate { terms in terms.forgetTerms(projectKeys: projectKeys) }
+        Log.polishing.info("Learned terms: \(projectKeys.count, privacy: .public) buckets forgotten")
+    }
+
     /// Folds an imported file's projects in (`LearnedTerms.merge`), ordered
     /// on the write queue like every write. `completion` runs on that queue.
     package func importProjects(
@@ -316,25 +339,6 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
             write(updated)
             onChange?()
         }
-    }
-
-    /// The Forget button. Drops the file as well as the memory: a user who
-    /// asks to forget should not find the terms back after a relaunch.
-    ///
-    /// Memory clears at once so the row reads zero under the click; the file is
-    /// removed on the queue, ordered behind any record already in flight, so a
-    /// dictation that was mid-fold cannot re-create the file afterwards.
-    package func forgetAll() {
-        state.withLock { state in state.terms = LearnedTerms() }
-        Log.polishing.info("Learned terms forgotten")
-        writeQueue.async { [self] in
-            state.withLock { state in state.terms = LearnedTerms() }
-            if let fileURL {
-                try? FileManager.default.removeItem(at: fileURL)
-            }
-            onChange?()
-        }
-        onChange?()
     }
 
     /// Blocks until the queued writes have landed. For tests and for nothing

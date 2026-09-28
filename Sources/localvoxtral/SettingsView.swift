@@ -288,7 +288,8 @@ struct SettingsView: View {
             case .textProcessing:
                 TextProcessingSettingsPane(
                     settings: settings,
-                    viewModel: viewModel
+                    viewModel: viewModel,
+                    openProjects: { navigator.selectedTab = .projects }
                 )
             case .integrationsContext:
                 IntegrationsContextSettingsPane(settings: settings, viewModel: viewModel)

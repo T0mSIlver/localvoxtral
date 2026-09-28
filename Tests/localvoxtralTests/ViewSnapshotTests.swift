@@ -153,46 +153,11 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
-    /// Advanced → Terms learned from polishing → Show: empty, which is where
-    /// a new machine imports (#523), and with the terms of a bucket outside
-    /// quick capture's projects, where Export… shows, agent proposals (#609)
-    /// included.
-    func testLearnedTermsSheet() throws {
-        let frozen = Date(timeIntervalSince1970: 1_790_000_000)
-        for filled in [false, true] {
-            let (_, viewModel) = makeViewModel()
-            let store = LearnedTermStore(fileURL: nil, now: { frozen })
-            if filled {
-                store.importProjects([
-                    LearnedTermProject(key: "remote:bold-bose-fac585", name: "bold-bose-fac585", terms: [
-                        LearnedTerm(
-                            term: "speechd", sources: ["repo"], dictations: 4,
-                            firstSeen: frozen, lastSeen: frozen),
-                        LearnedTerm(
-                            term: "Voxtral", sources: ["repo"], dictations: 2,
-                            firstSeen: frozen, lastSeen: frozen),
-                        // What a new project's agents proposed (#609).
-                        LearnedTerm(
-                            term: "inkwell", sources: [ProjectTermProposal.Agent.claude.source],
-                            dictations: 0, firstSeen: frozen, lastSeen: frozen),
-                        LearnedTerm(
-                            term: "GlyphAtlasCache", sources: [ProjectTermProposal.Agent.vibe.source],
-                            dictations: 1, firstSeen: frozen, lastSeen: frozen),
-                    ], lastSeen: frozen),
-                ]) { _ in }
-                store.waitForPendingWrites()
-            }
-            viewModel.learnedTermStore = store
-            try record(
-                LearnedTermsSheet(viewModel: viewModel, onDone: {}),
-                name: "learned-terms-\(filled ? "filled" : "empty")",
-                width: 520, height: 440, growToFit: false)
-        }
-    }
-
     /// Projects (#939), light and dark: the table, with a fork waiting for
-    /// a choice and a project with no GitHub repository, then one
-    /// project's sheet. Made-up projects and hosts: the artifacts are public.
+    /// a choice, a project with no GitHub repository and the "No project"
+    /// entry (#972), then one project's sheet with its whole term list and
+    /// the "No project" sheet. Made-up projects and hosts: the artifacts are
+    /// public.
     func testProjectsPane() async throws {
         for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             try await recordSettings(
@@ -212,13 +177,21 @@ final class ViewSnapshotTests: XCTestCase {
                 .background(Color(nsColor: .windowBackgroundColor)),
                 name: "projects-sheet-\(theme)",
                 width: 560, height: 760, growToFit: false, appearance: appearance)
+            try record(
+                UnlistedTermsSheet(viewModel: viewModel, inbox: inbox, onDone: {})
+                    .background(Color(nsColor: .windowBackgroundColor)),
+                name: "projects-no-project-sheet-\(theme)",
+                width: 560, height: 480, growToFit: false, appearance: appearance)
         }
     }
 
-    private func projectsInbox(_ settings: SettingsStore) throws -> QuickCaptureInboxViewModel {
+    private func projectsLearnedTerms() -> LearnedTerms {
         let now = Date()
-        func term(_ spelling: String, _ dictations: Int) -> LearnedTerm {
-            LearnedTerm(term: spelling, sources: ["repo"], dictations: dictations, firstSeen: now, lastSeen: now)
+        func term(_ spelling: String, _ dictations: Int, sources: [String] = ["repo"], pinned: Bool? = nil) -> LearnedTerm {
+            LearnedTerm(
+                term: spelling, sources: sources, dictations: dictations, firstSeen: now, lastSeen: now,
+                applied: dictations > 4 ? dictations - 2 : nil, lastApplied: dictations > 4 ? now.addingTimeInterval(-3_600) : nil,
+                pinned: pinned)
         }
         func project(
             _ key: String, _ name: String, ago hours: Double, terms: [LearnedTerm] = [],
@@ -234,11 +207,13 @@ final class ViewSnapshotTests: XCTestCase {
         let demoFacts = GitHubRepositoryFacts(
             description: "Turns talks into timestamped, citable notes for agents: an MCP server, a web app and a worker",
             topics: ["mcp"], parent: nil)
-        let learned = LearnedTerms(projects: [
+        return LearnedTerms(projects: [
             project(
                 "/work/demo", "demo", ago: 0.2,
-                terms: [term("demo", 9), term("job-status", 7), term("worker", 6), term("Vespa", 5), term("shelf", 4),
-                        term("youtu.be", 4), term("receipt", 3), term("ghcr.io", 3)],
+                terms: [term("demo", 9), term("job-status", 7), term("worker", 6), term("Vespa", 5, pinned: true),
+                        term("shelf", 4), term("youtu.be", 4), term("receipt", 3), term("ghcr.io", 3),
+                        term("citable", 3), term("MCP", 3), term("timestamped", 2), term("transcript-id", 2),
+                        term("fetch_video", 1), term("inkwell", 0, sources: [ProjectTermProposal.Agent.claude.source])],
                 repository: "example/demo", github: demoFacts),
             project("remote:demo", "demo", ago: 2, terms: [term("reindex", 3)], repository: "example/demo",
                     github: demoFacts, hosts: ["h1"]),
@@ -248,7 +223,19 @@ final class ViewSnapshotTests: XCTestCase {
                 "/work/mlx-audio-swift", "mlx-audio-swift", ago: 74, repository: "example/mlx-audio-swift",
                 github: GitHubRepositoryFacts(description: "Speech on Apple silicon", topics: [], parent: "upstream-org/mlx-audio-swift")),
             project("/work/scratch-notes", "scratch-notes", ago: 196),
+            // Outside every project: the "No project" entry.
+            project(LearnedTermProjectResolver.shared.key, LearnedTermProjectResolver.shared.name, ago: 30,
+                    terms: [term("Qwen", 6), term("Ghostty", 3)]),
+            // A remote label no host named.
+            LearnedTermProject(
+                key: "remote:bold-bose-fac585", name: "bold-bose-fac585", terms: [term("speechd", 2)],
+                lastSeen: now.addingTimeInterval(-90 * 3_600)),
         ])
+    }
+
+    private func projectsInbox(_ settings: SettingsStore) throws -> QuickCaptureInboxViewModel {
+        let now = Date()
+        let learned = projectsLearnedTerms()
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("projects-snapshot-\(UUID().uuidString)")
         let fileURL = directory.appendingPathComponent("quick-captures.json")
         func capture(_ key: String, _ state: QuickCaptureItem.State) -> QuickCaptureItem {

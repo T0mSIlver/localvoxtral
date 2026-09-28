@@ -390,8 +390,9 @@ there is not.
   file does not record as earned, taking the max of the counts, never the
   sum; a remembered term never outranks a live
   source (`.learned` is LAST in `PolishContextSource`, so a contested span
-  abstains); unpinned terms decay at 90 days; and Text processing →
-  Advanced → Terms learned from polishing → Forget drops the file (Show, or a project's Show all in Projects, forgets one). Verification candidates are never
+  abstains); unpinned terms decay at 90 days; and a forget in Settings →
+  Projects (one term, or a project's Forget All, #972) rewrites the file
+  without them, so nothing forgotten comes back after a relaunch. Verification candidates are never
   recorded — they are questions put to the model, not answers. A dictation
   whose project cannot be established teaches nothing at all, which is not
   the same as one with no project: the latter teaches the shared bucket,

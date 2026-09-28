@@ -270,7 +270,7 @@ final class ProjectRemoteTests: XCTestCase {
             dictationProjectKeys: []
         ).first
         XCTAssertEqual(row?.filing, .forkUnpicked(fork: "me/localvoxtral", upstream: "them/localvoxtral"))
-        XCTAssertEqual(row?.terms, ["Kern"])
+        XCTAssertEqual(row?.terms.map(\.term), ["Kern"])
     }
 
     // MARK: Captures

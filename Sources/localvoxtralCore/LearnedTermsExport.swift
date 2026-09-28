@@ -212,10 +212,18 @@ extension LearnedTerms {
 
     /// One spelling seen on two machines. The local spelling stays unless
     /// only the imported one was fixed by hand: a hand fix wins, as it does
-    /// in `recordCorrection`.
-    static func merged(_ local: LearnedTerm, _ imported: LearnedTerm) -> LearnedTerm {
-        let spelling = imported.isConfirmedByCorrection && !local.isConfirmedByCorrection
-            ? imported.term : local.term
+    /// in `recordCorrection`. Two checkouts of one repository folding
+    /// together (#971) pass `pinWins`: neither fixed, a pinned spelling is
+    /// the user's choice and wins too.
+    static func merged(_ local: LearnedTerm, _ imported: LearnedTerm, pinWins: Bool = false) -> LearnedTerm {
+        let spelling: String
+        if local.isConfirmedByCorrection != imported.isConfirmedByCorrection {
+            spelling = imported.isConfirmedByCorrection ? imported.term : local.term
+        } else if pinWins, local.isPinned != imported.isPinned {
+            spelling = imported.isPinned ? imported.term : local.term
+        } else {
+            spelling = local.term
+        }
         return LearnedTerm(
             term: spelling,
             sources: merging(local.sources, imported.sources),

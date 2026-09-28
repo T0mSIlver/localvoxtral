@@ -792,6 +792,19 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         removeEmptyProjects()
     }
 
+    /// Drops every term of these buckets: a project's Forget All in
+    /// Settings → Projects. A bucket kept for its proposal stamp or its
+    /// host's report stays, empty.
+    package mutating func forgetTerms(projectKeys: [String]) {
+        // A linked checkout's terms are its repository's (#971).
+        let keys = Set(projectKeys + projectKeys.compactMap { termRecord($0)?.key })
+        for index in projects.indices where keys.contains(projects[index].key) {
+            projects[index].terms = []
+        }
+        let linked = Set(projects.compactMap { $0.isLinkedCheckout ? $0.repositoryRecordKey : nil })
+        projects.removeAll { keys.contains($0.key) && !$0.isKeptWithoutTerms && !linked.contains($0.key) }
+    }
+
     /// The record `project`'s terms go to, made when missing: the
     /// checkout's own, or its repository's once it is linked (#971).
     private mutating func projectIndex(
