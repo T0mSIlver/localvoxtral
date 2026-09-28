@@ -1304,18 +1304,26 @@ final class DictationPipelineTests: XCTestCase {
         targetClaudeDesktop(pipeline, returns: { returns.append($0) })
 
         await startAndSpeak(pipeline)
+        // The send loop and the periodic commit sleep on this clock too: the
+        // stop's sleep is the one the phrase added.
+        let sessionSleeps = pipeline.clock.pendingDeadlines
+        let saidAt = pipeline.clock.now
         await sendDelta(pipeline, "run the tests, send it.")
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "armed by the trailing phrase")
         await pipeline.clock.waitForSleepers(3)
-        let sleepers = pipeline.clock.pendingSleepers
+        var stopSleeps = pipeline.clock.pendingDeadlines
+        for deadline in sessionSleeps {
+            if let index = stopSleeps.firstIndex(of: deadline) { stopSleeps.remove(at: index) }
+        }
+        let waits = stopSleeps.map { $0.timeIntervalSince(saidAt) }
+        XCTAssertEqual(waits, [1], "the stop's sleep")
+        let stopsAtOneSecond = waits == [1]
         pipeline.clock.advance(by: 1 - 0.01)
         XCTAssertTrue(pipeline.viewModel.isDictating, "one hundredth short, still dictating")
 
         pipeline.clock.advance(by: 0.01)
-        let endedAtOneSecond = pipeline.clock.pendingSleepers < sleepers
-        XCTAssertTrue(endedAtOneSecond, "the wait ended at 1 s")
         // A longer wait must still end, or the session outlives the test.
-        if !endedAtOneSecond { pipeline.clock.advance(by: 2) }
+        if !stopsAtOneSecond { pipeline.clock.advance(by: 2) }
         await armed.value
         XCTAssertFalse(pipeline.viewModel.isDictating)
         await finishStoppedSession(pipeline, finalText: "run the tests, send it.")
