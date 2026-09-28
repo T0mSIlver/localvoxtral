@@ -39,13 +39,20 @@ package struct AgentSkillNames: Codable, Equatable, Sendable {
         let fresh = hosts.values
             .filter { now.timeIntervalSince($0.reportedAt) < Double(Self.staleAfterDays) * 86_400 }
             .sorted { $0.reportedAt > $1.reportedAt }
-        var seen = Set<String>()
-        var result: [String] = []
-        for name in local + fresh.flatMap(\.names) where seen.insert(name.lowercased()).inserted {
-            result.append(name)
-            if result.count == Self.maxNames { break }
+        // Which names make the cap follows recency; which spelling of a name
+        // does not, or a host re-reporting would flip it in the prompt.
+        var spelling: [String: String] = [:]
+        var kept: [String] = []
+        for name in local + fresh.flatMap(\.names) {
+            let key = name.lowercased()
+            if let current = spelling[key] {
+                spelling[key] = min(current, name)
+            } else if kept.count < Self.maxNames {
+                spelling[key] = name
+                kept.append(key)
+            }
         }
-        return result.sorted { $0.lowercased() < $1.lowercased() }
+        return kept.compactMap { spelling[$0] }.sorted { $0.lowercased() < $1.lowercased() }
     }
 }
 
@@ -55,6 +62,7 @@ package final class AgentSkillStore: @unchecked Sendable {
     private struct State {
         var stored = AgentSkillNames()
         var local: [String] = []
+        var localReadAt: Date?
         /// The file exists but could not be read: never overwrite it.
         var readOnly = false
     }
@@ -85,6 +93,7 @@ package final class AgentSkillStore: @unchecked Sendable {
                 state.stored.hosts.merge(loaded.names.hosts) { reported, _ in reported }
                 state.readOnly = loaded.readOnly
                 state.local = local
+                state.localReadAt = now()
             }
             Log.polishing.info(
                 "Agent skills: \(local.count, privacy: .public) on this Mac, \(loaded.names.hosts.count, privacy: .public) hosts"
@@ -107,8 +116,22 @@ package final class AgentSkillStore: @unchecked Sendable {
         queue.sync {}
     }
 
-    /// Reads the Mac's skill folders again, off the caller's thread.
-    package func refreshLocal() {
+    /// The Mac's folders are read again at most this often.
+    package static let localRefreshInterval: TimeInterval = 600
+
+    /// Reads the Mac's skill folders again, off the caller's thread, when
+    /// the last read is older than `localRefreshInterval`: a skill installed
+    /// while the app runs reaches the prompts after that. Each polish calls
+    /// this, and the new list serves the ones after it.
+    package func refreshLocalIfStale() {
+        let moment = now()
+        let due = state.withLock { state -> Bool in
+            guard let read = state.localReadAt, moment.timeIntervalSince(read) >= Self.localRefreshInterval
+            else { return false }
+            state.localReadAt = moment
+            return true
+        }
+        guard due else { return }
         queue.async { [self] in
             let local = AgentSkillDirectories.names(home: home)
             state.withLock { $0.local = local }

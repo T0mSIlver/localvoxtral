@@ -201,6 +201,7 @@ extension DictationSessionController {
                 projectNames: polishProjectNames(),
                 skillNames: polishSkillNames()
             )
+            agentSkillStore?.refreshLocalIfStale()
 
             statusText = StatusStrings.polishing
             debugLog("LLM polishing started for \(workingText.count) chars")

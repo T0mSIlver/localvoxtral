@@ -48,6 +48,38 @@ final class AgentSkillStoreTests: XCTestCase {
         XCTAssertEqual(names.names(local: ["Ship", "unslop"], now: now), ["gh-stack", "Ship", "unslop"])
     }
 
+    /// The spelling of a name two hosts write differently must not follow
+    /// which one reported last: the prompt would change with it.
+    func testASpellingDoesNotDependOnWhichHostReportedLast() {
+        let now = Date(timeIntervalSince1970: 10_000_000)
+        func names(newer: String) -> [String] {
+            AgentSkillNames(hosts: [
+                "a": .init(names: ["Unslop"], reportedAt: now.addingTimeInterval(newer == "a" ? 0 : -60)),
+                "b": .init(names: ["unslop"], reportedAt: now.addingTimeInterval(newer == "b" ? 0 : -60)),
+            ]).names(local: [], now: now)
+        }
+        XCTAssertEqual(names(newer: "a"), ["Unslop"])
+        XCTAssertEqual(names(newer: "b"), ["Unslop"])
+    }
+
+    func testTheMacsFoldersAreReadAgainOnlyOnceTheLastReadIsOld() throws {
+        final class Clock: @unchecked Sendable { var now = Date(timeIntervalSince1970: 10_000_000) }
+        let clock = Clock()
+        let home = root.appendingPathComponent("home")
+        let store = AgentSkillStore(fileURL: nil, home: home, now: { clock.now })
+        store.waitForPendingWork()
+        try touch(".claude/skills/unslop/SKILL.md")
+
+        store.refreshLocalIfStale()
+        store.waitForPendingWork()
+        XCTAssertEqual(store.names(), [])
+
+        clock.now += AgentSkillStore.localRefreshInterval
+        store.refreshLocalIfStale()
+        store.waitForPendingWork()
+        XCTAssertEqual(store.names(), ["unslop"])
+    }
+
     func testAReportIsKeptOnDiskAndAnUnchangedOneIsNotRewrittenTheSameDay() throws {
         let file = root.appendingPathComponent("agent-skills.json")
         final class Clock: @unchecked Sendable { var now = Date(timeIntervalSince1970: 10_000_000) }
