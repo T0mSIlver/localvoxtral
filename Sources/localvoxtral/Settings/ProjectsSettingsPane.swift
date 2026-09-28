@@ -459,8 +459,6 @@ struct ProjectTermsGroup: View {
     @State private var query = ""
     @State private var isConfirmingForgetAll = false
 
-    /// More terms than this and a search field leads the list.
-    static let searchAbove = 12
     /// More rows than this and the list scrolls inside the group, so the
     /// Activity group below stays in reach.
     static let scrollAbove = 8
@@ -476,16 +474,14 @@ struct ProjectTermsGroup: View {
                         .foregroundStyle(.secondary)
                 }
             } else {
-                if terms.count > Self.searchAbove {
+                if terms.count > ProjectsPane.searchAbove {
                     SettingsGroupRow {
                         TextField("Search \(terms.count) terms", text: $query)
                             .textFieldStyle(.roundedBorder)
                             .accessibilityIdentifier("projects.terms.search")
                     }
                 }
-                // Only while the field shows: a forget that drops the list to
-                // the threshold hides the field, and with it the query.
-                let shown = terms.count > Self.searchAbove ? ProjectsPane.matching(terms, query: query) : terms
+                let shown = ProjectsPane.shown(terms, query: query)
                 if shown.isEmpty {
                     SettingsGroupRow {
                         Text("No term matches.")

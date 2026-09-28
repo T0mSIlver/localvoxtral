@@ -176,6 +176,17 @@ package enum ProjectsPane {
         return ProjectsPaneUnlisted(keys: buckets.map(\.key), terms: terms(of: buckets), lastUsed: latest)
     }
 
+    /// More terms than this and a project's sheet leads its list with a
+    /// search field.
+    package static let searchAbove = 12
+
+    /// What a project's sheet lists: `matching` while the search field
+    /// shows, every term once a forget has dropped the list to the
+    /// threshold and hidden the field with the query still in it.
+    package static func shown(_ terms: [LearnedTerm], query: String) -> [LearnedTerm] {
+        terms.count > searchAbove ? matching(terms, query: query) : terms
+    }
+
     /// The sheet's search: the terms whose spelling holds `query`, ignoring
     /// case; every term for an empty query.
     package static func matching(_ terms: [LearnedTerm], query: String) -> [LearnedTerm] {

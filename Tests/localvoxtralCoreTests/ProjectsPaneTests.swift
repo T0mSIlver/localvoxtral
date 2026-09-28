@@ -242,6 +242,15 @@ final class ProjectsPaneTests: XCTestCase {
         XCTAssertEqual(ProjectsPane.matching(terms, query: "zzz"), [])
     }
 
+    /// Review of #973: forgetting the 13th term hides the search field;
+    /// the query left in it must stop filtering.
+    func testAQueryStopsFilteringOnceTheFieldHides() {
+        let thirteen = (0...ProjectsPane.searchAbove).map { term("Term\($0)") }
+        XCTAssertEqual(ProjectsPane.shown(thirteen, query: "Term12").map(\.term), ["Term12"])
+        let twelve = Array(thirteen.dropLast())
+        XCTAssertEqual(ProjectsPane.shown(twelve, query: "Term12").count, ProjectsPane.searchAbove)
+    }
+
     func testLastUsedReadsLikeTheTable() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
