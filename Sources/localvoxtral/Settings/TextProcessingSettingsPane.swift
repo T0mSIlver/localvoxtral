@@ -75,7 +75,7 @@ struct TextProcessingSettingsPane: View {
                 }
 
                 SettingsFieldRow(
-                    title: "Names and terms",
+                    title: "Global terms",
                     layout: .stacked
                 ) {
                     SpeakerTermsField(terms: $settings.polishSpeakerTerms)

@@ -51,7 +51,7 @@ final class DictationInsightsModel {
             .flatMap(DictationInsightsPeriod.init(rawValue:)) ?? .month
     }
 
-    /// The speaker's terms are the ones Names and terms lists and the learned
+    /// The speaker's terms are the ones Global terms lists and the learned
     /// terms confirmed everywhere.
     convenience init(viewModel: DictationViewModel) {
         self.init(

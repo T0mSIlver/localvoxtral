@@ -9,8 +9,8 @@ import XCTest
 ///
 ///   stored WAV -> live speechd ASR (once) -> polish through the production
 ///   stop-commit path, twice:
-///     day 0   Names and terms only, no learned terms
-///     today   Names and terms plus every confirmed learned term
+///     day 0   Global terms only, no learned terms
+///     today   Global terms plus every confirmed learned term
 ///
 /// Each output is scored against the text the dictation actually inserted:
 /// word accuracy, and recall of the terms that text spells. The transcript
@@ -97,7 +97,7 @@ extension AgentDictationE2EEvalTests {
 
         print(DictationReplaySupport.renderScoreboard(
             header: "\(entries.count - failures) of \(entries.count) dictations, \(seconds) s of audio, "
-                + "\(set.learnedTerms.count) learned terms, \(set.speakerTerms.count) Names and terms, "
+                + "\(set.learnedTerms.count) learned terms, \(set.speakerTerms.count) Global terms, "
                 + "asr \(enablement.asrModel), polish \(polishConfiguration.model)",
             arms: [
                 ("transcript", transcriptScore),

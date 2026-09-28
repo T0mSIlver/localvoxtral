@@ -457,7 +457,7 @@ this Mac from the history store. With history off, the pane is empty.
   target app.
 
 **Your terms recognized correctly** takes your
-[Names and terms](#add-your-names-and-terms) and the learned terms that
+[Global terms](#add-your-global-terms) and the learned terms that
 ended up in a dictation. It counts how many the transcript already spelled
 exactly, before polishing or a replacement fixed them.
 
@@ -470,21 +470,22 @@ that reached the inserted text, so a term that both the recognizer and
 polishing got wrong is counted nowhere.
 
 Every polish receives the spellings you add to
-[Names and terms](#add-your-names-and-terms), and the app fixes their casing
+[Global terms](#add-your-global-terms), and the app fixes their casing
 and spacing without the model.
 
 ## Teach it your terms
 
-The app gets the spelling of your names and terms from five sources: the
+The app gets the spelling of your terms from five sources: the
 list you keep, suggestions from your history, fixes polishing made, fixes
 you made, and your coding agent.
 
-### Add your names and terms
+### Add your global terms
 
 **Settings → Text Processing → About you** holds a few lines on your work in
-your own words. It also holds **Names and terms**, a list of the names and
-terms you say often, spelled the way they should appear ("Qwen", "Claude
-Code", "vLLM").
+your own words. It also holds **Global terms**, the names and terms you say
+often in every project, spelled the way they should appear ("Qwen", "Claude
+Code", "vLLM"). Terms that belong to one project are in **Settings →
+Projects**, under that project.
 
 The app sends both to the polishing model with every dictation, whichever
 endpoint you chose. You never list how a name gets misheard; the polisher
@@ -692,7 +693,7 @@ to update the file and keeps your version alongside as a backup file.
 **The replacement dictionary is legacy.** It applies fixed rewrites, which
 helps in Live Auto-Paste without polishing. The polisher no longer sees it,
 and the app imported its spellings into your
-[Names and terms](#add-your-names-and-terms) once.
+[Global terms](#add-your-global-terms) once.
 
 **Extra terminal apps** live in **Settings → Terminals**, not in a config
 file. If you had a legacy terminal apps file, the app reads it once at
@@ -728,7 +729,7 @@ History; the panes sit under the sidebar's Settings header.
   [stop after silence](#stop-after-silence). **Advanced** holds
   [Live Auto-Paste](#live-auto-paste) and its own "send it" switch, the menu
   bar mode and the [Copy last dictation](#recover-a-dictation) shortcut.
-- **Text Processing**: [About you](#add-your-names-and-terms),
+- **Text Processing**: [About you](#add-your-global-terms),
   [Suggest terms](#get-term-suggestions), the LLM Polishing switch, the
   agent prompt profile and spoken clipboard paste. **Advanced** holds
   [learned terms](#terms-learned-from-polishing),

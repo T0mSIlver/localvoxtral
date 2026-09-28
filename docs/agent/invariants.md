@@ -381,7 +381,7 @@ there is not.
   under its own header — with no endpoint check and no re-check of the
   setting that first produced it. Owner ruling, 2026-09-20: a name the
   speaker keeps saying is their vocabulary, exactly like a name typed into
-  Names and terms, which has always been sent to whatever endpoint is
+  Global terms, which has always been sent to whatever endpoint is
   configured. What the app owes in exchange is stated here rather than
   enforced by a gate: each term keeps the sources that proposed it, so a
   later setting can drop what one source taught; nothing below the
