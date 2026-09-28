@@ -98,6 +98,7 @@ final class ProjectTermProposerTests: XCTestCase {
         _ runner: FakeRunner,
         store: FakeStore? = nil,
         files: [String] = ["README.md", "src/PageComposer.swift"],
+        origin: ProjectRemote? = nil,
         usage: UsageLedger? = nil
     ) -> (ProjectTermProposer, FakeStore) {
         let store = store ?? FakeStore(now: clock.now)
@@ -106,6 +107,7 @@ final class ProjectTermProposerTests: XCTestCase {
             runner: runner,
             now: clock.now,
             trackedFiles: { _ in files },
+            origin: { _ in origin },
             usageRecorder: usage
         )
         return (proposer, store)
@@ -140,6 +142,22 @@ final class ProjectTermProposerTests: XCTestCase {
         XCTAssertEqual(memory.projects.map(\.key), [repo])
         XCTAssertEqual(memory.unconfirmedProposals(projectKey: repo), ["inkwell"])
         XCTAssertFalse(memory.needsProposal(projectKey: repo, now: clock.now()))
+    }
+
+    /// A new clone of an ignored repository has no record to say so; its
+    /// `origin` does, and its agent is never asked (#1006).
+    func testANewCloneOfAnIgnoredRepositoryAsksNoAgent() async throws {
+        let repo = try checkout("quillmark")
+        let runner = FakeRunner(.terms(["inkwell"]))
+        let quill = try XCTUnwrap(ProjectRemote("github.com/me/quillmark"))
+        let store = FakeStore(now: clock.now)
+        store.memory.withLock { $0.ignoreProject(key: quill.key, name: "quillmark", keys: [], now: clock.now()) }
+        let (proposer, _) = proposer(runner, store: store, origin: quill)
+
+        await commit(proposer, join(repo + "/src"))
+
+        XCTAssertEqual(runner.count, 0)
+        XCTAssertTrue(store.snapshot().projects.isEmpty)
     }
 
     func testASecondDictationDoesNotRunAgain() async throws {

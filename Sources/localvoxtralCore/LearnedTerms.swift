@@ -320,6 +320,13 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
 
     package var version: Int = LearnedTerms.currentVersion
     package var projects: [LearnedTermProject] = []
+    /// The repositories the user ignored (#1006). Kept in its own file by
+    /// `LearnedTermStore`, never in this one's: see `IgnoredProjects`.
+    package var ignored = IgnoredProjects()
+
+    private enum CodingKeys: String, CodingKey {
+        case version, projects
+    }
 
     package init(version: Int = LearnedTerms.currentVersion, projects: [LearnedTermProject] = []) {
         self.version = version
@@ -542,6 +549,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     }
 
     package func needsProposal(projectKey: String, now: Date, revision: Int = 1) -> Bool {
+        guard !isIgnored(projectKey: projectKey) else { return false }
         guard let project = termRecord(projectKey) else { return true }
         if let answered = project.answeredRevision, answered >= revision { return false }
         guard let attempted = project.proposalAttemptedAt else { return true }
@@ -741,6 +749,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         excluding: [String] = [],
         now: Date
     ) -> [String] {
+        guard !isIgnored(projectKey: project.key) else { return [] }
         let index = projectIndex(for: project, now: now)
         var known = Set(projects[index].terms.map(\.term.caseFoldedForMatching))
         known.formUnion(excluding.map(\.caseFoldedForMatching))

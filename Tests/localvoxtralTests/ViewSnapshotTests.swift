@@ -155,8 +155,9 @@ final class ViewSnapshotTests: XCTestCase {
 
     /// Projects (#939), light and dark: the table, with a fork waiting for
     /// a choice, a project with no GitHub repository and the "No project"
-    /// entry (#972), then one project's sheet with its whole term list and
-    /// the "No project" sheet. Made-up projects and hosts: the artifacts are
+    /// entry (#972), the collapsed Ignored group (#1006), then that group
+    /// open, one project's sheet with its whole term list and the "No
+    /// project" sheet. Made-up projects and hosts: the artifacts are
     /// public.
     func testProjectsPane() async throws {
         for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
@@ -164,7 +165,14 @@ final class ViewSnapshotTests: XCTestCase {
                 pane: .projects, name: "settings-projects-\(theme)", setUp: false, appearance: appearance
             ) { viewModel in
                 viewModel.installQuickCaptureInbox(try self.projectsInbox(viewModel.settings))
+                viewModel.learnedTermStore = self.ignoringStore()
             }
+            try record(
+                IgnoredProjectsGroup(store: ignoringStore(), revision: 0, expanded: true)
+                    .padding(20)
+                    .background(Color(nsColor: .windowBackgroundColor)),
+                name: "projects-ignored-expanded-\(theme)",
+                width: 600, height: 200, growToFit: false, appearance: appearance)
             let (settings, viewModel) = makeViewModel()
             let inbox = try projectsInbox(settings)
             try record(
@@ -183,6 +191,15 @@ final class ViewSnapshotTests: XCTestCase {
                 name: "projects-no-project-sheet-\(theme)",
                 width: 560, height: 480, growToFit: false, appearance: appearance)
         }
+    }
+
+    /// Two made-up repositories the user ignored (#1006).
+    private func ignoringStore() -> LearnedTermStore {
+        let store = LearnedTermStore(fileURL: nil)
+        store.ignoreProject(key: "repo:github.com/example/side-project", name: "side-project", keys: [])
+        store.ignoreProject(key: "/work/diary", name: "diary", keys: [])
+        store.waitForPendingWrites()
+        return store
     }
 
     private func projectsLearnedTerms() -> LearnedTerms {

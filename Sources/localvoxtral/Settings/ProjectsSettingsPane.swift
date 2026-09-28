@@ -97,6 +97,9 @@ struct ProjectsSettingsPane: View {
                     }
                 }
             }
+            if let store = viewModel.learnedTermStore {
+                IgnoredProjectsGroup(store: store, revision: viewModel.learnedTermRevision)
+            }
         }
         .sheet(item: $openProject) { open in
             switch open {
@@ -195,6 +198,7 @@ struct ProjectDetailSheet: View {
     @State private var repositoryDraft = ""
     @State private var isEditingDescription = false
     @State private var descriptionDraft = ""
+    @State private var removal: Removal?
     private var row: ProjectsPaneRow? {
         _ = viewModel.learnedTermRevision
         // Any of its keys: the leading checkout changes when the Mac's
@@ -222,6 +226,12 @@ struct ProjectDetailSheet: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             HStack {
+                if let row {
+                    Button("Forget Project…") { removal = .forget(row) }
+                        .accessibilityIdentifier("projects.forget")
+                    Button("Ignore Project…") { removal = .ignore(row) }
+                        .accessibilityIdentifier("projects.ignore")
+                }
                 Spacer()
                 Button("Done", action: onDone)
                     .keyboardShortcut(.defaultAction)
@@ -230,6 +240,78 @@ struct ProjectDetailSheet: View {
         .padding(20)
         .frame(width: 560)
         .frame(minHeight: 420, idealHeight: 640)
+        .confirmationDialog(
+            removal?.title ?? "", isPresented: isConfirmingRemoval, titleVisibility: .visible, presenting: removal
+        ) { removal in
+            switch removal {
+            case .forget(let row):
+                Button("Forget Project", role: .destructive) {
+                    viewModel.learnedTermStore?.forgetProject(keys: row.keys)
+                    onDone()
+                }
+                exportButton(row)
+            case .ignore(let row):
+                Button("Ignore Project", role: .destructive) {
+                    viewModel.learnedTermStore?.ignoreProject(
+                        key: Self.ignoreKey(row), name: row.name, keys: row.keys)
+                    onDone()
+                }
+                exportButton(row)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { removal in
+            Text(removal.message)
+        }
+    }
+
+    /// Forget Project and Ignore Project (#1006), each confirmed: the
+    /// project's learned terms are lost.
+    enum Removal {
+        case forget(ProjectsPaneRow)
+        case ignore(ProjectsPaneRow)
+
+        var title: String {
+            switch self {
+            case .forget(let row): "Forget \(row.name)?"
+            case .ignore(let row): "Ignore \(row.name)?"
+            }
+        }
+
+        var message: String {
+            switch self {
+            case .forget(let row):
+                "\(Self.terms(row)) It comes back the next time you dictate there."
+            case .ignore(let row):
+                "\(Self.terms(row)) localvoxtral stops learning there and its coding agent is not asked for terms. Dictation there works as before."
+            }
+        }
+
+        private static func terms(_ row: ProjectsPaneRow) -> String {
+            switch row.terms.count {
+            case 0: "Its records are deleted."
+            case 1: "Its records and its learned term are deleted."
+            default: "Its records and its \(row.terms.count) learned terms are deleted."
+            }
+        }
+    }
+
+    private var isConfirmingRemoval: Binding<Bool> {
+        Binding(get: { removal != nil }, set: { if !$0 { removal = nil } })
+    }
+
+    @ViewBuilder
+    private func exportButton(_ row: ProjectsPaneRow) -> some View {
+        if !row.terms.isEmpty {
+            Button("Export Terms…") {
+                LearnedTermsTransfer.exportTerms(from: viewModel.learnedTermStore) { _ in }
+            }
+        }
+    }
+
+    /// The ignore entry's key: the repository's record when the project has
+    /// a remote, so every checkout of it is ignored; else its checkout's.
+    static func ignoreKey(_ row: ProjectsPaneRow) -> String {
+        row.keys.first { $0.hasPrefix(ProjectRemote.keyPrefix) } ?? row.key
     }
 
     // MARK: Repository
@@ -562,5 +644,56 @@ struct ProjectTermsGroup: View {
         let parts = ProjectsPane.detail(for: term)
         guard let lastApplied = parts.lastApplied else { return Text(parts.text) }
         return Text("\(parts.text) \(lastApplied, format: .relative(presentation: .named))")
+    }
+}
+
+/// The repositories the user ignored (#1006), collapsed at the bottom of
+/// Projects, each with Un-ignore. Shown once there is one, or while
+/// `ignored-projects.json` could not be read.
+struct IgnoredProjectsGroup: View {
+    let store: LearnedTermStore
+    /// Read so the group redraws when the store changes.
+    let revision: Int
+    @State private var isExpanded: Bool
+
+    init(store: LearnedTermStore, revision: Int, expanded: Bool = false) {
+        self.store = store
+        self.revision = revision
+        _isExpanded = State(initialValue: expanded)
+    }
+
+    var body: some View {
+        let ignored = store.snapshot().ignored.projects.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        if let problem = store.ignoredListProblem {
+            SettingsGroup(title: "Ignored") {
+                StoredFileProblemRow(problem: problem, fileName: LearnedTermStore.ignoredFileName) {
+                    _ = try await store.moveIgnoredListAsideAndStartOver()
+                }
+            }
+        } else if !ignored.isEmpty {
+            SettingsGroup(
+                title: "Ignored",
+                headerAction: (title: isExpanded ? "Hide" : "Show", action: { isExpanded.toggle() })
+            ) {
+                if isExpanded {
+                    ForEach(ignored, id: \.key) { project in
+                        SettingsGroupRow {
+                            HStack(spacing: 10) {
+                                Text(project.name)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Button("Un-ignore") { store.unignoreProject(key: project.key) }
+                                    .accessibilityIdentifier("projects.unignore")
+                            }
+                        }
+                    }
+                } else {
+                    SettingsGroupRow {
+                        Text(ignored.count == 1 ? "1 project" : "\(ignored.count) projects")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .accessibilityIdentifier("projects.ignored")
+        }
     }
 }
