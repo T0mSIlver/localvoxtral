@@ -70,6 +70,20 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
     /// the user moved it. Nil for the catch-all.
     package var projectKey: String?
     package var projectName: String?
+    /// The project the router guessed under its bar (#938), while the
+    /// capture waits unplaced. Nothing is drafted for it until the user
+    /// moves the capture there.
+    package var suggestion: Suggestion?
+
+    package struct Suggestion: Codable, Equatable, Sendable {
+        package let projectKey: String
+        package let projectName: String
+
+        package init(projectKey: String, projectName: String) {
+            self.projectKey = projectKey
+            self.projectName = projectName
+        }
+    }
     /// `owner/name` for `gh issue create --repo`. Resolved from a local
     /// checkout's remote; typed by the user otherwise.
     package var repository: String?
@@ -164,7 +178,8 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
         items.removeAll { $0.id == id }
     }
 
-    /// The router's answer. A project gets its name; the catch-all waits.
+    /// The router's answer. A project gets its name; the catch-all waits,
+    /// with the router's guess when it made one.
     package mutating func applyRoute(_ route: QuickCaptureRoute, to id: UUID, projects: [QuickCaptureProject]) {
         update(id) { item in
             item.route = route
@@ -175,6 +190,9 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
             } else {
                 item.projectKey = nil
                 item.projectName = nil
+                item.suggestion = route.suggestion.flatMap { key in
+                    projects.first { $0.key == key }.map { QuickCaptureItem.Suggestion(projectKey: key, projectName: $0.name) }
+                }
                 item.state = .ready
                 item.note = "Not routed to a project. Move it to one."
             }
@@ -279,6 +297,7 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
         update(id) { item in
             item.projectKey = project?.key
             item.projectName = project?.name
+            item.suggestion = nil
             item.repository = repository
             item.relation = .none
             item.relatedIssue = nil

@@ -141,6 +141,13 @@ private struct InboxCaptureRow: View {
 
     private var actions: some View {
         HStack(spacing: 8) {
+            // The router's guess under its bar (#938); nothing drafts
+            // until this click or a move.
+            if let suggestion = item.suggestion, item.projectKey == nil {
+                Button("Move to \(suggestion.projectName)") { _ = model.acceptSuggestion(item.id) }
+                    .disabled(!isEditable)
+                    .accessibilityIdentifier("inbox.row.suggestion")
+            }
             if item.isIssue {
                 Button("File") { _ = model.file(item.id) }
                     .disabled(!item.canFile)

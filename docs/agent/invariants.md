@@ -2478,7 +2478,8 @@ there is not.
   the overlay closes as a cancelled one does, and the words go to
   `QuickCaptureInboxModel`, which writes them to its 0600 file before
   routing. The router sends a low or tied answer to the catch-all, never a
-  guessed project. Jev and the chat model both need 0.9: on the replay
+  guessed project: the guess is kept as the route's `suggestion`, and
+  nothing drafts until the user accepts it (#938). Jev and the chat model both need 0.9: on the replay
   (#741, #744) every right project came at 0.95 or more, and nearly every
   wrong one under 0.9. Drafting has two stages (#918). The first is one
   request to the polishing model with the context the app gathers

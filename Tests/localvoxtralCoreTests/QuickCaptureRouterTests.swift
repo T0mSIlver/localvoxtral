@@ -39,20 +39,24 @@ final class QuickCaptureRouterTests: XCTestCase {
 
     // MARK: Decision
 
+    /// A project under a bar is only a suggestion on a catch-all route
+    /// (#938); the catch-all's own pick suggests nothing.
     func testOnlyAConfidentClearWinnerIsRoutedToAProject() {
         let options = QuickCaptureRouting.options(for: projects)
-        let cases: [(String, [String: Double], QuickCaptureRoute.Destination, QuickCaptureRoute.Reason)] = [
-            ("clear winner", ["localvoxtral": 0.95, "website": 0.03, "inbox": 0.02], .project("/w/localvoxtral"), .confident),
-            ("at both bars", ["website": 0.9, "localvoxtral": 0.1], .project("remote:website"), .confident),
-            ("low top", ["localvoxtral": 0.85, "website": 0.1, "inbox": 0.05], .catchAll, .lowConfidence),
-            ("near tie", ["localvoxtral": 0.95, "website": 0.9], .catchAll, .nearTie),
-            ("catch-all chosen", ["inbox": 0.9, "localvoxtral": 0.1], .catchAll, .classifierChoseCatchAll),
-            ("unknown ids ignored", ["other": 0.99, "website": 0.01], .catchAll, .lowConfidence),
+        let cases: [(String, [String: Double], QuickCaptureRoute.Destination, QuickCaptureRoute.Reason, String?)] = [
+            ("clear winner", ["localvoxtral": 0.95, "website": 0.03, "inbox": 0.02], .project("/w/localvoxtral"), .confident, nil),
+            ("at both bars", ["website": 0.9, "localvoxtral": 0.1], .project("remote:website"), .confident, nil),
+            ("low top", ["localvoxtral": 0.85, "website": 0.1, "inbox": 0.05], .catchAll, .lowConfidence, "/w/localvoxtral"),
+            ("near tie", ["localvoxtral": 0.95, "website": 0.9], .catchAll, .nearTie, "/w/localvoxtral"),
+            ("catch-all chosen", ["inbox": 0.9, "localvoxtral": 0.1], .catchAll, .classifierChoseCatchAll, nil),
+            ("unknown ids ignored", ["other": 0.99, "website": 0.01], .catchAll, .lowConfidence, "remote:website"),
+            ("nothing scored", ["other": 0.99], .catchAll, .lowConfidence, nil),
         ]
-        for (name, probabilities, destination, reason) in cases {
+        for (name, probabilities, destination, reason, suggestion) in cases {
             let route = QuickCaptureRouting.decide(probabilities: probabilities, options: options, classifier: .jev)
             XCTAssertEqual(route.destination, destination, name)
             XCTAssertEqual(route.reason, reason, name)
+            XCTAssertEqual(route.suggestion, suggestion, name)
             XCTAssertEqual(route.classifier, .jev, name)
         }
     }

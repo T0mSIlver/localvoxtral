@@ -19,7 +19,9 @@ package enum QuickCaptureChatRouting {
         Read the note and the project descriptions, then pick the one project \
         the note is about. Pick "\(QuickCaptureRouting.catchAllID)" when it fits \
         none of them, when two fit equally, or when you would be guessing. \
-        Reply with JSON only: {"project": "<id>", "confidence": <0 to 1>}.
+        Reply with JSON only: {"project": "<id>", "confidence": <0 to 1>}. \
+        Confidence: 0.95 when the note names the project or can only be about it; \
+        0.5 or less when you are guessing.
         """
 
     package static func userMessage(capture: String, options: [QuickCaptureOption]) -> String {

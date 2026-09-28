@@ -481,7 +481,9 @@ A capture then goes through four steps.
 
 1. **Route.** A classifier picks one of your projects (see
    [Which projects a capture can go to](#which-projects-a-capture-can-go-to)).
-   When it is unsure, or two projects tie, the capture stays unplaced.
+   When it is unsure, or two projects tie, the capture stays unplaced with
+   a **Move to** button for its best guess; nothing is drafted until you
+   click it or move the capture yourself.
 2. **First draft.** Your polishing model sorts the capture as an **Issue**, a
    **Question**, a **Task** or a **Note** and writes a draft within
    seconds (see [How the draft is written](#how-the-draft-is-written)). A
