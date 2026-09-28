@@ -72,6 +72,11 @@ package struct UsageEntry: Codable, Equatable, Sendable {
     /// Every prompt token, cached ones included. For an agent run, the sum of
     /// its uncached input, cache writes and cache reads over all its turns.
     package var promptTokens: Int?
+    /// The characters of the messages sent, a count only: with
+    /// `promptTokens` it measures the backend's tokens per character
+    /// (`PolishPromptTokenRatio`). Nil before it was recorded, and for
+    /// anything but a chat request.
+    package var promptCharacters: Int?
     package var cachedPromptTokens: Int?
     package var completionTokens: Int?
     /// The estimate at the prices in force when the request was made, so a
@@ -94,6 +99,7 @@ package struct UsageEntry: Codable, Equatable, Sendable {
         model: String,
         audioSeconds: Double? = nil,
         promptTokens: Int? = nil,
+        promptCharacters: Int? = nil,
         cachedPromptTokens: Int? = nil,
         completionTokens: Int? = nil,
         costEUR: Double? = nil,
@@ -106,6 +112,7 @@ package struct UsageEntry: Codable, Equatable, Sendable {
         self.model = model
         self.audioSeconds = audioSeconds
         self.promptTokens = promptTokens
+        self.promptCharacters = promptCharacters
         self.cachedPromptTokens = cachedPromptTokens
         self.completionTokens = completionTokens
         self.costEUR = costEUR
@@ -162,7 +169,7 @@ package struct UsageEntry: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case date, feature, backend, kind, model, audioSeconds, promptTokens,
-            cachedPromptTokens, completionTokens, costEUR, agentCostUSD, costUSD
+            promptCharacters, cachedPromptTokens, completionTokens, costEUR, agentCostUSD, costUSD
     }
 
     package init(from decoder: any Decoder) throws {
@@ -177,6 +184,7 @@ package struct UsageEntry: Codable, Equatable, Sendable {
         model = try container.decode(String.self, forKey: .model)
         audioSeconds = try container.decodeIfPresent(Double.self, forKey: .audioSeconds)
         promptTokens = try container.decodeIfPresent(Int.self, forKey: .promptTokens)
+        promptCharacters = try container.decodeIfPresent(Int.self, forKey: .promptCharacters)
         cachedPromptTokens = try container.decodeIfPresent(Int.self, forKey: .cachedPromptTokens)
         completionTokens = try container.decodeIfPresent(Int.self, forKey: .completionTokens)
         costEUR = try container.decodeIfPresent(Double.self, forKey: .costEUR)
@@ -193,6 +201,7 @@ package struct UsageEntry: Codable, Equatable, Sendable {
         try container.encode(model, forKey: .model)
         try container.encodeIfPresent(audioSeconds, forKey: .audioSeconds)
         try container.encodeIfPresent(promptTokens, forKey: .promptTokens)
+        try container.encodeIfPresent(promptCharacters, forKey: .promptCharacters)
         try container.encodeIfPresent(cachedPromptTokens, forKey: .cachedPromptTokens)
         try container.encodeIfPresent(completionTokens, forKey: .completionTokens)
         try container.encodeIfPresent(costEUR, forKey: .costEUR)
@@ -212,12 +221,14 @@ extension UsageEntry {
         feature: Feature,
         backend: Backend,
         requestedModel: String,
-        usage: LLMTokenUsage?
+        usage: LLMTokenUsage?,
+        promptCharacters: Int? = nil
     ) -> Self {
         let requested = requestedModel.trimmed
         var entry = UsageEntry(
             date: date, feature: feature, backend: backend, model: usage?.model ?? requested)
         guard let usage else { return entry }
+        entry.promptCharacters = promptCharacters
         entry.promptTokens = usage.promptTokens
         entry.cachedPromptTokens = usage.cachedPromptTokens
         entry.completionTokens = usage.completionTokens

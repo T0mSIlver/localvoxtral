@@ -88,7 +88,7 @@ final class ProjectsPaneTests: XCTestCase {
         let hosts = [(id: "h2", name: "builder"), (id: "h1", name: "devbox")]
         let byName = Dictionary(uniqueKeysWithValues: rows(learned, hosts: hosts).map { ($0.name, $0) })
         XCTAssertEqual(byName.count, 2, "the Mac's and the hosts' quill are one row")
-        XCTAssertEqual(byName["quill"]?.keys, ["/w/quill", "remote:quill"])
+        XCTAssertEqual(byName["quill"]?.keys, ["/w/quill", "remote:quill", "repo:github.com/me/quill"])
         XCTAssertEqual(byName["quill"]?.checkouts(), "Mac · builder · devbox")
         XCTAssertEqual(byName["quill"]?.checkouts(macName: "This Mac"), "This Mac · builder · devbox")
         // Reported before hosts were recorded, or by a host since removed.

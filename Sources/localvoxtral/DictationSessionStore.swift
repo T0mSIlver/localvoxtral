@@ -27,6 +27,7 @@ struct DictationHistoryEntry: Identifiable, Equatable, Sendable {
     var quickCaptureDestination: String? = nil
     /// `EditSignalOutcome`'s raw value, nil when nothing was watched.
     var editOutcome: String? = nil
+    var polishPromptTokens: Int? = nil
 
     /// What the dictation ended up as, the transcript when nothing changed it.
     var finalText: String { polishedText ?? rawText }
@@ -56,7 +57,8 @@ struct DictationHistoryEntry: Identifiable, Equatable, Sendable {
             commitSucceeded: commitSucceeded, polishProfile: polishProfile,
             polishContextSummary: polishContextSummary, projectKey: projectKey,
             projectName: projectName, joinedAgent: joinedAgent,
-            quickCaptureDestination: quickCaptureDestination, editOutcome: editOutcome)
+            quickCaptureDestination: quickCaptureDestination, editOutcome: editOutcome,
+            polishPromptTokens: polishPromptTokens)
     }
 
     /// What "Copy last dictation" copies, nil when there is no text.
@@ -87,12 +89,13 @@ extension DictationHistoryEntry {
             projectName: record.projectName,
             joinedAgent: record.joinedAgent,
             quickCaptureDestination: record.quickCaptureDestination,
-            editOutcome: record.editOutcome
+            editOutcome: record.editOutcome,
+            polishPromptTokens: record.polishPromptTokens
         )
     }
 
     fileprivate func makeRecord() -> DictationSessionRecord {
-        DictationSessionRecord(
+        let record = DictationSessionRecord(
             id: id,
             startedAt: startedAt,
             finishedAt: finishedAt,
@@ -113,6 +116,8 @@ extension DictationHistoryEntry {
             quickCaptureDestination: quickCaptureDestination,
             editOutcome: editOutcome
         )
+        record.polishPromptTokens = polishPromptTokens
+        return record
     }
 }
 

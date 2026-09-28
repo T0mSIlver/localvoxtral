@@ -12,7 +12,7 @@ package protocol AgentCLIDataSource: Sendable {
     func dictations(matching text: String, since: Date?, limit: Int) async -> [AgentCLIDictation]
     /// The last dictation, inserted or not, whether or not History holds it.
     func lastDictation() async -> AgentCLIDictation?
-    /// Settings' Names and terms.
+    /// Settings' Global terms.
     func userTerms() async -> [String]
     /// Term suggestions the user refused; a proposal never repeats them.
     func refusedTerms() async -> [String]
@@ -144,9 +144,17 @@ package struct AgentCLIService: Sendable {
         }
         let memory = await source.learnedTerms()
         var cache: [String: AgentCLIProject] = [:]
+        // A linked checkout's terms are its repository's (#971): the
+        // repository is listed once, and a filter naming any of its
+        // checkouts finds it.
         let projects = memory.projects
+            .filter { !$0.isLinkedCheckout }
             .filter { project in
-                filter?.matches(AgentCLIProject(key: project.key, name: project.name), cache: &cache) ?? true
+                guard let filter else { return true }
+                let names = [project] + memory.projects.filter {
+                    project.isRepositoryRecord && $0.isLinkedCheckout && $0.repositoryRecordKey == project.key
+                }
+                return names.contains { filter.matches(AgentCLIProject(key: $0.key, name: $0.name), cache: &cache) }
             }
             .sorted { lhs, rhs in
                 let lhsShared = lhs.key == LearnedTermProjectResolver.shared.key
@@ -211,9 +219,7 @@ package struct AgentCLIService: Sendable {
 
         let userList = await source.userTerms() + source.refusedTerms()
         let userKeys = Set(userList.map(\.caseFoldedForMatching))
-        var known = Set(
-            memory.projects.first { $0.key == project.key }?.terms.map(\.term.caseFoldedForMatching) ?? []
-        )
+        var known = Set(memory.termRecord(project.key)?.terms.map(\.term.caseFoldedForMatching) ?? [])
         var accepted: [String] = []
         var skipped: [AgentCLIProposal.Skipped] = []
         for candidate in raw {

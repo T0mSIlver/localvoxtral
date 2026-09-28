@@ -203,7 +203,7 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
         let asRepository = snapshot.remoteProject == label
         // The host's origin names the repository only beside its name.
         let repository = asRepository
-            ? snapshot.remoteEnvironment?.repository.flatMap { QuickCaptureInbox.isRepository($0) ? $0 : nil }
+            ? snapshot.remoteEnvironment?.repository.flatMap { ProjectRemote(header: $0) == nil ? nil : $0 }
             : nil
         // A cwd label stamps only a project a dictation already added. Until
         // then this hook records nothing, so it must not take the interval:

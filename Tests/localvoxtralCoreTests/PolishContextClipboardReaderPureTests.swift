@@ -27,10 +27,18 @@ final class PolishContextClipboardReaderPureTests: XCTestCase {
         XCTAssertEqual(PolishContextClipboardReader.fenceSafe("---"), "- - -")
         XCTAssertEqual(PolishContextClipboardReader.fenceSafe("-----"), "- - - - -")
         // An indented dash run is still neutralized (it would forge a fence
-        // once trimmed), but its indentation survives — see
-        // `testFenceSafePreservesIndentation`. Trailing padding does not: the
-        // escaped line is rebuilt from the trimmed run.
+        // once trimmed), but its indentation survives. Trailing padding does
+        // not: the escaped line is rebuilt from the trimmed run.
         XCTAssertEqual(PolishContextClipboardReader.fenceSafe("  ---  "), "  - - -")
+        // Indentation is real signal in a copied snippet - the selector
+        // right-trims only, and escaping must not undo that by yanking a
+        // divider to column zero.
+        XCTAssertEqual(PolishContextClipboardReader.fenceSafe("    ---"), "    - - -")
+        XCTAssertEqual(PolishContextClipboardReader.fenceSafe("\t---"), "\t- - -")
+        XCTAssertEqual(
+            PolishContextClipboardReader.fenceSafe("code\n  ---\nmore"),
+            "code\n  - - -\nmore"
+        )
     }
 
     /// `--force` and `--- foo` cannot close a fence and must survive untouched:
@@ -47,17 +55,6 @@ final class PolishContextClipboardReaderPureTests: XCTestCase {
     func testFenceSafePreservesLineCountAndOtherContent() {
         let text = "alpha\n---\nbeta"
         XCTAssertEqual(PolishContextClipboardReader.fenceSafe(text), "alpha\n- - -\nbeta")
-    }
-
-    /// Indentation is real signal in a copied snippet — the selector right-trims
-    /// only, and escaping must not undo that by yanking a divider to column zero.
-    func testFenceSafePreservesIndentation() {
-        XCTAssertEqual(PolishContextClipboardReader.fenceSafe("    ---"), "    - - -")
-        XCTAssertEqual(PolishContextClipboardReader.fenceSafe("\t---"), "\t- - -")
-        XCTAssertEqual(
-            PolishContextClipboardReader.fenceSafe("code\n  ---\nmore"),
-            "code\n  - - -\nmore"
-        )
     }
 
     /// Escaping is the only step that GROWS the excerpt, so it is the only one
@@ -88,40 +85,24 @@ final class PolishContextClipboardReaderPureTests: XCTestCase {
         XCTAssertLessThanOrEqual(body.count, 60)
     }
 
-    func testFenceSafeWithoutACapIsUnchangedBehavior() {
-        XCTAssertEqual(PolishContextClipboardReader.fenceSafe("a\n---\nb"), "a\n- - -\nb")
-    }
-
     // MARK: - Loopback-endpoint privacy gate
 
-    func testLoopbackEndpointsAreLocal() {
-        let loopback = [
-            "http://127.0.0.1:8472/v1/chat/completions",  // managed polishd
-            "http://localhost:8080/v1/chat/completions",
-            "https://LOCALHOST/v1/chat/completions",      // case-insensitive
-            "http://[::1]:8080/v1/chat/completions",      // IPv6 loopback literal
+    func testLoopbackEndpointsAreLocalAndEverythingElseIsNot() {
+        let cases: [(url: String, isLoopback: Bool)] = [
+            ("http://127.0.0.1:8472/v1/chat/completions", true),  // managed polishd
+            ("http://localhost:8080/v1/chat/completions", true),
+            ("https://LOCALHOST/v1/chat/completions", true),      // case-insensitive
+            ("http://[::1]:8080/v1/chat/completions", true),      // IPv6 loopback literal
+            ("https://example.com/v1/chat/completions", false),       // cloud provider
+            ("http://192.168.1.10:8080/v1/chat/completions", false),  // LAN IP: off-Mac
+            ("https://api.openai.com/v1/chat/completions", false),
+            ("http://127.0.0.1.evil.com/v1", false),                  // loopback-prefixed host
         ]
-        for urlString in loopback {
-            let url = URL(string: urlString)!
-            XCTAssertTrue(
-                PolishContextClipboardReader.isLoopbackEndpoint(url),
-                "should be loopback: \(urlString)"
-            )
-        }
-    }
-
-    func testNonLoopbackEndpointsAreNotLocal() {
-        let remote = [
-            "https://example.com/v1/chat/completions",       // cloud provider
-            "http://192.168.1.10:8080/v1/chat/completions",  // LAN IP: off-Mac
-            "https://api.openai.com/v1/chat/completions",
-            "http://127.0.0.1.evil.com/v1",                  // loopback-prefixed host
-        ]
-        for urlString in remote {
-            let url = URL(string: urlString)!
-            XCTAssertFalse(
-                PolishContextClipboardReader.isLoopbackEndpoint(url),
-                "should NOT be loopback: \(urlString)"
+        for row in cases {
+            XCTAssertEqual(
+                PolishContextClipboardReader.isLoopbackEndpoint(URL(string: row.url)!),
+                row.isLoopback,
+                "isLoopbackEndpoint(\(row.url))"
             )
         }
     }
@@ -173,14 +154,26 @@ final class PolishContextClipboardReaderPureTests: XCTestCase {
     }
 
     /// Excerpt content that ALSO appears in the pre-polish working text is the
-    /// user's own dictation, never a leak.
+    /// user's own dictation, never a leak. Case-folding applies to the
+    /// pre-polish text too: content the user DICTATED that the model
+    /// legitimately re-cases (and that also sits on the clipboard) is never a
+    /// leak - the folded original contains it.
     func testExcerptContentAlreadyInOriginalIsNotALeak() {
         XCTAssertNil(
             PolishContextClipboardReader.detectClipboardLeak(
                 polished: "The quarterly report shows revenue increased.",
                 original: "The quarterly report shows revenue increased",
                 excerpt: "The quarterly report shows revenue increased by twelve percent"
-            )
+            ),
+            "same case"
+        )
+        XCTAssertNil(
+            PolishContextClipboardReader.detectClipboardLeak(
+                polished: "The Quarterly Report Shows Revenue Increased.",
+                original: "the quarterly report shows revenue increased",
+                excerpt: "the quarterly report shows revenue increased by twelve percent"
+            ),
+            "model re-cased the dictated content"
         )
     }
 
@@ -196,41 +189,26 @@ final class PolishContextClipboardReaderPureTests: XCTestCase {
         )
     }
 
-    /// Re-casing cannot hide a leak: an echoed clipboard prose line the model
-    /// returns in a different case (title-case heading -> sentence case) is
-    /// still detected — the scan case-folds all three texts consistently.
-    func testRecasedEchoStillDetected() {
+    /// Re-casing and reflowed whitespace cannot hide a leak: an echoed
+    /// clipboard prose line the model returns in a different case is still
+    /// detected (the scan case-folds all three texts consistently), and the
+    /// excerpt's newlines and the output's spaces normalize to the same form.
+    func testRecasedOrWhitespaceReflowedEchoStillDetected() {
         XCTAssertNotNil(
             PolishContextClipboardReader.detectClipboardLeak(
                 polished: "quarterly results: revenue increased by twelve percent",
                 original: "add a note about the meeting",
                 excerpt: "QUARTERLY RESULTS: Revenue Increased By Twelve Percent"
-            )
+            ),
+            "re-cased"
         )
-    }
-
-    /// Case-folding applies to the pre-polish text too: content the user
-    /// DICTATED that the model legitimately re-cases (and that also sits on
-    /// the clipboard) is never a leak — the folded original contains it.
-    func testRecasedOriginalContentIsNotALeak() {
-        XCTAssertNil(
-            PolishContextClipboardReader.detectClipboardLeak(
-                polished: "The Quarterly Report Shows Revenue Increased.",
-                original: "the quarterly report shows revenue increased",
-                excerpt: "the quarterly report shows revenue increased by twelve percent"
-            )
-        )
-    }
-
-    /// Reflowed whitespace cannot hide a leak: the excerpt's newlines and the
-    /// output's spaces normalize to the same form.
-    func testWhitespaceReflowStillDetected() {
         XCTAssertNotNil(
             PolishContextClipboardReader.detectClipboardLeak(
                 polished: "summary: please review the attached deployment checklist before Friday",
                 original: "write a summary",
                 excerpt: "please review the attached\ndeployment checklist\nbefore Friday"
-            )
+            ),
+            "whitespace reflow"
         )
     }
 
@@ -244,20 +222,19 @@ final class PolishContextClipboardReaderPureTests: XCTestCase {
                 polished: "Fix UserSessionManager.swift",
                 original: "fix the user session manager",
                 excerpt: "UserSessionManager.swift"
-            )
+            ),
+            "short entity"
         )
-    }
-
-    /// Intrinsic entity exemption is length-independent: a very long dotted
-    /// filename inserted from grounding never trips the guard.
-    func testLongCodeEntityGroundingIsNotALeak() {
+        // Intrinsic entity exemption is length-independent: a very long
+        // dotted filename inserted from grounding never trips the guard.
         let entity = "VeryLongExplicitlyGroundedIdentifierName.swift"
         XCTAssertNil(
             PolishContextClipboardReader.detectClipboardLeak(
                 polished: "open \(entity) and fix the import",
                 original: "open very long explicitly grounded identifier name.swift and fix the import",
                 excerpt: entity
-            )
+            ),
+            "long entity"
         )
     }
 

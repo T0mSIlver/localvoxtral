@@ -7,7 +7,8 @@
 # outside it, a submodule, a bare repository's worktree, and names outside the
 # label charset), runs each shim from inside them with a stub curl that keeps
 # the header file it was handed, and checks the headers' values, or that there
-# are none. The repository is origin's on github.com, a fork's included.
+# are none. The repository is origin's: owner/name on github.com, a fork's
+# included, host/path elsewhere.
 #
 # Needs git and python3 (the Vibe shim's compactor), no network:
 #   ./scripts/ci/test-remote-shim-project.sh
@@ -49,6 +50,9 @@ new_repo "$TMP_DIR/work/lib"
 git -C "$TMP_DIR/work/lib" remote add origin https://gitlab.com/me/lib.git
 git -C "$TMP_DIR/work/repo" -c protocol.file.allow=always \
   submodule add -q "$TMP_DIR/work/lib" vendor/lib 2>/dev/null
+
+new_repo "$TMP_DIR/work/gl"
+git -C "$TMP_DIR/work/gl" remote add origin git@gitlab.com:me/group/gl.git
 
 new_repo "$TMP_DIR/seed"
 git clone -q --bare "$TMP_DIR/seed" "$TMP_DIR/work/api.git"
@@ -141,6 +145,8 @@ for agent in claude vibe; do
   expect "$agent" "$TMP_DIR/elsewhere/repo-fix/Sources" repo me/repo
   # A submodule is its own repository, here with an origin off GitHub.
   expect "$agent" "$TMP_DIR/work/repo/vendor/lib" lib
+  # An origin on another host is sent as host/path (#971).
+  expect "$agent" "$TMP_DIR/work/gl" gl gitlab.com/me/group/gl
   # The bare repository's origin is the seed's path: no GitHub repository.
   expect "$agent" "$TMP_DIR/work/api-feature" api.git
   # No repository, or a name outside the label charset: no header, and an

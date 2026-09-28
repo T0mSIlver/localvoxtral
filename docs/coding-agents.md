@@ -28,6 +28,12 @@ In a terminal, live dictation changes in three ways:
   instead of typing into the void, and an overlay commit copies the text to
   the clipboard instead.
 
+## Jump to the agent that needs you
+
+The needs-you cue, Tab to a waiting agent, and the voice commands that name,
+reach and send to sessions are in
+[Work with several agents](agents.md).
+
 ## Polishing
 
 When an Overlay Buffer dictation commits, optional LLM polishing cleans it up
@@ -473,17 +479,18 @@ drafts it for one of your projects. Your words never reach the focused app.
 They are saved in History, then shown on the **Inbox** page of the
 localvoxtral window.
 
-To capture, press Tab during a dictation until the overlay shows **Inbox**
+To capture, press Tab once during a dictation: the overlay shows **Inbox**
 ([Where the words go](dictation.md#where-the-words-go)). You can also set the
 optional **Quick capture to Inbox** shortcut in **Settings → Dictation**.
 
 A capture then goes through five steps.
 
 1. **Polish.** Your polishing model corrects the words once, with your
-   polish prompt and Names and terms. The project names and confirmed
-   learned terms of every project a capture can go to are matched against
-   your words, and the ones that match go with the request. It gets no
-   screen, clipboard or session context. The later steps read the polished words;
+   polish prompt and [Global terms](dictation.md#add-your-global-terms).
+   The project names and confirmed learned terms of every project a
+   capture can go to are matched against your words, and the ones that
+   match go with the request. It gets no screen, clipboard or session
+   context. The later steps read the polished words;
    History keeps what you said beside them. With polishing off, or when the
    request fails, the capture goes on with the words as heard.
 2. **Route.** A classifier picks one of your projects (see
@@ -525,7 +532,8 @@ it had before.
 
 ### Review a draft by voice
 
-With **Tell me when an agent needs you** on, a finished draft (for an issue,
+With [Tell me when an agent needs you](agents.md#when-an-agent-needs-you)
+on, a finished draft (for an issue,
 once it is checked against the code) lights the
 menu bar mark and the popover says "Draft ready: Inbox for localvoxtral".
 There is no banner and no sound, and the cue waits for your next break: the
@@ -563,13 +571,15 @@ Per-worktree projects that an older plugin left in your learned terms are
 not offered
 ([One project per repository](dictation.md#one-project-per-repository)).
 
-A repository checked out both on this Mac and on a host is one project
-here, drafted on this Mac. Its sheet lists its learned terms once, whichever
-checkout learned them.
+A repository checked out both on this Mac and on a host is one project,
+drafted on this Mac. Its sheet lists its learned terms once, whichever
+checkout learned them
+([One project per repository](dictation.md#one-project-per-repository)).
 
 ### Projects
 
-**Settings → Projects** lists every project a capture can go to: where
+**Settings → Projects** lists every project a capture can go to, under its
+repository's name, or `owner/repository` when two share a name: where
 **File** sends its issues, where it is checked out, when you last used it,
 and the drafts waiting on it. A warning replaces the repository for a fork
 you have not picked a repository for, and for a project with no GitHub
@@ -579,13 +589,15 @@ Click a project to see its repository and checkouts, its description, every
 learned term with a pin and a forget button, and its joined sessions,
 captures and dictations this week. **Open Inbox** goes to its drafts.
 **No project**, last in the list, holds the terms learned outside any
-project.
+project. **Import…** and **Export…**, under the list, move every project's
+terms to another Mac.
 
 ### Each project's repository
 
 A project's repository is the GitHub repository its `origin` remote points
 at. The app reads it from a checkout on this Mac; a host sends it from
-remote plugin 1.23.0 or Vibe hooks 1.8.0. A project whose `origin` is not on
+remote plugin 1.23.0 or Vibe hooks 1.8.0 (an `origin` off GitHub needs
+1.26.0 or 1.11.0 to join its Mac checkout). A project whose `origin` is not on
 GitHub, or that has none, asks for `owner/repository` on its first capture
 and keeps your answer. **Set…** or **Change…** in the project's
 **Repository** group edits that answer; an `origin` on GitHub is changed in

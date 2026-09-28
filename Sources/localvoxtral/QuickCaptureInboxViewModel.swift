@@ -96,6 +96,8 @@ final class QuickCaptureInboxViewModel {
         _ = await store.loadedSnapshot()
         await linker.refresh(force: force).value
         _ = await store.loadedSnapshot()
+        // A checkout linked just now joins its repository's project (#971).
+        model.adoptProjects()
         projectsRevision += 1
     }
 
@@ -110,6 +112,8 @@ final class QuickCaptureInboxViewModel {
         guard let store else { return }
         store.setFilesUpstream(upstream, repository: repository)
         _ = await store.loadedSnapshot()
+        // A checkout linked just now joins its repository's project (#971).
+        model.adoptProjects()
         projectsRevision += 1
     }
 

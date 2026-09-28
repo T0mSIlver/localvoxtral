@@ -370,7 +370,9 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
                 guard isCurrentConnectionLocked(s.base, generation) else { return }
                 s.finalCommitCompletionGate = .idle
             }
-            Log.realtime.notice("mistral realtime error: \(message, privacy: .public)")
+            Log.realtime.notice(
+                "mistral realtime error: \(Self.publicErrorLogDescription(from: json), privacy: .public) \(message, privacy: .private)"
+            )
             emit(.error(message), from: generation)
 
         case "transcription.language", "transcription.segment":
@@ -460,16 +462,7 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
     static func errorMessage(from json: [String: Any]) -> String {
         let errorObject = json["error"] as? [String: Any]
 
-        var message = ""
-        if let errorObject {
-            if let text = errorObject["message"] as? String {
-                message = text.trimmed
-            } else if let nested = errorObject["message"] as? [String: Any],
-                let detail = nested["detail"] as? String
-            {
-                message = detail.trimmed
-            }
-        }
+        var message = serverErrorText(in: errorObject)
         if message.isEmpty {
             message = "Mistral realtime error."
         }
@@ -483,6 +476,23 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
         }
         guard !annotations.isEmpty else { return message }
         return "\(message) [\(annotations.joined(separator: ", "))]"
+    }
+
+    /// An error frame without the server's message, which can quote what it
+    /// was sent: its code and type public, the message only as a length (#936).
+    static func publicErrorLogDescription(from json: [String: Any]) -> String {
+        let errorObject = json["error"] as? [String: Any]
+        let code = scalarString(errorObject?["code"]) ?? "none"
+        let type = scalarString(errorObject?["type"]) ?? "none"
+        return "code=\(code) type=\(type) message=\(serverErrorText(in: errorObject).count) characters"
+    }
+
+    private static func serverErrorText(in errorObject: [String: Any]?) -> String {
+        if let text = errorObject?["message"] as? String { return text.trimmed }
+        if let nested = errorObject?["message"] as? [String: Any], let detail = nested["detail"] as? String {
+            return detail.trimmed
+        }
+        return ""
     }
 
     private static func scalarString(_ value: Any?) -> String? {

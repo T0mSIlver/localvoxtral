@@ -7,16 +7,17 @@ import Foundation
 /// agent wrote (#891); its README's first paragraphs; GitHub's topics; its
 /// own terms.
 ///
-/// The projects are the learned terms' (`LearnedTerms.listedProjects`), the
-/// same ones the learned-terms sheet shows, except that a checkout on the
-/// Mac and one on a host of the same repository are one option here.
+/// The projects are the learned terms' (`LearnedTerms.listedProjects`): one
+/// per repository, named after it (#971), whichever checkouts it has on the
+/// Mac and on hosts.
 /// Nothing here comes from the screen or the clipboard.
 package struct QuickCaptureProject: Equatable, Sendable {
     /// `LearnedTermProject.key`: a main checkout's path, or `remote:<label>`.
     /// For a repository checked out in several places, the Mac's checkout
     /// when its folder is there, since it drafts without waiting for a host.
     package let key: String
-    /// Every key joined under `repository`, `key` first.
+    /// Every checkout's key, `key` first, then the repository record's
+    /// (`repo:<remote>`) when the project has a remote.
     package let keys: [String]
     package let name: String
     /// The README's opening paragraphs: read from a local checkout, or kept
@@ -51,6 +52,13 @@ package struct QuickCaptureProject: Equatable, Sendable {
         self.repository = repository
         self.issueRepository = issueRepository ?? repository
         self.github = github
+    }
+
+    func renamed(_ name: String) -> QuickCaptureProject {
+        QuickCaptureProject(
+            key: key, name: name, summary: summary, terms: terms, agentLine: agentLine, userLine: userLine,
+            keys: keys, repository: repository, issueRepository: issueRepository, github: github
+        )
     }
 
     /// GitHub's description, as a sentence, and the upstream a fork has.
@@ -120,26 +128,32 @@ package enum QuickCaptureProjects {
             return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
         }
     ) -> [QuickCaptureProject] {
-        let listed = learned.listedProjects(now: now)
+        let listed = learned.listedCheckouts(now: now)
         var groups: [[LearnedTermProject]] = []
         var groupOfRepository: [String: Int] = [:]
         for project in listed {
-            if let repository = project.repository, let index = groupOfRepository[repository] {
+            let repository = project.repositoryRecordKey ?? project.repository.map { "github:" + $0 }
+            if let repository, let index = groupOfRepository[repository] {
                 groups[index].append(project)
             } else {
-                if let repository = project.repository { groupOfRepository[repository] = groups.count }
+                if let repository { groupOfRepository[repository] = groups.count }
                 groups.append([project])
             }
         }
-        return groups.map { group in
+        let built = groups.map { group -> (project: QuickCaptureProject, remote: ProjectRemote?) in
             var members = group.filter { $0.key.hasPrefix("/") } + group.filter { !$0.key.hasPrefix("/") }
             if group.count > 1, let lead = members.firstIndex(where: { !$0.key.hasPrefix("/") || checkoutExists($0.key) }) {
                 members.insert(members.remove(at: lead), at: 0)
             }
             let primary = members[0]
+            // The repository's own record holds a linked project's terms and
+            // its agent's answer (#971).
+            let remote = primary.isLinkedCheckout ? primary.projectRemote : nil
+            let repositoryRecord = remote.flatMap { remote in learned.projects.first { $0.key == remote.key } }
+            let records = members + (repositoryRecord.map { [$0] } ?? [])
             var seen = Set<String>()
             var terms: [String] = []
-            for member in members {
+            for member in records {
                 for term in learned.confirmedTerms(projectKey: member.key) + learned.unconfirmedProposals(projectKey: member.key)
                 where seen.insert(term.caseFoldedForMatching).inserted {
                     terms.append(term)
@@ -149,24 +163,41 @@ package enum QuickCaptureProjects {
             for member in members where summary == nil {
                 summary = member.key.hasPrefix("/") ? readme(member.key).flatMap(Self.summary(ofReadme:)) : member.summary
             }
-            let userLine = members.lazy.compactMap { member in
-                userLines[member.key]
+            let keys = members.map(\.key) + (remote.map { [$0.key] } ?? [])
+            let userLine = keys.lazy.compactMap { key in
+                userLines[key]
                     .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                     .flatMap { $0.isEmpty ? nil : clipped($0, to: maxUserLineCharacters) }
             }.first
-            let github = members.lazy.compactMap(\.github).first
-            return QuickCaptureProject(
+            let github = records.lazy.compactMap(\.github).first
+            let project = QuickCaptureProject(
                 key: primary.key,
-                name: primary.name,
+                name: remote?.name ?? primary.name,
                 summary: summary.map { clipped($0, to: maxSummaryCharacters) },
                 terms: Array(terms.prefix(maxTerms)),
-                agentLine: members.lazy.compactMap(\.agentLine).first,
+                agentLine: records.lazy.compactMap(\.agentLine).first,
                 userLine: userLine,
-                keys: members.map(\.key),
+                keys: keys,
                 repository: primary.repository,
                 issueRepository: primary.issueRepository,
                 github: github
             )
+            return (project, remote)
+        }
+        return named(built)
+    }
+
+    /// Each project under its repository's name; `owner/repo` for those that
+    /// share a name with another listed project and have a remote to tell
+    /// them apart (#971).
+    static func named(_ built: [(project: QuickCaptureProject, remote: ProjectRemote?)]) -> [QuickCaptureProject] {
+        var counts: [String: Int] = [:]
+        for entry in built { counts[entry.project.name.caseFoldedForMatching, default: 0] += 1 }
+        return built.map { entry in
+            guard counts[entry.project.name.caseFoldedForMatching, default: 0] > 1, let remote = entry.remote else {
+                return entry.project
+            }
+            return entry.project.renamed(remote.path)
         }
     }
 

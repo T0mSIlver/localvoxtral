@@ -452,6 +452,9 @@ final class DictationSessionController {
     /// Brings a picked pane forward, or the focused app back.
     @ObservationIgnored
     var destinationFocusTask: Task<Void, Never>?
+    /// Closes the overlay's destination list once the user stops moving.
+    @ObservationIgnored
+    var destinationListCloseTask: Task<Void, Never>?
     /// What the commit checks when the stopped dictation's picks moved the
     /// focus, kept from the stop to the commit.
     @ObservationIgnored

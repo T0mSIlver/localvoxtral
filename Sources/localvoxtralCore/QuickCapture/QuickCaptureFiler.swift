@@ -29,26 +29,7 @@ package enum QuickCaptureFiling {
     /// (`git@github.com:owner/name`), with or without `.git`. Nil for any
     /// other host.
     package static func repository(fromRemoteURL url: String) -> String? {
-        let url = url.trimmingCharacters(in: .whitespacesAndNewlines)
-        let host: Substring
-        var path: Substring
-        if let scheme = url.range(of: "://") {
-            guard ["https", "http", "ssh", "git"].contains(url[..<scheme.lowerBound].lowercased()) else { return nil }
-            let rest = url[scheme.upperBound...]
-            let authority = rest.prefix { $0 != "/" }
-            path = rest.dropFirst(authority.count)
-            host = (authority.split(separator: "@").last ?? "").split(separator: ":").first ?? ""
-        } else {
-            guard let colon = url.firstIndex(of: ":") else { return nil }
-            host = url[..<colon].split(separator: "@").last ?? ""
-            path = url[url.index(after: colon)...]
-        }
-        guard host.lowercased() == "github.com" else { return nil }
-        while path.hasPrefix("/") { path = path.dropFirst() }
-        while path.hasSuffix("/") { path = path.dropLast() }
-        if path.hasSuffix(".git") { path = path.dropLast(4) }
-        let name = String(path)
-        return QuickCaptureInbox.isRepository(name) ? name : nil
+        ProjectRemote(remoteURL: url)?.githubRepository
     }
 
     /// The checkout's GitHub repository: `origin`'s, else gh's pick when it
@@ -56,6 +37,14 @@ package enum QuickCaptureFiling {
     package static func repository(
         ofCheckout path: String, environment: [String: String], isExecutable: @Sendable (String) -> Bool
     ) async -> String? {
+        await remote(ofCheckout: path, environment: environment, isExecutable: isExecutable)?.githubRepository
+    }
+
+    /// The repository the checkout's `origin` names, on any host (#971);
+    /// gh's pick when it has no `origin`. Nil when neither names one.
+    package static func remote(
+        ofCheckout path: String, environment: [String: String], isExecutable: @Sendable (String) -> Bool
+    ) async -> ProjectRemote? {
         // gh only when git says there is no origin (exit 2): after a timeout
         // or any other failure, gh would answer the upstream again.
         if let origin = await RepoGitRunner.run(
@@ -66,11 +55,13 @@ package enum QuickCaptureFiling {
                 return nil
             }
             if origin.exitCode == 0 {
-                let repository = Self.repository(fromRemoteURL: String(decoding: origin.data, as: UTF8.self))
-                if repository == nil {
+                let remote = ProjectRemote(remoteURL: String(decoding: origin.data, as: UTF8.self))
+                if remote == nil {
+                    Log.backends.info("Quick capture: the checkout's origin names no repository")
+                } else if remote?.githubRepository == nil {
                     Log.backends.info("Quick capture: the checkout's origin is not on GitHub")
                 }
-                return repository
+                return remote
             }
         }
         guard let gh = QuickCaptureDrafter.ghCandidates(environment: environment).first(where: isExecutable),
@@ -80,7 +71,7 @@ package enum QuickCaptureFiling {
               ), output.exitCode == 0, !output.timedOut
         else { return nil }
         let name = String(decoding: output.data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        return QuickCaptureInbox.isRepository(name) ? name : nil
+        return ProjectRemote(githubRepository: name)
     }
 
     /// `gh api repos/<owner>/<name>`, cut to what the router reads: the
@@ -130,6 +121,8 @@ package enum QuickCaptureFiling {
 package protocol QuickCaptureGitHub: Sendable {
     /// The checkout's `owner/name`, nil when it has no GitHub remote.
     func repository(ofCheckout path: String) async -> String?
+    /// The repository the checkout's `origin` names, on any host (#971).
+    func remote(ofCheckout path: String) async -> ProjectRemote?
     /// The open issues of `repository`, else of the checkout's own.
     func openIssues(ofCheckout path: String, repository: String?) async -> [QuickCaptureDraft.OpenIssue]?
     /// GitHub's description, topics and parent; nil when gh failed.
@@ -137,6 +130,13 @@ package protocol QuickCaptureGitHub: Sendable {
     func createIssue(repository: String, title: String, body: String) async -> Result<String, QuickCaptureFiling.Failure>
     /// Posts `body` on issue `issue`; the comment's URL.
     func commentOnIssue(repository: String, issue: Int, body: String) async -> Result<String, QuickCaptureFiling.Failure>
+}
+
+extension QuickCaptureGitHub {
+    /// The GitHub repository's remote, for a client that reads no other host.
+    package func remote(ofCheckout path: String) async -> ProjectRemote? {
+        await repository(ofCheckout: path).flatMap(ProjectRemote.init(githubRepository:))
+    }
 }
 
 package struct QuickCaptureGHClient: QuickCaptureGitHub {
@@ -156,7 +156,11 @@ package struct QuickCaptureGHClient: QuickCaptureGitHub {
     }
 
     package func repository(ofCheckout path: String) async -> String? {
-        await QuickCaptureFiling.repository(ofCheckout: path, environment: environment, isExecutable: isExecutable)
+        await remote(ofCheckout: path)?.githubRepository
+    }
+
+    package func remote(ofCheckout path: String) async -> ProjectRemote? {
+        await QuickCaptureFiling.remote(ofCheckout: path, environment: environment, isExecutable: isExecutable)
     }
 
     package func openIssues(ofCheckout path: String, repository: String?) async -> [QuickCaptureDraft.OpenIssue]? {

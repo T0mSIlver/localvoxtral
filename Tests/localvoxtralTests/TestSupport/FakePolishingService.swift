@@ -9,15 +9,22 @@ actor FakePolishingService: LLMPolishingServicing {
 
     private let reply: Reply
     private let durationSeconds: TimeInterval
+    /// What the reply reports it used; nil reports nothing, as a server
+    /// without `usage` does.
+    private let usage: LLMTokenUsage?
     private(set) var requests: [LLMPolishingRequest] = []
     private(set) var configurations: [LLMPolishingConfiguration] = []
 
     var lastRequest: LLMPolishingRequest? { requests.last }
     var lastConfiguration: LLMPolishingConfiguration? { configurations.last }
 
-    init(durationSeconds: TimeInterval = 0.01, reply: @escaping Reply = { $0.inputText }) {
+    init(
+        durationSeconds: TimeInterval = 0.01, usage: LLMTokenUsage? = nil,
+        reply: @escaping Reply = { $0.inputText }
+    ) {
         self.reply = reply
         self.durationSeconds = durationSeconds
+        self.usage = usage
     }
 
     init(returning text: String, durationSeconds: TimeInterval = 0.01) {
@@ -41,7 +48,8 @@ actor FakePolishingService: LLMPolishingServicing {
         return LLMPolishingResult(
             rawText: request.inputText,
             polishedText: try reply(request),
-            durationSeconds: durationSeconds
+            durationSeconds: durationSeconds,
+            usage: usage
         )
     }
 }

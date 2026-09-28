@@ -149,9 +149,12 @@ package struct QuickCaptureDrafter: Sendable {
         agents: [ProjectTermProposal.Agent],
         onFirstDraft: @escaping FirstDraftHandler = { _ in true }
     ) async -> QuickCaptureDraft.Outcome? {
-        guard case .project(let key) = route, let project = projects.first(where: { $0.key == key }) else {
+        // A capture keeps the checkout it was routed to; its project drafts
+        // in the checkout it leads with now (#971).
+        guard case .project(let routed) = route, let project = projects.first(where: { $0.keys.contains(routed) }) else {
             return .notRun(.catchAll)
         }
+        let key = project.key
         guard key.hasPrefix("/") else {
             // A remote label never becomes a working directory here: the
             // host runs the agent in its own checkout.

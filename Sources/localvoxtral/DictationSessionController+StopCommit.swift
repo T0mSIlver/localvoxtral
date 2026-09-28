@@ -398,6 +398,7 @@ extension DictationSessionController {
         var processedTextForPersistence: String? =
             workingText != originalText ? workingText : nil
         var polishingDuration: Double? = nil
+        var polishPromptTokens: Int? = nil
         var sessionStatus: DictationSessionStatus = .completed
         var llmConnectionFailure: PolishOutcomeClassifier.Failure?
         // The model's raw reply and the (placeholder-bearing)
@@ -413,6 +414,7 @@ extension DictationSessionController {
             break
         case .polished(let polished):
             polishingDuration = polished.durationSeconds
+            polishPromptTokens = polished.promptTokens
             let committedText = polished.committedText
 
             // Persist the PLACEHOLDER-bearing committed text —
@@ -475,6 +477,7 @@ extension DictationSessionController {
                         clipboardVocabularyCount: assembly.clipboardVocabularyCount
                     )
                 ),
+                polishPromptTokens: polishPromptTokens,
                 clipboardPayload: preparation.clipboardPayload,
                 audio: record.audio,
                 joined: capture.claudeJoin.map(AgentCLIJoin.init)
@@ -551,6 +554,7 @@ extension DictationSessionController {
                     clipboardVocabularyCount: assembly.clipboardVocabularyCount
                 )
             ),
+            polishPromptTokens: polishPromptTokens,
             clipboardPayload: preparation.clipboardPayload,
             audio: record.audio,
             joined: capture.claudeJoin.map(AgentCLIJoin.init)
@@ -866,6 +870,7 @@ extension DictationSessionController {
         commitSucceeded: Bool,
         polishProfile: String? = nil,
         polishContextSummary: String? = nil,
+        polishPromptTokens: Int? = nil,
         clipboardPayload: String? = nil,
         quickCaptureDestination: String? = nil,
         audio: Data? = nil,
@@ -899,6 +904,7 @@ extension DictationSessionController {
         record.projectKey = joined?.project?.key
         record.projectName = joined?.project?.name
         record.joinedAgent = joined?.agent
+        record.polishPromptTokens = polishPromptTokens
         lastDictationJoin = joined
         dependencies.onSessionRecord?(record)
         let retention = settings.dictationHistoryRetention

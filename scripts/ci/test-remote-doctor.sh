@@ -121,8 +121,10 @@ run_doctor() {
   case "$OUT" in *"$TOKEN"*) fail "$SH_NAME: the token is in doctor's output" ;; esac
 }
 
+# A here-string, not a pipe: grep -q exits at its first match, and under
+# pipefail a printf still writing the rest fails the check (#976).
 expect_line() {
-  printf '%s\n' "$OUT" | grep -qF -- "$1" || fail "$SH_NAME, $2: no line '$1' in:
+  grep -qF -- "$1" <<<"$OUT" || fail "$SH_NAME, $2: no line '$1' in:
 $OUT"
 }
 
@@ -206,5 +208,5 @@ OUT="$(sh "$PLUGIN/bin/localvoxtral" history last 2>&1)"
 STATUS=$?
 set -e
 [ "$STATUS" = 2 ] || fail "history on a host: exit $STATUS, want 2"
-printf '%s' "$OUT" | grep -qF "run on the Mac" || fail "history on a host: $OUT"
+grep -qF "run on the Mac" <<<"$OUT" || fail "history on a host: $OUT"
 pass "other commands say they run on the Mac"

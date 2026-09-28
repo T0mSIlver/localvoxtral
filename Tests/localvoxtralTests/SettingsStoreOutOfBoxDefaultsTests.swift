@@ -78,6 +78,19 @@ final class SettingsStoreOutOfBoxDefaultsTests: XCTestCase {
         XCTAssertEqual(makeStore().spokenSendTriggerPhrases, ["send it", "send now"])
     }
 
+    /// The wait before a send phrase stops the dictation (#1009): 3 s until
+    /// set, as before the setting existed; then the user's choice across a
+    /// restart. A value no choice has loads as the default.
+    func testSpokenStopWaitDefaultsToThreeSecondsAndSurvivesARestart() {
+        XCTAssertEqual(makeStore().spokenStopWait.duration, .seconds(3))
+
+        makeStore().spokenStopWait = .oneSecond
+        XCTAssertEqual(makeStore().spokenStopWait, .oneSecond)
+
+        defaults.set(500, forKey: "settings.spoken_stop_wait_ms")
+        XCTAssertEqual(makeStore().spokenStopWait.duration, .seconds(3))
+    }
+
     func testAnInstallThatTurnedDuckingOffKeepsItOff() {
         let store = makeStore()
         store.audioDuckingEnabled = false

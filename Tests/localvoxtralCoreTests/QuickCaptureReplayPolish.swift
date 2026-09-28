@@ -12,7 +12,7 @@ import localvoxtralTestSupport
 /// counts the captures where a listed project's name appears in the raw
 /// words and in the polished ones.
 enum QuickCaptureReplayPolish {
-    /// The bundled standard templates, with no About you, Names and terms or
+    /// The bundled standard templates, with no About you, Global terms or
     /// replacement rules: what a fresh install sends.
     static func inputs() throws -> QuickCapturePolishInputs {
         let directory = FileManager.default.temporaryDirectory

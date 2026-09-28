@@ -111,7 +111,7 @@ package enum QuickCapturePolishPrompt {
 
 /// What a capture's polish request is built from besides the words and the
 /// vocabulary: the standard profile's templates as loaded, the user's About
-/// you and Names and terms, and the replacement file's rules when exact
+/// you and Global terms, and the replacement file's rules when exact
 /// replacement is on (nil when it is off).
 package struct QuickCapturePolishInputs: Sendable {
     package var templates: LLMPromptTemplates
