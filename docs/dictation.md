@@ -138,45 +138,27 @@ While you dictate, the top of the overlay lists where the words can go.
 - **The app you started in**, named after its coding agent session when it
   has one. A dictation goes here unless you press Tab.
 - **Each coding agent session that needs you**, oldest first, when
-  [Tell me when an agent needs you](#when-a-coding-agent-needs-you) is on.
-  Picking one brings its pane forward so you can read what it asked while
-  you talk. Your words go into that pane when you stop.
+  [Tell me when an agent needs you](agents.md#when-an-agent-needs-you)
+  is on. Picking one brings its pane forward, and your words go there when
+  you stop.
 - **Inbox**: a [quick capture](coding-agents.md#quick-capture). The words are
   saved there and never typed anywhere.
 
 **→** and **←** move the same way, and a click on a destination picks it.
 None of these keys reach the app you are dictating into while the overlay is
-open.
+open. With nobody waiting, one Tab therefore sends the dictation to the Inbox.
 
-With nobody waiting, one Tab therefore sends the dictation to the Inbox.
-
-The overlay moves to a session only once its terminal confirms the pane is
-in front. Otherwise the overlay stays where it was and the menu bar popover
-says why.
-
-After Tab moves to a session, Tab can bring back the app you started in. The
-app refuses one case: you started in the same terminal app as that session,
-in a pane with no joined session. The app has no way to find that pane
-again, and bringing the terminal forward would only show the session's pane.
-
-### Open the overlay on a destination
-
-Two optional shortcuts under **Settings → Dictation → Output** start a
-dictation with a destination already picked:
-
-- **Answer the agent that needs you** picks the session that has waited
-  longest.
-- **Quick capture to Inbox** picks the Inbox.
-
-Pressed during a dictation, each picks its destination the way Tab would.
-Pressed again, it stops. Both can be a
+The optional **Quick capture to Inbox** shortcut under **Settings →
+Dictation → Output** starts a dictation with the Inbox already picked.
+Pressed during a dictation, it picks the Inbox the way Tab would. Pressed
+again, it stops. It can be a
 [chord of modifier keys](#record-a-chord-of-modifier-keys).
 
 ## Voice commands
 
-Four spoken phrases act instead of being typed: one presses Return, one
-switches sessions, one sends a dictation to another session, and one names a
-session.
+Some spoken phrases act instead of being typed. "Send it" presses Return.
+"Go to", "send that to" and "call this session" reach your coding agent
+sessions by name, in [Work with several agents](agents.md).
 
 ### Press Return with "send it"
 
@@ -224,73 +206,6 @@ The app treats an app as a terminal only if it is a known terminal or listed
 in **Settings → Terminals**. The app recognizes Claude Desktop on its own.
 Listing it there would make localvoxtral treat its prompt box as a terminal.
 
-### Switch to a session with "go to"
-
-Say only "go to payments" and the app brings the pane of the joined coding
-agent session named payments to the front instead of typing anything. In
-Live Auto-Paste, say it as a phrase between pauses.
-
-A session answers to, in this order:
-
-1. a [name you gave it](#name-a-session);
-2. its folder: the repository's, or in a linked worktree the worktree's,
-   with the random ending of a worktree Claude created left off
-   ("zealous chaplygin" for `zealous-chaplygin-aa1a02`), or the branch when
-   you named it (`fix/overlay-names` answers to "overlay names");
-3. its repository's name;
-4. its Claude Desktop title, whole or its first two to four words
-   ("go to better session names").
-
-The overlay, the popover and the banners show the name you gave it, else its
-Claude Desktop title, else its folder or branch. When sessions would show the
-same name, each gets its agent ("localvoxtral · Codex") or a number
-("localvoxtral · 2") added, and answers to that ("go to localvoxtral two").
-The shared name alone then matches more than one session and does nothing.
-
-"Go to" works for sessions in these places:
-
-- Ghostty, iTerm2 and Terminal.app on this Mac;
-- Claude Desktop Code-tab sessions, on this Mac or on an ssh host Desktop
-  runs them on.
-
-When no session has that name, the app types the dictation as usual. When
-more than one does, or its pane can't be reached, nothing is typed and the
-menu bar popover says so.
-
-In Live Auto-Paste, what you say next is typed into the session you went to.
-
-### Send to a session with "send that to"
-
-In Overlay Buffer, end a dictation with "send that to payments". The session
-named payments gets the text and presses Enter, and the app you are in gets
-nothing.
-
-The name has one to four words. Sessions answer to names the way they do for
-"go to", your own names first. What happens next depends on the session:
-
-- **A Ghostty, iTerm2 or Terminal.app tab** comes forward and gets the text.
-  Enter is pressed only if that pane is still the one in front.
-- **An opencode session, or a session in a
-  [herdr](../integrations/herdr/README.md) pane on this Mac,** gets the text
-  without coming forward.
-- **A remote, Claude Desktop or cmux session** gets nothing, and the popover
-  says "Can't send to that session yet".
-
-When no session has that name, the app inserts the whole dictation where you
-are, as spoken. When more than one does, nothing is sent and the text stays
-in History.
-
-When a delivery fails, nothing reaches the app you are in. The text stays in
-History, and the popover says whether it was typed without Enter.
-
-### Name a session
-
-While dictating into a joined session, say "call this session payments" (or
-"name this session payments"). Nothing is typed. From then on "go to
-payments" reaches that session, ahead of any repository or worktree name.
-
-Naming another session payments moves the name to it.
-
 ## Recover a dictation
 
 localvoxtral lives in the menu bar. Its popover shows the dictation status,
@@ -313,52 +228,6 @@ shortcut for it under **Settings → Dictation → Advanced**, or a
 Older dictations stay in [History](#review-your-dictations) until the
 **Keep dictations** period ends.
 
-## When a coding agent needs you
-
-Turn on **Tell me when an agent needs you** under **Settings → Dictation →
-Output**. localvoxtral then tells you when one of the coding agent sessions
-it joins waits for you.
-
-A wait is a permission prompt or a question, from Claude Code, Codex or
-opencode, on this Mac or an enrolled host. The app also tells you when a
-session finishes its turn while you are looking at another window or pane.
-A Mistral Vibe session tells you only when it finishes, since Vibe reports
-no waits.
-
-Each time, the app shows a macOS banner with a sound, and the menu bar icon
-gets an orange dot. Settings > Dictation > Output can make the dot a square
-or an exclamation mark instead. The sound is your alert sound, and macOS
-controls it: turn off **Play sound for notifications** under **System
-Settings → Notifications → localvoxtral** to keep the banner without it.
-Focus silences both. The popover names the session: "payments needs you"
-or "payments finished". Nothing fires for a turn that ends in the pane you
-are looking at.
-
-### Answer by voice
-
-Press Tab during a dictation until the overlay shows the session, as in
-[Where the words go](#where-the-words-go).
-
-The optional **Answer the agent that needs you** shortcut does it in one
-press. It brings forward the pane of the session that has waited longest, or
-else the one that finished first, and starts a dictation there. Press it
-again to stop; the next press goes to the next session. With no session
-waiting, it opens the oldest ready quick capture draft instead
-([Review a draft by voice](coding-agents.md#review-a-draft-by-voice)).
-
-Like "go to", both reach sessions in Ghostty, iTerm2 and Terminal.app on
-this Mac, and Claude Desktop Code-tab sessions, local or over ssh. For a
-Claude Desktop session, Desktop switches to the session and the words go
-there once its prompt has focus. For any other session, the popover says it
-can't bring that session forward.
-
-### When a session leaves the list
-
-A session leaves the list when you send it a prompt, when it starts working
-again, when it ends, or when you dictate into it.
-
-The app never receives what the agent wrote or asked, only that it waits.
-
 ## Review your dictations
 
 The app saves every dictation on this Mac, in plain text, in
@@ -377,7 +246,9 @@ list, newest first.
   list holds the only copy.
 - **A row** opens the whole text. When polishing or a replacement changed
   it, the transcript appears under it with the removed words marked.
-  **Copy Transcript** copies the unchanged version.
+  **Copy Transcript** copies the unchanged version. The line beside the
+  buttons names the model, the polish time and the prompt tokens the polish
+  request sent, as the polishing backend reported them.
 - **Delete** removes the dictation from the store. **Delete All…** removes
   every one.
 
@@ -470,7 +341,7 @@ this Mac from the history store. With history off, the pane is empty.
   target app.
 
 **Your terms recognized correctly** takes your
-[Names and terms](#add-your-names-and-terms) and the learned terms that
+[Global terms](#add-your-global-terms) and the learned terms that
 ended up in a dictation. It counts how many the transcript already spelled
 exactly, before polishing or a replacement fixed them.
 
@@ -483,21 +354,22 @@ that reached the inserted text, so a term that both the recognizer and
 polishing got wrong is counted nowhere.
 
 Every polish receives the spellings you add to
-[Names and terms](#add-your-names-and-terms), and the app fixes their casing
+[Global terms](#add-your-global-terms), and the app fixes their casing
 and spacing without the model.
 
 ## Teach it your terms
 
-The app gets the spelling of your names and terms from five sources: the
+The app gets the spelling of your terms from five sources: the
 list you keep, suggestions from your history, fixes polishing made, fixes
 you made, and your coding agent.
 
-### Add your names and terms
+### Add your global terms
 
 **Settings → Text Processing → About you** holds a few lines on your work in
-your own words. It also holds **Names and terms**, a list of the names and
-terms you say often, spelled the way they should appear ("Qwen", "Claude
-Code", "vLLM").
+your own words. It also holds **Global terms**, the names and terms you say
+often in every project, spelled the way they should appear ("Qwen", "Claude
+Code", "vLLM"). Terms that belong to one project are in **Settings →
+Projects**, under that project.
 
 The app sends both to the polishing model with every dictation, whichever
 endpoint you chose. You never list how a name gets misheard; the polisher
@@ -544,9 +416,9 @@ field. Each term shows how often it was applied and when it last was:
 - **Pin** a term to keep it. The app uses it at once and it never expires.
 - **Forget** one, or all of a project's with **Forget All…**.
 
-**Text Processing → Advanced → Terms learned from polishing** opens that
-pane with **Show in Projects**. Its **Export…** and **Import…** move every
-term to another Mac as a JSON file. An import adds to what is there. A term
+Under the list, **Learned terms → Move to another Mac** has **Export…** and
+**Import…**: they move every project's terms to another Mac as a JSON file.
+An import adds to what is there. A term
 still being learned stays that way until you have said it in three
 dictations.
 
@@ -640,7 +512,8 @@ runs the remote plugin 1.15.0 or the Vibe hooks 1.2.0 (**Update Host…**).
 The run happens on that host, in the session's repository, with the same
 limits, and bills the host's own Claude Code login or Mistral key. The Mac
 only asks, on the session's next hook, and files the answer under the
-session's project. Details:
+session's project. A session already running keeps the old hooks until you
+run `/reload-plugins` in it, or restart it if it is a Vibe session. Details:
 [Terms from the coding agent on a host](remote-claude-context.md#terms-from-the-coding-agent-on-a-host).
 
 ### One project per repository
@@ -698,6 +571,33 @@ in [the bundled config folder](../Sources/localvoxtral/Resources/Config).
 To stop sending the dictionary to the LLM, remove
 `{{replacement_dictionary}}` from a user prompt template.
 
+### What the prompt costs
+
+Settings shows the approximate size of each part of the polish prompt, in
+tokens:
+
+- **Text Processing → Advanced → Polishing instructions**: the prompt files
+  and the reference guide, sent with every polish. With the agent prompt
+  profile on, both profiles are shown.
+- **Text Processing → About you → Global terms**: what your terms add to
+  every polish.
+- **Projects**, in a project's Terms: the most that project's terms add. A
+  learned term is sent only when you say something that sounds like it, so
+  most dictations carry a few of them or none.
+
+Size matters most with the bundled helper, where a longer prompt takes
+longer to read and more memory; a cloud model's bill and speed barely move
+with a few thousand tokens. So with the bundled helper, its own tokenizer
+counts each part exactly. Mistral's API and other servers offer no count
+before a request is sent, so there the sizes are estimates, shown with ≈:
+each part's characters times the tokens per character your polishing
+backend reported over its last 20 polish requests. Before the
+first request, the app assumes 4.6 characters a token, what the Qwen3.5, GLM
+and Mistral tokenizers measured on the bundled prompts. A list of terms
+counts 1.6 times as many tokens per character as prose, because names and
+identifiers split into short pieces. The exact count of each dictation's
+request is in [History](#history).
+
 When an update ships better defaults, the app refreshes the files you
 haven't edited. It never changes a file you edited without asking. It offers
 to update the file and keeps your version alongside as a backup file.
@@ -705,7 +605,7 @@ to update the file and keeps your version alongside as a backup file.
 **The replacement dictionary is legacy.** It applies fixed rewrites, which
 helps in Live Auto-Paste without polishing. The polisher no longer sees it,
 and the app imported its spellings into your
-[Names and terms](#add-your-names-and-terms) once.
+[Global terms](#add-your-global-terms) once.
 
 **Extra terminal apps** live in **Settings → Terminals**, not in a config
 file. If you had a legacy terminal apps file, the app reads it once at
@@ -733,20 +633,22 @@ History; the panes sit under the sidebar's Settings header.
     pane's Mistral API group.
 - **Dictation**: the [trigger](#shortcuts), **Copy on stop**, the
   [phrases that press Return](#press-return-with-send-it) and the Overlay
-  Buffer "send it" switch, the [needs-you cue](#when-a-coding-agent-needs-you)
-  and the [two destination shortcuts](#open-the-overlay-on-a-destination),
+  Buffer "send it" switch, the
+  [needs-you cue and its shortcut](agents.md#jump-to-it),
+  the [Quick capture to Inbox shortcut](#where-the-words-go),
   [ducking other audio](#lower-other-audio-while-dictating), and the
   overlay's font size, lines before scrolling,
   [word wrapping](#keeping-words-on-their-line) and
   [stop after silence](#stop-after-silence). **Advanced** holds
   [Live Auto-Paste](#live-auto-paste) and its own "send it" switch, the menu
   bar mode and the [Copy last dictation](#recover-a-dictation) shortcut.
-- **Text Processing**: [About you](#add-your-names-and-terms),
+- **Text Processing**: [About you](#add-your-global-terms),
   [Suggest terms](#get-term-suggestions), the LLM Polishing switch, the
   agent prompt profile and spoken clipboard paste. **Advanced** holds
   [learned terms](#terms-learned-from-polishing),
   [the coding agent's terms](#terms-from-your-coding-agent), the legacy
-  replacement dictionary and [the prompt files](#edit-the-polishing-prompts-and-dictionary).
+  replacement dictionary, [the instructions' size](#what-the-prompt-costs)
+  and [the prompt files](#edit-the-polishing-prompts-and-dictionary).
 - **Context**: what the polisher may see (repo vocabulary, clipboard, the
   agent's screen and session). Each toggle's title names what leaves this
   Mac. The full terms are in

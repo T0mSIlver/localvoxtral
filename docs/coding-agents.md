@@ -28,6 +28,12 @@ In a terminal, live dictation changes in three ways:
   instead of typing into the void, and an overlay commit copies the text to
   the clipboard instead.
 
+## Jump to the agent that needs you
+
+The needs-you cue, Tab to a waiting agent, and the voice commands that name,
+reach and send to sessions are in
+[Work with several agents](agents.md).
+
 ## Polishing
 
 When an Overlay Buffer dictation commits, optional LLM polishing cleans it up
@@ -518,7 +524,8 @@ it had before.
 
 ### Review a draft by voice
 
-With **Tell me when an agent needs you** on, a finished draft (for an issue,
+With [Tell me when an agent needs you](agents.md#when-an-agent-needs-you)
+on, a finished draft (for an issue,
 once it is checked against the code) lights the
 menu bar mark and the popover says "Draft ready: Inbox for localvoxtral".
 There is no banner and no sound, and the cue waits for your next break: the
@@ -574,7 +581,8 @@ Click a project to see its repository and checkouts, its description, every
 learned term with a pin and a forget button, and its joined sessions,
 captures and dictations this week. **Open Inbox** goes to its drafts.
 **No project**, last in the list, holds the terms learned outside any
-project.
+project. **Import…** and **Export…**, under the list, move every project's
+terms to another Mac.
 
 ### Each project's repository
 

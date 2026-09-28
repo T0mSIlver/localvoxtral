@@ -467,6 +467,10 @@ marketplace copy and the plugin, stores this Mac's allocated port, and rewrites
 this host's SSH config block in the same action, so the two halves always
 agree.
 
+Sessions already running on the host keep the old hook script until you run
+`/reload-plugins` in a Claude Code session (Claude Code 2.1.283) or restart a
+Vibe session, since Vibe has no such command.
+
 Your token is preserved: `claude plugin update` keeps the stored config, and
 each --config option merges per key.
 

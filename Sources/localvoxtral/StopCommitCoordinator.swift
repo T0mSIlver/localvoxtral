@@ -369,6 +369,8 @@ enum StopCommitCoordinator {
             /// never the payload.
             let committedText: String
             let durationSeconds: Double
+            /// As the backend reported them; nil when it reported no usage.
+            var promptTokens: Int? = nil
         }
 
         enum Reply {
@@ -525,7 +527,8 @@ enum StopCommitCoordinator {
                 reply: .polished(PolishOutcome.Polished(
                     polishedText: result.polishedText,
                     committedText: committedText,
-                    durationSeconds: result.durationSeconds
+                    durationSeconds: result.durationSeconds,
+                    promptTokens: result.usage?.promptTokens
                 ))
             )
         } catch {

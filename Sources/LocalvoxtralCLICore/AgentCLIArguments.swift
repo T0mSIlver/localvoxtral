@@ -46,7 +46,7 @@ public struct AgentCLIArguments: Sendable {
               --since <when>        today, yesterday, 3d, 12h, 30m, 2w, or 2026-09-25
               --limit <n>           at most n dictations (default 20, max 200)
           history last            the last dictation, inserted or not
-          terms list              your names and terms, learned and proposed
+          terms list              your global terms, learned and proposed
               --project <dir|name>  one project's terms
           terms propose <term>…   suggest terms for a project; three dictations
                                   or a pin in Settings make one yours

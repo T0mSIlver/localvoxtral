@@ -387,12 +387,20 @@ final class IntegrationsSettingsModelTests: XCTestCase {
     // MARK: - herdr row
 
     @MainActor
-    func testHerdrRowIsAbsentWhenNothingReportsHerdr() async {
-        let model = makeModel(herdrPresenceReport: { false })
-        await model.refreshIntegrationsStatuses()
+    func testHerdrRowIsAbsentUntilSomethingReportsHerdrThenAppears() async {
+        let absent = makeModel(herdrPresenceReport: { false })
+        await absent.refreshIntegrationsStatuses()
         XCTAssertFalse(
-            model.isHerdrDetected,
+            absent.isHerdrDetected,
             "the view hides the row on this flag: a row that can only say 'not found' is noise"
+        )
+
+        let present = makeModel(herdrPresenceReport: { true })
+        await present.refreshIntegrationsStatuses()
+        XCTAssertTrue(present.isHerdrDetected)
+        XCTAssertEqual(
+            ClaudeIntegrationSettingsModel.herdrDetectedSentence,
+            "Found; panes join automatically."
         )
     }
 
@@ -404,17 +412,6 @@ final class IntegrationsSettingsModelTests: XCTestCase {
         XCTAssertTrue(
             model.isHerdrDetected,
             "binary on PATH reserves the row at construction"
-        )
-    }
-
-    @MainActor
-    func testHerdrRowAppearsWhenHerdrReports() async {
-        let model = makeModel(herdrPresenceReport: { true })
-        await model.refreshIntegrationsStatuses()
-        XCTAssertTrue(model.isHerdrDetected)
-        XCTAssertEqual(
-            ClaudeIntegrationSettingsModel.herdrDetectedSentence,
-            "Found; panes join automatically."
         )
     }
 
@@ -443,7 +440,7 @@ final class IntegrationsSettingsModelTests: XCTestCase {
     /// fixed directories are the ones herdr itself probes on a remote Mac
     /// (`src/remote/attach.rs`, 0.9.0): Homebrew, /usr/local, Nix.
     @MainActor
-    func testHerdrProbeFindsAHomebrewHerdrOutsideTheGUIPATH() {
+    func testHerdrProbeFindsAHomebrewHerdrOutsideTheGUIPATHAndIsPinnedWithoutTheMachinesOwnPATH() {
         let guiEnvironment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": "/Users/someone"]
         XCTAssertTrue(ClaudeHerdrAvailability.isHerdrBinaryAvailable(
             environment: guiEnvironment,
@@ -452,6 +449,14 @@ final class IntegrationsSettingsModelTests: XCTestCase {
         XCTAssertTrue(ClaudeHerdrAvailability.isHerdrBinaryAvailable(
             environment: guiEnvironment,
             isExecutable: { $0 == "/usr/local/bin/herdr" }
+        ))
+        XCTAssertTrue(ClaudeHerdrAvailability.isHerdrBinaryAvailable(
+            environment: ["PATH": "/usr/bin", "HOME": "/Users/someone"],
+            isExecutable: { $0 == "/Users/someone/.local/bin/herdr" }
+        ))
+        XCTAssertFalse(ClaudeHerdrAvailability.isHerdrBinaryAvailable(
+            environment: ["PATH": "/usr/bin", "HOME": "/Users/someone"],
+            isExecutable: { _ in false }
         ))
     }
 
@@ -477,18 +482,6 @@ final class IntegrationsSettingsModelTests: XCTestCase {
             "/nix/var/nix/profiles/default/bin/herdr",
             "/run/current-system/sw/bin/herdr",
         ])
-    }
-
-    @MainActor
-    func testHerdrProbeIsPinnedWithoutTheMachinesOwnPATH() {
-        XCTAssertTrue(ClaudeHerdrAvailability.isHerdrBinaryAvailable(
-            environment: ["PATH": "/usr/bin", "HOME": "/Users/someone"],
-            isExecutable: { $0 == "/Users/someone/.local/bin/herdr" }
-        ))
-        XCTAssertFalse(ClaudeHerdrAvailability.isHerdrBinaryAvailable(
-            environment: ["PATH": "/usr/bin", "HOME": "/Users/someone"],
-            isExecutable: { _ in false }
-        ))
     }
 }
 

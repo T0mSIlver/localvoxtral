@@ -17,6 +17,7 @@ nav = [
     { "Install" = "docs/install.md" },
     { "Dictating" = "docs/dictation.md" },
     { "Terminals & coding agents" = "docs/coding-agents.md" },
+    { "Work with several agents" = "docs/agents.md" },
     { "Integration matrix" = "docs/integration-matrix.md" },
     { "Under the hood" = "docs/under-the-hood.md" },
     { "Roadmap" = "docs/roadmap.md" },
