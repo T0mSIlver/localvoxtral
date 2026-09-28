@@ -76,6 +76,10 @@ public enum AgentCLICommand: String, Sendable, CaseIterable {
     case termsList = "terms.list"
     case termsPropose = "terms.propose"
     case status
+    case doctor
+    case captureList = "capture.list"
+    case captureShow = "capture.show"
+    case captureFiled = "capture.filed"
 }
 
 /// The coding agent that ran the command, recorded as a proposed term's
@@ -116,6 +120,11 @@ public struct AgentCLIRequest: Sendable, Equatable, Codable {
     /// `terms propose`'s terms.
     public var terms: [String]?
     public var caller: AgentCLICaller?
+    /// `capture show` and `capture filed`: an id, a unique id prefix, a
+    /// title, or a unique part of one.
+    public var capture: String?
+    /// `capture filed`'s issue URL.
+    public var url: String?
 
     public init(
         command: AgentCLICommand,
@@ -124,7 +133,9 @@ public struct AgentCLIRequest: Sendable, Equatable, Codable {
         since: Date? = nil,
         limit: Int? = nil,
         terms: [String]? = nil,
-        caller: AgentCLICaller? = nil
+        caller: AgentCLICaller? = nil,
+        capture: String? = nil,
+        url: String? = nil
     ) {
         self.cli = AgentCLIWire.version
         self.command = command.rawValue
@@ -134,6 +145,8 @@ public struct AgentCLIRequest: Sendable, Equatable, Codable {
         self.limit = limit
         self.terms = terms
         self.caller = caller
+        self.capture = capture
+        self.url = url
     }
 
     public var knownCommand: AgentCLICommand? { AgentCLICommand(rawValue: command) }
@@ -146,6 +159,12 @@ public struct AgentCLIError: Error, Sendable, Equatable, Codable {
         case unknownCommand
         /// No project matches `--project`.
         case unknownProject
+        /// No capture matches, or more than one does.
+        case unknownCapture
+        case ambiguousCapture
+        /// `capture filed` on a capture that is not waiting to be filed, or
+        /// with a URL that is not an issue in its repository.
+        case notFileable
         /// The app is running but could not answer in time.
         case busy
         /// Set by the command itself: nothing answered on the socket.
@@ -369,6 +388,157 @@ public struct AgentCLIStatus: Sendable, Equatable, Codable {
     public static let notRunning = AgentCLIStatus(running: false)
 }
 
+/// One `doctor` check: what was checked, what was found, and when it is not
+/// fine, the one step that fixes it. No dictated text and no key; a remote
+/// host's check names the host.
+public struct AgentCLICheck: Sendable, Equatable, Codable {
+    public enum State: String, Sendable, Codable {
+        case ok
+        case warning
+        case failed
+        /// Nothing to check here (a feature that is off, an engine the app
+        /// does not run).
+        case skipped
+    }
+
+    /// Stable across versions, so an agent can match on it.
+    public var id: String
+    public var title: String
+    public var state: State
+    public var detail: String
+    public var fix: String?
+    /// Supporting lines, such as the last dictations' join lines, most
+    /// recent first.
+    public var lines: [String]?
+
+    public init(
+        id: String, title: String, state: State, detail: String, fix: String? = nil, lines: [String]? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.state = state
+        self.detail = detail
+        self.fix = fix
+        self.lines = lines
+    }
+}
+
+public struct AgentCLIDoctor: Sendable, Equatable, Codable {
+    public var checks: [AgentCLICheck]
+
+    public init(checks: [AgentCLICheck]) {
+        self.checks = checks
+    }
+
+    public var hasFailure: Bool { checks.contains { $0.state == .failed } }
+
+    /// Numbered, so a person can say "check 4" and an agent can quote it.
+    /// The Mac's `doctor` and a remote host's print the same form.
+    public func textLines(numberedFrom first: Int = 1) -> [String] {
+        var lines: [String] = []
+        for (index, check) in checks.enumerated() {
+            let mark = switch check.state {
+            case .ok: "ok  "
+            case .warning: "warn"
+            case .failed: "FAIL"
+            case .skipped: "--  "
+            }
+            lines.append("\(first + index). [\(mark)] \(check.title): \(check.detail)")
+            for line in check.lines ?? [] { lines.append("   \(line)") }
+            if let fix = check.fix, check.state != .ok { lines.append("   fix: \(fix)") }
+        }
+        return lines
+    }
+
+    public var summaryLine: String {
+        let failed = checks.filter { $0.state == .failed }.count
+        let warned = checks.filter { $0.state == .warning }.count
+        return failed + warned == 0 ? "No problems found." : "\(failed) failed, \(warned) to look at."
+    }
+}
+
+/// One quick capture in the Inbox (#923). "Capture" is the Inbox item's name
+/// here, not "issue": an agent reads "the issue about X" as a GitHub issue.
+public struct AgentCLICapture: Sendable, Equatable, Codable {
+    public enum State: String, Sendable, Codable {
+        case routing
+        case drafting
+        /// Waiting for the user, or an agent, to file it.
+        case ready
+        case filing
+        case filed
+    }
+
+    public var id: String
+    public var capturedAt: Date
+    /// Nil while the capture belongs to no project.
+    public var project: AgentCLIProject?
+    /// What the draft is: `issue`, `question`, `task` or `note` (#918).
+    /// Only an issue is filed. Nil without a draft.
+    public var kind: String?
+    /// The draft's title, or the capture's first words while it has none.
+    public var title: String
+    public var state: State
+    /// `owner/name`, where the draft files; nil when unknown.
+    public var repository: String?
+    /// `duplicate` or `extends` an open issue, with its number.
+    public var relation: String?
+    public var relatedIssue: Int?
+    /// Why there is no draft, in one sentence.
+    public var note: String?
+    public var filedURL: String?
+    /// `capture show` only: the words as dictated, the draft's body, and
+    /// the body to file (the draft with the dictated words quoted under it,
+    /// as the Inbox's File sends it).
+    public var text: String?
+    public var body: String?
+    public var issueBody: String?
+
+    public init(
+        id: String,
+        capturedAt: Date,
+        project: AgentCLIProject?,
+        kind: String?,
+        title: String,
+        state: State,
+        repository: String? = nil,
+        relation: String? = nil,
+        relatedIssue: Int? = nil,
+        note: String? = nil,
+        filedURL: String? = nil,
+        text: String? = nil,
+        body: String? = nil,
+        issueBody: String? = nil
+    ) {
+        self.id = id
+        self.capturedAt = capturedAt
+        self.project = project
+        self.kind = kind
+        self.title = title
+        self.state = state
+        self.repository = repository
+        self.relation = relation
+        self.relatedIssue = relatedIssue
+        self.note = note
+        self.filedURL = filedURL
+        self.text = text
+        self.body = body
+        self.issueBody = issueBody
+    }
+}
+
+public struct AgentCLICaptures: Sendable, Equatable, Codable {
+    /// False when the app has no Inbox (quick capture unavailable).
+    public var inboxAvailable: Bool
+    /// Newest first.
+    public var captures: [AgentCLICapture]
+
+    public init(inboxAvailable: Bool, captures: [AgentCLICapture]) {
+        self.inboxAvailable = inboxAvailable
+        self.captures = captures
+    }
+}
+
 /// One answer. Exactly one of the payloads is set when `ok`, `error` when not.
 public struct AgentCLIResponse: Sendable, Equatable, Codable {
     public var cli: Int
@@ -378,13 +548,21 @@ public struct AgentCLIResponse: Sendable, Equatable, Codable {
     public var terms: AgentCLITerms?
     public var proposal: AgentCLIProposal?
     public var status: AgentCLIStatus?
+    public var doctor: AgentCLIDoctor?
+    /// `capture list`.
+    public var captures: AgentCLICaptures?
+    /// `capture show` and `capture filed`.
+    public var capture: AgentCLICapture?
 
     public init(
         error: AgentCLIError? = nil,
         history: AgentCLIHistory? = nil,
         terms: AgentCLITerms? = nil,
         proposal: AgentCLIProposal? = nil,
-        status: AgentCLIStatus? = nil
+        status: AgentCLIStatus? = nil,
+        doctor: AgentCLIDoctor? = nil,
+        captures: AgentCLICaptures? = nil,
+        capture: AgentCLICapture? = nil
     ) {
         self.cli = AgentCLIWire.version
         self.ok = error == nil
@@ -393,6 +571,9 @@ public struct AgentCLIResponse: Sendable, Equatable, Codable {
         self.terms = terms
         self.proposal = proposal
         self.status = status
+        self.doctor = doctor
+        self.captures = captures
+        self.capture = capture
     }
 
     public static func failure(_ code: AgentCLIError.Code, _ message: String) -> AgentCLIResponse {

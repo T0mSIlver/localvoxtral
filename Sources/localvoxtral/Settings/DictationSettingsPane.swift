@@ -114,6 +114,7 @@ struct DictationSettingsPane: View {
                     viewModel.agentAttention?.announcer?.requestPermission()
                 } else {
                     viewModel.agentAttention?.tracker.clear()
+                    viewModel.agentAttention?.clearDrafts()
                 }
             }
         )
@@ -195,7 +196,9 @@ struct DictationSettingsPane: View {
                 }
 
                 if settings.modifierOnlyHotKeyEnabled {
-                    SettingsFieldRow(title: "Modifier key") {
+                    // Stacked: beside the four-segment picker the inline
+                    // label was squeezed to a letter or two per line (#890).
+                    SettingsFieldRow(title: "Modifier key", layout: .stacked) {
                         Picker("", selection: Binding(
                             get: { settings.modifierOnlyHotKeyModifier },
                             set: { newValue in
@@ -308,6 +311,18 @@ struct DictationSettingsPane: View {
                 SettingsFieldRow(title: "Tell me when an agent needs you") {
                     Toggle("", isOn: agentAttentionBinding)
                         .labelsHidden()
+                }
+
+                SettingsFieldRow(title: "Menu bar mark when an agent needs you") {
+                    Picker("", selection: $settings.agentAttentionMark) {
+                        ForEach(AgentAttentionMark.allCases) { mark in
+                            Text(mark.displayName).tag(mark)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .fixedSize()
+                    .disabled(!settings.agentAttentionEnabled)
                 }
 
                 // Optional: opens a dictation in the pane of the session that

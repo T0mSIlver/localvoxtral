@@ -691,59 +691,60 @@ final class PolishPromptWarmupTests: XCTestCase {
     /// The invariant that makes app-side warmup work: the helper checkpoints
     /// every message EXCEPT the last, so the warmup request's non-final
     /// messages must be byte-identical to a production polish request's,
-    /// whatever the transcript or dictionary content.
+    /// whatever the transcript or dictionary content. Pinned for both bundled
+    /// template sources: the standard profile's and the agent profile's.
     func testWarmupRequestSharesAllNonFinalMessagesWithProductionRequests() throws {
-        let (templates, cleanup) = try LLMPolishEvalSupport.defaultPromptTemplates()
-        defer { cleanup() }
+        let (standardTemplates, standardCleanup) = try LLMPolishEvalSupport.defaultPromptTemplates()
+        let (agentTemplates, agentCleanup) = try LLMPolishEvalSupport.agentPromptTemplates()
+        defer { standardCleanup(); agentCleanup() }
 
-        let warmup = PolishPromptWarmup.request(templates: templates)
-        let production = LLMPolishingRequest(
-            inputText: "fix the bug in src/auth/useAuth.ts , then run the tests .",
-            systemPrompt: templates.systemContent,
-            userPrompts: templates.renderedUserPrompts(
-                inputText: "fix the bug in src/auth/useAuth.ts , then run the tests .",
-                replacementDictionary: "- \"local vox\" -> \"localvoxtral\""
+        let cases: [
+            (label: String, templates: LLMPromptTemplates,
+             productionInput: String, productionDictionary: String)
+        ] = [
+            (
+                "standard bundled templates",
+                standardTemplates,
+                "fix the bug in src/auth/useAuth.ts , then run the tests .",
+                "- \"local vox\" -> \"localvoxtral\""
+            ),
+            (
+                "agent bundled templates",
+                agentTemplates,
+                "run cargo test dash dash release",
+                ""
+            ),
+        ]
+
+        for testCase in cases {
+            let warmup = PolishPromptWarmup.request(templates: testCase.templates)
+            let production = LLMPolishingRequest(
+                inputText: testCase.productionInput,
+                systemPrompt: testCase.templates.systemContent,
+                userPrompts: testCase.templates.renderedUserPrompts(
+                    inputText: testCase.productionInput,
+                    replacementDictionary: testCase.productionDictionary
+                )
             )
-        )
 
-        XCTAssertEqual(warmup.systemPrompt, production.systemPrompt)
-        XCTAssertEqual(warmup.userPrompts.count, production.userPrompts.count)
-        XCTAssertEqual(
-            Array(warmup.userPrompts.dropLast()),
-            Array(production.userPrompts.dropLast()),
-            "warmup must prime the exact prefix messages production requests reuse"
-        )
-        XCTAssertEqual(warmup.maxTokens, 1)
-        XCTAssertFalse(
-            warmup.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-            "the service rejects empty input"
-        )
-    }
-
-    /// Same invariant for the agent profile's bundled templates: an agent
-    /// commit reuses the checkpoint only if the warmup's non-final messages
-    /// are byte-identical to an agent production request's.
-    func testWarmupRequestSharesAllNonFinalMessagesWithAgentProductionRequests() throws {
-        let (templates, cleanup) = try LLMPolishEvalSupport.agentPromptTemplates()
-        defer { cleanup() }
-
-        let warmup = PolishPromptWarmup.request(templates: templates)
-        let production = LLMPolishingRequest(
-            inputText: "run cargo test dash dash release",
-            systemPrompt: templates.systemContent,
-            userPrompts: templates.renderedUserPrompts(
-                inputText: "run cargo test dash dash release",
-                replacementDictionary: ""
+            XCTAssertEqual(
+                warmup.systemPrompt, production.systemPrompt, testCase.label
             )
-        )
-
-        XCTAssertEqual(warmup.systemPrompt, production.systemPrompt)
-        XCTAssertEqual(warmup.userPrompts.count, production.userPrompts.count)
-        XCTAssertEqual(
-            Array(warmup.userPrompts.dropLast()),
-            Array(production.userPrompts.dropLast()),
-            "warmup must prime the exact prefix messages agent production requests reuse"
-        )
+            XCTAssertEqual(
+                warmup.userPrompts.count, production.userPrompts.count, testCase.label
+            )
+            XCTAssertEqual(
+                Array(warmup.userPrompts.dropLast()),
+                Array(production.userPrompts.dropLast()),
+                "\(testCase.label): warmup must prime the exact prefix messages "
+                    + "production requests reuse"
+            )
+            XCTAssertEqual(warmup.maxTokens, 1, testCase.label)
+            XCTAssertFalse(
+                warmup.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                "\(testCase.label): the service rejects empty input"
+            )
+        }
     }
 
     /// A custom user template with no static text before its first

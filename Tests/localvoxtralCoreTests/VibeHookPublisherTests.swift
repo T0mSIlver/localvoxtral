@@ -575,10 +575,16 @@ final class VibeIntegrationFilesTests: XCTestCase {
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
 
+        // Both declared commands are the same string today, so each DISTINCT
+        // command runs once: re-running an identical command can only repeat an
+        // assertion, while a future edit that makes the two differ still gets
+        // one run per command here.
+        var seen = Set<String>()
         for line in commands {
             // TOML basic string: strip `command = "` and the closing quote, unescape `\"`.
             let command = String(line.dropFirst(#"command = ""#.count).dropLast())
                 .replacingOccurrences(of: #"\""#, with: "\"")
+            guard seen.insert(command).inserted else { continue }
             let output = home.appendingPathComponent("out")
             FileManager.default.createFile(atPath: output.path, contents: nil)
             let process = Process()

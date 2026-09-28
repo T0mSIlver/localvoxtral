@@ -106,50 +106,32 @@ final class TerminalTargetDetectorTests: XCTestCase {
         XCTAssertFalse(TerminalTargetDetector.isTerminalLikeBundleID("dev.warplike.Other"))
     }
 
-    func testFixtureUsesDeadExternalBackendInsteadOfLiveManagedService() {
-        let viewModel = makeViewModel(outputMode: .overlayBuffer)
-
-        XCTAssertEqual(viewModel.settings.dictationBackendMode, .externalURL)
-        XCTAssertEqual(
-            viewModel.settings.resolvedWebSocketURL?.absoluteString,
-            "ws://127.0.0.1:1/realtime"
-        )
-    }
-
     // MARK: - Decision logic (injected AX probe)
 
-    func testUnknownBundleWithUnsettableValueIsTerminalLike() {
-        let decision = TerminalTargetDetector.decision(forBundleID: "com.example.unknown") {
-            .valueNotSettable
+    func testUnknownBundleDecisionFollowsTheAXProbeResult() {
+        let cases: [(
+            probe: TerminalTargetDetector.FocusedElementProbe,
+            isTerminalLike: Bool,
+            reason: TerminalTargetDetector.Reason,
+            row: String
+        )] = [
+            (.valueNotSettable, true, .axProbeValueNotSettable, "valueNotSettable"),
+            (.noFocusedElement, true, .axProbeNoFocusedElement, "noFocusedElement"),
+            (.valueSettable, false, .axProbeValueSettable, "valueSettable"),
+            // AX trust missing / transient AX errors must not flip ordinary apps
+            // terminal-like — "couldn't tell" is distinct from "confirmed grid".
+            (.probeUnavailable, false, .axProbeUnavailable, "probeUnavailable"),
+        ]
+        for row in cases {
+            let decision = TerminalTargetDetector.decision(forBundleID: "com.example.unknown") {
+                row.probe
+            }
+            XCTAssertEqual(
+                decision.isTerminalLike, row.isTerminalLike,
+                "\(row.row): a terminal grid reads unsettable or missing; a writable value is an ordinary editor"
+            )
+            XCTAssertEqual(decision.reason, row.reason, row.row)
         }
-        XCTAssertTrue(decision.isTerminalLike)
-        XCTAssertEqual(decision.reason, .axProbeValueNotSettable)
-    }
-
-    func testUnknownBundleWithMissingFocusedElementIsTerminalLike() {
-        let decision = TerminalTargetDetector.decision(forBundleID: "com.example.unknown") {
-            .noFocusedElement
-        }
-        XCTAssertTrue(decision.isTerminalLike)
-        XCTAssertEqual(decision.reason, .axProbeNoFocusedElement)
-    }
-
-    func testUnknownBundleWithSettableValueIsNotTerminalLike() {
-        let decision = TerminalTargetDetector.decision(forBundleID: "com.example.unknown") {
-            .valueSettable
-        }
-        XCTAssertFalse(decision.isTerminalLike)
-        XCTAssertEqual(decision.reason, .axProbeValueSettable)
-    }
-
-    func testUnknownBundleWithUnavailableProbeIsNotTerminalLike() {
-        // AX trust missing / transient AX errors must not flip ordinary apps
-        // terminal-like — "couldn't tell" is distinct from "confirmed grid".
-        let decision = TerminalTargetDetector.decision(forBundleID: "com.example.unknown") {
-            .probeUnavailable
-        }
-        XCTAssertFalse(decision.isTerminalLike)
-        XCTAssertEqual(decision.reason, .axProbeUnavailable)
     }
 
     func testAllowlistedBundleIsTerminalLikeWithoutProbing() {

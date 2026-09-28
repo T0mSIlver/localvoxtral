@@ -78,6 +78,13 @@ struct DictationInsights: Equatable, Sendable {
     /// Of those, the ones it changed. A dictation only the replacement
     /// dictionary changed is in neither count.
     var polishChanged = 0
+    /// Dictations whose insertion was watched to the end of its window: the
+    /// ones the user erased right away plus the ones left alone. A window a
+    /// new dictation cut short says neither, so it is in neither count.
+    var editWatched = 0
+    /// Of those, the ones erased within seconds (Backspace, forward delete or
+    /// ⌘A): the "edited soon after insertion" share #519 trends.
+    var editedSoon = 0
     var medianPolishSeconds: Double?
     var slowPolishSeconds: Double?
     var recurringFixes: [RecurringFix] = []
@@ -115,6 +122,15 @@ struct DictationInsights: Equatable, Sendable {
             if entry.polishRan, let seconds = entry.polishingDurationSeconds {
                 polishRan += 1
                 polishSeconds.append(seconds)
+            }
+            switch entry.editOutcome.flatMap(EditSignalOutcome.init(rawValue:)) {
+            case .edited:
+                editWatched += 1
+                editedSoon += 1
+            case .clean:
+                editWatched += 1
+            case .superseded, nil:
+                break
             }
             if let bundleID = entry.targetAppBundleID, !bundleID.isEmpty {
                 appCounts[bundleID, default: 0] += 1

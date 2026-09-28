@@ -38,7 +38,7 @@ expect() {
 
 expect true "the gate script runs the suite" scripts/mac/localvoxtral-ui-gate.sh
 expect true "the suite itself runs the suite" scripts/ci/test-ui-gate.sh
-expect true "the workflow it asserts on runs the suite" .github/workflows/ci.yml
+expect true "the workflow it asserts on runs the suite" .github/workflows/ui-smoke.yml
 expect true "an input beside unrelated files still runs it" \
   Sources/localvoxtral/SettingsView.swift scripts/try-pr.sh
 expect false "a Swift change does not" Sources/localvoxtral/SettingsView.swift

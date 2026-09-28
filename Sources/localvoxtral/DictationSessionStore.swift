@@ -25,6 +25,8 @@ struct DictationHistoryEntry: Identifiable, Equatable, Sendable {
     var joinedAgent: String? = nil
     /// Where a quick capture went; nil for every other dictation.
     var quickCaptureDestination: String? = nil
+    /// `EditSignalOutcome`'s raw value, nil when nothing was watched.
+    var editOutcome: String? = nil
 
     /// What the dictation ended up as, the transcript when nothing changed it.
     var finalText: String { polishedText ?? rawText }
@@ -54,7 +56,7 @@ struct DictationHistoryEntry: Identifiable, Equatable, Sendable {
             commitSucceeded: commitSucceeded, polishProfile: polishProfile,
             polishContextSummary: polishContextSummary, projectKey: projectKey,
             projectName: projectName, joinedAgent: joinedAgent,
-            quickCaptureDestination: quickCaptureDestination)
+            quickCaptureDestination: quickCaptureDestination, editOutcome: editOutcome)
     }
 
     /// What "Copy last dictation" copies, nil when there is no text.
@@ -84,7 +86,8 @@ extension DictationHistoryEntry {
             projectKey: record.projectKey,
             projectName: record.projectName,
             joinedAgent: record.joinedAgent,
-            quickCaptureDestination: record.quickCaptureDestination
+            quickCaptureDestination: record.quickCaptureDestination,
+            editOutcome: record.editOutcome
         )
     }
 
@@ -107,7 +110,8 @@ extension DictationHistoryEntry {
             projectKey: projectKey,
             projectName: projectName,
             joinedAgent: joinedAgent,
-            quickCaptureDestination: quickCaptureDestination
+            quickCaptureDestination: quickCaptureDestination,
+            editOutcome: editOutcome
         )
     }
 }
@@ -368,6 +372,18 @@ final class DictationSessionStore {
         }
         lastWrite = Task { _ = await task.value }
         return await task.value
+    }
+
+    /// Copies the edit watch's verdict onto the dictation, for Insights.
+    @discardableResult
+    func setEditOutcome(_ outcome: EditSignalOutcome, forDictation id: UUID) -> Task<Void, Never> {
+        let value = outcome.rawValue
+        return enqueueWrite("record the edit outcome of dictation \(id)") { context in
+            let records = try context.fetch(FetchDescriptor<DictationSessionRecord>(
+                predicate: #Predicate { $0.id == id }))
+            for record in records { record.editOutcome = value }
+            return records.count
+        }
     }
 
     /// Deletes every diagnostic record and keeps the dictations: the

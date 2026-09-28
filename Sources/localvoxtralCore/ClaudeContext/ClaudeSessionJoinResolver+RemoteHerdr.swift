@@ -17,7 +17,7 @@ extension ClaudeSessionJoinResolver {
     /// dead. With no title arm left there is nothing to fall through TO, so
     /// every non-join is one answer: this arm has no session for you. The
     /// CAUSES stay distinct — each decline still logs and taps its own
-    /// content-free string, which is what the dogfood record and
+    /// content-free string, which is what the diagnostic record and
     /// `--probe-surface` read.
     package enum RemoteHerdrArmOutcome {
         case declined
@@ -78,7 +78,7 @@ extension ClaudeSessionJoinResolver {
         case .undeterminable(let cause):
             // The category is content-free by type (`SSHProbeIndeterminacy` —
             // never a host, path, or option), so it may ride into the log and
-            // the dogfood record. Three field dictations were diagnosed blind
+            // the diagnostic record. Three field dictations were diagnosed blind
             // without it (2026-08-06).
             Self.abstainedRemoteHerdrJoin(outcome: "ssh session undeterminable (\(cause.rawValue))")
             return .declined

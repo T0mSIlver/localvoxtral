@@ -13,8 +13,8 @@ enum AgentUsageFixtures {
         {"type":"result","subtype":"success","is_error":false,"num_turns":3,"total_cost_usd":0.0839732,\#
         "usage":{"input_tokens":4,"cache_creation_input_tokens":16017,"cache_read_input_tokens":14686,"output_tokens":1696},\#
         "modelUsage":{"claude-sonnet-5":{"inputTokens":4,"outputTokens":1696}},"permission_denials":[],\#
-        "result":"{\"terms\":[\"Quillmark\",\"GlyphAtlasCache\"]}",\#
-        "structured_output":{"terms":["Quillmark","GlyphAtlasCache"]}}
+        "result":"{\"terms\":[\"Quillmark\",\"Glyph Atlas\"]}",\#
+        "structured_output":{"terms":["Quillmark","Glyph Atlas"]}}
         """#
 
     /// That run in the ledger's terms.

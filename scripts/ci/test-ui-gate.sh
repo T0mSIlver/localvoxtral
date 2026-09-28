@@ -382,11 +382,11 @@ install -m 0700 "$ROOT_DIR/scripts/mac/lv-attach.sh" "$FAKE_HOME/bin/lv-attach"
 
 # --- fixtures --------------------------------------------------------------
 
-make_bundle() { # <name> <bundle-id> <executable> <dogfood-stamp:true|absent>
+make_bundle() { # <name> <bundle-id> <executable> <harness-stamp:true|absent>
   make_bundle_in "$ARTIFACT_ROOT" "$@"
 }
 
-make_bundle_in() { # <parent> <name> <bundle-id> <executable> <dogfood-stamp>
+make_bundle_in() { # <parent> <name> <bundle-id> <executable> <harness-stamp>
   local parent="$1"
   shift
   local dir="$parent/$1" stamp=""
@@ -394,7 +394,7 @@ make_bundle_in() { # <parent> <name> <bundle-id> <executable> <dogfood-stamp>
   : >"$dir/Contents/MacOS/$3"
   chmod +x "$dir/Contents/MacOS/$3"
   if [[ "$4" == "true" ]]; then
-    stamp=$'  <key>LVXDogfoodCapture</key>\n  <true/>'
+    stamp=$'  <key>LVXE2EHarness</key>\n  <true/>'
   fi
   cat >"$dir/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -412,7 +412,7 @@ PLIST
 }
 
 CLEAN_APP="$(make_bundle localvoxtral.app com.localvoxtral.app localvoxtral absent)"
-DOGFOOD_APP="$(make_bundle localvoxtral-dogfood.app com.localvoxtral.app localvoxtral true)"
+HARNESS_APP="$(make_bundle localvoxtral-harness.app com.localvoxtral.app localvoxtral true)"
 IMPOSTOR_APP="$(make_bundle Mail.app com.apple.mail Mail absent)"
 
 # --- gate runner -----------------------------------------------------------
@@ -556,15 +556,15 @@ assert_allowed() { # <command> <description> [env...]
   pass "allowed: $description"
 }
 
-write_app_state() { # <pid> [dogfood:0|1] [bundle]
-  local pid="$1" dogfood="${2:-0}" bundle="${3:-$CLEAN_APP}"
+write_app_state() { # <pid> [harness:0|1] [bundle]
+  local pid="$1" harness="${2:-0}" bundle="${3:-$CLEAN_APP}"
   local dir="$FAKE_HOME/.localvoxtral-ui-gate"
   mkdir -p "$dir"
   {
     printf 'pid=%s\n' "$pid"
     printf 'bundle=%s\n' "$bundle"
     printf 'identity=%s|%s\n' "Mon Aug 24 09:00:00 2026" "$bundle/Contents/MacOS/localvoxtral"
-    printf 'dogfood=%s\n' "$dogfood"
+    printf 'harness=%s\n' "$harness"
   } >"$dir/app.state"
 }
 
@@ -622,7 +622,7 @@ assert_denied 'state extra' 'state takes no arguments'
 assert_denied 'quit now' 'quit takes no arguments'
 assert_denied 'launch' 'launch without an artifact'
 assert_denied "launch --wat $CLEAN_APP" 'launch with an unknown flag'
-assert_denied "launch $CLEAN_APP $DOGFOOD_APP" 'launch with two artifacts'
+assert_denied "launch $CLEAN_APP $HARNESS_APP" 'launch with two artifacts'
 assert_denied 'key' 'key without a name'
 assert_denied 'key escape tab' 'key with two names'
 assert_denied 'key cmd+q' 'key outside the three-entry allowlist'
@@ -673,7 +673,7 @@ assert_denied "launch $IMPOSTOR_APP" 'launch of another vendor .app under the ro
 assert_denied 'launch /Applications/Mail.app' 'launch outside the allowlisted roots'
 assert_denied "launch $ARTIFACT_ROOT/../../etc" 'launch with .. in the path'
 assert_denied "launch $ARTIFACT_ROOT/missing.app" 'launch of a path that does not exist'
-assert_denied "launch --dogfood $CLEAN_APP" 'launch --dogfood on an unstamped bundle'
+assert_denied "launch --harness $CLEAN_APP" 'launch --harness on an unstamped bundle'
 
 echo "== 4. term open is not a shell verb =="
 
@@ -897,17 +897,18 @@ run_gate "launch $CLEAN_APP" "${APP_ENV[@]}" STUB_PGREP_PID=4242 STUB_PGREP_RUNN
 pass "launch refuses beside an instance it did not start, and opens nothing"
 clear_state
 
-# --dogfood requires the Info.plist stamp AND arms the runtime opt-in.
+# --harness requires the Info.plist stamp, and arms nothing: the socket's
+# consent stays the owner's own `defaults write`.
 clear_state
 : >"$TMP_DIR/defaults.log"
-run_gate "launch --dogfood $DOGFOOD_APP" \
+run_gate "launch --harness $HARNESS_APP" \
   STUB_PS_LSTART="Mon Aug 24 09:00:00 2026" \
-  STUB_PS_COMM="$DOGFOOD_APP/Contents/MacOS/localvoxtral" \
+  STUB_PS_COMM="$HARNESS_APP/Contents/MacOS/localvoxtral" \
   STUB_PGREP_PID=4343
-(( GATE_STATUS == 0 )) || fail "launch --dogfood of a stamped bundle failed: $GATE_STDERR"
-grep -q 'debug.dogfood_capture_enabled' "$TMP_DIR/defaults.log" \
-  || fail "launch --dogfood did not arm the capture opt-in"
-pass "allowed: launch --dogfood on a stamped bundle"
+(( GATE_STATUS == 0 )) || fail "launch --harness of a stamped bundle failed: $GATE_STDERR"
+[[ ! -s "$TMP_DIR/defaults.log" ]] \
+  || fail "launch --harness wrote defaults: $(cat "$TMP_DIR/defaults.log")"
+pass "allowed: launch --harness on a stamped bundle"
 
 # The bundle ships localvoxtral-speechd, localvoxtral-polishd and
 # localvoxtral-claude-hook in the SAME Contents/MacOS directory
@@ -1870,7 +1871,7 @@ pass "the installer's default destination is one of the gate's allowlisted roots
 SRC_DIR="$TMP_DIR/src"
 mkdir -p "$SRC_DIR"
 SRC_CLEAN="$(make_bundle_in "$SRC_DIR" build-clean.app com.localvoxtral.app localvoxtral absent)"
-SRC_DOGFOOD="$(make_bundle_in "$SRC_DIR" build-dogfood.app com.localvoxtral.app localvoxtral true)"
+SRC_HARNESS="$(make_bundle_in "$SRC_DIR" build-harness.app com.localvoxtral.app localvoxtral true)"
 SRC_IMPOSTOR="$(make_bundle_in "$SRC_DIR" Mail.app com.apple.mail Mail absent)"
 INSTALL_ROOT="$FAKE_HOME/install-root"
 
@@ -1924,8 +1925,15 @@ grep -q "^label=pr-238 @ CI run 123$" "$ARTIFACT_ROOT/localvoxtral.app.source" \
   || fail "no gate-launch hint, or not the path the gate resolves: $INSTALL_STDERR"
 pass "a clean bundle installs into the default root, with provenance and no launch"
 
+# The removed dogfood build's slot goes with the first install after it: the
+# gate would launch the stale instrumented bundle in it as a clean one.
+mkdir -p "$ARTIFACT_ROOT/localvoxtral-dogfood.app/Contents/MacOS"
+: >"$ARTIFACT_ROOT/localvoxtral-dogfood.app.source"
 run_install "$SRC_CLEAN" --no-hint
 (( INSTALL_STATUS == 0 )) || fail "--no-hint install failed: $INSTALL_STDERR"
+[[ ! -e "$ARTIFACT_ROOT/localvoxtral-dogfood.app" && ! -e "$ARTIFACT_ROOT/localvoxtral-dogfood.app.source" ]] \
+  || fail "the retired dogfood slot survived an install"
+pass "an install deletes the retired dogfood slot"
 [[ "$INSTALL_STDERR" != *"gate launch"* ]] \
   || fail "--no-hint still printed a launch hint (try-pr.sh prints its own, later)"
 pass "--no-hint suppresses the duplicate launch hint"
@@ -1937,19 +1945,19 @@ assert_allowed "launch $ARTIFACT_ROOT/localvoxtral.app" \
   "${APP_ENV[@]}" STUB_PGREP_PID=4242
 clear_state
 
-run_install "$SRC_DOGFOOD"
-(( INSTALL_STATUS == 0 )) || fail "installing a dogfood bundle failed: $INSTALL_STDERR"
-[[ "$INSTALL_STDOUT" == "$ARTIFACT_ROOT/localvoxtral-dogfood.app" ]] \
-  || fail "the stamped bundle did not take the dogfood slot: $INSTALL_STDOUT"
-grep -q '^variant=dogfood$' "$ARTIFACT_ROOT/localvoxtral-dogfood.app.source" \
-  || fail "the provenance file does not record the dogfood variant"
-assert_allowed "launch --dogfood $ARTIFACT_ROOT/localvoxtral-dogfood.app" \
-  'the gate launches the installed dogfood bundle with --dogfood' \
+run_install "$SRC_HARNESS"
+(( INSTALL_STATUS == 0 )) || fail "installing a harness bundle failed: $INSTALL_STDERR"
+[[ "$INSTALL_STDOUT" == "$ARTIFACT_ROOT/localvoxtral-harness.app" ]] \
+  || fail "the stamped bundle did not take the harness slot: $INSTALL_STDOUT"
+grep -q '^variant=harness$' "$ARTIFACT_ROOT/localvoxtral-harness.app.source" \
+  || fail "the provenance file does not record the harness variant"
+assert_allowed "launch --harness $ARTIFACT_ROOT/localvoxtral-harness.app" \
+  'the gate launches the installed harness bundle with --harness' \
   STUB_PS_LSTART="Mon Aug 24 09:00:00 2026" \
-  STUB_PS_COMM="$ARTIFACT_ROOT/localvoxtral-dogfood.app/Contents/MacOS/localvoxtral" \
+  STUB_PS_COMM="$ARTIFACT_ROOT/localvoxtral-harness.app/Contents/MacOS/localvoxtral" \
   STUB_PGREP_PID=4343
 clear_state
-pass "clean and dogfood builds occupy separate slots and both launch"
+pass "clean and harness builds occupy separate slots and both launch"
 
 # --- reinstall replaces its slot -------------------------------------------
 #
@@ -2030,7 +2038,7 @@ INSTALL_ENV=(LV_UI_ARTIFACT_DEST_ROOT="$ARTIFACT_ROOT" STUB_PGREP_PID=4242)
 assert_install_refused 'overwriting a bundle that is currently running' "$SRC_CLEAN"
 [[ "$INSTALL_STDERR" == *"quit it first"* ]] \
   || fail "the running-bundle refusal did not say what to do: $INSTALL_STDERR"
-# That refusal, and ONLY that one, is exit 3: ci.yml turns it into a warning
+# That refusal, and ONLY that one, is exit 3: ui-smoke.yml turns it into a warning
 # instead of a red build, because the build was fine and the owner merely had
 # the app open. Every other refusal must stay fatal.
 (( INSTALL_STATUS == 3 )) \
@@ -2039,7 +2047,7 @@ INSTALL_ENV=(LV_UI_ARTIFACT_DEST_ROOT="$INSTALL_ROOT/world")
 chmod 0777 "$INSTALL_ROOT/world"
 assert_install_refused 'a world-writable root (again, to pin its exit code)' "$SRC_CLEAN"
 (( INSTALL_STATUS == 1 )) \
-  || fail "a security refusal used exit $INSTALL_STATUS — ci.yml would treat 3 as a warning"
+  || fail "a security refusal used exit $INSTALL_STATUS — ui-smoke.yml would treat 3 as a warning"
 chmod 0755 "$INSTALL_ROOT/world"
 pass "only the slot-is-running refusal is exit 3; security refusals stay exit 1"
 
@@ -2069,38 +2077,32 @@ grep -q 'DEST="\$(mktemp -d /tmp/localvoxtral-try.XXXXXX)"' "$TRY_PR" \
   || fail "try-pr.sh's default extraction directory changed — --ui-gate was meant to be additive"
 pass "try-pr.sh's default (extract to /tmp, then open) is untouched"
 
-echo "== 20. the dispatched CI build installs itself for the gate =="
+echo "== 20. a dispatched UI Smoke run installs its harness build for the gate =="
 
 # try-pr.sh --ui-gate serves an operator with a shell on the Mac. An agent
 # driving the gate has neither a shell nor a verb that runs try-pr.sh, so the
 # runner does the install instead: it is a launchd agent in the owner's GUI
 # session, which is why $HOME there is the same home the gate's artifact root
 # lives under.
-CI_YML="$ROOT_DIR/.github/workflows/ci.yml"
-INSTALL_STEP="$(awk '/^      - name: Install the dogfood build into the UI gate/ { capture = 1 }
+UI_SMOKE_YML="$ROOT_DIR/.github/workflows/ui-smoke.yml"
+INSTALL_STEP="$(awk '/^      - name: Install the harness build into the UI gate/ { capture = 1 }
                      capture && /^      - name: / && ++seen > 1 { exit }
-                     capture { print }' "$CI_YML")"
-[[ -n "$INSTALL_STEP" ]] || fail "ci.yml has no UI-gate install step"
+                     capture { print }' "$UI_SMOKE_YML")"
+[[ -n "$INSTALL_STEP" ]] || fail "ui-smoke.yml has no UI-gate install step"
 grep -q 'install-ui-artifact.sh' <<<"$INSTALL_STEP" \
   || fail "the UI-gate install step does not go through install-ui-artifact.sh"
 
-# The gating is the whole safety story: an ordinary PR push must never write
-# into the owner's home, and the [dogfood-package] marker fires on those.
+# The gating is the whole safety story: a PR label or a scheduled run must
+# never write into the owner's home.
 STEP_IF="$(awk '/^ *if: >-$/ { capture = 1; next } capture && /^ *run:/ { exit } capture { print }' <<<"$INSTALL_STEP")"
 [[ -n "$STEP_IF" ]] || fail "the UI-gate install step has no multi-line if: gate"
 for required in "runner.environment == 'self-hosted'" \
                 "github.event_name == 'workflow_dispatch'" \
-                "github.event.inputs.dogfood == 'true'"; do
+                "steps.package.outcome == 'success'"; do
   grep -qF "$required" <<<"$STEP_IF" \
     || fail "the UI-gate install step is not gated on $required"
 done
-# `inputs.dogfood` is declared `type: boolean`; comparing a boolean to the
-# string 'true' coerces both to numbers (1 vs NaN), so that form is always
-# false and the step would silently never run. Only the event payload's
-# string copy compares as written.
-grep -q "github\.event\.inputs\.dogfood == 'true'" <<<"$STEP_IF" \
-  || fail "the dogfood gate must read github.event.inputs.dogfood (the boolean input never equals 'true')"
-pass "the UI-gate install step runs only on a workflow_dispatch with dogfood=true"
+pass "the UI-gate install step runs only on a workflow_dispatch that packaged"
 
 # Exit 3 (the slot is running) is a warning; anything else fails the build.
 grep -q 'STATUS == 3' <<<"$INSTALL_STEP" \
@@ -2111,17 +2113,17 @@ grep -q 'STATUS != 0' <<<"$INSTALL_STEP" \
   || fail "the install step swallows failures other than the slot-is-running one"
 pass "a running slot warns; every other install failure is red"
 
-echo "== 21. app — the passthrough to the dogfood control socket =="
+echo "== 21. app — the passthrough to the harness control socket =="
 
 # The verb exists because two things about the join are invisible from outside
 # the app's process: a dictation has no deterministic trigger, and the session
 # registry is per-process, so `--probe-surface` sees only the app's last saved
 # copy. What is proved here is that the passthrough stayed a
-# passthrough — one fixed socket, five known shapes, a dogfood-only gate.
+# passthrough — one fixed socket, five known shapes, a harness-only gate.
 
-DOGFOOD_APP_ENV=(
+HARNESS_APP_ENV=(
   STUB_PS_LSTART="Mon Aug 24 09:00:00 2026"
-  STUB_PS_COMM="$DOGFOOD_APP/Contents/MacOS/localvoxtral"
+  STUB_PS_COMM="$HARNESS_APP/Contents/MacOS/localvoxtral"
 )
 
 # A real AF_UNIX inode: `[[ -S ]]` is the gate's "is the app exposing one"
@@ -2145,19 +2147,19 @@ APP_SOCKET_ENV=(LV_UI_CONTROL_SOCKET="$CONTROL_SOCKET")
 
 clear_state
 assert_denied 'app join report' 'app with no app under test' \
-  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+  "${HARNESS_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
 
 # A shipped build compiles no socket at all, so this refusal is the difference
 # between one clear line and a connect that never answers.
 write_app_state 4242 0 "$CLEAN_APP"
-assert_denied 'app join report' 'app against a build with no dogfood stamp' \
+assert_denied 'app join report' 'app against a build with no harness stamp' \
   "${APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
-[[ "$(log_tail)" == *"not a dogfood build"* ]] \
-  || fail "the non-dogfood refusal did not say why: $(log_tail)"
+[[ "$(log_tail)" == *"not a harness build"* ]] \
+  || fail "the non-harness refusal did not say why: $(log_tail)"
 
-write_app_state 4242 1 "$DOGFOOD_APP"
+write_app_state 4242 1 "$HARNESS_APP"
 assert_denied 'app join report' 'app when the app is not exposing a socket' \
-  "${DOGFOOD_APP_ENV[@]}" LV_UI_CONTROL_SOCKET="$NOT_A_SOCKET"
+  "${HARNESS_APP_ENV[@]}" LV_UI_CONTROL_SOCKET="$NOT_A_SOCKET"
 [[ "$(log_tail)" == *"dogfood_control_socket_enabled"* ]] \
   || fail "the missing-socket refusal did not name the runtime opt-in: $(log_tail)"
 
@@ -2177,20 +2179,20 @@ for hostile in \
   'app rm -rf /'
 do
   assert_denied "$hostile" "app refuses: ${hostile#app }" \
-    "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+    "${HARNESS_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
 done
 
 # The socket path is not an argument, and there is no verb shape that makes it
 # one — so a second socket on the machine is unreachable through this gate.
 assert_denied "app join report $TMP_DIR/other.sock" 'app cannot be pointed at another socket' \
-  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+  "${HARNESS_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
 grep -q 'LV_UI_CONTROL_SOCKET' <<<"$(awk '/^run_app\(\) \{/ { capture = 1 } capture { print } capture && /^\}$/ { exit }' "$GATE")" \
   || fail "run_app no longer reads the fixed socket path"
 
 : >"$TMP_DIR/swift.log"
 : >"$TMP_DIR/say.log"
 assert_allowed 'app join report' 'app forwards a read-only command' \
-  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+  "${HARNESS_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
 grep -q "control $CONTROL_SOCKET join report" "$TMP_DIR/swift.log" \
   || fail "app did not forward the line to the fixed socket: $(cat "$TMP_DIR/swift.log")"
 [[ "$GATE_STDOUT" == *'"ok":true'* ]] \
@@ -2200,20 +2202,20 @@ grep -q "control $CONTROL_SOCKET join report" "$TMP_DIR/swift.log" \
 
 : >"$TMP_DIR/swift.log"
 assert_allowed 'app registry list' 'app forwards registry list' \
-  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+  "${HARNESS_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
 grep -q "control $CONTROL_SOCKET registry list" "$TMP_DIR/swift.log" \
   || fail "registry list did not reach the socket: $(cat "$TMP_DIR/swift.log")"
 
 # Owner rule: anything that takes the keyboard warns and waits first.
 : >"$TMP_DIR/say.log"
 assert_allowed 'app session start overlay' 'app session start warns before taking the screen' \
-  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+  "${HARNESS_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
 grep -q "taking control in 3" "$TMP_DIR/say.log" \
   || fail "app session start did not speak the takeover warning (owner rule)"
 
 : >"$TMP_DIR/say.log"
 assert_allowed 'app session stop' 'app session stop gives the session back without warning' \
-  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+  "${HARNESS_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
 [[ ! -s "$TMP_DIR/say.log" ]] \
   || fail "session stop spoke a takeover warning for a verb that takes nothing"
 
@@ -2221,21 +2223,21 @@ assert_allowed 'app session stop' 'app session stop gives the session back witho
 # question about the wrong surface, are both refused; in-process reads are not.
 LOCK_STATE=locked
 assert_denied 'app session start overlay' 'app session start while the screen is locked' \
-  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+  "${HARNESS_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
 assert_denied 'app session start live' 'app session start live while the screen is locked' \
-  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+  "${HARNESS_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
 assert_denied 'app surface probe' 'app surface probe while the screen is locked' \
-  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+  "${HARNESS_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
 assert_allowed 'app join report' 'app join report is a read and survives a locked screen' \
-  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+  "${HARNESS_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
 assert_allowed 'app registry list' 'app registry list survives a locked screen' \
-  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+  "${HARNESS_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
 assert_allowed 'app session stop' 'app session stop survives a locked screen' \
-  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+  "${HARNESS_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
 LOCK_STATE=unlocked
 
 # A socket that does not answer must not read as a completed command.
-run_gate 'app join report' "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}" STUB_CONTROL_FAIL=1
+run_gate 'app join report' "${HARNESS_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}" STUB_CONTROL_FAIL=1
 (( GATE_STATUS != 0 )) || fail "app reported success when the control socket refused"
 [[ "$GATE_STDERR" == *"control socket did not answer"* ]] \
   || fail "app's failure message is unhelpful: $GATE_STDERR"
@@ -2362,8 +2364,8 @@ assert_allowed 'log' 'log masks token-shaped runs' STUB_LOG_OUTPUT_FILE="$LOG_FI
 [[ "$GATE_STDOUT" != *"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"* ]] \
   || fail "log emitted a token-shaped run verbatim"
 [[ "$GATE_STDOUT" == *"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"* ]] \
-  || fail "log masked a run that is not the token shape — the rule must match DiagnosticRecordRedaction exactly"
-pass "log applies the same token-shaped scrub as the dogfood records"
+  || fail "log masked a run that is not the token shape — the rule must match DiagnosticRecordRedaction's token rule exactly"
+pass "log applies the same token-shaped scrub as the diagnostic records' token rule"
 
 # A cap that silently truncated would make a missing line look like a missing
 # event, so the drop is announced.
@@ -2780,13 +2782,13 @@ clear_conf
 #    localvoxtral bundle. Mail.app sits in the same fixture root.
 STATE="$(state_json 'the artifact roots')"
 ARTIFACT_NAMES="$(state_field "$STATE" '" ".join(sorted(a["name"] for a in s["setup"]["artifacts"]))')"
-[[ "$ARTIFACT_NAMES" == "localvoxtral-dogfood.app localvoxtral.app" ]] \
+[[ "$ARTIFACT_NAMES" == "localvoxtral-harness.app localvoxtral.app" ]] \
   || fail "state listed the wrong launchable bundles: $ARTIFACT_NAMES"
 [[ "$STATE" != *"Mail.app"* ]] \
   || fail "state listed a bundle launch would refuse — the list must be what launch accepts"
-[[ "$(state_field "$STATE" 'str([a["dogfood"] for a in s["setup"]["artifacts"] if a["name"]=="localvoxtral-dogfood.app"])')" == "[True]" ]] \
-  || fail "state did not distinguish the dogfood slot: $STATE"
-pass "state lists exactly the bundles launch would accept, and which are dogfood"
+[[ "$(state_field "$STATE" 'str([a["harness"] for a in s["setup"]["artifacts"] if a["name"]=="localvoxtral-harness.app"])')" == "[True]" ]] \
+  || fail "state did not distinguish the harness slot: $STATE"
+pass "state lists exactly the bundles launch would accept, and which are harness"
 
 # 7. The control socket: both halves, because `app` needs both.
 STATE="$(state_json 'the control socket, armed and bound' \
@@ -2802,7 +2804,7 @@ STATE="$(state_json 'the control socket, unbound' LV_UI_CONTROL_SOCKET="$NOT_A_S
 pass "state reports the control socket's consent and whether anything is bound"
 
 # A socket FILE that answers nothing is the case the file test could not see.
-# A dogfood build that quit leaves its socket behind, and a build with no
+# A harness build that quit leaves its socket behind, and a build with no
 # control socket compiled in never removes a predecessor's — so on 2026-09-05
 # `state` said `"present":true` while every `app` command came back
 # `could not connect to the control socket (61)`. `state` exists to answer
@@ -2902,7 +2904,7 @@ run_gate 'gate-log' STUB_LOG_RESTRICTED=1
 (( GATE_STATUS == 0 )) || fail "gate-log went near the unified log: $GATE_STDERR"
 pass "gate-log reads the gate's own file and nothing else"
 
-# The same token-shaped scrub the dogfood records and `log` use. These lines
+# The token-shaped scrub the diagnostic records and `log` use. These lines
 # are ours, but "every line anyone ever adds is safe" is not worth depending on.
 printf '%s\n' "2026-08-30T10:00:00+0000 DENY launch $(printf 'a%.0s' $(seq 1 43))" >>"$LOG_FILE"
 assert_allowed 'gate-log 3' 'gate-log masks token-shaped runs'

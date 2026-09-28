@@ -1,7 +1,7 @@
 import Foundation
 
 /// Why a dictation's join never reached the resolver. The raw value is the
-/// cause the outcome line and the dogfood record carry: a category, never a
+/// cause the outcome line and the diagnostic record carry: a category, never a
 /// path, host, address or id.
 package enum ClaudeJoinGate: String, Equatable, Sendable {
     case noPolishingEndpoint = "gate: no polishing endpoint"

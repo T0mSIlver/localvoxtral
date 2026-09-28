@@ -1,6 +1,7 @@
 import ClaudeContextWire
 import Foundation
 import localvoxtralTestSupport
+import Synchronization
 import XCTest
 @testable import localvoxtral
 
@@ -1527,6 +1528,131 @@ final class DictationPipelineTests: XCTestCase {
         await stopAndFinalize(pipeline)
     }
 
+    // MARK: - Reviewing a ready draft (#927)
+
+    /// A finished draft waits for a break: nothing shows while the user is
+    /// mid-task, and the stop of the next dictation lights the mark and the
+    /// popover line.
+    func testAStoppedDictationIsTheBreakThatShowsAReadyDraft() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        _ = try await installInboxWithDraft(pipeline)
+        XCTAssertNil(pipeline.viewModel.agentAttentionLine, "held until a break")
+        XCTAssertEqual(pipeline.viewModel.menuBarIndicatorState, .idle)
+
+        await startAndSpeak(pipeline)
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline)
+
+        XCTAssertEqual(pipeline.viewModel.agentAttentionLine, "Draft ready: Inbox for reach")
+        XCTAssertEqual(pipeline.viewModel.menuBarIndicatorState, .agentNeedsYou)
+    }
+
+    /// With nobody waiting, the answer key opens the draft: the overlay shows
+    /// that one draft and no other destination. "file it" files it as shown
+    /// and nothing reaches the focused app.
+    func testTheAnswerKeyOpensTheDraftAndFileItFilesIt() async throws {
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        let inbox = try await installInboxWithDraft(pipeline, shown: true)
+        XCTAssertEqual(pipeline.viewModel.agentAttentionLine, "Draft ready: Inbox for reach")
+
+        await startAndSpeak(pipeline, start: { $0.session.answerAgentThatNeedsYou() })
+        XCTAssertEqual(pipeline.overlay.startSessionAnchors.count, 1, "a review opens the overlay whatever the menu bar mode")
+        XCTAssertEqual(pipeline.overlay.shownDraftReviews.last??.title, "Dark mode")
+        XCTAssertTrue(pipeline.overlay.shownDestinations.isEmpty, "a review offers no other destination")
+
+        await sendDelta(pipeline, "File it.")
+        await stopAndFinalize(pipeline, finalText: "File it.", finalStatus: QuickCaptureReviewStatus.filing)
+        await pipeline.viewModel.session.draftReviewTask?.value
+
+        XCTAssertEqual(inbox.github.created.withLock { $0.map(\.[1]) }, ["Dark mode"])
+        XCTAssertEqual(inbox.model.items.first?.state, .filed)
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing reaches the focused app")
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), ["File it."], "the words are in History")
+        XCTAssertNil(pipeline.viewModel.session.sessionDraftReview, "the next dictation is an ordinary one")
+        XCTAssertNil(pipeline.viewModel.agentAttentionLine, "filed, it left the cue")
+    }
+
+    /// A review that files, drops and changes nothing keeps its draft in the
+    /// cue, as does a start the app refused: the next press opens it again.
+    func testAReviewThatSaysNothingKeepsTheDraftInTheCue() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        _ = try await installInboxWithDraft(pipeline, shown: true)
+
+        await startAndSpeak(pipeline, start: { $0.session.answerAgentThatNeedsYou() })
+        // Only the send phrase: nothing left to act on.
+        await stopAndFinalize(pipeline, finalText: "send it", finalStatus: QuickCaptureReviewStatus.kept)
+
+        XCTAssertEqual(pipeline.viewModel.agentAttentionLine, "Draft ready: Inbox for reach")
+    }
+
+    /// "drop it" alone, then three seconds of silence, stops the review by
+    /// voice and discards the draft.
+    func testDropItAndSilenceStopTheReviewAndDiscardTheDraft() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        let inbox = try await installInboxWithDraft(pipeline, shown: true)
+
+        await startAndSpeak(pipeline, start: { $0.session.answerAgentThatNeedsYou() })
+        await sendDelta(pipeline, "Drop it.")
+        let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "armed by the whole phrase")
+        await pipeline.clock.waitForSleepers(3)
+        pipeline.clock.advance(by: 3)
+        await armed.value
+        XCTAssertFalse(pipeline.viewModel.isDictating)
+        await finishStoppedSession(pipeline, finalText: "Drop it.", finalStatus: QuickCaptureReviewStatus.dropped)
+
+        XCTAssertTrue(inbox.model.items.isEmpty)
+        XCTAssertTrue(inbox.github.created.withLock { $0.isEmpty })
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0)
+    }
+
+    /// Anything else is a change: the drafter reruns with the dictated
+    /// words, the draft and the change, and a trailing send phrase is not
+    /// part of it. The redraft is a new draft, held for the next break.
+    func testAChangeRedraftsTheDraft() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        let inbox = try await installInboxWithDraft(pipeline, shown: true)
+        inbox.runner.nextTitles.withLock { $0 = ["Popover dark mode"] }
+
+        await startAndSpeak(pipeline, start: { $0.session.answerAgentThatNeedsYou() })
+        await sendDelta(pipeline, "Make it only the popover part, send it.")
+        let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "armed by the send phrase")
+        await pipeline.clock.waitForSleepers(3)
+        pipeline.clock.advance(by: 3)
+        await armed.value
+        await finishStoppedSession(
+            pipeline, finalText: "Make it only the popover part, send it.", finalStatus: QuickCaptureReviewStatus.redrafting
+        )
+        await pipeline.viewModel.session.draftReviewTask?.value
+
+        XCTAssertEqual(inbox.model.items.first?.title, "Popover dark mode")
+        XCTAssertEqual(inbox.model.items.first?.changes, ["Make it only the popover part"])
+        let prompt = inbox.runner.arguments.withLock { $0.last?.joined(separator: " ") ?? "" }
+        XCTAssertTrue(prompt.contains("Make it only the popover part"))
+        XCTAssertFalse(prompt.contains("send it"))
+        XCTAssertTrue(inbox.github.created.withLock { $0.isEmpty })
+        XCTAssertNil(pipeline.viewModel.agentAttentionLine, "the redraft waits for the next break")
+    }
+
+    /// An agent that needs you comes before a draft.
+    func testTheAnswerKeyGoesToAWaitingAgentBeforeADraft() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        // An unconfirmed focus starts no dictation, so the press is all
+        // there is to observe.
+        let waiting = installWaitingSessions(
+            pipeline, ["pay": "/r/payments"], outcome: .unverified(bundleID: TerminalScreenAllowlist.ghosttyBundleID)
+        )
+        _ = try await installInboxWithDraft(pipeline, shown: true, attention: pipeline.viewModel.agentAttention)
+        XCTAssertEqual(pipeline.viewModel.agentAttentionLine, "payments needs you (+1)")
+
+        pipeline.viewModel.session.answerAgentThatNeedsYou()
+        await pipeline.viewModel.session.answerAgentTask?.value
+        XCTAssertEqual(waiting.focuser.focusedSessionIDs, ["pay"])
+        XCTAssertEqual(pipeline.viewModel.agentAttentionLine, "Draft ready: Inbox for reach", "the draft waits its turn")
+        XCTAssertTrue(pipeline.overlay.shownDraftReviews.isEmpty)
+    }
+
     // MARK: - The two halves every scenario shares
 
     /// Start, open the microphone, connect, and get one captured chunk to the
@@ -1712,6 +1838,33 @@ final class DictationPipelineTests: XCTestCase {
             tracker.receive(.notification, session: session)
         }
         return (tracker, focuser)
+    }
+
+    /// An Inbox with one draft for "reach", ready and held for a break
+    /// (shown, when `shown`), with the cue on and nobody waiting unless
+    /// `attention` is already installed.
+    private func installInboxWithDraft(
+        _ pipeline: Pipeline, shown: Bool = false, attention: AgentAttentionModel? = nil
+    ) async throws -> (model: QuickCaptureInboxModel, github: FakeQuickCaptureGitHub, runner: FakeQuickCaptureDraftRunner) {
+        let settings = pipeline.viewModel.settings
+        settings.agentAttentionEnabled = true
+        if attention == nil {
+            let tracker = AgentAttentionTracker(
+                isEnabled: { settings.agentAttentionEnabled },
+                isWatching: { _ in false },
+                liveSessionIDs: { [] },
+                now: { Date(timeIntervalSince1970: 0) }
+            )
+            pipeline.viewModel.agentAttention = AgentAttentionModel(tracker: tracker, announcer: nil)
+        }
+        let github = FakeQuickCaptureGitHub()
+        let runner = FakeQuickCaptureDraftRunner()
+        let model = QuickCaptureFixture.model(fileURL: nil, answer: ["reach": 0.9], github: github, runner: runner)
+        pipeline.viewModel.installDraftCue(for: model)
+        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        XCTAssertEqual(model.items.first?.isReadyDraft, true)
+        if shown { pipeline.viewModel.agentAttention?.reachedBreak() }
+        return (model, github, runner)
     }
 
     /// 100 ms of 16 kHz mono PCM16, different for each seed, so a frame on

@@ -57,6 +57,8 @@ PATTERNS=(
   'Sources/localvoxtralCore/*RealtimeWebSocketClient.swift'   # Base, and Mistral, which shares it
   'Sources/localvoxtralCore/RealtimeAPIWebSocketClient.swift' # the client under test
   'Sources/localvoxtralCore/StringExtensions.swift'       # API key and model trimming
+  'Sources/localvoxtralCore/RealtimeFileTranscriber.swift' # voice memo files through the socket
+  'Sources/localvoxtral/VoiceMemoCapture.swift'           # the memo decoder the live test uses
   'Sources/localvoxtral/MicrophoneCaptureService.swift'
   'Sources/localvoxtral/AudioDeviceManager.swift'         # the unavailable-device test
   'Sources/localvoxtralCore/TextMergingAlgorithms.swift'  # the scorer normalizes through it

@@ -24,7 +24,7 @@ final class ProjectTermProposalTests: XCTestCase {
             "--max-budget-usd", "0.50",
             "--output-format", "json",
             "--json-schema",
-            #"{"type":"object","properties":{"terms":{"type":"array","items":{"type":"string"},"maxItems":40}},"required":["terms"],"additionalProperties":false}"#,
+            #"{"type":"object","properties":{"terms":{"type":"array","items":{"type":"string"},"maxItems":40},"description":{"type":"string"}},"required":["terms","description"],"additionalProperties":false}"#,
         ])
     }
 
@@ -156,9 +156,38 @@ final class ProjectTermProposalTests: XCTestCase {
         )
     }
 
+    func testTheProjectsSentenceIsReadFromEachAgentsAnswer() {
+        let claude = #"{"type":"result","subtype":"success","is_error":false,"structured_output":{"terms":["qmk"],"description":"Quillmark: Markdown to PDF."}}"#
+        XCTAssertEqual(
+            ProjectTermProposal.parseClaude(stdout: Data(claude.utf8), exitCode: 0),
+            .terms(["qmk"], usage: ProjectTermProposal.Usage(
+                turns: nil, costUSD: nil, inputTokens: nil, cacheWriteTokens: nil, cacheReadTokens: nil, outputTokens: nil
+            ), line: "Quillmark: Markdown to PDF.")
+        )
+        XCTAssertEqual(
+            ProjectTermProposal.answerObject(in: "Read two files.\n```json\n{\"terms\": [\"qmk\"], \"description\": \"A CLI.\"}\n```"),
+            ProjectTermProposal.Answer(terms: ["qmk"], line: "A CLI.")
+        )
+        XCTAssertEqual(
+            ProjectTermProposal.answerObject(in: #"{"terms": ["qmk"]}"#),
+            ProjectTermProposal.Answer(terms: ["qmk"], line: nil),
+            "an old runner's answer"
+        )
+    }
+
+    func testTheSentenceIsOneCappedLineWithoutLinks() {
+        XCTAssertEqual(ProjectTermProposal.acceptedLine(" A\tCLI\r\nfor PDFs. "), "A CLI for PDFs.")
+        XCTAssertNil(ProjectTermProposal.acceptedLine("  \n "))
+        XCTAssertNil(ProjectTermProposal.acceptedLine("Docs at www.example.com"))
+        XCTAssertNil(ProjectTermProposal.acceptedLine("See [the docs](x)"))
+        let long = ProjectTermProposal.acceptedLine(String(repeating: "word ", count: 80))
+        XCTAssertEqual(long?.count, ProjectTermProposal.maxLineCharacters)
+        XCTAssertEqual(long?.last, "…")
+    }
+
     func testClaudesTextResultIsReadWhenTheStructuredOneIsMissing() {
         let text = #"{"type":"result","subtype":"success","is_error":false,"result":"```json\n{\"terms\":[\"inkwell\"]}\n```"}"#
-        guard case .terms(let terms, _) = ProjectTermProposal.parseClaude(stdout: Data(text.utf8), exitCode: 0) else {
+        guard case .terms(let terms, _, _) = ProjectTermProposal.parseClaude(stdout: Data(text.utf8), exitCode: 0) else {
             return XCTFail("expected terms")
         }
         XCTAssertEqual(terms, ["inkwell"])
@@ -307,7 +336,7 @@ final class ProjectTermProposalTests: XCTestCase {
         """#
 
     func testOpencodesAnswerAndSummedUsageAreRead() throws {
-        guard case .terms(let terms, let usage) = ProjectTermProposal.parseOpencode(
+        guard case .terms(let terms, let usage, _) = ProjectTermProposal.parseOpencode(
             stdout: Data(Self.opencodeSuccess.utf8), exitCode: 0
         ) else { return XCTFail("expected terms") }
         XCTAssertEqual(terms, ["quillmark", "inkwell", "QUILLMARK_FONT_DIR", "qmk", "localvoxtral"])
@@ -321,7 +350,7 @@ final class ProjectTermProposalTests: XCTestCase {
     }
 
     func testOpencodesAnswerAfterASentenceIsRead() {
-        guard case .terms(let terms, _) = ProjectTermProposal.parseOpencode(
+        guard case .terms(let terms, _, _) = ProjectTermProposal.parseOpencode(
             stdout: Data(Self.opencodeProseFirst.utf8), exitCode: 0
         ) else { return XCTFail("expected terms") }
         XCTAssertEqual(terms, ["inkwell"])
@@ -359,11 +388,11 @@ final class ProjectTermProposalTests: XCTestCase {
 
     func testATermsObjectAfterProseIsReadFencedOrBare() {
         XCTAssertEqual(
-            ProjectTermProposal.termsObject(in: "Read two files.\n\n```json\n{\"terms\": [\"qmk\"]}\n```"),
+            ProjectTermProposal.answerObject(in: "Read two files.\n\n```json\n{\"terms\": [\"qmk\"]}\n```")?.terms,
             ["qmk"]
         )
-        XCTAssertEqual(ProjectTermProposal.termsObject(in: "Done: {\"terms\": [\"terms\", \"qmk\"]}"), ["terms", "qmk"])
-        XCTAssertNil(ProjectTermProposal.termsObject(in: "The terms are inkwell and qmk."))
+        XCTAssertEqual(ProjectTermProposal.answerObject(in: "Done: {\"terms\": [\"terms\", \"qmk\"]}")?.terms, ["terms", "qmk"])
+        XCTAssertNil(ProjectTermProposal.answerObject(in: "The terms are inkwell and qmk."))
     }
 
     // MARK: The term filter
@@ -383,8 +412,12 @@ final class ProjectTermProposalTests: XCTestCase {
                 "42",
                 "Inkwell",
                 "QUILLMARK_FONT_DIR",
+                "GlyphAtlasCache",
+                "qmk --out",
+                "Glyph Atlas",
             ]),
-            ["inkwell", "QUILLMARK_FONT_DIR"]
+            ["inkwell", "Glyph Atlas"],
+            "an environment variable, a type name and a flag are code, not names (#914)"
         )
     }
 

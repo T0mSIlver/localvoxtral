@@ -20,10 +20,15 @@ import Glibc
 /// reached it.
 ///
 /// So a copy that lost a bind to another copy retries it each time another
-/// copy exits. It never retries while they all run: the broker's liveness
-/// check connects to the owner's socket, and a timer would make it log a
-/// connection every few seconds. A retry that still finds the socket held
-/// (the copy that exited was not the owner) waits for the next exit.
+/// copy exits. A retry that still finds the socket held (the copy that exited
+/// was not the owner) waits for the next exit.
+///
+/// The broker never retries on a timer: its liveness check connects to the
+/// owner's socket, and a timer would make it log a connection every few
+/// seconds. The listener's port does: a failed bind touches no one, and the
+/// port's holder need not be a copy of the app with an exit to watch (a
+/// test host, an ssh `-L`, a copy under another bundle id). A step with a
+/// `retryInterval` is also retried on that clock until it binds (#892).
 @MainActor
 public final class ClaudeHookSocketTakeover {
     public enum Outcome: Equatable, Sendable {
@@ -54,10 +59,15 @@ public final class ClaudeHookSocketTakeover {
 
     public struct Step {
         public let name: String
+        /// Nil: retried only when another copy exits.
+        public let retryInterval: Duration?
         public let attempt: @MainActor () -> Outcome
 
-        public init(name: String, attempt: @escaping @MainActor () -> Outcome) {
+        public init(
+            name: String, retryInterval: Duration? = nil, attempt: @escaping @MainActor () -> Outcome
+        ) {
             self.name = name
+            self.retryInterval = retryInterval
             self.attempt = attempt
         }
     }
@@ -68,10 +78,14 @@ public final class ClaudeHookSocketTakeover {
         _ pid: Int32, _ onExit: @escaping @MainActor @Sendable () -> Void
     ) -> AnyObject
 
+    public typealias SleepFor = @Sendable (Duration) async throws -> Void
+
     private var pending: [Step]
     private let otherCopies: @MainActor () -> [Int32]
     private let watchExit: ExitWatch
+    private let sleepFor: SleepFor
     private var watches: [AnyObject] = []
+    private var timer: Task<Void, Never>?
     /// Bumped on every retry, so a watch armed before it cannot fire again.
     private var generation = 0
 
@@ -79,15 +93,19 @@ public final class ClaudeHookSocketTakeover {
     ///   - steps: the binds that lost to another copy at launch, in the order
     ///     launch ran them.
     ///   - otherCopies: pids of the other running copies of the app.
+    ///   - sleepFor: the clock the timed retries wait on.
     public init(
         steps: [Step],
         otherCopies: @escaping @MainActor () -> [Int32],
-        watchExit: @escaping ExitWatch
+        watchExit: @escaping ExitWatch,
+        sleepFor: @escaping SleepFor = { try await Task.sleep(for: $0) }
     ) {
         self.pending = steps
         self.otherCopies = otherCopies
         self.watchExit = watchExit
+        self.sleepFor = sleepFor
     }
+
 
     /// True while a step waits for another copy to exit.
     public var isWaiting: Bool { !pending.isEmpty }
@@ -99,28 +117,57 @@ public final class ClaudeHookSocketTakeover {
     /// they lost.
     public func begin() {
         armWatches()
+        armTimer()
     }
 
-    private func retry() {
+    private func retryAfterExit() {
         generation += 1
         watches.removeAll()
+        attempt(when: "after another copy exited") { _ in true }
+        armWatches()
+        armTimer()
+    }
+
+    private func retryOnTimer() {
+        attempt(when: "once its holder let go") { $0.retryInterval != nil }
+        if !isWaiting {
+            generation += 1
+            watches.removeAll()
+        }
+        armTimer()
+    }
+
+    /// Runs the pending steps `which` selects; the others stay pending.
+    private func attempt(when moment: String, _ which: (Step) -> Bool) {
         pending = pending.filter { step in
+            guard which(step) else { return true }
             switch step.attempt() {
             case .bound:
                 Log.claudeContext.notice(
-                    "Claude hook socket takeover: \(step.name, privacy: .public) bound after another copy exited"
+                    "Claude hook socket takeover: \(step.name, privacy: .public) bound \(moment, privacy: .public)"
                 )
                 return false
             case .heldByAnotherCopy:
                 return true
             case .failed:
                 Log.claudeContext.error(
-                    "Claude hook socket takeover: \(step.name, privacy: .public) failed after another copy exited; giving up"
+                    "Claude hook socket takeover: \(step.name, privacy: .public) failed \(moment, privacy: .public); giving up"
                 )
                 return false
             }
         }
-        armWatches()
+    }
+
+    private func armTimer() {
+        timer?.cancel()
+        timer = nil
+        guard let interval = pending.compactMap(\.retryInterval).min() else { return }
+        let sleepFor = sleepFor
+        timer = Task { @MainActor [weak self] in
+            do { try await sleepFor(interval) } catch { return }
+            guard !Task.isCancelled else { return }
+            self?.retryOnTimer()
+        }
     }
 
     private func armWatches() {
@@ -129,9 +176,10 @@ public final class ClaudeHookSocketTakeover {
         let names = waitingSteps.joined(separator: ", ")
         guard !pids.isEmpty else {
             // A socket held by something that is not a copy of the app: no
-            // exit to wait for. Settings' Retry is the way back.
+            // exit to wait for. A step with a retry interval still retries on
+            // it; the others wait for Settings' Retry.
             Log.claudeContext.error(
-                "Claude hook socket takeover: \(names, privacy: .public) held, but no other copy of the app runs; not waiting"
+                "Claude hook socket takeover: \(names, privacy: .public) held, but no other copy of the app runs; not waiting for an exit"
             )
             return
         }
@@ -144,7 +192,7 @@ public final class ClaudeHookSocketTakeover {
         watches = pids.map { pid in
             watchExit(pid) { [weak self] in
                 guard let self, self.generation == armed else { return }
-                self.retry()
+                self.retryAfterExit()
             }
         }
     }

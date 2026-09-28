@@ -39,11 +39,21 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
     /// Mac never asks a host that has not reported at least these.
     package static let minimumPluginVersion = "1.15.0"
     package static let minimumVibeHooksVersion = "1.2.0"
+    /// The first shims whose runner asks for the project's sentence too
+    /// (#891). A project answered before is asked again only through them.
+    package static let minimumLinePluginVersion = "1.20.0"
+    package static let minimumLineVibeHooksVersion = "1.5.0"
+    /// The first shims whose runner asks for names people say (#914,
+    /// `ProjectTermProposal.promptRevision` 3).
+    package static let minimumSpokenPluginVersion = "1.21.0"
+    package static let minimumSpokenVibeHooksVersion = "1.6.0"
 
     package struct Pending: Equatable, Sendable {
         package let agent: ProjectTermProposal.Agent
         package let project: LearnedTermProjectIdentity
         package let excluding: [String]
+        /// The prompt revision the host's runner asks with.
+        package let revision: Int
         package let markedAt: Date
         /// When the header went out; nil while it waits for a hook.
         package var askedAt: Date?
@@ -98,7 +108,9 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
         else { return false }
 
         let moment = now()
-        guard store.snapshot().needsProposal(projectKey: project.key, now: moment) else { return false }
+        let revision = Self.hostPromptRevision(host, agent: agent)
+        guard store.snapshot().needsProposal(projectKey: project.key, now: moment, revision: revision)
+        else { return false }
         let claimed = state.withLock { state -> Bool in
             prune(&state, now: moment)
             if let last = state.asked[project.key],
@@ -108,7 +120,8 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
             }
             state.asked[project.key] = moment
             state.pending[join.sessionID] = Pending(
-                agent: agent, project: project, excluding: excluding, markedAt: moment, askedAt: nil
+                agent: agent, project: project, excluding: excluding, revision: revision, markedAt: moment,
+                askedAt: nil
             )
             return true
         }
@@ -134,6 +147,28 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
         case .opencode:
             return false
         }
+    }
+
+    /// The prompt revision the host's recorded shim for `agent` asks with:
+    /// 3 asks for names people say (#914), 2 for the project's sentence too
+    /// (#891), 1 for terms only.
+    package static func hostPromptRevision(_ host: ClaudeRemoteHost, agent: ProjectTermProposal.Agent) -> Int {
+        func atLeast(_ minimum: String) -> Bool {
+            switch agent {
+            case .claude:
+                guard let report = host.reportedPluginVersion else { return false }
+                return report >= .version(minimum)
+            case .vibe:
+                guard let version = host.reportedVibeHooksVersion else { return false }
+                return !ClaudeRemotePluginVersionCodec.isVersion(version, olderThan: minimum)
+            case .opencode:
+                return false
+            }
+        }
+        let spoken = agent == .vibe ? minimumSpokenVibeHooksVersion : minimumSpokenPluginVersion
+        let line = agent == .vibe ? minimumLineVibeHooksVersion : minimumLinePluginVersion
+        if atLeast(spoken) { return 3 }
+        return atLeast(line) ? 2 : 1
     }
 
     // MARK: Step 2, the next hook's reply
@@ -168,39 +203,48 @@ public final class RemoteProjectTermRequests: @unchecked Sendable {
     }
 
     /// Reads an answer body and stores its term-shaped entries as `slot`'s
-    /// proposals. The body is Claude Code's result object from a 1.19.0
-    /// shim, or `{"terms": [...]}`, bare or in one code fence (Vibe, and an
-    /// older shim). `reportedUsage` is a Vibe run's `X-Lvx-Usage`. Nil when
-    /// the body is neither shape; nothing is stored then.
+    /// proposals, and its sentence on the project (#891). The body is Claude
+    /// Code's result object from a 1.19.0 shim, or `{"terms": [...],
+    /// "description": "..."}`, bare or in one code fence (Vibe, and an older
+    /// shim). `reportedUsage` is a Vibe run's `X-Lvx-Usage`. Nil when the
+    /// body is neither shape; nothing is stored then.
     package func accept(answer: Data, slot: Pending, reportedUsage: ProjectTermProposal.Usage? = nil) -> Int? {
         #if DEBUG
         debugAnswerObserver.withLock { $0 }?(answer.count)
         #endif
-        let (terms, usage) = Self.parse(answer: answer, agent: slot.agent)
+        let (parsed, usage) = Self.parse(answer: answer, agent: slot.agent)
         // The host ran the agent whatever it answered; a run that reported
         // nothing (an older shim) is counted, unpriced.
         usageRecorder?.record(
             .agentRun(date: now(), feature: .projectTerms, agent: slot.agent, usage: usage ?? reportedUsage))
-        guard let raw = terms else { return nil }
-        let accepted = ProjectTermProposal.acceptedTerms(raw)
-        store.recordProposal(accepted, agent: slot.agent, project: slot.project, excluding: slot.excluding)
+        guard let parsed else { return nil }
+        let accepted = ProjectTermProposal.acceptedTerms(parsed.terms)
+        // Asked for the sentence and answered without one (Vibe has no
+        // schema flag): still answered, or the host's `done` stamp would
+        // leave the Mac asking daily for nothing.
+        store.recordProposal(
+            accepted, line: parsed.line ?? (slot.revision >= 2 ? "" : nil), revision: slot.revision,
+            agent: slot.agent, project: slot.project, excluding: slot.excluding)
         return accepted.count
     }
 
     /// The terms and usage in a host's answer. Only Claude Code's result
     /// object (`"type": "result"`) carries usage.
-    static func parse(answer: Data, agent: ProjectTermProposal.Agent) -> (terms: [String]?, usage: ProjectTermProposal.Usage?) {
+    static func parse(
+        answer: Data, agent: ProjectTermProposal.Agent
+    ) -> (answer: ProjectTermProposal.Answer?, usage: ProjectTermProposal.Usage?) {
         if agent == .claude,
            let object = try? JSONSerialization.jsonObject(with: answer) as? [String: Any],
            object["type"] as? String == "result"
         {
             switch ProjectTermProposal.parseClaude(stdout: answer, exitCode: 0) {
-            case .terms(let terms, let usage): return (terms, usage)
+            case .terms(let terms, let usage, let line):
+                return (ProjectTermProposal.Answer(terms: terms, line: line), usage)
             case .failed: return (nil, nil)
             }
         }
         guard let text = String(data: answer, encoding: .utf8) else { return (nil, nil) }
-        return (ProjectTermProposal.termsObject(in: text), nil)
+        return (ProjectTermProposal.answerObject(in: text), nil)
     }
 
     /// A Vibe run's counts from `X-Lvx-Usage`: three decimal numbers of at

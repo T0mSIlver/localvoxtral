@@ -202,12 +202,12 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         // prefill — the CI failure mode of 2026-07-11.
         await warmPromptPrefixes(configStore: configStore, configuration: polishConfiguration)
 
-        let enVoice = recordedAudio == nil
+        let enVoice = try recordedAudio == nil
             ? Self.resolveVoice(
                 languagePrefix: "en", preferred: EvalSpeechStage.englishVoicePreference
             )
             : nil
-        let frVoice = recordedAudio == nil
+        let frVoice = try recordedAudio == nil
             ? Self.resolveVoice(
                 languagePrefix: "fr", preferred: EvalSpeechStage.frenchVoicePreference
             )
@@ -220,8 +220,8 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             )
         } else {
             print(
-                "agent-e2e: audio=tts voices en=\(enVoice ?? "<system default>") "
-                    + "fr=\(frVoice ?? "<none — fr TTS cases skip>")"
+                "agent-e2e: audio=tts voices en=\(enVoice ?? "-") "
+                    + "fr=\(frVoice ?? "-")"
             )
         }
 
@@ -306,7 +306,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             results: results,
             header: "polish model: \(polishConfiguration.model), "
                 + "asr: \(asrConfiguration.model) @ \(asrConfiguration.endpoint), "
-                + "audio: \(recordedAudio.map(\.audioLabel) ?? "macOS say"), "
+                + "audio: \(recordedAudio.map(\.audioLabel) ?? "macOS say en=\(enVoice ?? "-") fr=\(frVoice ?? "-")"), "
                 + "polish backend: \(polishBackend)"
         )
         print(board.text)
@@ -685,8 +685,8 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         try EvalSpeechStage.synthesizedPCM16(text: text, voice: voice)
     }
 
-    private static func resolveVoice(languagePrefix: String, preferred: [String]) -> String? {
-        EvalSpeechStage.resolveVoice(languagePrefix: languagePrefix, preferred: preferred)
+    private static func resolveVoice(languagePrefix: String, preferred: [String]) throws -> String {
+        try EvalSpeechStage.resolveVoice(languagePrefix: languagePrefix, preferred: preferred)
     }
 
     // MARK: - ASR (production websocket client vs live speechd STT service)

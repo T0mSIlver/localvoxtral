@@ -90,10 +90,11 @@ public final class ClaudeRemoteForwardCoordinator {
                     // record is what lets the next launch find and kill the
                     // orphan instead of reporting "Port held" at it.
                     if let pidLedger,
-                       let record = ClaudeRemoteForwardProcessIdentity.snapshot(
+                       var record = ClaudeRemoteForwardProcessIdentity.snapshot(
                            pid: process.processIdentifier
                        )
                     {
+                        record.owner = .current
                         pidLedger.remember(hostID: config.hostID, record: record)
                     }
                     return process
@@ -133,9 +134,10 @@ public final class ClaudeRemoteForwardCoordinator {
         }
 
         // Orphans from a previous run die BEFORE the first forward dials. The
-        // gate sits after the listener check on purpose: only the instance
-        // holding the listener port gets here, so a second app instance can
-        // never reap the first one's healthy tunnels.
+        // gate sits after the listener check on purpose: a copy that lost the
+        // port has no forwards of its own to clear. It does not protect
+        // another copy's forwards (the port may be free because that copy
+        // lost it too); the reaper's owner check does (#892).
         switch orphanReap {
         case .running:
             return

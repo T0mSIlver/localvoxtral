@@ -74,7 +74,7 @@ final class ClaudeHookSocketTakeoverTests: XCTestCase {
 
     /// The first copy listening on the port, and a second whose launch lost
     /// the bind to it.
-    private func remoteSetup() throws -> RemoteSetup {
+    private func remoteSetup(retryInterval: Duration? = nil) throws -> RemoteSetup {
         let now = epoch
         let hosts = try ClaudeRemoteHostRegistry(
             fileURL: URL(fileURLWithPath: "/tmp/lvx-takeover-\(UUID().uuidString.prefix(8)).json"),
@@ -97,7 +97,7 @@ final class ClaudeHookSocketTakeoverTests: XCTestCase {
                 now: { now }
             )
         }
-        let step = ClaudeHookSocketTakeover.Step(name: "remote listener") {
+        let step = ClaudeHookSocketTakeover.Step(name: "remote listener", retryInterval: retryInterval) {
             do {
                 try second.reconcile()
                 return .bound
@@ -189,6 +189,79 @@ final class ClaudeHookSocketTakeoverTests: XCTestCase {
         XCTAssertEqual(join?.mechanism, .desktopSession)
     }
 
+    /// The port's holder is no copy of the app, so there is no exit to watch:
+    /// the listener retries on its clock and binds once EADDRINUSE clears
+    /// (#892). Field case, 2026-09-27: `bindFailed(errno: 48)` at 16:15, and
+    /// the copy never listened again.
+    func testTheListenerBindsOnceEADDRINUSEClearsWithNoCopyToWaitFor() async throws {
+        let setup = try remoteSetup(retryInterval: .seconds(10))
+        defer {
+            setup.second.shutdown()
+            setup.first.stop()
+        }
+        XCTAssertEqual(setup.step.attempt(), .heldByAnotherCopy, "EADDRINUSE at launch")
+
+        let clock = ManualSessionClock()
+        let exits = Exits()
+        let takeover = ClaudeHookSocketTakeover(
+            steps: [setup.step],
+            otherCopies: { [] },
+            watchExit: exits.watch,
+            sleepFor: { await clock.sleep($0) }
+        )
+        takeover.begin()
+        XCTAssertEqual(exits.watched, [])
+
+        await clock.waitForSleepers(1)
+        clock.advance(by: 10)
+        await clock.waitForSleepers(1)
+        XCTAssertFalse(setup.second.isListening, "still held: the retry waits another interval")
+        XCTAssertTrue(takeover.isWaiting)
+
+        setup.first.stop()
+        clock.advance(by: 10)
+        // The woken retry runs on the main actor once the test yields to it.
+        for _ in 0..<1_000 where takeover.isWaiting { await Task.yield() }
+
+        XCTAssertTrue(setup.second.isListening)
+        XCTAssertEqual(clock.pendingSleepers, 0, "nothing left to retry")
+        XCTAssertEqual(try postDesktopPrompt(setup).status, 200)
+        let join = await desktopJoin(setup.sessions)
+        XCTAssertEqual(join?.mechanism, .desktopSession)
+    }
+
+    /// The broker's retry would connect to the holder's socket, so it never
+    /// runs on a clock, even beside a listener step that does.
+    func testOnlyTheListenerRetriesOnTheClock() async throws {
+        var brokerAttempts = 0
+        var listenerAttempts = 0
+        let clock = ManualSessionClock()
+        let takeover = ClaudeHookSocketTakeover(
+            steps: [
+                .init(name: "broker") {
+                    brokerAttempts += 1
+                    return .heldByAnotherCopy
+                },
+                .init(name: "remote listener", retryInterval: .seconds(10)) {
+                    listenerAttempts += 1
+                    return .heldByAnotherCopy
+                },
+            ],
+            otherCopies: { [] },
+            watchExit: Exits().watch,
+            sleepFor: { await clock.sleep($0) }
+        )
+        takeover.begin()
+        for _ in 0..<3 {
+            await clock.waitForSleepers(1)
+            clock.advance(by: 10)
+        }
+        await clock.waitForSleepers(1)
+        XCTAssertEqual(listenerAttempts, 3)
+        XCTAssertEqual(brokerAttempts, 0)
+        XCTAssertEqual(takeover.waitingSteps, ["broker", "remote listener"])
+    }
+
     // MARK: - The local broker, Desktop on this Mac
 
     func testTheSecondCopyTakesTheBrokerWhenTheFirstQuitsAndALocalDesktopSessionJoins() async throws {
@@ -262,6 +335,17 @@ final class ClaudeHookSocketTakeoverTests: XCTestCase {
         XCTAssertEqual(Outcome(startError: ClaudeRemoteContextListener.StartFailure.bindFailed(errno: EACCES)), .failed)
     }
 
+    /// The launch smoke runs beside the owner's copy and leaves his sockets
+    /// alone; UI Smoke and the UI gate quit his copy first and need the join,
+    /// so their keychain flag alone does not (#892).
+    func testOnlyTheLaunchSmokeFlagsLeaveTheHookSocketsAlone() {
+        typealias Flags = StartupPermissionSuppression
+        XCTAssertTrue(Flags.leavesHookSocketsAlone(environment: [Flags.environmentKey: "1"]))
+        XCTAssertTrue(Flags.leavesHookSocketsAlone(environment: [Flags.hookSocketsEnvironmentKey: "1"]))
+        XCTAssertFalse(Flags.leavesHookSocketsAlone(environment: [Flags.keychainEnvironmentKey: "1"]))
+        XCTAssertFalse(Flags.leavesHookSocketsAlone(environment: [:]))
+    }
+
     func testNoOtherCopyMeansNothingToWaitFor() async {
         let exits = Exits()
         let takeover = ClaudeHookSocketTakeover(
@@ -275,27 +359,29 @@ final class ClaudeHookSocketTakeoverTests: XCTestCase {
     }
 
     #if canImport(Darwin)
-    func testTheExitWatchFiresWhenTheProcessExits() async throws {
+    /// One spawn, both contracts of the exit watch. The first half pins the
+    /// kqueue event: a process that exits WHILE watched fires the callback.
+    /// The second half pins the registration handler: a process that was
+    /// already gone when the kevent was installed never fires it, and only
+    /// the handler's `kill(pid, 0)` check catches that — the same dead pid,
+    /// reaped before the second watch is created, is the cheapest
+    /// deterministic already-gone process.
+    func testTheExitWatchFiresOnExitAndForAProcessAlreadyGone() async throws {
         let child = Process()
         child.executableURL = URL(fileURLWithPath: "/bin/sleep")
         child.arguments = ["30"]
         try child.run()
-        let exited = expectation(description: "exit seen")
-        let watch = ProcessExitWatch(pid: child.processIdentifier) { exited.fulfill() }
+        let exitedWhileWatched = expectation(description: "exit of a watched process seen")
+        let watch = ProcessExitWatch(pid: child.processIdentifier) { exitedWhileWatched.fulfill() }
         child.terminate()
-        await fulfillment(of: [exited], timeout: 10)
-        withExtendedLifetime(watch) {}
-    }
+        await fulfillment(of: [exitedWhileWatched], timeout: 10)
 
-    func testTheExitWatchFiresForAProcessAlreadyGone() async throws {
-        let child = Process()
-        child.executableURL = URL(fileURLWithPath: "/usr/bin/true")
-        try child.run()
         child.waitUntilExit()
-        let exited = expectation(description: "exit seen")
-        let watch = ProcessExitWatch(pid: child.processIdentifier) { exited.fulfill() }
-        await fulfillment(of: [exited], timeout: 10)
+        let alreadyGone = expectation(description: "exit of an already-dead process seen")
+        let lateWatch = ProcessExitWatch(pid: child.processIdentifier) { alreadyGone.fulfill() }
+        await fulfillment(of: [alreadyGone], timeout: 10)
         withExtendedLifetime(watch) {}
+        withExtendedLifetime(lateWatch) {}
     }
     #endif
 }

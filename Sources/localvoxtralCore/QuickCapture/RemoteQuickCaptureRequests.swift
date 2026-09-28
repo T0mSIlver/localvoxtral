@@ -6,7 +6,7 @@ import Synchronization
 package protocol RemoteProjectSummaryStoring: Sendable {
     func snapshot() -> LearnedTerms
     func recordSummary(_ summary: String?, projectKey: String)
-    func recordRemoteReport(project: LearnedTermProjectIdentity, asRepository: Bool)
+    func recordRemoteReport(project: LearnedTermProjectIdentity, asRepository: Bool, repository: String?, hostID: String?)
 }
 
 /// Quick capture for remote projects (#745), on #641's channel: the Mac
@@ -19,9 +19,14 @@ package protocol RemoteProjectSummaryStoring: Sendable {
 ///   `/v1/readme`, and the Mac keeps the summary on that project, where the
 ///   router reads it.
 /// - **Draft.** `draft` waits for the next hook from a session in the
-///   routed project and puts `X-Lvx-Draft: <id>` on its reply. The host
-///   posts its open issues to `/v1/draft/prompt` and gets the drafting
-///   prompt back, with the capture in it; it runs #731's read-only agent in
+///   routed project and puts `X-Lvx-Draft: <id>` on its reply. A host whose
+///   shim sends context (#918: plugin 1.24.0, Vibe hooks 1.9.0) asks
+///   `/v1/draft/words` for the capture's search words, posts its context
+///   bundle (`QuickCaptureContext`) to `/v1/draft/context`, and polls
+///   `/v1/draft/check` while the Mac writes the first draft: 202 to wait,
+///   204 when no check is due, 200 with the check's prompt. An older shim
+///   posts its open issues to `/v1/draft/prompt` and gets the prompt to
+///   draft from scratch. Either way the host runs #731's read-only agent in
 ///   its checkout and posts the output to `/v1/draft`.
 ///
 /// Each answer is taken once, only from the session the ask went to, and
@@ -31,6 +36,9 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
     package static let readmePath = "/v1/readme"
     package static let draftPromptPath = "/v1/draft/prompt"
     package static let draftAnswerPath = "/v1/draft"
+    package static let draftWordsPath = "/v1/draft/words"
+    package static let draftContextPath = "/v1/draft/context"
+    package static let draftCheckPath = "/v1/draft/check"
     /// The session an answer is for: the id the hook sent, before the Mac
     /// scoped it.
     package static let sessionHeaderName = "X-Lvx-Capture-Session"
@@ -49,11 +57,13 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
     package static let maxDraftAnswerBytes = 60 * 1024
     /// A project's README is asked for at most this often per launch.
     package static let readmeAskInterval: TimeInterval = 86_400
-    /// An ask waits this long for its answer, and a draft this long for a
-    /// hook from its project.
+    /// An ask waits this long for its answer. A draft checks this often
+    /// that its project still has a live session to wait for.
     package static let askLifetime: TimeInterval = 600
-    /// A draft's run: the host's 240 s watchdog and 20 s for `gh`, with room.
-    package static let draftRunLifetime: TimeInterval = 600
+    /// A draft's run once asked: the host's context (`gh` and `git grep`,
+    /// 20 s each), the first draft (up to 120 s), the check's 360 s
+    /// watchdog, with room.
+    package static let draftRunLifetime: TimeInterval = 720
     /// A project a hook names is recorded at most this often (#819): hooks
     /// come several times a minute, and the file is written on each record.
     package static let reportInterval: TimeInterval = 3_600
@@ -68,14 +78,27 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
         let projectName: String
         let capture: String
         let createdAt: Date
+        let firstDrafter: (any QuickCaptureFirstDrafting)?
+        let onFirstDraft: QuickCaptureDrafter.FirstDraftHandler
         var sessionID: String?
         var agent: ProjectTermProposal.Agent?
         var askedAt: Date?
-        /// The listed issues' numbers once the host fetched its prompt; nil
-        /// before, and when the host's `gh` listed none.
+        /// The listed issues' numbers once the host sent them; nil before,
+        /// and when the host's `gh` listed none.
         var openIssues: [Int]?
+        var wordsSent = false
+        var contextReceived = false
+        /// The check's prompt once the first draft is in; `.none` when no
+        /// check is due.
+        var check: CheckPrompt = .pending
         var prompted = false
-        let continuation: CheckedContinuation<QuickCaptureDraft.Outcome, Never>
+        let continuation: CheckedContinuation<QuickCaptureDraft.Outcome?, Never>
+    }
+
+    private enum CheckPrompt {
+        case pending
+        case ready(String)
+        case none
     }
 
     private struct State {
@@ -83,9 +106,12 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
         var readmeAsks: [String: ReadmeAsk] = [:]
         var readmeAsked: [String: Date] = [:]
         var drafts: [String: Draft] = [:]
-        /// Keyed by project: when a hook's report of it was last recorded,
-        /// and whether as a repository.
-        var reported: [String: (at: Date, asRepository: Bool)] = [:]
+        /// Drafts that ended with no check due, so the host's next poll
+        /// hears 204 rather than a refusal.
+        var noCheck: [String: Date] = [:]
+        /// Keyed by project and host: when a hook's report of it was last
+        /// recorded, and whether as a repository.
+        var reported: [String: (at: Date, asRepository: Bool, repository: String?)] = [:]
     }
 
     private let state = Mutex(State())
@@ -166,27 +192,38 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
     /// reports any more (#819). Every shim version counts: an old one names
     /// its cwd label, which only stamps a project already held.
     package func noteReport(for snapshot: ClaudeSessionSnapshot) {
-        guard case .remote = snapshot.origin,
+        guard case .remote(let channel) = snapshot.origin,
+              let hostID = ClaudeRemoteSessionScope.hostID(fromChannel: channel),
               case .remoteOpaque(let label)? = snapshot.learnedTermWorkspace,
               let project = LearnedTermProjectResolver.resolve(
                   repositoryRoot: .unknown, workspace: snapshot.learnedTermWorkspace
               ),
               project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix)
         else { return }
-        let asRepository = snapshot.remoteSessionEnvironment?.project == label
+        let asRepository = snapshot.remoteProject == label
+        // The host's origin names the repository only beside its name.
+        let repository = asRepository
+            ? snapshot.remoteEnvironment?.repository.flatMap { QuickCaptureInbox.isRepository($0) ? $0 : nil }
+            : nil
+        // A cwd label stamps only a project a dictation already added. Until
+        // then this hook records nothing, so it must not take the interval:
+        // the hook right after that dictation is the one to stamp (#891).
+        guard asRepository || store.snapshot().projects.contains(where: { $0.key == project.key }) else { return }
         let moment = now()
+        let reportKey = project.key + "\u{0}" + hostID
         let due = state.withLock { state -> Bool in
-            if let last = state.reported[project.key],
+            if let last = state.reported[reportKey],
                moment.timeIntervalSince(last.at) < Self.reportInterval,
-               last.asRepository || !asRepository
+               last.asRepository || !asRepository,
+               repository == nil || last.repository == repository
             {
                 return false
             }
-            state.reported[project.key] = (moment, asRepository)
+            state.reported[reportKey] = (moment, asRepository, repository ?? state.reported[reportKey]?.repository)
             return true
         }
         guard due else { return }
-        store.recordRemoteReport(project: project, asRepository: asRepository)
+        store.recordRemoteReport(project: project, asRepository: asRepository, repository: repository, hostID: hostID)
     }
 
     // MARK: The asks, on an accepted hook's reply
@@ -231,7 +268,7 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
             Log.backends.info("Quick capture: asking a remote host for its project's README")
         }
         if asks.draftID != nil {
-            Log.backends.info("Quick capture: asking a remote \(agent.rawValue, privacy: .public) session's host to draft")
+            Log.backends.notice("Quick capture: asking a remote \(agent.rawValue, privacy: .public) session's host to draft")
         }
         return asks
     }
@@ -253,34 +290,30 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
 
     // MARK: Draft
 
-    /// Has a remote project's host draft `capture`. Returns once the host
-    /// answers, when no session of the project is live on a host that reads
-    /// the ask, or when an ask or run outlives its lifetime.
-    package func draft(capture: String, project: QuickCaptureProject) async -> QuickCaptureDraft.Outcome {
+    /// Has a remote project's host draft `capture`, in two stages when its
+    /// shim sends context. Returns the check once the host answers, nil
+    /// when no check was due, or why none ran: no session of the project is
+    /// live on a host that reads the ask, or the host's run outlived its
+    /// lifetime.
+    package func draft(
+        capture: String,
+        project: QuickCaptureProject,
+        firstDrafter: (any QuickCaptureFirstDrafting)? = nil,
+        onFirstDraft: @escaping QuickCaptureDrafter.FirstDraftHandler = { _ in true }
+    ) async -> QuickCaptureDraft.Outcome? {
         guard project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix) else {
             return .notRun(.remoteProject)
         }
-        var sessionFound = false
-        var hostReads = false
-        for session in registry.liveSessions() {
-            guard case .remote = session.origin,
-                  Self.remoteProjectKey(of: session.learnedTermWorkspace) == project.key,
-                  let agent = ProjectTermProposal.Agent(session.agent), agent != .opencode,
-                  let hostID = ClaudeRemoteSessionScope.hostID(fromScopedSessionID: session.sessionID),
-                  let host = hosts.host(id: hostID), !host.isRevoked
-            else { continue }
-            sessionFound = true
-            if Self.hostReadsTheAsks(host, agent: agent) { hostReads = true }
-        }
+        let (sessionFound, hostReads) = liveSessions(of: project.key)
         guard hostReads else {
-            Log.backends.info(
+            Log.backends.notice(
                 "Quick capture draft: \(sessionFound ? "the remote host's shim predates drafting" : "no live session of the remote project", privacy: .public)"
             )
             return .notRun(sessionFound ? .hostNeedsUpdate : .noHostSession)
         }
         let id = makeID()
         let createdAt = now()
-        Log.backends.info("Quick capture draft: waiting for a hook from the remote project")
+        Log.backends.notice("Quick capture draft: waiting for a hook from the remote project")
         let sleep = sleep
         let timer = Mutex<Task<Void, Never>?>(nil)
         let outcome = await withCheckedContinuation { continuation in
@@ -290,18 +323,27 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
                     projectName: project.name,
                     capture: capture,
                     createdAt: createdAt,
+                    firstDrafter: firstDrafter,
+                    onFirstDraft: onFirstDraft,
                     continuation: continuation
                 )
             }
             // Started once the draft is registered, so an early expiry finds it.
             timer.withLock {
                 $0 = Task { [weak self] in
-                    await sleep(Self.askLifetime)
-                    guard let self, !Task.isCancelled else { return }
-                    guard self.isAsked(id) else {
-                        self.finish(id, with: .notRun(.noHostSession), because: "no hook from the project")
-                        return
+                    // A session sends hooks only while it works, and the
+                    // user may capture while every session of the project
+                    // is idle: the draft waits for as long as one is live.
+                    while true {
+                        await sleep(Self.askLifetime)
+                        guard let self, !Task.isCancelled else { return }
+                        if self.isAsked(id) { break }
+                        guard self.liveSessions(of: project.key).hostReads else {
+                            self.finish(id, with: .notRun(.noHostSession), because: "no hook from the project")
+                            return
+                        }
                     }
+                    guard let self else { return }
                     await sleep(Self.draftRunLifetime)
                     guard !Task.isCancelled else { return }
                     self.finish(id, with: .failed(.timedOut), because: "the host's run did not answer")
@@ -312,35 +354,165 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
         return outcome
     }
 
+    /// Whether a session of the project is live on an enrolled host, and
+    /// whether one of those hosts' shims reads the asks.
+    private func liveSessions(of projectKey: String) -> (sessionFound: Bool, hostReads: Bool) {
+        var sessionFound = false
+        var hostReads = false
+        for session in registry.liveSessions() {
+            guard case .remote = session.origin,
+                  Self.remoteProjectKey(of: session.learnedTermWorkspace) == projectKey,
+                  let agent = ProjectTermProposal.Agent(session.agent), agent != .opencode,
+                  let hostID = ClaudeRemoteSessionScope.hostID(fromScopedSessionID: session.sessionID),
+                  let host = hosts.host(id: hostID), !host.isRevoked
+            else { continue }
+            sessionFound = true
+            if Self.hostReadsTheAsks(host, agent: agent) { hostReads = true }
+        }
+        return (sessionFound, hostReads)
+    }
+
     private func isAsked(_ id: String) -> Bool {
         state.withLock { $0.drafts[id]?.askedAt != nil }
     }
 
-    private func finish(_ id: String, with outcome: QuickCaptureDraft.Outcome, because reason: String) {
+    private func finish(_ id: String, with outcome: QuickCaptureDraft.Outcome?, because reason: String) {
         guard let draft = state.withLock({ $0.drafts.removeValue(forKey: id) }) else { return }
         Log.backends.error("Quick capture draft: remote draft ended: \(reason, privacy: .public)")
         // A host that fetched the prompt started its agent, answer or not.
-        if draft.prompted, let agent = draft.agent {
+        if draft.prompted, let agent = draft.agent, let outcome {
             QuickCaptureDraft.recordUsage(of: outcome, agent: agent, date: now(), to: usageRecorder)
         }
         draft.continuation.resume(returning: outcome)
     }
 
-    /// The drafting prompt for the host that was asked, once. `issueList` is
-    /// the host's `gh issue list --json number,title,body`, or empty when its
-    /// `gh` listed nothing; it is untrusted and only ever quoted in the
-    /// prompt. Nil when this session was not asked for this draft.
+    /// The drafting prompt for a host whose shim predates first drafts,
+    /// once: the agent drafts from scratch. `issueList` is the host's
+    /// `gh issue list --json number,title,body`, or empty when its `gh`
+    /// listed nothing; it is untrusted and only ever quoted in the prompt.
+    /// Nil when this session was not asked for this draft, or already sent
+    /// context.
     package func prompt(draftID: String, sessionID: String, agent: ProjectTermProposal.Agent, issueList: Data) -> String? {
         let issues = issueList.isEmpty ? nil : QuickCaptureDraft.parseIssueList(issueList)
         return state.withLock { state -> String? in
             guard var draft = state.drafts[draftID], draft.sessionID == sessionID, draft.agent == agent,
-                  !draft.prompted
+                  !draft.prompted, !draft.contextReceived
             else { return nil }
             let listed = issues.map { Array($0.prefix(QuickCaptureDraft.maxListedIssues)) }
             draft.prompted = true
             draft.openIssues = listed?.map(\.number)
             state.drafts[draftID] = draft
             return QuickCaptureDraft.prompt(capture: draft.capture, projectName: draft.projectName, issues: listed)
+        }
+    }
+
+    // MARK: Two stages (#918)
+
+    /// The capture's search words for the host's `git grep`, one per line,
+    /// once. They are the capture's own words, going only where the capture
+    /// itself goes. Nil when this session was not asked for this draft.
+    package func words(draftID: String, sessionID: String, agent: ProjectTermProposal.Agent) -> String? {
+        state.withLock { state -> String? in
+            guard var draft = state.drafts[draftID], draft.sessionID == sessionID, draft.agent == agent,
+                  !draft.wordsSent, !draft.prompted
+            else { return nil }
+            draft.wordsSent = true
+            state.drafts[draftID] = draft
+            return QuickCaptureContext.searchWords(in: draft.capture).map { $0 + "\n" }.joined()
+        }
+    }
+
+    /// The host's context bundle, once, from the session asked. Starts the
+    /// first draft; the host polls `checkPrompt` for what follows. False
+    /// when this session was not asked, or already answered.
+    package func acceptContext(
+        draftID: String, sessionID: String, agent: ProjectTermProposal.Agent, bundle: Data
+    ) -> Bool {
+        let context = QuickCaptureContext.parse(bundle: bundle)
+        let taken = state.withLock { state -> Draft? in
+            guard var draft = state.drafts[draftID], draft.sessionID == sessionID, draft.agent == agent,
+                  !draft.contextReceived, !draft.prompted
+            else { return nil }
+            draft.contextReceived = true
+            draft.openIssues = context.openIssues?.map(\.number)
+            state.drafts[draftID] = draft
+            return draft
+        }
+        guard let taken else { return false }
+        Log.backends.notice(
+            "Quick capture draft: remote context received: \(QuickCaptureDrafter.summary(of: context), privacy: .public)"
+        )
+        let now = now
+        Task { [weak self] in
+            var firstDraft: QuickCaptureDraft.Draft?
+            var proceed = true
+            if let firstDrafter = taken.firstDrafter {
+                let started = now()
+                let first = await firstDrafter.firstDraft(
+                    capture: taken.capture, projectName: taken.projectName, context: context
+                )
+                QuickCaptureDrafter.logFirstDraft(first, seconds: QuickCaptureDrafter.seconds(since: started, now: now()))
+                proceed = await taken.onFirstDraft(first)
+                if case .draft(let draft, _) = first {
+                    if draft.kind != .issue { proceed = false }
+                    firstDraft = draft
+                }
+            }
+            self?.setCheck(
+                draftID: draftID,
+                proceed
+                    ? .ready(QuickCaptureDraft.prompt(
+                        capture: taken.capture, projectName: taken.projectName,
+                        issues: context.openIssues, firstDraft: firstDraft
+                    ))
+                    : .none
+            )
+        }
+        return true
+    }
+
+    private func setCheck(draftID: String, _ check: CheckPrompt) {
+        let ended = state.withLock { state -> Draft? in
+            guard state.drafts[draftID] != nil else { return nil }
+            if case .none = check {
+                state.noCheck[draftID] = now()
+                return state.drafts.removeValue(forKey: draftID)
+            }
+            state.drafts[draftID]?.check = check
+            return nil
+        }
+        if let ended {
+            Log.backends.notice("Quick capture draft: no check due for the remote draft")
+            ended.continuation.resume(returning: nil)
+        }
+    }
+
+    package enum CheckReply: Equatable, Sendable {
+        /// Not asked, or the host skipped a step: refused.
+        case notAsked
+        /// The first draft is still being written: poll again.
+        case wait
+        /// No check is due: the host stops.
+        case done
+        /// The check's prompt; the host runs its agent on it.
+        case prompt(String)
+    }
+
+    /// The host's poll after its context.
+    package func checkPrompt(draftID: String, sessionID: String, agent: ProjectTermProposal.Agent) -> CheckReply {
+        state.withLock { state -> CheckReply in
+            if state.noCheck.removeValue(forKey: draftID) != nil { return .done }
+            guard var draft = state.drafts[draftID], draft.sessionID == sessionID, draft.agent == agent,
+                  draft.contextReceived, !draft.prompted
+            else { return .notAsked }
+            switch draft.check {
+            case .pending: return .wait
+            case .none: return .done
+            case .ready(let prompt):
+                draft.prompted = true
+                state.drafts[draftID] = draft
+                return .prompt(prompt)
+            }
         }
     }
 
@@ -359,14 +531,17 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
             return draft
         }
         guard let taken,
-              let outcome = Self.outcome(exit: exit, output: output, agent: agent, openIssues: taken.openIssues ?? [])?
+              var outcome = Self.outcome(exit: exit, output: output, agent: agent, openIssues: taken.openIssues ?? [])?
                   .reporting(reportedUsage)
         else { return false }
+        if case .draft(let result, let usage) = outcome {
+            outcome = .draft(result.keepingFiles(result.filesRead, agent: agent), usage: usage)
+        }
         guard let draft = state.withLock({ $0.drafts.removeValue(forKey: draftID) }) else { return false }
         QuickCaptureDraft.recordUsage(of: outcome, agent: agent, date: now(), to: usageRecorder)
         switch outcome {
         case .draft(let result, let usage):
-            Log.backends.info(
+            Log.backends.notice(
                 "Quick capture draft: remote \(agent.rawValue, privacy: .public) drafted, relation \(result.relation.rawValue, privacy: .public) (\(usage?.summary ?? "usage not reported", privacy: .public))"
             )
         case .failed(let failure):
@@ -412,5 +587,6 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
 
     private func prune(_ state: inout State, now moment: Date) {
         state.readmeAsks = state.readmeAsks.filter { moment.timeIntervalSince($0.value.askedAt) < Self.askLifetime }
+        state.noCheck = state.noCheck.filter { moment.timeIntervalSince($0.value) < Self.askLifetime }
     }
 }

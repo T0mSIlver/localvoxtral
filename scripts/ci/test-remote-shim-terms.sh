@@ -173,7 +173,7 @@ check_stdout() {
     || fail "$1 shim under $SH_NAME printed '$(cat "$TMP_DIR/stdout")'"
 }
 
-stamp_dirs() { find "$TMP_DIR/run/localvoxtral/terms" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' '; }
+stamp_dirs() { find "$TMP_DIR/run/localvoxtral/terms-3" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' '; }
 
 SHELLS=(/bin/sh)
 BASH_BIN="$(command -v bash || true)"
@@ -189,9 +189,12 @@ for agent in claude vibe; do
   label="$agent shim under $SH_NAME"
 
   # 1. The ask starts one run in the repository root, and the hook returns
-  #    with its usual stdout before the run ends.
+  #    with its usual stdout before the run ends. A project done under the
+  #    prompt before #891, which asked for no sentence, runs again.
   reset_state
-  touch "$TMP_DIR/ask"
+  old_sum="$(git -C "$TMP_DIR/repo" rev-parse --show-toplevel | cksum)"
+  mkdir -p "$TMP_DIR/run/localvoxtral/terms/${old_sum%% *}-${old_sum##* }"
+  touch "$TMP_DIR/run/localvoxtral/terms/${old_sum%% *}-${old_sum##* }/done" "$TMP_DIR/ask"
   run_hook "$agent" "$TMP_DIR/repo/Sources"
   check_stdout "$agent"
   wait_for "$TMP_DIR/$agent-started" || fail "$label: the ask started no run"
@@ -210,7 +213,7 @@ for agent in claude vibe; do
   if [ "$agent" = vibe ]; then
     grep -qx 'X-Lvx-Agent: vibe' "$TMP_DIR/posted-header" || fail "$label: no agent header"
   fi
-  wait_for "$(find "$TMP_DIR/run/localvoxtral/terms" -mindepth 1 -maxdepth 1 -type d | head -n 1)/done" \
+  wait_for "$(find "$TMP_DIR/run/localvoxtral/terms-3" -mindepth 1 -maxdepth 1 -type d | head -n 1)/done" \
     || fail "$label: a 200 did not mark the project done"
   pass "$label: one run, answer posted with the session and token, project marked done"
 
@@ -223,7 +226,7 @@ for agent in claude vibe; do
     || fail "$label: the token reached the run"
   if [ "$agent" = vibe ]; then
     run_home="$(sed -n 's/^VIBE_HOME=//p' "$TMP_DIR/vibe-env")"
-    [ "$run_home" = "$TMP_DIR/.vibe/localvoxtral/remote/vibe-home/$(basename "$(find "$TMP_DIR/run/localvoxtral/terms" -mindepth 1 -maxdepth 1 -type d)")" ] \
+    [ "$run_home" = "$TMP_DIR/.vibe/localvoxtral/remote/vibe-home/$(basename "$(find "$TMP_DIR/run/localvoxtral/terms-3" -mindepth 1 -maxdepth 1 -type d)")" ] \
       || fail "$label: the run's Vibe home is $run_home, not one of its own"
     [ "$(readlink "$run_home/config.toml")" = "$TMP_DIR/.vibe/config.toml" ] \
       || fail "$label: the Vibe home does not link the user's config"
@@ -250,7 +253,7 @@ for agent in claude vibe; do
   echo 400 >"$TMP_DIR/terms-status"
   run_hook "$agent" "$TMP_DIR/repo"
   wait_for "$TMP_DIR/posted-body" || fail "$label: the refused run never posted"
-  stamp="$(find "$TMP_DIR/run/localvoxtral/terms" -mindepth 1 -maxdepth 1 -type d)"
+  stamp="$(find "$TMP_DIR/run/localvoxtral/terms-3" -mindepth 1 -maxdepth 1 -type d)"
   sleep 0.3
   [ ! -e "$stamp/done" ] || fail "$label: a refused answer marked the project done"
   rm -f "$TMP_DIR/$agent-started"
@@ -308,7 +311,7 @@ for agent in claude vibe; do
   run_hook "$agent" "$TMP_DIR/repo"
   wait_for "$TMP_DIR/posted-body" || fail "$label: the run never tried to post"
   sleep 0.3
-  [ -z "$(find "$TMP_DIR/run/localvoxtral/terms" -name done)" ] || fail "$label: a dead tunnel marked done"
+  [ -z "$(find "$TMP_DIR/run/localvoxtral/terms-3" -name done)" ] || fail "$label: a dead tunnel marked done"
   pass "$label: no agent or a dead tunnel fails silently"
 done
 done

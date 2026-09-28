@@ -38,12 +38,19 @@ package struct QuickCaptureRoute: Codable, Equatable, Sendable {
     package let reason: Reason
     /// The winning option's probability, when a classifier answered.
     package let topProbability: Double?
+    /// The project a low or tied answer named (#938): the capture waits in
+    /// the Inbox, and one click moves it there.
+    package let suggestion: String?
 
-    package init(destination: Destination, classifier: Classifier, reason: Reason, topProbability: Double?) {
+    package init(
+        destination: Destination, classifier: Classifier, reason: Reason, topProbability: Double?,
+        suggestion: String? = nil
+    ) {
         self.destination = destination
         self.classifier = classifier
         self.reason = reason
         self.topProbability = topProbability
+        self.suggestion = suggestion
     }
 }
 
@@ -111,7 +118,8 @@ package enum QuickCaptureRouting {
 
     /// The decision on one answer. The catch-all wins whenever the top
     /// option is the catch-all, below `minimumTopProbability`, or within
-    /// `minimumMargin` of the runner-up; never a guessed project.
+    /// `minimumMargin` of the runner-up; never a guessed project. A guessed
+    /// project is kept as the route's suggestion, for the user to confirm.
     package static func decide(
         probabilities: [String: Double],
         options: [QuickCaptureOption],
@@ -123,13 +131,17 @@ package enum QuickCaptureRouting {
         guard let (top, topProbability) = ranked.first else {
             return QuickCaptureRoute(destination: .catchAll, classifier: classifier, reason: .noProjects, topProbability: nil)
         }
-        func catchAll(_ reason: QuickCaptureRoute.Reason) -> QuickCaptureRoute {
-            QuickCaptureRoute(destination: .catchAll, classifier: classifier, reason: reason, topProbability: topProbability)
+        func catchAll(_ reason: QuickCaptureRoute.Reason, suggesting key: String? = nil) -> QuickCaptureRoute {
+            QuickCaptureRoute(
+                destination: .catchAll, classifier: classifier, reason: reason, topProbability: topProbability,
+                suggestion: key
+            )
         }
         guard let key = top.projectKey else { return catchAll(.classifierChoseCatchAll) }
-        guard topProbability >= minimumTopProbability else { return catchAll(.lowConfidence) }
+        let suggestion = topProbability > 0 ? key : nil
+        guard topProbability >= minimumTopProbability else { return catchAll(.lowConfidence, suggesting: suggestion) }
         let runnerUp = ranked.count > 1 ? ranked[1].1 : 0
-        guard topProbability - runnerUp >= minimumMargin else { return catchAll(.nearTie) }
+        guard topProbability - runnerUp >= minimumMargin else { return catchAll(.nearTie, suggesting: suggestion) }
         return QuickCaptureRoute(destination: .project(key), classifier: classifier, reason: .confident, topProbability: topProbability)
     }
 

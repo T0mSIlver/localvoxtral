@@ -77,6 +77,32 @@ it or use **Re-anchor** in **Settings → Dictation → Overlay Buffer**.
 If you unplug the display the overlay sits on, the app keeps the position.
 Until that display is back, it shows the overlay at the anchor.
 
+### Stop after silence
+
+**Stop dictating after silence** (**Settings → Dictation → Overlay
+Buffer**) ends a dictation once no new words have appeared for a set time.
+It offers **Never**, the default, and **After 5 s**, **8 s**, **15 s** or
+**30 s**. The stop is the same as pressing the key, so polishing and the
+commit run as usual.
+
+It applies only to Overlay Buffer dictations started by a tap: a tap of the
+modifier keys, a keyboard shortcut set to **Toggle**, or a destination
+shortcut. A held dictation stops on release, and Live Auto-Paste has typed
+its words already, so neither stops on silence.
+
+- The time counts from the last new words, not from the last sound you
+  made.
+- A dropped connection pauses the count. It restarts from zero once the
+  app reconnects.
+- A change to the setting applies from the next dictation.
+
+**With "send it".** A dictation that ends in a send phrase stops three
+seconds after the last new word, sooner than the shortest silence setting
+(see [Press Return with "send it"](#press-return-with-send-it)). A silence
+stop presses Return only when that send-phrase stop would have. Code:
+[silence stop](../Sources/localvoxtral/DictationSessionController+SilenceAutoStop.swift),
+[send-phrase stop](../Sources/localvoxtral/DictationSessionController+SpokenStop.swift).
+
 ### Live Auto-Paste
 
 Words land in the focused app while you talk. The app applies dictionary
@@ -286,8 +312,12 @@ session finishes its turn while you are looking at another window or pane.
 A Mistral Vibe session tells you only when it finishes, since Vibe reports
 no waits.
 
-Each time, the app plays a sound and shows a macOS banner, and the menu bar
-icon gets an orange dot. The popover names the session: "payments needs you"
+Each time, the app shows a macOS banner with a sound, and the menu bar icon
+gets an orange dot. Settings > Dictation > Output can make the dot a square
+or an exclamation mark instead. The sound is your alert sound, and macOS
+controls it: turn off **Play sound for notifications** under **System
+Settings → Notifications → localvoxtral** to keep the banner without it.
+Focus silences both. The popover names the session: "payments needs you"
 or "payments finished". Nothing fires for a turn that ends in the pane you
 are looking at.
 
@@ -299,7 +329,9 @@ Press Tab during a dictation until the overlay shows the session, as in
 The optional **Answer the agent that needs you** shortcut does it in one
 press. It brings forward the pane of the session that has waited longest, or
 else the one that finished first, and starts a dictation there. Press it
-again to stop; the next press goes to the next session.
+again to stop; the next press goes to the next session. With no session
+waiting, it opens the oldest ready quick capture draft instead
+([Review a draft by voice](coding-agents.md#review-a-draft-by-voice)).
 
 Like "go to", both reach sessions in Ghostty, iTerm2 and Terminal.app on
 this Mac, and Claude Desktop Code-tab sessions, local or over ssh. For a
@@ -491,13 +523,16 @@ These terms also show as tags in **Suggestions**, with no API credits. The
 app keeps terms per project, and a project is a git repository (see
 [One project per repository](#one-project-per-repository)).
 
-**Advanced → Terms learned from polishing → Show** lists them by project,
-with how often each was applied and when it last was:
+A project's terms are in **Settings → Projects**: click the project, then
+**Show all** beside its terms. **Advanced → Terms learned from polishing →
+Show** lists the rest: terms learned outside any project, and those of
+projects no longer listed. Both lists show how often each term was applied
+and when it last was:
 
 - **Pin** a term to keep it. The app uses it at once and it never expires.
-- **Forget** one, or all of them.
-- **Export…** and **Import…** at the bottom of the list move the terms to
-  another Mac as a JSON file. An import adds to what is there. A term still
+- **Forget** one, or all of them with **Forget** beside **Show**.
+- **Export…** and **Import…** at the bottom of the **Show** list move every
+  term to another Mac as a JSON file. An import adds to what is there. A term still
   being learned stays that way until you have said it in three dictations.
 
 When you say a learned name as ordinary words in a sentence ("we should use
@@ -526,18 +561,26 @@ terms** is off by default. When it is on, the first dictation that joins a
 local Claude Code, Mistral Vibe or opencode session in a new project starts
 that agent once, headless, in the project's repository.
 
-The agent reads a few files and answers with up to 40 of the project's own
-names: modules, types, commands, environment variables. Your session never
-sees the request, so it cannot interrupt a turn.
+The agent reads a few files and answers with up to 40 names you would say
+about the project, and one sentence on what the project is and has, which
+quick capture's classifier reads
+([Quick capture](coding-agents.md#quick-capture)). The names are the
+project's and its parts', the products, tools, services and models it uses,
+people, and words of its domain. The app drops any name written like code: a
+type or function name, a file name, a path, a flag or an environment
+variable. Your session never sees the request, so it cannot interrupt a
+turn.
 
 The app asks once per repository, whichever agent joins first. Joining a
 session in another worktree of the same repository does not ask again (see
-[One project per repository](#one-project-per-repository)). The app retries
-a run that fails a day later.
+[One project per repository](#one-project-per-repository)). A repository
+asked with an older version of the request is asked once more, and its new
+answer replaces the old names you never used or pinned. The app retries a run
+that fails a day later.
 
-The names show in **Terms learned from polishing → Show** as "Proposed by
-Claude Code", "Proposed by Mistral Vibe" or "Proposed by opencode". They are
-suggestions:
+The names show in the project's **Show all** (**Settings → Projects**) as
+"Proposed by Claude Code", "Proposed by Mistral Vibe" or "Proposed by
+opencode". They are suggestions:
 
 - Polishing applies one only where you allow repo vocabulary, and only where
   the transcript spells it out.
@@ -592,7 +635,7 @@ are all kept per project. A project is a git repository, and its worktrees
 belong to it:
 
 - **On this Mac**, a session in any worktree of a repository counts toward
-  that repository. The Learned terms list shows one entry, under the
+  that repository. **Settings → Projects** shows one entry, under the
   repository's name.
 - **On an ssh host**, the same holds once the host runs the remote plugin
   1.13.0 or later. An older plugin sends only the worktree's folder name, so
@@ -671,8 +714,9 @@ History; the panes sit under the sidebar's Settings header.
   Buffer "send it" switch, the [needs-you cue](#when-a-coding-agent-needs-you)
   and the [two destination shortcuts](#open-the-overlay-on-a-destination),
   [ducking other audio](#lower-other-audio-while-dictating), and the
-  overlay's font size, lines before scrolling and
-  [word wrapping](#keeping-words-on-their-line). **Advanced** holds
+  overlay's font size, lines before scrolling,
+  [word wrapping](#keeping-words-on-their-line) and
+  [stop after silence](#stop-after-silence). **Advanced** holds
   [Live Auto-Paste](#live-auto-paste) and its own "send it" switch, the menu
   bar mode and the [Copy last dictation](#recover-a-dictation) shortcut.
 - **Text Processing**: [About you](#add-your-names-and-terms),

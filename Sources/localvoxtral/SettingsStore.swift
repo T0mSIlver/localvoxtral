@@ -144,12 +144,17 @@ final class SettingsStore {
         static let answerAgentShortcutEnabled = "settings.answer_agent_shortcut_enabled"
         static let answerAgentShortcutChord = "settings.answer_agent_shortcut_chord"
         static let agentAttentionEnabled = "settings.agent_attention_enabled"
+        static let agentAttentionMark = "settings.agent_attention_mark"
         static let modifierHoldLiveAutoPaste = "settings.modifier_hold_live_auto_paste"
         static let quickCaptureShortcutKeyCode = "settings.quick_capture_shortcut_key_code"
         static let quickCaptureShortcutModifiers = "settings.quick_capture_shortcut_carbon_modifiers"
         static let quickCaptureShortcutEnabled = "settings.quick_capture_shortcut_enabled"
         static let quickCaptureShortcutChord = "settings.quick_capture_shortcut_chord"
+        /// Retired with #918: its "on" meant Jev first, and the polishing
+        /// model is now everyone's router until they pick Jev.
         static let quickCaptureJevEnabled = "settings.quick_capture_jev_enabled"
+        static let quickCaptureRouter = "settings.quick_capture_router"
+        static let voiceMemosEnabled = "settings.voice_memos_enabled"
         static let quickCaptureProjectLines = "settings.quick_capture_project_lines"
         static let jevAPIKeyNeverStored = "settings.jev_api_key"
     }
@@ -262,14 +267,28 @@ final class SettingsStore {
         didSet { persistSecret(jevAPIKey, for: .jevAPIKey) }
     }
 
-    /// "Send quick captures to Jev for routing": off until the user turns it
-    /// on, like every hosted feature.
-    var quickCaptureJevEnabled: Bool {
+    /// Which model routes quick captures (#918): the polishing model unless
+    /// the user picks Jev, a hosted service like every other off by default.
+    enum QuickCaptureRouterChoice: String, CaseIterable, Sendable {
+        case polishingModel = "polishing_model"
+        case jev
+    }
+
+    var quickCaptureRouter: QuickCaptureRouterChoice {
         didSet {
-            defaults.set(quickCaptureJevEnabled, forKey: Keys.quickCaptureJevEnabled)
-            if quickCaptureJevEnabled { ensureSecretsLoaded([.jevAPIKey]) }
+            defaults.set(quickCaptureRouter.rawValue, forKey: Keys.quickCaptureRouter)
+            if quickCaptureRouter == .jev { ensureSecretsLoaded([.jevAPIKey]) }
         }
     }
+
+    /// "Transcribe voice memos stored in iCloud Drive" (#925): off until the
+    /// user turns it on, since the audio sits in Apple's cloud.
+    var voiceMemosEnabled: Bool {
+        didSet { defaults.set(voiceMemosEnabled, forKey: Keys.voiceMemosEnabled) }
+    }
+
+    /// Jev routes, so its key is read.
+    var quickCaptureJevEnabled: Bool { quickCaptureRouter == .jev }
 
     /// The line the user wrote about each project, by project key, which
     /// the quick capture router reads with the README summary (#811).
@@ -862,6 +881,11 @@ final class SettingsStore {
         didSet { defaults.set(agentAttentionEnabled, forKey: Keys.agentAttentionEnabled) }
     }
 
+    /// The mark the menu bar icon gets while an agent needs you.
+    var agentAttentionMark: AgentAttentionMark {
+        didSet { defaults.set(agentAttentionMark.rawValue, forKey: Keys.agentAttentionMark) }
+    }
+
     var answerAgentShortcutKeyCode: UInt32 {
         didSet { defaults.set(answerAgentShortcutKeyCode, forKey: Keys.answerAgentShortcutKeyCode) }
     }
@@ -1035,8 +1059,10 @@ final class SettingsStore {
             secrets, .mistralAPIKey, envKey: "MISTRAL_API_KEY", environment: environment)
         jevAPIKey = Self.resolveSecret(
             secrets, .jevAPIKey, envKey: "TYPESAFE_API_KEY", environment: environment)
-        quickCaptureJevEnabled = Self.loadBool(
-            defaults: defaults, key: Keys.quickCaptureJevEnabled, fallback: false)
+        quickCaptureRouter = defaults.string(forKey: Keys.quickCaptureRouter)
+            .flatMap(QuickCaptureRouterChoice.init(rawValue:)) ?? .polishingModel
+        voiceMemosEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.voiceMemosEnabled, fallback: false)
         quickCaptureProjectLines =
             defaults.dictionary(forKey: Keys.quickCaptureProjectLines) as? [String: String] ?? [:]
         // Empty is the stored form of "use the pinned default": the defaults
@@ -1286,6 +1312,9 @@ final class SettingsStore {
             defaults: defaults, key: Keys.answerAgentShortcutEnabled, fallback: false)
         agentAttentionEnabled = Self.loadBool(
             defaults: defaults, key: Keys.agentAttentionEnabled, fallback: false)
+        agentAttentionMark =
+            defaults.string(forKey: Keys.agentAttentionMark)
+            .flatMap(AgentAttentionMark.init(rawValue:)) ?? .dot
         modifierHoldLiveAutoPaste = Self.loadBool(
             defaults: defaults, key: Keys.modifierHoldLiveAutoPaste, fallback: false)
         quickCaptureShortcutKeyCode =

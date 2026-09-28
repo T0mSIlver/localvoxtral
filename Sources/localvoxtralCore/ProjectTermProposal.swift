@@ -109,22 +109,42 @@ package enum ProjectTermProposal {
         }
     }
 
+    /// The project's sentence is capped like the user's own line.
+    package static let maxLineCharacters = QuickCaptureProjects.maxUserLineCharacters
+
+    /// Bumped whenever the prompt asks for something new, so a project
+    /// answered under an older one is asked once more
+    /// (`LearnedTerms.needsProposal`): 2 added the project's sentence
+    /// (#891), 3 asks for names people say instead of the code's (#914).
+    package static let promptRevision = 3
+
+    /// The terms, and since #891 one sentence quick capture's router reads:
+    /// a README says what a project is, rarely what it has. The people who
+    /// dictate say names, not identifiers (#914); the answer is filtered for
+    /// code shapes anyway (`acceptedTerms`).
     package static let prompt = """
-        List the names someone dictating about this project would say that a \
-        speech recognizer is likely to misspell: this project's own modules, \
-        types, functions, files, commands, flags, environment variables and \
-        product names. Leave out common English words and well-known names. \
-        Read at most six files. Spell each name exactly as the code does. \
-        Reply with JSON only: {"terms": [...]}, at most \(maxTerms) terms.
+        List the names someone would say aloud about this project that a \
+        speech recognizer is likely to misspell. Picture a builder who talks \
+        to coding agents and rarely reads the code: they say the project's \
+        name and its parts as its docs name them, the products, tools, \
+        services, libraries and models it uses, people and teams, and words \
+        of its domain. They never say class, function or variable names, file \
+        names, paths, flags or environment variables: leave those out, and \
+        leave out common English words. Also describe the project in one \
+        sentence of at most \(maxLineCharacters) characters: what it is, then \
+        the features and parts someone would name when filing an idea for it. \
+        Read at most six files, the README first. Spell each name as the \
+        project's docs write it. Reply with JSON only: \
+        {"terms": [...], "description": "..."}, at most \(maxTerms) terms.
         """
 
     /// Replaces Claude Code's default system prompt, which costs a third more
     /// tokens and asks nothing this run needs (#609 spec measurements).
     package static let claudeSystemPrompt =
-        "You list a code project's own vocabulary for a dictation app. Reply only with the requested JSON."
+        "You list the names people say when they talk about a code project, and describe it, for a dictation app. Reply only with the requested JSON."
 
     package static let claudeJSONSchema =
-        #"{"type":"object","properties":{"terms":{"type":"array","items":{"type":"string"},"maxItems":40}},"required":["terms"],"additionalProperties":false}"#
+        #"{"type":"object","properties":{"terms":{"type":"array","items":{"type":"string"},"maxItems":40},"description":{"type":"string"}},"required":["terms","description"],"additionalProperties":false}"#
 
     /// Read, Glob and Grep only: no Bash, no MCP, no hooks. `disableAllHooks`
     /// is what keeps a project's `SessionStart` hook, and our own plugin's,
@@ -343,9 +363,17 @@ package enum ProjectTermProposal {
     }
 
     package enum Outcome: Equatable, Sendable {
-        /// The agent's list, as it answered. `acceptedTerms` filters it.
-        case terms([String], usage: Usage? = nil)
+        /// The agent's list and sentence, as it answered: `acceptedTerms`
+        /// and `acceptedLine` filter them. The line is nil when the answer
+        /// had no `description`.
+        case terms([String], usage: Usage? = nil, line: String? = nil)
         case failed(Failure)
+    }
+
+    /// An answer object: `{"terms": [...], "description": "..."}`.
+    package struct Answer: Equatable, Sendable {
+        package let terms: [String]
+        package let line: String?
     }
 
     /// `claude -p --output-format json`: one result object. With
@@ -365,12 +393,12 @@ package enum ProjectTermProposal {
         }
         let usage = claudeUsage(object)
         if let structured = object["structured_output"] as? [String: Any],
-           let terms = structured["terms"] as? [Any]
+           let answer = answer(in: structured)
         {
-            return .terms(terms.compactMap { $0 as? String }, usage: usage)
+            return .terms(answer.terms, usage: usage, line: answer.line)
         }
-        if let text = object["result"] as? String, let terms = termsObject(in: text) {
-            return .terms(terms, usage: usage)
+        if let text = object["result"] as? String, let answer = answerObject(in: text) {
+            return .terms(answer.terms, usage: usage, line: answer.line)
         }
         return .failed(.malformedOutput)
     }
@@ -406,8 +434,8 @@ package enum ProjectTermProposal {
         }
         let parts = entries[lastIndex]["content"] as? [[String: Any]] ?? []
         let text = parts.compactMap { $0["text"] as? String }.joined()
-        guard let terms = termsObject(in: text) else { return .failed(.malformedOutput) }
-        return .terms(terms)
+        guard let answer = answerObject(in: text) else { return .failed(.malformedOutput) }
+        return .terms(answer.terms, line: answer.line)
     }
 
     /// `opencode run --format json`: one JSON event per line. The answer is
@@ -419,8 +447,8 @@ package enum ProjectTermProposal {
         switch opencodeAnswer(stdout: stdout, exitCode: exitCode) {
         case .failure(let failure): return .failed(failure)
         case .success(let answer):
-            guard let terms = termsObject(in: answer.text) else { return .failed(.malformedOutput) }
-            return .terms(terms, usage: answer.usage)
+            guard let object = answerObject(in: answer.text) else { return .failed(.malformedOutput) }
+            return .terms(object.terms, usage: answer.usage, line: object.line)
         }
     }
 
@@ -476,16 +504,16 @@ package enum ProjectTermProposal {
     /// `{"terms": [...]}`, bare or inside one Markdown code fence, or ending
     /// a text that opens with a sentence or two: a model without a schema
     /// flag sometimes says what it did first (opencode, 2026-09-26).
-    static func termsObject(in text: String) -> [String]? {
-        if let terms = wholeTermsObject(in: text) { return terms }
+    package static func answerObject(in text: String) -> Answer? {
+        if let answer = wholeAnswerObject(in: text) { return answer }
         guard let key = text.range(of: #""terms""#, options: .backwards),
               let open = text[..<key.lowerBound].lastIndex(of: "{"),
               let close = text.lastIndex(of: "}"), close > key.upperBound
         else { return nil }
-        return wholeTermsObject(in: String(text[open...close]))
+        return wholeAnswerObject(in: String(text[open...close]))
     }
 
-    private static func wholeTermsObject(in text: String) -> [String]? {
+    private static func wholeAnswerObject(in text: String) -> Answer? {
         var body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if body.hasPrefix("```") {
             guard let firstNewline = body.firstIndex(of: "\n"),
@@ -495,17 +523,39 @@ package enum ProjectTermProposal {
             body = String(body[body.index(after: firstNewline)..<closing.lowerBound])
         }
         guard let data = body.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let terms = object["terms"] as? [Any]
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
-        return terms.compactMap { $0 as? String }
+        return answer(in: object)
+    }
+
+    private static func answer(in object: [String: Any]) -> Answer? {
+        guard let terms = object["terms"] as? [Any] else { return nil }
+        return Answer(terms: terms.compactMap { $0 as? String }, line: object["description"] as? String)
+    }
+
+    /// The project's sentence is untrusted text too, and the router reads
+    /// it: one line with no control character, no link, and at most
+    /// `maxLineCharacters`. Nil when nothing is left.
+    package static func acceptedLine(_ raw: String) -> String? {
+        let scalars = raw.unicodeScalars.map { scalar -> Character in
+            scalar.properties.generalCategory == .control ? " " : Character(scalar)
+        }
+        let line = String(scalars)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        guard !line.isEmpty,
+              line.range(of: #"https?://|www\.|\]\("#, options: [.regularExpression, .caseInsensitive]) == nil
+        else { return nil }
+        return QuickCaptureProjects.clipped(line, to: maxLineCharacters)
     }
 
     /// The agent's answer is untrusted text that repo contents can steer, so
     /// only term-shaped strings survive: the `.github/dictation.md` filter
     /// (no URL or link, at most four words, 2 to 64 characters with a
     /// letter), no control character anywhere, and the learned-term length
-    /// cap. One entry per case-folded spelling, first one kept, at most
+    /// cap. Nothing shaped like code survives either (`SpokenTermShape`):
+    /// the prompt asks for names people say, and agents list identifiers
+    /// anyway. One entry per case-folded spelling, first one kept, at most
     /// `maxTerms`.
     package static func acceptedTerms(_ raw: [String]) -> [String] {
         var result: [String] = []
@@ -513,7 +563,8 @@ package enum ProjectTermProposal {
         for candidate in raw {
             guard result.count < maxTerms else { break }
             guard !candidate.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }),
-                  let shaped = DictationTermsFile.accepted(candidate)
+                  let shaped = DictationTermsFile.accepted(candidate),
+                  SpokenTermShape.identifier(in: shaped) == nil
             else { continue }
             let term = LearnedTerms.sanitized(shaped)
             guard !term.isEmpty, seen.insert(term.caseFoldedForMatching).inserted else { continue }
