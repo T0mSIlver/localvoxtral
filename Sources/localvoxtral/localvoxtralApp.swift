@@ -407,6 +407,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // persistent `ssh -L` children. During polish the join has already been
         // consumed, so the explicit service owner is what makes quit complete.
         viewModel.context.closeRemoteHerdrForwards()
+        drainHistoryWrites(within: 3.0)
+    }
+
+    /// Waits for the dictations already queued for History to reach the
+    /// disk. The queue is serial and each write is one SQLite transaction; a
+    /// quit that returned first dropped the last dictation (#985).
+    private func drainHistoryWrites(within seconds: TimeInterval) {
+        guard let pending = viewModel.sessionStore?.pendingWrites else { return }
+        let deadline = Date().addingTimeInterval(seconds)
+        let finished = Mutex(false)
+        Task { @MainActor in
+            await pending.value
+            finished.withLock { $0 = true }
+        }
+        while !finished.withLock({ $0 }), Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+        }
+        if !finished.withLock({ $0 }) {
+            Log.persistence.error("History writes did not finish before quit; the last dictation may be lost")
+        }
     }
 
     /// Spin the run loop until every forward teardown has finished, or the

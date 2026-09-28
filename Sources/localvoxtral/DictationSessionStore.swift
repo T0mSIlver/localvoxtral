@@ -163,6 +163,14 @@ final class DictationSessionStore {
     /// once one succeeds. History and Insights show it instead of an empty
     /// page (#985).
     private(set) var accessFailure: String?
+    /// Called when `accessFailure` changes, so the popover and the panes
+    /// can say History is failing while it fails.
+    var onAccessFailureChange: (@MainActor (String?) -> Void)?
+
+    /// Whether the last read or write failed. Retention and the sweeps
+    /// wait while it does: a store that cannot answer is no authority for
+    /// deleting anything (#985).
+    var isFailing: Bool { accessFailure != nil }
 
     /// The user's history: `history.store` in `directory`, which defaults to
     /// the app's folder in Application Support. With the default folder, a
@@ -318,6 +326,7 @@ final class DictationSessionStore {
     func trim(olderThan cutoff: Date) -> Task<Void, Never> {
         let audioStore = audioStore
         let diagnosticRecordStore = diagnosticRecordStore
+        guard !isFailing else { return skipWhileFailing("trim dictations") }
         return enqueueWrite("trim dictations") { context in
             let deleted = try Self.deleteRecords(
                 matching: #Predicate<DictationSessionRecord> { $0.startedAt < cutoff },
@@ -347,7 +356,15 @@ final class DictationSessionStore {
     func removeOrphanedAudio() -> Task<Void, Never> {
         let audioStore = audioStore
         let diagnosticRecordStore = diagnosticRecordStore
+        guard !isFailing else { return skipWhileFailing("sweep dictation audio") }
         return enqueueWrite("sweep dictation audio") { context in
+            // Before anything is deleted, strays and pruning included: an
+            // empty store beside files lost its rows.
+            let files = (audioStore?.storedIDs().count ?? 0)
+                + (diagnosticRecordStore?.storedIDs().count ?? 0)
+            if files > 0, try !Self.storeHoldsDictations(context, files: files, kind: "attachment") {
+                return 0
+            }
             if let audioStore {
                 audioStore.removeStrayFiles()
                 try Self.removeOrphanedAudio(audioStore, context: context)
@@ -627,6 +644,18 @@ final class DictationSessionStore {
     }
 
     private func noteAccess(failure: String?) {
+        guard accessFailure != failure else { return }
         accessFailure = failure
+        onAccessFailureChange?(failure)
     }
+
+    private func skipWhileFailing(_ label: String) -> Task<Void, Never> {
+        Log.persistence.error(
+            "History: skipping \(label, privacy: .public): the store's last read or write failed"
+        )
+        return Task {}
+    }
+
+    /// The queued writes, for the quit path to wait on.
+    var pendingWrites: Task<Void, Never>? { lastWrite }
 }

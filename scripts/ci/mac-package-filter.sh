@@ -117,7 +117,7 @@ is_skippable() {
       return 0
       ;;
     Sources/* | PolishHelper/* | SpeechHelper/* | Package.* | assets/* | integrations/* \
-      | scripts/package_app.sh | scripts/ci/mac-package-filter.sh | scripts/ci/launch-smoke.py \
+      | scripts/package_app.sh | scripts/ci/mac-package-filter.sh \
       | scripts/ci/clean-stale-outputs.sh)
       REJECTION="packaging input: $path"
       return 1

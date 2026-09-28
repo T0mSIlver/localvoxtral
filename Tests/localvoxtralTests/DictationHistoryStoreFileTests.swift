@@ -110,6 +110,66 @@ final class DictationHistoryStoreFileTests: XCTestCase {
         XCTAssertEqual(entries.map(\.rawText), ["one"])
     }
 
+    /// What the app lived through from 15:10 to 16:28: another program
+    /// migrates the file under a running store. Reads fail, the store says so,
+    /// and the launch sweep keeps every recording.
+    func testAStoreWhoseFileIsMigratedAwayFailsLoudlyAndDeletesNothing() async throws {
+        let directory = makeDirectory()
+        let url = directory.appendingPathComponent("history.store")
+        let store = try DictationSessionStore.open(url: url).get()
+        let audio = DictationAudioStore(
+            directoryURL: directory.appendingPathComponent("dictation-audio", isDirectory: true))
+        store.audioStore = audio
+        var reported: [String?] = []
+        store.onAccessFailureChange = { reported.append($0) }
+        let saved = record("one")
+        await store.save(saved, audio: Data([1, 0, 2, 0])).value
+
+        _ = try rawTexts(ForeignRequestModel.self, at: url, \.path)
+        _ = await store.entries()
+
+        XCTAssertTrue(store.isFailing, "a store whose table is gone must not read as empty")
+        XCTAssertEqual(reported.count, 1)
+        await store.removeOrphanedAudio().value
+        await store.trim(olderThan: origin.addingTimeInterval(86_400)).value
+        XCTAssertEqual(audio.storedIDs(), [saved.id])
+    }
+
+    // MARK: - Upgrades from the schemas users have
+
+    /// Each layout a shipped build wrote opens with every field kept.
+    func testStoresFromEarlierSchemasOpenWithEveryRowAndField() async throws {
+        let directory = makeDirectory()
+        let before751 = directory.appendingPathComponent("17.store")
+        let before800 = directory.appendingPathComponent("18.store")
+        do {
+            let schema = Schema([History17.DictationSessionRecord.self])
+            let container = try ModelContainer(
+                for: schema, configurations: [ModelConfiguration(schema: schema, url: before751)])
+            let context = ModelContext(container)
+            context.insert(History17.DictationSessionRecord(rawText: "old", joinedAgent: "claude"))
+            try context.save()
+        }
+        do {
+            let schema = Schema([History18.DictationSessionRecord.self])
+            let container = try ModelContainer(
+                for: schema, configurations: [ModelConfiguration(schema: schema, url: before800)])
+            let context = ModelContext(container)
+            context.insert(History18.DictationSessionRecord(rawText: "newer", quickCaptureDestination: "Inbox"))
+            try context.save()
+        }
+
+        let old = try DictationSessionStore.open(url: before751).get()
+        let oldEntries = await old.entries()
+        XCTAssertEqual(oldEntries.map(\.rawText), ["old"])
+        XCTAssertEqual(oldEntries.map(\.joinedAgent), ["claude"])
+        XCTAssertEqual(oldEntries.map(\.editOutcome), [nil])
+        let newer = try DictationSessionStore.open(url: before800).get()
+        let newerEntries = await newer.entries()
+        XCTAssertEqual(newerEntries.map(\.rawText), ["newer"])
+        XCTAssertEqual(newerEntries.map(\.quickCaptureDestination), ["Inbox"])
+    }
+
     // MARK: - Moving off default.store
 
     func testTheLegacyStoreIsCopiedOnceAndNeverChanged() async throws {
@@ -203,6 +263,82 @@ enum NewerHistory {
             outputMode = ""
             status = ""
             commitSucceeded = true
+        }
+    }
+}
+
+/// `DictationSessionRecord` before quick capture (#751): the 20-column layout.
+enum History17 {
+    @Model
+    final class DictationSessionRecord {
+        var id: UUID
+        var startedAt: Date
+        var finishedAt: Date
+        var rawText: String
+        var polishedText: String?
+        var polishingDurationSeconds: Double?
+        var provider: String
+        var model: String
+        var outputMode: String
+        var targetAppBundleID: String?
+        var status: String
+        var commitSucceeded: Bool
+        var polishProfile: String?
+        var polishContextSummary: String?
+        var projectKey: String?
+        var projectName: String?
+        var joinedAgent: String?
+
+        init(rawText: String, joinedAgent: String?) {
+            id = UUID()
+            startedAt = Date(timeIntervalSince1970: 1_800_000_000)
+            finishedAt = Date(timeIntervalSince1970: 1_800_000_005)
+            self.rawText = rawText
+            provider = "p"
+            model = "m"
+            outputMode = "overlay_buffer"
+            status = "completed"
+            commitSucceeded = true
+            self.joinedAgent = joinedAgent
+        }
+    }
+}
+
+/// `DictationSessionRecord` after quick capture, before the edit verdict
+/// (#800): the 21-column layout.
+enum History18 {
+    @Model
+    final class DictationSessionRecord {
+        var id: UUID
+        var startedAt: Date
+        var finishedAt: Date
+        var rawText: String
+        var polishedText: String?
+        var polishingDurationSeconds: Double?
+        var provider: String
+        var model: String
+        var outputMode: String
+        var targetAppBundleID: String?
+        var status: String
+        var commitSucceeded: Bool
+        var polishProfile: String?
+        var polishContextSummary: String?
+        var projectKey: String?
+        var projectName: String?
+        var joinedAgent: String?
+        var quickCaptureDestination: String?
+
+        init(rawText: String, quickCaptureDestination: String?) {
+            id = UUID()
+            startedAt = Date(timeIntervalSince1970: 1_800_000_000)
+            finishedAt = Date(timeIntervalSince1970: 1_800_000_005)
+            self.rawText = rawText
+            provider = "p"
+            model = "m"
+            outputMode = "overlay_buffer"
+            status = "completed"
+            commitSucceeded = true
+            self.quickCaptureDestination = quickCaptureDestination
         }
     }
 }

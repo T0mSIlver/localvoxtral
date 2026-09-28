@@ -412,6 +412,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         )
 
         XCTAssertNil(viewModel.sessionStore)
+        XCTAssertEqual(viewModel.historyPopoverWarning, "History is from a newer version. Not saving.")
         let history = DictationHistoryModel(viewModel: viewModel)
         await history.reload()
         XCTAssertEqual(

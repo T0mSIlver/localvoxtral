@@ -201,6 +201,8 @@ final class DictationViewModel {
     var sessionStore: DictationSessionStore? { get { session.sessionStore } set { session.sessionStore = newValue } }
     /// Why the history store did not open at launch; nil when it did (#985).
     private(set) var historyOpenFailure: DictationHistoryOpenFailure?
+    /// The store's last read or write error while it keeps failing.
+    private(set) var historyAccessFailure: String?
     /// What History and Insights say in place of dictations: the store did
     /// not open, or its last read or write failed. The log has the error.
     var historyUnavailableText: String? {
@@ -210,8 +212,17 @@ final class DictationViewModel {
         case .unreadable:
             return "Your history couldn't be opened. The log says why."
         case nil:
-            return sessionStore?.accessFailure == nil
-                ? nil : "Your history couldn't be read. The log says why."
+            return historyAccessFailure == nil
+                ? nil : "Your history couldn't be read or saved. Nothing was deleted. The log says why."
+        }
+    }
+
+    /// The popover's one line while History is not saving.
+    var historyPopoverWarning: String? {
+        switch historyOpenFailure {
+        case .unknownContents: return "History is from a newer version. Not saving."
+        case .unreadable: return "History isn't saving. Nothing was deleted."
+        case nil: return historyAccessFailure == nil ? nil : "History isn't saving. Nothing was deleted."
         }
     }
     var learnedTermStore: LearnedTermStore? {
@@ -675,6 +686,10 @@ final class DictationViewModel {
                 sessionStore = store
             case let .failure(failure):
                 historyOpenFailure = failure
+            }
+            sessionStore?.onAccessFailureChange = { [weak self] failure in
+                self?.historyAccessFailure = failure
+                self?.dictationHistoryRevision += 1
             }
             sessionStore?.onChange = { [weak self] in
                 self?.dictationHistoryRevision += 1
