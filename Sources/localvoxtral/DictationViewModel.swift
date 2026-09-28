@@ -220,9 +220,9 @@ final class DictationViewModel {
     /// The popover's one line while History is not saving.
     var historyPopoverWarning: String? {
         switch historyOpenFailure {
-        case .unknownContents: return "History is from a newer version. Not saving."
-        case .unreadable: return "History isn't saving. Nothing was deleted."
-        case nil: return historyAccessFailure == nil ? nil : "History isn't saving. Nothing was deleted."
+        case .unknownContents: return "History needs a newer localvoxtral."
+        case .unreadable: return "History isn't saving; nothing was deleted."
+        case nil: return historyAccessFailure == nil ? nil : "History isn't saving; nothing was deleted."
         }
     }
     var learnedTermStore: LearnedTermStore? {
