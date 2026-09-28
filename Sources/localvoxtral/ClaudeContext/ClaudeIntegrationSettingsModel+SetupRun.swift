@@ -117,13 +117,10 @@ extension ClaudeIntegrationSettingsModel {
         guard continueSetup(hostID: hostID) else { return }
 
         markSetup(.remotePlugin, .running)
-        let pluginAttempt = await performEnrollmentAsync {
-            let outcome = try service.setupRemotePlugin(
-                sshHostAlias: alias, token: token, remoteForwardPort: port
-            )
-            return [.init(index: 0, command: "remote plugin", message: String(describing: outcome))]
+        let (pluginOutcome, pluginFailure) = await performSetupStep("remote plugin") {
+            try service.setupRemotePlugin(sshHostAlias: alias, token: token, remoteForwardPort: port)
         }
-        if let failure = pluginAttempt.failure {
+        if let failure = pluginFailure {
             failSetup(
                 .remotePlugin,
                 reason: "The remote plugin could not be installed or updated.",
@@ -136,8 +133,7 @@ extension ClaudeIntegrationSettingsModel {
         // indicator must clear on this run, not at the host's next hook (the
         // host may not run another hook for hours, and the user is looking at
         // the row right now).
-        let claudeFound = pluginAttempt.steps.first?.message != "claudeNotFound"
-        if claudeFound {
+        if pluginOutcome != .claudeNotFound {
             hostsWithoutClaude.remove(hostID)
             registry?.notePluginVersion(
                 hostID: hostID,
@@ -146,21 +142,21 @@ extension ClaudeIntegrationSettingsModel {
         } else {
             hostsWithoutClaude.insert(hostID)
         }
-        switch pluginAttempt.steps.first?.message {
-        case "claudeNotFound":
+        switch pluginOutcome {
+        case .claudeNotFound:
             markSetup(.remotePlugin, .skipped("Claude Code is not installed on the remote host."))
-        case "installed": markSetup(.remotePlugin, .done("The remote plugin was installed and verified."))
-        case "updated": markSetup(.remotePlugin, .done("The remote plugin was updated and verified."))
-        default: markSetup(.remotePlugin, .done("The remote plugin is already current and verified."))
+        case .installed: markSetup(.remotePlugin, .done("The remote plugin was installed and verified."))
+        case .updated: markSetup(.remotePlugin, .done("The remote plugin was updated and verified."))
+        case .alreadyCurrent, nil:
+            markSetup(.remotePlugin, .done("The remote plugin is already current and verified."))
         }
         guard continueSetup(hostID: hostID) else { return }
 
         markSetup(.environmentCrossing, .running)
-        let environmentAttempt = await performEnrollmentAsync {
-            let outcome = try service.probeRemoteEnvironment(sshHostAlias: alias)
-            return [.init(index: 0, command: "environment probe", message: String(describing: outcome))]
+        let (environmentOutcome, environmentFailure) = await performSetupStep("environment probe") {
+            try service.probeRemoteEnvironment(sshHostAlias: alias)
         }
-        if let failure = environmentAttempt.failure {
+        if let failure = environmentFailure {
             failSetup(
                 .environmentCrossing,
                 reason: "The terminal environment check could not run.",
@@ -168,17 +164,17 @@ extension ClaudeIntegrationSettingsModel {
             )
             return
         }
-        switch environmentAttempt.steps.first?.message {
-        case "crossed":
+        switch environmentOutcome {
+        case .crossed:
             markSetup(.environmentCrossing, .done("LC_LVX_TTY crossed the SSH connection."))
-        case "localSendEnvMissing":
+        case .localSendEnvMissing:
             failSetup(
                 .environmentCrossing,
                 reason: "This Mac is not sending LC_LVX_TTY for this SSH host.",
                 remedy: "Open Details and follow the SSH environment setup."
             )
             return
-        default:
+        case .remoteAcceptEnvMissing, nil:
             failSetup(
                 .environmentCrossing,
                 reason: "The remote SSH server did not accept LC_LVX_TTY.",
@@ -189,11 +185,10 @@ extension ClaudeIntegrationSettingsModel {
         guard continueSetup(hostID: hostID) else { return }
 
         markSetup(.remoteHerdr, .running)
-        let herdrAttempt = await performEnrollmentAsync {
-            let outcome = try service.setupRemoteHerdr(sshHostAlias: alias)
-            return [.init(index: 0, command: "remote herdr", message: String(describing: outcome))]
+        let (herdrOutcome, herdrFailure) = await performSetupStep("remote herdr") {
+            try service.setupRemoteHerdr(sshHostAlias: alias)
         }
-        if let failure = herdrAttempt.failure {
+        if let failure = herdrFailure {
             failSetup(
                 .remoteHerdr,
                 reason: "Remote herdr setup failed.",
@@ -201,14 +196,14 @@ extension ClaudeIntegrationSettingsModel {
             )
             return
         }
-        switch herdrAttempt.steps.first?.message {
-        case "notFound":
+        switch herdrOutcome {
+        case .notFound:
             markSetup(.remoteHerdr, .skipped("herdr is not installed on the remote host."))
-        case "customized":
+        case .customized:
             setupManualInstructions = "The remote herdr table is customized; open Details to update it manually."
             manualSteps.append(.remoteHerdr)
             markSetup(.remoteHerdr, .skipped("The existing herdr agents table was left unchanged."))
-        default:
+        case .configured, nil:
             markSetup(.remoteHerdr, .done("The remote herdr agents panel is configured."))
         }
         guard continueSetup(hostID: hostID) else { return }
@@ -322,6 +317,22 @@ extension ClaudeIntegrationSettingsModel {
         Log.claudeContext.info("Claude remote host setup completed")
     }
 
+    /// Runs one setup step through `performEnrollmentAsync` and returns its
+    /// outcome as the step's own type. The outcome is nil when the step threw,
+    /// or when an injected performer never ran it.
+    private func performSetupStep<Outcome: Sendable>(
+        _ command: String,
+        _ body: @escaping @Sendable () throws -> Outcome
+    ) async -> (outcome: Outcome?, failure: ClaudeEnrollmentActionFailure?) {
+        let outcome = Mutex<Outcome?>(nil)
+        let attempt = await performEnrollmentAsync {
+            let result = try body()
+            outcome.withLock { $0 = result }
+            return [.init(index: 0, command: command, message: String(describing: result))]
+        }
+        return (outcome.withLock { $0 }, attempt.failure)
+    }
+
     /// Turn on the app-held forward when Claude Desktop runs sessions on the
     /// host, and say whether this run did (#656).
     ///
@@ -339,17 +350,16 @@ extension ClaudeIntegrationSettingsModel {
         guard let registry, registry.host(id: hostID)?.persistentForwardEnabled == false else {
             return false
         }
-        let detection = await performEnrollmentAsync {
-            let found = try service.detectClaudeDesktop(sshHostAlias: alias)
-            return [.init(index: 0, command: "detect Claude Desktop", message: found ? "found" : "absent")]
+        let (found, detectionFailure) = await performSetupStep("detect Claude Desktop") {
+            try service.detectClaudeDesktop(sshHostAlias: alias)
         }
-        if let failure = detection.failure {
+        if let failure = detectionFailure {
             Log.claudeContext.error(
                 "Claude remote setup could not check for Claude Desktop: \(failure.describedError, privacy: .public)"
             )
             return false
         }
-        guard detection.steps.first?.message == "found" else { return false }
+        guard found == true else { return false }
         do {
             try registry.setPersistentForwardEnabled(true, hostID: hostID)
         } catch {
