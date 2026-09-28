@@ -69,8 +69,11 @@ package enum EvalSpeechStage {
 
     // MARK: - TTS
 
-    package static let englishVoicePreference = ["Samantha", "Alex"]
-    package static let frenchVoicePreference = ["Thomas", "Amélie", "Aurélie", "Audrey"]
+    /// In order of preference. Scores compare only between runs with the
+    /// same voices. Since macOS 27 the Mac's Actions runner lists neither
+    /// Samantha nor Alex and gets Daniel (en_GB) (#960).
+    package static let englishVoicePreference = ["Samantha", "Alex", "Daniel"]
+    package static let frenchVoicePreference = ["Thomas", "Jacques", "Amélie"]
 
     #if os(macOS)
     package static let ttsDataFormat = "LEI16@16000"
@@ -172,10 +175,14 @@ package enum EvalSpeechStage {
         guard process.terminationStatus == 0 else {
             throw Failure("`say -v ?` failed (status \(process.terminationStatus))")
         }
-        return try requireVoice(
+        let voice = try requireVoice(
             fromSayVoicesOutput: String(contentsOf: outputURL, encoding: .utf8),
             languagePrefix: languagePrefix, preferred: preferred
         )
+        if let note = fallbackNote(chosen: voice, preferred: preferred) {
+            print("eval TTS: \(note)")
+        }
+        return voice
     }
     #endif
 
@@ -194,11 +201,24 @@ package enum EvalSpeechStage {
     ) -> String? {
         let listed = voiceNames(fromSayVoicesOutput: output, languagePrefix: languagePrefix)
         for name in preferred {
-            if let voice = listed.first(where: { $0 == name || $0.hasPrefix(name + " (") }) {
+            if let voice = listed.first(where: { isVoice($0, named: name) }) {
                 return voice
             }
         }
         return nil
+    }
+
+    /// One line naming the preferred voices `say` did not list, when
+    /// `chosen` is not the first preference; nil otherwise.
+    package static func fallbackNote(chosen: String, preferred: [String]) -> String? {
+        guard let index = preferred.firstIndex(where: { isVoice(chosen, named: $0) }), index > 0
+        else { return nil }
+        return "\(preferred[..<index].joined(separator: ", ")) not listed by `say -v ?`, using \(chosen)"
+    }
+
+    /// "Samantha" or, as macOS 27 lists it, "Samantha (English (US))".
+    private static func isVoice(_ listed: String, named name: String) -> Bool {
+        listed == name || listed.hasPrefix(name + " (")
     }
 
     /// `pickVoice`, failing with the voices on offer when it finds none. No

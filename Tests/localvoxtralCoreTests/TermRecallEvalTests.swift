@@ -206,7 +206,13 @@ final class TermRecallEvalTests: XCTestCase {
             scores.append(TermRecallScorer.score(evalCase, hypothesis: hypothesis, noiseTerms: noiseTerms))
             progress("term-recall: [\(index + 1)/\(cases.count)] \(evalCase.id) done")
         }
+        #if os(macOS)
+        // The voices go in the header: scores compare only between runs
+        // with the same voices.
+        let audio = recordings?.audio ?? "say en=\(englishVoice ?? "-") fr=\(frenchVoice ?? "-")"
+        #else
         let audio = recordings?.audio ?? "say"
+        #endif
         return TermRecallRun(
             header: .init(
                 label: config.label ?? "\(asr)-\(bias)", source: asr, model: model, bias: bias, audio: audio,

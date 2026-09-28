@@ -47,12 +47,55 @@ final class EvalVoicePickingTests: XCTestCase {
         XCTAssertEqual(pick(macOS27Voices, "fr"), "Thomas (French (France))")
     }
 
-    /// No fallback to another voice of the language: Albert is what the
+    /// What the Mac's Actions runner lists on macOS 27 (run 36363115511):
+    /// no Samantha, Alex or Thomas, so the list's later entries apply.
+    private let macOS27RunnerVoices = """
+        Albert                           en_US    # Hello! My name is Albert.
+        Amélie                           fr_CA    # Bonjour! Je m'appelle Amélie.
+        Bad News                         en_US    # ...
+        Bahh                             en_US    # ...
+        Daniel                           en_GB    # Hello! My name is Daniel.
+        Flo (English (UK))               en_GB    # Hello! My name is Flo.
+        Flo (English (US))               en_US    # Hello! My name is Flo.
+        Fred                             en_US    # ...
+        Jacques                          fr_FR    # Bonjour! Je m'appelle Jacques.
+        Karen                            en_AU    # Hello! My name is Karen.
+        Moira                            en_IE    # Hello! My name is Moira.
+        Zarvox                           en_US    # ...
+        """
+
+    func testRunnerListingFallsBackAlongThePreferenceList() {
+        XCTAssertEqual(pick(macOS27RunnerVoices, "en"), "Daniel")
+        XCTAssertEqual(pick(macOS27RunnerVoices, "fr"), "Jacques")
+        XCTAssertEqual(
+            EvalSpeechStage.fallbackNote(
+                chosen: "Daniel", preferred: EvalSpeechStage.englishVoicePreference
+            ),
+            "Samantha, Alex not listed by `say -v ?`, using Daniel"
+        )
+        XCTAssertNil(
+            EvalSpeechStage.fallbackNote(
+                chosen: "Samantha (English (US))",
+                preferred: EvalSpeechStage.englishVoicePreference
+            )
+        )
+    }
+
+    /// Amélie (fr_CA) is the last French choice.
+    func testFrenchFallsBackToAmelie() {
+        let output = """
+            Amélie                           fr_CA    # Bonjour! Je m'appelle Amélie.
+            Audrey (French (France))         fr_FR    # Bonjour! Je m'appelle Audrey.
+            """
+        XCTAssertEqual(pick(output, "fr"), "Amélie")
+    }
+
+    /// No fallback to a voice off the list: Albert is what the old
     /// fallback chose on macOS 27, and speechd transcribed nothing of it.
     func testListingWithoutPreferredVoicePicksNone() {
         let output = """
             Albert                           en_US    # Hello! My name is Albert.
-            Jacques                          fr_FR    # Bonjour! Je m'appelle Jacques.
+            Audrey (French (France))         fr_FR    # Bonjour! Je m'appelle Audrey.
             """
         XCTAssertNil(pick(output, "en"))
         XCTAssertNil(pick(output, "fr"))
@@ -73,7 +116,7 @@ final class EvalVoicePickingTests: XCTestCase {
         ) { error in
             XCTAssertEqual(
                 String(describing: error),
-                "no en TTS voice named Samantha or Alex; "
+                "no en TTS voice named Samantha or Alex or Daniel; "
                     + "`say -v ?` offered: Albert, Eddy (English (UK))"
             )
         }

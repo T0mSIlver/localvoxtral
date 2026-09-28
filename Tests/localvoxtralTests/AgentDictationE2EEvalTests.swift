@@ -306,7 +306,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             results: results,
             header: "polish model: \(polishConfiguration.model), "
                 + "asr: \(asrConfiguration.model) @ \(asrConfiguration.endpoint), "
-                + "audio: \(recordedAudio.map(\.audioLabel) ?? "macOS say"), "
+                + "audio: \(recordedAudio.map(\.audioLabel) ?? "macOS say en=\(enVoice ?? "-") fr=\(frVoice ?? "-")"), "
                 + "polish backend: \(polishBackend)"
         )
         print(board.text)
