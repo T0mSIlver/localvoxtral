@@ -155,15 +155,20 @@ final class ViewSnapshotTests: XCTestCase {
 
     /// Projects (#939), light and dark: the table, with a fork waiting for
     /// a choice, a project with no GitHub repository and the "No project"
-    /// entry (#972), then one project's sheet with its whole term list and
-    /// the "No project" sheet. Made-up projects and hosts: the artifacts are
-    /// public.
+    /// entry (#972), and Import… and Export… under it (#999); then one
+    /// project's sheet with its whole term list and the "No project" sheet.
+    /// Made-up projects and hosts: the artifacts are public.
     func testProjectsPane() async throws {
         for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             try await recordSettings(
                 pane: .projects, name: "settings-projects-\(theme)", setUp: false, appearance: appearance
             ) { viewModel in
                 viewModel.installQuickCaptureInbox(try self.projectsInbox(viewModel.settings))
+                // Export… shows only when the store holds terms (#999).
+                let store = LearnedTermStore(fileURL: nil)
+                store.importProjects(self.projectsLearnedTerms().projects) { _ in }
+                store.waitForPendingWrites()
+                viewModel.learnedTermStore = store
             }
             let (settings, viewModel) = makeViewModel()
             let inbox = try projectsInbox(settings)
