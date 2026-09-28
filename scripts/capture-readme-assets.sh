@@ -267,6 +267,8 @@ defaults write "$BUNDLE_ID" "settings.onboarding_completed" -bool true
 defaults write "$BUNDLE_ID" "settings.modifier_only_hotkey_enabled" -bool true
 defaults write "$BUNDLE_ID" "settings.llm_polishing_enabled" -bool true
 LAUNCHED_APP=1
+# The captured app keeps its History and other stores out of the owner's (#985).
+export LOCALVOXTRAL_DATA_HOME="${LOCALVOXTRAL_DATA_HOME:-$(mktemp -d "${TMPDIR:-/tmp}/lv-readme-assets-data.XXXXXX")}"
 lv_open "$APP_PATH"
 for _ in $(seq 1 20); do pgrep -xq "$APP_PROCESS" && break; sleep 0.5; done
 APP_PID="$(pgrep -xn "$APP_PROCESS")"

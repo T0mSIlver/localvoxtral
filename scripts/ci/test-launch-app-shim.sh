@@ -61,7 +61,7 @@ LOCALVOXTRAL_DATA_HOME=/tmp/lv-data lv_open -n /tmp/localvoxtral.app
 [ "$(cat "$ARGV_LOG")" = "open --env LOCALVOXTRAL_DATA_HOME=/tmp/lv-data -n /tmp/localvoxtral.app" ] \
   || fail "the data folder was not forwarded: $(cat "$ARGV_LOG")"
 
-for script in scripts/ui-smoke.sh scripts/e2e-dictation.sh scripts/record-demo.sh; do
+for script in scripts/ui-smoke.sh scripts/e2e-dictation.sh scripts/record-demo.sh scripts/capture-readme-assets.sh; do
   grep -q 'export LOCALVOXTRAL_DATA_HOME=' "$ROOT_DIR/$script" \
     || fail "$script launches the app as the owner without a data folder of its own"
 done
