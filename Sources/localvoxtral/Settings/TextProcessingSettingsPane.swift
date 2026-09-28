@@ -5,6 +5,7 @@ struct TextProcessingSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
     @State private var instructionsTokens: String?
+    @State private var globalTermsTokens: String?
 
     static let speakerProfileExample = """
         Backend engineer at Acme, mostly Swift and Python.
@@ -22,21 +23,50 @@ struct TextProcessingSettingsPane: View {
         settings.isOverlayBufferSessionReachable
     }
 
-    private var tokenRatio: PolishPromptTokenRatio {
-        PolishPromptTokenText.ratio(settings: settings, ledger: viewModel.engines.usageLedger)
+    private var tokenCounter: PolishPromptTokenCounter {
+        PolishPromptTokenCounter(settings: settings, ledger: viewModel.engines.usageLedger)
     }
 
-    /// Read from the prompt files once per visit, not on every render.
-    private func instructionsTokenText() -> String {
-        let ratio = tokenRatio
-        let tokens = { (profile: PolishPromptProfile) in
-            ratio.tokens(proseCharacters: PolishPromptParts.instructionCharacters(
-                viewModel.appConfigStore.loadLLMPromptTemplates(profile: profile).withReferenceGuide()))
+    /// What a count depends on; the backend picks exact or estimated.
+    private struct TokenCountKey: Equatable {
+        let backend: BackendMode
+        let agentProfile: Bool
+        let terms: [String]
+        /// With About-you text, the header is its, not the terms'.
+        let hasProfile: Bool
+    }
+
+    private var tokenCountKey: TokenCountKey {
+        TokenCountKey(
+            backend: settings.polishingBackendMode,
+            agentProfile: settings.agentPolishProfileEnabled,
+            terms: settings.polishSpeakerTerms,
+            hasProfile: !settings.polishSpeakerProfile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    /// Reads the prompt files once per visit and change, not on every render.
+    private func countPromptParts() async {
+        let counter = tokenCounter
+        let instructions = { (profile: PolishPromptProfile) in
+            PolishPromptParts.instructionText(
+                viewModel.appConfigStore.loadLLMPromptTemplates(profile: profile).withReferenceGuide())
         }
-        return PolishPromptTokenText.instructions(
-            standard: tokens(.standard),
-            agent: settings.agentPolishProfileEnabled ? tokens(.agent) : nil
-        )
+        let standardText = instructions(.standard)
+        let agentText = settings.agentPolishProfileEnabled ? instructions(.agent) : nil
+        let terms = SpeakerTerms.sanitized(settings.polishSpeakerTerms)
+        // What the terms add does not depend on the instructions.
+        let termText = PolishPromptParts.globalTermText(
+            LLMPromptTemplates(systemContent: "", userContent: ""),
+            profile: settings.polishSpeakerProfile, terms: terms)
+
+        if let standard = await counter.count(standardText) {
+            var agent: PolishPromptTokenCounter.Count?
+            if let agentText { agent = await counter.count(agentText) }
+            instructionsTokens = PolishPromptTokenText.instructions(standard: standard, agent: agent)
+        }
+        globalTermsTokens = await counter.count(termText, termList: true).map {
+            PolishPromptTokenText.globalTerms(count: terms.count, tokens: $0)
+        }
     }
 
     private var llmPolishingEnabledBinding: Binding<Bool> {
@@ -94,7 +124,7 @@ struct TextProcessingSettingsPane: View {
 
                 SettingsFieldRow(
                     title: "Global terms",
-                    status: PolishPromptTokenText.globalTerms(settings.polishSpeakerTerms, ratio: tokenRatio),
+                    status: globalTermsTokens,
                     layout: .stacked
                 ) {
                     SpeakerTermsField(terms: $settings.polishSpeakerTerms)
@@ -180,8 +210,8 @@ struct TextProcessingSettingsPane: View {
                 SettingsFieldRow(title: "Polishing instructions", status: instructionsTokens) {
                     EmptyView()
                 }
-                .task(id: settings.agentPolishProfileEnabled) {
-                    instructionsTokens = instructionsTokenText()
+                .task(id: tokenCountKey) {
+                    await countPromptParts()
                 }
 
                 SettingsFieldRow(title: "Config folder") {

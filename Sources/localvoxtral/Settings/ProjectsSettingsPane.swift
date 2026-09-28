@@ -223,8 +223,8 @@ struct ProjectDetailSheet: View {
     @State private var repositoryDraft = ""
     @State private var isEditingDescription = false
     @State private var descriptionDraft = ""
-    private var tokenRatio: PolishPromptTokenRatio {
-        PolishPromptTokenText.ratio(settings: settings, ledger: viewModel.engines.usageLedger)
+    private var tokenCounter: PolishPromptTokenCounter {
+        PolishPromptTokenCounter(settings: settings, ledger: viewModel.engines.usageLedger)
     }
 
     private var row: ProjectsPaneRow? {
@@ -245,7 +245,7 @@ struct ProjectDetailSheet: View {
                         descriptionGroup(row)
                         ProjectTermsGroup(
                             terms: row.terms, keys: row.keys, store: viewModel.learnedTermStore,
-                            tokenRatio: tokenRatio)
+                            tokenCounter: tokenCounter)
                         activityGroup(row)
                     }
                 }
@@ -473,7 +473,7 @@ struct UnlistedTermsSheet: View {
                 // closing the sheet under the pointer.
                 ProjectTermsGroup(
                     terms: unlisted?.terms ?? [], keys: unlisted?.keys ?? [], store: viewModel.learnedTermStore,
-                    tokenRatio: PolishPromptTokenText.ratio(
+                    tokenCounter: PolishPromptTokenCounter(
                         settings: viewModel.settings, ledger: viewModel.engines.usageLedger))
             }
             .settingsScrollEdgeEffectHidden()
@@ -499,7 +499,8 @@ struct ProjectTermsGroup: View {
     let keys: [String]
     let store: LearnedTermStore?
     /// Sizes the terms in the polish prompt; nil shows no size.
-    var tokenRatio: PolishPromptTokenRatio? = nil
+    var tokenCounter: PolishPromptTokenCounter? = nil
+    @State private var sentTermsTokens: String?
     @State private var query = ""
     @State private var isConfirmingForgetAll = false
 
@@ -518,8 +519,8 @@ struct ProjectTermsGroup: View {
                         .foregroundStyle(.secondary)
                 }
             } else {
-                if let tokenRatio, let tokens = PolishPromptTokenText.projectTerms(terms, ratio: tokenRatio) {
-                    SettingsFieldRow(title: "Polish prompt", status: tokens) {
+                if let sentTermsTokens {
+                    SettingsFieldRow(title: "Polish prompt", status: sentTermsTokens) {
                         EmptyView()
                     }
                 }
@@ -549,6 +550,11 @@ struct ProjectTermsGroup: View {
                 }
             }
         }
+        .task(id: sentTerms) {
+            guard let tokenCounter else { return }
+            sentTermsTokens = await tokenCounter.count(PolishPromptParts.projectTermText(sentTerms), termList: true)
+                .map(PolishPromptTokenText.projectTerms)
+        }
         .confirmationDialog(
             "Forget all \(terms.count) terms of this project?", isPresented: $isConfirmingForgetAll
         ) {
@@ -560,7 +566,12 @@ struct ProjectTermsGroup: View {
         }
     }
 
-    private func row(_ term: LearnedTerm) -> some View {
+    /// The terms a dictation may send: the confirmed ones.
+    private var sentTerms: [String] {
+        terms.filter { $0.isConfirmed(minimumDictations: LearnedTerms.confirmedDictations) }.map(\.term)
+    }
+
+        private func row(_ term: LearnedTerm) -> some View {
         SettingsGroupRow {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {

@@ -702,9 +702,13 @@ tokens:
   learned term is sent only when you say something that sounds like it, so
   most dictations carry a few of them or none.
 
-No polishing backend counts tokens before a request is sent, so these are
-estimates: each part's characters times the tokens per character your
-polishing backend reported over its last 20 polish requests. Before the
+Size matters most with the bundled helper, where a longer prompt takes
+longer to read and more memory; a cloud model's bill and speed barely move
+with a few thousand tokens. So with the bundled helper, its own tokenizer
+counts each part exactly. Mistral's API and other servers offer no count
+before a request is sent, so there the sizes are estimates, shown with ≈:
+each part's characters times the tokens per character your polishing
+backend reported over its last 20 polish requests. Before the
 first request, the app assumes 4.6 characters a token, what the Qwen3.5, GLM
 and Mistral tokenizers measured on the bundled prompts. A list of terms
 counts 1.6 times as many tokens per character as prose, because names and

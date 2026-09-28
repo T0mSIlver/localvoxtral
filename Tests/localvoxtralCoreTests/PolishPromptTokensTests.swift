@@ -84,9 +84,7 @@ final class PolishPromptTokensTests: XCTestCase {
             systemContent: "Polish it.",
             userContent: "Terms:\n{{replacement_dictionary}}\nText:\n{{input_text}}")
 
-        XCTAssertEqual(
-            PolishPromptParts.instructionCharacters(templates),
-            "Polish it.".count + "Terms:\n\nText:\n".count)
+        XCTAssertEqual(PolishPromptParts.instructionText(templates), "Polish it.Terms:\n\nText:\n")
     }
 
     func testGlobalTermsAddTheirLineAndTheHeaderWhenTheyBringIt() {
@@ -94,18 +92,17 @@ final class PolishPromptTokensTests: XCTestCase {
         let line = "Names and terms they use: Qwen, vLLM\n"
 
         XCTAssertEqual(
-            PolishPromptParts.globalTermCharacters(templates, profile: "I write Swift.", terms: ["Qwen", "vLLM"]),
-            line.count)
+            PolishPromptParts.globalTermText(templates, profile: "I write Swift.", terms: ["Qwen", "vLLM"]), line)
         XCTAssertEqual(
-            PolishPromptParts.globalTermCharacters(templates, profile: "", terms: ["Qwen", "vLLM"]),
-            "\n\n".count + LLMPromptTemplates.speakerProfileHeader.count + "\n".count + line.count)
-        XCTAssertEqual(PolishPromptParts.globalTermCharacters(templates, profile: "", terms: []), 0)
+            PolishPromptParts.globalTermText(templates, profile: "", terms: ["Qwen", "vLLM"]),
+            "\n\n" + LLMPromptTemplates.speakerProfileHeader + "\n" + line)
+        XCTAssertEqual(PolishPromptParts.globalTermText(templates, profile: "", terms: []), "")
     }
 
     func testAProjectAddsAtMostItsLearnedSectionWithEveryTerm() {
-        let section = "[Learned vocabulary]\n- Qwen: Qwen\n- vLLM: vLLM"
-
-        XCTAssertEqual(PolishPromptParts.projectTermCharacters(["Qwen", "vLLM"]), "\n\n".count + section.count)
-        XCTAssertEqual(PolishPromptParts.projectTermCharacters([]), 0)
+        XCTAssertEqual(
+            PolishPromptParts.projectTermText(["Qwen", "vLLM"]),
+            "\n\n[Learned vocabulary]\n- Qwen: Qwen\n- vLLM: vLLM")
+        XCTAssertEqual(PolishPromptParts.projectTermText([]), "")
     }
 }

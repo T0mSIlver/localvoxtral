@@ -1,5 +1,7 @@
 import Foundation
+import Synchronization
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 /// A polished dictation keeps the prompt tokens its request sent, as the
@@ -54,5 +56,44 @@ final class PolishPromptTokensWiringTests: XCTestCase {
         XCTAssertNotNil(entry?.polishedText)
         XCTAssertNil(entry?.polishPromptTokens)
         XCTAssertEqual(entry.map(DictationHistoryRowText.details(for:))?.contains("tokens"), false)
+    }
+
+    // MARK: - Settings' counts
+
+    private let ratio = PolishPromptTokenRatio(tokensPerCharacter: 0.25, basis: .assumed)
+    private let helper = URL(string: "http://127.0.0.1:1/v1/tokenize")!
+
+    func testTheBundledHelperCountsExactly() async {
+        StubHTTPProtocol.reply.withLock { $0 = .http(200, #"{"tokens":1229}"#) }
+        let counter = PolishPromptTokenCounter(
+            ratio: ratio, helperTokenizeURL: helper, session: StubHTTPProtocol.session())
+
+        let count = await counter.count(String(repeating: "a", count: 400))
+
+        XCTAssertEqual(count, .exact(1_229))
+    }
+
+    /// A helper that is down, or predates the route, answers nothing usable.
+    func testAHelperWithoutTheRouteFallsBackToTheEstimate() async {
+        StubHTTPProtocol.reply.withLock { $0 = .http(404, #"{"error":{"message":"not found"}}"#) }
+        let counter = PolishPromptTokenCounter(
+            ratio: ratio, helperTokenizeURL: helper, session: StubHTTPProtocol.session())
+
+        let prose = await counter.count(String(repeating: "a", count: 400))
+        let terms = await counter.count(String(repeating: "a", count: 400), termList: true)
+
+        XCTAssertEqual(prose, .estimated(100))
+        XCTAssertEqual(terms, .estimated(160))
+    }
+
+    func testACloudBackendIsEstimatedAndShownApproximately() async {
+        let counter = PolishPromptTokenCounter(ratio: ratio, helperTokenizeURL: nil)
+
+        let count = await counter.count(String(repeating: "a", count: 4_918))
+
+        XCTAssertEqual(count, .estimated(1_230))
+        XCTAssertEqual(
+            PolishPromptTokenText.instructions(standard: count!, agent: .exact(1_758)),
+            "≈ \(1_230.formatted()) · agent \(1_758.formatted()) tokens")
     }
 }

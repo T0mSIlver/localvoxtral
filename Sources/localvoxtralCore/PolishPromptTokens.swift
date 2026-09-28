@@ -77,39 +77,42 @@ package struct PolishPromptTokenRatio: Equatable, Sendable {
     }
 }
 
-/// The characters each part of the polish prompt puts on the wire, counted
-/// from the same functions that build the request.
+/// The text each part of the polish prompt puts on the wire, built by the
+/// same functions that build the request, so it can be counted in characters
+/// or handed to a tokenizer.
 package enum PolishPromptParts {
     /// The instructions every polish sends whatever was said: the system
     /// prompt with the reference guide, and the user template around its
     /// placeholders. `templates` must not carry the speaker profile yet.
-    package static func instructionCharacters(_ templates: LLMPromptTemplates) -> Int {
+    package static func instructionText(_ templates: LLMPromptTemplates) -> String {
         let userTemplate = ["{{input_text}}", "{{replacement_dictionary}}"].reduce(templates.userContent) {
             $0.replacingOccurrences(of: $1, with: "")
         }
-        return templates.systemContent.count + userTemplate.count
+        return templates.systemContent + userTemplate
     }
 
     /// What the global terms add to the system prompt, given the About-you
     /// text sent with them: their line, and the header when the profile is
     /// empty and the terms alone bring it.
-    package static func globalTermCharacters(
+    package static func globalTermText(
         _ templates: LLMPromptTemplates, profile: String, terms: [String]
-    ) -> Int {
-        templates.withSpeakerProfile(profile, terms: terms).systemContent.count
-            - templates.withSpeakerProfile(profile).systemContent.count
+    ) -> String {
+        let with = templates.withSpeakerProfile(profile, terms: terms).systemContent
+        let without = templates.withSpeakerProfile(profile).systemContent
+        guard with.hasPrefix(without) else { return "" }
+        return String(with.dropFirst(without.count))
     }
 
     /// The most a project's confirmed terms add to one request: the learned
-    /// vocabulary section with every term in it. A term is sent only when the
+    /// vocabulary section with every term in it, after the blank line that
+    /// joins it to the sections before. A term is sent only when the
     /// dictation says something like it, so most requests carry a few lines
     /// or none. The form each term was heard as is unknown here; the term
     /// itself stands in for it.
-    package static func projectTermCharacters(_ terms: [String]) -> Int {
+    package static func projectTermText(_ terms: [String]) -> String {
         let entries = terms.map { ReplacementEntry(replaceWith: $0, matches: [$0]) }
         let section = RepoVocabularyMatcher.promptSection(
             entries: entries, header: RepoVocabularyMatcher.learnedVocabularyHeader)
-        // Joined to the sections before it with a blank line.
-        return section.isEmpty ? 0 : section.count + 2
+        return section.isEmpty ? "" : "\n\n" + section
     }
 }
