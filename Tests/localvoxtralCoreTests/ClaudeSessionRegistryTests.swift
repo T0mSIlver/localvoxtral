@@ -162,21 +162,14 @@ final class ClaudeSessionRegistryTests: XCTestCase {
 
     // MARK: SessionEnd eviction
 
-    func testSessionEndEvictsImmediatelyButReturnsFinalSnapshot() throws {
-        let registry = makeRegistry()
-        registry.ingest(record(.sessionStart), origin: local)
-        let final = try XCTUnwrap(registry.ingest(record(.sessionEnd), origin: local))
-        XCTAssertEqual(final.activity, .ended)
-        XCTAssertNil(registry.snapshot(sessionID: "s1"))
-        XCTAssertTrue(registry.liveSessions().isEmpty)
-    }
-
-    func testSessionEndMakesTheSessionUnresolvableByID() {
+    func testSessionEndEvictsImmediatelyReturnsFinalSnapshotAndFreesTheID() throws {
         let registry = makeRegistry()
         registry.ingest(record(.sessionStart, session: "s1"), origin: local)
         XCTAssertNotNil(registry.snapshot(sessionID: "s1"))
-        registry.ingest(record(.sessionEnd, session: "s1"), origin: local)
+        let final = try XCTUnwrap(registry.ingest(record(.sessionEnd, session: "s1"), origin: local))
+        XCTAssertEqual(final.activity, .ended, "the caller still gets the final snapshot")
         XCTAssertNil(registry.snapshot(sessionID: "s1"))
+        XCTAssertTrue(registry.liveSessions().isEmpty)
 
         // And the id is free again: a NEW session that spells the same id is a
         // new entry, not a resurrection of the evicted one.
@@ -229,18 +222,6 @@ final class ClaudeSessionRegistryTests: XCTestCase {
             registry.snapshot(sessionID: "s1"),
             "activity should have refreshed the TTL"
         )
-    }
-
-    func testDeadClaudeProcessMakesASessionStaleBeforeTTLExpires() {
-        // Claude Code can die without firing SessionEnd (SIGKILL, closed
-        // terminal), so TTL alone would keep a ghost session resolvable.
-        let liveness = TestLiveness()
-        let registry = makeRegistry(liveness: liveness)
-        registry.ingest(record(.sessionStart, claudePID: 4242), origin: local)
-        XCTAssertNotNil(registry.snapshot(sessionID: "s1"), "alive session should resolve")
-
-        liveness.kill(4242)
-        XCTAssertNil(registry.snapshot(sessionID: "s1"))
     }
 
     func testPIDLessLocalSessionUsesTheShortExposureTTL() {
@@ -305,8 +286,9 @@ final class ClaudeSessionRegistryTests: XCTestCase {
 
     // MARK: TTY lookup — the focus join
 
-    func testTTYLookupResolvesTheLocalSessionOnThatDevice() throws {
-        let registry = makeRegistry()
+    func testTTYLookupResolvesTheLocalSessionOnThatDeviceAndAbstainsOtherwise() throws {
+        let liveness = TestLiveness()
+        let registry = makeRegistry(liveness: liveness)
         registry.ingest(
             record(.sessionStart, claudePID: 9001, tty: "/dev/ttys003"), origin: local
         )
@@ -314,6 +296,10 @@ final class ClaudeSessionRegistryTests: XCTestCase {
             return XCTFail("expected the session on that device")
         }
         XCTAssertEqual(snapshot.sessionID, "s1")
+        XCTAssertEqual(registry.resolve(tty: "/dev/ttys007"), .unknown, "an unseen device")
+
+        liveness.kill(9001)
+        XCTAssertEqual(registry.resolve(tty: "/dev/ttys003"), .stale, "the only match is dead")
     }
 
     func testTTYLookupNeverMatchesARemoteSession() {
@@ -344,28 +330,11 @@ final class ClaudeSessionRegistryTests: XCTestCase {
         XCTAssertEqual(registry.resolve(tty: "/dev/ttys003"), .ambiguous)
     }
 
-    func testTTYLookupReportsStaleWhenTheOnlyMatchIsDead() {
-        let liveness = TestLiveness()
-        let registry = makeRegistry(liveness: liveness)
-        registry.ingest(
-            record(.sessionStart, claudePID: 9001, tty: "/dev/ttys003"), origin: local
-        )
-        liveness.kill(9001)
-        XCTAssertEqual(registry.resolve(tty: "/dev/ttys003"), .stale)
-    }
-
-    func testTTYLookupIsUnknownForAnUnseenDevice() {
-        let registry = makeRegistry()
-        registry.ingest(
-            record(.sessionStart, claudePID: 9001, tty: "/dev/ttys003"), origin: local
-        )
-        XCTAssertEqual(registry.resolve(tty: "/dev/ttys007"), .unknown)
-    }
-
     // MARK: herdr pane lookup — the inner-pane focus join
 
-    func testHerdrPaneLookupResolvesTheLocalSessionInThatPane() {
-        let registry = makeRegistry()
+    func testHerdrPaneLookupResolvesTheLocalSessionInThatPaneAndAbstainsOtherwise() {
+        let liveness = TestLiveness()
+        let registry = makeRegistry(liveness: liveness)
         registry.ingest(
             record(.sessionStart, claudePID: 9001, herdrPaneID: "pane-7"),
             origin: local
@@ -374,26 +343,10 @@ final class ClaudeSessionRegistryTests: XCTestCase {
             return XCTFail("expected the session in that herdr pane")
         }
         XCTAssertEqual(snapshot.sessionID, "s1")
-    }
+        XCTAssertEqual(registry.resolve(herdrPaneID: "pane-other"), .unknown, "an unseen pane")
 
-    func testHerdrPaneLookupIsUnknownForAnUnseenPane() {
-        let registry = makeRegistry()
-        registry.ingest(
-            record(.sessionStart, claudePID: 9001, herdrPaneID: "pane-7"),
-            origin: local
-        )
-        XCTAssertEqual(registry.resolve(herdrPaneID: "pane-other"), .unknown)
-    }
-
-    func testHerdrPaneLookupReportsStaleWhenTheOnlyMatchIsDead() {
-        let liveness = TestLiveness()
-        let registry = makeRegistry(liveness: liveness)
-        registry.ingest(
-            record(.sessionStart, claudePID: 9001, herdrPaneID: "pane-7"),
-            origin: local
-        )
         liveness.kill(9001)
-        XCTAssertEqual(registry.resolve(herdrPaneID: "pane-7"), .stale)
+        XCTAssertEqual(registry.resolve(herdrPaneID: "pane-7"), .stale, "the only match is dead")
     }
 
     func testTwoLocalSessionsInOneHerdrPaneAbstainAsAmbiguous() {
@@ -420,8 +373,9 @@ final class ClaudeSessionRegistryTests: XCTestCase {
         XCTAssertEqual(registry.resolve(herdrPaneID: "pane-7"), .unknown)
     }
 
-    func testLiveLocalHerdrSocketPathsAreDistinct() {
-        let registry = makeRegistry()
+    func testLiveLocalHerdrSocketPathsAreDistinctLiveAndLocalOnly() {
+        let liveness = TestLiveness()
+        let registry = makeRegistry(liveness: liveness)
         registry.ingest(
             record(.sessionStart, session: "s1", claudePID: 9001, herdrSocketPath: "/tmp/a.sock"),
             origin: local
@@ -434,41 +388,28 @@ final class ClaudeSessionRegistryTests: XCTestCase {
             record(.sessionStart, session: "s3", claudePID: 9003, herdrSocketPath: "/tmp/b.sock"),
             origin: local
         )
-        XCTAssertEqual(registry.liveLocalHerdrSocketPaths(), ["/tmp/a.sock", "/tmp/b.sock"])
-    }
-
-    func testLiveLocalHerdrSocketPathsExcludeStaleSessions() {
-        let liveness = TestLiveness()
-        let registry = makeRegistry(liveness: liveness)
+        // A stale session's socket is not live.
         registry.ingest(
-            record(.sessionStart, session: "live", claudePID: 9001, herdrSocketPath: "/tmp/live.sock"),
+            record(.sessionStart, session: "dead", claudePID: 9004, herdrSocketPath: "/tmp/dead.sock"),
             origin: local
         )
+        liveness.kill(9004)
+        // A remote session's socket path names a machine that is not this one.
         registry.ingest(
-            record(.sessionStart, session: "dead", claudePID: 9002, herdrSocketPath: "/tmp/dead.sock"),
-            origin: local
-        )
-        liveness.kill(9002)
-        XCTAssertEqual(registry.liveLocalHerdrSocketPaths(), ["/tmp/live.sock"])
-    }
-
-    func testLiveLocalHerdrSocketPathsExcludeRemoteSessions() {
-        let registry = makeRegistry()
-        registry.ingest(
-            record(.sessionStart, session: "local", claudePID: 9001, herdrSocketPath: "/tmp/local.sock"),
-            origin: local
-        )
-        registry.ingest(
-            record(.sessionStart, session: "remote", claudePID: 9002, herdrSocketPath: "/tmp/remote.sock"),
+            record(.sessionStart, session: "remote", claudePID: 9005, herdrSocketPath: "/tmp/remote.sock"),
             origin: .remote(channel: "ssh")
         )
-        XCTAssertEqual(registry.liveLocalHerdrSocketPaths(), ["/tmp/local.sock"])
+        XCTAssertEqual(registry.liveLocalHerdrSocketPaths(), ["/tmp/a.sock", "/tmp/b.sock"])
     }
 
     // MARK: Workspace lookup — ambiguity
 
-    func testWorkspaceLookupResolvesSingleMatch() throws {
-        let registry = makeRegistry()
+    func testWorkspaceLookupResolvesSingleMatchAndReportsUnknownThenStale() throws {
+        let clock = TestClock(epoch)
+        let registry = makeRegistry(
+            limits: ClaudeRegistryLimits(maxSessions: 32, sessionTTL: 10),
+            clock: clock
+        )
         registry.ingest(record(.sessionStart, cwd: "/repo"), origin: local)
         let workspace = try XCTUnwrap(
             ClaudeWorkspaceReference.make(rawCwd: "/repo", origin: local)?.localPath
@@ -477,6 +418,14 @@ final class ClaudeSessionRegistryTests: XCTestCase {
             return XCTFail("expected a single match")
         }
         XCTAssertEqual(snapshot.sessionID, "s1")
+
+        let elsewhere = try XCTUnwrap(
+            ClaudeWorkspaceReference.make(rawCwd: "/elsewhere", origin: local)?.localPath
+        )
+        XCTAssertEqual(registry.resolve(workspace: elsewhere), .unknown)
+
+        clock.advance(11)
+        XCTAssertEqual(registry.resolve(workspace: workspace), .stale, "stale, rather than unknown")
     }
 
     func testTwoSessionsInOneWorkspaceAbstainAsAmbiguous() throws {
@@ -489,29 +438,6 @@ final class ClaudeSessionRegistryTests: XCTestCase {
             ClaudeWorkspaceReference.make(rawCwd: "/repo", origin: local)?.localPath
         )
         XCTAssertEqual(registry.resolve(workspace: workspace), .ambiguous)
-    }
-
-    func testWorkspaceLookupUnknownWhenNothingMatches() throws {
-        let registry = makeRegistry()
-        registry.ingest(record(.sessionStart, cwd: "/repo"), origin: local)
-        let workspace = try XCTUnwrap(
-            ClaudeWorkspaceReference.make(rawCwd: "/elsewhere", origin: local)?.localPath
-        )
-        XCTAssertEqual(registry.resolve(workspace: workspace), .unknown)
-    }
-
-    func testWorkspaceLookupReportsStaleRatherThanUnknown() throws {
-        let clock = TestClock(epoch)
-        let registry = makeRegistry(
-            limits: ClaudeRegistryLimits(maxSessions: 32, sessionTTL: 10),
-            clock: clock
-        )
-        registry.ingest(record(.sessionStart, cwd: "/repo"), origin: local)
-        let workspace = try XCTUnwrap(
-            ClaudeWorkspaceReference.make(rawCwd: "/repo", origin: local)?.localPath
-        )
-        clock.advance(11)
-        XCTAssertEqual(registry.resolve(workspace: workspace), .stale)
     }
 
     func testRemoteSessionIsNeverFoundByWorkspaceLookup() throws {
@@ -541,22 +467,6 @@ final class ClaudeSessionRegistryTests: XCTestCase {
         XCTAssertNotNil(registry.snapshot(sessionID: "middle"))
         XCTAssertNotNil(registry.snapshot(sessionID: "newest"))
         XCTAssertEqual(registry.liveSessions().count, 2)
-    }
-
-    func testCapEvictedSessionIsGoneFromEveryLookup() {
-        let clock = TestClock(epoch)
-        let registry = makeRegistry(
-            limits: ClaudeRegistryLimits(maxSessions: 1, sessionTTL: 10_000),
-            clock: clock
-        )
-        registry.ingest(record(.sessionStart, session: "s1"), origin: local)
-        clock.advance(1)
-        registry.ingest(record(.sessionStart, session: "s2"), origin: local)
-        XCTAssertNil(
-            registry.snapshot(sessionID: "s1"),
-            "an evicted session must not linger anywhere a join could reach it"
-        )
-        XCTAssertEqual(registry.liveSessions().map(\.sessionID), ["s2"])
     }
 
     func testOneOriginsBurstCannotEvictAnotherOriginsLiveSession() {
@@ -637,7 +547,7 @@ final class ClaudeSessionRegistryTests: XCTestCase {
     /// The next hook of a Desktop session left idle is the UserPromptSubmit
     /// of the prompt being dictated, so the first dictation back used to find
     /// the record pruned.
-    func testADesktopSessionIdleLongerThanTheSessionTTLStillJoins() throws {
+    func testADesktopSessionIdleLongerThanTheSessionTTLStillJoinsButStillExpiresAfterAWeek() throws {
         let clock = TestClock(epoch)
         let registry = makeRegistry(clock: clock)
         ingestDesktopSession(registry, session: "desktop", desktopID: "local_a")
@@ -653,15 +563,9 @@ final class ClaudeSessionRegistryTests: XCTestCase {
             registry.snapshot(sessionID: "terminal"),
             "a session reporting no Desktop id keeps the ordinary TTL"
         )
-    }
 
-    func testADesktopSessionStillExpiresAfterAWeek() {
-        let clock = TestClock(epoch)
-        let registry = makeRegistry(clock: clock)
-        ingestDesktopSession(registry, session: "desktop", desktopID: "local_a")
-
+        // But even a Desktop session does not live forever.
         clock.advance(8 * 24 * 60 * 60)
-
         XCTAssertEqual(registry.resolve(desktopSessionID: "local_a"), .stale)
     }
 
@@ -849,7 +753,7 @@ final class ClaudeSessionRegistryTests: XCTestCase {
         return registry
     }
 
-    func testEvictingARemoteHostTakesItsSessions() {
+    func testEvictingARemoteHostTakesItsSessionsAndLeavesSiblingsAndLocalOnesAlone() throws {
         let registry = makeMixedOriginRegistry()
 
         let evicted = registry.evictRemoteSessions(notIn: ["ssh:hkeep"])
@@ -862,13 +766,6 @@ final class ClaudeSessionRegistryTests: XCTestCase {
         XCTAssertFalse(
             registry.liveSessions().contains { $0.sessionID == "remote:hgone:s1" }
         )
-    }
-
-    func testEvictingOneRemoteHostLeavesSiblingsAndLocalSessionsAlone() throws {
-        let registry = makeMixedOriginRegistry()
-
-        registry.evictRemoteSessions(notIn: ["ssh:hkeep"])
-
         let sibling = try XCTUnwrap(
             registry.snapshot(sessionID: "remote:hkeep:s1"),
             "a sibling host's session is not collateral"
@@ -878,6 +775,11 @@ final class ClaudeSessionRegistryTests: XCTestCase {
             Set(registry.liveSessions().map(\.sessionID)),
             ["remote:hkeep:s1", "relay:s1", "local-1"]
         )
+
+        // reconcile() calls this on every enrollment change, so it runs far more
+        // often than it has work to do.
+        XCTAssertEqual(registry.evictRemoteSessions(notIn: ["ssh:hkeep"]), 0, "nothing left to evict")
+        XCTAssertNotNil(registry.snapshot(sessionID: "remote:hkeep:s1"))
     }
 
     func testEvictingEveryRemoteHostNeverTouchesLocalSessions() throws {
@@ -896,15 +798,6 @@ final class ClaudeSessionRegistryTests: XCTestCase {
             registry.snapshot(sessionID: "relay:s1"),
             "another remote transport is not governed by SSH host enrollment"
         )
-    }
-
-    func testEvictingRemoteSessionsIsIdempotent() {
-        // reconcile() calls this on every enrollment change, so it runs far more
-        // often than it has work to do.
-        let registry = makeMixedOriginRegistry()
-        XCTAssertEqual(registry.evictRemoteSessions(notIn: ["ssh:hkeep"]), 1)
-        XCTAssertEqual(registry.evictRemoteSessions(notIn: ["ssh:hkeep"]), 0, "nothing left to evict")
-        XCTAssertNotNil(registry.snapshot(sessionID: "remote:hkeep:s1"))
     }
 
     // MARK: Submitted prompts

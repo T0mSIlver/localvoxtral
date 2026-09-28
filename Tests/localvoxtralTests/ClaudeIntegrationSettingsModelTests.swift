@@ -555,7 +555,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertTrue(detail.contains("/tmp/claude"))
     }
 
-    func testRevokingTheLastHostStopsListening() async throws {
+    func testRevokingOrRemovingTheLastHostStopsListeningAndRotatingARevokedHostRebindsIt() async throws {
         let registry = try makeRegistry()
         let listener = StubClaudeRemoteListener(hosts: registry)
         let model = makeModel(registry: registry, listener: listener)
@@ -563,14 +563,27 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         model.enrollSSHAlias = "builder"
         await model.enroll()
         XCTAssertTrue(listener.isListening)
+        let hostID = try XCTUnwrap(model.hosts.first).id
 
-        await model.revoke(hostID: try XCTUnwrap(model.hosts.first).id)
+        await model.revoke(hostID: hostID)
 
         // No enrolled host ⇒ no open port. A feature nobody has set up must not
         // be listening on one.
         XCTAssertFalse(listener.isListening)
         XCTAssertEqual(model.listenerStatus, .idle)
         XCTAssertEqual(listener.reconcileCount, 2)
+
+        await model.rotate(hostID: hostID)
+
+        // Rotation reinstates a revoked host — handing out a credential is the
+        // same act as enrolling — so it is a 0→1 transition and must rebind.
+        XCTAssertTrue(listener.isListening)
+
+        // Removing the only (active again) host closes the port too.
+        await model.remove(hostID: hostID)
+
+        XCTAssertTrue(model.hosts.isEmpty)
+        XCTAssertFalse(listener.isListening)
     }
 
     func testRevokingOneOfTwoHostsKeepsListening() async throws {
@@ -590,47 +603,18 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertEqual(listener.reconcileCount, 3, "every registry mutation must reconcile")
     }
 
-    func testRemovingTheLastHostStopsListening() async throws {
-        let registry = try makeRegistry()
-        let listener = StubClaudeRemoteListener(hosts: registry)
-        let model = makeModel(registry: registry, listener: listener)
-        model.enrollLabel = "buildhost"
-        model.enrollSSHAlias = "builder"
-        await model.enroll()
-
-        await model.remove(hostID: try XCTUnwrap(model.hosts.first).id)
-
-        XCTAssertTrue(model.hosts.isEmpty)
-        XCTAssertFalse(listener.isListening)
-    }
-
-    func testRotatingARevokedHostRebindsTheListener() async throws {
-        let registry = try makeRegistry()
-        let listener = StubClaudeRemoteListener(hosts: registry)
-        let model = makeModel(registry: registry, listener: listener)
-        model.enrollLabel = "buildhost"
-        model.enrollSSHAlias = "builder"
-        await model.enroll()
-        let hostID = try XCTUnwrap(model.hosts.first).id
-        await model.revoke(hostID: hostID)
-        XCTAssertFalse(listener.isListening)
-
-        await model.rotate(hostID: hostID)
-
-        // Rotation reinstates a revoked host — handing out a credential is the
-        // same act as enrolling — so it is a 0→1 transition and must rebind.
-        XCTAssertTrue(listener.isListening)
-    }
-
     // MARK: The token
 
-    func testEnrollmentShowsTheTokenExactlyOnceAndThenForgetsIt() async throws {
+    func testEnrollmentShowsTheTokenExactlyOnceThenForgetsItAndClearsTheForm() async throws {
         let registry = try makeRegistry()
         let model = makeModel(registry: registry, listener: StubClaudeRemoteListener(hosts: registry))
         model.enrollLabel = "buildhost"
         model.enrollSSHAlias = "builder"
         await model.enroll()
 
+        // The form is cleared, so the next host starts blank.
+        XCTAssertEqual(model.enrollLabel, "")
+        XCTAssertEqual(model.enrollSSHAlias, "")
         let plan = try XCTUnwrap(model.presentedPlan)
         XCTAssertFalse(plan.isRotation)
         XCTAssertTrue(ClaudeRemoteTokenDigest.isWellFormed(plan.token))
@@ -644,16 +628,6 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         // The registry stores only hashes, so nothing anywhere can produce this
         // token again. Rotation is the recovery path, deliberately.
         XCTAssertNil(model.presentedPlan)
-    }
-
-    func testTheFormIsClearedAfterEnrollingSoTheNextHostStartsBlank() async throws {
-        let registry = try makeRegistry()
-        let model = makeModel(registry: registry, listener: StubClaudeRemoteListener(hosts: registry))
-        model.enrollLabel = "buildhost"
-        model.enrollSSHAlias = "builder"
-        await model.enroll()
-        XCTAssertEqual(model.enrollLabel, "")
-        XCTAssertEqual(model.enrollSSHAlias, "")
     }
 
     func testRotationPresentsTheNewTokenAndSaysItIsARotation() async throws {
@@ -1757,7 +1731,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
     /// Tonight's failure, made visible: the app knew connections were being
     /// rejected and said nothing anywhere the user would look.
-    func testRejectedConnectionsSurfaceAsOneShortInlineMessage() throws {
+    func testRejectedConnectionsSurfaceAsOneShortInlineMessageAndAModelWithNoListenerInventsNone() throws {
         let registry = try makeRegistry()
         let listener = StubClaudeRemoteListener(hosts: registry)
         let model = makeModel(registry: registry, listener: listener)
@@ -1772,6 +1746,11 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         // Owner rule: no long text in the pane.
         XCTAssertLessThan(hint.count, 110)
         XCTAssertFalse(hint.contains("\n"))
+
+        // With no listener at all the pane never invents a hint.
+        let bare = makeModel(registry: nil, listener: nil)
+        bare.refreshRejectionHint()
+        XCTAssertNil(bare.rejectionHint)
     }
 
     func testTheHintNamesWhichKindOfRejectionItWas() {
@@ -1827,12 +1806,6 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             model.rejectionHint,
             "Rejected connections suggest a stale token; rotate it and rerun setup."
         )
-    }
-
-    func testAModelWithNoListenerNeverInventsAHint() {
-        let model = makeModel(registry: nil, listener: nil)
-        model.refreshRejectionHint()
-        XCTAssertNil(model.rejectionHint)
     }
 
     // MARK: Step 3 — in-app verification

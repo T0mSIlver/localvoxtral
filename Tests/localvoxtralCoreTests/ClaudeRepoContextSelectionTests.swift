@@ -39,7 +39,7 @@ final class ClaudeRepoContextSelectionTests: XCTestCase {
     // The demand is what the snapshot can RENDER. `trackedPaths` are grounding
     // material — they are not a section and never render a character — so they
     // must not appear in it at any size.
-    func testRenderableDemandExcludesGroundingOnlyTrackedPaths() {
+    func testRenderableDemandExcludesGroundingOnlyTrackedPathsWhichStillGround() {
         let paths = (0..<5_000).map { "Sources/Generated/File\($0).swift" }
         let small = snapshot(branch: "main", active: [file("App.swift", "struct App {}")])
         let huge = snapshot(
@@ -59,6 +59,13 @@ final class ClaudeRepoContextSelectionTests: XCTestCase {
             100_000,
             "precondition: the grounding text really is enormous"
         )
+        // The complete harvest reaches grounding even when the rendered excerpt
+        // is reduced: a monorepo's tracked path list alone can exceed the whole
+        // prompt budget, and it is exactly the vocabulary the feature exists to
+        // spell correctly.
+        let grounding = ClaudeRepoContextSelection.groundingText(snapshot: huge)
+        XCTAssertTrue(grounding.contains("Sources/Generated/File4999.swift"))
+        XCTAssertGreaterThan(grounding.count, PolishContextBudget.totalCharacterBudget)
     }
 
     // The demand equals the string `render` measures for its verbatim case —
@@ -144,6 +151,7 @@ final class ClaudeRepoContextSelectionTests: XCTestCase {
             snapshot: snap, transcript: "fix the app", characterCap: 6000
         )
         XCTAssertTrue(rendered.contains("struct App {}"))
+        XCTAssertTrue(rendered.contains("App.swift (edited)"), "the touch kind is labeled")
         XCTAssertTrue(rendered.contains("+new"))
         XCTAssertTrue(rendered.contains("branch: main"))
         XCTAssertTrue(rendered.contains(" M App.swift"))
@@ -151,23 +159,22 @@ final class ClaudeRepoContextSelectionTests: XCTestCase {
         XCTAssertFalse(rendered.contains(PolishContextExcerptSelector.elisionMarker))
     }
 
-    func testEmptySnapshotRendersNothing() {
+    func testEmptySnapshotAndZeroBudgetRenderNothing() {
         XCTAssertEqual(
             ClaudeRepoContextSelection.render(
                 snapshot: snapshot(branch: nil), transcript: "hello", characterCap: 6000
             ),
-            ""
+            "",
+            "an empty snapshot"
         )
-    }
-
-    func testZeroBudgetRendersNothing() {
         XCTAssertEqual(
             ClaudeRepoContextSelection.render(
                 snapshot: snapshot(status: [" M App.swift"]),
                 transcript: "hello",
                 characterCap: 0
             ),
-            ""
+            "",
+            "a zero budget"
         )
     }
 
@@ -269,15 +276,6 @@ final class ClaudeRepoContextSelectionTests: XCTestCase {
         )
     }
 
-    func testTouchKindIsLabeled() {
-        let rendered = ClaudeRepoContextSelection.render(
-            snapshot: snapshot(branch: nil, active: [file("App.swift", "body")]),
-            transcript: "app",
-            characterCap: 6000
-        )
-        XCTAssertTrue(rendered.contains("App.swift (edited)"))
-    }
-
     // MARK: - Determinism
 
     func testRenderIsDeterministic() {
@@ -301,18 +299,6 @@ final class ClaudeRepoContextSelectionTests: XCTestCase {
     }
 
     // MARK: - Grounding sees everything
-
-    // The requirement that the complete harvest reaches grounding even when the
-    // rendered excerpt is reduced: a monorepo's tracked path list alone can
-    // exceed the whole prompt budget, and it is exactly the vocabulary the
-    // feature exists to spell correctly.
-    func testGroundingTextCoversTrackedPathsEvenWhenNothingRenders() {
-        let paths = (0..<5000).map { "Sources/Generated\($0)/FileName\($0).swift" }
-        let snap = snapshot(trackedPaths: paths)
-        let grounding = ClaudeRepoContextSelection.groundingText(snapshot: snap)
-        XCTAssertTrue(grounding.contains("Sources/Generated4999/FileName4999.swift"))
-        XCTAssertGreaterThan(grounding.count, PolishContextBudget.totalCharacterBudget)
-    }
 
     func testPreparationGroundsOverTheWholeHarvestWithAZeroRenderBudget() {
         let snap = snapshot(
