@@ -45,6 +45,9 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
                 // `.git`), and this is where it reaches the main checkout.
                 // Idempotent, so a file with nothing to fold is not rewritten.
                 let folded = loaded.foldWorktreesIntoMainCheckouts(now: now())
+                    // A checkout whose `origin` a hook or the linker already
+                    // recorded gives its terms to its repository (#971).
+                    + loaded.linkCheckoutsToRepositories(now: now())
                 // Proposals agents made before answers were filtered (#914).
                 let dropped = loaded.dropIdentifierProposals()
                 let adopted = state.withLock { state in
@@ -54,7 +57,7 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
                 }
                 if folded + dropped > 0, adopted {
                     Log.polishing.info(
-                        "Learned terms: folded \(folded, privacy: .public) worktree projects into their main checkouts, dropped \(dropped, privacy: .public) proposals shaped like code"
+                        "Learned terms: folded \(folded, privacy: .public) worktrees and checkouts into their projects, dropped \(dropped, privacy: .public) proposals shaped like code"
                     )
                     write(loaded)
                     onChange?()
@@ -232,8 +235,8 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     }
 
     /// A local checkout's `origin` (#926).
-    package func recordOriginRepository(_ repository: String, projectKey: String) {
-        mutate { memory in memory.recordOriginRepository(repository, projectKey: projectKey) }
+    package func recordOrigin(_ remote: ProjectRemote, projectKey: String) {
+        mutate { memory in memory.recordOrigin(remote, projectKey: projectKey) }
     }
 
     /// The user's `owner/name` for a project with no GitHub `origin`.
@@ -312,6 +315,8 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         let moment = now()
         mutate { terms in
             let summary = terms.merge(importing: projects, now: moment)
+            // Terms imported onto a linked checkout belong to its repository.
+            terms.linkCheckoutsToRepositories(now: moment)
             let kept = terms.termCount
             Log.polishing.info(
                 "Learned terms imported: \(summary.terms, privacy: .public) terms in \(summary.projects, privacy: .public) projects, \(kept, privacy: .public) kept"

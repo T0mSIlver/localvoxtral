@@ -63,9 +63,19 @@ package final class QuickCaptureInboxModel {
         var loaded = fileURL.map(QuickCaptureInboxFile.load(from:)) ?? QuickCaptureInbox()
         loaded.prune(now: now())
         inbox = loaded
+        adoptProjects()
     }
 
     package var items: [QuickCaptureItem] { inbox.items }
+
+    /// Points each capture at its project as the list has it now: a checkout
+    /// merged into its repository (#971) moves to the key and name the
+    /// project leads with. Called at load and whenever the projects change.
+    package func adoptProjects() {
+        let projects = projects()
+        guard inbox.adopting(projects) != inbox else { return }
+        mutate { $0 = $0.adopting(projects) }
+    }
     package var waitingCount: Int { inbox.items.filter { $0.state != .filed }.count }
     package var projectChoices: [QuickCaptureProject] { projects() }
 
@@ -199,7 +209,8 @@ package final class QuickCaptureInboxModel {
     }
 
     private func draft(_ id: UUID, text: String, destination: QuickCaptureRoute.Destination, projects: [QuickCaptureProject]) async {
-        guard case .project(let key) = destination else { return }
+        guard case .project(let routed) = destination else { return }
+        let key = projects.first { $0.keys.contains(routed) }?.key ?? routed
         // A later run for this capture (a follow-up joined, #965) makes this
         // one's answers moot.
         draftRunCount += 1
@@ -309,7 +320,7 @@ package final class QuickCaptureInboxModel {
     @discardableResult
     package func move(_ id: UUID, toProjectKey key: String?) -> Task<Void, Never>? {
         let projects = projects()
-        let project = key.flatMap { key in projects.first { $0.key == key } }
+        let project = key.flatMap { key in projects.first { $0.keys.contains(key) } }
         guard let item = inbox.items.first(where: { $0.id == id }), item.state == .ready else { return nil }
         mutate { $0.move(id, to: project, repository: project?.issueRepository) }
         guard let project else { return nil }

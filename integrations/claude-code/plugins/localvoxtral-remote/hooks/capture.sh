@@ -43,11 +43,12 @@ set +a
 unset TOKEN
 umask 077
 
-# github_repo <remote-url>: its owner/name when it is a github.com URL
-# (https, ssh with or without a port, git@github.com:), with or without
-# `.git`; nothing otherwise. QuickCaptureFiling.repository(fromRemoteURL:)
-# reads the same shapes on the Mac.
-github_repo() {
+# remote_repo <remote-url>: the repository a remote URL names, as
+# host/owner/name: https, http, ssh (with or without a user or a port), git,
+# or scp-style user@host:path, with or without `.git`; nothing for a local
+# path or any other shape. ProjectRemote(remoteURL:) reads the same shapes on
+# the Mac.
+remote_repo() {
   case "$1" in
   https://* | http://* | ssh://* | git://*)
     rest="${1#*://}"
@@ -56,30 +57,47 @@ github_repo() {
     host="${host##*@}"
     host="${host%%:*}"
     ;;
+  /* | ./* | ../* | *://*) return 0 ;;
   *:*)
     host="${1%%:*}"
+    case "$host" in */*) return 0 ;; esac
     host="${host##*@}"
     path="${1#*:}"
     ;;
   *) return 0 ;;
   esac
-  [ "$(printf '%s' "$host" | tr 'A-Z' 'a-z')" = github.com ] || return 0
-  path="${path#/}"
-  path="${path%/}"
+  host="$(printf '%s' "$host" | tr 'A-Z' 'a-z')"
+  while [ "${path#/}" != "$path" ]; do path="${path#/}"; done
+  while [ "${path%/}" != "$path" ]; do path="${path%/}"; done
   path="${path%.git}"
-  case "$path" in
-  */*/* | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_./-]*) ;;
-  ?*/?*) echo "$path" ;;
+  case "$host/$path" in
+  */.* | .* | *//* | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_./-]*) ;;
+  ?*/?*/?*) echo "$host/$path" ;;
+  esac
+}
+
+# github_repo <remote-url>: its owner/name when it is a github.com URL;
+# nothing otherwise. QuickCaptureFiling.repository(fromRemoteURL:) reads the
+# same shapes on the Mac.
+github_repo() {
+  repo="$(remote_repo "$1")"
+  case "$repo" in
+  github.com/*/*/*) ;;
+  github.com/?*/?*) echo "${repo#github.com/}" ;;
   esac
 }
 
 # repository prints the owner/name of the current directory's origin when it
-# is on github.com, and nothing otherwise: the hook shim sends it as
-# X-Lvx-Env-Repository (#926), so the Mac files and describes the project
-# without asking. It reads no token and starts nothing.
+# is on github.com, else its host/path (#971), and nothing without an origin:
+# the hook shim sends it as X-Lvx-Env-Repository (#926), so the Mac files and
+# describes the project without asking, and merges its checkouts into one
+# project. A Mac before #971 drops a host/path value. It reads no token and
+# starts nothing.
 if [ "${1:-}" = repository ]; then
   ORIGIN="$(git remote get-url origin 2>/dev/null)" || exit 0
-  github_repo "$ORIGIN"
+  REPO="$(github_repo "$ORIGIN")"
+  [ -n "$REPO" ] || REPO="$(remote_repo "$ORIGIN")"
+  [ -z "$REPO" ] || echo "$REPO"
   exit 0
 fi
 
