@@ -555,7 +555,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertTrue(detail.contains("/tmp/claude"))
     }
 
-    func testRevokingOrRemovingTheLastHostStopsListeningAndRotatingARevokedHostRebindsIt() async throws {
+    func testRevokingTheLastHostStopsListeningAndRotatingItRebindsTheListener() async throws {
         let registry = try makeRegistry()
         let listener = StubClaudeRemoteListener(hosts: registry)
         let model = makeModel(registry: registry, listener: listener)
@@ -578,9 +578,17 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         // Rotation reinstates a revoked host — handing out a credential is the
         // same act as enrolling — so it is a 0→1 transition and must rebind.
         XCTAssertTrue(listener.isListening)
+    }
 
-        // Removing the only (active again) host closes the port too.
-        await model.remove(hostID: hostID)
+    func testRemovingTheLastHostStopsListening() async throws {
+        let registry = try makeRegistry()
+        let listener = StubClaudeRemoteListener(hosts: registry)
+        let model = makeModel(registry: registry, listener: listener)
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+
+        await model.remove(hostID: try XCTUnwrap(model.hosts.first).id)
 
         XCTAssertTrue(model.hosts.isEmpty)
         XCTAssertFalse(listener.isListening)
