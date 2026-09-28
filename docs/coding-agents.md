@@ -634,3 +634,47 @@ on your default model, is capped at 20 steps.
 For a project on an ssh host, the host gathers the context and runs the check
 in its own checkout, the next time a session there sends a hook
 ([Quick capture on a host](remote-claude-context.md#quick-capture-on-a-host)).
+
+### Capture from your iPhone or Apple Watch
+
+A Shortcut on the phone records a voice memo into iCloud Drive, and the Mac
+turns it into a capture. The engine you dictate with, the bundled one by
+default, transcribes the memo in less time than it lasts. The capture then
+goes through the same three steps as any other.
+
+Set up the Mac first:
+
+1. Turn on iCloud Drive on this Mac (**System Settings → Apple Account →
+   iCloud → iCloud Drive**).
+2. Turn on **Settings → Context → Quick capture → Transcribe voice memos
+   stored in iCloud Drive**. macOS asks whether localvoxtral may access files
+   in iCloud Drive; click **Allow**. The app creates the folder
+   **iCloud Drive/localvoxtral**.
+
+Then build the Shortcut on the iPhone:
+
+1. In the Shortcuts app, create a shortcut named "Memo to localvoxtral".
+2. Add **Record Audio**. Set **Start Recording** to **Immediately** and
+   **Finish Recording** to **On Tap**.
+3. Add **Save File**. Save **Recorded Audio** to **iCloud Drive →
+   localvoxtral**, and turn off **Ask Where to Save**.
+4. On an iPhone with an Action Button, choose the shortcut under
+   **Settings → Action Button → Shortcut**.
+5. For Apple Watch, turn on **Show on Apple Watch** in the shortcut's
+   details, then run it from the Shortcuts app on the watch.
+
+Press the button, speak, and tap to stop. The Mac checks the folder every
+30 seconds while it is awake. A memo recorded while it sleeps waits in
+iCloud Drive, and the Mac picks it up after it wakes.
+
+What happens to the audio:
+
+- The memo sits in iCloud Drive, on Apple's servers, until the Mac has
+  transcribed it. The app then moves it to the Trash, where you can still
+  restore it.
+- The Mac keeps its own copy until you file or discard the capture.
+- A memo with no words, or a file that isn't audio, stays in the folder for
+  you to delete.
+- If you clicked **Don't Allow**, the setting turns itself off. To allow
+  access later, go to **System Settings → Privacy & Security → Files &
+  Folders**, then turn the setting on again.

@@ -122,6 +122,28 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(github.created.withLock { $0.first?.last }, "Dictated:\n\n> Update the about page")
     }
 
+    /// A voice memo's audio is kept under its item's id until the capture is
+    /// filed or discarded (#925); a failed filing keeps it.
+    func testACaptureIsDoneWhenFiledOrDiscardedNotWhenFilingFails() async throws {
+        let model = model(answer: ["reach": 0.9])
+        var done: [UUID] = []
+        model.onDone = { done.append($0) }
+        let memo = UUID(), other = UUID()
+        let recordedAt = Date(timeIntervalSince1970: 999_000)
+        await model.capture(text: "Add a dark mode", historyRecordID: nil, id: memo, capturedAt: recordedAt).value
+        await model.capture(text: "Add a light mode", historyRecordID: nil, id: other).value
+        XCTAssertEqual(model.items.first { $0.id == memo }?.capturedAt, recordedAt)
+
+        github.createResult = .failure(.failed(exitCode: 1))
+        await model.file(memo)?.value
+        XCTAssertEqual(done, [])
+        github.createResult = .success("https://github.com/o/reach/issues/9")
+        await model.file(memo)?.value
+        XCTAssertEqual(done, [memo])
+        model.discard(other)
+        XCTAssertEqual(done, [memo, other])
+    }
+
     /// #926: the project's repository files and lists issues without
     /// asking gh, a fork set to file upstream does both upstream, and an
     /// `owner/name` typed for a project with none is kept on it.

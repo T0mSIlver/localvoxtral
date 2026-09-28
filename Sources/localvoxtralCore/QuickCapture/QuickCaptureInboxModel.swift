@@ -35,6 +35,8 @@ package final class QuickCaptureInboxModel {
     package var onDraftReady: (@MainActor (QuickCaptureItem) -> Void)?
     /// Where the capture went, for its History record.
     package var onRouted: (@MainActor (_ historyRecordID: UUID, _ destination: String) -> Void)?
+    /// A capture was filed or discarded, so audio kept for it can go.
+    package var onDone: (@MainActor (_ id: UUID) -> Void)?
     /// The user typed `owner/name` for a project that has no repository
     /// (#926): kept on the project, so the Inbox asks once.
     package var onRepositoryAnswered: (@MainActor (_ projectKey: String, _ repository: String) -> Void)?
@@ -67,10 +69,14 @@ package final class QuickCaptureInboxModel {
     // MARK: Capture
 
     /// Adds the capture and starts routing it. Returns the task that routes
-    /// and drafts; the app drops it, tests await it.
+    /// and drafts; the app drops it, tests await it. A voice memo passes the
+    /// id its audio is kept under, and when it was recorded.
     @discardableResult
-    package func capture(text: String, historyRecordID: UUID?) -> Task<Void, Never> {
-        let item = QuickCaptureItem(capturedAt: now(), text: text, historyRecordID: historyRecordID)
+    package func capture(
+        text: String, historyRecordID: UUID?, id: UUID = UUID(), capturedAt: Date? = nil
+    ) -> Task<Void, Never> {
+        let item = QuickCaptureItem(
+            id: id, capturedAt: capturedAt ?? now(), text: text, historyRecordID: historyRecordID)
         mutate { $0.add(item) }
         Log.backends.notice("Quick capture: saved, routing")
         let router = makeRouter()
@@ -208,6 +214,7 @@ package final class QuickCaptureInboxModel {
 
     package func discard(_ id: UUID) {
         mutate { $0.discard(id) }
+        onDone?(id)
     }
 
     /// The only path to `gh issue create`.
@@ -238,7 +245,9 @@ package final class QuickCaptureInboxModel {
                     }
                 }
             }
-            if case .success = result, let recordID = item.historyRecordID {
+            guard case .success = result else { return }
+            self.onDone?(id)
+            if let recordID = item.historyRecordID {
                 self.onRouted?(recordID, "Filed in \(repository)")
             }
         }

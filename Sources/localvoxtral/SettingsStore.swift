@@ -154,6 +154,7 @@ final class SettingsStore {
         /// model is now everyone's router until they pick Jev.
         static let quickCaptureJevEnabled = "settings.quick_capture_jev_enabled"
         static let quickCaptureRouter = "settings.quick_capture_router"
+        static let voiceMemosEnabled = "settings.voice_memos_enabled"
         static let quickCaptureProjectLines = "settings.quick_capture_project_lines"
         static let jevAPIKeyNeverStored = "settings.jev_api_key"
     }
@@ -278,6 +279,12 @@ final class SettingsStore {
             defaults.set(quickCaptureRouter.rawValue, forKey: Keys.quickCaptureRouter)
             if quickCaptureRouter == .jev { ensureSecretsLoaded([.jevAPIKey]) }
         }
+    }
+
+    /// "Transcribe voice memos stored in iCloud Drive" (#925): off until the
+    /// user turns it on, since the audio sits in Apple's cloud.
+    var voiceMemosEnabled: Bool {
+        didSet { defaults.set(voiceMemosEnabled, forKey: Keys.voiceMemosEnabled) }
     }
 
     /// Jev routes, so its key is read.
@@ -1054,6 +1061,8 @@ final class SettingsStore {
             secrets, .jevAPIKey, envKey: "TYPESAFE_API_KEY", environment: environment)
         quickCaptureRouter = defaults.string(forKey: Keys.quickCaptureRouter)
             .flatMap(QuickCaptureRouterChoice.init(rawValue:)) ?? .polishingModel
+        voiceMemosEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.voiceMemosEnabled, fallback: false)
         quickCaptureProjectLines =
             defaults.dictionary(forKey: Keys.quickCaptureProjectLines) as? [String: String] ?? [:]
         // Empty is the stored form of "use the pinned default": the defaults

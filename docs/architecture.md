@@ -81,7 +81,10 @@ AppKit:
   the rule that sends a low or tied answer to the catch-all, the context a
   first draft reads (`QuickCaptureContext`), the polishing model's first
   draft sorted by kind (`QuickCaptureFirstDraft`), the agent's check of an
-  issue (`QuickCaptureDrafter`), and the Inbox (`QuickCaptureInboxModel`)
+  issue (`QuickCaptureDrafter`), and the Inbox (`QuickCaptureInboxModel`);
+  the voice memo folder watcher and its ledger (#925), and
+  `RealtimeFileTranscriber`, which streams a recorded file through a
+  realtime client. Decoding the memo (AVFoundation) stays in the app
 - the Claude socket guard (`ClaudeSocketGuard`: `getpeereid` and
   `LOCAL_PEERPID` on Darwin, `SO_PEERCRED` on Linux), with the SHA-256 and
   HMAC helpers the Claude code hashes through
