@@ -443,7 +443,11 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
                 do {
                     let aside = try StoredFile.moveAside(fileURL)
                     state.withLock { state in
-                        state.terms = LearnedTerms()
+                        // The ignore list has its own file, which still
+                        // holds: an empty one here would lift every opt-out.
+                        var fresh = LearnedTerms()
+                        fresh.ignored = state.terms?.ignored ?? IgnoredProjects()
+                        state.terms = fresh
                         state.problem = nil
                     }
                     onChange?()

@@ -219,6 +219,29 @@ final class LearnedTermsIgnoreTests: XCTestCase {
         XCTAssertNotNil(store.snapshot().projects.first { $0.key == mac.key }, "learning resumes")
     }
 
+    /// Start Over on a refused learned-terms file keeps the ignore list,
+    /// which loaded fine from its own file.
+    func testStartingTheTermsOverKeepsTheIgnoreList() async throws {
+        let fileURL = makeFileURL()
+        let seeded = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        seeded.ignoreProject(key: quill.key, name: "quill", keys: ["/w/quill"])
+        seeded.waitForPendingWrites()
+        try Data("{ not json".utf8).write(to: fileURL)
+
+        let store = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        store.waitForPendingWrites()
+        XCTAssertEqual(store.problem, .unreadable)
+        _ = try await store.moveAsideAndStartOver()
+        store.record(observations("Kern"), project: .init(key: "/w/quill", name: "quill"))
+        store.ignoreProject(key: "/w/notes", name: "notes", keys: [])
+        store.waitForPendingWrites()
+
+        XCTAssertTrue(store.snapshot().projects.isEmpty)
+        let onDisk = try XCTUnwrap(
+            LearnedTermStore.ignored(fromFileContents: Data(contentsOf: XCTUnwrap(store.ignoredFileURL))).value)
+        XCTAssertEqual(onDisk.projects.map(\.key), [quill.key, "/w/notes"])
+    }
+
     func testACorruptIgnoreListKeepsItsBytesAndPausesLearning() async throws {
         try await assertAnUnreadableListKeepsItsBytes(Data(#"{"version":1,"projects":[{"key":"#.utf8), problem: .unreadable)
     }

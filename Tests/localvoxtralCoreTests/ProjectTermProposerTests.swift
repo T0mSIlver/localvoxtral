@@ -44,6 +44,13 @@ final class ProjectTermProposerTests: XCTestCase {
             let moment = now()
             memory.withLock { $0.recordProposalFailure(project: project, now: moment) }
         }
+
+        func recordOrigin(_ remote: ProjectRemote, projectKey: String) {
+            memory.withLock {
+                $0.recordOrigin(remote, projectKey: projectKey)
+                $0.removeIgnoredProjects()
+            }
+        }
     }
 
     private final class Clock: @unchecked Sendable {
@@ -151,13 +158,20 @@ final class ProjectTermProposerTests: XCTestCase {
         let runner = FakeRunner(.terms(["inkwell"]))
         let quill = try XCTUnwrap(ProjectRemote("github.com/me/quillmark"))
         let store = FakeStore(now: clock.now)
-        store.memory.withLock { $0.ignoreProject(key: quill.key, name: "quillmark", keys: [], now: clock.now()) }
+        store.memory.withLock {
+            $0.ignoreProject(key: quill.key, name: "quillmark", keys: [], now: clock.now())
+            // The dictation that joined recorded the clone before its origin was known.
+            $0.record(
+                [LearnedTermObservation(term: "Inkwell", source: .repository)],
+                project: .init(key: repo, name: "quillmark"), now: clock.now())
+        }
         let (proposer, _) = proposer(runner, store: store, origin: quill)
 
         await commit(proposer, join(repo + "/src"))
 
         XCTAssertEqual(runner.count, 0)
-        XCTAssertTrue(store.snapshot().projects.isEmpty)
+        XCTAssertTrue(store.snapshot().projects.isEmpty, "what the clone learned went")
+        XCTAssertTrue(store.snapshot().ignored.contains(key: repo), "and its key is known from now on")
     }
 
     func testASecondDictationDoesNotRunAgain() async throws {

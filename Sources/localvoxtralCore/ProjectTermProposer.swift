@@ -16,6 +16,14 @@ package protocol ProjectTermProposalStoring: Sendable {
         excluding: [String]
     )
     func recordProposalFailure(project: LearnedTermProjectIdentity)
+    /// A checkout's `origin` names `remote` (#971); for an ignored one, the
+    /// checkout joins its entry (#1006).
+    func recordOrigin(_ remote: ProjectRemote, projectKey: String)
+}
+
+extension ProjectTermProposalStoring {
+    /// A store that keeps no repository links has nothing to record.
+    package func recordOrigin(_ remote: ProjectRemote, projectKey: String) {}
 }
 
 /// Asks a project's coding agent for its terms after the first joined
@@ -118,6 +126,9 @@ package final class ProjectTermProposer: @unchecked Sendable {
            store.snapshot().isIgnored(projectKey: project.key, remote: remote)
         {
             Log.backends.info("Project terms: not asking, the repository is ignored")
+            // Links the checkout, so the store drops what it learned there
+            // and knows its key from now on.
+            store.recordOrigin(remote, projectKey: project.key)
             return
         }
         let workingDirectory = gitRoot ?? directory
