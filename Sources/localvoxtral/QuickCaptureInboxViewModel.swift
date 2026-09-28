@@ -133,6 +133,12 @@ final class QuickCaptureInboxViewModel {
         )
     }
 
+    /// The Projects table's "No project" entry (#972): the terms outside
+    /// every row.
+    func unlistedTerms() -> ProjectsPaneUnlisted? {
+        ProjectsPane.unlisted(learned: learnedTerms(), rows: projectRows(dictationProjectKeys: []))
+    }
+
     @ObservationIgnored private var remoteSlot: RemoteDraftsSlot?
 
     /// Lets a remote project's host draft its captures (#745). Nil, as

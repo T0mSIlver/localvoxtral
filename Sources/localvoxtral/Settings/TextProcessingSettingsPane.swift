@@ -4,7 +4,9 @@ import SwiftUI
 struct TextProcessingSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
-    @State private var isShowingLearnedTerms = false
+    /// Selects the Projects pane, where the learned terms are (#972).
+    var openProjects: () -> Void = {}
+    @State private var learnedTermsFileMessage: String?
 
     static let speakerProfileExample = """
         Backend engineer at Acme, mostly Swift and Python.
@@ -23,20 +25,11 @@ struct TextProcessingSettingsPane: View {
     }
 
     /// Reading `learnedTermRevision` is what re-renders the row after a
-    /// dictation: the store is a plain class, so nothing else observes it.
-    private var learnedTermCount: Int {
+    /// dictation or an import: the store is a plain class, so nothing else
+    /// observes it.
+    private var hasLearnedTerms: Bool {
         _ = viewModel.learnedTermRevision
-        return viewModel.learnedTermStore?.summary().terms ?? 0
-    }
-
-    private var learnedTermStatus: String {
-        _ = viewModel.learnedTermRevision
-        guard let summary = viewModel.learnedTermStore?.summary(), summary.terms > 0 else {
-            return "0"
-        }
-        return summary.projects > 1
-            ? "\(summary.terms) in \(summary.projects) projects"
-            : "\(summary.terms)"
+        return !(viewModel.learnedTermStore?.snapshot().projects.isEmpty ?? true)
     }
 
     private var llmPolishingEnabledBinding: Binding<Bool> {
@@ -165,26 +158,30 @@ struct TextProcessingSettingsPane: View {
                     .disabled(settings.polishDismissedTermSuggestions.isEmpty)
                 }
 
+                // The terms themselves are in Projects, each under its
+                // project (#972); moving them between machines is here.
                 SettingsFieldRow(
                     title: "Terms learned from polishing",
-                    status: learnedTermStatus
+                    status: learnedTermsFileMessage
                 ) {
                     HStack(spacing: 8) {
-                        // Enabled at zero: the sheet is where a new machine
-                        // imports terms (#523).
-                        Button("Show") {
-                            isShowingLearnedTerms = true
+                        Button("Show in Projects", action: openProjects)
+                            .accessibilityIdentifier("settings.learnedTerms.show")
+                        // Enabled with no terms: a new machine imports (#523).
+                        Button("Import…") {
+                            LearnedTermsTransfer.importTerms(into: viewModel.learnedTermStore) {
+                                learnedTermsFileMessage = $0
+                            }
                         }
-                        .accessibilityIdentifier("settings.learnedTerms.show")
-                        Button("Forget") {
-                            viewModel.learnedTermStore?.forgetAll()
+                        .accessibilityIdentifier("settings.learnedTerms.import")
+                        if hasLearnedTerms {
+                            Button("Export…") {
+                                LearnedTermsTransfer.exportTerms(from: viewModel.learnedTermStore) {
+                                    learnedTermsFileMessage = $0
+                                }
+                            }
+                            .accessibilityIdentifier("settings.learnedTerms.export")
                         }
-                        .disabled(learnedTermCount == 0)
-                    }
-                }
-                .sheet(isPresented: $isShowingLearnedTerms) {
-                    LearnedTermsSheet(viewModel: viewModel) {
-                        isShowingLearnedTerms = false
                     }
                 }
 

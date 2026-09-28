@@ -523,17 +523,19 @@ These terms also show as tags in **Suggestions**, with no API credits. The
 app keeps terms per project, and a project is a git repository (see
 [One project per repository](#one-project-per-repository)).
 
-A project's terms are in **Settings → Projects**: click the project, then
-**Show all** beside its terms. **Advanced → Terms learned from polishing →
-Show** lists the rest: terms learned outside any project, and those of
-projects no longer listed. Both lists show how often each term was applied
-and when it last was:
+Every term is in **Settings → Projects**: click a project to see its terms,
+or **No project** at the end of the list for terms learned outside any
+project and those of projects no longer listed. A long list has a search
+field. Each term shows how often it was applied and when it last was:
 
 - **Pin** a term to keep it. The app uses it at once and it never expires.
-- **Forget** one, or all of them with **Forget** beside **Show**.
-- **Export…** and **Import…** at the bottom of the **Show** list move every
-  term to another Mac as a JSON file. An import adds to what is there. A term still
-  being learned stays that way until you have said it in three dictations.
+- **Forget** one, or all of a project's with **Forget All…**.
+
+**Text Processing → Advanced → Terms learned from polishing** opens that
+pane with **Show in Projects**. Its **Export…** and **Import…** move every
+term to another Mac as a JSON file. An import adds to what is there. A term
+still being learned stays that way until you have said it in three
+dictations.
 
 When you say a learned name as ordinary words in a sentence ("we should use
 auth tokens" with "useAuth" learned), the app does not rewrite it; polishing
@@ -578,7 +580,7 @@ asked with an older version of the request is asked once more, and its new
 answer replaces the old names you never used or pinned. The app retries a run
 that fails a day later.
 
-The names show in the project's **Show all** (**Settings → Projects**) as
+The names show under the project's terms (**Settings → Projects**) as
 "Proposed by Claude Code", "Proposed by Mistral Vibe" or "Proposed by
 opencode". They are suggestions:
 
@@ -645,8 +647,8 @@ belong to it:
 - **Projects left over from an older plugin** are not merged into their
   repository. Their terms expire 90 days after last use, unless you pinned
   one, and the list then drops the project. Quick capture no longer offers
-  them as destinations. To remove one sooner, forget its terms in
-  **Terms learned from polishing → Show**.
+  them as destinations. To remove one sooner, forget its terms under
+  **No project** in **Settings → Projects**.
 
 ## Lower other audio while dictating
 
