@@ -302,6 +302,15 @@ package struct SessionNameCandidate: Equatable, Sendable {
     }
 }
 
+extension SessionNameCandidate {
+    /// The names `AgentAttentionText.name` builds: the cwd's, no branch.
+    var withoutWalk: SessionNameCandidate {
+        var candidate = self
+        candidate.names = SessionDefaultNames.of(snapshot, repositoryRoot: .unknown, title: names.title)
+        return candidate
+    }
+}
+
 package enum SessionNameResolution: Equatable, Sendable {
     case resolved(ClaudeSessionSnapshot)
     /// No live session has that name: the dictation was not a command.
@@ -332,10 +341,16 @@ package enum SessionNameResolver {
         // the name the user reads is the one that answers. A shown title
         // answers only at the title tier.
         let shown = SessionShownNames.distinct(panes, name: SessionShownNames.base)
+        // The popover and overlay name sessions with no git-root walk and no
+        // branch (`AgentAttentionText.name`): their suffixed names answer too.
+        let cueNames = SessionShownNames.distinct(panes.map(\.withoutWalk), name: SessionShownNames.base)
         let showsTitle: (SessionNameCandidate) -> Bool = { $0.nickname == nil && $0.names.title != nil }
         let tiers: [(SessionNameCandidate) -> [String]] = [
             { [$0.nickname].compactMap { $0 } },
-            { showsTitle($0) ? [] : SessionShownNames.spokenForms(shown[$0.snapshot.sessionID]) },
+            {
+                showsTitle($0) ? [] : SessionShownNames.spokenForms(shown[$0.snapshot.sessionID])
+                    + SessionShownNames.spokenForms(cueNames[$0.snapshot.sessionID])
+            },
             { [$0.names.primary, $0.names.readablePrimary, $0.names.namedBranch].compactMap { $0 } },
             { [$0.names.repository].compactMap { $0 } },
             {

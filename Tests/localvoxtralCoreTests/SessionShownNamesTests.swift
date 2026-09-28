@@ -117,6 +117,20 @@ final class SessionShownNamesTests: XCTestCase {
         XCTAssertEqual(resolvedID("payments", two), "second")
     }
 
+    /// The popover names sessions by their cwd; its suffixed names answer
+    /// even where the git-root walk names them apart.
+    func testTheCuesNamesAnswerWhenTheWalkNamesSessionsApart() {
+        let a = localSession("a", cwd: "/r/payments/docs", tty: "/dev/ttys001", seen: 0)
+        let b = localSession("b", cwd: "/r/billing/docs", tty: "/dev/ttys002", seen: 1)
+        XCTAssertEqual(AgentAttentionText.name(of: b, among: [a, b]), "docs · 2")
+        let walked = [
+            candidate(a, root: .root("/r/payments")),
+            candidate(b, root: .root("/r/billing")),
+        ]
+        XCTAssertEqual(resolvedID("docs two", walked), "b")
+        XCTAssertEqual(resolvedID("billing", walked), "b")
+    }
+
     func testSessionsOnOnePaneShareOneName() {
         let old = localSession("old", cwd: "/r/payments", tty: "/dev/ttys001", seen: 0)
         var new = localSession("new", cwd: "/r/payments", tty: "/dev/ttys001", seen: 1)
