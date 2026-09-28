@@ -274,6 +274,8 @@ else
 fi
 start_backend_sampler
 DRILL_LAUNCHED=1
+# Its History and other stores stay off the account's own (#985).
+export LOCALVOXTRAL_DATA_HOME="${LOCALVOXTRAL_DATA_HOME:-$(mktemp -d -t localvoxtral-ui-smoke-data)}"
 lv_open -n "$APP_PATH"
 launch_deadline=$((SECONDS + LAUNCH_TIMEOUT_SECONDS))
 while ((SECONDS < launch_deadline)); do

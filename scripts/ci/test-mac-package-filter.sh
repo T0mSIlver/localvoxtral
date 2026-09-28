@@ -57,6 +57,7 @@ expect true "the Claude Code plugin's agent guide ships too" integrations/claude
 expect true "the opencode plugin packages" integrations/opencode/localvoxtral.js
 expect true "package_app.sh packages" scripts/package_app.sh
 expect true "what cleans dist/ before packaging packages" scripts/ci/clean-stale-outputs.sh
+expect true "the launch smoke itself runs the launch smoke" scripts/ci/launch-smoke.py
 expect true "this filter's own edit packages" scripts/ci/mac-package-filter.sh
 expect true "a ci.yml edit packages when no fact was read" .github/workflows/ci.yml
 expect true "a ci.yml edit inside the mac-lanes job packages" \

@@ -361,18 +361,9 @@ jobs:
           # Accessibility grant dies on every runner auto-update).
           LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS: "1"
         run: |
-          python3 - <<'PY'
-          import subprocess, time
-          process = subprocess.Popen(["dist/localvoxtral.app/Contents/MacOS/localvoxtral"])
-          time.sleep(2)
-          if process.poll() is not None:
-              raise SystemExit(f"packaged app exited during smoke test: {process.returncode}")
-          process.terminate()
-          try:
-              process.wait(timeout=5)
-          except subprocess.TimeoutExpired:
-              process.kill(); process.wait(timeout=5)
-          PY
+          # A home of its own, as in ci.yml: never the owner's history (#985).
+          SMOKE_HOME="$(mktemp -d)"
+          SMOKE_APP=dist/localvoxtral.app SMOKE_HOME="$SMOKE_HOME" python3 scripts/ci/launch-smoke.py
 
       - name: Create release artifacts (zip + dmg)
         if: steps.plan.outputs.proceed != 'false'

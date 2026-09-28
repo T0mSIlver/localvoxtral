@@ -59,10 +59,13 @@ import Darwin
 /// one client.
 final class DogfoodControlSocket: Sendable {
     /// Under Application Support, in a folder of its own that the scripts
-    /// driving it (`scripts/e2e-dictation.sh`, the UI gate) name literally.
+    /// driving it (`scripts/e2e-dictation.sh`, the UI gate) name literally,
+    /// so it stays there under `LOCALVOXTRAL_DATA_HOME`.
     static func defaultSocketPath() -> String {
-        DiagnosticRecordStore.defaultDirectoryURL()
-            .deletingLastPathComponent()
+        (FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support", isDirectory: true))
+            .appendingPathComponent("localvoxtral", isDirectory: true)
             .appendingPathComponent("dogfood")
             .appendingPathComponent("control")
             .appendingPathComponent("control.sock")
