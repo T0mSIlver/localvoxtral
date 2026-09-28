@@ -142,15 +142,28 @@ set_status() {
     >/dev/null
 }
 
-# URLs of the package dependencies at a commit, lowercased, one per line.
+# URLs of the package dependencies at a commit, as https://github.com/<owner>/<repo>,
+# lowercased, one per line. Package.resolved is JSON: its pins' locations are
+# read with jq (v2/v3 "location", v1 "repositoryURL"). Package.swift is Swift
+# source, so its URLs are matched, in the https and both ssh spellings.
 dependency_urls() {
   local commit="$1" path
   git ls-tree -r --name-only "$commit" \
     | grep -E '(^|/)Package\.(swift|resolved)$' \
     | while read -r path; do
-        git show "$commit:$path" | grep -oE 'https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+' || true
+        case "$path" in
+          *.resolved)
+            git show "$commit:$path" \
+              | jq -r '(.pins // .object.pins // [])[] | .location // .repositoryURL // empty'
+            ;;
+          *)
+            git show "$commit:$path" \
+              | grep -oE '(https://|ssh://git@|git@)github\.com[:/][A-Za-z0-9._-]+/[A-Za-z0-9._-]+' || true
+            ;;
+        esac
       done \
-    | sed -E 's/\.git$//' | tr 'A-Z' 'a-z' | sort -u
+    | sed -E -e 's#^(ssh://git@|git@|https?://)github\.com[:/]#https://github.com/#' -e 's/\.git$//' \
+    | tr 'A-Z' 'a-z' | grep '^https://github\.com/' | sort -u || true
 }
 
 # A URL the PR adds whose repo name main already takes from another owner, or
