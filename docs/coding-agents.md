@@ -69,8 +69,8 @@ one and its pane comes forward. The overlay moves to it only once the
 terminal confirms the pane is in front. Otherwise it stays where it was and
 the popover says why.
 
-The optional **Answer the agent that needs you** shortcut does the same in
-one press. It brings forward the session that has waited longest, or else
+The optional **Answer the agent that needs you** shortcut, under **Settings
+→ Dictation → Output**, does the same in one press. It brings forward the session that has waited longest, or else
 the one that finished first, and starts a dictation there. Press it again to
 stop; the next press goes to the next session. During a dictation it picks
 that session the way Tab would. It can be a

@@ -137,9 +137,10 @@ While you dictate, the top of the overlay lists where the words can go.
 
 - **The app you started in**, named after its coding agent session when it
   has one. A dictation goes here unless you press Tab.
-- **Each coding agent session that needs you**, oldest first. Picking one
-  brings its pane forward, and your words go there when you stop
-  ([Jump to the agent that needs you](coding-agents.md#jump-to-the-agent-that-needs-you)).
+- **Each coding agent session that needs you**, oldest first, when
+  [Tell me when an agent needs you](coding-agents.md#jump-to-the-agent-that-needs-you)
+  is on. Picking one brings its pane forward, and your words go there when
+  you stop.
 - **Inbox**: a [quick capture](coding-agents.md#quick-capture). The words are
   saved there and never typed anywhere.
 
