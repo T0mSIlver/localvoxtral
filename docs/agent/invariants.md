@@ -2409,8 +2409,7 @@ there is not.
     (`DogfoodAudioFileSource`). A release build compiles none of it: no
     listener, no path, no code that could create one, and no setting or
     argument that turns it on. Only the UI smoke workflow's package sets
-    `LOCALVOXTRAL_E2E_HARNESS=1` (a dogfood package implies it, until the
-    dogfood build is removed in #792). `package_app.sh` searches every
+    `LOCALVOXTRAL_E2E_HARNESS=1`. `package_app.sh` searches every
     bundle's binary for the harness types
     (`scripts/packaging/check-harness-symbols.sh`): a release build fails if
     one is there, a harness build fails if one is missing. Within a build that

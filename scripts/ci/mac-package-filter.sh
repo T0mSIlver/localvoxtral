@@ -16,7 +16,7 @@
 # Two env vars say what else the run needs:
 #   LANE_NEEDS_BUNDLE   space-separated names of the lanes this run will run
 #                       that read the packaged bundle (the polishd and speechd
-#                       integrations, the dogfood pass); non-empty packages
+#                       integrations); non-empty packages
 #   LANE_MAC_LANES_JOB_CHANGED=false   from scripts/ci/lane-diff-facts.sh:
 #                       ci.yml changed outside the mac-lanes job, so not the
 #                       packaging or smoke steps; only the literal "false"

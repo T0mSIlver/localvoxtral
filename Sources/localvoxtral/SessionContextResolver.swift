@@ -299,7 +299,7 @@ final class SessionContextResolver {
     /// or the gate or abstention chain that stopped it. `.notice`, because
     /// the unified log keeps no `.info` line past the moment, and a join is
     /// only ever questioned after the dictation. Categories only — the same
-    /// `ClaudeSessionJoinSummary` a dogfood record and `--probe-surface`
+    /// `ClaudeSessionJoinSummary` a diagnostic record and `--probe-surface`
     /// print, which carries no id, path, host or address.
     private func noteJoinOutcome(_ attempt: ClaudeJoinAttempt, causes: [String]) {
         var causes = causes

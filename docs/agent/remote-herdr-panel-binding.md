@@ -221,7 +221,7 @@ reported as an unconfigured row — the opposite diagnosis.
 
 ## Diagnosability
 
-Every abstention names its cause in `Log.claudeContext` and the dogfood
+Every abstention names its cause in `Log.claudeContext` and the diagnostic
 join-abstention string, following #228's `SSHProbeIndeterminacy` pattern:
 distinct content-free categories for at least — row-not-rendered (no token in
 grid), AX-read-unavailable, forward-unavailable-for-speculative-candidate,
@@ -422,7 +422,7 @@ herdr. That reload gap is the residual.
 
 Mechanism handling follows the remote arm: `pane.read` of exactly the joined
 pane, no raw AX attachment, forward/indicator ownership in the view model, and
-`federatedHerdrPane` in `ClaudeSessionJoinSummary` for the dogfood record and
+`federatedHerdrPane` in `ClaudeSessionJoinSummary` for the diagnostic record and
 `--probe-surface`.
 
 ## Out of scope (recorded follow-ups)

@@ -54,7 +54,7 @@ targets += [
     .executableTarget(
         name: "App",
         dependencies: ["Core"],
-        swiftSettings: dogfoodSwiftSettings
+        swiftSettings: harnessSwiftSettings
     ),
 ]
 let package = Package(
@@ -122,7 +122,7 @@ expect package_deps_changed true "a pin on a line of its own is a dependency cha
 expect package_deps_changed true "a platform change counts" \
   's/\.macOS\(\.v15\)/.macOS(.v26)/' Package.swift
 expect package_deps_changed true "a build setting counts" \
-  's/swiftSettings: dogfoodSwiftSettings/swiftSettings: [.unsafeFlags(["-Ounchecked"])]/' Package.swift
+  's/swiftSettings: harnessSwiftSettings/swiftSettings: [.unsafeFlags(["-Ounchecked"])]/' Package.swift
 expect package_deps_changed true "the tools version counts" \
   's/swift-tools-version: 6.2/swift-tools-version: 6.3/' Package.swift
 

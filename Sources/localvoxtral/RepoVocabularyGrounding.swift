@@ -290,9 +290,9 @@ final class RepoVocabularyPipeline: RepoVocabularyGrounding {
         }
     }
 
-    /// The detached pipeline task, with the ONE dogfood obligation both the
-    /// live pipeline and the DEBUG override seam must share: in a dogfood
-    /// build, the body runs under the tap generation read at creation time
+    /// The detached pipeline task, with the ONE diagnostic-record obligation both the
+    /// live pipeline and the DEBUG override seam must share: the
+    /// body runs under the tap generation read at creation time
     /// (synchronously, in the caller's main-actor context — ordered against
     /// `beginSession`). Task-locals do not cross `Task.detached`, so the
     /// binding happens inside the closure; see `DiagnosticCaptureTap.noteGeneration`
