@@ -96,10 +96,12 @@ struct ProjectsSettingsPane: View {
             switch open {
             case .project(let key):
                 projectSheet(key)
+                    .opensWithNothingFocused()
             case .unlisted:
                 UnlistedTermsSheet(viewModel: viewModel, inbox: inbox) {
                     openProject = nil
                 }
+                .opensWithNothingFocused()
             }
         }
         .task {
