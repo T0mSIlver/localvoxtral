@@ -13,9 +13,10 @@ final class OverlayDestinationClickTests: XCTestCase {
     private var controller: DictationOverlayController!
     private var clicked: [DictationDestination] = []
 
-    /// A panel listening with one session waiting, its list open or not.
-    /// Synchronous: the run loop turn below is unavailable from async code.
-    private func showPanel(open: Bool) {
+    /// A panel listening with `waiting` sessions waiting, its list open or
+    /// not. Synchronous: the run loop turn below is unavailable from async
+    /// code.
+    private func showPanel(open: Bool, waiting: Int = 1) {
         controller = DictationOverlayController(
             placementWriter: { _ in },
             screensProvider: { [] }
@@ -23,7 +24,8 @@ final class OverlayDestinationClickTests: XCTestCase {
         clicked = []
         controller.onDestinationClick = { [weak self] in self?.clicked.append($0) }
         let strip = OverlayDestinationStrip(
-            list: DictationDestinationList(waitingSessionIDs: ["pay"], focusedSessionID: nil),
+            list: DictationDestinationList(
+                waitingSessionIDs: waiting == 1 ? ["pay"] : (0..<waiting).map { "s\($0)" }, focusedSessionID: nil),
             focusedAppLabel: "Safari",
             focusedAppJoined: nil,
             sessionName: { _ in "payments" },
@@ -96,6 +98,17 @@ final class OverlayDestinationClickTests: XCTestCase {
     func testADragOrAClickOffTheRowsPicksNothing() throws {
         showPanel(open: true)
         controller.dragForTesting(at: try center(of: .inbox, inList: true))
+        controller.clickForTesting(at: NSPoint(x: 30, y: 10))
+        XCTAssertEqual(clicked, [])
+    }
+
+    /// Past six rows the list scrolls. A row scrolled out of view is no
+    /// click target: a click on the transcript under the list picks nothing,
+    /// and only the rows in view report a frame.
+    func testARowScrolledOutOfViewPicksNothing() throws {
+        showPanel(open: true, waiting: 10)
+        let frames = controller.destinationFramesForTesting(inList: true)
+        XCTAssertLessThanOrEqual(frames.count, OverlayLayoutMetrics.maximumVisibleDestinationRows + 1, "\(frames.keys)")
         controller.clickForTesting(at: NSPoint(x: 30, y: 10))
         XCTAssertEqual(clicked, [])
     }
