@@ -143,7 +143,7 @@ final class DictationHistoryStoreFileTests: XCTestCase {
     }
 
     func testTheStoreOpensUnderItsOwnName() throws {
-        let directory = makeDirectory()
+        let directory = makeDirectory().appendingPathComponent("not-yet-created", isDirectory: true)
         _ = try DictationSessionStore.open(directory: directory).get()
 
         XCTAssertTrue(FileManager.default.fileExists(

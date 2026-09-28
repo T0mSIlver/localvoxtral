@@ -170,6 +170,8 @@ final class DictationSessionStore {
     static func open(directory: URL? = nil) -> Result<DictationSessionStore, DictationHistoryOpenFailure> {
         let folder = directory ?? DictationHistoryStoreFile.defaultDirectoryURL()
         let url = folder.appendingPathComponent(DictationHistoryStoreFile.fileName)
+        // Core Data creates the file, not its folder: a first launch has none.
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         if directory == nil {
             let legacy = DictationHistoryStoreFile.legacyStoreURL()
             switch DictationHistoryStoreFile.importLegacyStore(from: legacy, to: url) {
@@ -189,8 +191,6 @@ final class DictationSessionStore {
                 )
                 return .failure(.unreadable("copying the history from default.store failed: \(reason)"))
             }
-        } else {
-            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         }
         return open(url: url)
     }
