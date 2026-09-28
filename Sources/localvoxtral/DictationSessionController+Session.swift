@@ -953,7 +953,7 @@ extension DictationSessionController {
         let endpoint = sanitizedRealtimeEndpointForLogging()
         if let technicalDetails {
             Log.dictation.error(
-                "Realtime connection failure [provider: \(provider, privacy: .public), endpoint: \(endpoint, privacy: .public)] \(message, privacy: .public) details: \(technicalDetails, privacy: .public)"
+                "Realtime connection failure [provider: \(provider, privacy: .public), endpoint: \(endpoint, privacy: .public)] \(message, privacy: .public) details: \(RealtimeConnectionFailureClassifier.publicLogDescription(of: technicalDetails), privacy: .public) \(technicalDetails, privacy: .private)"
             )
         } else {
             Log.dictation.error(
