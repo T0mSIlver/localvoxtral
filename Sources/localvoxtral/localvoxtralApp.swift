@@ -185,8 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let settingsNavigator = SettingsNavigator()
     /// What the History and Insights panes show, kept while the app runs so
     /// that neither starts from nothing each time it opens.
-    lazy var historyModel = DictationHistoryModel(
-        store: { [weak viewModel] in viewModel?.sessionStore })
+    lazy var historyModel = DictationHistoryModel(viewModel: viewModel)
     lazy var insightsModel = DictationInsightsModel(viewModel: viewModel)
     private var widgetSnapshotWriter: WidgetSnapshotWriter?
     /// "Open localvoxtral at login". Built here so the pane reads the login

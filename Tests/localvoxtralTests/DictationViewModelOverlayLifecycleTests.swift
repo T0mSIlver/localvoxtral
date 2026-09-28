@@ -499,7 +499,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
     }
 
     func testADictationIsSavedAndOlderOnesPastTheRetentionAreTrimmed() async throws {
-        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
         let longAgo = Date(timeIntervalSince1970: 1_000_000)
         store.save(
             DictationSessionRecord(
@@ -517,7 +517,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
     /// runs that delete again, so one that failed does not leave the archive
     /// on disk until the next launch.
     func testUnderOffADictationIsNotSavedAndWhatWasLeftIsDeleted() async throws {
-        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
         let longAgo = Date(timeIntervalSince1970: 1_000_000)
         store.save(
             DictationSessionRecord(
@@ -553,7 +553,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
             startRuntimeServices: false
         )
         viewModel.llmPolishingService = SilentService()
-        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
         let longAgo = Date(timeIntervalSince1970: 1_000_000)
         store.save(
             DictationSessionRecord(

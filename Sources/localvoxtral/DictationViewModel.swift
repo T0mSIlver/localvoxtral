@@ -199,6 +199,21 @@ final class DictationViewModel {
         set { session.appConfigStore = newValue }
     }
     var sessionStore: DictationSessionStore? { get { session.sessionStore } set { session.sessionStore = newValue } }
+    /// Why the history store did not open at launch; nil when it did (#985).
+    private(set) var historyOpenFailure: DictationHistoryOpenFailure?
+    /// What History and Insights say in place of dictations: the store did
+    /// not open, or its last read or write failed. The log has the error.
+    var historyUnavailableText: String? {
+        switch historyOpenFailure {
+        case .unknownContents:
+            return "Your history was saved by a newer localvoxtral. This version won't open it."
+        case .unreadable:
+            return "Your history couldn't be opened. The log says why."
+        case nil:
+            return sessionStore?.accessFailure == nil
+                ? nil : "Your history couldn't be read. The log says why."
+        }
+    }
     var learnedTermStore: LearnedTermStore? {
         get { session.learnedTermStore }
         set { session.learnedTermStore = newValue }
@@ -367,6 +382,10 @@ final class DictationViewModel {
         /// Mistral's batch endpoint, for the second pass an Overlay Buffer
         /// dictation gets on stop in Mistral API mode (#317).
         var batchTranscriber: any MistralBatchTranscribing
+        /// The folder holding the history store, its audio and its diagnostic
+        /// records. Nil is the app's folder in Application Support; a test
+        /// that starts runtime services passes a temporary one.
+        var historyDirectory: URL?
 
         init(
             microphone: (() -> any MicrophoneCapturing)? = nil,
@@ -389,7 +408,8 @@ final class DictationViewModel {
             repoVocabularyGrounding: (any RepoVocabularyGrounding)? = nil,
             onRealtimeDeltaLogRecord: ((DebugRealtimeDeltaLogRecord) -> Void)? = nil,
             clock: SessionClock = .live,
-            batchTranscriber: any MistralBatchTranscribing = MistralBatchTranscriptionClient()
+            batchTranscriber: any MistralBatchTranscribing = MistralBatchTranscriptionClient(),
+            historyDirectory: URL? = nil
         ) {
             self.microphone = microphone
             self.pasteboardReader = pasteboardReader
@@ -405,6 +425,7 @@ final class DictationViewModel {
             self.onRealtimeDeltaLogRecord = onRealtimeDeltaLogRecord
             self.clock = clock
             self.batchTranscriber = batchTranscriber
+            self.historyDirectory = historyDirectory
         }
     }
     /// Warms the managed polishing helper's prompt-prefix cache on every
@@ -649,7 +670,12 @@ final class DictationViewModel {
 
         textInsertion.refreshAccessibilityTrustState()
         if startRuntimeServices {
-            sessionStore = DictationSessionStore()
+            switch DictationSessionStore.open(directory: dependencies.historyDirectory) {
+            case let .success(store):
+                sessionStore = store
+            case let .failure(failure):
+                historyOpenFailure = failure
+            }
             sessionStore?.onChange = { [weak self] in
                 self?.dictationHistoryRevision += 1
                 Task { await self?.session.refreshLastDictationFromStore() }
@@ -658,10 +684,15 @@ final class DictationViewModel {
             // Attached whatever the setting says, so Delete and retention
             // still clear recordings kept before it was turned off.
             sessionStore?.audioStore = DictationAudioStore(
-                directoryURL: DictationAudioStore.defaultDirectoryURL())
+                directoryURL: dependencies.historyDirectory.map {
+                    $0.appendingPathComponent("dictation-audio", isDirectory: true)
+                } ?? DictationAudioStore.defaultDirectoryURL())
             // One store for writes and for deletes: a record follows its
             // History entry the way its audio does.
-            let diagnosticRecordStore = DiagnosticRecordStore()
+            let diagnosticRecordStore = DiagnosticRecordStore(
+                directoryURL: dependencies.historyDirectory.map {
+                    $0.appendingPathComponent("diagnostic-records", isDirectory: true)
+                })
             session.diagnosticRecordStore = diagnosticRecordStore
             sessionStore?.diagnosticRecordStore = diagnosticRecordStore
             sessionStore?.removeOrphanedAudio()

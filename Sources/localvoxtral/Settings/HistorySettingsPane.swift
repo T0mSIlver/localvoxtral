@@ -387,6 +387,7 @@ struct HistorySettingsPane: View {
 
     private var emptyText: String {
         if !model.hasLoaded { return "Loading…" }
+        if let unavailable = model.unavailableText { return unavailable }
         if model.isFiltering { return "No dictation matches." }
         return settings.dictationHistoryRetention.savesDictations
             ? "No dictations yet."

@@ -87,9 +87,10 @@ This command also removes settings, downloaded engines and caches:
 brew uninstall --cask --zap localvoxtral
 ```
 
-It leaves two things that other apps can share. Dictation history stays in
-`~/Library/Application Support/default.store`, and models stay in
-`~/.cache/huggingface`. Stored API keys stay in your login keychain.
+It leaves two things that other apps can share. Models stay in
+`~/.cache/huggingface`, and so does `~/Library/Application Support/default.store`,
+where older versions kept the dictation history. Stored API keys stay in
+your login keychain.
 
 ## The Homebrew cask
 

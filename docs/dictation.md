@@ -250,7 +250,7 @@ Older dictations stay in [History](#review-your-dictations) until the
 ## Review your dictations
 
 The app saves every dictation on this Mac, in plain text, in
-`~/Library/Application Support/default.store`. Nothing in it leaves the
+`~/Library/Application Support/localvoxtral/history.store`. Nothing in it leaves the
 machine, except that the [term suggestion](#get-term-suggestions) pass sends
 recent dictations to your hosted polishing model when you have one.
 
