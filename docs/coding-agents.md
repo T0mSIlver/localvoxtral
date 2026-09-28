@@ -574,7 +574,8 @@ Click a project to see its repository and checkouts, its description, every
 learned term with a pin and a forget button, and its joined sessions,
 captures and dictations this week. **Open Inbox** goes to its drafts.
 **No project**, last in the list, holds the terms learned outside any
-project.
+project. **Import…** and **Export…**, under the list, move every project's
+terms to another Mac.
 
 ### Each project's repository
 

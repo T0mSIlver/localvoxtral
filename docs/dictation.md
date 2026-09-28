@@ -531,9 +531,9 @@ field. Each term shows how often it was applied and when it last was:
 - **Pin** a term to keep it. The app uses it at once and it never expires.
 - **Forget** one, or all of a project's with **Forget All…**.
 
-**Text Processing → Advanced → Terms learned from polishing** opens that
-pane with **Show in Projects**. Its **Export…** and **Import…** move every
-term to another Mac as a JSON file. An import adds to what is there. A term
+Under the list, **Learned terms → Move to another Mac** has **Export…** and
+**Import…**: they move every project's terms to another Mac as a JSON file.
+An import adds to what is there. A term
 still being learned stays that way until you have said it in three
 dictations.
 
