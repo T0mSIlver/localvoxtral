@@ -2469,8 +2469,8 @@ there is not.
   list. The hook receipt (`ClaudeBrokerResponse`) is untouched and still
   carries nothing a hook could print.
 
-- **A quick capture never reaches the focused app, and only File reaches
-  GitHub** (#725). A session started by the quick capture shortcut latches
+- **A quick capture never reaches the focused app, and only File and
+  Comment on #N reach GitHub** (#725, #965). A session started by the quick capture shortcut latches
   `sessionIsQuickCapture` with its output mode (always Overlay Buffer), and
   its stop takes `commitQuickCapture` before any polish, second pass, screen
   or clipboard sample, or insertion: the History record is written first,
@@ -2497,5 +2497,15 @@ there is not.
   button and from a spoken "file it" (#927). That one works only in a review
   dictation, whose overlay shows exactly one draft, and `applySpokenReview`
   files only when the draft's title and body still match what the overlay
-  showed. A remote project is drafted on its host (#745, below): a remote
+  showed. `QuickCaptureInboxModel.comment` is the one call to `gh issue
+  comment` (#965), reached only from the Inbox's Comment on #N button, and
+  only for a draft whose `relation` is `extends`: the issue number comes from
+  the app's own open-issue list. A follow-up joins an open capture (not
+  filed, within the hour) only on its first words ("also", "for that idea")
+  or on a router pick past the same 0.9 and 0.15 bars; an unsure pick joins
+  nothing and suggests that capture's project. The join keeps the
+  follow-up's words apart for Split, and a draft run it supersedes is
+  dropped. The router's request changes only when there is an open capture
+  to offer; that capture's title or first words then go to the same
+  classifier as the new capture. A remote project is drafted on its host (#745, below): a remote
   label never becomes a working directory here.

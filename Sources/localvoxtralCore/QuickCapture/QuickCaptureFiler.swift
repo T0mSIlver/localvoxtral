@@ -1,10 +1,23 @@
 import Foundation
 
 /// The only code that files anything (#732): `gh issue create`, run when the
-/// user presses File, as the user, with the title and body the Inbox shows.
+/// user presses File, and `gh issue comment` when they press Comment on #N
+/// (#965), as the user, with the text the Inbox shows.
 package enum QuickCaptureFiling {
     package static func createArguments(repository: String, title: String, body: String) -> [String] {
         ["issue", "create", "--repo", repository, "--title", title, "--body", body]
+    }
+
+    package static func commentArguments(repository: String, issue: Int, body: String) -> [String] {
+        ["issue", "comment", String(issue), "--repo", repository, "--body", body]
+    }
+
+    /// The comment URL `gh issue comment` prints last.
+    package static func commentURL(inOutput data: Data) -> String? {
+        String(decoding: data, as: UTF8.self)
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .last { $0.hasPrefix("https://") && $0.contains("#issuecomment-") }
     }
 
     /// `gh repo view --json nameWithOwner` in a checkout: its GitHub
@@ -122,6 +135,8 @@ package protocol QuickCaptureGitHub: Sendable {
     /// GitHub's description, topics and parent; nil when gh failed.
     func repositoryFacts(_ repository: String) async -> GitHubRepositoryFacts?
     func createIssue(repository: String, title: String, body: String) async -> Result<String, QuickCaptureFiling.Failure>
+    /// Posts `body` on issue `issue`; the comment's URL.
+    func commentOnIssue(repository: String, issue: Int, body: String) async -> Result<String, QuickCaptureFiling.Failure>
 }
 
 package struct QuickCaptureGHClient: QuickCaptureGitHub {
@@ -180,6 +195,26 @@ package struct QuickCaptureGHClient: QuickCaptureGitHub {
         }
         guard let url = QuickCaptureFiling.issueURL(inOutput: output.data) else { return .failure(.noURL) }
         Log.backends.info("Quick capture: filed \(url, privacy: .public)")
+        return .success(url)
+    }
+
+    package func commentOnIssue(repository: String, issue: Int, body: String) async -> Result<String, QuickCaptureFiling.Failure> {
+        guard let gh else { return .failure(.ghNotFound) }
+        Log.backends.info("Quick capture: commenting on \(repository, privacy: .public)#\(issue, privacy: .public)")
+        guard let output = await BoundedProcess.run(
+            executableURL: gh,
+            arguments: QuickCaptureFiling.commentArguments(repository: repository, issue: issue, body: body),
+            environment: environment, timeoutSeconds: 60, maxBytes: 65_536, label: "quick capture gh issue comment"
+        ) else { return .failure(.failed(exitCode: -1)) }
+        guard output.exitCode == 0, !output.timedOut else {
+            Log.backends.error("Quick capture: gh issue comment exited \(output.exitCode, privacy: .public)")
+            return .failure(.failed(exitCode: output.exitCode))
+        }
+        guard let url = QuickCaptureFiling.commentURL(inOutput: output.data) else {
+            Log.backends.error("Quick capture: gh issue comment printed no comment URL")
+            return .failure(.noURL)
+        }
+        Log.backends.info("Quick capture: commented \(url, privacy: .public)")
         return .success(url)
     }
 }

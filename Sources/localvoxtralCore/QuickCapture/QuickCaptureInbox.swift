@@ -46,6 +46,10 @@ package struct QuickCaptureCodeCheck: Codable, Equatable, Sendable {
 ///   saved before; read nil as `.issue` (`isIssue`).
 /// - `codeCheck` (#918): an issue's check against the code, or the agent's
 ///   draft that read it; nil for other kinds and before an agent answered.
+/// - `followUps` (#965): later captures joined to this one; `text` stays
+///   the first capture's words, and `words` is all of them.
+/// - `commentedOn` (#965): the issue a comment was posted on instead of
+///   filing; `filedURL` is then the comment's URL.
 /// A draft is final once `state == .ready`, `title` is set and
 /// `codeCheck?.state != .checking`.
 package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
@@ -103,6 +107,41 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
     /// The changes the user asked for by voice (#927), oldest first. The
     /// redraft reads them with `text`, which stays as dictated.
     package var changes: [String]?
+    /// Later captures joined to this one (#965), oldest first.
+    package var followUps: [FollowUp]?
+    /// The issue Comment on #N posted to (#965); nil when filed as an issue.
+    package var commentedOn: Int?
+
+    /// A later capture joined to this one (#965): it began "also", or the
+    /// router matched it here. Its words, History record and audio id stay
+    /// its own, so Split can take it back out.
+    package struct FollowUp: Codable, Equatable, Sendable, Identifiable {
+        package let id: UUID
+        package let capturedAt: Date
+        package let text: String
+        package var historyRecordID: UUID?
+        /// The item's draft when this joined, for Split to give back; nil
+        /// when it had none.
+        package var draftBefore: DraftSnapshot?
+
+        package init(id: UUID, capturedAt: Date, text: String, historyRecordID: UUID?, draftBefore: DraftSnapshot?) {
+            self.id = id
+            self.capturedAt = capturedAt
+            self.text = text
+            self.historyRecordID = historyRecordID
+            self.draftBefore = draftBefore
+        }
+    }
+
+    /// A draft as it stood, to put back.
+    package struct DraftSnapshot: Codable, Equatable, Sendable {
+        package var title: String
+        package var body: String
+        package var kind: QuickCaptureKind?
+        package var codeCheck: QuickCaptureCodeCheck?
+        package var relation: QuickCaptureDraft.Draft.Relation
+        package var relatedIssue: Int?
+    }
 
     package init(id: UUID = UUID(), capturedAt: Date, text: String, historyRecordID: UUID? = nil) {
         self.id = id
@@ -127,6 +166,49 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
     /// Only an issue is filed; a capture no draft sorted counts as one.
     package var isIssue: Bool { (kind ?? .issue) == .issue }
 
+    /// Every word dictated for this idea: the first capture's, then each
+    /// follow-up's (#965).
+    package var words: String {
+        ([text] + (followUps ?? []).map(\.text)).joined(separator: "\n\n")
+    }
+
+    /// When the last of its captures was made.
+    package var lastCapturedAt: Date {
+        (followUps ?? []).map(\.capturedAt).reduce(capturedAt, max)
+    }
+
+    /// A new capture may join it (#965): not filed or on its way there, and
+    /// captured or last joined within the hour of `date`, either side (a
+    /// voice memo can be older than the capture it follows).
+    package func acceptsFollowUp(at date: Date) -> Bool {
+        (state == .ready || state == .drafting)
+            && abs(date.timeIntervalSince(lastCapturedAt)) <= QuickCaptureInbox.followUpWindow
+    }
+
+    /// The draft's title, else the first words, for a router option.
+    package var summary: String {
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? QuickCaptureDraft.oneLine(text, limit: 160) : title
+    }
+
+    package var draftSnapshot: DraftSnapshot? {
+        guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return DraftSnapshot(
+            title: title, body: body, kind: kind, codeCheck: codeCheck, relation: relation, relatedIssue: relatedIssue
+        )
+    }
+
+    /// Comment on #N (#965): an issue's draft that extends an open issue of
+    /// its repository, when File could run.
+    package var canComment: Bool {
+        canFile && relation == .extends && relatedIssue != nil
+    }
+
+    /// What Comment on #N posts: the draft's title over what File would send.
+    package var commentBody: String {
+        "**\(title.trimmingCharacters(in: .whitespacesAndNewlines))**\n\n" + bodyToFile
+    }
+
     /// File needs an issue, a repository and a title, and never runs twice.
     /// It does not wait for the check against the code.
     package var canFile: Bool {
@@ -146,7 +228,7 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
     /// draft, with the dictated words kept under it.
     package var bodyToFile: String {
         let draft = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        let quoted = text.split(separator: "\n", omittingEmptySubsequences: false).map { "> \($0)" }.joined(separator: "\n")
+        let quoted = words.split(separator: "\n", omittingEmptySubsequences: false).map { "> \($0)" }.joined(separator: "\n")
         return (draft.isEmpty ? "" : draft + "\n\n") + "Dictated:\n\n" + quoted
     }
 }
@@ -157,6 +239,8 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
     package static let currentVersion = 1
     /// Filed captures stay listed this long, then drop off.
     package static let keepFiledDays = 7
+    /// A new capture joins an item captured or joined this recently (#965).
+    package static let followUpWindow: TimeInterval = 3600
 
     package var version: Int = QuickCaptureInbox.currentVersion
     package var items: [QuickCaptureItem] = []
@@ -305,6 +389,73 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
             if item.codeCheck?.state == .checking { item.codeCheck = nil }
             if project != nil, item.note == "Not routed to a project. Move it to one." { item.note = nil }
         }
+    }
+
+    /// Moves capture `followUpID` into `target` as its follow-up (#965).
+    /// False, with nothing changed, when either is gone.
+    @discardableResult
+    package mutating func join(_ followUpID: UUID, into target: UUID) -> Bool {
+        guard followUpID != target,
+              let capture = items.first(where: { $0.id == followUpID }),
+              items.contains(where: { $0.id == target })
+        else { return false }
+        items.removeAll { $0.id == followUpID }
+        update(target) { item in
+            let followUp = QuickCaptureItem.FollowUp(
+                id: capture.id, capturedAt: capture.capturedAt, text: capture.text,
+                historyRecordID: capture.historyRecordID, draftBefore: item.draftSnapshot
+            )
+            item.followUps = (item.followUps ?? []) + [followUp]
+        }
+        return true
+    }
+
+    /// A capture that says it continues the last one (#965): it starts
+    /// "also" or "for that idea", after an "and" or "oh" at most.
+    package static func saysFollowUp(_ text: String) -> Bool {
+        var words = text.lowercased().split { !$0.isLetter && $0 != "'" }.prefix(5).map(String.init)
+        while let first = words.first, ["and", "oh"].contains(first) { words.removeFirst() }
+        return words.first == "also" || words.prefix(3) == ["for", "that", "idea"]
+    }
+
+    /// Takes follow-up `followUpID` back out of `id` as its own capture,
+    /// placed right above it. The last follow-up gives the item back the
+    /// draft it had before it joined; `restored` says so, and otherwise the
+    /// draft still holds the split words and needs redrafting.
+    package mutating func split(
+        _ followUpID: UUID, from id: UUID
+    ) -> (capture: QuickCaptureItem, restored: Bool)? {
+        guard let index = items.firstIndex(where: { $0.id == id }),
+              let followUps = items[index].followUps,
+              let position = followUps.firstIndex(where: { $0.id == followUpID })
+        else { return nil }
+        let followUp = followUps[position]
+        var restored = false
+        update(id) { item in
+            item.followUps?.remove(at: position)
+            if item.followUps?.isEmpty == true { item.followUps = nil }
+            if position == followUps.count - 1, let before = followUp.draftBefore {
+                item.title = before.title
+                item.body = before.body
+                item.kind = before.kind
+                item.codeCheck = before.codeCheck
+                item.relation = before.relation
+                item.relatedIssue = before.relatedIssue
+                item.state = .ready
+                item.note = nil
+                // The check the follow-up interrupted never lands.
+                if item.codeCheck?.state == .checking {
+                    item.codeCheck?.state = .failed
+                    item.note = "Not checked against the code: a follow-up interrupted the check."
+                }
+                restored = true
+            }
+        }
+        let capture = QuickCaptureItem(
+            id: followUp.id, capturedAt: followUp.capturedAt, text: followUp.text, historyRecordID: followUp.historyRecordID
+        )
+        items.insert(capture, at: index)
+        return (capture, restored)
     }
 
     package enum MarkFiledRefusal: Error, Equatable, Sendable {
