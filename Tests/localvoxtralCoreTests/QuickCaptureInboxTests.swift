@@ -107,6 +107,58 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(model.markFiled(id, url: "https://github.com/o/reach/issues/13"), .failure(.notReady(.filed)))
     }
 
+    /// #938: an unsure capture waits unplaced with the router's guess; no
+    /// agent runs until one click moves it there.
+    func testAnUnsureCaptureWaitsWithASuggestionAndDraftsOnlyOnceAccepted() async throws {
+        let model = model(answer: ["reach": 0.85])
+        await model.capture(text: "Add a dark mode", historyRecordID: UUID()).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        var item = try XCTUnwrap(model.items.first)
+        XCTAssertNil(item.projectKey)
+        XCTAssertEqual(item.suggestion, .init(projectKey: "/w/reach", projectName: "reach"))
+        XCTAssertEqual(item.note, "Not routed to a project. Move it to one.")
+        XCTAssertEqual(statuses, ["Sent to inbox"])
+        XCTAssertEqual(routed, ["Inbox"])
+        XCTAssertEqual(runner.runs.withLock { $0 }, 0, "no agent spend on a guess")
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).items.first?.suggestion?.projectKey, "/w/reach")
+
+        await model.acceptSuggestion(id)?.value
+        item = try XCTUnwrap(model.items.first)
+        XCTAssertEqual(item.projectName, "reach")
+        XCTAssertNil(item.suggestion)
+        XCTAssertEqual(item.title, "Dark mode")
+        XCTAssertEqual(runner.runs.withLock { $0 }, 1)
+        XCTAssertTrue(item.canFile)
+    }
+
+    func testMovingElsewhereDropsTheSuggestion() async throws {
+        let model = model(answer: ["reach": 0.5])
+        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        await model.move(id, toProjectKey: "remote:website")?.value
+        XCTAssertNil(model.items.first?.suggestion)
+        XCTAssertNil(model.acceptSuggestion(id))
+    }
+
+    func testASuggestionWhoseProjectIsGoneSaysSoInsteadOfMoving() async throws {
+        var listed = projects
+        let model = QuickCaptureInboxModel(
+            fileURL: fileURL,
+            makeRouter: { QuickCaptureRouter(classifiers: [FixedQuickCaptureClassifier(["reach": 0.5])]) },
+            projects: { listed },
+            agents: { [.claude] },
+            drafter: { QuickCaptureDrafter(runner: self.runner, openIssues: { _, _ in [] }, trackedFiles: { _ in [] }) },
+            github: github
+        )
+        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        listed.removeAll { $0.name == "reach" }
+        XCTAssertNil(model.acceptSuggestion(id))
+        XCTAssertNil(model.items.first?.projectKey)
+        XCTAssertNil(model.items.first?.suggestion)
+        XCTAssertEqual(model.items.first?.note, "reach is no longer a project. Move it to one.")
+    }
+
     func testAFailedFilingKeepsTheCaptureAndARemoteProjectNeedsARepository() async throws {
         github.createResult = .failure(.failed(exitCode: 1))
         let model = model(answer: ["website": 0.9])
