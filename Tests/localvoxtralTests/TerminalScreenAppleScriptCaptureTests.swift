@@ -65,6 +65,10 @@ final class TerminalScreenAppleScriptCaptureTests: XCTestCase {
             Row(bundleID: "com.example.random", supported: false, ax: false, appleScript: false),
             Row(bundleID: "com.googlecode.iterm2.evil",
                 supported: false, ax: false, appleScript: false),
+            Row(bundleID: "com.mitchellh.ghostty.evil",
+                supported: false, ax: false, appleScript: false),
+            Row(bundleID: "com.mitchellh.ghost",
+                supported: false, ax: false, appleScript: false),
             Row(bundleID: "", supported: false, ax: false, appleScript: false),
             Row(bundleID: nil, supported: false, ax: false, appleScript: false),
         ]
