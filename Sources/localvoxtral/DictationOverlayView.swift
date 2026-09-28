@@ -481,12 +481,21 @@ struct OverlayDestinationTarget: Hashable {
 }
 
 private extension View {
-    /// Reports where this target is drawn, and nil once it is gone.
+    /// Reports where this target is drawn, and nil once it is gone. Inside
+    /// a scroll view only the part in view counts: a row scrolled out of
+    /// the list still has a frame, over the transcript or the header, and
+    /// a click there must not pick it.
     func reportingFrame(
         of target: OverlayDestinationTarget,
         to report: ((OverlayDestinationTarget, CGRect?) -> Void)?
     ) -> some View {
-        onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+        onGeometryChange(for: CGRect?.self) { proxy in
+            let frame = proxy.frame(in: .global)
+            guard let visible = proxy.bounds(of: .scrollView) else { return frame }
+            let shown = CGRect(origin: .zero, size: proxy.size).intersection(visible)
+            guard !shown.isNull, shown.height > 0 else { return nil }
+            return shown.offsetBy(dx: frame.minX, dy: frame.minY)
+        } action: { frame in
             report?(target, frame)
         }
         .onDisappear { report?(target, nil) }
