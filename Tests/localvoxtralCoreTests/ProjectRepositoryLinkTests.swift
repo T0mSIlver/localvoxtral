@@ -149,8 +149,8 @@ final class QuickCaptureProjectLinkerTests: XCTestCase {
             self.now = now
         }
         func snapshot() -> LearnedTerms { memory.withLock { $0 } }
-        func recordOriginRepository(_ repository: String, projectKey: String) {
-            memory.withLock { _ = $0.recordOriginRepository(repository, projectKey: projectKey) }
+        func recordOrigin(_ remote: ProjectRemote, projectKey: String) {
+            memory.withLock { _ = $0.recordOrigin(remote, projectKey: projectKey) }
         }
         func recordGitHub(_ facts: GitHubRepositoryFacts, repository: String) {
             let now = now

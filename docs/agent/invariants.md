@@ -366,7 +366,17 @@ there is not.
   (`…/<repo>/.claude/worktrees/<name>`: a Desktop session keeps the plugin
   it started with for days), else its cwd label, so two repositories with one
   basename on one host share a bucket: the price of never holding a remote
-  path), and once three separate
+  path. That key names a checkout; the terms live on its repository's
+  record, `repo:<host/owner/repo>`, once its `origin` is known (#971,
+  `ProjectRemote`). The Mac reads a local checkout's `origin` off the
+  commit path (`QuickCaptureProjectLinker`, once a launch), and a host
+  sends its own as `X-Lvx-Env-Repository`, a label like the project name.
+  So a host that claims a repository shares that repository's record with
+  the Mac's checkout: its sessions' dictations are polished with the
+  record's confirmed terms, at the user's own endpoint, and what they
+  teach counts toward it. What a host can push into it unasked is
+  `/v1/terms` proposals, which stay unconfirmed under the three-dictation
+  bar. The record is never keyed or reached by a path.), and once three separate
   dictations have resolved it, it grounds later ones and rides in the prompt
   under its own header — with no endpoint check and no re-check of the
   setting that first produced it. Owner ruling, 2026-09-20: a name the
@@ -2508,4 +2518,7 @@ there is not.
   dropped. The router's request changes only when there is an open capture
   to offer; that capture's title or first words then go to the same
   classifier as the new capture. A remote project is drafted on its host (#745, below): a remote
-  label never becomes a working directory here.
+  label never becomes a working directory here. A capture keeps the
+  checkout key it was routed to; when that checkout's repository gains a
+  checkout on the Mac, the Inbox moves it to the Mac's (#971), except while
+  a draft runs for it.

@@ -631,17 +631,24 @@ session's project. Details:
 ### One project per repository
 
 Learned terms, the coding agent's proposals and quick capture's project list
-are all kept per project. A project is a git repository, and its worktrees
-belong to it:
+are all kept per project. A project is a git repository, known by the
+repository its `origin` remote names (`github.com/owner/repository`, or the
+same on another host). Every checkout of it, on this Mac or on an ssh host,
+whatever its folder is called, shares one list of terms and one entry in
+**Settings → Projects**, under the repository's name. A checkout with no
+`origin` is a project of its own, under its folder's name. A fork is its own
+repository, since its `origin` is yours.
 
 - **On this Mac**, a session in any worktree of a repository counts toward
-  that repository. **Settings → Projects** shows one entry, under the
-  repository's name.
+  that repository.
 - **On an ssh host**, the same holds once the host runs the remote plugin
   1.13.0 or later. An older plugin sends only the worktree's folder name, so
   each worktree shows up as a project of its own, with a name like
   bold-bose-fac585. **Update Host…** in **Settings → Remote hosts** installs
   the newer plugin.
+- **Terms a checkout learned on its own**, before the app knew its
+  `origin`, join the repository's list once it does. A term both lists
+  hold keeps the higher count, and a pin stays.
 - **Projects left over from an older plugin** are not merged into their
   repository. Their terms expire 90 days after last use, unless you pinned
   one, and the list then drops the project. Quick capture no longer offers

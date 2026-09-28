@@ -271,7 +271,7 @@ fi
 # the app validates the shape and trusts nothing else about it.
 cat 2>/dev/null >"$WORK/header" <<EOF || fail_open
 Authorization: Bearer $TOKEN
-X-Lvx-Plugin-Version: 1.25.0
+X-Lvx-Plugin-Version: 1.26.0
 EOF
 
 # --- Allowlisted environment enrichment --------------------------------------
@@ -377,10 +377,11 @@ lvx_project() {
 LVX_PROJECT="$(lvx_project 2>/dev/null)" || LVX_PROJECT=""
 
 # --- Repository (#926) --------------------------------------------------------
-# The owner/name of the repository's origin when it is on github.com, from
-# capture.sh's parser, the one the draft run lists issues with. Asked only
-# inside a repository; anything else, or an origin off GitHub, sends no
-# header. The Mac keeps it on the project as its filing repository.
+# The owner/name of the repository's origin when it is on github.com, else
+# its host/path (#971), from capture.sh's parser, the one the draft run lists
+# issues with. Asked only inside a repository; no origin sends no header. The
+# Mac keeps a GitHub one as the project's filing repository, and merges every
+# checkout of one repository into one project.
 LVX_REPOSITORY=""
 if [ -n "$LVX_PROJECT" ] && [ -r "${0%/*}/capture.sh" ]; then
   LVX_REPOSITORY="$(sh "${0%/*}/capture.sh" repository </dev/null 2>/dev/null)" || LVX_REPOSITORY=""
