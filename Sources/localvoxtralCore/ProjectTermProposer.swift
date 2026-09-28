@@ -10,6 +10,7 @@ package protocol ProjectTermProposalStoring: Sendable {
     func recordProposal(
         _ terms: [String],
         line: String?,
+        revision: Int?,
         agent: ProjectTermProposal.Agent,
         project: LearnedTermProjectIdentity,
         excluding: [String]
@@ -104,7 +105,7 @@ package final class ProjectTermProposer: @unchecked Sendable {
         ), project.key.hasPrefix("/") else { return }
 
         let started = now()
-        guard store.snapshot().needsProposal(projectKey: project.key, now: started, asksLine: true),
+        guard store.snapshot().needsProposal(projectKey: project.key, now: started, revision: ProjectTermProposal.promptRevision),
               claim(project.key, at: started)
         else { return }
 
@@ -135,7 +136,9 @@ package final class ProjectTermProposer: @unchecked Sendable {
             asked.withLock { $0[project.key] = .distantFuture }
             // This run's prompt asked for the sentence: an answer without one
             // still counts as answered, so the project is not asked daily.
-            store.recordProposal(accepted, line: line ?? "", agent: request.agent, project: project, excluding: excluding)
+            store.recordProposal(
+                accepted, line: line ?? "", revision: ProjectTermProposal.promptRevision, agent: request.agent,
+                project: project, excluding: excluding)
         case .failed(let failure):
             if failure.agentRan {
                 usageRecorder?.record(.agentRun(date: now(), feature: .projectTerms, agent: request.agent, usage: nil))

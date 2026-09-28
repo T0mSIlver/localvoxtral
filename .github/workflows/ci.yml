@@ -12,19 +12,14 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [main]
-  # Manual dispatch exists to produce artifacts on demand — today that means
-  # the opt-in dogfood build (scripts/try-pr.sh --dogfood offers to trigger
-  # one). The dispatched ref already had its own push/PR run, so the
+  # Manual dispatch exists to produce artifacts on demand: the signed bundle
+  # scripts/try-pr.sh installs. The dispatched ref already had its own push/PR run, so the
   # conditional live-model lanes skip on dispatch (see the lane decide steps).
   # The live herdr lane is the exception — a dispatch is how that external
   # contract gets repeated — so it defaults ON and is opted out per dispatch
   # with `herdr=false`.
   workflow_dispatch:
     inputs:
-      dogfood:
-        description: "Also package the dogfood-instrumented app (artifact: localvoxtral-app-dogfood)"
-        type: boolean
-        default: false
       herdr:
         description: "Run the live herdr lane on this dispatch"
         type: boolean
@@ -161,8 +156,7 @@ jobs:
               || grep -qF '[run-speechd-integration]' <<<"$MARKER_TEXT" \
               || grep -qF '[run-herdr-integration]' <<<"$MARKER_TEXT" \
               || grep -qF '[run-stt-integration]' <<<"$MARKER_TEXT" \
-              || grep -qF '[mac-lanes]' <<<"$MARKER_TEXT" \
-              || grep -qF '[dogfood-package]' <<<"$MARKER_TEXT"; then
+              || grep -qF '[mac-lanes]' <<<"$MARKER_TEXT"; then
             full_run "explicit lane marker present in PR body / head commit"
           fi
 
@@ -254,11 +248,11 @@ jobs:
             ./scripts/ci/test-llm-lane-filter.sh \
             ./scripts/ci/test-herdr-lane-filter.sh \
             ./scripts/ci/test-helper-lane-filter.sh \
-            ./scripts/ci/test-dogfood-filter.sh \
             ./scripts/ci/test-harness-symbols.sh \
             ./scripts/ci/test-stt-lane-filter.sh \
             ./scripts/ci/test-mac-package-filter.sh \
             ./scripts/ci/test-lane-diff-facts.sh \
+            ./scripts/ci/test-remote-doctor.sh \
             ./scripts/ci/test-herdr-fixture-recovery.sh \
             ./scripts/ci/test-clean-stale-outputs.sh \
             ./scripts/ci/test-workflow-step-names.sh \
@@ -603,51 +597,6 @@ jobs:
             swift:6.2.0-bookworm@sha256:1fc848c3953417e3ba101ff35458fc0ad048b2401899fd51853bc5979f6220f5 \
             sh -c 'apt-get update -qq && apt-get install -qq -y --no-install-recommends python3 procps curl >/dev/null && ./scripts/core-tests-linux.sh'
 
-  # The dogfood capture suite. The capture is behind a COMPILE flag
-  # (Package.swift), so neither it nor its tests exist in the unit suite,
-  # which compiles the shipping shape; without this job nothing in CI would
-  # build it. The app target needs AppKit, so this is hosted macOS, not
-  # Linux. Moved off mac-lanes (#545): a cold debug build here costs about as
-  # much as build-test's, and runs beside it. No build cache: the define
-  # changes what the app and test modules contain, so it could not share
-  # build-test's, and a second one would double the main-push saves. Not a
-  # required check. A PR that changes no Swift input skips the build
-  # (scripts/ci/dogfood-filter.sh); a push to main and a dispatch always run.
-  dogfood:
-    runs-on: macos-latest
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Decide dogfood scope
-        id: dogfood_scope
-        env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          set -uo pipefail
-          FILES="$RUNNER_TEMP/dogfood-changed-files.txt"
-          : > "$FILES"
-          # A diff of two trees needs no history, so a depth-1 fetch of the
-          # base is enough. Any failure leaves the list empty, and the filter
-          # runs the job on an empty list.
-          if [[ "$GITHUB_EVENT_NAME" == "pull_request" && -n "$PR_BASE_SHA" ]] \
-              && git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"; then
-            git diff --name-only --no-renames "$PR_BASE_SHA" HEAD -- > "$FILES" || : > "$FILES"
-          fi
-          if ! DECISION="$(./scripts/ci/dogfood-filter.sh "$FILES" "$GITHUB_EVENT_NAME")"; then
-            DECISION=$'run=true\nreason=dogfood filter failed — failing open'
-          fi
-          echo "$DECISION" >> "$GITHUB_OUTPUT"
-          echo "Dogfood suite: $(sed -n 's/^run=//p' <<<"$DECISION") ($(sed -n 's/^reason=//p' <<<"$DECISION"))" \
-            | tee -a "$GITHUB_STEP_SUMMARY"
-
-      - name: Dogfood capture suite (instrumented build)
-        if: steps.dogfood_scope.outputs.run != 'false'
-        env:
-          LOCALVOXTRAL_DOGFOOD: "1"
-        run: swift test --build-system native --filter 'Dogfood'
-
   # EVERYTHING THAT NEEDS THIS PARTICULAR MAC, and nothing else.
   #
   # The owner's personal MacBook holds the things a hosted runner cannot
@@ -783,8 +732,7 @@ jobs:
               || grep -qF '[run-speechd-integration]' <<<"$MARKER_TEXT" \
               || grep -qF '[run-herdr-integration]' <<<"$MARKER_TEXT" \
               || grep -qF '[run-stt-integration]' <<<"$MARKER_TEXT" \
-              || grep -qF '[mac-lanes]' <<<"$MARKER_TEXT" \
-              || grep -qF '[dogfood-package]' <<<"$MARKER_TEXT"; then
+              || grep -qF '[mac-lanes]' <<<"$MARKER_TEXT"; then
             full_run "explicit lane marker present in PR body / head commit"
           fi
 
@@ -872,8 +820,8 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            # Manual dispatch exists to (re)produce artifacts (try-pr.sh
-            # --dogfood). The dispatched ref's own push/PR run already made
+            # Manual dispatch exists to (re)produce artifacts (try-pr.sh).
+            # The dispatched ref's own push/PR run already made
             # this lane's diff-based decision; don't reload 4B weights here.
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "LLM eval lane: SKIPPED (manual dispatch — decided by the ref's own push/PR run)" \
@@ -1009,8 +957,7 @@ jobs:
             # runner-only behavior — so it stays ON by default here.
             #
             # `herdr=false` opts a single dispatch out. The dispatch that
-            # exists to produce an ARTIFACT (scripts/try-pr.sh --dogfood)
-            # passes it, because that dispatch never asked for this lane's
+            # exists to produce an ARTIFACT (scripts/try-pr.sh) passes it, because that dispatch never asked for this lane's
             # time or its failure modes. Pushes and PRs are untouched by
             # this input — they keep the path filter + [run-herdr-integration]
             # marker, which is what holds the contract.
@@ -1056,57 +1003,6 @@ jobs:
             echo "Herdr integration lane: RUNNING ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           else
             echo "Herdr integration lane: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Decide dogfood artifact lane ([dogfood-package] marker / dispatch input)
-        # The instrumented (LOCALVOXTRAL_DOGFOOD) app is packaged and uploaded
-        # only on explicit opt-in: the literal marker [dogfood-package] in the
-        # PR body / head commit message, or the workflow_dispatch `dogfood`
-        # input (which is what scripts/try-pr.sh --dogfood offers to trigger).
-        # Opt-in because the second packaging pass recompiles the root app
-        # under the extra define — and flips the incremental cache, so the
-        # NEXT clean run recompiles it back. No path filter: dogfooding is a
-        # human decision, not a diff property.
-        id: dogfood_lane
-        if: steps.ci_scope.outputs.docs_only != 'true'
-        env:
-          # env indirection, not inline ${{ }} in the script body: PR bodies
-          # and commit messages are attacker-shaped strings.
-          PR_BODY: ${{ github.event.pull_request.body }}
-          PUSH_HEAD_MESSAGE: ${{ github.event.head_commit.message }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          DISPATCH_DOGFOOD: ${{ inputs.dogfood }}
-        run: |
-          set -euo pipefail
-          RUN=false
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            if [[ "$DISPATCH_DOGFOOD" == "true" ]]; then
-              RUN=true; REASON="workflow_dispatch with dogfood=true"
-            else
-              REASON="workflow_dispatch without dogfood=true"
-            fi
-          else
-            # Marker sources mirror the LLM lane: PR body + PR head commit
-            # message (HEAD is the synthetic merge commit on PRs), or the
-            # head commit message on push.
-            MARKER_TEXT="$RUNNER_TEMP/dogfood-lane-marker-text.txt"
-            printf '%s\n' "$PR_BODY" > "$MARKER_TEXT"
-            if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
-              git log -1 --format=%B "$PR_HEAD_SHA" >> "$MARKER_TEXT" || true
-            else
-              printf '%s\n' "$PUSH_HEAD_MESSAGE" >> "$MARKER_TEXT"
-            fi
-            if grep -qF '[dogfood-package]' "$MARKER_TEXT"; then
-              RUN=true; REASON="[dogfood-package] marker present"
-            else
-              REASON="no [dogfood-package] marker in PR body / head commit message"
-            fi
-          fi
-          echo "run=$RUN" >> "$GITHUB_OUTPUT"
-          if [[ "$RUN" == "true" ]]; then
-            echo "Dogfood artifact lane: RUNNING ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
-          else
-            echo "Dogfood artifact lane: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Decide helper unit lanes (path filter)
@@ -1201,7 +1097,7 @@ jobs:
         # Mac, and a diff of tests, docs, CI scripts or other workflows builds
         # the same bundle main has. scripts/ci/mac-package-filter.sh lists
         # what may skip; anything unclassified packages. A lane below that
-        # reads the bundle (polishd, speechd, the dogfood pass) packages
+        # reads the bundle (polishd, speechd) packages
         # whatever the diff. A dispatch always packages, so try-pr.sh can
         # still build any branch; a missing decision packages too, because
         # the steps below skip only on the literal 'false'.
@@ -1211,7 +1107,6 @@ jobs:
           LANE_MAC_LANES_JOB_CHANGED: ${{ steps.diff_facts.outputs.mac_lanes_job_changed }}
           LLM_RUN: ${{ steps.llm_lane.outputs.run }}
           SPEECHD_RUN: ${{ steps.speechd_lane.outputs.run }}
-          DOGFOOD_RUN: ${{ steps.dogfood_lane.outputs.run }}
           # env indirection: PR bodies are attacker-shaped strings.
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -1227,7 +1122,6 @@ jobs:
           LANE_NEEDS_BUNDLE=""
           [[ "$LLM_RUN" == "true" ]] && LANE_NEEDS_BUNDLE+=" polishd"
           [[ "$SPEECHD_RUN" == "true" ]] && LANE_NEEDS_BUNDLE+=" speechd"
-          [[ "$DOGFOOD_RUN" == "true" ]] && LANE_NEEDS_BUNDLE+=" dogfood"
           export LANE_NEEDS_BUNDLE
           if ! DECISION="$(./scripts/ci/mac-package-filter.sh "$FILES" "$GITHUB_EVENT_NAME" "$MARKER_TEXT")"; then
             DECISION=$'run=true\nreason=packaging filter failed — failing open'
@@ -1448,117 +1342,6 @@ jobs:
             process.wait(timeout=5)
           PY
 
-      - name: Package dogfood app bundle (opt-in instrumented artifact)
-        # Second packaging pass with the dogfood capture COMPILE flag. Fetch
-        # and launch with `scripts/try-pr.sh <pr|main> --dogfood`.
-        # - Enablement is the step env, NEVER the .dogfood-capture-enable
-        #   marker file: this workspace is persistent (clean: false), and a
-        #   marker file surviving a cancelled run would silently instrument
-        #   every later build. A step env cannot leak.
-        # - Runs AFTER the launch smoke so the smoke exercises the artifact
-        #   end users get, and the clean dist/localvoxtral.app is already
-        #   zipped and uploaded before this pass overwrites dist/. The helper
-        #   xcodebuild lanes are incremental no-ops; only the root app
-        #   recompiles under the define.
-        # - Runs BEFORE the conditional live lanes, so no live precondition
-        #   can cost a dispatch the artifact it was dispatched for. See the
-        #   phase comment below.
-        # - Same bundle id and signing identity as the clean build, so the
-        #   designated requirement — and the owner's Accessibility (TCC)
-        #   grant — is identical when switching between the two.
-        # - package_app.sh self-verifies the LVXDogfoodCapture Info.plist
-        #   stamp and fails loudly on mismatch; no re-check needed here.
-        if: steps.ci_scope.outputs.docs_only != 'true' && steps.dogfood_lane.outputs.run == 'true'
-        env:
-          LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
-          LOCALVOXTRAL_REQUIRE_CODESIGN_IDENTITY: "1"
-          LOCALVOXTRAL_DOGFOOD: "1"
-        run: |
-          ./scripts/package_app.sh release
-          ditto -c -k --sequesterRsrc --keepParent dist/localvoxtral.app dist/localvoxtral-app-dogfood.zip
-          # The instrumented root binary has its own UUID, so the clean
-          # localvoxtral-dsym artifact can't symbolicate a crash that happens
-          # while hand-dogfooding — ship this pass's dSYM too. The helper
-          # dSYMs are unchanged by this pass (incremental xcodebuild no-ops)
-          # and already ship in localvoxtral-dsym.
-          ditto -c -k --keepParent dist/localvoxtral.dSYM dist/localvoxtral-dsym-dogfood.zip
-
-      - name: Upload dogfood app artifact
-        if: steps.ci_scope.outputs.docs_only != 'true' && steps.dogfood_lane.outputs.run == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: localvoxtral-app-dogfood
-          path: dist/localvoxtral-app-dogfood.zip
-          retention-days: 7
-
-      - name: Upload dogfood dSYM artifact
-        # Same longer retention rationale as localvoxtral-dsym: field crashes
-        # surface days after the build that produced them.
-        if: steps.ci_scope.outputs.docs_only != 'true' && steps.dogfood_lane.outputs.run == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: localvoxtral-dsym-dogfood
-          path: dist/localvoxtral-dsym-dogfood.zip
-          retention-days: 30
-
-      - name: Install the dogfood build into the UI gate's artifact root
-        # An agent driving the SSH UI gate can BUILD but cannot INSTALL: there
-        # is no gate verb that runs try-pr.sh and no shell on that account. The
-        # runner closes that gap for free — it is a launchd agent in the
-        # owner's GUI session, so $HOME here IS the GUI account's home (proved
-        # by the workspace path, /Users/tom/actions-runner/...), which is where
-        # the gate's default artifact root lives. Dispatching a build is then
-        # the install, with no hand-copying and no new gate verb.
-        #
-        # workflow_dispatch + dogfood=true ONLY, deliberately narrower than the
-        # dogfood lane itself: the [dogfood-package] marker fires on ordinary
-        # PR pushes, and no PR run should write into the owner's home. The
-        # install destination is what moves here; the gate's roots are
-        # untouched and stay owner-writable only.
-        #
-        # `github.event.inputs.dogfood`, not `inputs.dogfood`: the input is
-        # declared `type: boolean`, and comparing a boolean to the string
-        # 'true' in an expression coerces both to numbers (1 vs NaN) and is
-        # therefore always false — a gate that silently never fires. The event
-        # payload's copy is a string, so it compares as written.
-        # `runner.environment == 'self-hosted'` is redundant now that this
-        # whole job is self-hosted, and it stays on purpose: this is the one
-        # step that writes into the OWNER'S HOME. A guard that costs nothing
-        # and would catch someone moving the step to the wrong job is worth
-        # keeping, and scripts/ci/test-ui-gate.sh asserts it by name.
-        if: >-
-          runner.environment == 'self-hosted'
-          && github.event_name == 'workflow_dispatch'
-          && github.event.inputs.dogfood == 'true'
-          && steps.dogfood_lane.outputs.run == 'true'
-        run: |
-          set -uo pipefail
-          # dist/localvoxtral.app is the instrumented bundle at this point (the
-          # dogfood pass overwrote it); install-ui-artifact.sh reads the
-          # LVXDogfoodCapture stamp and picks the dogfood slot accordingly.
-          STATUS=0
-          INSTALLED="$(./scripts/mac/install-ui-artifact.sh dist/localvoxtral.app --no-hint \
-            --label "${GITHUB_REF_NAME} @ ${GITHUB_SHA:0:7} (run ${GITHUB_RUN_ID})")" || STATUS=$?
-          if (( STATUS == 3 )); then
-            # Exit 3 is the one refusal that is not a build problem: that slot
-            # is running, which only the operator can resolve.
-            echo "::warning::UI-gate install skipped — the target bundle is running. Quit it (ssh lv-ui 'quit') and re-dispatch."
-            echo "UI-gate install skipped: the target bundle is running." >>"$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          if (( STATUS != 0 )); then
-            echo "::error::UI-gate install failed (exit $STATUS)."
-            exit "$STATUS"
-          fi
-          GATE_ARG="${INSTALLED#"$HOME"/}"
-          {
-            echo "### Installed for the UI gate"
-            echo
-            echo '```'
-            echo "ssh lv-ui 'launch --dogfood $GATE_ARG'"
-            echo '```'
-          } >>"$GITHUB_STEP_SUMMARY"
-
       # ---- CONDITIONAL LIVE LANES --------------------------------------
       # Artifact production is finished above; below this line are the lanes
       # that hold a contract against something live and are opted into per
@@ -1566,15 +1349,9 @@ jobs:
       # last because a lane's precondition must never cost the run the
       # artifacts it was dispatched to produce: the herdr lane used to sit
       # before packaging, and while its fixture refused to start beside the
-      # herdr the owner runs all day (before #323), `-f dogfood=true` could not reach the
-      # packaging steps on the owner's Mac at all (run 35084386041).
+      # herdr the owner runs all day (before #323), a dispatch could not reach
+      # the packaging steps on the owner's Mac at all (run 35084386041).
       # New conditional live lanes go here, below the artifact steps.
-      #
-      # dist/localvoxtral.app is the INSTRUMENTED bundle here when the dogfood
-      # lane ran. That is fine for the speechd lane below: package_app.sh
-      # copies the same SpeechHelper xcodebuild Release product in both passes
-      # (the LOCALVOXTRAL_DOGFOOD define only reaches the root app binary and
-      # the Info.plist stamp — grep DOGFOOD in scripts/package_app.sh).
       - name: Speech helper integration (real audio + live model)
         # Runs packaged speechd through RealtimeAPIWebSocketClient with the
         # tier-1 spoken fixture. Conditional because it loads the multi-GB

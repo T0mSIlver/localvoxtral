@@ -124,7 +124,7 @@ for helper in polish speech; do
 done
 
 # ci.yml narrows only on the literal "false" from lane-diff-facts.sh: an edit
-# to build-test, linux or dogfood cannot change how these suites run.
+# to build-test or linux cannot change how these suites run.
 export LANE_MAC_LANES_JOB_CHANGED=false
 for helper in polish speech; do
   expect "$helper" false "a ci.yml edit outside the mac-lanes job runs neither lane" \

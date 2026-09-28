@@ -31,13 +31,13 @@ final class ProjectTermProposerTests: XCTestCase {
         func snapshot() -> LearnedTerms { memory.withLock { $0 } }
 
         func recordProposal(
-            _ terms: [String], line: String?,
+            _ terms: [String], line: String?, revision: Int?,
             agent: ProjectTermProposal.Agent,
             project: LearnedTermProjectIdentity,
             excluding: [String]
         ) {
             let moment = now()
-            memory.withLock { $0.recordProposal(terms, line: line, agent: agent, project: project, excluding: excluding, now: moment) }
+            memory.withLock { $0.recordProposal(terms, line: line, revision: revision, agent: agent, project: project, excluding: excluding, now: moment) }
         }
 
         func recordProposalFailure(project: LearnedTermProjectIdentity) {
@@ -208,7 +208,8 @@ final class ProjectTermProposerTests: XCTestCase {
         let runner = FakeRunner(.terms(["inkwell"]))
         let store = FakeStore(now: clock.now)
         store.recordProposal(
-            ["inkwell"], line: "Quillmark renders Markdown to PDF.", agent: .claude,
+            ["inkwell"], line: "Quillmark renders Markdown to PDF.", revision: ProjectTermProposal.promptRevision,
+            agent: .claude,
             project: LearnedTermProjectIdentity(key: repo, name: "quillmark"), excluding: []
         )
         let (proposer, _) = proposer(runner, store: store)

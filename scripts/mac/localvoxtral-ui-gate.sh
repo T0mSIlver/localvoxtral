@@ -73,7 +73,7 @@ set -euo pipefail
 #     property is why the app's titleMarker join arm is suppressed there).
 #   - `app` forwards ONE line to the control socket of the app under test —
 #     never a shell, never a path of the caller's choosing. The socket only
-#     exists in a dogfood build, so the verb refuses unless `launch --dogfood`
+#     exists in a harness build, so the verb refuses unless `launch --harness`
 #     recorded one, and the forwarded line must be one of the five shapes the
 #     socket's own grammar accepts. The socket answers in a closed vocabulary
 #     of bools, counts and enum names (docs/test-harness.md).
@@ -124,7 +124,7 @@ set -euo pipefail
 #
 # Verbs (each documented at its run_* function):
 #   state
-#   launch [--dogfood] [--keychain] <artifact>
+#   launch [--harness] [--keychain] <artifact>
 #   shot [settings|popover|overlay|window <n>]
 #   ax dump [settings|overlay|window <n>]
 #   ax find <selector>
@@ -284,8 +284,8 @@ LV_UI_MAX_TEXT_BYTES="${LV_UI_MAX_TEXT_BYTES:-512}"
 # interpreted fallback, on a box that may well have the real one.
 LV_UI_SWIFTC="${LV_UI_SWIFTC:-swiftc}"
 
-# `app`'s target: the dogfood control socket of the app under test. Not
-# discovered, not passed in — the one path a dogfood build ever binds
+# `app`'s target: the harness control socket of the app under test. Not
+# discovered, not passed in — the one path a harness build ever binds
 # (DogfoodControlSocket.defaultSocketPath). Overridable only so the test suite
 # can point it at a fixture.
 LV_UI_CONTROL_SOCKET="${LV_UI_CONTROL_SOCKET:-$HOME/Library/Application Support/localvoxtral/dogfood/control/control.sock}"
@@ -1555,7 +1555,7 @@ case "termaction":
 
 // control <socket-path> <line>
 //
-// One line to the dogfood control socket of the app under test, one line back.
+// One line to the harness control socket of the app under test, one line back.
 // Written here rather than shelled out to `nc` for two reasons: the exact
 // half-close/EOF behaviour of BSD nc's `-U` is a detail this must not depend
 // on, and the embedded helper is compile-checked by test-ui-gate.sh while a
@@ -1567,12 +1567,12 @@ case "termaction":
 // Is anything LISTENING on the control socket right now.
 //
 // `state` used to answer this with `[[ -S … ]]`, which is a question about a
-// FILE. A dogfood build that has quit leaves its socket behind (and a build
+// FILE. A harness build that has quit leaves its socket behind (and a build
 // with no control socket compiled in never removes a predecessor's), so the
 // gate reported `"present":true` while every `app` command failed with
 // `could not connect (61)`. That is a diagnostic saying "armed" about
 // something that cannot answer — measured 2026-09-05, where the installed
-// dogfood build predated the control socket entirely and `state` still
+// harness build predated the control socket entirely and `state` still
 // claimed it was there.
 //
 // Connect and close, nothing sent. A refused connect is the answer, and it
@@ -1623,7 +1623,7 @@ case "control":
         }
     }
     guard connected == 0 else {
-        die("could not connect to the control socket (\(errno)) — is the app a dogfood build with debug.dogfood_control_socket_enabled armed?")
+        die("could not connect to the control socket (\(errno)) — is the app a harness build with debug.dogfood_control_socket_enabled armed?")
     }
     // Bounded on both halves: a wedged app must cost the operator a refusal,
     // never a hung SSH command.
@@ -1793,7 +1793,7 @@ helper_json() { # `state`'s setup.helper
 APP_STATE="$STATE_DIR/app.state"
 APP_PID=""
 APP_BUNDLE=""
-APP_DOGFOOD="0"
+APP_HARNESS="0"
 
 # Start time AND executable path. Either alone is forgeable by pid reuse:
 # a recycled pid can match the path (relaunch) or the second (another app
@@ -1809,19 +1809,19 @@ process_identity() { # <pid> -> "<lstart>|<executable>"
 load_app_state() {
   APP_PID=""
   APP_BUNDLE=""
-  APP_DOGFOOD="0"
+  APP_HARNESS="0"
   [[ -f "$APP_STATE" ]] || return 1
-  local pid bundle identity dogfood live
+  local pid bundle identity harness live
   pid="$(sed -n 's/^pid=//p' "$APP_STATE" | head -n 1)"
   bundle="$(sed -n 's/^bundle=//p' "$APP_STATE" | head -n 1)"
   identity="$(sed -n 's/^identity=//p' "$APP_STATE" | head -n 1)"
-  dogfood="$(sed -n 's/^dogfood=//p' "$APP_STATE" | head -n 1)"
+  harness="$(sed -n 's/^harness=//p' "$APP_STATE" | head -n 1)"
   [[ "$pid" =~ ^[0-9]+$ ]] || return 1
   live="$(process_identity "$pid")" || return 1
   [[ "$live" == "$identity" ]] || return 1
   APP_PID="$pid"
   APP_BUNDLE="$bundle"
-  APP_DOGFOOD="${dogfood:-0}"
+  APP_HARNESS="${harness:-0}"
 }
 
 require_app_under_test() {
@@ -1960,9 +1960,9 @@ setup_artifacts_json() {
       [[ -d "$bundle" ]] || continue
       name="${bundle##*/}"
       validate_localvoxtral_bundle "$bundle" || continue
-      stamp="$(plist_value "$bundle/Contents/Info.plist" LVXDogfoodCapture)"
+      stamp="$(plist_value "$bundle/Contents/Info.plist" LVXE2EHarness)"
       [[ -n "$out" ]] && out+=","
-      out+="{\"name\":$(json_string "$name"),\"dogfood\":$([[ "$stamp" == "true" ]] && echo true || echo false)}"
+      out+="{\"name\":$(json_string "$name"),\"harness\":$([[ "$stamp" == "true" ]] && echo true || echo false)}"
     done
   done
   printf '[%s]' "$out"
@@ -2041,11 +2041,11 @@ attach_check() {
 
 # Whether the control socket ANSWERS, not whether its path exists.
 #
-# A dogfood build that quit leaves its socket file behind, and a build with no
+# A harness build that quit leaves its socket file behind, and a build with no
 # control socket compiled in never removes a predecessor's — so the file test
 # this replaces reported `"present":true` for a socket that every `app` command
 # then failed to reach with `could not connect (61)`. Measured 2026-09-05: the
-# installed dogfood build predated the control socket entirely and `state`
+# installed harness build predated the control socket entirely and `state`
 # still said it was there. `state` exists to answer "is it safe to drive"; a
 # field in it that cannot fail is not an answer.
 control_socket_live() {
@@ -2160,7 +2160,7 @@ run_state() {
   [[ "$screen_recording" == "1" ]] && screen_recording=true || screen_recording=false
 
   if load_app_state; then
-    running_json="{\"running\":true,\"pid\":$APP_PID,\"bundle\":$(json_string "$APP_BUNDLE"),\"dogfood\":$([[ "$APP_DOGFOOD" == 1 ]] && echo true || echo false)}"
+    running_json="{\"running\":true,\"pid\":$APP_PID,\"bundle\":$(json_string "$APP_BUNDLE"),\"harness\":$([[ "$APP_HARNESS" == 1 ]] && echo true || echo false)}"
   else
     running_json='{"running":false}'
   fi
@@ -2243,13 +2243,13 @@ launch_secret_assignments() {
   done <"$file"
 }
 
-# launch [--dogfood] [--keychain] <artifact>
+# launch [--harness] [--keychain] <artifact>
 run_launch() {
-  local dogfood=0 keychain=0 argument="" bundle stamp pid deadline foreign
+  local harness=0 keychain=0 argument="" bundle stamp pid deadline foreign
   local -a launch_env=()
   while (( $# > 0 )); do
     case "$1" in
-      --dogfood) dogfood=1 ;;
+      --harness) harness=1 ;;
       --keychain) keychain=1 ;;
       -*) deny "unknown launch flag" ;;
       *)
@@ -2267,9 +2267,9 @@ run_launch() {
   validate_localvoxtral_bundle "$bundle" \
     || deny "not a localvoxtral bundle: $bundle"
 
-  stamp="$(plist_value "$bundle/Contents/Info.plist" LVXDogfoodCapture)"
-  if (( dogfood == 1 )) && [[ "$stamp" != "true" ]]; then
-    deny "--dogfood on a bundle without the LVXDogfoodCapture stamp (got: ${stamp:-absent})"
+  stamp="$(plist_value "$bundle/Contents/Info.plist" LVXE2EHarness)"
+  if (( harness == 1 )) && [[ "$stamp" != "true" ]]; then
+    deny "--harness on a bundle without the LVXE2EHarness stamp (got: ${stamp:-absent})"
   fi
 
   # Refuse to start a second instance: it would orphan the recorded pid (two
@@ -2292,14 +2292,8 @@ run_launch() {
   fi
 
   require_unlocked_screen
-  log_command ALLOW "bundle=$bundle dogfood=$dogfood keychain=$keychain"
+  log_command ALLOW "bundle=$bundle harness=$harness keychain=$keychain"
   announce_takeover "launching localvoxtral under test"
-
-  if (( dogfood == 1 )); then
-    # Same runtime opt-in try-pr.sh arms, for the same reason: a dogfood
-    # launch that cannot capture is the wrong-binary confusion in disguise.
-    defaults write com.localvoxtral.app debug.dogfood_capture_enabled -bool true >/dev/null 2>&1 || true
-  fi
 
   # The login keychain, OFF by default.
   #
@@ -2382,11 +2376,11 @@ run_launch() {
     printf 'pid=%s\n' "$pid"
     printf 'bundle=%s\n' "$bundle"
     printf 'identity=%s\n' "$(process_identity "$pid")"
-    printf 'dogfood=%s\n' "$dogfood"
+    printf 'harness=%s\n' "$harness"
   } >"$APP_STATE"
 
   ACTION_COMPLETED=1
-  printf 'launched pid=%s bundle=%s dogfood=%s\n' "$pid" "$bundle" "$dogfood"
+  printf 'launched pid=%s bundle=%s harness=%s\n' "$pid" "$bundle" "$harness"
 }
 
 # shot [settings|popover|overlay|window <n>] — ONE window, by CGWindowID, and
@@ -2650,7 +2644,7 @@ run_dictate() {
 
 # app <control command>
 #
-# Forwards ONE line to the dogfood control socket of the app under test and
+# Forwards ONE line to the harness control socket of the app under test and
 # prints the reply. This is what makes the join debuggable at all: the socket
 # can start a dictation deterministically (the real trigger is a modifier
 # gesture) and can resolve the focused surface against the app's LIVE session
@@ -2661,7 +2655,7 @@ run_dictate() {
 #
 #   * The socket path is fixed, not an argument. There is no way to point this
 #     verb at another socket on the machine.
-#   * The app under test must be a DOGFOOD build. A shipped build compiles no
+#   * The app under test must be a HARNESS build. A shipped build compiles no
 #     socket at all, so forwarding to one would be a lie; refusing on the
 #     recorded stamp says so in one line instead of hanging on a connect.
 #   * The forwarded line must be one of the five shapes below. The socket
@@ -2704,8 +2698,8 @@ run_app() {
     require_unlocked_screen
   fi
   require_app_under_test
-  [[ "$APP_DOGFOOD" == "1" ]] \
-    || deny "the app under test is not a dogfood build (launch it with --dogfood); a shipped build has no control socket"
+  [[ "$APP_HARNESS" == "1" ]] \
+    || deny "the app under test is not a harness build (launch it with --harness); a shipped build has no control socket"
   [[ -S "$LV_UI_CONTROL_SOCKET" ]] \
     || deny "no control socket at $LV_UI_CONTROL_SOCKET — arm it with: defaults write com.localvoxtral.app debug.dogfood_control_socket_enabled -bool true (then relaunch)"
 
@@ -2718,7 +2712,7 @@ run_app() {
 }
 
 # Masks maximal runs of exactly 43 base64url characters — the remote-enrollment
-# token's shape. Deliberately the SAME rule as DiagnosticRecordRedaction (and the
+# token's shape. Deliberately the SAME rule as DiagnosticRecordRedaction's token rule (and the
 # same trade: it over-matches an isolated 43-character identifier, and misses a
 # token glued into a longer run), so a reviewer reading a `<redacted>` here and
 # one in a capture record is reading the same decision.
@@ -2768,7 +2762,7 @@ redact_token_shaped_runs() {
 #   * the WINDOW is clamped 1..LV_UI_LOG_MAX_MINUTES, mirroring the build
 #     gate's `applog`.
 #   * the OUTPUT is line-capped and passed through the same token-shaped scrub
-#     the dogfood records use. The app writes its categories `privacy: .public`
+#     the diagnostic records apply to the enrollment token. The app writes its categories `privacy: .public`
 #     on purpose, but "the app's own lines are safe" is an assumption about
 #     every line anyone ever adds, and this is the cheap way not to depend on it.
 #

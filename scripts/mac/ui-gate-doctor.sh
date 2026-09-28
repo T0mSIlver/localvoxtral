@@ -10,7 +10,7 @@ set -uo pipefail
 # Why it exists. Every setup item this reports was, in a real session
 # (2026-08-30), invisible until a verb failed — and each failure looked exactly
 # like a broken verb: `term open` refused everything because
-# ~/.localvoxtral-ui-gate.conf did not exist, `app` denied because the dogfood
+# ~/.localvoxtral-ui-gate.conf did not exist, `app` denied because the harness
 # socket's runtime consent was off, and nobody could see either from outside.
 # The numbered list in scripts/mac/README.md said all of it; prose the owner
 # reads and mis-follows is not a check.
@@ -341,29 +341,29 @@ elif attach_conf == "wrapper-too-old":
 artifacts = setup.get("artifacts", [])
 if artifacts:
     ok("launchable builds",
-       ", ".join("%s%s" % (a.get("name"), " (dogfood)" if a.get("dogfood") else "")
+       ", ".join("%s%s" % (a.get("name"), " (harness)" if a.get("harness") else "")
                  for a in artifacts))
 else:
     fix("launchable builds",
         "no localvoxtral bundle under the artifact roots — `launch` has nothing to start",
-        "./scripts/try-pr.sh <pr> --dogfood --ui-gate    # or: gh workflow run CI --ref <branch> -f dogfood=true -f herdr=false")
+        "./scripts/ui-smoke-dispatch.sh --override 'harness build for the UI gate' <branch>    # installs it for the gate; takes the screen, ask the owner")
 
 # 8. the app under test
 app = state.get("app", {})
 if app.get("running"):
     ok("app under test",
-       "pid %s%s" % (app.get("pid"), ", dogfood" if app.get("dogfood") else ", not a dogfood build"))
+       "pid %s%s" % (app.get("pid"), ", harness" if app.get("harness") else ", not a harness build"))
 else:
     note("app under test",
-         "none — `launch [--dogfood] <artifact>` first; shot/ax/key/menu/dictate/app all need one")
+         "none — `launch [--harness] <artifact>` first; shot/ax/key/menu/dictate/app all need one")
 
-# 9. the dogfood control socket — TWO consents, deliberately
+# 9. the harness control socket — TWO consents, deliberately
 socket = setup.get("control_socket", {})
 if socket.get("present"):
     ok("control socket", "bound; `app <command>` can be forwarded")
 elif socket.get("consent") == "on":
     note("control socket",
-         "consent armed but no socket bound — relaunch the dogfood build (`quit`, then `launch --dogfood ...`)")
+         "consent armed but no socket bound — relaunch the harness build (`quit`, then `launch --harness ...`)")
 else:
     fix("control socket",
         "debug.dogfood_control_socket_enabled is %s, so `app <command>` denies "

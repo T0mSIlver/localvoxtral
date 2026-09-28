@@ -300,8 +300,8 @@ a separate one-shot process with its own empty session registry. It tells you
 which join ran and why the window was or was not identified, but it never has
 the live sessions this check needs.
 
-On a dogfood build, the registry list command reports each session's remote
-local tty, the same fact seen from the app.
+On a debug or UI Smoke build, the registry list command reports each
+session's remote local tty, the same fact seen from the app.
 
 ### 2. The connection (zero setup, no jump host)
 

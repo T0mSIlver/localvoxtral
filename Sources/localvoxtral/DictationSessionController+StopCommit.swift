@@ -81,6 +81,10 @@ extension DictationSessionController {
     /// An Overlay Buffer session that was not cancelled: transcribed again
     /// first when the session has a second pass, then committed.
     private func commitOverlayBufferSession(sessionMode: DictationOutputMode) {
+        if let review = sessionDraftReview {
+            commitDraftReview(review, sessionMode: sessionMode)
+            return
+        }
         if sessionIsQuickCapture {
             commitQuickCapture(sessionMode: sessionMode)
             return
@@ -717,6 +721,8 @@ extension DictationSessionController {
         // transcript, polishing disabled, cancelled overlay.
         context.discardTerminalScreenCapture()
         clearLatchedSessionMetadata()
+        // A stop is a break: drafts held for one show now (#927).
+        agentAttention?.reachedBreak()
         if holdFailureIndicatorUntilStopCompletes {
             holdFailureIndicatorUntilStopCompletes = false
             markRecentConnectionFailureIndicator()

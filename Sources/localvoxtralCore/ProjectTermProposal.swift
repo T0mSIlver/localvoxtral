@@ -112,24 +112,36 @@ package enum ProjectTermProposal {
     /// The project's sentence is capped like the user's own line.
     package static let maxLineCharacters = QuickCaptureProjects.maxUserLineCharacters
 
+    /// Bumped whenever the prompt asks for something new, so a project
+    /// answered under an older one is asked once more
+    /// (`LearnedTerms.needsProposal`): 2 added the project's sentence
+    /// (#891), 3 asks for names people say instead of the code's (#914).
+    package static let promptRevision = 3
+
     /// The terms, and since #891 one sentence quick capture's router reads:
-    /// a README says what a project is, rarely what it has.
+    /// a README says what a project is, rarely what it has. The people who
+    /// dictate say names, not identifiers (#914); the answer is filtered for
+    /// code shapes anyway (`acceptedTerms`).
     package static let prompt = """
-        List the names someone dictating about this project would say that a \
-        speech recognizer is likely to misspell: this project's own modules, \
-        types, functions, files, commands, flags, environment variables and \
-        product names. Leave out common English words and well-known names. \
-        Also describe the project in one sentence of at most \(maxLineCharacters) \
-        characters: what it is, then the features and parts someone would name \
-        when filing an idea for it. Read at most six files. Spell each name \
-        exactly as the code does. Reply with JSON only: \
+        List the names someone would say aloud about this project that a \
+        speech recognizer is likely to misspell. Picture a builder who talks \
+        to coding agents and rarely reads the code: they say the project's \
+        name and its parts as its docs name them, the products, tools, \
+        services, libraries and models it uses, people and teams, and words \
+        of its domain. They never say class, function or variable names, file \
+        names, paths, flags or environment variables: leave those out, and \
+        leave out common English words. Also describe the project in one \
+        sentence of at most \(maxLineCharacters) characters: what it is, then \
+        the features and parts someone would name when filing an idea for it. \
+        Read at most six files, the README first. Spell each name as the \
+        project's docs write it. Reply with JSON only: \
         {"terms": [...], "description": "..."}, at most \(maxTerms) terms.
         """
 
     /// Replaces Claude Code's default system prompt, which costs a third more
     /// tokens and asks nothing this run needs (#609 spec measurements).
     package static let claudeSystemPrompt =
-        "You list a code project's own vocabulary and describe it for a dictation app. Reply only with the requested JSON."
+        "You list the names people say when they talk about a code project, and describe it, for a dictation app. Reply only with the requested JSON."
 
     package static let claudeJSONSchema =
         #"{"type":"object","properties":{"terms":{"type":"array","items":{"type":"string"},"maxItems":40},"description":{"type":"string"}},"required":["terms","description"],"additionalProperties":false}"#
@@ -541,7 +553,9 @@ package enum ProjectTermProposal {
     /// only term-shaped strings survive: the `.github/dictation.md` filter
     /// (no URL or link, at most four words, 2 to 64 characters with a
     /// letter), no control character anywhere, and the learned-term length
-    /// cap. One entry per case-folded spelling, first one kept, at most
+    /// cap. Nothing shaped like code survives either (`SpokenTermShape`):
+    /// the prompt asks for names people say, and agents list identifiers
+    /// anyway. One entry per case-folded spelling, first one kept, at most
     /// `maxTerms`.
     package static func acceptedTerms(_ raw: [String]) -> [String] {
         var result: [String] = []
@@ -549,7 +563,8 @@ package enum ProjectTermProposal {
         for candidate in raw {
             guard result.count < maxTerms else { break }
             guard !candidate.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }),
-                  let shaped = DictationTermsFile.accepted(candidate)
+                  let shaped = DictationTermsFile.accepted(candidate),
+                  SpokenTermShape.identifier(in: shaped) == nil
             else { continue }
             let term = LearnedTerms.sanitized(shaped)
             guard !term.isEmpty, seen.insert(term.caseFoldedForMatching).inserted else { continue }

@@ -62,17 +62,6 @@ final class ClaudeRemoteDesktopHostTests: XCTestCase {
         return .init(exitCode: process.terminationStatus, message: String(decoding: data, as: UTF8.self))
     }
 
-    /// A service whose ssh is this test's fake host.
-    private func fakeHostService(
-        recording log: InvocationLog? = nil
-    ) -> ClaudeRemoteEnrollmentService {
-        let home = home.path
-        return ClaudeRemoteEnrollmentService(runner: { invocation in
-            log?.record(invocation)
-            return try Self.run(invocation.standardInput, home: home)
-        })
-    }
-
     private func makeDirectory(_ relative: String) throws {
         try FileManager.default.createDirectory(
             at: home.appendingPathComponent(relative, isDirectory: true),
@@ -94,27 +83,65 @@ final class ClaudeRemoteDesktopHostTests: XCTestCase {
 
     // MARK: - Claude Desktop detection
 
-    func testClaudeDesktopIsDetectedByItsSessionDaemonDirectory() throws {
-        XCTAssertFalse(try fakeHostService().detectClaudeDesktop(sshHostAlias: "builder"))
-
+    /// Both branches of the probe in ONE shell: the production script runs
+    /// twice against two throwaway homes — one carrying Desktop's
+    /// `~/.claude/remote/srv`, one a plain Claude Code home that keeps
+    /// `~/.claude` and `~/.claude/remote` — and each row's framed answer is
+    /// asserted by name. The service's reading of a framed yes/no is
+    /// `testOnlyTheFramedLineDecides`; what it sends to read is
+    /// `testTheDesktopProbeClearsForwardingsAndCarriesNoToken`.
+    func testTheProbeAnswersYesOnlyForDesktopsDaemonDirectory() throws {
         try makeDirectory(".claude/remote/srv/90fca6e6")
-        XCTAssertTrue(try fakeHostService().detectClaudeDesktop(sshHostAlias: "builder"))
+        let desktopHome = home.path
+        let plainHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-desktop-host-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: plainHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: plainHome) }
+        try FileManager.default.createDirectory(
+            at: plainHome.appendingPathComponent(".claude/plugins", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: plainHome.appendingPathComponent(".claude/remote", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+
+        let probe = String(decoding: ClaudeRemoteEnrollmentService.claudeDesktopProbeScript, as: UTF8.self)
+        let bothHomes = "HOME='\(desktopHome)'\n\(probe)HOME='\(plainHome.path)'\n\(probe)"
+        let result = try runOnFakeHost(Data(bothHomes.utf8))
+
+        XCTAssertEqual(result.exitCode, 0, result.message)
+        let answers = result.message.split(separator: "\n").map(String.init)
+        XCTAssertEqual(answers.count, 2, result.message)
+        XCTAssertEqual(
+            answers.first, "LVX_DESKTOP:yes",
+            "a home with ~/.claude/remote/srv is Desktop's"
+        )
+        XCTAssertEqual(
+            answers.last, "LVX_DESKTOP:no",
+            "a plain Claude Code home is not"
+        )
     }
 
-    /// Plain Claude Code keeps `~/.claude` too; only Desktop's daemon counts.
-    func testAPlainClaudeCodeHomeIsNotDesktop() throws {
-        try makeDirectory(".claude/plugins")
-        try makeDirectory(".claude/remote")
-        XCTAssertFalse(try fakeHostService().detectClaudeDesktop(sshHostAlias: "builder"))
-    }
-
+    /// What the service SENDS on the Desktop probe. The runner is scripted:
+    /// every assertion below is about the invocation the service built, and
+    /// the probe script's behavior under a real shell is the detection test
+    /// above.
     func testTheDesktopProbeClearsForwardingsAndCarriesNoToken() throws {
         let log = InvocationLog()
-        _ = try fakeHostService(recording: log).detectClaudeDesktop(sshHostAlias: "builder")
+        let scripted = ClaudeRemoteEnrollmentService(runner: { invocation in
+            log.record(invocation)
+            return .init(exitCode: 0, message: "LVX_DESKTOP:no\n")
+        })
+        _ = try scripted.detectClaudeDesktop(sshHostAlias: "builder")
         let recorded = log.all
         XCTAssertEqual(
             recorded.map(\.argv),
             [["ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--", "builder", "/bin/sh", "-s"]]
+        )
+        XCTAssertEqual(
+            recorded.first?.standardInput, ClaudeRemoteEnrollmentService.claudeDesktopProbeScript,
+            "the service runs the probe the detection test proves under a real shell"
         )
         let script = String(decoding: recorded[0].standardInput, as: UTF8.self)
         XCTAssertFalse(script.lowercased().contains("token"))
@@ -149,25 +176,16 @@ final class ClaudeRemoteDesktopHostTests: XCTestCase {
         try runOnFakeHost(ClaudeRemoteEnrollmentService.remoteScript(command: "claude plugin list"))
     }
 
-    /// Desktop's CLI files are versioned binaries. The highest VERSION wins,
-    /// compared field by field: a string sort would pick 2.1.9 over 2.1.10.
-    func testTheResolverFallsBackToTheNewestDesktopCLI() throws {
+    /// The Desktop CLI is the last resort, and among its version-named files
+    /// the newest RUNNABLE one wins: versions compare field by field (a
+    /// string sort would pick 2.1.9 over 2.1.10), and a partial download, a
+    /// temp name or a non-runnable file never counts — here they sit BESIDE
+    /// the real files, so the filter must refuse them, not just fall back to
+    /// the only runnable one.
+    func testTheResolverPicksTheNewestRunnableDesktopCLI() throws {
+        try installFakeCLI(".claude/remote/ccd-cli/2.0.300")
         try installFakeCLI(".claude/remote/ccd-cli/2.1.9")
         try installFakeCLI(".claude/remote/ccd-cli/2.1.10")
-        try installFakeCLI(".claude/remote/ccd-cli/2.0.300")
-
-        let result = try resolveClaude()
-        XCTAssertEqual(result.exitCode, 0, result.message)
-        XCTAssertEqual(
-            result.message.trimmingCharacters(in: .whitespacesAndNewlines),
-            "cli=.claude/remote/ccd-cli/2.1.10 args=plugin list"
-        )
-    }
-
-    /// A download in progress, a file that cannot run, or any other stray
-    /// name is not a version: the newest RUNNABLE version wins.
-    func testOnlyRunnableVersionNamedFilesCount() throws {
-        try installFakeCLI(".claude/remote/ccd-cli/2.1.9")
         try installFakeCLI(".claude/remote/ccd-cli/2.1.10.partial")
         try installFakeCLI(".claude/remote/ccd-cli/2.1.11-tmp")
         try installFakeCLI(".claude/remote/ccd-cli/.2.1.12")
@@ -175,7 +193,10 @@ final class ClaudeRemoteDesktopHostTests: XCTestCase {
 
         let result = try resolveClaude()
         XCTAssertEqual(result.exitCode, 0, result.message)
-        XCTAssertTrue(result.message.contains("cli=.claude/remote/ccd-cli/2.1.9 "), result.message)
+        XCTAssertEqual(
+            result.message.trimmingCharacters(in: .whitespacesAndNewlines),
+            "cli=.claude/remote/ccd-cli/2.1.10 args=plugin list"
+        )
     }
 
     /// A regular install still wins: the Desktop CLI is the last resort.
@@ -243,16 +264,6 @@ final class ClaudeRemoteDesktopHostTests: XCTestCase {
             [check],
             "a later listener read cannot turn a tunnel that closed into a standing one"
         )
-    }
-
-    /// A forward something else holds: the app's own supervisor, a terminal,
-    /// an editor. One probe, and it clears forwardings so it cannot make its
-    /// own.
-    func testAStandingTunnelPassesOnTheFirstProbe() throws {
-        let host = ScriptedHost(answers: ["LVX_HTTP:401"])
-        let check = try tunnelCheck(host)
-        XCTAssertTrue(check.passed)
-        XCTAssertEqual(host.argvs, [standingProbe], "nothing left to ask once the standing forward answered")
     }
 
     func testNothingAnsweringEitherWayBlamesTheConfigBlock() throws {

@@ -317,7 +317,8 @@ user-level instructions file, saying your prompts come from speech-to-text.
 The note asks the agent to fix an obvious transcription error itself, and to
 ask before acting when a likely error changes the request. It also asks the
 agent to propose what it creates or renames with
-[the localvoxtral command](#the-localvoxtral-command).
+[the localvoxtral command](#the-localvoxtral-command), and names
+`localvoxtral doctor` for when dictation misbehaves.
 
 **Remove** takes the note out. A note added by an older version reads as
 another version, with an **Update** button.
@@ -348,8 +349,10 @@ copy the note by hand.
 
 ## The localvoxtral command
 
-A coding agent can read your dictation history and your terms, and propose
-terms of its own, with the localvoxtral command.
+A coding agent can read your dictation history, your terms and your quick
+captures, propose terms of its own, mark a capture filed, and find out why
+dictation misbehaves, with the
+localvoxtral command.
 
 ### Install the command
 
@@ -366,7 +369,12 @@ localvoxtral history search "mac queue" --since yesterday --project .
 localvoxtral history last
 localvoxtral terms list --project .
 localvoxtral terms propose Featherline QuillDoc --project .
+localvoxtral capture list --project .
+localvoxtral capture show "busy herdr pane"
+localvoxtral capture filed "busy herdr pane" https://github.com/you/app/issues/42
 localvoxtral status
+localvoxtral doctor
+localvoxtral logs --join --since 3h
 ```
 
 - Every command takes `--json`.
@@ -381,13 +389,65 @@ The command talks to the running app over the same private socket the hooks
 use. It opens no network port, and only processes running as you can reach
 it. It needs the app running, and exits with status 3 when it is not.
 
+### Quick captures
+
+Tell your agent "look at the capture about the busy herdr pane". The command
+calls an Inbox item a capture, not an issue, so the agent asks the command
+instead of searching GitHub.
+
+- `capture list` shows each capture's id, project, kind, age, state and
+  title. The title is the draft's, or the capture's first words until it has
+  a draft.
+- `capture show` takes the title, any unique part of it, or the id, and
+  prints the draft, your dictated words, the related issue and the
+  repository it files in, followed by the body **File** would send.
+- The command never files. The agent opens the issue with its own `gh`,
+  then runs `capture filed` with the issue's URL. The capture then shows as
+  filed on the Inbox page, as after **File**. The URL must be an issue in
+  the capture's repository, and a capture that is still drafting or already
+  filed is refused.
+
+### Find out what is wrong
+
+`doctor` prints numbered checks: which copy of the app runs and where
+/usr/local/bin/localvoxtral points, the microphone and Accessibility
+permissions, the speech and polish engines, the Claude Code and Codex
+plugins, the opencode plugin, the Vibe hooks, the note in each agent's file,
+each remote host, and the sessions the last five dictations joined. Each
+problem comes with the step that fixes it, and `--json` gives each check a
+stable `id`. It changes nothing. It prints no dictated text and no key, but
+it names your remote hosts. It exits with status 4 when a check failed.
+
+`logs` reads the app's lines from the macOS unified log, and works while the
+app is not running: one line per dictation saying which session it joined
+and why (`--join`), and without `--join`, the app's errors too. It covers the
+last hour unless `--since` says otherwise. It prints what `log show` prints,
+so a value the app logs as private stays `<private>`, and the app never logs
+dictated text in the clear.
+
+### On a remote host
+
+The remote Claude Code plugin puts a `localvoxtral` command on the PATH of
+Claude Code sessions on the host, and only `localvoxtral doctor` runs there.
+It checks the host's end of the tunnel: the port the Mac's forward should
+bind, that the Mac refuses a request without the host's token and takes one
+with it, the plugin version each running session loaded, the Vibe hooks, and
+the last hook's outcome. Then it prints the Mac's own checks, fetched through
+the tunnel with the host's token, without local paths and without your other
+hosts. It never prints the token.
+
+With the Vibe hooks only, the same check is
+`sh ~/.vibe/localvoxtral/remote/doctor.sh`.
+
 ### Proposed terms
 
 A proposed term joins the project's terms the way the agent's own proposals
 do (see [Dictation](dictation.md)). It applies only where repo vocabulary
-may, and three dictations or a **Pin** make it yours.
+may, and three dictations or a **Pin** make it yours. A name written like
+code (a type or function name, a file name, a path, a flag or an environment
+variable) is refused as not a term.
 
-**Settings → Text Processing → Terms learned from polishing → Show** lists it
+**Show all** under the project's terms in **Settings → Projects** lists it
 as "Proposed by" the agent that ran the command. Claude Code, Codex and
 opencode are detected; Vibe passes `--agent vibe`.
 
@@ -399,7 +459,8 @@ the agent once.
 
 Add the note from the **Tell … you dictate** row (see
 [Telling the agent you dictate](#telling-the-agent-you-dictate)). It tells
-your agents to propose what they create or rename.
+your agents to propose what they create or rename, and to run
+`localvoxtral doctor` when dictation misbehaves.
 
 Vibe is not detected, so its proposals read "Proposed by a coding agent". To
 have them name Vibe, ask it to add `--agent vibe` in a line of
@@ -409,31 +470,67 @@ offer **Update**, which undoes it.
 ## Quick capture
 
 Quick capture saves an idea that has no place in the app you are in, and
-turns it into a draft issue for one of your projects. Your words never reach
-the focused app. They are saved in History, then shown on the **Inbox** page
-of the localvoxtral window.
+drafts it for one of your projects. Your words never reach the focused app.
+They are saved in History, then shown on the **Inbox** page of the
+localvoxtral window.
 
 To capture, press Tab during a dictation until the overlay shows **Inbox**
 ([Where the words go](dictation.md#where-the-words-go)). You can also set the
 optional **Quick capture to Inbox** shortcut in **Settings → Dictation**.
 
-A capture then goes through three steps.
+A capture then goes through four steps.
 
 1. **Route.** A classifier picks one of your projects (see
    [Which projects a capture can go to](#which-projects-a-capture-can-go-to)).
-   When it is unsure, or two projects tie, the capture stays unplaced.
-2. **Draft.** An agent drafts an issue: title, scope, constraints and proof,
-   following the repository's AGENTS.md, and naming any open issue it
-   duplicates (see [How the draft is written](#how-the-draft-is-written)).
-3. **Review.** On the Inbox page you edit the draft, move the capture to
+   When it is unsure, or two projects tie, the capture stays unplaced with
+   a **Move to** button for its best guess; nothing is drafted until you
+   click it or move the capture yourself.
+2. **First draft.** Your polishing model sorts the capture as an **Issue**, a
+   **Question**, a **Task** or a **Note** and writes a draft within
+   seconds (see [How the draft is written](#how-the-draft-is-written)). A
+   question shows its answer. A task or a note is restated and stays in the
+   Inbox; it is never filed.
+3. **Check against the code**, issues only. An agent reads the code the issue
+   touches, corrects the draft, and lists the files it read. The row says
+   **Checked against the code** when it is done. You don't have to wait for
+   it.
+4. **Review.** On the Inbox page you edit the draft, move the capture to
    another project, or discard it. **File** creates the issue with your
-   GitHub CLI, with your dictated words quoted under the draft. Nothing is
-   filed any other way.
+   GitHub CLI, with your dictated words quoted under the draft. The Inbox
+   fills in the project's repository (see
+   [Each project's repository](#each-projects-repository)). Your coding
+   agent can also file it with its own `gh` ([Quick captures](#quick-captures)).
+   You can also [review it by voice](#review-a-draft-by-voice). Nothing
+   else files. A draft that failed has **Draft Again**.
+
+### Review a draft by voice
+
+With **Tell me when an agent needs you** on, a finished draft (for an issue,
+once it is checked against the code) lights the
+menu bar mark and the popover says "Draft ready: Inbox for localvoxtral".
+There is no banner and no sound, and the cue waits for your next break: the
+end of a dictation, or the end of a turn in the agent pane you are looking
+at. An agent that needs you keeps the popover line; drafts add to its count.
+
+When no agent waits, the **Answer the agent that needs you** shortcut opens
+the oldest ready draft in the overlay and starts a dictation. The overlay
+shows that one draft. When you stop, what you said decides:
+
+- "file it" files the draft as the overlay shows it. It files nothing if
+  the draft changed on the Inbox page in the meantime, or if it is a
+  question, a task or a note.
+- "drop it" discards it.
+- Anything else is a change, such as "make it only the popover part". The
+  agent drafts again from your first words, the draft and your change, and
+  the new draft waits for your next break.
+
+With [Press Return with "send it"](dictation.md#press-return-with-send-it)
+on, "file it" or "drop it" alone, or a change followed by "send it", stops
+the dictation after 3 seconds of silence.
 
 ### Which projects a capture can go to
 
-The classifier picks from the projects **Settings → Text Processing → Terms
-learned from polishing** lists:
+The classifier picks from the projects **Settings → Projects** lists:
 
 - a checkout on this Mac that a dictation joined;
 - a repository on an ssh host where a session has run, when the host runs
@@ -446,45 +543,141 @@ Per-worktree projects that an older plugin left in your learned terms are
 not offered
 ([One project per repository](dictation.md#one-project-per-repository)).
 
+A repository checked out both on this Mac and on a host is one project
+here, drafted on this Mac. Its learned terms stay listed under each
+checkout.
+
+### Projects
+
+**Settings → Projects** lists every project a capture can go to: where
+**File** sends its issues, where it is checked out, when you last used it,
+and the drafts waiting on it. A warning replaces the repository for a fork
+you have not picked a repository for, and for a project with no GitHub
+repository.
+
+Click a project to see its repository and checkouts, its description, its
+learned terms, and its joined sessions, captures and dictations this week.
+**Open Inbox** goes to its drafts.
+
+### Each project's repository
+
+A project's repository is the GitHub repository its `origin` remote points
+at. The app reads it from a checkout on this Mac; a host sends it from
+remote plugin 1.23.0 or Vibe hooks 1.8.0. A project whose `origin` is not on
+GitHub, or that has none, asks for `owner/repository` on its first capture
+and keeps your answer. **Set…** or **Change…** in the project's
+**Repository** group edits that answer; an `origin` on GitHub is changed in
+git.
+
+A fork files in your fork, since `origin` is yours. To file its captures in
+the repository it was forked from, pick that repository in the project's
+**File issues here**. Until you pick one, **Settings → Projects** marks the
+fork.
+
 ### Describe your projects
 
 The classifier reads each project's name, a description, the opening of its
-README, and its learned terms. It reads the README from a checkout on this
-Mac, or from what a remote project's host reports.
+README, its GitHub topics, and its learned terms. It reads the README from a
+checkout on this Mac, or from what a remote project's host reports.
 
-A README says what a project is, rarely what it has, so each project also
-gets a one-sentence description, up to 200 characters. With **Ask the coding
-agent for each new project's terms** on, the agent writes it in the same run
-as the terms
+The description is the repository's description on GitHub, which your
+GitHub CLI fetches once a week and whenever **Settings → Projects** opens.
+A private repository works when `gh` can read it. Without a GitHub
+description, the description is one sentence of up to 200 characters that
+the coding agent writes in the same run as the terms, when **Ask the coding
+agent for each new project's terms** is on
 ([Terms from your coding agent](dictation.md#terms-from-your-coding-agent)).
-Until it answers, or with that setting off, the description is the README
-opening.
+Until it answers, or with that setting off, it is the README opening.
 
-**Settings → Context → Quick capture → Project descriptions** shows each
-one. Edit a field to replace it with your own, such as "Menu bar dictation
-app: shortcuts, polishing, quick capture and its Inbox". Empty the field to
-go back to the automatic one.
+A project's sheet in **Settings → Projects** shows its description and who
+wrote it. **Edit…** replaces it with your own, such as "Menu bar dictation
+app: shortcuts, polishing, quick capture and its Inbox". Save an empty
+field to go back to the automatic one.
 
 ### Choose the classifier
 
-- **Send quick captures to Jev for routing**, when on and with a **Jev API
-  key** set, sends the capture text and the project descriptions to Jev,
-  TypeSafe's hosted classifier. The key is TypeSafe's, or a Vercel AI Gateway
-  key starting `vck_`. It is off by default.
-- Otherwise, or when Jev fails, your polishing model routes the capture,
-  wherever polishing runs. That is on this Mac for the bundled helper, and at
-  the endpoint you configured otherwise.
-- With neither, every capture waits in the Inbox for you to place it.
+**Settings → Context → Quick capture → Route quick captures with** picks it:
+
+- **Polishing model**, the default, routes the capture wherever polishing
+  runs. That is on this Mac for the bundled helper, and at the endpoint you
+  configured otherwise.
+- **Jev**, with a **Jev API key** set, sends the capture text and the project
+  descriptions to Jev, TypeSafe's hosted classifier. The key is TypeSafe's,
+  or a Vercel AI Gateway key starting `vck_`. When Jev fails, your polishing
+  model routes the capture.
+
+With no polishing model and no Jev key, every capture waits in the Inbox for
+you to place it.
 
 ### How the draft is written
 
-For a checkout on this Mac, the first of Claude Code, Mistral Vibe and
-opencode installed runs in the background with read-only tools.
+**First draft.** The app gathers the project's context in its checkout: the
+README's opening, the rules for issues, tests and proof in its AGENTS.md or
+CLAUDE.md, `git grep` hits for the capture's longer words, and, through your
+GitHub CLI, the open issues, the last 40 closed issues and the last 20 merged
+pull requests. It sends that and your words to your polishing model in one
+request, at its lowest reasoning effort. On Mistral's API with GLM 5.3 that
+is about 7,500 tokens in and 3,000 to 8,000 out.
 
-The run is capped at 20 turns and $0.50 (Claude Code) or $0.30 (Vibe) of
-your agent plan or API key. opencode has no price cap, so its run, on your
-default model, is capped at 20 steps and 8 minutes.
+An issue's draft has a title under 70 characters and the sections Problem,
+Scope, Constraints, Proof, Links and Open questions. The first draft has not
+read the code, so it can be wrong about it until the check lands.
 
-For a project on an ssh host, the host runs the agent in its own checkout,
-the next time a session there sends a hook
+**Check against the code.** For an issue, the first of Claude Code, Mistral
+Vibe and opencode installed runs in the background with read-only tools,
+starting from the first draft. Its draft replaces the first one, unless you
+edited the first one meanwhile; then yours stays and the row says so. With
+no polishing model, or when the first draft fails, the same run drafts the
+issue from your words alone.
+
+The run is capped at 20 turns, 6 minutes, and $0.50 (Claude Code) or $0.30
+(Vibe) of your agent plan or API key. opencode has no price cap, so its run,
+on your default model, is capped at 20 steps.
+
+For a project on an ssh host, the host gathers the context and runs the check
+in its own checkout, the next time a session there sends a hook
 ([Quick capture on a host](remote-claude-context.md#quick-capture-on-a-host)).
+
+### Capture from your iPhone or Apple Watch
+
+A Shortcut on the phone records a voice memo into iCloud Drive, and the Mac
+turns it into a capture. The engine you dictate with, the bundled one by
+default, transcribes the memo in less time than it lasts. The capture then
+goes through the same three steps as any other.
+
+Set up the Mac first:
+
+1. Turn on iCloud Drive on this Mac (**System Settings → Apple Account →
+   iCloud → iCloud Drive**).
+2. Turn on **Settings → Context → Quick capture → Transcribe voice memos
+   stored in iCloud Drive**. macOS asks whether localvoxtral may access files
+   in iCloud Drive; click **Allow**. The app creates the folder
+   **iCloud Drive/localvoxtral**.
+
+Then build the Shortcut on the iPhone:
+
+1. In the Shortcuts app, create a shortcut named "Memo to localvoxtral".
+2. Add **Record Audio**. Set **Start Recording** to **Immediately** and
+   **Finish Recording** to **On Tap**.
+3. Add **Save File**. Save **Recorded Audio** to **iCloud Drive →
+   localvoxtral**, and turn off **Ask Where to Save**.
+4. On an iPhone with an Action Button, choose the shortcut under
+   **Settings → Action Button → Shortcut**.
+5. For Apple Watch, turn on **Show on Apple Watch** in the shortcut's
+   details, then run it from the Shortcuts app on the watch.
+
+Press the button, speak, and tap to stop. The Mac checks the folder every
+30 seconds while it is awake. A memo recorded while it sleeps waits in
+iCloud Drive, and the Mac picks it up after it wakes.
+
+What happens to the audio:
+
+- The memo sits in iCloud Drive, on Apple's servers, until the Mac has
+  transcribed it. The app then moves it to the Trash, where you can still
+  restore it.
+- The Mac keeps its own copy until you file or discard the capture.
+- A memo with no words, or a file that isn't audio, stays in the folder for
+  you to delete.
+- If you clicked **Don't Allow**, the setting turns itself off. To allow
+  access later, go to **System Settings → Privacy & Security → Files &
+  Folders**, then turn the setting on again.

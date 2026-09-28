@@ -15,7 +15,7 @@ import os
 /// pipeline already resolved — a file name, a product, a model — and the
 /// counters beside it, which is exactly what `SpeakerTerms` keeps for the
 /// hand-written list.
-package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectSummaryStoring, @unchecked Sendable {
+package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectSummaryStoring, QuickCaptureProjectLinkStoring, @unchecked Sendable {
     private struct State {
         var terms: LearnedTerms?
     }
@@ -45,14 +45,16 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
                 // `.git`), and this is where it reaches the main checkout.
                 // Idempotent, so a file with nothing to fold is not rewritten.
                 let folded = loaded.foldWorktreesIntoMainCheckouts(now: now())
+                // Proposals agents made before answers were filtered (#914).
+                let dropped = loaded.dropIdentifierProposals()
                 let adopted = state.withLock { state in
                     guard state.terms == nil else { return false }
                     state.terms = loaded
                     return true
                 }
-                if folded > 0, adopted {
+                if folded + dropped > 0, adopted {
                     Log.polishing.info(
-                        "Learned terms: folded \(folded, privacy: .public) worktree projects into their main checkouts"
+                        "Learned terms: folded \(folded, privacy: .public) worktree projects into their main checkouts, dropped \(dropped, privacy: .public) proposals shaped like code"
                     )
                     write(loaded)
                     onChange?()
@@ -164,6 +166,7 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     package func recordProposal(
         _ terms: [String],
         line: String? = nil,
+        revision: Int? = nil,
         agent: ProjectTermProposal.Agent,
         project: LearnedTermProjectIdentity,
         excluding: [String]
@@ -171,7 +174,8 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         let moment = now()
         mutate { memory in
             let added = memory.recordProposal(
-                terms, line: line, agent: agent, project: project, excluding: excluding, now: moment)
+                terms, line: line, revision: revision, agent: agent, project: project, excluding: excluding,
+                now: moment)
             Log.polishing.info(
                 "Learned terms: \(added, privacy: .public) proposed by \(agent.rawValue, privacy: .public) kept for a new project"
             )
@@ -211,14 +215,45 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         }
     }
 
-    /// A hook from a remote session named its project (#819).
-    package func recordRemoteReport(project: LearnedTermProjectIdentity, asRepository: Bool) {
+    /// A hook from a remote session named its project (#819), and its
+    /// `origin`'s GitHub repository when the host sent one (#926), and the
+    /// host it came from.
+    package func recordRemoteReport(
+        project: LearnedTermProjectIdentity, asRepository: Bool, repository: String?, hostID: String? = nil
+    ) {
         let moment = now()
         mutate { memory in
-            if memory.recordRemoteReport(project: project, asRepository: asRepository, now: moment) {
+            if memory.recordRemoteReport(
+                project: project, asRepository: asRepository, repository: repository, hostID: hostID, now: moment
+            ) {
                 Log.polishing.info("Learned terms: a remote hook named a new repository")
             }
         }
+    }
+
+    /// A local checkout's `origin` (#926).
+    package func recordOriginRepository(_ repository: String, projectKey: String) {
+        mutate { memory in memory.recordOriginRepository(repository, projectKey: projectKey) }
+    }
+
+    /// The user's `owner/name` for a project with no GitHub `origin`.
+    package func recordTypedRepository(_ repository: String, projectKey: String) {
+        mutate { memory in
+            let kept = memory.recordTypedRepository(repository, projectKey: projectKey)
+            Log.polishing.info("Learned terms: a typed repository \(kept ? "kept" : "dropped", privacy: .public)")
+        }
+    }
+
+    /// GitHub's description of a repository (#926).
+    package func recordGitHub(_ facts: GitHubRepositoryFacts, repository: String) {
+        let moment = now()
+        mutate { memory in memory.recordGitHub(facts, repository: repository, now: moment) }
+    }
+
+    /// The "File issues here" choice for a fork.
+    package func setFilesUpstream(_ upstream: Bool, repository: String) {
+        mutate { memory in memory.setFilesUpstream(upstream, repository: repository) }
+        Log.polishing.info("Learned terms: a fork files \(upstream ? "upstream" : "in the fork", privacy: .public)")
     }
 
     /// A terms request failed; the project is asked again after a day.

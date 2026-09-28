@@ -1,0 +1,19 @@
+#!/bin/sh
+# `localvoxtral` on a remote host, put on Claude Code's PATH by the remote
+# plugin. The real command runs on the Mac; here only `doctor` exists, and it
+# checks this host's end of the tunnel before asking the Mac for its checks.
+# A `localvoxtral` earlier on PATH (the Mac's own) wins over this one.
+case "${1:-}" in
+doctor)
+  shift
+  exec sh "$(dirname "$0")/../hooks/doctor.sh" "$@"
+  ;;
+"" | -h | --help | help)
+  echo "usage: localvoxtral doctor [--json]"
+  echo "On a remote host, only doctor runs. It checks this host's end of the tunnel, then the Mac's checks through it."
+  ;;
+*)
+  echo "localvoxtral: on a remote host only \`localvoxtral doctor\` runs; the other commands run on the Mac." >&2
+  exit 2
+  ;;
+esac

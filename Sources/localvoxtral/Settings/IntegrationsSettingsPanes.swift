@@ -20,20 +20,6 @@ import SwiftUI
 struct IntegrationsContextSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
-    @State private var isShowingProjectLines = false
-
-    /// The projects the router lists now that have a description: the
-    /// user's, the agent's, or a remote host's README summary (#891).
-    /// Read from memory, never a checkout's README, and re-read on the
-    /// learned terms' revision.
-    private var projectLineCount: Int {
-        _ = viewModel.learnedTermRevision
-        let learned = viewModel.learnedTermStore?.snapshot() ?? LearnedTerms()
-        return learned.listedProjects(now: Date())
-            .filter { settings.quickCaptureProjectLines[$0.key] != nil || $0.agentLine != nil || $0.summary != nil }
-            .count
-    }
-
     /// Where the group's Learn more link lands.
     private enum LearnMore {
         static let polishContext = DocsLink.page("docs/coding-agents/#polish-context-what-each-toggle-sends")
@@ -101,12 +87,16 @@ struct IntegrationsContextSettingsPane: View {
             }
 
             // Its own group: a capture is not polish context. The key row
-            // stays whatever the toggle says, so the group never changes
+            // stays whatever the picker says, so the group never changes
             // shape (owner rule, 2026-07-04).
             SettingsGroup(title: "Quick capture", learnMoreURL: LearnMore.quickCapture) {
-                SettingsFieldRow(title: "Send quick captures to Jev for routing") {
-                    Toggle("", isOn: $settings.quickCaptureJevEnabled)
-                        .labelsHidden()
+                SettingsFieldRow(title: "Route quick captures with") {
+                    Picker("", selection: $settings.quickCaptureRouter) {
+                        Text("Polishing model").tag(SettingsStore.QuickCaptureRouterChoice.polishingModel)
+                        Text("Jev").tag(SettingsStore.QuickCaptureRouterChoice.jev)
+                    }
+                    .labelsHidden()
+                    .fixedSize()
                 }
 
                 SettingsFieldRow(title: "Jev API key") {
@@ -115,23 +105,14 @@ struct IntegrationsContextSettingsPane: View {
                         .frame(maxWidth: SettingsLayout.textFieldWidth)
                 }
 
-                // Routing reads these lines with or without Jev, so the row
-                // stays whatever the toggle says.
-                SettingsFieldRow(
-                    title: "Project descriptions",
-                    status: "\(projectLineCount)"
-                ) {
-                    Button("Edit…") { isShowingProjectLines = true }
-                        .accessibilityIdentifier("settings.quickCaptureProjectLines.edit")
+                // Memos an iPhone or Watch Shortcut saves (#925). The title
+                // says where the audio sits; the recipe is behind Learn more.
+                SettingsFieldRow(title: "Transcribe voice memos stored in iCloud Drive") {
+                    Toggle("", isOn: $settings.voiceMemosEnabled)
+                        .labelsHidden()
+                        .accessibilityIdentifier("settings.voiceMemos.toggle")
                 }
-                .sheet(isPresented: $isShowingProjectLines) {
-                    QuickCaptureProjectLinesSheet(
-                        settings: settings,
-                        projects: viewModel.quickCapture?.model.projectChoices ?? []
-                    ) {
-                        isShowingProjectLines = false
-                    }
-                }
+                .onChange(of: settings.voiceMemosEnabled) { viewModel.voiceMemos?.apply() }
             }
             .onAppear {
                 // Read from the Keychain only for someone who turned routing

@@ -412,8 +412,12 @@ final class ProjectTermProposalTests: XCTestCase {
                 "42",
                 "Inkwell",
                 "QUILLMARK_FONT_DIR",
+                "GlyphAtlasCache",
+                "qmk --out",
+                "Glyph Atlas",
             ]),
-            ["inkwell", "QUILLMARK_FONT_DIR"]
+            ["inkwell", "Glyph Atlas"],
+            "an environment variable, a type name and a flag are code, not names (#914)"
         )
     }
 

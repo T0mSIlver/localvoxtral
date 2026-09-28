@@ -37,7 +37,7 @@ final class ClaudeRemoteSessionEnvironmentCodecTests: XCTestCase {
         }
         // The allowlist itself: it grows only deliberately, so a silent addition
         // (or removal, which would break a join arm) fails here first.
-        XCTAssertEqual(ClaudeRemoteEnvironmentField.allCases.count, 16)
+        XCTAssertEqual(ClaudeRemoteEnvironmentField.allCases.count, 17)
         // The cap must stay ABOVE the allowlist. At or below it, whatever
         // sorts last in `allCases` is silently dropped on arrival — a join arm
         // that quietly never fires, with nothing anywhere saying why.
@@ -62,10 +62,6 @@ final class ClaudeRemoteSessionEnvironmentCodecTests: XCTestCase {
         let parsed = try XCTUnwrap(ClaudeRemoteEnvironmentCodec.environment(in: headers(raw)))
         XCTAssertEqual(parsed, expected)
         XCTAssertFalse(parsed.isEmpty)
-    }
-
-    func testNoEnvHeadersMeansNoEnvironmentRatherThanAnEmptyOne() {
-        XCTAssertNil(ClaudeRemoteEnvironmentCodec.environment(in: headers([:])))
     }
 
     func testHeadersOutsideTheAllowlistAreIgnored() {

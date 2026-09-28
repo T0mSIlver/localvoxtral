@@ -3,45 +3,16 @@
 import PackageDescription
 import Foundation
 
-/// Opt-in dogfooding instrumentation (`Sources/localvoxtral/Dogfood`). Its
-/// source is gated `#if DEBUG || LOCALVOXTRAL_E2E_HARNESS`, so the unit tests
-/// build it and a release build does not. `LOCALVOXTRAL_DOGFOOD=1` packages a
-/// release build that carries it and stamps `LVXDogfoodCapture` into Info.plist.
-///
-/// The capture writes repository contents, terminal screen text and fully
-/// rendered prompts to disk, the material the shipped app refuses to log, so
-/// inside an instrumented build it is still off until the runtime opt-in is
-/// armed.
-///
-/// Enablement travels EITHER as the environment variable (local builds, CI)
-/// OR as a gitignored marker file in the package root — the same dual form the
-/// LLM eval lanes use, and for the same reason: the Mac build gate allowlists
-/// exact `swift test …` payloads, so an env prefix cannot cross the SSH
-/// boundary. `remote-build.sh dogfood` writes the marker, syncs, and removes it
-/// again on exit.
-///
-/// The marker cannot leak into a release: `release.yml` builds from a clean
-/// checkout, the file is gitignored, and `package_app.sh` prints which mode it
-/// built in, stamps the plist and checks the binary for harness symbols.
-let dogfoodMarkerURL = URL(fileURLWithPath: #filePath)
-    .deletingLastPathComponent()
-    .appendingPathComponent(".dogfood-capture-enable")
-let dogfoodCaptureEnabled =
-    ProcessInfo.processInfo.environment["LOCALVOXTRAL_DOGFOOD"] == "1"
-    || FileManager.default.fileExists(atPath: dogfoodMarkerURL.path)
 /// The e2e test harness: the control socket (`DogfoodControlSocket`) and the
 /// WAV file that stands in for the microphone (`DogfoodAudioFileSource`).
 /// Source gates it as `#if DEBUG || LOCALVOXTRAL_E2E_HARNESS`, so the unit
 /// tests build it and a release build contains neither unless the UI smoke
-/// workflow asks with `LOCALVOXTRAL_E2E_HARNESS=1`. `package_app.sh` checks the
-/// binary either way (`scripts/packaging/check-harness-symbols.sh`). A dogfood
-/// build implies the harness: the owner's UI gate drives it through the socket.
-let e2eHarnessEnabled =
+/// workflow asks with `LOCALVOXTRAL_E2E_HARNESS=1`. `package_app.sh` stamps
+/// such a bundle and checks every binary against its stamp
+/// (`scripts/packaging/check-harness-symbols.sh`).
+let harnessSwiftSettings: [SwiftSetting] =
     ProcessInfo.processInfo.environment["LOCALVOXTRAL_E2E_HARNESS"] == "1"
-    || dogfoodCaptureEnabled
-let dogfoodSwiftSettings: [SwiftSetting] =
-    (dogfoodCaptureEnabled ? [.define("LOCALVOXTRAL_DOGFOOD")] : [])
-    + (e2eHarnessEnabled ? [.define("LOCALVOXTRAL_E2E_HARNESS")] : [])
+    ? [.define("LOCALVOXTRAL_E2E_HARNESS")] : []
 
 /// The widget extension's App Intents need metadata that only Xcode's build
 /// asks the compiler for: the const values `appintentsmetadataprocessor`
@@ -102,12 +73,12 @@ var targets: [Target] = [
     // polish-outcome and connection-failure classifiers, the session clock
     // (#432 step 9), and the Claude session snapshot, which is why it depends
     // on the wire contract. The app re-exports it.
-    // Built with the dogfood define too, for the Claude join code that moves
-    // here from the app and taps the dogfood capture (#591).
+    // Built with the harness define too, so `#if LOCALVOXTRAL_E2E_HARNESS`
+    // means the same thing in code that moves here from the app (#591).
     .target(
         name: "localvoxtralCore",
         dependencies: ["ClaudeContextWire"],
-        swiftSettings: dogfoodSwiftSettings
+        swiftSettings: harnessSwiftSettings
     ),
     // The hook publisher and its Linux process-table reader; runs on both
     // platforms.
@@ -146,7 +117,7 @@ var targets: [Target] = [
             "LocalvoxtralCLICore",
             "localvoxtralTestSupport",
         ],
-        swiftSettings: dogfoodSwiftSettings
+        swiftSettings: harnessSwiftSettings
     ),
 ]
 
@@ -179,7 +150,7 @@ targets += [
         resources: [
             .process("Resources"),
         ],
-        swiftSettings: dogfoodSwiftSettings
+        swiftSettings: harnessSwiftSettings
     ),
     .testTarget(
         name: "localvoxtralTests",
@@ -193,7 +164,7 @@ targets += [
         ],
         // Golden fixtures are read through `#filePath`, not the bundle.
         exclude: ["Fixtures"],
-        swiftSettings: dogfoodSwiftSettings
+        swiftSettings: harnessSwiftSettings
     ),
 ]
 #endif

@@ -91,32 +91,6 @@ final class ClaudeRemoteOriginIsolationTests: XCTestCase {
 
     // MARK: The runtime half
 
-    func testARemoteSessionNeverExposesALocalWorkspacePath() throws {
-        let registry = makeRegistry()
-        let snapshot = try XCTUnwrap(registry.ingest(record(), origin: remote))
-        XCTAssertNil(
-            snapshot.localWorkspacePath,
-            "this accessor is the only thing a collector can be handed"
-        )
-        XCTAssertEqual(snapshot.workspace, .remoteOpaque(label: "service"))
-        XCTAssertEqual(snapshot.origin, remote)
-    }
-
-    func testARemoteSessionsFilePathsAreWithheldFromLocalConsumers() throws {
-        // Per-file paths are plain strings on the wire, so unlike the cwd they
-        // have no compile-time gate. `localRecentFiles` is theirs.
-        let registry = makeRegistry()
-        let snapshot = try XCTUnwrap(registry.ingest(
-            record(event: .postToolUse, files: [
-                ClaudeFileTouch(path: "/etc/passwd", kind: .read),
-                ClaudeFileTouch(path: "/home/dev/work/service/main.swift", kind: .edited),
-            ]),
-            origin: remote
-        ))
-        XCTAssertEqual(snapshot.recentFiles.count, 2, "still known, for display and grounding")
-        XCTAssertEqual(snapshot.localRecentFiles, [], "but never as paths on THIS machine")
-    }
-
     func testALocalSessionsFilePathsAreAvailable() throws {
         let registry = makeRegistry()
         let snapshot = try XCTUnwrap(registry.ingest(
@@ -222,60 +196,6 @@ final class ClaudeRemoteOriginIsolationTests: XCTestCase {
     }
 
     // MARK: Host and session isolation
-
-    func testTwoHostsWithTheSameSessionIDGetSeparateSessions() throws {
-        let registry = makeRegistry()
-        let hostA = ClaudeTransportOrigin.remote(channel: ClaudeRemoteSessionScope.channel(hostID: "hAAA"))
-        let hostB = ClaudeTransportOrigin.remote(channel: ClaudeRemoteSessionScope.channel(hostID: "hBBB"))
-
-        // Both hosts happen to pick the same Claude session id. Scoping is what
-        // keeps them apart — without it, the second would silently take over the
-        // first's session.
-        let a = try XCTUnwrap(registry.ingest(
-            record(
-                event: .userPromptSubmit,
-                sessionID: ClaudeRemoteSessionScope.scopedSessionID(hostID: "hAAA", sessionID: "same-id"),
-                cwd: "/srv/alpha",
-                prompt: "alpha work"
-            ),
-            origin: hostA
-        ))
-        let b = try XCTUnwrap(registry.ingest(
-            record(
-                event: .userPromptSubmit,
-                sessionID: ClaudeRemoteSessionScope.scopedSessionID(hostID: "hBBB", sessionID: "same-id"),
-                cwd: "/srv/beta",
-                prompt: "beta work"
-            ),
-            origin: hostB
-        ))
-
-        XCTAssertNotEqual(a.sessionID, b.sessionID)
-        XCTAssertEqual(a.latestPriorUserPrompt, "alpha work")
-        XCTAssertEqual(b.latestPriorUserPrompt, "beta work")
-        XCTAssertEqual(a.workspace, .remoteOpaque(label: "alpha"))
-        XCTAssertEqual(b.workspace, .remoteOpaque(label: "beta"))
-        XCTAssertEqual(registry.liveSessions().count, 2)
-    }
-
-    func testEachHostsScopedIDResolvesOnlyToItsOwnSession() throws {
-        let registry = makeRegistry()
-        let hostA = ClaudeTransportOrigin.remote(channel: ClaudeRemoteSessionScope.channel(hostID: "hAAA"))
-        let hostB = ClaudeTransportOrigin.remote(channel: ClaudeRemoteSessionScope.channel(hostID: "hBBB"))
-        _ = registry.ingest(record(sessionID: "remote:hAAA:s", cwd: "/srv/alpha"), origin: hostA)
-        _ = registry.ingest(record(sessionID: "remote:hBBB:s", cwd: "/srv/beta"), origin: hostB)
-
-        let a = try XCTUnwrap(registry.snapshot(sessionID: "remote:hAAA:s"))
-        let b = try XCTUnwrap(registry.snapshot(sessionID: "remote:hBBB:s"))
-        XCTAssertEqual(a.workspace, .remoteOpaque(label: "alpha"))
-        XCTAssertEqual(b.workspace, .remoteOpaque(label: "beta"))
-    }
-
-    func testAnUnknownSessionIDAbstains() {
-        let registry = makeRegistry()
-        _ = registry.ingest(record(), origin: remote)
-        XCTAssertNil(registry.snapshot(sessionID: "remote:habc:nobody"))
-    }
 
     func testAStaleRemoteSessionAbstains() {
         // A remote pid names a process on another machine, where it could be

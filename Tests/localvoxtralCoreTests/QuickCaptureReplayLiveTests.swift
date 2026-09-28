@@ -5,14 +5,18 @@ import XCTest
 
 /// Replays labelled captures through the production router (#730) and
 /// prints the scoreboard: the right-project rate, the catch-all count and
-/// the captures sent to a wrong project. Spends real tokens, so it runs only
-/// through `scripts/linux/quick-capture-replay.sh`, on Linux.
+/// the captures sent to a wrong project. A capture kept in the catch-all
+/// with a suggestion (#938) counts as the catch-all there, and its
+/// suggestion in its own counts. Spends real tokens, so it runs only through
+/// `scripts/linux/quick-capture-replay.sh`, on Linux.
 ///
 /// Inputs (paths, from the script's flags):
 /// - `QC_CAPTURES`: JSON lines `{"id", "expected", "text"}`; `expected` is a
 ///   project name, or `inbox` for the catch-all. A name missing from the
 ///   project set expects the catch-all.
-/// - `QC_PROJECTS`: `[{"key", "name", "terms", "userLine"?, "hostReadme"?}]`;
+/// - `QC_PROJECTS`: `[{"key", "name", "terms", "userLine"?, "hostReadme"?,
+///   "github"?: {"description"?, "topics", "parent"?}}]`, `github` as
+///   `gh api repos/<owner>/<name>` answers it (#926);
 ///   a key that is a path gets its README read, as the app does for a local
 ///   checkout, and `hostReadme` is the README a remote project's host would
 ///   report (#745), summarized as the Mac summarizes that report.
@@ -31,6 +35,7 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
         let terms: [String]
         let userLine: String?
         let hostReadme: String?
+        let github: GitHubRepositoryFacts?
     }
 
     /// Prints a classifier's error (`Log` is silent on Linux), and retries a
@@ -79,7 +84,8 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
                         .flatMap { FileManager.default.contents(atPath: $0) }
                         .flatMap(QuickCaptureProjects.summary(ofRemoteReadme:)),
                 terms: entry.terms,
-                userLine: entry.userLine
+                userLine: entry.userLine,
+                github: entry.github
             )
         }
 
@@ -115,6 +121,7 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
         let names = Dictionary(projects.map { ($0.key, $0.name) }, uniquingKeysWith: { first, _ in first })
         let projectNames = Set(projects.map(\.name))
         var right = 0, projectExpected = 0, projectRight = 0, catchAll = 0, wrongProject = 0, inboxRight = 0, failed = 0
+        var suggested = 0, suggestedRight = 0
         for capture in captures {
             let expected = projectNames.contains(capture.expected) ? capture.expected : "inbox"
             let route = await router.route(capture: capture.text, projects: projects)
@@ -122,6 +129,11 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
             switch route.destination {
             case .project(let key): got = names[key] ?? key
             case .catchAll: got = "inbox"
+            }
+            let picked = route.suggestion.map { names[$0] ?? $0 } ?? got
+            if route.suggestion != nil {
+                suggested += 1
+                if picked == expected { suggestedRight += 1 }
             }
             if got == expected { right += 1 }
             if expected == "inbox" {
@@ -132,10 +144,12 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
             }
             if got == "inbox" { catchAll += 1 } else if got != expected { wrongProject += 1 }
             if route.reason == .classifierFailed { failed += 1 }
-            let mark = got == expected ? "ok " : (got == "inbox" ? "inb" : "BAD")
+            let mark = route.suggestion != nil
+                ? (picked == expected ? "sug" : "SUG")
+                : got == expected ? "ok " : (got == "inbox" ? "inb" : "BAD")
             let probability = route.topProbability.map { String(format: "%.2f", $0) } ?? "-"
-            print("QC \(mark) \(capture.id) expected=\(expected) got=\(got) by=\(route.classifier.rawValue) \(route.reason.rawValue) p=\(probability)")
+            print("QC \(mark) \(capture.id) expected=\(expected) got=\(picked) by=\(route.classifier.rawValue) \(route.reason.rawValue) p=\(probability)")
         }
-        print("QC SCORE captures=\(captures.count) right=\(right) project-expected=\(projectExpected) right-project=\(projectRight) catch-all=\(catchAll) wrong-project=\(wrongProject) inbox-expected=\(captures.count - projectExpected) inbox-right=\(inboxRight) failed=\(failed)")
+        print("QC SCORE captures=\(captures.count) right=\(right) project-expected=\(projectExpected) right-project=\(projectRight) catch-all=\(catchAll) wrong-project=\(wrongProject) inbox-expected=\(captures.count - projectExpected) inbox-right=\(inboxRight) failed=\(failed) suggested=\(suggested) suggested-right=\(suggestedRight) suggested-wrong=\(suggested - suggestedRight)")
     }
 }

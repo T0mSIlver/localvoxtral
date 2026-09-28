@@ -362,7 +362,9 @@ there is not.
   the commit path never walks the filesystem for it, and it inherits that
   pipeline's title parsing, ssh titles included. A remote session's key is
   the basename of its repository's main checkout when its host's shim sends
-  `X-Lvx-Env-Project`, else its cwd label, so two repositories with one
+  `X-Lvx-Env-Project`, else the `<repo>` of a Claude Code worktree cwd
+  (`…/<repo>/.claude/worktrees/<name>`: a Desktop session keeps the plugin
+  it started with for days), else its cwd label, so two repositories with one
   basename on one host share a bucket: the price of never holding a remote
   path), and once three separate
   dictations have resolved it, it grounds later ones and rides in the prompt
@@ -379,7 +381,7 @@ there is not.
   sum; a remembered term never outranks a live
   source (`.learned` is LAST in `PolishContextSource`, so a contested span
   abstains); unpinned terms decay at 90 days; and Text processing →
-  Advanced → Terms learned from polishing → Forget drops the file (Show forgets one). Verification candidates are never
+  Advanced → Terms learned from polishing → Forget drops the file (Show, or a project's Show all in Projects, forgets one). Verification candidates are never
   recorded — they are questions put to the model, not answers. A dictation
   whose project cannot be established teaches nothing at all, which is not
   the same as one with no project: the latter teaches the shared bucket,
@@ -2010,7 +2012,17 @@ there is not.
   repository; it replaces the cwd label only as the learned-terms key
   (`ClaudeSessionSnapshot.learnedTermWorkspace`), and only when it is already
   a label under `ClaudeWorkspaceReference.opaqueLabel`'s rule: a value that
-  would need reshaping is refused, never reshaped.
+  would need reshaping is refused, never reshaped. Without the header, the
+  directory above a cwd's `.claude/worktrees/<name>` stands in for it
+  (`claudeWorktreeRepository`), under the same rule; it is read off the cwd
+  as it arrives and kept as a label, like the cwd's own.
+  `X-Lvx-Env-Repository` (#926) is the host's `origin` on github.com as
+  `owner/name`, from `capture.sh repository`. It is kept on the project only
+  beside `X-Lvx-Env-Project` and only when `QuickCaptureInbox.isRepository`
+  accepts it (no `.` or `..` part), and it is used only as `gh issue create
+  --repo`, after the Inbox shows it, and as `gh api repos/<owner>/<name>`,
+  which only reads. A squatter on the port cannot send it: it rides on the
+  host's authenticated hook.
 - **A remote request names its agent in a header, and the header buys nothing
   but a namespace.** A remote host runs no publisher of ours, so the agent
   cannot ride inside the record the way it does locally: the Vibe shim
@@ -2347,7 +2359,13 @@ there is not.
   three. The capture text leaves the Mac only in the prompt reply. The
   README bytes are only summarized, the host's issue list only quoted into
   the prompt (a related issue counts only if listed there), the output read
-  as a local draft. A squatter on the port can send both headers and answer
+  as a local draft. A shim from #918 on asks `/v1/draft/words` (the
+  capture's search words, which go only where the capture goes), posts its
+  context bundle to `/v1/draft/context` (96 KiB, parsed into
+  `QuickCaptureContext` and only quoted), and polls `/v1/draft/check` (202,
+  204, or the check's prompt); the host greps only words that start with a
+  letter or digit, after `-e`, so no word reads as an option. The first
+  draft runs on the Mac, off the listener's threads. A squatter on the port can send both headers and answer
   the prompt request with a prompt of its own, so the host's run is the
   Mac's drafting command with Claude Code's reads confined to the checkout
   (`--permission-mode dontAsk --allowedTools Read(./**)`; without it Read
@@ -2359,7 +2377,8 @@ there is not.
   shims pull the numbers out of Vibe's session log with `sed` and never send
   the file, which holds the prompt. Which remote projects the router sees
   (#819): a hook adds a project only for a name its host sent as
-  `X-Lvx-Env-Project`; a cwd label only stamps a project already held,
+  `X-Lvx-Env-Project`, or the repository of a Claude Code worktree cwd; a
+  cwd label only stamps a project already held,
   because each worktree has its own, and a label no hook has named since is
   not listed, since no session will report it again. Nothing guesses which
   repository an old label belonged to.
@@ -2390,8 +2409,7 @@ there is not.
     (`DogfoodAudioFileSource`). A release build compiles none of it: no
     listener, no path, no code that could create one, and no setting or
     argument that turns it on. Only the UI smoke workflow's package sets
-    `LOCALVOXTRAL_E2E_HARNESS=1` (a dogfood package implies it, until the
-    dogfood build is removed in #792). `package_app.sh` searches every
+    `LOCALVOXTRAL_E2E_HARNESS=1`. `package_app.sh` searches every
     bundle's binary for the harness types
     (`scripts/packaging/check-harness-symbols.sh`): a release build fails if
     one is there, a harness build fails if one is missing. Within a build that
@@ -2459,13 +2477,25 @@ there is not.
   the overlay closes as a cancelled one does, and the words go to
   `QuickCaptureInboxModel`, which writes them to its 0600 file before
   routing. The router sends a low or tied answer to the catch-all, never a
-  guessed project. Jev and the chat model both need 0.9: on the replay
+  guessed project: the guess is kept as the route's `suggestion`, and
+  nothing drafts until the user accepts it (#938). Jev and the chat model both need 0.9: on the replay
   (#741, #744) every right project came at 0.95 or more, and nearly every
-  wrong one under 0.9. The drafting agent has
-  read-only tools and no shell, so it cannot run `gh`; the open issues reach
-  it through the prompt, from the app's own `gh issue list`. Its answer is
-  untrusted text: a one-line capped title, a body without control
-  characters, a related issue only if it was listed. `QuickCaptureInboxModel.file`
+  wrong one under 0.9. Drafting has two stages (#918). The first is one
+  request to the polishing model with the context the app gathers
+  (`QuickCaptureContext`: README and guide openings, `git grep` hits for the
+  capture's words, `gh` issue and PR lists), every field capped and only
+  quoted; it sorts the capture by kind, and only an issue can be filed
+  (`QuickCaptureItem.canFile`) or checked. The second, an issue's check, is
+  the drafting agent: read-only tools and no shell, so it cannot run `gh`;
+  the open issues reach it through the prompt, from the app's own `gh issue
+  list`. Both answers are untrusted text: a one-line capped title, a body
+  without control characters, a related issue only if it was listed, files
+  read only as relative paths that exist in the checkout. A check never
+  overwrites a draft the user edited, and never lands on a capture filed or
+  moved meanwhile. `QuickCaptureInboxModel.file`
   is the one call to `gh issue create`, reached only from the Inbox's File
-  button. A remote project is drafted on its host (#745, below): a remote
+  button and from a spoken "file it" (#927). That one works only in a review
+  dictation, whose overlay shows exactly one draft, and `applySpokenReview`
+  files only when the draft's title and body still match what the overlay
+  showed. A remote project is drafted on its host (#745, below): a remote
   label never becomes a working directory here.

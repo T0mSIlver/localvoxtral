@@ -3,7 +3,7 @@ import Foundation
 import Observation
 import os
 
-/// A dictation's audio: the microphone (or, in a dogfood build, a file) that
+/// A dictation's audio: the microphone (or, in a harness build, a file) that
 /// feeds the chunk buffer, the send and commit loops that drain it to the
 /// realtime client, the capture health monitor, output ducking, and the
 /// input device list and selection the popover shows.
@@ -99,7 +99,7 @@ final class SessionAudioPipeline {
         microphone.stop()
     }
 
-    /// False only in a dogfood build launched with an audio file to dictate
+    /// False only in a harness build launched with an audio file to dictate
     /// from: that session needs no microphone grant, and nothing may fall back
     /// to the microphone behind its back.
     var capturesFromMicrophone: Bool {

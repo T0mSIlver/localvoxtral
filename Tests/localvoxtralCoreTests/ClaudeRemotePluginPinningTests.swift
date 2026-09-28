@@ -43,14 +43,40 @@ final class ClaudeRemotePluginPinningTests: XCTestCase {
 
     private var home: URL!
 
+    /// The fake CLI, written once for the class: executing a script the
+    /// system has not seen before cost 170–260 ms on the build host against
+    /// 23 ms for one it has (measured in `VibeRemoteShimTests`), and every
+    /// test here used to write its own. The script reads all of its state
+    /// from `$HOME`, so each test still gets a fresh host; only the
+    /// executable is shared, linked into each test's own
+    /// `$HOME/.local/bin` — the directory the setup script's PATH resolver
+    /// searches — so the resolver's discovery path is exactly a real host's.
+    private static let sharedCLIDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("lvx-pinning-cli-\(UUID().uuidString)")
+
+    private static func writeFakeClaudeOnce() throws {
+        let claude = sharedCLIDirectory.appendingPathComponent("claude")
+        guard !FileManager.default.fileExists(atPath: claude.path) else { return }
+        try FileManager.default.createDirectory(at: sharedCLIDirectory, withIntermediateDirectories: true)
+        try fakeClaude.write(to: claude, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: claude.path)
+    }
+
+    override class func tearDown() {
+        try? FileManager.default.removeItem(at: sharedCLIDirectory)
+        super.tearDown()
+    }
+
     override func setUpWithError() throws {
+        try Self.writeFakeClaudeOnce()
         home = FileManager.default.temporaryDirectory
             .appendingPathComponent("lvx-pinning-\(UUID().uuidString)")
         let bin = home.appendingPathComponent(".local/bin")
         try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
-        let claude = bin.appendingPathComponent("claude")
-        try Self.fakeClaude.write(to: claude, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: claude.path)
+        try FileManager.default.createSymbolicLink(
+            at: bin.appendingPathComponent("claude"),
+            withDestinationURL: Self.sharedCLIDirectory.appendingPathComponent("claude")
+        )
     }
 
     override func tearDownWithError() throws {

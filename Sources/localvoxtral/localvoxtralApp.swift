@@ -258,7 +258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingConfigDefaultsPromptFileNames: [String]?
 
     #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
-    /// The dogfood-only local control socket and the service behind it.
+    /// The harness-only local control socket and the service behind it.
     ///
     /// Owned here for the same reason the broker is: the socket answers
     /// questions about the registry and the resolver, both of which live at
@@ -442,7 +442,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
-    /// Binds the dogfood-only control socket, if the owner armed it.
+    /// Binds the harness-only control socket, if the owner armed it.
     ///
     /// Two gates, both required, exactly like the capture: this code is only
     /// compiled under `DEBUG || LOCALVOXTRAL_E2E_HARNESS`, and even then the socket binds
@@ -972,6 +972,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         viewModel.quickCapture?.attachRemote(quickCapture)
+        viewModel.quickCapture?.enrolledHosts = {
+            registry?.hosts().filter { $0.revokedAt == nil }.map { (id: $0.id, name: $0.label) } ?? []
+        }
+        viewModel.quickCapture?.liveSessions = { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() }
 
         let coordinator = registry.map { hosts in
             ClaudeRemoteListenerCoordinator(
@@ -993,7 +997,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 },
                 projectTerms: projectTerms,
-                quickCapture: quickCapture
+                quickCapture: quickCapture,
+                doctor: RemoteDoctorRoute { @MainActor [weak viewModel] hostID in
+                    guard let viewModel else { return [] }
+                    return await AgentCLIAppDataSource(viewModel: viewModel).hostDoctorChecks(hostID: hostID)
+                }
             )
         }
         claudeRemoteListenerCoordinator = coordinator
