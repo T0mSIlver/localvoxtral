@@ -138,6 +138,15 @@ enum DictationHistoryStoreFile {
         return (tables, columns)
     }
 
+    /// Whether opening `url` with `schema` migrates it: the file has our
+    /// table but lacks columns the model has. False for a new file.
+    static func needsUpgrade(_ url: URL, schema: Schema) throws -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path) else { return false }
+        let columns = Set(try SQLiteFile(readWrite: url).columnNames(of: entityTable))
+        guard !columns.isEmpty else { return false }
+        return !columnNames(of: schema).isSubset(of: columns)
+    }
+
     /// Core Data names an attribute's column `Z` + its name in capitals.
     static func columnNames(of schema: Schema) -> Set<String> {
         let entity = schema.entities.first { $0.name == "DictationSessionRecord" }
@@ -162,7 +171,7 @@ struct SQLiteFileError: Error, CustomStringConvertible {
 }
 
 /// A SQLite database, closed when released.
-private final class SQLiteFile {
+final class SQLiteFile {
     private var db: OpaquePointer?
 
     init(readWrite url: URL) throws {

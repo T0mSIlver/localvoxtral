@@ -254,6 +254,13 @@ The app saves every dictation on this Mac, in plain text, in
 machine, except that the [term suggestion](#get-term-suggestions) pass sends
 recent dictations to your hosted polishing model when you have one.
 
+The app copies that file to `localvoxtral/backups/history/` once a day, before
+an update changes its layout, and before retention deletes anything. It keeps
+seven daily copies, the ten newest other copies, and always the newest copy
+that still holds dictations. A recording or diagnostic record whose dictation
+is gone moves to `localvoxtral/quarantine/` for 30 days instead of being
+deleted. What you delete yourself is deleted.
+
 ### History
 
 **History** in the menu bar popover opens the localvoxtral window on the
