@@ -221,7 +221,7 @@ extension HerdrWindowLocator {
     /// The ttys whose foreground job, owned by `user`, is a process named
     /// `name` (`herdr` for a client, `ssh` for a connection), one per tty;
     /// nil when the process table or a device name cannot be read.
-    package static func foregroundTTYs(
+    nonisolated package static func foregroundTTYs(
         named name: String,
         processes: [TTYProcessTable.Entry]?,
         user: uid_t,
@@ -240,7 +240,7 @@ extension HerdrWindowLocator {
     }
 
     /// The live process table's ttys for `name`.
-    package static func liveForegroundTTYs(named name: String) -> [String]? {
+    nonisolated package static func liveForegroundTTYs(named name: String) -> [String]? {
         #if canImport(Darwin)
         foregroundTTYs(named: name, processes: TTYProcessTable.allProcesses(), user: geteuid()) { device in
             devname(device, S_IFCHR).map { "/dev/" + String(cString: $0) }
