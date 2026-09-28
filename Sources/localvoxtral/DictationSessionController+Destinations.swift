@@ -24,6 +24,15 @@ struct SessionDestinations {
     var focusInFlight = false
     /// Bumped per pick task, so only the latest one clears `focusInFlight`.
     var pickGeneration = 0
+    /// The overlay lists every destination while the user moves between
+    /// them (#1015), until `DestinationListRule.openFor` passes without a move.
+    var listOpen = false
+}
+
+enum DestinationListRule {
+    /// How long the overlay's list stays open after the last Tab, arrow or
+    /// click.
+    static let openFor: Duration = .seconds(2)
 }
 
 /// Which window a dictation's picks may have put in front.
@@ -49,7 +58,8 @@ enum DestinationCommitGuard: Equatable {
 }
 
 /// Tab and ⇧Tab (or → and ←, or a click) during an Overlay Buffer dictation
-/// move its words to the focused app, a session that needs you, or the Inbox. The words go only
+/// move its words to the focused app, the Inbox, or a session that needs
+/// you, and open the overlay's list of them for a moment. The words go only
 /// where the overlay shows: a session is picked only once its terminal
 /// confirmed the pane is in front (`.focused`), the way the answer shortcut
 /// starts a dictation (#785), and the stop then commits into that pane like
@@ -101,6 +111,8 @@ extension DictationSessionController {
         destinationKeyHandler.stop()
         destinationFocusTask?.cancel()
         destinationFocusTask = nil
+        destinationListCloseTask?.cancel()
+        destinationListCloseTask = nil
         destinations = nil
     }
 
@@ -110,21 +122,41 @@ extension DictationSessionController {
         refreshDestinationList(&state)
         let base = state.pending ?? state.list.selected
         destinations = state
+        openDestinationList()
         pickDestination(state.list.moving(from: base, forward: forward))
     }
 
     /// A click on a destination in the overlay (#880) picks it the way Tab
-    /// would. A click on where the picks are already going does nothing, and
-    /// one on a session that left the list since the overlay drew it is
-    /// dropped.
+    /// would. A click on where the picks are already going opens the list,
+    /// the only way to reach the others by click while it is closed. One on
+    /// a session that left the list since the overlay drew it is dropped.
     func clickDestination(_ destination: DictationDestination) {
         guard isDictating, var state = destinations else { return }
         refreshDestinationList(&state)
         destinations = state
-        guard state.list.entries.contains(destination),
-              destination != (state.pending ?? state.list.selected)
-        else { return }
+        guard state.list.entries.contains(destination) else { return }
+        openDestinationList()
+        guard destination != (state.pending ?? state.list.selected) else { return }
         pickDestination(destination)
+    }
+
+    /// Opens the overlay's list, or keeps it open, for another
+    /// `DestinationListRule.openFor` on `dependencies.clock`.
+    private func openDestinationList() {
+        guard destinations != nil else { return }
+        if destinations?.listOpen == false {
+            destinations?.listOpen = true
+            showDestinations()
+        }
+        destinationListCloseTask?.cancel()
+        let clock = dependencies.clock
+        destinationListCloseTask = Task { @MainActor [weak self] in
+            await clock.sleep(DestinationListRule.openFor)
+            guard let self, !Task.isCancelled, self.destinations?.listOpen == true else { return }
+            self.destinationListCloseTask = nil
+            self.destinations?.listOpen = false
+            self.showDestinations()
+        }
     }
 
     /// The quick capture shortcut during an Overlay Buffer dictation picks
@@ -434,7 +466,8 @@ extension DictationSessionController {
                 list: state.list,
                 focusedAppLabel: state.originLabel,
                 focusedAppJoined: state.originJoined,
-                sessionName: { state.names[$0] ?? AgentAttentionText.unnamed }
+                sessionName: { state.names[$0] ?? AgentAttentionText.unnamed },
+                isOpen: state.listOpen
             )
         )
     }

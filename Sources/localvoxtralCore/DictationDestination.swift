@@ -15,9 +15,10 @@ package enum DictationDestination: Hashable, Sendable {
 }
 
 /// The overlay's destinations for one dictation, in a fixed order: the
-/// focused app, the sessions that need you in the order the answer hotkey
-/// reaches them, then the Inbox. The focused app and the Inbox are always
-/// there, so with nobody waiting one Tab reaches the Inbox.
+/// focused app, the Inbox, then the sessions that need you in the order the
+/// answer hotkey reaches them. The focused app and the Inbox are always
+/// there, and one Tab always reaches the Inbox: it is for saving something
+/// quickly (#1015).
 package struct DictationDestinationList: Equatable, Sendable {
     package private(set) var entries: [DictationDestination]
     package private(set) var selected: DictationDestination
@@ -37,11 +38,12 @@ package struct DictationDestinationList: Equatable, Sendable {
         let sessions = waitingSessionIDs.filter { id in
             id != focusedSessionID && seen.insert(id).inserted
         }
-        entries = [.focusedApp] + sessions.map(DictationDestination.session) + [.inbox]
+        entries = [.focusedApp, .inbox] + sessions.map(DictationDestination.session)
         self.selected = entries.contains(selected) ? selected : .focusedApp
     }
 
-    /// The entry Tab moves to, wrapping from the Inbox to the focused app.
+    /// The entry Tab moves to, wrapping from the last entry to the focused
+    /// app.
     package var next: DictationDestination { neighbor(of: selected, offset: 1) }
 
     /// The entry ⇧Tab moves to.
@@ -90,8 +92,8 @@ package struct DictationDestinationList: Equatable, Sendable {
     }
 }
 
-/// What the overlay header shows for a `DictationDestinationList`: one pill
-/// per entry, the picked one filled.
+/// What the overlay shows for a `DictationDestinationList`: the picked entry
+/// in the header, and one row per entry while the list is open.
 package struct OverlayDestinationStrip: Equatable, Sendable {
     package enum Kind: Equatable, Sendable {
         /// `joined` says what the join badge said: true for a session the
@@ -113,6 +115,9 @@ package struct OverlayDestinationStrip: Equatable, Sendable {
     package static let inboxLabel = "Inbox"
 
     package let items: [Item]
+    /// The list is open under the header: the user is moving between
+    /// entries (#1015). Closed, only the picked one shows.
+    package var isOpen: Bool
 
     /// - Parameters:
     ///   - focusedAppLabel: the joined session's name, else the app's.
@@ -121,8 +126,10 @@ package struct OverlayDestinationStrip: Equatable, Sendable {
         list: DictationDestinationList,
         focusedAppLabel: String,
         focusedAppJoined: Bool?,
-        sessionName: (String) -> String
+        sessionName: (String) -> String,
+        isOpen: Bool = false
     ) {
+        self.isOpen = isOpen
         items = list.entries.map { entry in
             let isSelected = entry == list.selected
             switch entry {
@@ -137,4 +144,12 @@ package struct OverlayDestinationStrip: Equatable, Sendable {
     }
 
     package var selectedKind: Kind? { items.first(where: \.isSelected)?.kind }
+
+    package var selectedItem: Item? { items.first(where: \.isSelected) }
+
+    /// "2 of 5": where the picked entry sits in the list.
+    package var position: String {
+        let index = items.firstIndex(where: \.isSelected).map { $0 + 1 } ?? 1
+        return "\(index) of \(items.count)"
+    }
 }

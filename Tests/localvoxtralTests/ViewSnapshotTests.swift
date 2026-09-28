@@ -445,15 +445,6 @@ final class ViewSnapshotTests: XCTestCase {
             ("listening-unjoined", DictationOverlayView(
                 phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
                 metrics: metrics, claudeJoin: .unjoined)),
-            ("destinations-here", DictationOverlayView(
-                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
-                metrics: metrics, destinations: Self.strip(selected: .focusedApp))),
-            ("destinations-session", DictationOverlayView(
-                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
-                metrics: metrics, destinations: Self.strip(selected: .session(id: "pay")))),
-            ("destinations-inbox", DictationOverlayView(
-                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
-                metrics: metrics, destinations: Self.strip(selected: .inbox))),
             ("draft-review", DictationOverlayView(
                 phase: .buffering, text: "", errorMessage: nil, secureInputActive: false,
                 metrics: metrics, draftReview: Self.draft)),
@@ -474,9 +465,20 @@ final class ViewSnapshotTests: XCTestCase {
                 errorMessage: "Couldn't insert. Copied for manual paste.",
                 secureInputActive: false, metrics: metrics)),
         ]
-        for state in states {
+        // Where the words go (#1015), with 1, 3 and 10 agents waiting: the
+        // list closed on the second agent, then open on it.
+        let destinations = [1, 3, 10].flatMap { waiting in
+            [false, true].map { open in
+                (name: "destinations-\(waiting)-\(open ? "open" : "closed")",
+                 view: DictationOverlayView(
+                    phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
+                    metrics: metrics, destinations: Self.strip(waiting: waiting, open: open)))
+            }
+        }
+        for state in states + destinations {
             let height = metrics.contentHeight(
-                text: state.view.text, errorMessage: state.view.errorMessage, draftReview: state.view.draftReview)
+                text: state.view.text, errorMessage: state.view.errorMessage, draftReview: state.view.draftReview,
+                destinations: state.view.destinations)
             // A flat backdrop stands in for the desktop the panel floats over.
             let inset: CGFloat = 16
             let view = state.view
@@ -503,13 +505,32 @@ final class ViewSnapshotTests: XCTestCase {
         """
     )
 
-    /// The overlay's destinations (#840) with one session waiting.
-    private static func strip(selected: DictationDestination) -> OverlayDestinationStrip {
-        OverlayDestinationStrip(
-            list: DictationDestinationList(waitingSessionIDs: ["pay"], focusedSessionID: nil, selected: selected),
-            focusedAppLabel: "localvoxtral",
+    /// Made-up session names as long as real ones: worktree folders, and
+    /// Claude Desktop titles, which run to about 70 characters (#1013).
+    private static let sessionNames = [
+        "Fix test-remote-doctor.sh broken-pipe flake in the harness scripts",
+        "history-store-own-file-a41c2e",
+        "Polish prompt token sizes in Settings and History",
+        "quick-capture-polish-before-routing",
+        "Voice memos keep follow-up recordings",
+        "overlay-destination-list-1015",
+        "Learned terms import and export move to Projects",
+        "remote-join-diagnosis-3b9d10",
+        "Boost the user's terms while Nemotron decodes",
+        "eval-e2e-scheduled-run-guard-874",
+    ]
+
+    /// The overlay's destinations (#840) with `waiting` sessions waiting,
+    /// the first of them picked: the second Tab.
+    private static func strip(waiting: Int, open: Bool) -> OverlayDestinationStrip {
+        let ids = (0..<waiting).map { "s\($0)" }
+        return OverlayDestinationStrip(
+            list: DictationDestinationList(
+                waitingSessionIDs: ids, focusedSessionID: nil, selected: .session(id: ids[0])),
+            focusedAppLabel: "ci-speed-optimizations-7ffef0",
             focusedAppJoined: true,
-            sessionName: { _ in "payments" }
+            sessionName: { id in sessionNames[Int(id.dropFirst())!] },
+            isOpen: open
         )
     }
 

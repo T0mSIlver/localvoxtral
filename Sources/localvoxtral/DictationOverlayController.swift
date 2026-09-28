@@ -204,9 +204,9 @@ final class DictationOverlayController {
     /// the next word arrived, which reads as the double-click doing nothing
     /// (field report, 2026-09-21).
     private var lastPositioning: (anchor: OverlayAnchor, contentSize: CGSize)?
-    /// Where each destination pill sits, top-left origin in the hosting
-    /// view, as the view last reported it.
-    private var destinationFrames: [DictationDestination: CGRect] = [:]
+    /// Where each destination pill or list row sits, top-left origin in the
+    /// hosting view, as the view last reported it.
+    private var destinationFrames: [OverlayDestinationTarget: CGRect] = [:]
 
     /// A click, not a drag, on a destination pill (#880). The panel keeps
     /// swallowing the click, so the target app keeps the focus.
@@ -337,15 +337,16 @@ final class DictationOverlayController {
             claudeJoin: snapshot.claudeJoin,
             destinations: snapshot.destinations,
             draftReview: snapshot.draftReview,
-            onDestinationFrame: { [weak self] destination, frame in
-                self?.destinationFrames[destination] = frame
+            onDestinationFrame: { [weak self] target, frame in
+                self?.destinationFrames[target] = frame
             }
         )
 
         let contentHeight = metrics.contentHeight(
             text: bufferText,
             errorMessage: snapshot.errorMessage,
-            draftReview: snapshot.draftReview
+            draftReview: snapshot.draftReview,
+            destinations: snapshot.destinations
         )
         let size = CGSize(
             width: metrics.panelWidth,
@@ -428,7 +429,8 @@ final class DictationOverlayController {
     private func clickDestination(at point: NSPoint) {
         let local = hostingView.convert(point, from: dragRegionView)
         let topLeft = hostingView.isFlipped ? local : NSPoint(x: local.x, y: hostingView.bounds.height - local.y)
-        guard let destination = destinationFrames.first(where: { $0.value.contains(topLeft) })?.key else { return }
+        guard let destination = destinationFrames.first(where: { $0.value.contains(topLeft) })?.key.destination
+        else { return }
         Log.overlay.info("click: destination pill")
         onDestinationClick?(destination)
     }
@@ -448,7 +450,10 @@ final class DictationOverlayController {
         dragRegionView.onDragEnded?(dragRegionView.convert(point, from: panel.contentView))
     }
 
-    var destinationFramesForTesting: [DictationDestination: CGRect] { destinationFrames }
+    /// The frames drawn now, in the list (`inList`) or the header.
+    func destinationFramesForTesting(inList: Bool) -> [DictationDestination: CGRect] {
+        Dictionary(uniqueKeysWithValues: destinationFrames.filter { $0.key.inList == inList }.map { ($0.key.destination, $0.value) })
+    }
     var contentHeightForTesting: CGFloat { panel.contentView?.bounds.height ?? 0 }
     #endif
 
