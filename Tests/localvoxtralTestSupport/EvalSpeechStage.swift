@@ -273,10 +273,11 @@ package enum EvalSpeechStage {
     /// carries the whole utterance in one event, which the join handles as
     /// the one-element case it already is.
     ///
-    /// An empty transcript is a failure unless `allowsEmptyTranscript`: then
-    /// the final commit's completion (`.transcriptionFinalized`) with no text
-    /// returns "", a result the ASR-only eval scores. The end-to-end eval
-    /// keeps the failure, since polish has nothing to work on.
+    /// The final commit's completion (`.transcriptionFinalized`) with no text
+    /// ends the utterance at once. It returns "" when `allowsEmptyTranscript`,
+    /// a result the ASR-only eval scores. Otherwise it fails as an answer,
+    /// not a stall (#961): the end-to-end eval keeps the failure, since
+    /// polish has nothing to work on, but `ServiceWatch` does not count it.
     ///
     /// `clock` times the wait for an answer and the grace after it; tests
     /// pass a `ManualSessionClock`.
@@ -309,7 +310,9 @@ package enum EvalSpeechStage {
                 guard !trimmed.isEmpty else { return }
                 finals.append(trimmed)
                 firstAnswer.finish(answered: true)
-            case .transcriptionFinalized where allowsEmptyTranscript:
+            case .transcriptionFinalized:
+                // The final commit's `transcription.done`. With no text
+                // before it, the service answered with nothing.
                 finalized.append("")
                 firstAnswer.finish(answered: true)
             case .error(let message):
