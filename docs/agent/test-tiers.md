@@ -39,6 +39,14 @@ run is a decision: the commands below leave it out. A burst of runs reuses
 one warm process (each `ensure` resets a ~20 min idle window); the reaper frees
 the RAM once the machine goes quiet.
 
+TTS voices in `eval-e2e` and term-recall: each language takes the first voice
+`say -v ?` lists from `EvalSpeechStage`'s preference list (en: Samantha, Alex,
+Daniel; fr: Thomas, Jacques, Amélie), logs a line when it skipped one, and
+fails setup when it finds none. The chosen voices print in the scoreboard
+header, and scores compare only between runs with the same voices. Since
+macOS 27 the Mac's Actions runner lists neither Samantha nor Alex, so CI runs
+get Daniel (#960).
+
 LLM polish prompt eval: `LLMPolishPromptEvalTests` scores the bundled default
 polishing prompt (punctuation-spacing cases, French vs English) against a live
 chat/completions server through the production request path. Run it with
