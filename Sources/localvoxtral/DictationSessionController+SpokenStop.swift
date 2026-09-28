@@ -34,14 +34,15 @@ extension DictationSessionController {
         guard spokenStopWouldStop(text) else { return }
         spokenStopArmedWords = words
         let clock = dependencies.clock
+        let wait = settings.spokenStopWait
         spokenStopTask = Task { @MainActor [weak self] in
-            await clock.sleep(SpokenStopWait.default.duration)
+            await clock.sleep(wait.duration)
             guard let self, !Task.isCancelled else { return }
             self.spokenStopTask = nil
             self.spokenStopArmedWords = nil
-            self.fireSpokenStop()
+            self.fireSpokenStop(after: wait)
         }
-        Log.dictation.info("spoken stop armed: a send phrase ends the dictation")
+        Log.dictation.info("spoken stop armed: a send phrase ends the dictation after \(wait.displayName, privacy: .public)")
     }
 
     func disarmSpokenStop() {
@@ -50,7 +51,7 @@ extension DictationSessionController {
         spokenStopArmedWords = nil
     }
 
-    private func fireSpokenStop() {
+    private func fireSpokenStop(after wait: SpokenStopWait) {
         guard isDictating, !isFinalizingStop, !isReconnectingRealtimeSession,
               isOverlayBufferModeEnabled,
               spokenStopWouldStop(transcript.overlayDisplayText)
@@ -60,7 +61,7 @@ extension DictationSessionController {
         }
         sessionStoppedBySpokenPhrase = true
         Log.dictation.notice(
-            "spoken stop: a send phrase and \(SpokenStopWait.default.displayName, privacy: .public) without new text; stopping as if pressed quick_capture=\(self.sessionIsQuickCapture, privacy: .public)"
+            "spoken stop: a send phrase and \(wait.displayName, privacy: .public) without new text; stopping as if pressed quick_capture=\(self.sessionIsQuickCapture, privacy: .public)"
         )
         stopDictation(reason: "spoken stop")
     }
