@@ -172,17 +172,26 @@ final class DictationSessionStore {
     /// deleting anything (#985).
     var isFailing: Bool { accessFailure != nil }
 
+    /// What the one-time copy from `default.store` did at this launch; nil
+    /// when it did not run.
+    private(set) var legacyImport: DictationHistoryStoreFile.LegacyImport?
+
     /// The user's history: `history.store` in `directory`, which defaults to
-    /// the app's folder in Application Support. With the default folder, a
-    /// `default.store` left by an older build is copied in first, once.
-    static func open(directory: URL? = nil) -> Result<DictationSessionStore, DictationHistoryOpenFailure> {
+    /// the app's folder in Application Support. A `default.store` left by an
+    /// older build (`legacyStore`, the real one with the default folder) is
+    /// copied in first, once.
+    static func open(
+        directory: URL? = nil, legacyStore: URL? = nil
+    ) -> Result<DictationSessionStore, DictationHistoryOpenFailure> {
         let folder = directory ?? DictationHistoryStoreFile.defaultDirectoryURL()
         let url = folder.appendingPathComponent(DictationHistoryStoreFile.fileName)
         // Core Data creates the file, not its folder: a first launch has none.
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        if directory == nil {
-            let legacy = DictationHistoryStoreFile.legacyStoreURL()
-            switch DictationHistoryStoreFile.importLegacyStore(from: legacy, to: url) {
+        var legacyImport: DictationHistoryStoreFile.LegacyImport?
+        if let legacy = legacyStore ?? (directory == nil ? DictationHistoryStoreFile.legacyStoreURL() : nil) {
+            let outcome = DictationHistoryStoreFile.importLegacyStore(from: legacy, to: url)
+            legacyImport = outcome
+            switch outcome {
             case .storeExists, .noLegacyStore:
                 break
             case .imported:
@@ -191,7 +200,7 @@ final class DictationSessionStore {
                 )
             case let .legacyHoldsNoHistory(tables):
                 Log.persistence.error(
-                    "History: \(legacy.path, privacy: .public) holds no dictations (entity tables: \(tables, privacy: .public)); starting \(url.path, privacy: .public) empty"
+                    "History: \(legacy.path, privacy: .public) holds no dictations (entity tables: \(tables, privacy: .public)); copied nothing and left it in place; starting \(url.path, privacy: .public) empty. Restore it by hand if a backup has them."
                 )
             case let .failed(reason):
                 Log.persistence.error(
@@ -200,7 +209,9 @@ final class DictationSessionStore {
                 return .failure(.unreadable("copying the history from default.store failed: \(reason)"))
             }
         }
-        return open(url: url)
+        let result = open(url: url)
+        if case let .success(store) = result { store.legacyImport = legacyImport }
+        return result
     }
 
     /// A store file at `url`: the user's, or a copy for the replay eval.
@@ -210,9 +221,8 @@ final class DictationSessionStore {
         let schema = Schema([DictationSessionRecord.self])
         let result: Result<DictationSessionStore, DictationHistoryOpenFailure>
         do {
-            let unknown = try DictationHistoryStoreFile.unknownContents(of: url, schema: schema)
-            if !unknown.tables.isEmpty || !unknown.columns.isEmpty {
-                result = .failure(.unknownContents(tables: unknown.tables, columns: unknown.columns))
+            if let refusal = try DictationHistoryStoreFile.refusal(of: url, schema: schema) {
+                result = .failure(refusal)
             } else {
                 result = .success(try DictationSessionStore(
                     configuration: ModelConfiguration(schema: schema, url: url)))

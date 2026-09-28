@@ -10,6 +10,10 @@ enum DictationHistoryOpenFailure: Error, Equatable, Sendable {
     /// Opening it would migrate the file to this model, and Core Data's
     /// inferred migration drops whatever the model lacks (#985).
     case unknownContents(tables: [String], columns: [String])
+    /// A Core Data file without our table. SwiftData creates the table with
+    /// the file, so a file that lacks it lost it: to another program's model,
+    /// as `default.store` did to icloudmailagent's (#985).
+    case missingHistoryTable
     /// SQLite or SwiftData could not open the file.
     case unreadable(String)
 
@@ -18,6 +22,8 @@ enum DictationHistoryOpenFailure: Error, Equatable, Sendable {
         case let .unknownContents(tables, columns):
             return "it holds data this build does not know (tables: \(tables), columns: \(columns)); "
                 + "a newer localvoxtral or another program wrote it, and opening it would drop that data"
+        case .missingHistoryTable:
+            return "it is a Core Data store without the dictation table; something else's model replaced ours"
         case let .unreadable(reason):
             return reason
         }
@@ -60,8 +66,10 @@ enum DictationHistoryStoreFile {
         /// never had a legacy store.
         case storeExists
         case noLegacyStore
-        /// The legacy file has no dictation table: another program's model
-        /// replaced ours, or it was never ours.
+        /// The legacy file has no dictation table, or an empty one: another
+        /// program's model replaced ours (icloudmailagent's did), or our
+        /// migration back recreated it empty. Nothing is copied, and the file
+        /// stays for a restore by hand.
         case legacyHoldsNoHistory(tables: [String])
         case imported
         case failed(String)
@@ -81,7 +89,7 @@ enum DictationHistoryStoreFile {
         do {
             let source = try SQLiteFile(readingWithoutChanging: legacy)
             let tables = try source.tableNames()
-            guard tables.contains(entityTable) else {
+            guard tables.contains(entityTable), try source.rowCount(of: entityTable) > 0 else {
                 return .legacyHoldsNoHistory(tables: tables.filter(isEntityTable).sorted())
             }
             try fileManager.createDirectory(
@@ -96,6 +104,26 @@ enum DictationHistoryStoreFile {
         }
     }
 
+    /// Why SwiftData must not open the file at `url`: it holds entity tables
+    /// other than ours or columns of ours the model lacks, or it is a Core
+    /// Data store without our table. Nil for a file this build may open,
+    /// including one that does not exist yet.
+    static func refusal(of url: URL, schema: Schema) throws -> DictationHistoryOpenFailure? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        // Ours, and SwiftData opens it read-write right after.
+        let allTables = try SQLiteFile(readWrite: url).tableNames()
+        if allTables.contains("Z_METADATA"), !allTables.contains(entityTable),
+           !allTables.contains(where: { isEntityTable($0) })
+        {
+            return .missingHistoryTable
+        }
+        let unknown = try unknownContents(of: url, schema: schema)
+        guard unknown.tables.isEmpty, unknown.columns.isEmpty else {
+            return .unknownContents(tables: unknown.tables, columns: unknown.columns)
+        }
+        return nil
+    }
+
     /// What the store at `url` holds that `schema` does not: entity tables
     /// other than ours and columns of ours the model lacks. Empty for a file
     /// that does not exist yet.
@@ -103,7 +131,6 @@ enum DictationHistoryStoreFile {
         of url: URL, schema: Schema
     ) throws -> (tables: [String], columns: [String]) {
         guard FileManager.default.fileExists(atPath: url.path) else { return ([], []) }
-        // Ours, and SwiftData opens it read-write right after.
         let file = try SQLiteFile(readWrite: url)
         let tables = try file.tableNames().filter { isEntityTable($0) && $0 != entityTable }.sorted()
         let known = Set(["Z_PK", "Z_ENT", "Z_OPT"]).union(columnNames(of: schema))
@@ -173,6 +200,10 @@ private final class SQLiteFile {
     }
 
     deinit { sqlite3_close(db) }
+
+    func rowCount(of table: String) throws -> Int {
+        try strings("SELECT count(*) FROM \(table)", column: 0).first.flatMap { Int($0) } ?? 0
+    }
 
     func tableNames() throws -> [String] {
         try strings("SELECT name FROM sqlite_master WHERE type = 'table'", column: 0)

@@ -345,6 +345,14 @@ struct HistorySettingsPane: View {
                 }
             }
 
+            if let notice = viewModel.historyImportNotice {
+                SettingsGroupRow {
+                    Text(notice)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("history.importNotice")
+                }
+            }
+
             if let since = model.since {
                 SettingsGroupRow {
                     HStack {

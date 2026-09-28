@@ -207,6 +207,8 @@ final class DictationViewModel {
     /// not open, or its last read or write failed. The log has the error.
     var historyUnavailableText: String? {
         switch historyOpenFailure {
+        case .missingHistoryTable:
+            return "Your history file lost its dictations to another program. Nothing was deleted. The log says why."
         case .unknownContents:
             return "Your history was saved by a newer localvoxtral. This version won't open it."
         case .unreadable:
@@ -217,10 +219,19 @@ final class DictationViewModel {
         }
     }
 
+    /// Said above the History list after a launch whose copy from
+    /// `default.store` found no dictations there: the history did not come
+    /// along, and the old file is left for a restore by hand.
+    var historyImportNotice: String? {
+        guard case .legacyHoldsNoHistory = sessionStore?.legacyImport else { return nil }
+        return "Your earlier history wasn't in default.store, so nothing was copied. That file is kept."
+    }
+
     /// The popover's one line while History is not saving.
     var historyPopoverWarning: String? {
         switch historyOpenFailure {
         case .unknownContents: return "History needs a newer localvoxtral."
+        case .missingHistoryTable: return "History isn't saving; nothing was deleted."
         case .unreadable: return "History isn't saving; nothing was deleted."
         case nil: return historyAccessFailure == nil ? nil : "History isn't saving; nothing was deleted."
         }

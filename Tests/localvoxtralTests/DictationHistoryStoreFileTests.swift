@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import SwiftData
 import XCTest
 @testable import localvoxtral
@@ -200,6 +201,54 @@ final class DictationHistoryStoreFileTests: XCTestCase {
             DictationHistoryStoreFile.importLegacyStore(from: legacy, to: destination),
             .legacyHoldsNoHistory(tables: ["ZFOREIGNREQUESTMODEL"]))
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    /// What the mail agent left: our table gone. The app copies nothing,
+    /// keeps the file, starts an empty store and says why.
+    func testALegacyStoreTheMailAgentMigratedIsNotCopiedAndIsKept() async throws {
+        let directory = makeDirectory()
+        let legacy = directory.appendingPathComponent("default.store")
+        try await seedStore(at: legacy, texts: ["one"])
+        _ = try rawTexts(ForeignRequestModel.self, at: legacy, \.path)
+        let before = try legacyFiles(legacy)
+
+        let store = try DictationSessionStore.open(
+            directory: directory.appendingPathComponent("localvoxtral"), legacyStore: legacy).get()
+
+        XCTAssertEqual(store.legacyImport, .legacyHoldsNoHistory(tables: ["ZFOREIGNREQUESTMODEL"]))
+        XCTAssertEqual(try legacyFiles(legacy), before)
+        let count = await store.count()
+        XCTAssertEqual(count, 0)
+    }
+
+    /// Our table recreated empty, as the migration back left it: an empty
+    /// history is not a history to import.
+    func testALegacyStoreWithAnEmptyTableIsNotCopied() async throws {
+        let directory = makeDirectory()
+        let legacy = directory.appendingPathComponent("default.store")
+        let destination = directory.appendingPathComponent("localvoxtral/history.store")
+        try await seedStore(at: legacy, texts: [])
+
+        XCTAssertEqual(
+            DictationHistoryStoreFile.importLegacyStore(from: legacy, to: destination),
+            .legacyHoldsNoHistory(tables: ["ZDICTATIONSESSIONRECORD"]))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    /// A Core Data file without our table lost it; opening it would only
+    /// recreate the table empty.
+    func testAStoreWithoutTheDictationTableIsRefused() async throws {
+        let url = makeDirectory().appendingPathComponent("history.store")
+        try await seedStore(at: url, texts: ["one"])
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &db), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db, "DROP TABLE ZDICTATIONSESSIONRECORD", nil, nil, nil), SQLITE_OK)
+        sqlite3_close(db)
+
+        guard case let .failure(failure) = DictationSessionStore.open(url: url) else {
+            return XCTFail("a store without its table must not open")
+        }
+        XCTAssertEqual(failure, .missingHistoryTable)
     }
 
     func testTheStoreOpensUnderItsOwnName() throws {
