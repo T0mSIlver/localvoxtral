@@ -4,7 +4,7 @@
     speech-service-probe.py <ws-endpoint> <model> <wav> <silence-seconds>
 
 e2e-dictation.sh runs this to tell a slow service from a broken app (#548).
-It plays the scenario's WAV to the service the way the dogfood app does: the
+It plays the scenario's WAV to the service the way the harness app does: the
 audio is produced at real time from the moment the socket opens, held until
 `session.created`, sent in 100 ms chunks, followed by the same seconds of
 silence the check leaves before its stop, then a final commit. The lag is the

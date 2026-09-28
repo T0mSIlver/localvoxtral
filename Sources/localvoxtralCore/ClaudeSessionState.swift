@@ -81,6 +81,10 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
     /// Only ever populated for a `.remote` origin (`ClaudeSessionReducer`), and
     /// `remoteSessionEnvironment` re-states that at the read side.
     public var remoteEnvironment: ClaudeRemoteSessionEnvironment?
+    /// The repository a remote session's cwd names by Claude Code's worktree
+    /// layout (`ClaudeWorkspaceReference.claudeWorktreeRepository`). A label,
+    /// like `workspace`; remote only.
+    public var remoteWorktreeRepository: String?
     public var firstSeen: Date
     public var lastActivity: Date
 
@@ -93,12 +97,20 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
     }
 
     /// The workspace learned terms are filed under: `workspace`, except that
-    /// a remote session's label is its host's name for the repository when
-    /// the host sent one (`preferringRemoteProject`). Only for that key: the
+    /// a remote session's label is its repository's name when one is known
+    /// (`remoteProject`, `preferringRemoteProject`). Only for that key: the
     /// session keeps showing its own cwd label everywhere else.
     package var learnedTermWorkspace: ClaudeWorkspaceReference? {
         guard !origin.isLocalAuthenticated else { return workspace }
-        return workspace?.preferringRemoteProject(remoteEnvironment?.project)
+        return workspace?.preferringRemoteProject(remoteProject)
+    }
+
+    /// A remote session's repository name: the one its host sent, else the
+    /// one its cwd's Claude Code worktree layout gives. Nil for a local
+    /// session.
+    package var remoteProject: String? {
+        guard !origin.isLocalAuthenticated else { return nil }
+        return remoteEnvironment?.project ?? remoteWorktreeRepository
     }
 
     /// Recent files that name paths on THIS machine.
@@ -188,6 +200,7 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
         self.activity = .idle
         self.process = nil
         self.remoteEnvironment = nil
+        self.remoteWorktreeRepository = nil
         self.firstSeen = firstSeen
         self.lastActivity = firstSeen
     }
@@ -230,6 +243,9 @@ public enum ClaudeSessionReducer {
 
         if let workspace = ClaudeWorkspaceReference.make(rawCwd: record.rawCwd, origin: origin) {
             snapshot.workspace = workspace
+            if case .remote = origin, let rawCwd = record.rawCwd {
+                snapshot.remoteWorktreeRepository = ClaudeWorkspaceReference.claudeWorktreeRepository(rawCwd: rawCwd)
+            }
         }
         // Never absorbed from a focus record (declaration or retraction): its
         // process block describes the PANE (the declarer's tty and pid), not

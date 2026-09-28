@@ -182,7 +182,7 @@ write_header() {
   cat 2>/dev/null >"$1" <<HEADERS
 Authorization: Bearer $2
 X-Lvx-Agent: vibe
-X-Lvx-Vibe-Hooks-Version: 1.3.0
+X-Lvx-Vibe-Hooks-Version: 1.10.0
 HEADERS
 }
 write_header "$WORK/header" "$TOKEN" || exit 0
@@ -264,6 +264,16 @@ lvx_project() {
 }
 LVX_PROJECT="$(lvx_project 2>/dev/null)" || LVX_PROJECT=""
 
+# --- Repository (#926) --------------------------------------------------------
+# The owner/name of the repository's origin when it is on github.com, from
+# capture.sh's parser, the one the draft run lists issues with. Asked only
+# inside a repository; anything else, or an origin off GitHub, sends no
+# header. The Mac keeps it on the project as its filing repository.
+LVX_REPOSITORY=""
+if [ -n "$LVX_PROJECT" ] && [ -r "$DIR/capture.sh" ]; then
+  LVX_REPOSITORY="$(sh "$DIR/capture.sh" repository </dev/null 2>/dev/null)" || LVX_REPOSITORY=""
+fi
+
 (
   LC_ALL=C
   export LC_ALL
@@ -288,6 +298,7 @@ LVX_PROJECT="$(lvx_project 2>/dev/null)" || LVX_PROJECT=""
   set +f
   lvx_env_header 'X-Lvx-Env-Hook-Parent-Pid' "$AGENT_PID"
   lvx_env_header 'X-Lvx-Env-Project' "${LVX_PROJECT:-}"
+  lvx_env_header 'X-Lvx-Env-Repository' "${LVX_REPOSITORY:-}"
 ) 2>/dev/null || :
 
 # --- Project terms (#641) ----------------------------------------------------
@@ -305,7 +316,10 @@ LVX_PROJECT="$(lvx_project 2>/dev/null)" || LVX_PROJECT=""
 # included: a per-project stamp directory, taken by an atomic mkdir, holds the
 # attempt time, and terms.sh writes `done` there after the Mac accepts the
 # answer. The project is the git toplevel of this hook's cwd, or the cwd
-# outside git; its stamp is named by the cksum of that path.
+# outside git; its stamp is named by the cksum of that path. The stamps move
+# to a new directory whenever the prompt asks for something new: `terms-2`
+# for the project's sentence (#891), `terms-3` for names people say (#914).
+# A project answered under an older prompt is asked once more.
 lvx_terms_start() {
   _lvx_agent="$1"
   _lvx_session="$2"
@@ -320,7 +334,7 @@ lvx_terms_start() {
   _lvx_crc="${_lvx_sum%% *}"
   _lvx_len="${_lvx_sum##* }"
   case "$_lvx_crc$_lvx_len" in "" | *[!0-9]*) return 0 ;; esac
-  _lvx_terms="$STAMP_DIR/terms"
+  _lvx_terms="$STAMP_DIR/terms-3"
   { mkdir -p "$_lvx_terms" && chmod 700 "$STAMP_DIR" "$_lvx_terms"; } 2>/dev/null || return 0
   _lvx_stamp="$_lvx_terms/$_lvx_crc-$_lvx_len"
   if ! mkdir "$_lvx_stamp" 2>/dev/null; then

@@ -91,20 +91,6 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         XCTAssertEqual(dir.mode, 0o700)
     }
 
-    func testStopRemovesSocket() throws {
-        try broker.start()
-        broker.stop()
-        XCTAssertFalse(broker.isRunning)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
-    }
-
-    func testDoubleStartIsRejected() throws {
-        try broker.start()
-        XCTAssertThrowsError(try broker.start()) { error in
-            XCTAssertEqual(error as? ClaudeContextBroker.StartFailure, .alreadyRunning)
-        }
-    }
-
     func testStopThenStartAgainWorks() throws {
         // The accept loop owns the listener fd and closes it on the way out.
         // If stop() failed to wake it, the loop would still hold the socket and
@@ -122,16 +108,6 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         XCTAssertNil(send(try XCTUnwrap(ClaudeHookWireCodec.encodeLine(record))))
         wait(for: [expectation], timeout: 5)
         XCTAssertNotNil(registry.snapshot(sessionID: "restarted"))
-    }
-
-    func testStopWithNoConnectionEverMadeStillReturns() throws {
-        // The accept loop is parked in poll() with nothing pending — exactly
-        // the state where a wakeup that relied on shutdown()/close() alone
-        // would leave it blocked forever.
-        try broker.start()
-        broker.stop()
-        XCTAssertFalse(broker.isRunning)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
     }
 
     // MARK: Reply shape — a receipt, never a channel
@@ -786,23 +762,22 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
 
     // MARK: Publisher fail-open
 
-    func testPublishToAbsentSocketReportsNotListening() {
-        // The overwhelmingly common case: app not running. The publisher's
-        // caller turns this into a silent exit 0.
-        let failure = send(Data("{}\n".utf8))
-        XCTAssertEqual(failure, .notListening)
-    }
-
-    func testPublishToOverlongSocketPathIsRejectedNotCrashed() {
-        let failure = UnixSocketPublisher().publish(
-            line: Data("{}\n".utf8),
-            to: "/tmp/" + String(repeating: "p", count: 200)
-        )
-        XCTAssertEqual(failure, .socketPathTooLong)
-    }
-
-    func testPublishToEmptyPathIsRejected() {
-        XCTAssertEqual(UnixSocketPublisher().publish(line: Data("{}\n".utf8), to: ""), .noSocketPath)
+    /// Each way a socket path can be unusable is reported to the publisher's
+    /// caller — which turns it into a silent exit 0 — never a crash. The
+    /// absent path is the overwhelmingly common case: the app is not running.
+    func testPublishToAnUnusablePathReportsTheSpecificFailure() {
+        let cases: [(label: String, path: String, failure: ClaudeHookPublishFailure)] = [
+            ("app not running", socketPath, .notListening),
+            ("overlong for sockaddr_un", "/tmp/" + String(repeating: "p", count: 200), .socketPathTooLong),
+            ("empty path", "", .noSocketPath),
+        ]
+        for row in cases {
+            XCTAssertEqual(
+                UnixSocketPublisher().publish(line: Data("{}\n".utf8), to: row.path),
+                row.failure,
+                row.label
+            )
+        }
     }
 }
 
@@ -854,21 +829,6 @@ final class ClaudeContextBrokerLifecycleTests: XCTestCase {
         // stop() waits for the accept loop's defer, which is what unlinks. If it
         // did not wait, this would be a race rather than an assertion.
         XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
-    }
-
-    func testStopThenStartRebindsWithoutLosingTheSocket() throws {
-        let broker = makeBroker()
-        try broker.start()
-        broker.stop()
-
-        try broker.start()
-
-        // The regression: without stop() waiting for the loop, the outgoing
-        // loop's unlink lands AFTER the new bind and deletes the socket out from
-        // under a broker that reports itself running. Publishers then get
-        // ENOENT forever and nothing logs a thing.
-        XCTAssertTrue(broker.isRunning)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: socketPath))
     }
 
     func testStartIsRefusedWhileAlreadyRunning() throws {

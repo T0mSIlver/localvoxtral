@@ -18,7 +18,7 @@ private final class OutcomeDesktopReadCounter: Sendable {
 ///
 /// The line is the only record of a join that survives the dictation: every
 /// arm logs its outcome at `.info`, which the unified log does not keep, and
-/// the gates used to note their cause only in a dogfood build.
+/// the gates used to note their cause only in a harness build.
 @MainActor
 final class ClaudeJoinOutcomeLineTests: XCTestCase {
     private let remoteEndpoint = "https://api.example.com/v1/chat/completions"

@@ -3,37 +3,86 @@ import Foundation
 /// One project a quick capture can be routed to (#725), as the classifier
 /// sees it. Repository names alone route badly ("sometimes it's not
 /// representative of the project"), so each goes out with a description:
-/// its README's first paragraph, its own terms, and a line the user wrote.
+/// the user's line, else GitHub's description (#926), else the one its
+/// agent wrote (#891); its README's first paragraphs; GitHub's topics; its
+/// own terms.
 ///
-/// The projects are the ones the learned-terms file holds: every local
-/// checkout a joined dictation has shown the app (#609 stamps each one), and
-/// every remote repository a hook has named (#819). Nothing here comes from
-/// the screen or the clipboard.
+/// The projects are the learned terms' (`LearnedTerms.listedProjects`), the
+/// same ones the learned-terms sheet shows, except that a checkout on the
+/// Mac and one on a host of the same repository are one option here.
+/// Nothing here comes from the screen or the clipboard.
 package struct QuickCaptureProject: Equatable, Sendable {
     /// `LearnedTermProject.key`: a main checkout's path, or `remote:<label>`.
+    /// For a repository checked out in several places, the Mac's checkout
+    /// when its folder is there, since it drafts without waiting for a host.
     package let key: String
+    /// Every key joined under `repository`, `key` first.
+    package let keys: [String]
     package let name: String
     /// The README's opening paragraphs: read from a local checkout, or kept
     /// from the host's report for a remote project (#745). Nil when neither
     /// has one.
     package let summary: String?
     package let terms: [String]
-    /// What the user wrote about the project, when they did.
+    /// The project's agent's sentence about it (#891), when it answered.
+    package let agentLine: String?
+    /// What the user wrote about the project, when they did. It replaces
+    /// GitHub's description and the agent's sentence.
     package let userLine: String?
+    /// `owner/name` from the project's `origin` or the user's answer.
+    package let repository: String?
+    /// Where File sends its issues (`LearnedTermProject.issueRepository`).
+    package let issueRepository: String?
+    package let github: GitHubRepositoryFacts?
 
-    package init(key: String, name: String, summary: String?, terms: [String], userLine: String?) {
+    package init(
+        key: String, name: String, summary: String?, terms: [String],
+        agentLine: String? = nil, userLine: String?,
+        keys: [String]? = nil, repository: String? = nil, issueRepository: String? = nil,
+        github: GitHubRepositoryFacts? = nil
+    ) {
         self.key = key
+        self.keys = keys ?? [key]
         self.name = name
         self.summary = summary
         self.terms = terms
+        self.agentLine = agentLine
         self.userLine = userLine
+        self.repository = repository
+        self.issueRepository = issueRepository ?? repository
+        self.github = github
     }
 
-    /// The text the classifier reads for this option.
+    /// GitHub's description, as a sentence, and the upstream a fork has.
+    package var githubLine: String? {
+        guard let github else { return nil }
+        var parts: [String] = []
+        if let description = github.description?.trimmingCharacters(in: .whitespacesAndNewlines), !description.isEmpty {
+            let clipped = QuickCaptureProjects.clipped(description, to: QuickCaptureProjects.maxUserLineCharacters)
+            parts.append(clipped.hasSuffix(".") || clipped.hasSuffix("…") ? clipped : clipped + ".")
+        }
+        if let parent = github.parent { parts.append("A fork of \(parent).") }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+
+    /// The description filled in without the user: GitHub's, else the
+    /// agent's sentence, else the README summary, cut like the user's line.
+    /// The Projects pane shows it until the user writes their
+    /// own.
+    package var automaticLine: String? {
+        githubLine ?? agentLine
+            ?? summary.map { QuickCaptureProjects.clipped($0, to: QuickCaptureProjects.maxUserLineCharacters) }
+    }
+
+    /// The text the classifier reads for this option, in the order #920
+    /// measured: the line, the README, GitHub's topics, the terms.
     package var description: String {
         var parts: [String] = ["Project \(name)."]
-        if let userLine { parts.append(userLine) }
+        if let line = userLine ?? githubLine ?? agentLine { parts.append(line) }
         if let summary { parts.append(summary) }
+        if userLine == nil, let topics = github?.topics, !topics.isEmpty {
+            parts.append("Topics: " + topics.prefix(QuickCaptureProjects.maxTopics).joined(separator: ", ") + ".")
+        }
         if !terms.isEmpty { parts.append("Its names: " + terms.joined(separator: ", ") + ".") }
         return parts.joined(separator: " ")
     }
@@ -47,59 +96,78 @@ package enum QuickCaptureProjects {
     package static let maxSummaryCharacters = 400
     package static let summaryParagraphs = 2
     package static let maxUserLineCharacters = 200
-    /// A remote cwd label is listed this long after a hook last named it.
-    /// Only a host older than plugin 1.13.0 (#652) sends one for a session
-    /// in a repository, and there each worktree has its own label: listed
-    /// while its sessions run, gone a week after.
-    package static let remoteLabelListedDays = 7
 
-    /// Every project in `learned` a capture can go to, most recent first: a
-    /// local checkout, or a remote project a hook has named since #819 (a
-    /// repository at any time, a cwd label within `remoteLabelListedDays`).
-    /// A remote project no hook has named is a label no session reports any
-    /// more, such as a worktree's from before #652, and the shared bucket is
-    /// no project; neither is listed.
+    /// GitHub allows 20 topics; the router reads this many.
+    package static let maxTopics = 12
+
+    /// Every project a capture can go to (`LearnedTerms.listedProjects`),
+    /// most recent first, each with its description. Projects that name one
+    /// repository are one option (#926): the Mac's checkout's key, else the
+    /// most recent, with the terms of all of them. A Mac checkout whose
+    /// folder is gone leads only when no host has the repository.
     ///
     /// - Parameters:
     ///   - userLines: the user's line per project key.
     ///   - readme: the README text of a local project root, nil when none.
+    ///   - checkoutExists: whether a local project root is still a folder.
     package static func projects(
         from learned: LearnedTerms,
         userLines: [String: String],
         now: Date,
-        readme: (String) -> String?
-    ) -> [QuickCaptureProject] {
-        func recency(_ project: LearnedTermProject) -> Date {
-            max(project.lastSeen, project.reportedAt ?? project.lastSeen)
+        readme: (String) -> String?,
+        checkoutExists: (String) -> Bool = { path in
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
         }
-        return learned.projects
-            .filter { !$0.key.isEmpty && !$0.name.isEmpty && isListed($0, now: now) }
-            .sorted { recency($0) > recency($1) }
-            .map { project in
-                let terms = learned.confirmedTerms(projectKey: project.key)
-                    + learned.unconfirmedProposals(projectKey: project.key)
-                let summary = project.key.hasPrefix("/")
-                    ? readme(project.key).flatMap(summary(ofReadme:))
-                    : project.summary
-                return QuickCaptureProject(
-                    key: project.key,
-                    name: project.name,
-                    summary: summary.map { clipped($0, to: maxSummaryCharacters) },
-                    terms: Array(terms.prefix(maxTerms)),
-                    userLine: userLines[project.key]
-                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                        .flatMap { $0.isEmpty ? nil : clipped($0, to: maxUserLineCharacters) }
-                )
+    ) -> [QuickCaptureProject] {
+        let listed = learned.listedProjects(now: now)
+        var groups: [[LearnedTermProject]] = []
+        var groupOfRepository: [String: Int] = [:]
+        for project in listed {
+            if let repository = project.repository, let index = groupOfRepository[repository] {
+                groups[index].append(project)
+            } else {
+                if let repository = project.repository { groupOfRepository[repository] = groups.count }
+                groups.append([project])
             }
-    }
-
-    private static func isListed(_ project: LearnedTermProject, now: Date) -> Bool {
-        if project.key.hasPrefix("/") { return true }
-        guard project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix),
-              let reported = project.reportedAt
-        else { return false }
-        return project.reportedAsRepository == true
-            || now.timeIntervalSince(reported) < Double(remoteLabelListedDays) * 86_400
+        }
+        return groups.map { group in
+            var members = group.filter { $0.key.hasPrefix("/") } + group.filter { !$0.key.hasPrefix("/") }
+            if group.count > 1, let lead = members.firstIndex(where: { !$0.key.hasPrefix("/") || checkoutExists($0.key) }) {
+                members.insert(members.remove(at: lead), at: 0)
+            }
+            let primary = members[0]
+            var seen = Set<String>()
+            var terms: [String] = []
+            for member in members {
+                for term in learned.confirmedTerms(projectKey: member.key) + learned.unconfirmedProposals(projectKey: member.key)
+                where seen.insert(term.caseFoldedForMatching).inserted {
+                    terms.append(term)
+                }
+            }
+            var summary: String?
+            for member in members where summary == nil {
+                summary = member.key.hasPrefix("/") ? readme(member.key).flatMap(Self.summary(ofReadme:)) : member.summary
+            }
+            let userLine = members.lazy.compactMap { member in
+                userLines[member.key]
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .flatMap { $0.isEmpty ? nil : clipped($0, to: maxUserLineCharacters) }
+            }.first
+            let github = members.lazy.compactMap(\.github).first
+            return QuickCaptureProject(
+                key: primary.key,
+                name: primary.name,
+                summary: summary.map { clipped($0, to: maxSummaryCharacters) },
+                terms: Array(terms.prefix(maxTerms)),
+                agentLine: members.lazy.compactMap(\.agentLine).first,
+                userLine: userLine,
+                keys: members.map(\.key),
+                repository: primary.repository,
+                issueRepository: primary.issueRepository,
+                github: github
+            )
+        }
     }
 
     /// The summary kept for a remote project from the README opening its
@@ -207,7 +275,7 @@ package enum QuickCaptureProjects {
             .trimmingCharacters(in: .whitespaces)
     }
 
-    private static func clipped(_ text: String, to limit: Int) -> String {
+    package static func clipped(_ text: String, to limit: Int) -> String {
         guard text.count > limit else { return text }
         return String(text.prefix(limit - 1)) + "…"
     }

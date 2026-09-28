@@ -382,7 +382,7 @@ final class SpeakerTermSuggestionModel {
             guard ownsRow else { return .notRun }
             phase = background ? .idle : .failed("The polishing model did not answer.")
             Log.polishing.error(
-                "Term suggestions failed: \(error.localizedDescription, privacy: .public)"
+                "Term suggestions failed: \(LLMPolishingError.publicLogDescription(of: error), privacy: .public) \(error.localizedDescription, privacy: .private)"
             )
             return .failed
         }

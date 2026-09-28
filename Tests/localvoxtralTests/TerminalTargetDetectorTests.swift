@@ -106,50 +106,32 @@ final class TerminalTargetDetectorTests: XCTestCase {
         XCTAssertFalse(TerminalTargetDetector.isTerminalLikeBundleID("dev.warplike.Other"))
     }
 
-    func testFixtureUsesDeadExternalBackendInsteadOfLiveManagedService() {
-        let viewModel = makeViewModel(outputMode: .overlayBuffer)
-
-        XCTAssertEqual(viewModel.settings.dictationBackendMode, .externalURL)
-        XCTAssertEqual(
-            viewModel.settings.resolvedWebSocketURL?.absoluteString,
-            "ws://127.0.0.1:1/realtime"
-        )
-    }
-
     // MARK: - Decision logic (injected AX probe)
 
-    func testUnknownBundleWithUnsettableValueIsTerminalLike() {
-        let decision = TerminalTargetDetector.decision(forBundleID: "com.example.unknown") {
-            .valueNotSettable
+    func testUnknownBundleDecisionFollowsTheAXProbeResult() {
+        let cases: [(
+            probe: TerminalTargetDetector.FocusedElementProbe,
+            isTerminalLike: Bool,
+            reason: TerminalTargetDetector.Reason,
+            row: String
+        )] = [
+            (.valueNotSettable, true, .axProbeValueNotSettable, "valueNotSettable"),
+            (.noFocusedElement, true, .axProbeNoFocusedElement, "noFocusedElement"),
+            (.valueSettable, false, .axProbeValueSettable, "valueSettable"),
+            // AX trust missing / transient AX errors must not flip ordinary apps
+            // terminal-like — "couldn't tell" is distinct from "confirmed grid".
+            (.probeUnavailable, false, .axProbeUnavailable, "probeUnavailable"),
+        ]
+        for row in cases {
+            let decision = TerminalTargetDetector.decision(forBundleID: "com.example.unknown") {
+                row.probe
+            }
+            XCTAssertEqual(
+                decision.isTerminalLike, row.isTerminalLike,
+                "\(row.row): a terminal grid reads unsettable or missing; a writable value is an ordinary editor"
+            )
+            XCTAssertEqual(decision.reason, row.reason, row.row)
         }
-        XCTAssertTrue(decision.isTerminalLike)
-        XCTAssertEqual(decision.reason, .axProbeValueNotSettable)
-    }
-
-    func testUnknownBundleWithMissingFocusedElementIsTerminalLike() {
-        let decision = TerminalTargetDetector.decision(forBundleID: "com.example.unknown") {
-            .noFocusedElement
-        }
-        XCTAssertTrue(decision.isTerminalLike)
-        XCTAssertEqual(decision.reason, .axProbeNoFocusedElement)
-    }
-
-    func testUnknownBundleWithSettableValueIsNotTerminalLike() {
-        let decision = TerminalTargetDetector.decision(forBundleID: "com.example.unknown") {
-            .valueSettable
-        }
-        XCTAssertFalse(decision.isTerminalLike)
-        XCTAssertEqual(decision.reason, .axProbeValueSettable)
-    }
-
-    func testUnknownBundleWithUnavailableProbeIsNotTerminalLike() {
-        // AX trust missing / transient AX errors must not flip ordinary apps
-        // terminal-like — "couldn't tell" is distinct from "confirmed grid".
-        let decision = TerminalTargetDetector.decision(forBundleID: "com.example.unknown") {
-            .probeUnavailable
-        }
-        XCTAssertFalse(decision.isTerminalLike)
-        XCTAssertEqual(decision.reason, .axProbeUnavailable)
     }
 
     func testAllowlistedBundleIsTerminalLikeWithoutProbing() {
@@ -292,9 +274,9 @@ final class TerminalTargetDetectorTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         await viewModel.session.beginDictationSession(outputMode: .overlayBuffer)
-        XCTAssertFalse(
-            viewModel.audio.hasInitializedMicrophone,
-            "connecting must not eagerly initialize CoreAudio"
+        XCTAssertTrue(
+            viewModel.fakeMicrophone.isCapturing(),
+            "the dial opens the microphone, so speech during the connect is kept (#527)"
         )
 
         XCTAssertEqual(
@@ -307,8 +289,8 @@ final class TerminalTargetDetectorTests: XCTestCase {
 
         viewModel.session.abortConnectingSession()
         XCTAssertFalse(
-            viewModel.audio.hasInitializedMicrophone,
-            "aborting before audio starts must not register CoreAudio listeners"
+            viewModel.fakeMicrophone.isCapturing(),
+            "aborting the connect stops the microphone"
         )
     }
 
@@ -816,10 +798,12 @@ final class TerminalTargetDetectorTests: XCTestCase {
         // the mode that actually consults it.
         settings.dictationBackendMode = .externalURL
         settings.realtimeAPIEndpointURL = "ws://127.0.0.1:1/realtime"
+        // The dial opens the microphone (#527): never the host's.
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: coordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(microphone: { FakeMicrophoneCaptureService() })
         )
         viewModel.session.realtimeAPIClient.debugSkipSocketCreationForTesting()
         // Keep tests hermetic: capture reads the terminal-apps config through

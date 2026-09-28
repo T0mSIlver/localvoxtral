@@ -113,6 +113,13 @@ package struct LearnedTerm: Codable, Equatable, Sendable {
     package var isUnconfirmedProposal: Bool {
         proposerName != nil && !isConfirmed(minimumDictations: LearnedTerms.confirmedDictations)
     }
+
+    /// Only agents taught it, and the user has not used, pinned or corrected
+    /// to it: dropping it loses nothing they did.
+    var isUntouchedProposal: Bool {
+        !sources.isEmpty && sources.allSatisfy { $0.hasPrefix(LearnedTerm.agentSourcePrefix) }
+            && dictations == 0 && !isPinned && !isConfirmedByCorrection
+    }
 }
 
 /// One project's remembered terms. A project is a git root, a remote session's
@@ -146,6 +153,38 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
     /// True once a host named it through `X-Lvx-Env-Project`: the name of a
     /// repository, not of the directory a session happened to run in.
     package var reportedAsRepository: Bool? = nil
+    /// The project's agent's one sentence about it (#891), asked with its
+    /// terms: what the project is and what it has. Quick capture's router
+    /// reads it when the user wrote no line.
+    package var agentLine: String? = nil
+    /// When an answer to the prompt that asks for that sentence landed,
+    /// with or without one. Nil on a project answered before #891, which
+    /// is asked once more.
+    package var agentLineAt: Date? = nil
+    /// The `ProjectTermProposal.promptRevision` the last answer was asked
+    /// with. Nil on an answer from before the field: see `answeredRevision`.
+    package var proposalRevision: Int? = nil
+    /// The project's GitHub repository, `owner/name` (#926): its `origin`,
+    /// read on the Mac for a local checkout and sent by the host's shim as
+    /// `X-Lvx-Env-Repository` for a remote one, else the user's answer when
+    /// the Inbox asked (`repositoryTyped`). A host's value is a label like
+    /// its project name: only ever a `gh --repo` argument.
+    package var repository: String? = nil
+    /// The user typed `repository` because the project had no GitHub
+    /// `origin`. An `origin` read later replaces it; a missing one does not.
+    package var repositoryTyped: Bool? = nil
+    /// What GitHub says about `repository`, for quick capture's router.
+    package var github: GitHubRepositoryFacts? = nil
+    /// When `github` was fetched; asked again after `githubRefreshDays`.
+    package var githubAt: Date? = nil
+    /// The user files this fork's issues in its upstream (GitHub's
+    /// `parent`), not in the fork. Nil until the user picks; it files in
+    /// the fork meanwhile.
+    package var filesUpstream: Bool? = nil
+    /// The enrolled hosts (`ClaudeRemoteHost.id`) whose hooks named this
+    /// remote project, so the Projects pane can say where it is checked
+    /// out. Nil on a local project and on one no hook named since.
+    package var hostIDs: [String]? = nil
 
     package init(
         key: String,
@@ -163,13 +202,44 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
         self.proposalAttemptedAt = proposalAttemptedAt
     }
 
+    /// Where File sends this project's issues: the fork's upstream when the
+    /// user chose it and GitHub named one, else `repository`.
+    package var issueRepository: String? {
+        if filesUpstream == true, let parent = github?.parent { return parent }
+        return repository
+    }
+
     /// A project kept for its stamp alone: an agent answered with nothing
     /// new, or failed, and emptying it would ask again.
     package var hasProposalStamp: Bool { proposedAt != nil || proposalAttemptedAt != nil }
 
+    /// The prompt revision the project's answer came from, nil when it has
+    /// none. An answer older than `proposalRevision` is revision 2 when it
+    /// carried the sentence (#891), else 1.
+    package var answeredRevision: Int? {
+        guard proposedAt != nil else { return nil }
+        return proposalRevision ?? (agentLineAt != nil ? 2 : 1)
+    }
+
     /// Kept with no terms: a proposal stamp, or a hook that named it. A
     /// project holding neither is dropped once its last term goes.
     var isKeptWithoutTerms: Bool { hasProposalStamp || reportedAt != nil }
+}
+
+/// A repository's description and topics as GitHub reports them
+/// (`gh api repos/<owner>/<name>`, #926), and the repository it was forked
+/// from.
+package struct GitHubRepositoryFacts: Codable, Equatable, Sendable {
+    package var description: String?
+    package var topics: [String]
+    /// `owner/name` of the repository this one is a fork of.
+    package var parent: String?
+
+    package init(description: String?, topics: [String], parent: String?) {
+        self.description = description
+        self.topics = topics
+        self.parent = parent
+    }
 }
 
 /// A project's stable key and the name a human would recognize
@@ -226,6 +296,9 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     package static let staleAfterDays = 90
     /// A remote README summary is asked for again after this long.
     package static let summaryRefreshDays = 7
+    /// GitHub's description and topics are fetched again after this long,
+    /// or when the Projects pane opens.
+    package static let githubRefreshDays = 7
 
     /// Longest spelling remembered. Matches `SpeakerTerms.maxTermCharacters`,
     /// since both feed the same prompt slot.
@@ -274,9 +347,6 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
             .map(\.term)
     }
 
-    /// Whether a joined dictation in this project should ask its agent for
-    /// terms: never asked, or the last attempt failed at least
-    /// `ProjectTermProposal.retryAfter` ago.
     /// Whether a remote project's host should be asked for its README
     /// (#745): a project a dictation has shown the app, with no report or
     /// one older than `LearnedTerms.summaryRefreshDays`.
@@ -304,10 +374,14 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// only stamps a project a dictation already added: every worktree has
     /// its own label, and none of them is a project. Returns true when it
     /// added the project.
+    /// `repository` is the host's `origin`, kept only with a repository's
+    /// name.
     @discardableResult
     package mutating func recordRemoteReport(
         project: LearnedTermProjectIdentity,
         asRepository: Bool,
+        repository: String? = nil,
+        hostID: String? = nil,
         now: Date
     ) -> Bool {
         guard project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix) else { return false }
@@ -321,14 +395,131 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
             index = projects.count - 1
         }
         projects[index].reportedAt = now
-        if asRepository { projects[index].reportedAsRepository = true }
+        if let hostID, !(projects[index].hostIDs ?? []).contains(hostID) {
+            projects[index].hostIDs = (projects[index].hostIDs ?? []) + [hostID]
+        }
+        if asRepository {
+            projects[index].reportedAsRepository = true
+            if let repository { setOriginRepository(repository, at: index) }
+        }
         prune(now: now)
         return added
     }
 
-    package func needsProposal(projectKey: String, now: Date) -> Bool {
+    /// A local checkout's `origin` names `repository`. Returns false when
+    /// the project is gone or the value is no `owner/name`.
+    @discardableResult
+    package mutating func recordOriginRepository(_ repository: String, projectKey: String) -> Bool {
+        guard let index = projects.firstIndex(where: { $0.key == projectKey }) else { return false }
+        return setOriginRepository(repository, at: index)
+    }
+
+    @discardableResult
+    private mutating func setOriginRepository(_ repository: String, at index: Int) -> Bool {
+        guard QuickCaptureInbox.isRepository(repository) else { return false }
+        if projects[index].repository != repository {
+            projects[index].repository = repository
+            projects[index].github = nil
+            projects[index].githubAt = nil
+            projects[index].filesUpstream = nil
+        }
+        projects[index].repositoryTyped = nil
+        return true
+    }
+
+    /// The user answered the Inbox's `owner/name` for a project with no
+    /// GitHub `origin`; kept so the next capture there does not ask. An
+    /// `origin` the project already has wins. Returns whether it was kept.
+    @discardableResult
+    package mutating func recordTypedRepository(_ repository: String, projectKey: String) -> Bool {
+        guard QuickCaptureInbox.isRepository(repository),
+              let index = projects.firstIndex(where: { $0.key == projectKey }),
+              projects[index].repository == nil || projects[index].repositoryTyped == true
+        else { return false }
+        if projects[index].repository != repository {
+            projects[index].github = nil
+            projects[index].githubAt = nil
+            projects[index].filesUpstream = nil
+        }
+        projects[index].repository = repository
+        projects[index].repositoryTyped = true
+        return true
+    }
+
+    /// GitHub answered for `repository`. Kept on every project that still
+    /// names it: a checkout on the Mac and one on a host share one answer.
+    package mutating func recordGitHub(_ facts: GitHubRepositoryFacts, repository: String, now: Date) {
+        for index in projects.indices where projects[index].repository == repository {
+            projects[index].github = facts
+            projects[index].githubAt = now
+        }
+    }
+
+    /// The "File issues here" choice, on every project that names
+    /// `repository`. Kept either way: a fork with no choice yet is one the
+    /// Projects pane asks about.
+    package mutating func setFilesUpstream(_ upstream: Bool, repository: String) {
+        for index in projects.indices where projects[index].repository == repository {
+            projects[index].filesUpstream = upstream
+        }
+    }
+
+    /// The repositories a listed project names whose GitHub facts are
+    /// missing or older than `githubRefreshDays`, or all of them with
+    /// `force`. Each once.
+    package func repositoriesNeedingGitHub(now: Date, force: Bool = false) -> [String] {
+        var seen = Set<String>()
+        return listedProjects(now: now).compactMap { project -> String? in
+            guard let repository = project.repository, seen.insert(repository).inserted else { return nil }
+            if force { return repository }
+            guard let fetched = project.githubAt else { return repository }
+            return now.timeIntervalSince(fetched) >= Double(Self.githubRefreshDays) * 86_400 ? repository : nil
+        }
+    }
+
+    /// Whether a joined dictation in this project should ask its agent:
+    /// never answered, or answered with an older prompt revision than
+    /// `revision`, the one this ask would carry (#891, #914). A failed
+    /// attempt waits `ProjectTermProposal.retryAfter`.
+    /// A remote working-directory name is listed this long after a hook
+    /// last named it. Only a host older than plugin 1.13.0 (#652) sends one
+    /// for a session in a repository, and there each worktree has its own:
+    /// listed while its sessions run, gone a week after.
+    package static let remoteLabelListedDays = 7
+
+    /// The projects, most recent first: what the learned-terms sheet groups
+    /// terms under and what quick capture routes to (#891). A local main
+    /// checkout; a remote project a hook named as a repository, or whose
+    /// host sent its README in the last 90 days (only a 1.17.0 shim does,
+    /// and it names the repository); an old shim's working-directory name within
+    /// `remoteLabelListedDays` of its last hook (#819). A remote name no
+    /// hook has named, such as a worktree's from before #652, is no project,
+    /// and neither is the shared bucket; their terms still apply.
+    package func listedProjects(now: Date) -> [LearnedTermProject] {
+        func recency(_ project: LearnedTermProject) -> Date {
+            max(project.lastSeen, project.reportedAt ?? project.lastSeen)
+        }
+        return projects
+            .filter { !$0.key.isEmpty && !$0.name.isEmpty && Self.isListed($0, now: now) }
+            .sorted { recency($0) != recency($1) ? recency($0) > recency($1) : $0.key < $1.key }
+    }
+
+    private static func isListed(_ project: LearnedTermProject, now: Date) -> Bool {
+        if project.key.hasPrefix("/") { return true }
+        guard project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix) else { return false }
+        if project.reportedAsRepository == true { return true }
+        if let summaryAt = project.summaryAt,
+           now.timeIntervalSince(summaryAt) < Double(staleAfterDays) * 86_400
+        {
+            return true
+        }
+        guard let reported = project.reportedAt else { return false }
+        return now.timeIntervalSince(reported) < Double(remoteLabelListedDays) * 86_400
+    }
+
+    package func needsProposal(projectKey: String, now: Date, revision: Int = 1) -> Bool {
         guard let project = projects.first(where: { $0.key == projectKey }) else { return true }
-        if project.proposedAt != nil { return false }
+        if let answered = project.answeredRevision, answered >= revision { return false }
         guard let attempted = project.proposalAttemptedAt else { return true }
         return now.timeIntervalSince(attempted) >= ProjectTermProposal.retryAfter
     }
@@ -475,16 +666,29 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// project already holds, in any state, or one in `excluding` (the
     /// user's own list and the suggestions they refused) is dropped. The
     /// project is stamped even when nothing is added, so it is not asked
-    /// again. Returns how many terms were added.
+    /// again. `line` is the answer's sentence (#891), empty when the prompt
+    /// asked for one and none came, nil when the answer is from a runner
+    /// that did not ask. `revision` is the prompt revision the answer was
+    /// asked with, nil when the caller does not know it. An answer from a
+    /// newer revision replaces the older answer's terms that nothing has
+    /// confirmed or used since (#914). Returns how many terms were added.
     @discardableResult
     package mutating func recordProposal(
         _ raw: [String],
+        line: String? = nil,
+        revision: Int? = nil,
         agent: ProjectTermProposal.Agent,
         project: LearnedTermProjectIdentity,
         excluding: [String] = [],
         now: Date
     ) -> Int {
         let index = projectIndex(for: project, now: now)
+        let previousRevision = projects[index].answeredRevision
+        if let revision, let answered = previousRevision, answered < revision,
+           let answeredAt = projects[index].proposedAt
+        {
+            projects[index].terms.removeAll { $0.isUntouchedProposal && $0.firstSeen == answeredAt }
+        }
         var known = Set(projects[index].terms.map(\.term.caseFoldedForMatching))
         known.formUnion(excluding.map(\.caseFoldedForMatching))
         var added = 0
@@ -496,6 +700,13 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         }
         projects[index].proposedAt = now
         projects[index].proposalAttemptedAt = nil
+        // A late answer from an older runner never lowers the revision, or
+        // every newer runner would ask again.
+        if let revision { projects[index].proposalRevision = max(revision, previousRevision ?? revision) }
+        if let line {
+            projects[index].agentLine = ProjectTermProposal.acceptedLine(line)
+            projects[index].agentLineAt = now
+        }
         prune(now: now)
         return added
     }
@@ -590,6 +801,24 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
             LearnedTermProject(key: project.key, name: project.name, terms: [], lastSeen: now)
         )
         return projects.count - 1
+    }
+
+    /// Drops the proposals shaped like code (`SpokenTermShape`) that the user
+    /// has not used, pinned or corrected to: what agents proposed before
+    /// answers were filtered (#914). A project emptied by it keeps its stamp.
+    /// Returns how many were dropped.
+    @discardableResult
+    package mutating func dropIdentifierProposals() -> Int {
+        var dropped = 0
+        for index in projects.indices {
+            let before = projects[index].terms.count
+            projects[index].terms.removeAll {
+                $0.isUntouchedProposal && SpokenTermShape.identifier(in: $0.term) != nil
+            }
+            dropped += before - projects[index].terms.count
+        }
+        projects.removeAll { $0.terms.isEmpty && !$0.isKeptWithoutTerms }
+        return dropped
     }
 
     /// Decay and caps, applied after every write and after every load: a file

@@ -362,7 +362,9 @@ there is not.
   the commit path never walks the filesystem for it, and it inherits that
   pipeline's title parsing, ssh titles included. A remote session's key is
   the basename of its repository's main checkout when its host's shim sends
-  `X-Lvx-Env-Project`, else its cwd label, so two repositories with one
+  `X-Lvx-Env-Project`, else the `<repo>` of a Claude Code worktree cwd
+  (`…/<repo>/.claude/worktrees/<name>`: a Desktop session keeps the plugin
+  it started with for days), else its cwd label, so two repositories with one
   basename on one host share a bucket: the price of never holding a remote
   path), and once three separate
   dictations have resolved it, it grounds later ones and rides in the prompt
@@ -379,7 +381,7 @@ there is not.
   sum; a remembered term never outranks a live
   source (`.learned` is LAST in `PolishContextSource`, so a contested span
   abstains); unpinned terms decay at 90 days; and Text processing →
-  Advanced → Terms learned from polishing → Forget drops the file (Show forgets one). Verification candidates are never
+  Advanced → Terms learned from polishing → Forget drops the file (Show, or a project's Show all in Projects, forgets one). Verification candidates are never
   recorded — they are questions put to the model, not answers. A dictation
   whose project cannot be established teaches nothing at all, which is not
   the same as one with no project: the latter teaches the shared bucket,
@@ -1030,7 +1032,7 @@ there is not.
     ProxyCommand's grandchild stays a root and abstains — conservative on
     purpose. Probe abstentions carry a content-free cause category
     (`SSHProbeIndeterminacy` — never a host, path, or option letter) into the
-    log and the dogfood record, because three field dictations were diagnosed
+    log and the diagnostic record, because three field dictations were diagnosed
     blind without one;
     It then requires that ssh session to BE a plain whole-view herdr client — classified, not
     boolean (`HerdrInvocation`): the remote command's first argv token has
@@ -1308,7 +1310,7 @@ there is not.
     arm's Accessibility read, which switches Electron's accessibility tree on
     and is therefore never a default.
     What the verb PRINTS is bounded by `ClaudeSessionJoinSummary`, the single
-    mapper the dogfood record also uses: an arm name, the resolver's own
+    mapper the diagnostic record also uses: an arm name, the resolver's own
     content-free abstention categories, an origin CLASS, a terminal NAME, and
     two Bools — never a session id, pane id, socket path, host, nonce, or
     workspace path. The live registry is in the app, so the verb restores the
@@ -2010,7 +2012,17 @@ there is not.
   repository; it replaces the cwd label only as the learned-terms key
   (`ClaudeSessionSnapshot.learnedTermWorkspace`), and only when it is already
   a label under `ClaudeWorkspaceReference.opaqueLabel`'s rule: a value that
-  would need reshaping is refused, never reshaped.
+  would need reshaping is refused, never reshaped. Without the header, the
+  directory above a cwd's `.claude/worktrees/<name>` stands in for it
+  (`claudeWorktreeRepository`), under the same rule; it is read off the cwd
+  as it arrives and kept as a label, like the cwd's own.
+  `X-Lvx-Env-Repository` (#926) is the host's `origin` on github.com as
+  `owner/name`, from `capture.sh repository`. It is kept on the project only
+  beside `X-Lvx-Env-Project` and only when `QuickCaptureInbox.isRepository`
+  accepts it (no `.` or `..` part), and it is used only as `gh issue create
+  --repo`, after the Inbox shows it, and as `gh api repos/<owner>/<name>`,
+  which only reads. A squatter on the port cannot send it: it rides on the
+  host's authenticated hook.
 - **A remote request names its agent in a header, and the header buys nothing
   but a namespace.** A remote host runs no publisher of ours, so the agent
   cannot ride inside the record the way it does locally: the Vibe shim
@@ -2258,6 +2270,27 @@ there is not.
   that could put a byte on a terminal, so there is no variable part left for a
   squatter to aim at. The fixed `X-Lvx-Session: joined|unknown` response header
   only selects a private per-session status stamp and never reaches stdout.
+  A second copy of the app (a `try-pr.sh` build) loses this port and the
+  broker socket to the running copy, and then waits:
+  `ClaudeHookSocketTakeover` retries only the binds it lost, each time
+  another process with the app's bundle id exits (a kqueue exit watch). The
+  broker never retries on a timer, because its liveness check connects to
+  the holder's socket; the listener's port also retries every ten seconds,
+  since a failed bind touches no one and the holder may be no copy of the
+  app (#892). A retry that still finds the socket held waits. MEASURED
+  2026-09-27 (#655): without it, the survivor of two copies kept dictating
+  with no hook reaching it, and every Claude Desktop join abstained until a
+  relaunch.
+  The CI launch smoke never binds either socket nor starts or reaps a
+  forward (`StartupPermissionSuppression.leavesHookSocketsAlone`), and the
+  forward orphan reaper kills a forward only when the copy that spawned it
+  (`ClaudeRemoteForwardOwner`, recorded in the pid ledger) is dead and ran
+  from this copy's executable. Holding the listener is not proof of being
+  the only copy: a copy that lost the port keeps running without it.
+  MEASURED 2026-09-27 (#892): three launch smokes on the owner's Mac bound
+  the port his copy had lost, each SIGTERMed the forward the shared ledger
+  named, dialed his dev box with a forward of its own, and left it behind
+  when the smoke killed the app two seconds later.
   The shim's request-side `X-Lvx-Plugin-Version` header (its own version, a
   constant in `post.sh`) is the same shape of rule: validated to a strict
   numeric shape on arrival (`ClaudeRemotePluginVersionCodec`), recorded on the
@@ -2308,7 +2341,8 @@ there is not.
   the host that authenticated it, and accepts one answer per ask, for a live
   session of the asked agent; the project key is the one the Mac recorded at
   the ask, never anything the host sends. The body is untrusted text that repo
-  contents can steer: 8 KiB at most, `{"terms": [...]}` only, through the #609
+  contents can steer: 16 KiB at most, `{"terms": [...]}` or Claude Code's
+  result object, read for its answer and usage only (#854), through the #609
   term filter, stored only as unconfirmed proposals. A refusal logs its reason,
   never a byte of the body. What stays as it was: the stdout gate, the hook's
   fail-open exit, the forward, and what is sent to herdr.
@@ -2325,15 +2359,26 @@ there is not.
   three. The capture text leaves the Mac only in the prompt reply. The
   README bytes are only summarized, the host's issue list only quoted into
   the prompt (a related issue counts only if listed there), the output read
-  as a local draft. A squatter on the port can send both headers and answer
+  as a local draft. A shim from #918 on asks `/v1/draft/words` (the
+  capture's search words, which go only where the capture goes), posts its
+  context bundle to `/v1/draft/context` (96 KiB, parsed into
+  `QuickCaptureContext` and only quoted), and polls `/v1/draft/check` (202,
+  204, or the check's prompt); the host greps only words that start with a
+  letter or digit, after `-e`, so no word reads as an option. The first
+  draft runs on the Mac, off the listener's threads. A squatter on the port can send both headers and answer
   the prompt request with a prompt of its own, so the host's run is the
   Mac's drafting command with Claude Code's reads confined to the checkout
   (`--permission-mode dontAsk --allowedTools Read(./**)`; without it Read
   opens any file, measured 2026-09-27; Vibe's tools are workspace-bound) and
   the shim allows one draft at a time and 20 a day. `capture.sh` never runs
-  `gh` for anything but `issue list`. Which remote projects the router sees
+  `gh` for anything but `issue list`. A Vibe run's usage rides in
+  `X-Lvx-Usage` on `/v1/terms` and `/v1/draft` (#854): three decimal
+  counts, anything else read as none, used for the usage log alone. The
+  shims pull the numbers out of Vibe's session log with `sed` and never send
+  the file, which holds the prompt. Which remote projects the router sees
   (#819): a hook adds a project only for a name its host sent as
-  `X-Lvx-Env-Project`; a cwd label only stamps a project already held,
+  `X-Lvx-Env-Project`, or the repository of a Claude Code worktree cwd; a
+  cwd label only stamps a project already held,
   because each worktree has its own, and a label no hook has named since is
   not listed, since no session will report it again. Nothing guesses which
   repository an old label belonged to.
@@ -2364,24 +2409,24 @@ there is not.
     (`DogfoodAudioFileSource`). A release build compiles none of it: no
     listener, no path, no code that could create one, and no setting or
     argument that turns it on. Only the UI smoke workflow's package sets
-    `LOCALVOXTRAL_E2E_HARNESS=1` (a dogfood package implies it, until the
-    dogfood build is removed in #792). `package_app.sh` searches every
+    `LOCALVOXTRAL_E2E_HARNESS=1`. `package_app.sh` searches every
     bundle's binary for the harness types
     (`scripts/packaging/check-harness-symbols.sh`): a release build fails if
     one is there, a harness build fails if one is missing. Within a build that
     has the socket there is a SECOND runtime gate,
-    `debug.dogfood_control_socket_enabled`, kept separate from the capture's:
-    writing records and accepting commands are different consents.
+    `debug.dogfood_control_socket_enabled`, kept separate from the diagnostic
+    records switch: writing records and accepting commands are different
+    consents.
   - **0700 directory, 0600 socket, and `getpeereid` before the first read.**
     The permissions should already make another uid unable to reach the path.
     The credential check is there because "should" is a claim about the
     filesystem, not about this process.
   - **Every value that crosses is a bool, a count, or a closed enum name.**
     `ClaudeSessionJoinSummary` is reused rather than re-mapped (its third
-    consumer, after the dogfood record and `--probe-surface`), abstention
+    consumer, after the diagnostic record and `--probe-surface`), abstention
     causes are the resolver's own content-free categories, and `registry list`
     reports session SHAPES — never a session id, marker, workspace, tty, pane
-    id, socket path or host. Replies pass through `DogfoodCaptureRedaction` as
+    id, socket path or host. Replies pass through `DiagnosticRecordRedaction` as
     a backstop, not as the strategy.
   - **`session start` reaches `handleModifierOnlyTap`, the gesture's own
     handler.** It is subject to the Secure Keyboard Entry refusal, the
@@ -2432,13 +2477,25 @@ there is not.
   the overlay closes as a cancelled one does, and the words go to
   `QuickCaptureInboxModel`, which writes them to its 0600 file before
   routing. The router sends a low or tied answer to the catch-all, never a
-  guessed project. Jev and the chat model both need 0.9: on the replay
+  guessed project: the guess is kept as the route's `suggestion`, and
+  nothing drafts until the user accepts it (#938). Jev and the chat model both need 0.9: on the replay
   (#741, #744) every right project came at 0.95 or more, and nearly every
-  wrong one under 0.9. The drafting agent has
-  read-only tools and no shell, so it cannot run `gh`; the open issues reach
-  it through the prompt, from the app's own `gh issue list`. Its answer is
-  untrusted text: a one-line capped title, a body without control
-  characters, a related issue only if it was listed. `QuickCaptureInboxModel.file`
+  wrong one under 0.9. Drafting has two stages (#918). The first is one
+  request to the polishing model with the context the app gathers
+  (`QuickCaptureContext`: README and guide openings, `git grep` hits for the
+  capture's words, `gh` issue and PR lists), every field capped and only
+  quoted; it sorts the capture by kind, and only an issue can be filed
+  (`QuickCaptureItem.canFile`) or checked. The second, an issue's check, is
+  the drafting agent: read-only tools and no shell, so it cannot run `gh`;
+  the open issues reach it through the prompt, from the app's own `gh issue
+  list`. Both answers are untrusted text: a one-line capped title, a body
+  without control characters, a related issue only if it was listed, files
+  read only as relative paths that exist in the checkout. A check never
+  overwrites a draft the user edited, and never lands on a capture filed or
+  moved meanwhile. `QuickCaptureInboxModel.file`
   is the one call to `gh issue create`, reached only from the Inbox's File
-  button. A remote project is drafted on its host (#745, below): a remote
+  button and from a spoken "file it" (#927). That one works only in a review
+  dictation, whose overlay shows exactly one draft, and `applySpokenReview`
+  files only when the draft's title and body still match what the overlay
+  showed. A remote project is drafted on its host (#745, below): a remote
   label never becomes a working directory here.

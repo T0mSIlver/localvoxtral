@@ -37,8 +37,15 @@ HARNESS_TOKENS=(
 )
 CONTROL_TOKEN=DictationSessionController
 
-count_of() { # grep exits 1 on no match, which pipefail would turn fatal
+matches_of() { # grep exits 1 on no match, which pipefail would turn fatal
   { LC_ALL=C grep -a -o -F -- "$1" "$BINARY" || true; } | wc -l | tr -d ' '
+}
+# An unstripped binary also lists the path of each object file that gave it
+# code, for dsymutil. Under whole-module optimization the compiler can put its
+# own code in a gated-out file's object, so `/<token>.swift.o` names the file,
+# not a harness type; those paths are not counted.
+count_of() {
+  echo $(( $(matches_of "$1") - $(matches_of "/$1.swift.o") ))
 }
 
 if [[ "$(count_of "$CONTROL_TOKEN")" == 0 ]]; then

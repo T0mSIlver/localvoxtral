@@ -1077,6 +1077,19 @@ final class ClaudeSessionPersistenceTests: XCTestCase {
         XCTAssertEqual(paneMatches.map(\.sessionID), [remote[0].sessionID])
     }
 
+    func testARemoteWorktreesRepositorySurvivesRestart() throws {
+        let store = MemoryClaudeSessionStore()
+        let first = registry(store: store)
+        var record = remoteRecord(.stop)
+        record.rawCwd = "/home/dev/work/localvoxtral/.claude/worktrees/ci-speed-optimizations-7ffef0"
+        first.ingest(record, origin: remoteOrigin)
+        first.flushPersistence()
+
+        let restored = try XCTUnwrap(registry(store: store).liveSessions().first)
+        XCTAssertEqual(restored.learnedTermWorkspace, .remoteOpaque(label: "localvoxtral"))
+        XCTAssertEqual(restored.workspace, .remoteOpaque(label: "ci-speed-optimizations-7ffef0"))
+    }
+
     func testRestoreDropsStaleDeadRebootedAndRevokedSessions() {
         let staleStore = MemoryClaudeSessionStore()
         let staleFirst = registry(

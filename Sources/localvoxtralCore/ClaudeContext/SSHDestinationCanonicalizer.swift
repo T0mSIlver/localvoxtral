@@ -3,7 +3,7 @@ import Synchronization
 
 /// Whether a destination's effective ssh config routes it through a jump host,
 /// as a SHAPE — never the host's name, so it is safe in the log and the
-/// dogfood record.
+/// diagnostic record.
 ///
 /// **This is a diagnosis, not a capability.** A ProxyJump'd connection cannot
 /// be joined by the plain-ssh arm, and the reason is a measured property of

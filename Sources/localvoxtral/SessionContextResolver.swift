@@ -68,6 +68,11 @@ final class SessionContextResolver {
         Log.claudeContext.notice("Claude join outcome: \(line, privacy: .public)")
     }
 
+    /// The last lines `joinOutcomeLog` got, most recent first, for
+    /// `localvoxtral doctor`. The unified log keeps them too, but only
+    /// `localvoxtral logs` knows the predicate.
+    private(set) var recentJoinOutcomes: [AgentCLIDoctorFacts.JoinLine] = []
+
     init(settings: SettingsStore, textInsertion: TextInsertionService) {
         self.settings = settings
         self.textInsertion = textInsertion
@@ -87,12 +92,10 @@ final class SessionContextResolver {
     /// means the screen is never read. A nil polishing configuration also means
     /// no read: with no endpoint there is nothing to ground for.
     func captureAtStart() async -> OverlayClaudeJoinBadge {
-        #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         // A fresh dictation gets fresh tap slots: an abandoned pipeline's late
         // note from the PREVIOUS session must not describe this one. (The
         // owner supersedes its post-commit edit watch before calling here.)
-        DogfoodCaptureTap.shared.beginSession()
-        #endif
+        DiagnosticCaptureTap.shared.beginSession()
         contextJoinAskedTheArms = false
         guard let endpointURL = settings.llmPolishingConfiguration?.endpointURL else {
             terminalScreenStartCapture = nil
@@ -296,17 +299,19 @@ final class SessionContextResolver {
     /// or the gate or abstention chain that stopped it. `.notice`, because
     /// the unified log keeps no `.info` line past the moment, and a join is
     /// only ever questioned after the dictation. Categories only — the same
-    /// `ClaudeSessionJoinSummary` a dogfood record and `--probe-surface`
+    /// `ClaudeSessionJoinSummary` a diagnostic record and `--probe-surface`
     /// print, which carries no id, path, host or address.
     private func noteJoinOutcome(_ attempt: ClaudeJoinAttempt, causes: [String]) {
         var causes = causes
         if case .gated(let gate) = attempt {
             causes.append(gate.rawValue)
-            #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
-            DogfoodCaptureTap.shared.noteJoinAbstention(gate.rawValue)
-            #endif
+            DiagnosticCaptureTap.shared.noteJoinAbstention(gate.rawValue)
         }
         let summary = ClaudeSessionJoinSummary.summarize(join: attempt.join, abstentions: causes)
+        recentJoinOutcomes = Array(
+            ([AgentCLIDoctorFacts.JoinLine(at: Date(), line: summary.noticeText)] + recentJoinOutcomes)
+                .prefix(AgentCLIDoctorChecks.recentJoinLimit)
+        )
         joinOutcomeLog(summary.noticeText)
         #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         // Snapshotted HERE, at the single resolution, because the commit path
@@ -515,10 +520,10 @@ extension SessionContextResolver {
     /// Snapshot the resolved join for `join report`, with the abstention chain
     /// as it stands at resolution time, gate included.
     func dogfoodNoteResolvedJoin(_ join: ClaudeSessionJoin?) {
-        DogfoodCaptureTap.shared.noteResolvedJoin(
+        DiagnosticCaptureTap.shared.noteResolvedJoin(
             ClaudeSessionJoinSummary.summarize(
                 join: join,
-                abstentions: DogfoodCaptureTap.shared.peekJoinAbstentions()
+                abstentions: DiagnosticCaptureTap.shared.peekJoinAbstentions()
             )
         )
     }

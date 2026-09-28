@@ -41,3 +41,5 @@ Tests/localvoxtralTests/WorkflowActionPinningTests.swift contentsOfDirectory( no
 Tests/localvoxtralCoreTests/RemoteProjectTermsLiveTests.swift /README.md none
 Tests/localvoxtralCoreTests/RemoteProjectTermsLiveTests.swift contentsOfDirectory( none
 Tests/localvoxtralCoreTests/RemoteQuickCaptureLiveTests.swift /README.md none
+Tests/localvoxtralTests/AddressedSendWiringTests.swift contentsOfDirectory( none
+Tests/localvoxtralCoreTests/AgentCLILogPrivacyTests.swift enumerator( none

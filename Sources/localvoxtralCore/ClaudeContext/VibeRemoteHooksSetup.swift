@@ -12,8 +12,14 @@ public struct VibeRemoteHooksFiles: Sendable, Equatable {
     /// Quick capture's README and draft runner, which `post.sh` starts when
     /// the Mac asks (#745).
     public var captureScript: String
+    /// The host side of `localvoxtral doctor` (#910), from the remote plugin.
+    public var doctorScript: String
 
-    public init(postScript: String, compactScript: String, hooksBlock: String, termsScript: String, captureScript: String) {
+    public init(
+        postScript: String, compactScript: String, hooksBlock: String, termsScript: String, captureScript: String,
+        doctorScript: String = ""
+    ) {
+        self.doctorScript = doctorScript
         self.postScript = postScript
         self.compactScript = compactScript
         self.hooksBlock = hooksBlock
@@ -33,8 +39,8 @@ public struct VibeRemoteHooksFiles: Sendable, Equatable {
         return nil
     }
 
-    /// The five shipped files, from wherever `ClaudePluginAssets` finds them.
-    /// `terms.sh` and `capture.sh` come from the remote Claude Code plugin,
+    /// The six shipped files, from wherever `ClaudePluginAssets` finds them.
+    /// `terms.sh`, `capture.sh` and `doctor.sh` come from the remote Claude Code plugin,
     /// which ships the same runners for its own shim and is copied into the
     /// app whole.
     public static func bundled() -> VibeRemoteHooksFiles? {
@@ -48,10 +54,11 @@ public struct VibeRemoteHooksFiles: Sendable, Equatable {
             ))
         }
         guard let post = vibe("post.sh"), let compact = vibe("compact.py"), let block = vibe("hooks.toml"),
-              let terms = plugin("terms.sh"), let capture = plugin("capture.sh")
+              let terms = plugin("terms.sh"), let capture = plugin("capture.sh"), let doctor = plugin("doctor.sh")
         else { return nil }
         return VibeRemoteHooksFiles(
-            postScript: post, compactScript: compact, hooksBlock: block, termsScript: terms, captureScript: capture
+            postScript: post, compactScript: compact, hooksBlock: block, termsScript: terms, captureScript: capture,
+            doctorScript: doctor
         )
     }
 }
@@ -130,7 +137,7 @@ extension ClaudeRemoteEnrollmentService {
         D="\(vibeRemoteDirectory)"
         printf '%s\\n' \(vibeProbeFrameBegin)
         command -v vibe >/dev/null 2>&1 && echo vibe=found
-        for p in "$HOME/.vibe" "$HOME/.vibe/localvoxtral" "$D" "$H" "$D/post.sh" "$D/compact.py" "$D/terms.sh" "$D/capture.sh" "$D/token" "$D/port"; do
+        for p in "$HOME/.vibe" "$HOME/.vibe/localvoxtral" "$D" "$H" "$D/post.sh" "$D/compact.py" "$D/terms.sh" "$D/capture.sh" "$D/doctor.sh" "$D/token" "$D/port"; do
           [ ! -L "$p" ] || echo refusal=symlink
         done
         if [ -r "$D/post.sh" ]; then
@@ -239,7 +246,7 @@ extension ClaudeRemoteEnrollmentService {
         umask 077
         H="$HOME/.vibe/hooks.toml"
         D="\(vibeRemoteDirectory)"
-        for p in "$HOME/.vibe" "$HOME/.vibe/localvoxtral" "$D" "$H" "$D/post.sh" "$D/compact.py" "$D/terms.sh" "$D/capture.sh" "$D/token" "$D/port"; do
+        for p in "$HOME/.vibe" "$HOME/.vibe/localvoxtral" "$D" "$H" "$D/post.sh" "$D/compact.py" "$D/terms.sh" "$D/capture.sh" "$D/doctor.sh" "$D/token" "$D/port"; do
           [ ! -L "$p" ] || exit 46
         done
         \(unchanged)
@@ -289,6 +296,7 @@ extension ClaudeRemoteEnrollmentService {
         script += Self.writeFileScript(path: "$D/compact.py", content: files.compactScript, mode: "600", seed: "COMPACT")
         script += Self.writeFileScript(path: "$D/terms.sh", content: files.termsScript, mode: "700", seed: "TERMS")
         script += Self.writeFileScript(path: "$D/capture.sh", content: files.captureScript, mode: "700", seed: "CAPTURE")
+        script += Self.writeFileScript(path: "$D/doctor.sh", content: files.doctorScript, mode: "700", seed: "DOCTOR")
         script += Self.writeFileScript(path: "$D/port", content: String(remoteForwardPort), mode: "600", seed: "PORT")
         if updated != probe.hooksText {
             // A new file is ours to create at 0600; an existing one keeps its mode.

@@ -218,7 +218,6 @@
 0.001 ClaudeSocketGuardValidationTests
 0.001 CmuxPasswordSettingsRowTests
 0.001 DockIconPolicyTests
-0.001 DogfoodBuildStatusTests
 0.001 HerdrClientTTYProbeTests
 0.001 HerdrSurfaceLogTests
 0.001 HotKeyManagerTests

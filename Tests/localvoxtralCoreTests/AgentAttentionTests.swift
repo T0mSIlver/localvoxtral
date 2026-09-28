@@ -130,16 +130,20 @@ final class AgentAttentionTests: XCTestCase {
     @MainActor
     func testAFinishedTurnCuesOnlyWhenTheUserWasNotLookingAtThePane() async throws {
         let h = harness()
+        var breaks = 0
+        h.tracker.onWatchedTurnEnd = { breaks += 1 }
         let stop = #"{"hook_event_name":"Stop","session_id":"s1","cwd":"/work/payments","last_assistant_message":"done"}"#
         h.watching.set(["s1"])
         h.registry.ingest(try claude(stop), origin: local)
         await settle(h)
         XCTAssertTrue(h.tracker.queue.isEmpty)
         XCTAssertTrue(h.cues.get().isEmpty)
+        XCTAssertEqual(breaks, 1, "a turn ending in front of the user is a break for held drafts (#927)")
 
         h.watching.set([])
         h.registry.ingest(try claude(stop), origin: local)
         await settle(h)
+        XCTAssertEqual(breaks, 1)
         XCTAssertEqual(h.tracker.queue.entries.map(\.kind), [.finished])
         XCTAssertEqual(h.cues.get().map { AgentAttentionText.sentence($0) }, ["payments finished"])
     }

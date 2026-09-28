@@ -31,11 +31,17 @@ import Glibc
 ///   stated because a single inspect-then-act cannot close it, not because it
 ///   is reachable in practice (macOS allocates pids incrementally and skips
 ///   recently used ones).
-/// * **Only run while this instance holds the listener.** The caller
-///   (`ClaudeRemoteForwardCoordinator`) gates the reap behind its listener
-///   bind, which is what makes a SECOND app instance harmless: it cannot bind
-///   8473 while the first instance lives, so it can never reap the first
-///   instance's healthy tunnels.
+/// * **Only a dead copy's forward, and only this install's.** A record names
+///   the copy of the app that spawned it (`ClaudeRemoteForwardOwner`). While
+///   that copy runs, its forward is its own to stop; and a forward another
+///   install left behind (a try-pr build, a CI launch smoke's temporary copy)
+///   is that install's to reap on its next launch. The listener gate
+///   (`ClaudeRemoteForwardCoordinator` reaps only after binding) is not
+///   enough on its own: a copy that lost the port stops its forwards but
+///   keeps running, and any copy launched after the holder quit binds the
+///   port. On 2026-09-27 three CI launch smokes did exactly that and each
+///   SIGTERMed the forward the ledger named (#892). Records from before the
+///   owner was recorded are reaped as before.
 /// * **Escalate like the supervisor does.** SIGTERM, a bounded wait, SIGKILL,
 ///   a bounded wait — on the injected clock, since the supervisor's own suite
 ///   set the no-wall-clock rule for this subsystem. A survivor of SIGKILL
@@ -52,6 +58,7 @@ public struct ClaudeRemoteForwardOrphanReaper: Sendable {
     public typealias SleepFor = @Sendable (Duration) async throws -> Void
 
     private let ledger: ClaudeRemoteForwardPidLedger
+    private let ownCopy: ClaudeRemoteForwardOwner?
     private let inspect: Inspect
     private let sendSignal: SendSignal
     private let sleepFor: SleepFor
@@ -59,8 +66,11 @@ public struct ClaudeRemoteForwardOrphanReaper: Sendable {
     private let killGrace: Duration
     private let pollInterval: Duration
 
+    /// - Parameter ownCopy: this copy of the app. Nil reaps no record that
+    ///   names an owner, since no install can be shown to be this one.
     public init(
         ledger: ClaudeRemoteForwardPidLedger,
+        ownCopy: ClaudeRemoteForwardOwner? = .current,
         inspect: @escaping Inspect = { ClaudeRemoteForwardProcessIdentity.snapshot(pid: $0) },
         sendSignal: SendSignal? = nil,
         sleepFor: @escaping SleepFor = { try await Task.sleep(for: $0) },
@@ -69,6 +79,7 @@ public struct ClaudeRemoteForwardOrphanReaper: Sendable {
         pollInterval: Duration = .milliseconds(50)
     ) {
         self.ledger = ledger
+        self.ownCopy = ownCopy
         self.inspect = inspect
         // In the body, not as a default argument value: the default needs
         // `Log`, which is internal, and a public init's default arguments may
@@ -109,6 +120,7 @@ public struct ClaudeRemoteForwardOrphanReaper: Sendable {
             ledger.forget(hostID: hostID, pid: record.pid)
             return
         }
+        guard isOrphanOfThisInstall(hostID: hostID, record: record) else { return }
         // Signal first, log second: the log call would otherwise sit inside
         // the verify-to-signal window the type comment promises is only
         // microseconds wide.
@@ -150,6 +162,25 @@ public struct ClaudeRemoteForwardOrphanReaper: Sendable {
         Log.claudeContext.error(
             "Claude remote forward orphan pid \(record.pid, privacy: .public) survived SIGKILL; its forwarding resource may stay bound"
         )
+    }
+
+    /// Whether a live forward is this install's orphan. Anything else keeps
+    /// its record: its owner forgets it on stop, or reaps it on relaunch.
+    private func isOrphanOfThisInstall(hostID: String, record: ClaudeRemoteForwardPidRecord) -> Bool {
+        guard let owner = record.owner else { return true }
+        if owner.isRunning(as: inspect(pid_t(owner.pid))) {
+            Log.claudeContext.notice(
+                "Claude remote forward for key \(hostID, privacy: .public) (pid \(record.pid, privacy: .public)) belongs to another running copy (pid \(owner.pid, privacy: .public)); left alone"
+            )
+            return false
+        }
+        guard let ownCopy, owner.executablePath == ownCopy.executablePath else {
+            Log.claudeContext.notice(
+                "Claude remote forward for key \(hostID, privacy: .public) (pid \(record.pid, privacy: .public)) was left by another install (\(owner.executablePath, privacy: .public)); left alone"
+            )
+            return false
+        }
+        return true
     }
 
     private func waitUntilGone(

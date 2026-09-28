@@ -26,10 +26,10 @@ final class RemoteProjectTermsLiveTests: XCTestCase {
         let memory = Mutex(LearnedTerms())
         func snapshot() -> LearnedTerms { memory.withLock { $0 } }
         func recordProposal(
-            _ terms: [String], agent: ProjectTermProposal.Agent,
+            _ terms: [String], line: String?, revision: Int?, agent: ProjectTermProposal.Agent,
             project: LearnedTermProjectIdentity, excluding: [String]
         ) {
-            memory.withLock { $0.recordProposal(terms, agent: agent, project: project, excluding: excluding, now: Date()) }
+            memory.withLock { $0.recordProposal(terms, line: line, revision: revision, agent: agent, project: project, excluding: excluding, now: Date()) }
         }
         func recordProposalFailure(project: LearnedTermProjectIdentity) {
             memory.withLock { $0.recordProposalFailure(project: project, now: Date()) }

@@ -77,7 +77,7 @@ expect false "a CI script does not" scripts/ci/stt-lane-filter.sh scripts/ci/tes
 expect false "a dev script does not" scripts/remote-build.sh scripts/try-pr.sh
 expect false "another workflow does not" .github/workflows/ui-smoke.yml .github/workflows/README.md
 expect false "a ci.yml edit outside the mac-lanes job does not" \
-  --env LANE_MAC_LANES_JOB_CHANGED=false .github/workflows/ci.yml scripts/ci/test-dogfood-filter.sh
+  --env LANE_MAC_LANES_JOB_CHANGED=false .github/workflows/ci.yml scripts/ci/test-harness-symbols.sh
 expect false "an agent guide under Sources does not" \
   Sources/localvoxtral/ClaudeContext/AGENTS.md Sources/localvoxtralCore/ClaudeContext/NOTES.md
 expect false "the opencode and vibe READMEs do not (their integrations ship named files)" \

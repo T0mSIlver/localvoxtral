@@ -26,6 +26,7 @@ extension SettingsTab {
         case .history: return "History"
         case .insights: return "Insights"
         case .inbox: return "Inbox"
+        case .projects: return "Projects"
         }
     }
 
@@ -58,6 +59,8 @@ extension SettingsTab {
             return .tile(systemImage: "chart.bar.fill", tint: Color(nsColor: .systemGreen))
         case .inbox:
             return .tile(systemImage: "tray.fill", tint: Color(nsColor: .systemBlue))
+        case .projects:
+            return .tile(systemImage: "folder.fill", tint: Color(nsColor: .systemGreen))
         }
     }
 

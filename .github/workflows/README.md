@@ -2,7 +2,7 @@
 
 ## `ci.yml`
 
-`ci.yml` runs **four jobs in parallel**, split by what actually needs the
+`ci.yml` runs **three jobs in parallel**, split by what actually needs the
 owner's Mac (owner decision 2026-09-05):
 
 **`build-test` — GitHub-hosted macOS (`macos-latest`), every event, every
@@ -33,9 +33,8 @@ launch-smoking the bundle signed with the stable `localvoxtral-dev` identity
 `localvoxtral-dsym` (30-day retention) for symbolicating field crashes, the
 live STT-service integration (path-gated on PRs by `scripts/ci/stt-lane-filter.sh`,
 always on dispatches and in every release), the conditional polishd/speechd/herdr live-model
-lanes, the two MLX helper unit suites (kept here for the warm Cmlx build), the
-opt-in dogfood packaging, the UI-gate install, and the process leak
-check. It keeps `clean: false` — the persistent warm `.build` that makes those
+lanes, the two MLX helper unit suites (kept here for the warm Cmlx build), and
+the process leak check. It keeps `clean: false` — the persistent warm `.build` that makes those
 lanes affordable.
 
 **`linux` — GitHub-hosted Ubuntu, every event, every contributor (#545).**
@@ -44,14 +43,6 @@ workflow edit, and `scripts/core-tests-linux.sh` in the `swift:6.2.0` image
 pinned by digest. A required check on main. `build-test` keeps its own
 shell-suite step anyway: the scripts those suites test run on the Mac under
 `/bin/bash` 3.2 and BSD tools, which only a macOS runner reproduces.
-
-**`dogfood` — GitHub-hosted macOS, not required (#545).** The
-dogfood capture suite (`LOCALVOXTRAL_DOGFOOD=1 swift test --filter Dogfood`),
-the only build of the capture in CI. It needs the app target, so macOS, and it
-runs cold with no build cache. A PR that changes nothing under `Sources/` or
-`Tests/`, no `Package.swift`/`Package.resolved`, `ci.yml` or the filter
-itself skips the build (`scripts/ci/dogfood-filter.sh`); pushes to main and
-dispatches always run it.
 
 The jobs run in parallel and share no artifact; `build-test` and `mac-lanes`
 each compute the docs-only fast-path decision themselves rather than
@@ -81,30 +72,23 @@ when the image's default Xcode moves, the log says which build ran and no
 stamps every file with the checkout time, and swift-driver would otherwise
 recompile every file against the restored build.
 
-Opt-in dogfood artifact: with the literal marker `[dogfood-package]` in the
-PR body / head commit message, or a `workflow_dispatch` with `dogfood=true`,
-`mac-lanes` packages a second, `LOCALVOXTRAL_DOGFOOD`-instrumented bundle
-after the launch smoke and uploads it as `localvoxtral-app-dogfood` (7-day
-retention) plus `localvoxtral-dsym-dogfood` (30-day — the instrumented
-binary's UUID differs from the clean dSYM's). Fetch and launch it with
-`scripts/try-pr.sh <pr|main> --dogfood`,
-which also arms the runtime capture default. On manual dispatch the
-conditional live-model lanes (polishd/speechd) skip — the dispatched ref's
-own push/PR run already decided them.
+Fetch and launch a PR's or main's signed bundle with `scripts/try-pr.sh
+<pr|main>`. On manual dispatch the conditional live-model lanes
+(polishd/speechd) skip — the dispatched ref's own push/PR run already
+decided them.
 
 `mac-lanes` is ordered in two phases: everything that produces an artifact
-(packaging, uploads, launch smoke, the dogfood pass and the UI-gate install)
-runs first, and the conditional live lanes (speechd/polishd/herdr) run after
-it. A live lane's precondition must not cost a run the artifact it was
-dispatched for — the herdr lane used to run before packaging, and while its
-fixture still refused to start beside a herdr the account was running
-(before #323), a `-f dogfood=true` dispatch on the owner's Mac never reached
-the packaging steps at all (run 35084386041).
+(packaging, uploads, launch smoke) runs first, and the conditional live
+lanes (speechd/polishd/herdr) run after it. A live lane's precondition must
+not cost a run the artifact it was dispatched for — the herdr lane used to
+run before packaging, and while its fixture still refused to start beside a
+herdr the account was running (before #323), a dispatch on the owner's Mac
+never reached the packaging steps at all (run 35084386041).
 
 The live herdr lane is the one lane a dispatch still forces on (it needs no
 weights, and dispatching it is how that external contract gets repeated).
 `-f herdr=false` opts a single dispatch out, which is what
-`scripts/try-pr.sh --dogfood` passes; pushes and PRs are unaffected and keep
+`scripts/try-pr.sh` passes; pushes and PRs are unaffected and keep
 the `scripts/ci/herdr-lane-filter.sh` path filter plus the
 `[run-herdr-integration]` marker.
 
@@ -125,8 +109,7 @@ test names outside a comment, or a read declared in `scripts/ci/test-reads.txt`
 `scripts/ci/test-docs-only-filter.sh` fails when a test adds such a read
 without a line there. An explicit `[run-llm-eval]` /
 `[run-speechd-integration]` / `[run-herdr-integration]` /
-`[run-stt-integration]` / `[dogfood-package]` / `[mac-lanes]` marker also
-forces the full run.
+`[run-stt-integration]` / `[mac-lanes]` marker also forces the full run.
 
 The two helper unit suites are additionally path-gated per helper
 (`scripts/ci/helper-lane-filter.sh`): a PR runs a helper's suite only when the
@@ -141,7 +124,7 @@ changed path stays out of the bundle (tests, docs, `scripts/` other than
 `ci.yml`'s `mac-lanes` job, eval data, and Markdown under `Sources/` outside
 a `Resources/` directory or in the opencode and vibe integrations) builds no
 bundle, unless a lane that
-reads it runs (polishd, speechd, the dogfood pass) or its body carries
+reads it runs (polishd, speechd) or its body carries
 `[mac-lanes]`. An unclassified path packages. Such a PR has no
 `localvoxtral-app` artifact for `try-pr.sh`, which says so; its bundle would
 have been main's.
@@ -149,8 +132,8 @@ have been main's.
 `scripts/ci/lane-diff-facts.sh` reads two facts a file list cannot carry:
 whether a `ci.yml` edit touched the `mac-lanes` job or the file's head
 (triggers, concurrency, env), and whether a `Package.swift` edit touched a
-dependency, pin, platform or build-setting line. An edit to `build-test`,
-`linux` or `dogfood` then runs neither the live STT lane, the helper unit
+dependency, pin, platform or build-setting line. An edit to `build-test` or
+`linux` then runs neither the live STT lane, the helper unit
 suites nor packaging, and moving files between targets does not run the STT
 lane. A fact the script cannot read counts as changed.
 
@@ -315,7 +298,7 @@ image pre-grants Accessibility and Screen Recording to `bash` and
 `ui-smoke-log` with a screenshot.
 
 `e2e-dictation` stays on the self-hosted Mac: it repackages the app as a
-signed dogfood build and runs `scripts/e2e-dictation.sh`, where the packaged
+signed harness build and runs `scripts/e2e-dictation.sh`, where the packaged
 app dictates from a WAV in place of the microphone into a throwaway target
 window, once per scenario in `scripts/e2e/scenarios/`, and the inserted text
 is scored against the spoken phrase. It has no schedule: GitHub cron starts

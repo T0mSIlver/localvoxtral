@@ -27,7 +27,7 @@ INPUTS=(
   'scripts/mac/README.md'
   'scripts/ci/screen-lock-state.sh'
   'scripts/try-pr.sh'
-  '.github/workflows/ci.yml'
+  '.github/workflows/ui-smoke.yml'
   'scripts/ci/test-ui-gate.sh'
   'scripts/ci/ui-gate-suite-filter.sh'
   'scripts/ci/run-shell-suites.sh'

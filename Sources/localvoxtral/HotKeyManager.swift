@@ -75,11 +75,14 @@ final class HotKeyManager {
     private nonisolated(unsafe) static weak var hotKeyTarget: HotKeyManager?
     private var modifierOnlyManager = ModifierOnlyHotKeyManager()
     private var isUsingModifierOnly = false
+    /// The dictation key is a chord (#863), run by `chordMonitor`.
+    private var isUsingDictationChord = false
 
-    /// True while a modifier-only registration is installed. Lets the view
-    /// model retry a launch-time registration that failed because
-    /// Accessibility trust had not landed yet, without churning a live one.
-    var isModifierOnlyRegistrationActive: Bool { isUsingModifierOnly }
+    /// True while a modifier-only registration is installed, a chord
+    /// included. Lets the view model retry a launch-time registration that
+    /// failed because Accessibility trust had not landed yet, without
+    /// churning a live one.
+    var isModifierOnlyRegistrationActive: Bool { isUsingModifierOnly || isUsingDictationChord }
 
     /// Maps hotkey IDs to output modes for dual-shortcut dispatch.
     private var hotKeyIDToMode: [UInt32: DictationOutputMode] = [:]
@@ -128,28 +131,39 @@ final class HotKeyManager {
         chordMonitor.onChord = { [weak self] action in
             self?.handleHotKeyEvent(kind: UInt32(kEventHotKeyPressed), hotKeyID: action.id)
         }
+        chordMonitor.onDictationTap = { [weak self] in self?.handleModifierTap() }
+        chordMonitor.onDictationHoldStart = { [weak self] in self?.onHoldStart?() }
+        chordMonitor.onDictationHoldEnd = { [weak self] in self?.onRelease?() }
+    }
+
+    /// A tap of the modifier key or chord: an Overlay Buffer toggle.
+    private func handleModifierTap() {
+        if let onModifierOnlyTap {
+            onModifierOnlyTap(.overlayBuffer)
+        } else if onPressWithMode != nil {
+            onPressWithMode?(.overlayBuffer)
+        } else {
+            onPress?()
+        }
     }
 
     /// Register a modifier-only key (Fn, Right Command, etc.) as the hotkey.
     /// This bypasses the Carbon RegisterEventHotKey path entirely.
     /// Tap triggers overlay buffer (toggle), hold is push to talk.
+    /// `.chord` registers `chord` the same way (#863); with no chord it
+    /// leaves no dictation trigger.
     @discardableResult
     func registerModifierOnly(
         _ modifier: ModifierOnlyHotKeyManager.ModifierKey,
-        holdThreshold: Double = 0.35
+        holdThreshold: Double = 0.35,
+        chord: ModifierChord? = nil
     ) -> RegistrationResult {
+        if modifier == .chord {
+            return registerDictationChord(chord, holdDelay: holdThreshold)
+        }
         let candidateManager = ModifierOnlyHotKeyManager()
         candidateManager.holdThresholdSeconds = holdThreshold
-        candidateManager.onTap = { [weak self] in
-            guard let self else { return }
-            if let onModifierOnlyTap = self.onModifierOnlyTap {
-                onModifierOnlyTap(.overlayBuffer)
-            } else if self.onPressWithMode != nil {
-                self.onPressWithMode?(.overlayBuffer)
-            } else {
-                self.onPress?()
-            }
-        }
+        candidateManager.onTap = { [weak self] in self?.handleModifierTap() }
         candidateManager.onHoldStart = { [weak self] in self?.onHoldStart?() }
         candidateManager.onHoldRelease = { [weak self] in self?.onRelease?() }
 
@@ -165,6 +179,31 @@ final class HotKeyManager {
         unregister()
         modifierOnlyManager = candidateManager
         isUsingModifierOnly = true
+        #if DEBUG
+        debugCurrentRegistrationKind = .modifierOnly
+        #endif
+        return .success
+    }
+
+    private func registerDictationChord(_ chord: ModifierChord?, holdDelay: Double) -> RegistrationResult {
+        guard let chord else {
+            unregister()
+            #if DEBUG
+            debugCurrentRegistrationKind = .none
+            #endif
+            return .success
+        }
+        guard chordMonitor.setDictationChord(chord, holdDelay: holdDelay) else {
+            // The monitor dropped the chord it had, if any.
+            isUsingDictationChord = false
+            Log.modifierKeys.error(
+                "Dictation chord registration failed; preserving any previous non-chord registration.")
+            return .failure(.modifierOnlyHotKeyUnavailable)
+        }
+        // `unregister` must take the previous trigger, not this chord.
+        isUsingDictationChord = false
+        unregister()
+        isUsingDictationChord = true
         #if DEBUG
         debugCurrentRegistrationKind = .modifierOnly
         #endif
@@ -310,6 +349,10 @@ final class HotKeyManager {
         if isUsingModifierOnly {
             modifierOnlyManager.stop()
             isUsingModifierOnly = false
+        }
+        if isUsingDictationChord {
+            _ = chordMonitor.setDictationChord(nil, holdDelay: 0)
+            isUsingDictationChord = false
         }
 
         for (_, ref) in hotKeyRefs {

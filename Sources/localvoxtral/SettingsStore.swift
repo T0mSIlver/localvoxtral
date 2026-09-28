@@ -90,6 +90,7 @@ final class SettingsStore {
         static let termSuggestionRetryAt = "settings.term_suggestion_retry_at"
         static let dictationHistoryRetention = "settings.dictation_history_retention"
         static let dictationAudioEnabled = "settings.dictation_audio_enabled"
+        static let diagnosticRecordsEnabled = "settings.diagnostic_records_enabled"
         static let clipboardPayloadMacroEnabled = "settings.clipboard_payload_macro_enabled"
         static let terminalScreenContextEnabled = "settings.terminal_screen_context_enabled"
         static let repoVocabularyEnabled = "settings.repo_vocabulary_enabled"
@@ -109,10 +110,6 @@ final class SettingsStore {
         /// user-facing preference and must never surface in the settings UI.
         static let debugLogRealtimeDeltas = "debug.log_realtime_deltas"
         #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
-        /// The runtime half of the dogfooding gate. `debug.` prefixed like the
-        /// flag above: it exists only in an instrumented build and is not a
-        /// product preference.
-        static let dogfoodCaptureEnabled = "debug.dogfood_capture_enabled"
         /// The runtime half of the control-socket gate, kept SEPARATE from the
         /// capture one: writing records and opening a socket that can start
         /// dictations are different consents, and an owner running an
@@ -122,6 +119,7 @@ final class SettingsStore {
         static let modifierOnlyHotKeyEnabled = "settings.modifier_only_hotkey_enabled"
         static let modifierOnlyHotKeyModifier = "settings.modifier_only_hotkey_modifier"
         static let modifierOnlyHoldDelay = "settings.modifier_only_hold_delay"
+        static let modifierOnlyHotKeyChord = "settings.modifier_only_hotkey_chord"
         static let overlayBufferShortcutKeyCode = "settings.overlay_buffer_shortcut_key_code"
         static let overlayBufferShortcutModifiers =
             "settings.overlay_buffer_shortcut_carbon_modifiers"
@@ -146,12 +144,17 @@ final class SettingsStore {
         static let answerAgentShortcutEnabled = "settings.answer_agent_shortcut_enabled"
         static let answerAgentShortcutChord = "settings.answer_agent_shortcut_chord"
         static let agentAttentionEnabled = "settings.agent_attention_enabled"
+        static let agentAttentionMark = "settings.agent_attention_mark"
         static let modifierHoldLiveAutoPaste = "settings.modifier_hold_live_auto_paste"
         static let quickCaptureShortcutKeyCode = "settings.quick_capture_shortcut_key_code"
         static let quickCaptureShortcutModifiers = "settings.quick_capture_shortcut_carbon_modifiers"
         static let quickCaptureShortcutEnabled = "settings.quick_capture_shortcut_enabled"
         static let quickCaptureShortcutChord = "settings.quick_capture_shortcut_chord"
+        /// Retired with #918: its "on" meant Jev first, and the polishing
+        /// model is now everyone's router until they pick Jev.
         static let quickCaptureJevEnabled = "settings.quick_capture_jev_enabled"
+        static let quickCaptureRouter = "settings.quick_capture_router"
+        static let voiceMemosEnabled = "settings.voice_memos_enabled"
         static let quickCaptureProjectLines = "settings.quick_capture_project_lines"
         static let jevAPIKeyNeverStored = "settings.jev_api_key"
     }
@@ -264,14 +267,28 @@ final class SettingsStore {
         didSet { persistSecret(jevAPIKey, for: .jevAPIKey) }
     }
 
-    /// "Send quick captures to Jev for routing": off until the user turns it
-    /// on, like every hosted feature.
-    var quickCaptureJevEnabled: Bool {
+    /// Which model routes quick captures (#918): the polishing model unless
+    /// the user picks Jev, a hosted service like every other off by default.
+    enum QuickCaptureRouterChoice: String, CaseIterable, Sendable {
+        case polishingModel = "polishing_model"
+        case jev
+    }
+
+    var quickCaptureRouter: QuickCaptureRouterChoice {
         didSet {
-            defaults.set(quickCaptureJevEnabled, forKey: Keys.quickCaptureJevEnabled)
-            if quickCaptureJevEnabled { ensureSecretsLoaded([.jevAPIKey]) }
+            defaults.set(quickCaptureRouter.rawValue, forKey: Keys.quickCaptureRouter)
+            if quickCaptureRouter == .jev { ensureSecretsLoaded([.jevAPIKey]) }
         }
     }
+
+    /// "Transcribe voice memos stored in iCloud Drive" (#925): off until the
+    /// user turns it on, since the audio sits in Apple's cloud.
+    var voiceMemosEnabled: Bool {
+        didSet { defaults.set(voiceMemosEnabled, forKey: Keys.voiceMemosEnabled) }
+    }
+
+    /// Jev routes, so its key is read.
+    var quickCaptureJevEnabled: Bool { quickCaptureRouter == .jev }
 
     /// The line the user wrote about each project, by project key, which
     /// the quick capture router reads with the README summary (#811).
@@ -526,6 +543,15 @@ final class SettingsStore {
         didSet { defaults.set(dictationAudioEnabled, forKey: Keys.dictationAudioEnabled) }
     }
 
+    /// Keeps a diagnostic record of each polished dictation beside its History
+    /// entry, and watches the seconds after its insertion for an erase
+    /// (`DiagnosticRecord`, `EditSignalWatcher`). On by default; History >
+    /// Storage turns it off, which deletes the records. Nothing is kept while
+    /// History is "Don't keep", whatever this says.
+    var diagnosticRecordsEnabled: Bool {
+        didSet { defaults.set(diagnosticRecordsEnabled, forKey: Keys.diagnosticRecordsEnabled) }
+    }
+
     func dismissTermSuggestion(_ term: String) {
         let key = SpeakerTermSuggestions.key(term)
         guard !key.isEmpty,
@@ -749,32 +775,12 @@ final class SettingsStore {
     }
 
     #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
-    /// Arms the dogfooding context capture. Default false, and it exists at all
-    /// only in a debug or instrumented build (see `Package.swift` for why that
-    /// gate is a compile flag rather than this toggle alone).
-    ///
-    /// While armed, every polished dictation writes a record containing the raw
-    /// transcript, the harvested context, the rendered prompts, and the model's
-    /// reply to `~/Library/Application Support/localvoxtral/dogfood`. That is
-    /// content the shipped app deliberately never writes anywhere, which is why
-    /// arming it is a deliberate act rather than a side effect of running an
-    /// instrumented build.
-    ///
-    /// No UI yet — like `debugLogRealtimeDeltas`, and toggled the same way:
-    ///   `defaults write com.localvoxtral.app debug.dogfood_capture_enabled -bool true`
-    /// A Settings row and a status-item indicator belong with the flag-this-
-    /// dictation affordance; until they exist, an armed build is only
-    /// discoverable from this default and the capture directory.
-    var dogfoodCaptureEnabled: Bool {
-        didSet { defaults.set(dogfoodCaptureEnabled, forKey: Keys.dogfoodCaptureEnabled) }
-    }
-
     /// Whether this instrumented build opens its local control socket
     /// (`DogfoodControlSocket`), which can start and stop dictations and report
     /// what the context pipeline resolved.
     ///
-    /// Off by default, and separate from `dogfoodCaptureEnabled` on purpose: a
-    /// capture writes a file, a socket accepts commands, and consenting to the
+    /// Off by default, and separate from `diagnosticRecordsEnabled` on purpose: a
+    /// record is a file, a socket accepts commands, and consenting to the
     /// first is not consenting to the second. Toggled the same way:
     ///   `defaults write com.localvoxtral.app debug.dogfood_control_socket_enabled -bool true`
     /// Read once at launch — the socket binds in `applicationDidFinishLaunching`
@@ -795,6 +801,13 @@ final class SettingsStore {
         didSet {
             defaults.set(modifierOnlyHotKeyModifier.rawValue, forKey: Keys.modifierOnlyHotKeyModifier)
         }
+    }
+
+    /// The dictation key's chord when `modifierOnlyHotKeyModifier` is
+    /// `.chord` (#863), in `ModifierChord.storageValue` form; empty when none
+    /// is recorded. Both Shifts until the user records another.
+    var modifierOnlyHotKeyChord: String {
+        didSet { defaults.set(modifierOnlyHotKeyChord, forKey: Keys.modifierOnlyHotKeyChord) }
     }
 
     /// Seconds to hold modifier before it triggers live auto-paste (0.1-0.8).
@@ -866,6 +879,11 @@ final class SettingsStore {
     /// waiting sessions in the overlay's destinations. Off by default.
     var agentAttentionEnabled: Bool {
         didSet { defaults.set(agentAttentionEnabled, forKey: Keys.agentAttentionEnabled) }
+    }
+
+    /// The mark the menu bar icon gets while an agent needs you.
+    var agentAttentionMark: AgentAttentionMark {
+        didSet { defaults.set(agentAttentionMark.rawValue, forKey: Keys.agentAttentionMark) }
     }
 
     var answerAgentShortcutKeyCode: UInt32 {
@@ -1041,8 +1059,10 @@ final class SettingsStore {
             secrets, .mistralAPIKey, envKey: "MISTRAL_API_KEY", environment: environment)
         jevAPIKey = Self.resolveSecret(
             secrets, .jevAPIKey, envKey: "TYPESAFE_API_KEY", environment: environment)
-        quickCaptureJevEnabled = Self.loadBool(
-            defaults: defaults, key: Keys.quickCaptureJevEnabled, fallback: false)
+        quickCaptureRouter = defaults.string(forKey: Keys.quickCaptureRouter)
+            .flatMap(QuickCaptureRouterChoice.init(rawValue:)) ?? .polishingModel
+        voiceMemosEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.voiceMemosEnabled, fallback: false)
         quickCaptureProjectLines =
             defaults.dictionary(forKey: Keys.quickCaptureProjectLines) as? [String: String] ?? [:]
         // Empty is the stored form of "use the pinned default": the defaults
@@ -1179,9 +1199,9 @@ final class SettingsStore {
             defaults: defaults, key: Keys.polishContextTrustedEndpointEnabled, fallback: false)
         debugLogRealtimeDeltas = Self.loadBool(
             defaults: defaults, key: Keys.debugLogRealtimeDeltas, fallback: false)
+        diagnosticRecordsEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.diagnosticRecordsEnabled, fallback: true)
         #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
-        dogfoodCaptureEnabled = Self.loadBool(
-            defaults: defaults, key: Keys.dogfoodCaptureEnabled, fallback: false)
         dogfoodControlSocketEnabled = Self.loadBool(
             defaults: defaults, key: Keys.dogfoodControlSocketEnabled, fallback: false)
         #endif
@@ -1194,6 +1214,8 @@ final class SettingsStore {
         } else {
             modifierOnlyHotKeyModifier = .fn
         }
+        modifierOnlyHotKeyChord = defaults.string(forKey: Keys.modifierOnlyHotKeyChord)
+            ?? ModifierChord.bothShifts.storageValue
         let storedHoldDelay = defaults.object(forKey: Keys.modifierOnlyHoldDelay) != nil
             ? defaults.double(forKey: Keys.modifierOnlyHoldDelay)
             : 0.35
@@ -1290,6 +1312,9 @@ final class SettingsStore {
             defaults: defaults, key: Keys.answerAgentShortcutEnabled, fallback: false)
         agentAttentionEnabled = Self.loadBool(
             defaults: defaults, key: Keys.agentAttentionEnabled, fallback: false)
+        agentAttentionMark =
+            defaults.string(forKey: Keys.agentAttentionMark)
+            .flatMap(AgentAttentionMark.init(rawValue:)) ?? .dot
         modifierHoldLiveAutoPaste = Self.loadBool(
             defaults: defaults, key: Keys.modifierHoldLiveAutoPaste, fallback: false)
         quickCaptureShortcutKeyCode =
