@@ -87,6 +87,10 @@ package final class QuickCaptureInboxModel {
     /// Whether capture `id` is in the Inbox, on its own or as a follow-up.
     package func holds(_ id: UUID) -> Bool { inbox.holds(id) }
 
+    /// The last write of the inbox file failed, so memory holds changes the
+    /// file does not (#988).
+    package private(set) var hasUnsavedChanges = false
+
     /// The voice memo recordings a sweep keeps (#988).
     package var recordingIDsToKeep: Set<UUID> { inbox.recordingIDsToKeep }
 
@@ -707,8 +711,10 @@ package final class QuickCaptureInboxModel {
         guard let fileURL else { return nil }
         do {
             try QuickCaptureInboxFile.save(inbox, to: fileURL)
+            hasUnsavedChanges = false
             return nil
         } catch {
+            hasUnsavedChanges = true
             Log.persistence.error("Quick capture inbox: save failed: \(error.localizedDescription, privacy: .public)")
             return error
         }

@@ -42,6 +42,7 @@ package final class VoiceMemoIntake {
     private let requestDownload: @MainActor (URL) -> Void
     private let removeTranscribed: @MainActor (URL) throws -> Void
     private let inboxHas: @MainActor (UUID) -> Bool
+    private let inboxIsSaved: @MainActor () -> Bool
     private let capture: @MainActor (_ itemID: UUID, _ text: String, _ recordedAt: Date, _ pcm16: Data) throws -> Void
 
     /// False while a dictation runs: the memo waits rather than share the engine.
@@ -78,6 +79,8 @@ package final class VoiceMemoIntake {
         requestDownload: @escaping @MainActor (URL) -> Void = VoiceMemoFolder.requestDownload,
         removeTranscribed: @escaping @MainActor (URL) throws -> Void = VoiceMemoFolder.removeTranscribed,
         inboxHas: @escaping @MainActor (UUID) -> Bool,
+        /// False while the Inbox holds changes its file does not (#988).
+        inboxIsSaved: @escaping @MainActor () -> Bool = { true },
         /// Throws when the capture's words or audio are not on disk: the
         /// memo then stays in the folder (#988).
         capture: @escaping @MainActor (_ itemID: UUID, _ text: String, _ recordedAt: Date, _ pcm16: Data) throws -> Void
@@ -90,6 +93,7 @@ package final class VoiceMemoIntake {
         self.requestDownload = requestDownload
         self.removeTranscribed = removeTranscribed
         self.inboxHas = inboxHas
+        self.inboxIsSaved = inboxIsSaved
         self.capture = capture
         let load = ledgerURL.map(VoiceMemoLedger.load(from:)) ?? .absent
         ledger = load.value ?? VoiceMemoLedger()
@@ -169,6 +173,14 @@ package final class VoiceMemoIntake {
 
         var captured = 0
         for file in files.sorted(by: { $0.modifiedAt < $1.modifiedAt }) {
+            // A capture whose save failed, or a quit interrupted, and whose
+            // words have reached the Inbox file since.
+            if let entry = ledger.entries[file.name], entry.size == file.size,
+               case .transcribing(let itemID) = entry.state, inboxHas(itemID), inboxIsSaved()
+            {
+                finish(file, itemID: itemID, at: directory.appendingPathComponent(file.name))
+                continue
+            }
             guard ledger.needsCapture(file, inboxHas: { inboxHas($0) }) else { continue }
             let url = directory.appendingPathComponent(file.name)
             guard file.isDownloaded else {
@@ -226,15 +238,21 @@ package final class VoiceMemoIntake {
             onStatus?("A voice memo could not be saved.")
             return .stopPass
         }
-        record(file, .captured(itemID: itemID))
         Log.backends.info("Voice memos: \(transcript.text.count, privacy: .public) chars to the inbox")
+        finish(file, itemID: itemID, at: url)
+        return .captured
+    }
+
+    /// The memo's capture is on disk: marks it captured and moves it to the
+    /// Trash.
+    private func finish(_ file: VoiceMemoFile, itemID: UUID, at url: URL) {
+        record(file, .captured(itemID: itemID))
         do {
             try removeTranscribed(url)
         } catch {
             // The ledger keeps it from being captured twice.
             Log.backends.error("Voice memos: could not move a transcribed memo to the Trash: \(error.localizedDescription, privacy: .public)")
         }
-        return .captured
     }
 
     private func record(_ file: VoiceMemoFile, _ state: VoiceMemoLedger.State) {

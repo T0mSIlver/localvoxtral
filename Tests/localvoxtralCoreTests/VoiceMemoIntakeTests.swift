@@ -207,7 +207,8 @@ final class VoiceMemoIntakeTests: XCTestCase {
     }
 
     /// #988: a memo whose capture never reached the Inbox file stays in the
-    /// folder, and the ledger does not call it captured.
+    /// folder, and the ledger does not call it captured until a later save
+    /// puts the words on disk.
     func testAMemoWhoseCaptureIsNotOnDiskStaysInTheFolder() async throws {
         let inboxURL = workDirectory.appendingPathComponent("quick-captures.json")
         let model = QuickCaptureFixture.model(
@@ -222,6 +223,7 @@ final class VoiceMemoIntakeTests: XCTestCase {
             list: { [unowned self] _ in files },
             removeTranscribed: { [unowned self] url in trashed.append(url.lastPathComponent) },
             inboxHas: { id in model.holds(id) },
+            inboxIsSaved: { !model.hasUnsavedChanges },
             capture: { id, text, recordedAt, _ in
                 try model.captureVoiceMemo(text: text, historyRecordID: nil, id: id, capturedAt: recordedAt)
             }
@@ -236,6 +238,13 @@ final class VoiceMemoIntakeTests: XCTestCase {
             return XCTFail("the ledger says \(entry.state), not transcribing")
         }
         XCTAssertEqual(model.items.map(\.id), [itemID], "the words wait in the Inbox for the next save")
+
+        try FileManager.default.removeItem(at: inboxURL)
+        model.setTitle("A walk", for: itemID)
+        _ = await intake.scan()
+        XCTAssertEqual(trashed, ["walk.m4a"])
+        XCTAssertEqual(VoiceMemoLedger.load(from: ledgerURL).entries["walk.m4a"]?.state, .captured(itemID: itemID))
+        XCTAssertEqual(transcriber.calls.withLock { $0 }, ["walk.m4a"], "transcribed once")
     }
 
     func testANewMemoSavedUnderAnOldNameIsANewMemo() async {

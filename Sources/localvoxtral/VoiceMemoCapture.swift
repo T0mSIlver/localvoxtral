@@ -227,6 +227,7 @@ final class VoiceMemoController {
             ledgerURL: ledgerURL,
             transcriber: transcriber,
             inboxHas: { id in inbox.model.holds(id) },
+            inboxIsSaved: { !inbox.model.hasUnsavedChanges },
             capture: { id, text, recordedAt, pcm in
                 do {
                     try audioStore.write(pcm16: pcm, for: id)
