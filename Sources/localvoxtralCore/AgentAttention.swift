@@ -176,10 +176,9 @@ package final class AgentAttentionTracker {
         }
         eventCount[id, default: 0] += 1
         let count = eventCount[id]
-        let name = name(session)
         switch signal {
         case .waiting:
-            let entry = queue.wait(sessionID: id, name: name, agent: session.agent, at: now())
+            let entry = queue.wait(sessionID: id, name: name(session), agent: session.agent, at: now())
             changed()
             cue(entry)
             return nil
@@ -190,6 +189,7 @@ package final class AgentAttentionTracker {
             return nil
         case .turnEnded:
             let endedAt = now()
+            let name = name(session)
             return Task { @MainActor [weak self] in
                 guard let self else { return }
                 let watched = await self.isWatching(session)

@@ -21,6 +21,7 @@ package final class ClaudeDesktopSessionTitles: @unchecked Sendable {
     package static let maxLength = 80
 
     private struct Cached {
+        var file: URL
         var modified: Date?
         var size: Int?
         var title: String?
@@ -56,15 +57,25 @@ package final class ClaudeDesktopSessionTitles: @unchecked Sendable {
     package func title(desktopSessionID id: String) -> String? {
         // The id becomes a file name: Desktop's shape only, so no separator
         // or dot can reach the path.
-        guard ClaudeDesktopSessionURL.isSessionID(id), let file = file(named: id + ".json") else { return nil }
-        let attributes = try? fileManager.attributesOfItem(atPath: file.path)
+        guard ClaudeDesktopSessionURL.isSessionID(id) else { return nil }
+        // One stat per call once the file is known: this runs on the main
+        // actor for every needs-you event.
+        let cached = cache.withLock { $0[id] }
+        var attributes = cached.flatMap { try? fileManager.attributesOfItem(atPath: $0.file.path) }
+        var file = cached?.file
+        if attributes == nil {
+            guard let found = self.file(named: id + ".json") else { return nil }
+            file = found
+            attributes = try? fileManager.attributesOfItem(atPath: found.path)
+        }
+        guard let file else { return nil }
         let modified = attributes?[.modificationDate] as? Date
         let size = (attributes?[.size] as? NSNumber)?.intValue
-        if let cached = cache.withLock({ $0[id] }), cached.modified == modified, cached.size == size {
+        if let cached, cached.file == file, cached.modified == modified, cached.size == size {
             return cached.title
         }
         let title = (try? Data(contentsOf: file)).flatMap(Self.title(inSessionFile:))
-        cache.withLock { $0[id] = Cached(modified: modified, size: size, title: title) }
+        cache.withLock { $0[id] = Cached(file: file, modified: modified, size: size, title: title) }
         return title
     }
 

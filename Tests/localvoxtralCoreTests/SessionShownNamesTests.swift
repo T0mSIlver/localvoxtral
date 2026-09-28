@@ -99,6 +99,24 @@ final class SessionShownNamesTests: XCTestCase {
         XCTAssertEqual(resolvedID("payments", [titled]), "titled")
     }
 
+    /// The name the user reads is the one that answers, suffix included.
+    func testATitledPaneLeavesTheShownSuffixesToTheOthers() {
+        let titled = candidate(localSession("titled", cwd: "/r/payments", tty: "/dev/ttys001", seen: 0), title: "Fix refunds")
+        let second = candidate(localSession("second", cwd: "/r/payments", tty: "/dev/ttys002", seen: 1))
+        let third = candidate(localSession("third", cwd: "/r/payments", tty: "/dev/ttys003", seen: 2))
+        let three = [titled, second, third]
+        XCTAssertEqual(SessionShownNames.of(three), [
+            "titled": "Fix refunds", "second": "payments · 1", "third": "payments · 2",
+        ])
+        XCTAssertEqual(resolvedID("payments one", three), "second")
+        XCTAssertEqual(resolvedID("payments two", three), "third")
+        XCTAssertEqual(resolvedID("fix refunds", three), "titled")
+
+        let two = [titled, second]
+        XCTAssertEqual(SessionShownNames.of(two)["second"], "payments")
+        XCTAssertEqual(resolvedID("payments", two), "second")
+    }
+
     func testSessionsOnOnePaneShareOneName() {
         let old = localSession("old", cwd: "/r/payments", tty: "/dev/ttys001", seen: 0)
         var new = localSession("new", cwd: "/r/payments", tty: "/dev/ttys001", seen: 1)
@@ -169,6 +187,8 @@ final class SessionShownNamesTests: XCTestCase {
 
         try JSONSerialization.data(withJSONObject: ["title": "Renamed"]).write(to: file)
         XCTAssertEqual(titles.title(desktopSessionID: id), "Renamed", "a changed file is read again")
+        try FileManager.default.removeItem(at: file)
+        XCTAssertNil(titles.title(desktopSessionID: id), "a file Desktop deleted names nothing")
 
         XCTAssertNil(titles.title(desktopSessionID: "local_0000"), "no file")
         XCTAssertNil(titles.title(desktopSessionID: "local_../../x"), "not Desktop's id shape")

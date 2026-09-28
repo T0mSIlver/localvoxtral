@@ -311,9 +311,9 @@ package enum SessionNameResolution: Equatable, Sendable {
 }
 
 package enum SessionNameResolver {
-    /// Tiers, first match wins: a nickname; the name the session goes by
-    /// with duplicates told apart ("localvoxtral · 2", while the bare
-    /// "localvoxtral" stays ambiguous); its folder, readable
+    /// Tiers, first match wins: a nickname; the name shown for it
+    /// (`SessionShownNames`) with duplicates told apart ("localvoxtral · 2",
+    /// while the bare "localvoxtral" stays ambiguous); its folder, readable
     /// folder or named branch; its repository; its whole title; the first
     /// two to four words of its title. A title never beats a folder name,
     /// since the session can set its own title. A match on a git root's
@@ -328,13 +328,20 @@ package enum SessionNameResolver {
         let spoken = SessionNameMatching.key(spokenName)
         guard !spoken.isEmpty else { return .unknown }
         let panes = onePerPane(candidates)
-        let distinct = SessionShownNames.distinct(panes, name: \.names.fallback)
+        // The names the overlay and the popover show, suffixes included, so
+        // the name the user reads is the one that answers. A shown title
+        // answers only at the title tier.
+        let shown = SessionShownNames.distinct(panes, name: SessionShownNames.base)
+        let showsTitle: (SessionNameCandidate) -> Bool = { $0.nickname == nil && $0.names.title != nil }
         let tiers: [(SessionNameCandidate) -> [String]] = [
             { [$0.nickname].compactMap { $0 } },
-            { SessionShownNames.spokenForms(distinct[$0.snapshot.sessionID]) },
+            { showsTitle($0) ? [] : SessionShownNames.spokenForms(shown[$0.snapshot.sessionID]) },
             { [$0.names.primary, $0.names.readablePrimary, $0.names.namedBranch].compactMap { $0 } },
             { [$0.names.repository].compactMap { $0 } },
-            { [$0.names.title].compactMap { $0 } },
+            {
+                [$0.names.title].compactMap { $0 }
+                    + (showsTitle($0) ? SessionShownNames.spokenForms(shown[$0.snapshot.sessionID]) : [])
+            },
         ]
         for tier in tiers {
             let matches = panes.filter { candidate in
@@ -396,7 +403,7 @@ package enum SessionShownNames {
     /// told apart. Every session on one pane gets that pane's name.
     package static func of(_ candidates: [SessionNameCandidate]) -> [String: String] {
         let panes = SessionNameResolver.onePerPane(candidates)
-        let names = distinct(panes) { $0.nickname ?? $0.names.shown }
+        let names = distinct(panes, name: base)
         var byPane: [String: String] = [:]
         for pane in panes {
             byPane[SessionNameResolver.paneKey(pane.snapshot)] = names[pane.snapshot.sessionID]
@@ -406,6 +413,11 @@ package enum SessionShownNames {
             result[candidate.snapshot.sessionID] = byPane[SessionNameResolver.paneKey(candidate.snapshot)]
         }
         return result
+    }
+
+    /// A pane's name before duplicates are told apart.
+    package static func base(_ candidate: SessionNameCandidate) -> String? {
+        candidate.nickname ?? candidate.names.shown
     }
 
     /// Names made unique among `panes`. A name only one pane has stays as
