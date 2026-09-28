@@ -27,6 +27,9 @@ package final class QuickCaptureInboxModel {
     private let drafter: @MainActor () -> QuickCaptureDrafter
     private let github: any QuickCaptureGitHub
     private let now: @MainActor () -> Date
+    /// The latest draft run per capture: an older run's answer is dropped.
+    private var draftRuns: [UUID: Int] = [:]
+    private var draftRunCount = 0
     /// One short sentence for the menu bar popover.
     package var onStatus: (@MainActor (String) -> Void)?
     /// A draft finished: an item went from drafting, or from an issue's
@@ -71,6 +74,10 @@ package final class QuickCaptureInboxModel {
     /// Adds the capture and starts routing it. Returns the task that routes
     /// and drafts; the app drops it, tests await it. A voice memo passes the
     /// id its audio is kept under, and when it was recorded.
+    ///
+    /// A follow-up (#965) joins an open capture instead: one that begins
+    /// "also" or "for that idea" joins the latest, and the router may match
+    /// any of them on the same call that picks a project.
     @discardableResult
     package func capture(
         text: String, historyRecordID: UUID?, id: UUID = UUID(), capturedAt: Date? = nil
@@ -78,12 +85,46 @@ package final class QuickCaptureInboxModel {
         let item = QuickCaptureItem(
             id: id, capturedAt: capturedAt ?? now(), text: text, historyRecordID: historyRecordID)
         mutate { $0.add(item) }
+        let open = inbox.items
+            .filter { $0.id != item.id && $0.acceptsFollowUp(at: item.capturedAt) }
+            .sorted { $0.lastCapturedAt > $1.lastCapturedAt }
+        if QuickCaptureInbox.saysFollowUp(text), let latest = open.first {
+            Log.backends.notice("Quick capture: saved, a follow-up by its first words")
+            let task = join(item.id, into: latest.id)
+            return Task { await task?.value }
+        }
         Log.backends.notice("Quick capture: saved, routing")
+        let openCaptures = open.prefix(QuickCaptureRouting.maxOpenCaptures).map {
+            QuickCaptureOpenCapture(id: $0.id, projectKey: $0.projectKey, summary: $0.summary)
+        }
+        return route(item, openCaptures: Array(openCaptures))
+    }
+
+    /// Routes `item` and drafts it where it lands, or joins it to the open
+    /// capture the router matched.
+    private func route(_ item: QuickCaptureItem, openCaptures: [QuickCaptureOpenCapture]) -> Task<Void, Never> {
         let router = makeRouter()
         let projects = projects()
+        let text = item.text
+        let historyRecordID = item.historyRecordID
         return Task { @MainActor [weak self] in
-            let route = await router.route(capture: text, projects: projects)
+            let answer = await router.answer(capture: text, projects: projects, openCaptures: openCaptures)
             guard let self else { return }
+            let route: QuickCaptureRoute
+            switch answer {
+            case .route(let answered):
+                route = answered
+            case .join(let target, let classifier, let probability):
+                if let task = self.join(item.id, into: target) {
+                    await task.value
+                    return
+                }
+                // The capture it continues was filed or discarded meanwhile.
+                route = QuickCaptureRoute(
+                    destination: .catchAll, classifier: classifier, reason: .lowConfidence, topProbability: probability,
+                    suggestion: openCaptures.first { $0.id == target }?.projectKey
+                )
+            }
             self.mutate { $0.applyRoute(route, to: item.id, projects: projects) }
             let name = self.inbox.items.first { $0.id == item.id }?.projectName
             self.onStatus?(name.map { "Sent to \($0) inbox" } ?? "Sent to inbox")
@@ -94,8 +135,76 @@ package final class QuickCaptureInboxModel {
         }
     }
 
+    // MARK: Follow-ups (#965)
+
+    /// Joins capture `id` to `target` as its follow-up, and redrafts the
+    /// target in its project: from the draft it has, which may hold the
+    /// user's edits, else from all its words. Nil, with nothing changed, only
+    /// when the target was filed or discarded meanwhile.
+    private func join(_ id: UUID, into target: UUID) -> Task<Void, Never>? {
+        guard let before = inbox.items.first(where: { $0.id == target }),
+              before.state == .ready || before.state == .drafting,
+              let capture = inbox.items.first(where: { $0.id == id })
+        else { return nil }
+        mutate { $0.join(id, into: target) }
+        Log.backends.notice("Quick capture: joined an open capture as its follow-up")
+        onStatus?(QuickCaptureFollowUpStatus.joined)
+        if let recordID = capture.historyRecordID {
+            onRouted?(recordID, "Added to \(before.projectName.map { "a \($0) capture" } ?? "an Inbox capture")")
+        }
+        // A capture with no project keeps the words and drafts nothing.
+        guard let key = before.projectKey else { return Task {} }
+        let projects = projects()
+        let input: String
+        if let draft = before.draftSnapshot {
+            input = QuickCaptureSpokenReview.redraftCapture(
+                original: before.words, title: draft.title, body: draft.body,
+                changes: (before.changes ?? []) + ["Add what the user said next: \(capture.text)"]
+            )
+        } else {
+            input = before.words + "\n\n" + capture.text
+        }
+        return Task { @MainActor [weak self] in
+            await self?.draft(target, text: input, destination: .project(key), projects: projects)
+        }
+    }
+
+    /// Split (#965): the follow-up becomes its own capture again, routed to
+    /// a project (never joined back), and the item gets back the draft it had
+    /// before that follow-up, else is redrafted from its remaining words.
+    @discardableResult
+    package func split(_ followUpID: UUID, from id: UUID) -> Task<Void, Never>? {
+        guard let item = inbox.items.first(where: { $0.id == id }), item.state == .ready || item.state == .drafting
+        else { return nil }
+        var result: (capture: QuickCaptureItem, restored: Bool)?
+        mutate { result = $0.split(followUpID, from: id) }
+        guard let result else { return nil }
+        // A draft running now holds the split words.
+        draftRuns[id] = nil
+        Log.backends.notice("Quick capture: split a follow-up, \(result.restored ? "earlier draft restored" : "redrafting", privacy: .public)")
+        let routing = route(result.capture, openCaptures: [])
+        guard !result.restored, let key = item.projectKey,
+              let after = inbox.items.first(where: { $0.id == id })
+        else {
+            if !result.restored, item.state == .drafting {
+                mutate { inbox in inbox.update(id) { $0.state = .ready } }
+            }
+            return routing
+        }
+        let projects = projects()
+        return Task { @MainActor [weak self] in
+            await self?.draft(id, text: after.words, destination: .project(key), projects: projects)
+            await routing.value
+        }
+    }
+
     private func draft(_ id: UUID, text: String, destination: QuickCaptureRoute.Destination, projects: [QuickCaptureProject]) async {
         guard case .project(let key) = destination else { return }
+        // A later run for this capture (a follow-up joined, #965) makes this
+        // one's answers moot.
+        draftRunCount += 1
+        let run = draftRunCount
+        draftRuns[id] = run
         mutate { inbox in
             inbox.update(id) {
                 $0.state = .drafting
@@ -117,7 +226,7 @@ package final class QuickCaptureInboxModel {
         let final = await drafter.draft(
             capture: text, route: destination, projects: projects, agents: agents,
             onFirstDraft: { @MainActor [weak self] outcome in
-                guard let self, let item = self.inbox.items.first(where: { $0.id == id }),
+                guard let self, self.draftRuns[id] == run, let item = self.inbox.items.first(where: { $0.id == id }),
                       item.state == .drafting, item.projectKey == key
                 else { return false }
                 self.mutate { $0.applyFirstDraft(outcome, repository: repository, checking: !agents.isEmpty, to: id) }
@@ -127,6 +236,10 @@ package final class QuickCaptureInboxModel {
             }
         )
         guard let final else { return }
+        guard draftRuns[id] == run else {
+            Log.backends.notice("Quick capture draft: superseded by a later draft of the same capture, dropped")
+            return
+        }
         guard let item = inbox.items.first(where: { $0.id == id }), item.projectKey == key else {
             Log.backends.notice("Quick capture draft: the capture was moved or discarded, draft dropped")
             return
@@ -159,7 +272,7 @@ package final class QuickCaptureInboxModel {
         guard projects.contains(where: { $0.key == key }) else { return nil }
         Log.backends.notice("Quick capture draft: drafting again")
         return Task { @MainActor [weak self] in
-            await self?.draft(id, text: item.text, destination: .project(key), projects: projects)
+            await self?.draft(id, text: item.words, destination: .project(key), projects: projects)
         }
     }
 
@@ -204,7 +317,7 @@ package final class QuickCaptureInboxModel {
         return Task { @MainActor [weak self] in
             guard let self else { return }
             if needsDraft {
-                await self.draft(id, text: item.text, destination: .project(project.key), projects: projects)
+                await self.draft(id, text: item.words, destination: .project(project.key), projects: projects)
             } else if project.issueRepository == nil, project.key.hasPrefix("/") {
                 let repository = await self.github.repository(ofCheckout: project.key)
                 self.mutate { inbox in inbox.update(id) { if $0.repository == nil { $0.repository = repository } } }
@@ -231,8 +344,16 @@ package final class QuickCaptureInboxModel {
     }
 
     package func discard(_ id: UUID) {
+        let followUps = inbox.items.first { $0.id == id }?.followUps ?? []
         mutate { $0.discard(id) }
+        draftRuns[id] = nil
         onDone?(id)
+        for followUp in followUps { onDone?(followUp.id) }
+    }
+
+    /// The History records of a capture and its follow-ups.
+    private func historyRecordIDs(_ item: QuickCaptureItem) -> [UUID] {
+        ([item.historyRecordID] + (item.followUps ?? []).map(\.historyRecordID)).compactMap { $0 }
     }
 
     /// The only path to `gh issue create`.
@@ -265,8 +386,47 @@ package final class QuickCaptureInboxModel {
             }
             guard case .success = result else { return }
             self.onDone?(id)
-            if let recordID = item.historyRecordID {
+            for followUp in item.followUps ?? [] { self.onDone?(followUp.id) }
+            for recordID in self.historyRecordIDs(item) {
                 self.onRouted?(recordID, "Filed in \(repository)")
+            }
+        }
+    }
+
+    /// Comment on #N (#965): the one path to `gh issue comment`, for a draft
+    /// that extends an open issue. Like File, only on the user's click.
+    @discardableResult
+    package func comment(_ id: UUID) -> Task<Void, Never>? {
+        guard let item = inbox.items.first(where: { $0.id == id }), item.canComment,
+              let repository = item.repository, let issue = item.relatedIssue
+        else { return nil }
+        mutate { inbox in inbox.update(id) { $0.state = .filing } }
+        let body = item.commentBody
+        return Task { @MainActor [weak self] in
+            guard let self else { return }
+            let result = await self.github.commentOnIssue(repository: repository, issue: issue, body: body)
+            self.mutate { inbox in
+                inbox.update(id) { item in
+                    switch result {
+                    case .success(let url):
+                        item.state = .filed
+                        item.filedURL = url
+                        item.filedAt = self.now()
+                        item.commentedOn = issue
+                        item.note = nil
+                    case .failure(let failure):
+                        item.state = .ready
+                        item.note = failure == .ghNotFound
+                            ? "GitHub CLI not found."
+                            : "The comment failed. Check that gh is logged in."
+                    }
+                }
+            }
+            guard case .success = result else { return }
+            self.onDone?(id)
+            for followUp in item.followUps ?? [] { self.onDone?(followUp.id) }
+            for recordID in self.historyRecordIDs(item) {
+                self.onRouted?(recordID, "Commented on \(repository)#\(issue)")
             }
         }
     }
@@ -340,7 +500,7 @@ package final class QuickCaptureInboxModel {
             }
         }
         let text = QuickCaptureSpokenReview.redraftCapture(
-            original: item.text, title: item.title, body: item.body, changes: changes
+            original: item.words, title: item.title, body: item.body, changes: changes
         )
         let projects = projects()
         return Task { @MainActor [weak self] in
@@ -383,6 +543,11 @@ package final class QuickCaptureInboxModel {
             Log.persistence.error("Quick capture inbox: save failed: \(error.localizedDescription, privacy: .public)")
         }
     }
+}
+
+/// The popover's sentence for a follow-up that joined a capture (#965).
+package enum QuickCaptureFollowUpStatus {
+    package static let joined = "Added to an earlier capture"
 }
 
 /// The popover's sentences for what a spoken review did (#927), within its

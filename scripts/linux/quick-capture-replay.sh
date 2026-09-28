@@ -6,7 +6,12 @@
 #
 #   scripts/linux/quick-capture-replay.sh --captures FILE --projects FILE \
 #     [--jev typesafe|vercelGateway --jev-key-file FILE] \
-#     [--chat-url URL --chat-model ID [--chat-key-file FILE] [--chat-extra JSON]]
+#     [--chat-url URL --chat-model ID [--chat-key-file FILE] [--chat-extra JSON]] \
+#     [--follow-ups]
+#
+# --follow-ups replays the captures as one Inbox stream (#965): earlier
+# captures are offered for a follow-up to join, and a capture's `join` field
+# names the one it continues.
 #
 # Classifiers are tried in that order, as the app tries Jev first. The
 # captures are private dictations: keep them outside the repository.
@@ -17,7 +22,7 @@ if [[ "$(uname)" != Linux ]]; then
   echo "quick-capture-replay: Linux only; never spend inference on the Mac" >&2
   exit 2
 fi
-captures="" projects="" jev_host="" jev_key_file="" chat_url="" chat_model="" chat_key_file="" chat_extra=""
+follow_ups="" captures="" projects="" jev_host="" jev_key_file="" chat_url="" chat_model="" chat_key_file="" chat_extra=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --captures) captures="$2"; shift 2 ;;
@@ -28,6 +33,7 @@ while [[ $# -gt 0 ]]; do
     --chat-model) chat_model="$2"; shift 2 ;;
     --chat-key-file) chat_key_file="$2"; shift 2 ;;
     --chat-extra) chat_extra="$2"; shift 2 ;;
+    --follow-ups) follow_ups=1; shift ;;
     *) echo "quick-capture-replay: unknown flag $1" >&2; exit 2 ;;
   esac
 done
@@ -46,5 +52,5 @@ trap 'cat "$resolved_backup" >Package.resolved; rm -f "$resolved_backup"' EXIT
 env -i HOME="$HOME" PATH="$PATH" LANG="${LANG:-C.UTF-8}" LV_QUICK_CAPTURE_REPLAY=1 \
   QC_CAPTURES="$(realpath "$captures")" QC_PROJECTS="$(realpath "$projects")" \
   QC_JEV_HOST="$jev_host" QC_JEV_KEY_FILE="$jev_key_file" \
-  QC_CHAT_URL="$chat_url" QC_CHAT_MODEL="$chat_model" QC_CHAT_KEY_FILE="$chat_key_file" QC_CHAT_EXTRA="$chat_extra" \
+  QC_CHAT_URL="$chat_url" QC_CHAT_MODEL="$chat_model" QC_CHAT_KEY_FILE="$chat_key_file" QC_CHAT_EXTRA="$chat_extra" QC_FOLLOW_UPS="$follow_ups" \
   "$SWIFT" test --skip-build --scratch-path "$SCRATCH" --filter QuickCaptureReplayLiveTests

@@ -2,8 +2,10 @@ import SwiftUI
 
 /// Quick captures waiting for the user (#725): the words as dictated, the
 /// project the router chose, and the draft, sorted by kind (#918). Edit it,
-/// move it, discard it, or File an issue; File is the only way anything
-/// reaches GitHub. A question shows its answer; a task or a note stays here.
+/// move it, discard it, or File an issue; File, and Comment on #N for a draft
+/// that extends an open issue (#965), are the only ways anything reaches
+/// GitHub. A question shows its answer; a task or a note stays here. A
+/// follow-up that joined a capture shows under its words, with Split.
 struct InboxSettingsPane: View {
     /// Nil in a view model that runs no services (previews, tests).
     let inbox: QuickCaptureInboxViewModel?
@@ -41,6 +43,7 @@ private struct InboxCaptureRow: View {
                     .textSelection(.enabled)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                followUps
                 if let note = item.note {
                     Text(note)
                         .font(.callout)
@@ -89,6 +92,25 @@ private struct InboxCaptureRow: View {
         }
         .font(.callout)
         .foregroundStyle(.secondary)
+    }
+
+    /// Each follow-up's words (#965), with Split beside them while the
+    /// capture can still change.
+    @ViewBuilder
+    private var followUps: some View {
+        ForEach(item.followUps ?? []) { followUp in
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(followUp.text)
+                    .textSelection(.enabled)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if item.state == .ready || item.state == .drafting {
+                    Button("Split") { _ = model.split(followUp.id, from: item.id) }
+                        .controlSize(.small)
+                        .accessibilityIdentifier("inbox.row.split")
+                }
+            }
+        }
     }
 
     static func label(for kind: QuickCaptureKind) -> String {
@@ -153,6 +175,11 @@ private struct InboxCaptureRow: View {
                     .disabled(!item.canFile)
                     .accessibilityIdentifier("inbox.row.file")
             }
+            if item.relation == .extends, let issue = item.relatedIssue, item.isIssue {
+                Button("Comment on #\(issue)") { _ = model.comment(item.id) }
+                    .disabled(!item.canComment)
+                    .accessibilityIdentifier("inbox.row.comment")
+            }
             if item.canDraftAgain {
                 Button("Draft Again") { _ = model.draftAgain(item.id) }
                     .accessibilityIdentifier("inbox.row.draftAgain")
@@ -211,7 +238,7 @@ private struct InboxCaptureRow: View {
                 .lineLimit(1)
             Spacer(minLength: 8)
             if let url = item.filedURL.flatMap(URL.init(string:)) {
-                Link("Open issue", destination: url)
+                Link(item.commentedOn.map { "Open comment on #\($0)" } ?? "Open issue", destination: url)
             }
         }
         .font(.callout)

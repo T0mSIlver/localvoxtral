@@ -174,6 +174,9 @@ final class QuickCaptureProjectLinkerTests: XCTestCase {
         func createIssue(repository: String, title: String, body: String) async -> Result<String, QuickCaptureFiling.Failure> {
             .failure(.noURL)
         }
+        func commentOnIssue(repository: String, issue: Int, body: String) async -> Result<String, QuickCaptureFiling.Failure> {
+            .failure(.noURL)
+        }
     }
 
     func testOriginsAreReadOnceAndDescriptionsWeekly() async {

@@ -22,11 +22,18 @@ import XCTest
 ///   report (#745), summarized as the Mac summarizes that report.
 /// - `QC_JEV_HOST` + `QC_JEV_KEY_FILE`, and/or `QC_CHAT_URL` + `QC_CHAT_MODEL`
 ///   (+ `QC_CHAT_KEY_FILE`, `QC_CHAT_EXTRA` as a JSON object), in router order.
+/// - `QC_FOLLOW_UPS=1` (#965): the captures are one stream, in file order,
+///   as the Inbox sees them within the hour: each earlier capture not joined
+///   to another is open (the last five are offered), a capture that says
+///   "also" joins the latest, and the rest go to the router with the open
+///   ones as options. A capture's optional `join` names the earlier capture
+///   it continues; without it, joining anything is wrong.
 final class QuickCaptureReplayLiveTests: XCTestCase {
     private struct Capture: Decodable {
         let id: String
         let expected: String
         let text: String
+        let join: String?
     }
 
     private struct ProjectEntry: Decodable {
@@ -118,13 +125,50 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
             print("QC   \(option.id): \(option.description)")
         }
         let router = QuickCaptureRouter(classifiers: classifiers.map { Printing(inner: $0) })
+        let followUps = environment["QC_FOLLOW_UPS"] == "1"
+        // Most recent first: (capture id, its option).
+        var open: [(id: String, capture: QuickCaptureOpenCapture)] = []
+        var joinsExpected = 0, joinedRight = 0, joinedWrong = 0, joinsMissed = 0, joinedByWords = 0
         let names = Dictionary(projects.map { ($0.key, $0.name) }, uniquingKeysWith: { first, _ in first })
         let projectNames = Set(projects.map(\.name))
         var right = 0, projectExpected = 0, projectRight = 0, catchAll = 0, wrongProject = 0, inboxRight = 0, failed = 0
         var suggested = 0, suggestedRight = 0
         for capture in captures {
             let expected = projectNames.contains(capture.expected) ? capture.expected : "inbox"
-            let route = await router.route(capture: capture.text, projects: projects)
+            var joined: String?
+            var answer: QuickCaptureRouteAnswer = .route(QuickCaptureRoute(
+                destination: .catchAll, classifier: .none, reason: .noProjects, topProbability: nil))
+            if followUps, QuickCaptureInbox.saysFollowUp(capture.text), let latest = open.first {
+                joined = latest.id
+                joinedByWords += 1
+            } else {
+                let offered = followUps ? Array(open.prefix(QuickCaptureRouting.maxOpenCaptures).map(\.capture)) : []
+                answer = await router.answer(capture: capture.text, projects: projects, openCaptures: offered)
+                if case .join(let target, _, _) = answer {
+                    joined = open.first { $0.capture.id == target }?.id
+                }
+            }
+            if capture.join != nil { joinsExpected += 1 }
+            if let joined {
+                let probability: String
+                if case .join(_, _, let p) = answer { probability = String(format: "%.2f", p) } else { probability = "words" }
+                if joined == capture.join { joinedRight += 1 } else { joinedWrong += 1 }
+                print("QC \(joined == capture.join ? "JOK" : "JBAD") \(capture.id) joined=\(joined) expected-join=\(capture.join ?? "-") p=\(probability)")
+                if let index = open.firstIndex(where: { $0.id == joined }) { open.insert(open.remove(at: index), at: 0) }
+                continue
+            }
+            if capture.join != nil { joinsMissed += 1 }
+            let route: QuickCaptureRoute
+            switch answer {
+            case .route(let answered): route = answered
+            case .join: continue
+            }
+            if followUps {
+                open.insert((capture.id, QuickCaptureOpenCapture(
+                    id: UUID(), projectKey: route.destination.projectKey,
+                    summary: QuickCaptureDraft.oneLine(capture.text, limit: 160)
+                )), at: 0)
+            }
             let got: String
             switch route.destination {
             case .project(let key): got = names[key] ?? key
@@ -150,6 +194,15 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
             let probability = route.topProbability.map { String(format: "%.2f", $0) } ?? "-"
             print("QC \(mark) \(capture.id) expected=\(expected) got=\(picked) by=\(route.classifier.rawValue) \(route.reason.rawValue) p=\(probability)")
         }
+        if followUps {
+            print("QC JOINS expected=\(joinsExpected) right=\(joinedRight) wrong=\(joinedWrong) missed=\(joinsMissed) by-words=\(joinedByWords)")
+        }
         print("QC SCORE captures=\(captures.count) right=\(right) project-expected=\(projectExpected) right-project=\(projectRight) catch-all=\(catchAll) wrong-project=\(wrongProject) inbox-expected=\(captures.count - projectExpected) inbox-right=\(inboxRight) failed=\(failed) suggested=\(suggested) suggested-right=\(suggestedRight) suggested-wrong=\(suggested - suggestedRight)")
+    }
+}
+
+private extension QuickCaptureRoute.Destination {
+    var projectKey: String? {
+        if case .project(let key) = self { key } else { nil }
     }
 }

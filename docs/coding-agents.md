@@ -499,8 +499,22 @@ A capture then goes through four steps.
    fills in the project's repository (see
    [Each project's repository](#each-projects-repository)). Your coding
    agent can also file it with its own `gh` ([Quick captures](#quick-captures)).
-   You can also [review it by voice](#review-a-draft-by-voice). Nothing
-   else files. A draft that failed has **Draft Again**.
+   When the draft extends an open issue, **Comment on #N** beside **File**
+   posts the draft and your words on that issue instead. You can also
+   [review it by voice](#review-a-draft-by-voice). Nothing else files. A
+   draft that failed has **Draft Again**.
+
+### Add to an idea you just captured
+
+A capture that starts with "also" or "for that idea" is added to your latest
+capture from the last hour that you haven't filed. Otherwise the classifier
+also compares the new capture with those captures, and adds it to one only
+when it is sure the new words continue that idea. The capture is then drafted
+again with your added words, starting from its draft as you left it.
+
+The added words show under the first ones on the Inbox row. **Split** makes
+them a capture of their own again, and the first capture gets back the draft
+it had before.
 
 ### Review a draft by voice
 
