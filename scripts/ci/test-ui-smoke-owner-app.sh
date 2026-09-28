@@ -81,6 +81,10 @@ case "$1" in
 esac
 exit 0
 STUB
+cat >"$BIN/plutil" <<'STUB'
+#!/bin/sh
+exit "${STUB_LINT_STATUS:-0}"
+STUB
 chmod +x "$BIN"/*
 
 APP="$WORK/dist/localvoxtral.app"
@@ -165,5 +169,16 @@ assert_reached_launch
 grep -q "^open $OWNER_BUNDLE" "$EVENTS" && fail "the owner's app was relaunched without its defaults"
 grep -q "NOT relaunching the owner app" "$WORK/out" || fail "the skipped relaunch is not reported"
 echo "PASS: no relaunch when the owner's defaults could not be restored"
+
+# 5. The owner's defaults cannot be backed up: the drill touches nothing and
+#    still brings the owner's app back. Cleanup restores from an EXIT trap,
+#    where a bare `return` reported the failed drill's status as a failed
+#    restore and kept the owner's app down.
+STUB_LINT_STATUS=1 run_drill 0 yes
+grep -q "Could not create persistent defaults backup" "$WORK/out" \
+  || fail "the drill did not end at its snapshot: $(tail -n 3 "$WORK/out")"
+grep -q "^defaults write" "$EVENTS" && fail "the drill forced its defaults without a backup"
+grep -q "^open $OWNER_BUNDLE" "$EVENTS" || fail "the owner's app was not relaunched after a failed snapshot"
+echo "PASS: a failed snapshot leaves the defaults alone and relaunches the owner's app"
 
 echo "ui-smoke owner-app tests passed"
