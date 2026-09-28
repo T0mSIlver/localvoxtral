@@ -166,6 +166,10 @@ private final class SQLiteFile {
             db = nil
             throw SQLiteFileError(description: "cannot open \(name): \(message)")
         }
+        // Core Data may hold a lock for a moment (a save, a checkpoint, a
+        // second build open at once); a check that failed on it would read
+        // as a store that cannot be opened.
+        sqlite3_busy_timeout(db, 5_000)
     }
 
     deinit { sqlite3_close(db) }
