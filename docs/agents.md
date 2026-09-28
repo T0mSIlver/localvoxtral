@@ -1,7 +1,7 @@
 # Work with several agents
 
 Run several coding agents at once, and localvoxtral tells you when one waits
-for you. Press Tab while you dictate, and that agent's pane comes to the
+for you. Tab to it while you dictate, and that agent's pane comes to the
 front so you can read what it asked while you answer. Your words go into
 that pane when you stop. By voice, you can name a session, go to it, send
 it a dictation from another app, and press Return.
@@ -36,8 +36,9 @@ what the agent wrote or asked, only that it waits.
 ## Jump to it
 
 During a dictation, the overlay lists each waiting session among
-[where the words go](dictation.md#where-the-words-go), oldest first. Tab to
-one and its pane comes forward. The overlay moves to it only once the
+[where the words go](dictation.md#where-the-words-go), oldest first, after
+the Inbox. The second Tab reaches the oldest one, and its pane comes
+forward. The overlay moves to it only once the
 terminal confirms the pane is in front. Otherwise it stays where it was and
 the popover says why.
 
@@ -50,8 +51,8 @@ can be a [chord of modifier keys](dictation.md#record-a-chord-of-modifier-keys).
 With no session waiting, it opens the oldest ready quick capture draft
 instead ([Review a draft by voice](coding-agents.md#review-a-draft-by-voice)).
 
-After Tab moves to a session, Tab can bring back the app you started in,
-except in one case: you started in the same terminal app as that session, in
+After a move to a session, moving back to the app you started in brings it
+forward, except in one case: you started in the same terminal app as that session, in
 a pane with no joined session. The app has no way to find that pane again,
 and bringing the terminal forward would only show the session's pane.
 
