@@ -757,6 +757,10 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     private func concurrently<Input, Output: Sendable>(
         _ inputs: [Input], _ body: (Input) throws -> Output
     ) throws -> [Output] {
+        // The stubs are written lazily on first use; two runs racing to write
+        // one could replace it under the other's feet. Write them first.
+        _ = try stubCurlDirectory()
+        _ = try fixedDateDirectory()
         let results = Mutex<[Int: Result<Output, any Error>]>([:])
         withoutActuallyEscaping(body) { body in
             let work = ConcurrentShimRuns(inputs: inputs, body: body)
