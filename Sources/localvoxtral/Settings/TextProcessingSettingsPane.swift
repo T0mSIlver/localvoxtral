@@ -130,6 +130,22 @@ struct TextProcessingSettingsPane: View {
                     SpeakerTermsField(terms: $settings.polishSpeakerTerms)
                 }
 
+                // Every polish sends the project names already (#1024).
+                let repeated = PolishProjectNames.globalTerms(
+                    settings.polishSpeakerTerms, repeating: viewModel.session.polishProjectNames())
+                if !repeated.isEmpty {
+                    SettingsFieldRow(
+                        title: "Global terms that repeat a project name",
+                        status: repeated.joined(separator: ", ")
+                    ) {
+                        Button("Remove") {
+                            let removed = Set(repeated)
+                            settings.polishSpeakerTerms.removeAll { removed.contains($0) }
+                        }
+                        .accessibilityIdentifier("settings.aboutYou.removeProjectNameTerms")
+                    }
+                }
+
                 SettingsFieldRow(
                     title: "Suggestions",
                     layout: .stacked

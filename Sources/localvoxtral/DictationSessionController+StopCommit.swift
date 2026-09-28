@@ -197,7 +197,8 @@ extension DictationSessionController {
             let promptTemplates = StopCommitCoordinator.promptTemplates(
                 profile: polishProfile,
                 settings: settings,
-                appConfigStore: appConfigStore
+                appConfigStore: appConfigStore,
+                projectNames: polishProjectNames()
             )
 
             statusText = StatusStrings.polishing

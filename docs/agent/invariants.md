@@ -401,6 +401,27 @@ there is not.
   dictations, not independent evidence, so one stale clipboard read across
   three dictations is three confirmations.
 
+- **Every polish carries every listed project's name** (#1024). The
+  About-you block ends with `Their projects (repository names): …`, built by
+  `PolishProjectNames` from quick capture's project list
+  (`QuickCaptureProjects.projects`): each project's name and its
+  repository's, sorted, the 30 most recent projects, without labels a tool
+  generated (a folder name ending in a hex hash, such as a Claude Desktop
+  worktree's). It goes to every endpoint whatever the context toggles say,
+  on the same ruling as learned terms above: a repository name is the
+  speaker's vocabulary. A remote project's name is a label its host sent, so
+  a host can put up to 60 characters of its choosing in every prompt; the
+  host is one the user enrolled, and the label is sanitized like a term
+  (`SpeakerTerms.sanitized`: one line, no quotes, no commas). The list sits
+  in the SYSTEM prompt and is sorted rather than ordered by recency, so the
+  helper's cached prefix changes only when a project is added or dropped,
+  never because the user dictated into another one. Measured on GLM 5.3
+  with Tom's dictations (#1024): with the names, 117/122 repository names
+  came out right against 58 without and 104 with his hand-typed Global
+  terms, and no control got a name written into it. A name already among
+  the Global terms is listed there only, and Settings offers to remove such
+  a term; nothing removes it without a click.
+
 - **A learned term does not rewrite ordinary words** (#522). The exact tier
   pre-applies any span that normalizes to a term, so a learned `useAuth`
   would turn "we should use auth tokens" into code. For the `.learned`

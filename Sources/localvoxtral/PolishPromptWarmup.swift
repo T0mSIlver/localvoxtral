@@ -54,7 +54,8 @@ enum PolishPromptWarmup {
     @MainActor
     static func plan(
         settings: SettingsStore,
-        appConfigStore: any AppConfigServing
+        appConfigStore: any AppConfigServing,
+        projectNames: [String]
     ) -> (requests: [ProfiledRequest], configuration: LLMPolishingConfiguration)? {
         guard settings.polishingBackendMode == .managedLocal,
             let configuration = settings.llmPolishingConfiguration
@@ -63,7 +64,8 @@ enum PolishPromptWarmup {
         }
         let standardRequest = request(
             templates: StopCommitCoordinator.promptTemplates(
-                profile: .standard, settings: settings, appConfigStore: appConfigStore)
+                profile: .standard, settings: settings, appConfigStore: appConfigStore,
+                projectNames: projectNames)
         )
         var requests: [ProfiledRequest] = [
             ProfiledRequest(profile: .standard, request: standardRequest)
@@ -71,7 +73,8 @@ enum PolishPromptWarmup {
         if settings.agentPolishProfileEnabled {
             let agentRequest = request(
                 templates: StopCommitCoordinator.promptTemplates(
-                    profile: .agent, settings: settings, appConfigStore: appConfigStore)
+                    profile: .agent, settings: settings, appConfigStore: appConfigStore,
+                    projectNames: projectNames)
             )
             if !sharesCheckpointedPrefix(agentRequest, standardRequest) {
                 requests.append(ProfiledRequest(profile: .agent, request: agentRequest))

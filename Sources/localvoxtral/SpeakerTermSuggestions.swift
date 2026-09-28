@@ -211,6 +211,9 @@ final class SpeakerTermSuggestionModel {
     /// Offered with no model call and no API credits — the evidence is
     /// already on this machine.
     private let learnedTerms: @MainActor () -> [String]
+    /// The user's project names (`PolishProjectNames`): every polish already
+    /// carries them, so they are known like the user's own terms (#1024).
+    private let projectNames: @MainActor () -> [String]
     private let service: @MainActor () -> any LLMPolishingServicing
     /// Why the button cannot be used right now, or nil. Measured on the
     /// owner's history (2026-09-19): the bundled 4B took 177 s, listed the
@@ -228,6 +231,7 @@ final class SpeakerTermSuggestionModel {
         settings: SettingsStore,
         recentDictations: @escaping @MainActor () async -> [TermSuggestionScreen.Dictation],
         learnedTerms: @escaping @MainActor () -> [String] = { [] },
+        projectNames: @escaping @MainActor () -> [String] = { [] },
         service: @escaping @MainActor () -> any LLMPolishingServicing,
         unavailableReason: @escaping @MainActor () -> String? = { nil },
         now: @escaping @MainActor () -> Date = { Date() }
@@ -235,9 +239,16 @@ final class SpeakerTermSuggestionModel {
         self.settings = settings
         self.recentDictations = recentDictations
         self.learnedTerms = learnedTerms
+        self.projectNames = projectNames
         self.service = service
         self.unavailableReasonProvider = unavailableReason
         self.now = now
+    }
+
+    /// What a suggestion must not repeat: the user's terms and the project
+    /// names.
+    private var knownTerms: [String] {
+        settings.polishSpeakerTerms + projectNames()
     }
 
     /// Chips the app can offer for free: terms it has already watched the
@@ -250,7 +261,7 @@ final class SpeakerTermSuggestionModel {
         let shown = Set(suggestions.map(SpeakerTermSuggestions.key))
         let learned = SpeakerTermSuggestions.filtered(
             learnedTerms(),
-            terms: settings.polishSpeakerTerms,
+            terms: knownTerms,
             dismissed: settings.polishDismissedTermSuggestions
         ).filter { !shown.contains(SpeakerTermSuggestions.key($0)) }
         guard !learned.isEmpty else { return }
@@ -325,7 +336,7 @@ final class SpeakerTermSuggestionModel {
         readingCount = 0
         startedAt = now()
         phase = .loading
-        let terms = settings.polishSpeakerTerms
+        let terms = knownTerms
         let dismissed = settings.polishDismissedTermSuggestions
         let reserved = SpeakerTermSuggestions.instructions.count
             + SpeakerTermSuggestions.listSections(terms: terms, dismissed: dismissed)
@@ -351,7 +362,7 @@ final class SpeakerTermSuggestionModel {
             let found = TermSuggestionScreen.screened(
                 SpeakerTermSuggestions.filtered(
                     candidates.map(\.term),
-                    terms: settings.polishSpeakerTerms,
+                    terms: knownTerms,
                     dismissed: settings.polishDismissedTermSuggestions
                 ),
                 dictations: dictations,
@@ -366,7 +377,7 @@ final class SpeakerTermSuggestionModel {
             suggestions = Array(
                 SpeakerTermSuggestions.filtered(
                     found + suggestions,
-                    terms: settings.polishSpeakerTerms,
+                    terms: knownTerms,
                     dismissed: settings.polishDismissedTermSuggestions
                 ).prefix(SpeakerTermSuggestions.maxShown)
             )

@@ -429,6 +429,12 @@ works that out.
 The app fixes the casing of a multi-word or mixed-case term even in Live
 Auto-Paste with no polishing.
 
+Your project names go with every dictation too: each project in
+**Settings → Projects** and its repository's name, whichever session the
+dictation joins. They don't belong in Global terms. When a Global term only
+repeats one, **About you** offers to remove it, and suggestions never
+propose one.
+
 ### Get term suggestions
 
 **Suggest terms** sends your recent dictations to the polishing model you

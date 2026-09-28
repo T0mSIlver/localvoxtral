@@ -115,6 +115,8 @@ final class PolishRequestGoldenTests: XCTestCase {
         var claudeRepoContextEnabled = false
         var claudeJoin: ClaudeJoinScenario? = nil
         var learnedTerms: [String] = []
+        /// Local projects the learned terms know, by name (#1024).
+        var projects: [String] = []
         var standardUserTemplate =
             "Clean this up.\n{{replacement_dictionary}}\nWorking text:\n{{input_text}}"
         var agentUserTemplate =
@@ -170,6 +172,16 @@ final class PolishRequestGoldenTests: XCTestCase {
         scenario.speakerProfile = "Tom, a Swift developer working on a macOS dictation app."
         scenario.speakerTerms = ["Voxtral", "SwiftPM", "herdr"]
         try await assertGolden("03-speaker-profile", scenario)
+    }
+
+    /// #1024: every project's name rides the About-you block, whatever
+    /// the dictation joined; a name already among the terms is listed once.
+    func testProjectNamesReachTheSystemPrompt() async throws {
+        var scenario = Scenario()
+        scenario.transcript = "ship the vid tech page and bump working set"
+        scenario.speakerTerms = ["working set"]
+        scenario.projects = ["vidtheque", "working-set"]
+        try await assertGolden("03b-project-names", scenario)
     }
 
     func testReplacementDictionaryOffStillCasesSpeakerTerms() async throws {
@@ -475,6 +487,12 @@ final class PolishRequestGoldenTests: XCTestCase {
                     project: LearnedTermProjectResolver.shared
                 )
             }
+        }
+        for name in scenario.projects {
+            store.record(
+                [LearnedTermObservation(term: "Voxtral", source: .repository)],
+                project: .init(key: "/w/" + name, name: name)
+            )
         }
         store.waitForPendingWrites()
 

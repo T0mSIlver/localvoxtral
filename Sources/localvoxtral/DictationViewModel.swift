@@ -738,7 +738,8 @@ final class DictationViewModel {
                     guard let self else { return nil }
                     return PolishPromptWarmup.plan(
                         settings: self.settings,
-                        appConfigStore: self.appConfigStore
+                        appConfigStore: self.appConfigStore,
+                        projectNames: self.session.polishProjectNames()
                     )
                 },
                 clock: dependencies.clock

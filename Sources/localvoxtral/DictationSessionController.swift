@@ -262,6 +262,7 @@ final class DictationSessionController {
             learnedTerms: { [weak self] in
                 self?.learnedTermStore?.snapshot().confirmedEverywhere().map(\.term) ?? []
             },
+            projectNames: { [weak self] in self?.polishProjectNames() ?? [] },
             service: { [weak self] in self?.llmPolishingService ?? LLMPolishingService() },
             unavailableReason: { [weak self] in
                 guard let settings = self?.settings else { return nil }
