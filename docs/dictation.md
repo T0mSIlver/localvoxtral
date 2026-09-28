@@ -563,7 +563,8 @@ runs the remote plugin 1.15.0 or the Vibe hooks 1.2.0 (**Update Host…**).
 The run happens on that host, in the session's repository, with the same
 limits, and bills the host's own Claude Code login or Mistral key. The Mac
 only asks, on the session's next hook, and files the answer under the
-session's project. Details:
+session's project. A session already running keeps the old hooks until you
+run `/reload-plugins` in it, or restart it if it is a Vibe session. Details:
 [Terms from the coding agent on a host](remote-claude-context.md#terms-from-the-coding-agent-on-a-host).
 
 ### One project per repository
