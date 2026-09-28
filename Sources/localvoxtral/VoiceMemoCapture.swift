@@ -110,6 +110,8 @@ final class VoiceMemoController {
     private var wakeObserver: NSObjectProtocol?
     /// One short sentence for the menu bar popover.
     var onStatus: (@MainActor (String) -> Void)?
+    /// The ledger was refused, or no longer is (#989).
+    var onLedgerProblem: (@MainActor (StoredFileProblem?) -> Void)?
 
     init(
         settings: SettingsStore,
@@ -161,6 +163,7 @@ final class VoiceMemoController {
             runTask?.cancel()
             runTask = nil
             intake = nil
+            onLedgerProblem?(nil)
             return
         }
         guard intake == nil, startTask == nil else { return }
@@ -180,6 +183,15 @@ final class VoiceMemoController {
                 self.turnOff(status: Self.refusedStatus)
             }
         }
+    }
+
+    /// Settings' Start Over for a refused ledger: memos still in the folder
+    /// become captures again on the next scans.
+    func startOverLedger() throws {
+        guard let intake else { throw StoredFile.MoveAsideFailed() }
+        try intake.moveLedgerAsideAndStartOver()
+        onLedgerProblem?(nil)
+        scanNow()
     }
 
     /// Checks now, as after the Mac wakes. A memo iCloud has just brought
@@ -234,6 +246,7 @@ final class VoiceMemoController {
             self.turnOff(status: Self.refusedStatus)
         }
         self.intake = intake
+        onLedgerProblem?(intake.ledgerProblem)
         runTask = Task { await intake.run() }
         Log.backends.info("Voice memos: watching iCloud Drive/\(VoiceMemoFolder.name, privacy: .public)")
     }

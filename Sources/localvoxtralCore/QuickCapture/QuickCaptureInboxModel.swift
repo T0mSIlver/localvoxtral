@@ -21,6 +21,9 @@ package final class QuickCaptureInboxModel {
     package var onChange: (@MainActor () -> Void)?
 
     private let fileURL: URL?
+    /// Set, the inbox file could not be loaded: it is left as it is, the
+    /// Inbox is empty and refuses every change (#989).
+    package private(set) var storeProblem: StoredFileProblem?
     private let makeRouter: @MainActor () -> QuickCaptureRouter
     private let projects: @MainActor () -> [QuickCaptureProject]
     private let agents: @MainActor () -> [ProjectTermProposal.Agent]
@@ -60,7 +63,9 @@ package final class QuickCaptureInboxModel {
         self.drafter = drafter
         self.github = github
         self.now = now
-        var loaded = fileURL.map(QuickCaptureInboxFile.load(from:)) ?? QuickCaptureInbox()
+        let load = fileURL.map(QuickCaptureInboxFile.load(from:)) ?? .absent
+        storeProblem = load.problem
+        var loaded = load.value ?? QuickCaptureInbox()
         loaded.prune(now: now())
         inbox = loaded
         adoptProjects()
@@ -92,6 +97,12 @@ package final class QuickCaptureInboxModel {
     package func capture(
         text: String, historyRecordID: UUID?, id: UUID = UUID(), capturedAt: Date? = nil
     ) -> Task<Void, Never> {
+        guard storeProblem == nil else {
+            // The words are in History; the Inbox file is not replaced.
+            Log.persistence.error("Quick capture: not saved, the inbox file could not be loaded")
+            onStatus?(Self.refusedStatus)
+            return Task {}
+        }
         let item = QuickCaptureItem(
             id: id, capturedAt: capturedAt ?? now(), text: text, historyRecordID: historyRecordID)
         mutate { $0.add(item) }
@@ -545,7 +556,26 @@ package final class QuickCaptureInboxModel {
         return result
     }
 
+    /// The popover's sentence for a capture the refused Inbox did not take.
+    package static let refusedStatus = "Inbox unreadable; capture not saved"
+
+    /// The Inbox pane's Start Over: moves the refused file aside
+    /// (`StoredFile.moveAside`) and starts an empty Inbox. Throws, keeping
+    /// the refusal, when the move could not be verified.
+    @discardableResult
+    package func moveAsideAndStartOver() throws -> URL {
+        guard storeProblem != nil, let fileURL else { throw StoredFile.MoveAsideFailed() }
+        let aside = try StoredFile.moveAside(fileURL)
+        storeProblem = nil
+        onChange?()
+        return aside
+    }
+
     private func mutate(_ change: (inout QuickCaptureInbox) -> Void) {
+        guard storeProblem == nil else {
+            Log.persistence.error("Quick capture inbox: a change was refused, the file could not be loaded")
+            return
+        }
         change(&inbox)
         guard let fileURL else { return }
         do {

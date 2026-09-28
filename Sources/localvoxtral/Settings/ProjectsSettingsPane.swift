@@ -36,7 +36,13 @@ struct ProjectsSettingsPane: View {
         let unlisted = inbox?.unlistedTerms()
         SettingsPage(tab: .projects) {
             SettingsGroup(title: "Projects", learnMoreURL: ProjectsLearnMore.projects) {
-                if rows.isEmpty && unlisted == nil {
+                if let store = viewModel.learnedTermStore, let problem = store.problem {
+                    // The file also holds the projects: nothing else here
+                    // means anything until it loads (#989).
+                    StoredFileProblemRow(problem: problem, fileName: "learned-terms.json") {
+                        _ = try await store.moveAsideAndStartOver()
+                    }
+                } else if rows.isEmpty && unlisted == nil {
                     SettingsGroupRow {
                         Text("No projects. A project appears once you dictate into a coding agent there.")
                             .foregroundStyle(.secondary)
@@ -511,6 +517,12 @@ struct ProjectTermsGroup: View {
         }
     }
 
+    private var canPin: Bool {
+        guard let store else { return false }
+        let terms = store.snapshot()
+        return keys.contains { terms.canPin(projectKey: $0) }
+    }
+
     private func row(_ term: LearnedTerm) -> some View {
         SettingsGroupRow {
             HStack(spacing: 10) {
@@ -529,6 +541,11 @@ struct ProjectTermsGroup: View {
                     Image(systemName: term.isPinned ? "pin.fill" : "pin")
                 }
                 .buttonStyle(.borderless)
+                // Pinned projects are never evicted, so their number is
+                // capped where a pin would add one (#989).
+                .disabled(!term.isPinned && !canPin)
+                .help(!term.isPinned && !canPin
+                    ? "\(LearnedTerms.maxProjects) projects already hold pins or a chosen repository." : "")
                 .accessibilityLabel(term.isPinned ? "Unpin \(term.term)" : "Pin \(term.term)")
                 Button {
                     store?.forget(term.term, projectKeys: keys)

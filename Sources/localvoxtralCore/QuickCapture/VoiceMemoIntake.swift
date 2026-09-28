@@ -52,6 +52,10 @@ package final class VoiceMemoIntake {
     package var onListFailure: (@MainActor (Error) -> Void)?
 
     private var ledger: VoiceMemoLedger
+    /// Set, the ledger could not be loaded: it is left as it is and no memo
+    /// is taken, since each would be taken again (#989).
+    package private(set) var ledgerProblem: StoredFileProblem?
+    private var reportedLedgerProblem = false
     private var lastSeen: [String: VoiceMemoFile] = [:]
     private var isScanning = false
     private var lastListFailure: String?
@@ -80,7 +84,24 @@ package final class VoiceMemoIntake {
         self.removeTranscribed = removeTranscribed
         self.inboxHas = inboxHas
         self.capture = capture
-        ledger = ledgerURL.map(VoiceMemoLedger.load(from:)) ?? VoiceMemoLedger()
+        let load = ledgerURL.map(VoiceMemoLedger.load(from:)) ?? .absent
+        ledger = load.value ?? VoiceMemoLedger()
+        ledgerProblem = load.problem
+    }
+
+    /// The popover's sentence while the ledger is refused.
+    package static let ledgerRefusedStatus = "Voice memos paused: list unreadable"
+
+    /// Settings' Start Over: moves the refused ledger aside
+    /// (`StoredFile.moveAside`) and starts an empty one. Every memo still in
+    /// the folder becomes a capture on the next scan.
+    @discardableResult
+    package func moveLedgerAsideAndStartOver() throws -> URL {
+        guard ledgerProblem != nil, let ledgerURL else { throw StoredFile.MoveAsideFailed() }
+        let aside = try StoredFile.moveAside(ledgerURL)
+        ledger = VoiceMemoLedger()
+        ledgerProblem = nil
+        return aside
     }
 
     /// Scans now and every `scanInterval` after, until the task is cancelled.
@@ -95,6 +116,15 @@ package final class VoiceMemoIntake {
     @discardableResult
     package func scan() async -> Int {
         guard !isScanning else { return 0 }
+        guard ledgerProblem == nil else {
+            // Once, not every 30 s.
+            if !reportedLedgerProblem {
+                reportedLedgerProblem = true
+                Log.persistence.error("Voice memos: not scanning, the ledger could not be loaded")
+                onStatus?(Self.ledgerRefusedStatus)
+            }
+            return 0
+        }
         isScanning = true
         defer { isScanning = false }
 
@@ -181,7 +211,7 @@ package final class VoiceMemoIntake {
     }
 
     private func saveLedger() {
-        guard let ledgerURL else { return }
+        guard let ledgerURL, ledgerProblem == nil else { return }
         do {
             try ledger.save(to: ledgerURL)
         } catch {

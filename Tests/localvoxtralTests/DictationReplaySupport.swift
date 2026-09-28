@@ -35,7 +35,7 @@ enum DictationReplaySupport {
             throw ReplaySetError(description: "no dictation-audio/ in \(directory.path)")
         }
         let learned = (try? Data(contentsOf: directory.appendingPathComponent("learned-terms.json")))
-            .map(LearnedTermStore.terms(fromFileContents:)) ?? LearnedTerms()
+            .flatMap { LearnedTermStore.terms(fromFileContents: $0).value } ?? LearnedTerms()
         let speaker = (try? Data(contentsOf: directory.appendingPathComponent("speaker-terms.json")))
             .flatMap { try? JSONDecoder().decode([String].self, from: $0) } ?? []
         return ReplaySet(

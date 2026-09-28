@@ -213,7 +213,47 @@ final class VoiceMemoIntakeTests: XCTestCase {
         refusing.onListFailure = { _ in failures += 1 }
         _ = await refusing.scan()
         XCTAssertEqual(failures, 1)
-        XCTAssertEqual(VoiceMemoLedger.load(from: ledgerURL).entries.keys.sorted(), ["walk.m4a"])
+        XCTAssertEqual(VoiceMemoLedger.load(from: ledgerURL).value?.entries.keys.sorted(), ["walk.m4a"])
+    }
+
+    /// A ledger this build cannot load is left as it is and no memo is
+    /// taken, since each would become a second capture (#989).
+    func testANewerLedgerKeepsItsBytesAndTakesNoMemo() async throws {
+        try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
+        let data = Data(#"{"version":\#(VoiceMemoLedger.currentVersion + 1),"entries":{}}"#.utf8)
+        try data.write(to: ledgerURL)
+        var statuses: [String] = []
+        let intake = intake()
+        intake.onStatus = { statuses.append($0) }
+        files = [memo("walk.m4a")]
+        _ = await intake.scan()
+        _ = await intake.scan()
+
+        XCTAssertEqual(intake.ledgerProblem, .newerVersion(VoiceMemoLedger.currentVersion + 1))
+        XCTAssertTrue(captured.isEmpty)
+        XCTAssertTrue(trashed.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: ledgerURL), data)
+        XCTAssertEqual(statuses, [VoiceMemoIntake.ledgerRefusedStatus], "said once")
+
+        let aside = try intake.moveLedgerAsideAndStartOver()
+        XCTAssertEqual(try Data(contentsOf: aside), data)
+        _ = await intake.scan()
+        _ = await intake.scan()
+        XCTAssertEqual(captured.map(\.text), ["words of walk.m4a"])
+    }
+
+    func testACorruptLedgerKeepsItsBytesAndTakesNoMemo() async throws {
+        try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
+        let data = Data(#"{"version":1,"entries":{"walk.m4a":"#.utf8)
+        try data.write(to: ledgerURL)
+        let intake = intake()
+        files = [memo("walk.m4a")]
+        _ = await intake.scan()
+        _ = await intake.scan()
+
+        XCTAssertEqual(intake.ledgerProblem, .unreadable)
+        XCTAssertTrue(captured.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: ledgerURL), data)
     }
 
     /// The real listing: audio files only, no hidden iCloud or Finder files,

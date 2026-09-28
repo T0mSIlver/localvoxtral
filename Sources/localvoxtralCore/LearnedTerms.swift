@@ -230,6 +230,12 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
     /// project holding neither is dropped once its last term goes.
     var isKeptWithoutTerms: Bool { hasProposalStamp || reportedAt != nil || isLinkedCheckout }
 
+    /// The user made a choice here: a pinned term, a typed repository, the
+    /// fork's filing choice. The caps never evict it (#989).
+    package var isExplicit: Bool {
+        terms.contains(where: \.isPinned) || repositoryTyped == true || filesUpstream != nil
+    }
+
     /// A checkout whose terms live on its repository's record.
     package var isLinkedCheckout: Bool { !isRepositoryRecord && repositoryRecordKey != nil }
 }
@@ -450,7 +456,9 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     package mutating func recordTypedRepository(_ repository: String, projectKey: String) -> Bool {
         guard QuickCaptureInbox.isRepository(repository),
               let index = projects.firstIndex(where: { $0.key == projectKey }),
-              projects[index].repository == nil || projects[index].repositoryTyped == true
+              projects[index].repository == nil || projects[index].repositoryTyped == true,
+              // Like a pin, a typed repository keeps the project past the cap.
+              projects[index].isExplicit || projects.filter(\.isExplicit).count < LearnedTerms.maxProjects
         else { return false }
         if projects[index].repository != repository {
             projects[index].github = nil
@@ -775,6 +783,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
                   $0.term.caseFoldedForMatching == key
               })
         else { return false }
+        guard !pinned || canPin(projectKey: projectKey) else { return false }
         projects[index].terms[termIndex].pinned = pinned ? true : nil
         return true
     }
@@ -855,11 +864,14 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
                 projects[index].reportedAt = nil
             }
             if projects[index].terms.count > LearnedTerms.maxTermsPerProject {
-                projects[index].terms = Array(
-                    projects[index].terms
-                        .sorted(by: LearnedTerms.isStrongerEvidence)
-                        .prefix(LearnedTerms.maxTermsPerProject)
-                )
+                // A pin is the user's word that the term stays (#989): only
+                // the unpinned share what room the pins leave.
+                let pinned = projects[index].terms.filter(\.isPinned)
+                let room = max(0, LearnedTerms.maxTermsPerProject - pinned.count)
+                projects[index].terms = (pinned + projects[index].terms.filter { !$0.isPinned }
+                    .sorted(by: LearnedTerms.isStrongerEvidence)
+                    .prefix(room))
+                    .sorted(by: LearnedTerms.isStrongerEvidence)
             }
         }
         // A linked checkout no dictation or hook has touched for as long as a
@@ -877,24 +889,36 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         // report is as old as a stale term.
         removeEmptyProjects()
         if projects.count > LearnedTerms.maxProjects {
-            // A project holding a pinned term is evicted last, one kept only
-            // for a hook's report first.
-            projects = Array(
-                projects
-                    .sorted { lhs, rhs in
-                        let lhsPinned = lhs.terms.contains(where: \.isPinned)
-                        let rhsPinned = rhs.terms.contains(where: \.isPinned)
-                        if lhsPinned != rhsPinned { return lhsPinned }
-                        let lhsReportOnly = lhs.terms.isEmpty && !lhs.hasProposalStamp
-                        let rhsReportOnly = rhs.terms.isEmpty && !rhs.hasProposalStamp
-                        if lhsReportOnly != rhsReportOnly { return rhsReportOnly }
-                        return lhs.lastSeen == rhs.lastSeen
-                            ? lhs.key < rhs.key
-                            : lhs.lastSeen > rhs.lastSeen
-                    }
-                    .prefix(LearnedTerms.maxProjects)
-            )
+            // A project the user made a choice in is never evicted (#989);
+            // the rest share the room left, one kept only for a hook's
+            // report going first.
+            var room = max(0, LearnedTerms.maxProjects - projects.filter(\.isExplicit).count)
+            projects = projects
+                .sorted { lhs, rhs in
+                    if lhs.isExplicit != rhs.isExplicit { return lhs.isExplicit }
+                    let lhsReportOnly = lhs.terms.isEmpty && !lhs.hasProposalStamp
+                    let rhsReportOnly = rhs.terms.isEmpty && !rhs.hasProposalStamp
+                    if lhsReportOnly != rhsReportOnly { return rhsReportOnly }
+                    return lhs.lastSeen == rhs.lastSeen
+                        ? lhs.key < rhs.key
+                        : lhs.lastSeen > rhs.lastSeen
+                }
+                .filter { project in
+                    guard !project.isExplicit else { return true }
+                    guard room > 0 else { return false }
+                    room -= 1
+                    return true
+                }
         }
+    }
+
+    /// Whether pinning a term in this project keeps within `maxProjects`
+    /// projects the user made a choice in: a project already one always
+    /// can. Settings disables the pin when not (#989).
+    package func canPin(projectKey: String) -> Bool {
+        guard let index = termRecordIndex(projectKey) else { return false }
+        return projects[index].isExplicit
+            || projects.filter(\.isExplicit).count < LearnedTerms.maxProjects
     }
 
     // MARK: Rules

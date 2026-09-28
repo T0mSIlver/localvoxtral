@@ -318,7 +318,7 @@ final class ProjectRemoteTests: XCTestCase {
         store.waitForPendingWrites()
 
         XCTAssertEqual(store.confirmedTerms(projectKey: "/Users/tom/Desktop/projects/supervoxtral"), ["herdr", "Voxtral"])
-        let written = LearnedTermStore.terms(fromFileContents: try Data(contentsOf: fileURL))
+        let written = try XCTUnwrap(LearnedTermStore.terms(fromFileContents: try Data(contentsOf: fileURL)).value)
         XCTAssertEqual(written.termRecord("remote:localvoxtral")?.key, "repo:github.com/t0msilver/localvoxtral")
         XCTAssertEqual(written.termCount, 2)
     }
