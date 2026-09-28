@@ -21,7 +21,9 @@ it only where nothing else can do the job:
 - Linux first. `localvoxtralCore` (the Foundation-only pieces) builds and
   tests here: `./scripts/core-tests-linux.sh` (Swift 6.2; `SWIFT=` names the
   toolchain), and so do `scripts/ci/test-*.sh`. The app re-exports core, so a
-  core declaration the app uses needs `package` access.
+  core declaration the app uses needs `package` access. On Linux a
+  synchronous test method in a `@MainActor` class aborts the whole test
+  process at discovery; make it `async`.
 - On the Mac, run only the suites your change touches:
   `remote-build.sh test --filter <Suite>`, the flag repeated per suite (the
   host's SSH gate refuses `|`). Never run the full suite there: the PR's
@@ -59,7 +61,11 @@ it only where nothing else can do the job:
 4. **Open the PR as a draft** (`gh pr create --draft`) with `Closes #<n>` in
    the body. The link moves the issue's card on the project board
    (github.com/users/T0mSIlver/projects/1) to In progress, and the merge moves
-   it to Done.
+   it to Done. Keep one `waits:` label on it per reason it can't merge yet
+   (a Mac night run, the UI Smoke dictation, a stack, a known red, an outside
+   key). CI adds the lane and stack ones, the scheduler removes a Mac one
+   after the night run, and you remove the rest when they clear. The set: `docs/agent/test-tiers.md`, "Why a PR
+   waits: the waits labels".
 5. **Mark it ready** (`gh pr ready <n>`) only once `build-test` is green and
    none of your other PRs is waiting on `mac-lanes`. Ready starts the Mac
    lanes; see CI below.
@@ -68,6 +74,22 @@ it only where nothing else can do the job:
    from Blocked to Todo once all its blockers are closed; GitHub does not.
    Stopping before the merge? Leave a handoff comment: state, what's left,
    decisions made.
+
+The board's Needs human review status holds PRs, not issues, that wait on
+the owner. The scheduler adds an open PR when it asks for the owner's OK to
+merge; whoever merges a `needs-human-review` PR adds it right after the
+merge. Add with `gh project item-add 1 --owner T0mSIlver --url <pr-url>`,
+then `gh project item-edit --project-id PVT_kwHOAhDp9c4BkXCa --id <item>
+--field-id PVTSSF_lAHOAhDp9c4BkXCazhjH4TM --single-select-option-id
+404d76ac`. On a merged PR, the board's own workflow sets Done a few seconds
+after the add and overwrites an edit made sooner. Wait a minute, edit, then
+read the status back with `gh project item-list`. `gh issue create
+--project` fails here. Only the owner moves a
+PR's card to Done; every session holds the owner's token, so only this rule stops
+you. On an open PR that move is the OK to merge: the scheduler's
+`scripts/board/merge-approved.sh` pass merges it, or moves it back with the
+failing output. On a merged PR it means checked. A failed check becomes a
+`bug` issue that links the PR.
 
 New issues get one area label (`asr`, `polish`, `ci`, `claude-join`,
 `mistral`, `session`) plus `bug` or `enhancement`. Group work with sub-issues
@@ -97,7 +119,9 @@ from your issue and say so in your report. Don't ask whether to file it.
   a `ManualSessionClock` (`Tests/localvoxtralTestSupport`) and advances it;
   on the wall clock the timers fire into the process-retained view model
   after the test ends. New timers go on the clock.
-- UI change: say exactly what you verified by hand and how.
+- Can't test something yourself (a UI change, behaviour only a person at
+  the Mac sees)? Add the `needs-human-review` label and numbered steps for
+  the owner under the template's Hand check item.
 - Session-path change (start and stop, realtime clients, merging, insertion,
   overlay commit): prove it in process, in `DictationPipelineTests` or next
   to it. The e2e dictation check, the only one where the packaged app
@@ -167,6 +191,10 @@ from your issue and say so in your report. Don't ask whether to file it.
 - Never read a child process pipe with `FileHandle.availableData`. It raises an
   uncatchable ObjC exception on a descriptor error and aborts the app (#60).
   Use `POSIXPipeRead.nextChunk(fromDescriptor:)`.
+- GLM (`zai-glm-*`) on the Mistral API bills the Vibe plan key
+  (`VIBE_MISTRAL_API_KEY`, else `MISTRAL_API_KEY=` in `~/.vibe/.env`), never
+  `MISTRAL_API_KEY` or `~/.config/localvoxtral/mistral_api_key`: that is the
+  pay-per-call Studio key, for Voxtral and the other Mistral models.
 - Backend and lifecycle paths log requests, completions and failures to
   `Log.backends`. Keep new paths loud; silent failures have cost hours of
   remote probing.
@@ -192,6 +220,9 @@ from your issue and say so in your report. Don't ask whether to file it.
   `docs/agent/field-debugging.md`. Dispatch `mac-crashlog.yml` before
   theorizing; install builds with `./scripts/try-pr.sh`.
 - CI lanes and evals: `docs/agent/test-tiers.md`.
+- The diagnostic record (`Sources/localvoxtral/DiagnosticRecords`): its
+  privacy rules in `docs/agent/diagnostic-records.md`. It ships on by
+  default; never add a field that holds the prompt sent to the agent.
 - Showing the owner what a view looks like: `docs/agent/view-snapshots.md`
   (hosted runner, no Mac).
 - Either MLX helper: `PolishHelper/AGENTS.md`, `SpeechHelper/AGENTS.md`.

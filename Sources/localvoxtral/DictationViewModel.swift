@@ -18,6 +18,9 @@ enum MenuBarIndicatorState: Equatable {
     /// with the failure icon because the menu bar is the only surface still
     /// visible while the popover is closed during dictation (#89).
     case secureInputWarning
+    /// Idle, and an agent session waits on the user or finished while they
+    /// looked elsewhere (#717).
+    case agentNeedsYou
 }
 
 @MainActor
@@ -84,6 +87,8 @@ final class DictationViewModel {
                 || message == HotKeyManager.livePasteUnavailableErrorMessage
                 || message == HotKeyManager.modifierOnlyUnavailableErrorMessage
                 || message == HotKeyManager.copyLastDictationUnavailableErrorMessage
+                || message == HotKeyManager.answerAgentUnavailableErrorMessage
+                || message == HotKeyManager.quickCaptureUnavailableErrorMessage
             {
                 return .hotKeyShortcutUnavailable
             }
@@ -110,11 +115,13 @@ final class DictationViewModel {
         static let networkLostDictationStopped = "Dictation stopped after the network disconnected."
         static let liveDictationBlockedBySecureInput = "Secure Keyboard Entry blocks Live Auto-Paste."
         static let overlayCopiedToClipboard = "Copied for manual paste."
+        static let agentPromptTextKeptInHistory = "Not delivered; the text is in History."
         static let noNetworkConnection = "No network connection."
         static let microphoneAccessDenied = "Microphone access denied."
         static let finalizing = "Finalizing..."
         static let reconnecting = "Reconnecting..."
         static let lastDictationCopied = "Last dictation copied."
+        static let quickCaptureSaved = "Saved to inbox"
         static let noDictationToCopy = "No dictation to copy yet."
     }
 
@@ -159,7 +166,6 @@ final class DictationViewModel {
     var transcript: TranscriptAccumulator { get { session.transcript } set { session.transcript = newValue } }
     var statusText: String { get { session.statusText } set { session.statusText = newValue } }
     var lastError: String? { get { session.lastError } set { session.lastError = newValue } }
-    var lastFinalSegment: String { session.lastFinalSegment }
     var lastPolishChangedRawTranscript: String? {
         get { session.lastPolishChangedRawTranscript }
         set { session.lastPolishChangedRawTranscript = newValue }
@@ -218,11 +224,9 @@ final class DictationViewModel {
     func selectMicrophoneInputChannel(_ channel: Int) { session.selectMicrophoneInputChannel(channel) }
     func clearTranscript() { session.clearTranscript() }
     func copyTranscript() { session.copyTranscript() }
-    func copyLatestSegment(updateStatus: Bool = true) { session.copyLatestSegment(updateStatus: updateStatus) }
     func copyRawTranscript() { session.copyRawTranscript() }
     var canCopyLastDictation: Bool { session.canCopyLastDictation }
     func copyLastDictation() { session.copyLastDictation() }
-    func pasteLatestSegment() { session.pasteLatestSegment() }
     func applyDictationHistoryRetention(now: Date = Date()) { session.applyDictationHistoryRetention(now: now) }
     func prepareLLMPolishingPromptAccessIfNeeded() { session.prepareLLMPolishingPromptAccessIfNeeded() }
 
@@ -244,6 +248,12 @@ final class DictationViewModel {
     /// onboarding wizard. Kept as a seam rather than a singleton reference.
     @ObservationIgnored
     var onRequestReRunOnboarding: (() -> Void)?
+
+    /// The quick capture Inbox (#725). Built with the runtime services, so
+    /// nil in a view model that runs none.
+    private(set) var quickCapture: QuickCaptureInboxViewModel?
+    /// Voice memos from iCloud Drive (#925); nil in a view model that runs no services.
+    private(set) var voiceMemos: VoiceMemoController?
 
     var requiredManagedBackendsReady: Bool {
         guard settings.onboardingCompleted else { return true }
@@ -279,8 +289,22 @@ final class DictationViewModel {
         case .recentFailure:
             return .failure
         case .idle:
-            return requiredManagedBackendsReady ? .idle : .failure
+            guard requiredManagedBackendsReady else { return .failure }
+            return agentAttentionLine == nil ? .idle : .agentNeedsYou
         }
+    }
+
+    /// The needs-you queue (#717), installed by `AppDelegate`.
+    var agentAttention: AgentAttentionModel? {
+        get { session.agentAttention }
+        set { session.agentAttention = newValue }
+    }
+
+    /// The popover's needs-you sentence, nil when nobody waits or the cue is
+    /// off (turning it off hides the line at once).
+    var agentAttentionLine: String? {
+        guard settings.agentAttentionEnabled else { return nil }
+        return agentAttention?.popoverLine
     }
 
     let settings: SettingsStore
@@ -311,6 +335,11 @@ final class DictationViewModel {
         /// The bundle identifier of a running process, for the app the
         /// overlay commits into.
         var bundleIdentifier: (pid_t) -> String?
+        /// The app's name, for the overlay's focused app entry (#840).
+        var applicationName: (pid_t) -> String?
+        /// Brings an app back to the front: ⇧Tab to the focused app after a
+        /// session pane came forward. False when it is gone.
+        var activateApp: @MainActor (pid_t) -> Bool
         /// The center the sleep and terminate observers register on. Nil is
         /// the default center, registered only when runtime services run; a
         /// private center is registered on regardless, so a test posts
@@ -346,6 +375,12 @@ final class DictationViewModel {
             bundleIdentifier: @escaping (pid_t) -> String? = {
                 NSRunningApplication(processIdentifier: $0)?.bundleIdentifier
             },
+            applicationName: @escaping (pid_t) -> String? = {
+                NSRunningApplication(processIdentifier: $0)?.localizedName
+            },
+            activateApp: @escaping @MainActor (pid_t) -> Bool = {
+                NSRunningApplication(processIdentifier: $0)?.activate(options: []) ?? false
+            },
             lifecycleNotificationCenter: NotificationCenter? = nil,
             reconnectSleep: @escaping @MainActor (TimeInterval) async -> Void =
                 DictationSessionController.sleepForReconnect,
@@ -360,6 +395,8 @@ final class DictationViewModel {
             self.pasteboardReader = pasteboardReader
             self.pasteboardWriter = pasteboardWriter
             self.bundleIdentifier = bundleIdentifier
+            self.applicationName = applicationName
+            self.activateApp = activateApp
             self.lifecycleNotificationCenter = lifecycleNotificationCenter
             self.reconnectSleep = reconnectSleep
             self.connectionFailurePresenter = connectionFailurePresenter
@@ -443,8 +480,7 @@ final class DictationViewModel {
             backendManager
             ?? BackendManager(
                 polishingModelProvider: { settings.resolvedManagedLLMPolishingModel },
-                speechModelProvider: { settings.resolvedManagedSpeechModel },
-                speechdCacheLimitProvider: { settings.speechdCacheLimit.megabytes }
+                speechModelProvider: { settings.resolvedManagedSpeechModel }
             )
         self.managesRuntimeServices = startRuntimeServices
         let context = SessionContextResolver(settings: settings, textInsertion: textInsertion)
@@ -475,22 +511,25 @@ final class DictationViewModel {
             ducksRealOutput: ducksRealOutput
         )
         let overlay: OverlayBufferSessionCoordinating
+        var overlayPanel: DictationOverlayController?
         if let overlayBufferCoordinator {
             overlay = overlayBufferCoordinator
         } else {
             let anchorResolver = OverlayAnchorResolver()
+            let panel = DictationOverlayController(
+                metricsProvider: {
+                    OverlayLayoutMetrics(
+                        bodyFontSize: settings.overlayBufferFontSize,
+                        visibleLines: settings.overlayBufferVisibleLines,
+                        wordHold: settings.overlayBufferWordHold)
+                },
+                storedPlacementProvider: { settings.overlayBufferPlacement },
+                placementWriter: { settings.overlayBufferPlacement = $0 }
+            )
+            overlayPanel = panel
             overlay = OverlayBufferSessionCoordinator(
                 stateMachine: OverlayBufferStateMachine(),
-                renderer: DictationOverlayController(
-                    metricsProvider: {
-                        OverlayLayoutMetrics(
-                            bodyFontSize: settings.overlayBufferFontSize,
-                            visibleLines: settings.overlayBufferVisibleLines,
-                            wordHold: settings.overlayBufferWordHold)
-                    },
-                    storedPlacementProvider: { settings.overlayBufferPlacement },
-                    placementWriter: { settings.overlayBufferPlacement = $0 }
-                ),
+                renderer: panel,
                 anchorResolver: anchorResolver
             )
         }
@@ -567,6 +606,7 @@ final class DictationViewModel {
         textInsertion.onAccessibilityTrustChanged = { [weak self] in
             guard let self else { return }
             self.shortcuts.retryModifierOnlyHotKeyRegistrationIfNeeded()
+            self.shortcuts.retryChordShortcutRegistrationIfNeeded()
             if self.currentErrorToken == .accessibilityPermissionRequired {
                 self.lastError = nil
             }
@@ -600,6 +640,12 @@ final class DictationViewModel {
         }
 
         session.escapeCancelHandler.onCancel = { [weak session] in session?.cancelDictation() }
+        session.destinationKeyHandler.onMove = { [weak session] forward in
+            session?.moveDestination(forward: forward)
+        }
+        overlayPanel?.onDestinationClick = { [weak session] destination in
+            session?.clickDestination(destination)
+        }
 
         textInsertion.refreshAccessibilityTrustState()
         if startRuntimeServices {
@@ -613,8 +659,18 @@ final class DictationViewModel {
             // still clear recordings kept before it was turned off.
             sessionStore?.audioStore = DictationAudioStore(
                 directoryURL: DictationAudioStore.defaultDirectoryURL())
+            // One store for writes and for deletes: a record follows its
+            // History entry the way its audio does.
+            let diagnosticRecordStore = DiagnosticRecordStore()
+            session.diagnosticRecordStore = diagnosticRecordStore
+            sessionStore?.diagnosticRecordStore = diagnosticRecordStore
             sessionStore?.removeOrphanedAudio()
             applyDictationHistoryRetention()
+            // Before everything that calls a model, so each one records to it.
+            let usageLedger = UsageLedger(fileURL: UsageLedger.defaultFileURL()) {
+                [weak self] in
+                Task { @MainActor in self?.engines.noteUsageLedgerChanged() }
+            }
             learnedTermStore = LearnedTermStore(
                 fileURL: LearnedTermStore.defaultFileURL(),
                 onChange: { [weak self] in
@@ -642,9 +698,20 @@ final class DictationViewModel {
                         userVibeDirectory: FileManager.default.homeDirectoryForCurrentUser
                             .appendingPathComponent(".vibe", isDirectory: true)
                     ),
-                    now: { Date() }
+                    now: { Date() },
+                    usageRecorder: usageLedger
                 )
             }
+            installQuickCaptureInbox(
+                QuickCaptureInboxViewModel(
+                    settings: settings,
+                    learnedTerms: { [weak self] in self?.learnedTermStore?.snapshot() ?? LearnedTerms() },
+                    learnedTermStore: learnedTermStore,
+                    fileURL: QuickCaptureInboxViewModel.defaultFileURL(),
+                    applicationSupport: LearnedTermStore.defaultFileURL().deletingLastPathComponent(),
+                    usageRecorder: usageLedger
+                )
+            )
             session.termSuggestionCadence = TermSuggestionCadence(
                 settings: settings,
                 model: { [weak self] in self?.termSuggestions },
@@ -655,12 +722,8 @@ final class DictationViewModel {
                 },
                 launchedAt: Date()
             )
-            installMistralUsageLedger(
-                MistralUsageLedger(fileURL: MistralUsageLedger.defaultFileURL()) {
-                    [weak self] in
-                    Task { @MainActor in self?.engines.noteUsageLedgerChanged() }
-                }
-            )
+            installUsageLedger(usageLedger)
+            installVoiceMemos(usageLedger: usageLedger)
             refreshMicrophoneInputs()
             registerLifecycleObservers(on: dependencies.lifecycleNotificationCenter ?? .default)
             permissions.requestStartupPermissionsIfNeeded()
@@ -692,12 +755,13 @@ final class DictationViewModel {
         }
     }
 
-    /// Points both Mistral paths — the realtime socket and the polishing
-    /// service — at `ledger`. Replaces `llmPolishingService`, so a test that
+    /// Points both realtime clients, the second pass and the polishing service
+    /// (polishes and term suggestions) at `ledger`. Replaces `llmPolishingService`, so a test that
     /// substitutes a fake does so after this.
-    func installMistralUsageLedger(_ ledger: MistralUsageLedger) {
+    func installUsageLedger(_ ledger: UsageLedger) {
         engines.installUsageLedger(ledger)
         session.mistralRealtimeClient.setUsageRecorder(ledger)
+        session.realtimeAPIClient.setUsageRecorder(ledger)
         session.secondPassUsageRecorder = ledger
         llmPolishingService = LLMPolishingService(usageRecorder: ledger)
     }
@@ -727,6 +791,7 @@ final class DictationViewModel {
         session.overlayBufferCoordinator.reset()
         audio.healthMonitor.cancelTasks()
         session.escapeCancelHandler.stop()
+        session.destinationKeyHandler.stop()
         audio.audioDucking.restoreImmediatelyForTermination()
         if managesRuntimeServices {
             audio.stopMicrophoneIfInitialized()
@@ -764,12 +829,10 @@ final class DictationViewModel {
             // to run).
             MainActor.assumeIsolated {
                 guard let self else { return }
-                #if LOCALVOXTRAL_DOGFOOD
                 // Last chance for a still-open post-commit watch to patch its
                 // record: after this the process is gone and the dictation
                 // would keep no behavior block at all.
-                self.session.dogfoodEditSignalWatcher.flushForTermination()
-                #endif
+                self.session.editSignalWatcher.flushForTermination()
                 // Inline, not in the Task below: a fade would not get to
                 // finish and the Task is not guaranteed to run at all.
                 self.audio.audioDucking.restoreImmediatelyForTermination()
@@ -853,7 +916,7 @@ final class DictationViewModel {
 
 }
 
-#if LOCALVOXTRAL_DOGFOOD
+#if DEBUG || LOCALVOXTRAL_E2E_HARNESS
 extension DictationViewModel {
     /// The dogfood control socket's entry into the dictation trigger.
     ///
@@ -870,3 +933,124 @@ extension DictationViewModel {
 }
 #endif
 
+
+extension DictationViewModel {
+    /// Points stopped quick captures at the Inbox, its routing sentence at
+    /// the popover, and where each capture went at its History record.
+    func installQuickCaptureInbox(_ inbox: QuickCaptureInboxViewModel) {
+        quickCapture = inbox
+        session.onQuickCapture = { [weak inbox] text, historyRecordID in
+            inbox?.capture(text: text, historyRecordID: historyRecordID)
+        }
+        inbox.model.onStatus = { [weak self] sentence in
+            // Mid-session the status line belongs to the session.
+            guard let self, !self.isDictating, !self.isFinalizingStop, !self.isConnectingRealtimeSession else { return }
+            self.statusText = sentence
+        }
+        inbox.model.onRouted = { [weak self] recordID, destination in
+            self?.sessionStore?.setQuickCaptureDestination(destination, id: recordID)
+        }
+        installDraftCue(for: inbox.model)
+    }
+
+    /// Ready drafts join the needs-you cue (#927), leave it when the Inbox no
+    /// longer holds them as ready drafts, and the answer shortcut reviews
+    /// them against this Inbox.
+    func installDraftCue(for model: QuickCaptureInboxModel) {
+        session.quickCaptureInbox = model
+        model.onDraftReady = { [weak self] item in
+            guard let self, self.settings.agentAttentionEnabled, let projectName = item.projectName else { return }
+            self.agentAttention?.draftReady(id: item.id, projectName: projectName, at: Date())
+        }
+        let observeItems = model.onChange
+        model.onChange = { [weak self, weak model] in
+            observeItems?()
+            guard let self, let model else { return }
+            self.agentAttention?.retainDrafts(in: model.items)
+        }
+    }
+}
+
+extension DictationViewModel {
+    /// Turns each voice memo in the iCloud Drive folder into a quick capture
+    /// through the dictation engine, while the setting is on (#925).
+    func installVoiceMemos(usageLedger: UsageLedger) {
+        guard let inbox = quickCapture else { return }
+        let controller = VoiceMemoController(
+            settings: settings,
+            inbox: inbox,
+            audioStore: DictationAudioStore(directoryURL: VoiceMemoController.defaultAudioDirectoryURL()),
+            ledgerURL: VoiceMemoController.defaultLedgerURL(),
+            transcriber: VoiceMemoEngineTranscriber(prepare: { [weak self] in
+                guard let self else { throw CancellationError() }
+                return try await self.voiceMemoEngine(usageLedger: usageLedger)
+            }),
+            isDictationActive: { [weak self] in
+                guard let self else { return false }
+                return self.isDictating || self.isFinalizingStop || self.isConnectingRealtimeSession
+            },
+            saveHistory: { [weak self] text, recordedAt in
+                self?.saveVoiceMemoRecord(text: text, recordedAt: recordedAt)
+            }
+        )
+        controller.onStatus = { [weak self] sentence in
+            // Mid-session the status line belongs to the session.
+            guard let self, !self.isDictating, !self.isFinalizingStop, !self.isConnectingRealtimeSession else { return }
+            self.statusText = sentence
+        }
+        voiceMemos = controller
+        controller.apply()
+    }
+
+    /// What a dictation would dial now, on a socket of its own so a memo never
+    /// touches the session's client. The bundled helper is started first.
+    private func voiceMemoEngine(
+        usageLedger: UsageLedger
+    ) async throws -> (RealtimeSessionConfiguration, @Sendable () -> any RealtimeClient) {
+        let mode = settings.dictationBackendMode
+        if mode == .managedLocal {
+            try await backendManager.ensureReady(dictation: true, polishing: false)
+        }
+        let provider = settings.realtimeProvider
+        guard let endpoint = settings.resolvedWebSocketURL(for: provider) else {
+            throw RealtimeFileTranscriber.Failure.connectFailed("no dictation endpoint is set")
+        }
+        let configuration = RealtimeSessionConfiguration(
+            endpoint: endpoint,
+            apiKey: settings.trimmedAPIKey,
+            model: settings.effectiveModelName(for: provider),
+            usageBackend: DictationSessionController.usageBackend(for: mode)
+        )
+        if mode == .mistralAPI {
+            return (configuration, {
+                let client = MistralRealtimeWebSocketClient()
+                client.setUsageRecorder(usageLedger)
+                return client
+            })
+        }
+        return (configuration, {
+            let client = RealtimeAPIWebSocketClient()
+            client.setUsageRecorder(usageLedger)
+            return client
+        })
+    }
+
+    /// A memo's History record, as a quick capture's: saved when History
+    /// keeps dictations. Its audio lives with the Inbox item, not here.
+    private func saveVoiceMemoRecord(text: String, recordedAt: Date) -> UUID? {
+        guard let sessionStore, settings.dictationHistoryRetention.savesDictations else { return nil }
+        let record = DictationSessionRecord(
+            startedAt: recordedAt,
+            finishedAt: Date(),
+            rawText: text,
+            provider: settings.realtimeProvider.rawValue,
+            model: settings.effectiveModelName,
+            outputMode: DictationSessionRecord.quickCaptureOutputMode,
+            status: .sttCompleted,
+            commitSucceeded: true,
+            quickCaptureDestination: "Inbox"
+        )
+        sessionStore.save(record)
+        return record.id
+    }
+}

@@ -6,14 +6,18 @@ import IOKit.hid
 
 /// Captures modifier-only key presses (Fn/Globe, Right Command, Right Option)
 /// with NSEvent monitors. A quick tap starts/stops overlay-buffer dictation;
-/// holding past the configured threshold starts live auto-paste push-to-talk
-/// dictation until the modifier is released.
+/// holding past the configured threshold starts push-to-talk dictation until
+/// the modifier is released.
 @MainActor
 final class ModifierOnlyHotKeyManager {
     enum ModifierKey: String, CaseIterable, Identifiable, Codable {
         case fn = "fn"
         case rightCommand = "right_command"
         case rightOption = "right_option"
+        /// Two modifier keys or more pressed together, stored apart in
+        /// `SettingsStore.modifierOnlyHotKeyChord` (#863). `ModifierChordHotKeyMonitor`
+        /// runs its gesture, not this manager.
+        case chord = "chord"
 
         var id: String { rawValue }
 
@@ -22,6 +26,7 @@ final class ModifierOnlyHotKeyManager {
             case .fn: return "Fn / Globe"
             case .rightCommand: return "Right Command"
             case .rightOption: return "Right Option"
+            case .chord: return "Chord"
             }
         }
     }
@@ -175,7 +180,7 @@ final class ModifierOnlyHotKeyManager {
         // MainActor deinit - teardown is driven by HotKeyManager via stop().
     }
 
-    private static func defaultHoldScheduler(
+    static func defaultHoldScheduler(
         delay: Double,
         fire: @escaping @MainActor @Sendable () -> Void
     ) {
@@ -364,6 +369,8 @@ final class ModifierOnlyHotKeyManager {
             return flags.contains(.command)
         case .rightOption:
             return flags.contains(.option)
+        case .chord:
+            return false
         }
     }
 
@@ -378,6 +385,8 @@ final class ModifierOnlyHotKeyManager {
             return keyCode == UInt16(kVK_RightCommand)
         case .rightOption:
             return keyCode == UInt16(kVK_RightOption)
+        case .chord:
+            return false
         }
     }
 

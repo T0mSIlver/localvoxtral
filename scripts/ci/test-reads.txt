@@ -32,12 +32,14 @@ Tests/localvoxtralTests/RepoVocabularyTests.swift dictation.md none
 Tests/localvoxtralCoreTests/ClaudePluginManifestTests.swift contentsOfDirectory( none
 Tests/localvoxtralCoreTests/VibeRemoteShimTests.swift contentsOfDirectory( none
 Tests/localvoxtralTestSupport/AgentDictationEvalCorpus.swift contentsOfDirectory( none
-Tests/localvoxtralTests/DogfoodControlBuildBoundaryTests.swift enumerator( none
 Tests/localvoxtralTests/HerdrIntegrationSupport.swift contentsOfDirectory( none
 Tests/localvoxtralTests/SettingsSourceText.swift contentsOfDirectory( none
 Tests/localvoxtralTests/SettingsTabTests.swift enumerator( none
 Tests/localvoxtralTests/SpeechHelperIntegrationTests.swift contentsOfDirectory( none
-Tests/localvoxtralTests/VibeHooksInstallServiceTests.swift contentsOfDirectory( none
+Tests/localvoxtralCoreTests/VibeHooksInstallServiceTests.swift contentsOfDirectory( none
 Tests/localvoxtralTests/WorkflowActionPinningTests.swift contentsOfDirectory( none
 Tests/localvoxtralCoreTests/RemoteProjectTermsLiveTests.swift /README.md none
 Tests/localvoxtralCoreTests/RemoteProjectTermsLiveTests.swift contentsOfDirectory( none
+Tests/localvoxtralCoreTests/RemoteQuickCaptureLiveTests.swift /README.md none
+Tests/localvoxtralTests/AddressedSendWiringTests.swift contentsOfDirectory( none
+Tests/localvoxtralCoreTests/AgentCLILogPrivacyTests.swift enumerator( none

@@ -20,10 +20,10 @@ import SwiftUI
 struct IntegrationsContextSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
-
     /// Where the group's Learn more link lands.
     private enum LearnMore {
         static let polishContext = DocsLink.page("docs/coding-agents/#polish-context-what-each-toggle-sends")
+        static let quickCapture = DocsLink.page("docs/coding-agents/#quick-capture")
     }
 
     /// Same gate as the Text Processing polishing rows: context is only ever
@@ -85,6 +85,40 @@ struct IntegrationsContextSettingsPane: View {
                 .disabled(!isLLMPolishingReachable)
                 .opacity(isLLMPolishingReachable ? 1.0 : 0.5)
             }
+
+            // Its own group: a capture is not polish context. The key row
+            // stays whatever the picker says, so the group never changes
+            // shape (owner rule, 2026-07-04).
+            SettingsGroup(title: "Quick capture", learnMoreURL: LearnMore.quickCapture) {
+                SettingsFieldRow(title: "Route quick captures with") {
+                    Picker("", selection: $settings.quickCaptureRouter) {
+                        Text("Polishing model").tag(SettingsStore.QuickCaptureRouterChoice.polishingModel)
+                        Text("Jev").tag(SettingsStore.QuickCaptureRouterChoice.jev)
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                }
+
+                SettingsFieldRow(title: "Jev API key") {
+                    SecureField("TypeSafe or Vercel AI Gateway key", text: $settings.jevAPIKey)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: SettingsLayout.textFieldWidth)
+                }
+
+                // Memos an iPhone or Watch Shortcut saves (#925). The title
+                // says where the audio sits; the recipe is behind Learn more.
+                SettingsFieldRow(title: "Transcribe voice memos stored in iCloud Drive") {
+                    Toggle("", isOn: $settings.voiceMemosEnabled)
+                        .labelsHidden()
+                        .accessibilityIdentifier("settings.voiceMemos.toggle")
+                }
+                .onChange(of: settings.voiceMemosEnabled) { viewModel.voiceMemos?.apply() }
+            }
+            .onAppear {
+                // Read from the Keychain only for someone who turned routing
+                // on: opening this pane must not prompt anyone else.
+                if settings.quickCaptureJevEnabled { settings.ensureSecretsLoaded([.jevAPIKey]) }
+            }
         }
     }
 }
@@ -141,6 +175,23 @@ struct VibeSettingsPane: View {
                 if let claude = viewModel.claudeIntegrationSettings {
                     VibeHooksRow(model: claude)
                     DictationNoteRow(model: claude, agent: .vibe)
+                }
+            }
+        }
+    }
+}
+
+struct CodexSettingsPane: View {
+    let viewModel: DictationViewModel
+
+    private static let learnMoreURL = DocsLink.page("integrations/codex/")
+
+    var body: some View {
+        SettingsPage(tab: .integrationsCodex) {
+            SettingsGroup(title: "Setup", learnMoreURL: Self.learnMoreURL) {
+                if let claude = viewModel.claudeIntegrationSettings {
+                    CodexPluginRow(model: claude)
+                    DictationNoteRow(model: claude, agent: .codex)
                 }
             }
         }

@@ -32,6 +32,29 @@ final class DictationSessionRecord {
     /// content — just character counts. Additive optional field: SwiftData
     /// lightweight-migrates existing stores, and old records decode as nil.
     var polishContextSummary: String?
+    /// The joined coding-agent session's project, for `localvoxtral history
+    /// --project` (#721): its directory or `remote:<label>`
+    /// (`LearnedTermProjectResolver`), and the name a person would use. Nil
+    /// when the dictation joined no session. Additive optional fields, like
+    /// the two above.
+    var projectKey: String?
+    var projectName: String?
+    /// `claude`, `vibe`, `opencode`: the agent whose session it joined.
+    var joinedAgent: String?
+    /// Where a quick capture went (#725): "Inbox" when saved, then the
+    /// project it was routed to, then "Filed in owner/name". Nil for every
+    /// other dictation. Additive optional field, like those above.
+    var quickCaptureDestination: String?
+
+    /// `outputMode` of a quick capture, which is never inserted anywhere.
+    static let quickCaptureOutputMode = "quickCapture"
+
+    /// Whether the user erased the insertion within seconds of it
+    /// (`EditSignalOutcome`: `edited`, `clean`, `superseded`), copied from the
+    /// diagnostic record when its watch window closes. Nil when nothing was
+    /// watched: records off, Live Auto-Paste, a failed insertion, or an older
+    /// build. Additive optional field, like the ones above.
+    var editOutcome: String?
 
     init(
         id: UUID = UUID(),
@@ -47,7 +70,12 @@ final class DictationSessionRecord {
         status: DictationSessionStatus,
         commitSucceeded: Bool,
         polishProfile: String? = nil,
-        polishContextSummary: String? = nil
+        polishContextSummary: String? = nil,
+        projectKey: String? = nil,
+        projectName: String? = nil,
+        joinedAgent: String? = nil,
+        quickCaptureDestination: String? = nil,
+        editOutcome: String? = nil
     ) {
         self.id = id
         self.startedAt = startedAt
@@ -63,5 +91,10 @@ final class DictationSessionRecord {
         self.commitSucceeded = commitSucceeded
         self.polishProfile = polishProfile
         self.polishContextSummary = polishContextSummary
+        self.projectKey = projectKey
+        self.projectName = projectName
+        self.joinedAgent = joinedAgent
+        self.quickCaptureDestination = quickCaptureDestination
+        self.editOutcome = editOutcome
     }
 }

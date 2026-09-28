@@ -13,9 +13,45 @@ import localvoxtralCore
 package enum EvalSpeechStage {
     package struct Failure: Error, CustomStringConvertible {
         package let description: String
+        /// The service never answered: a socket error or no final transcript
+        /// within the timeout. An empty transcript is an answer.
+        package let serviceStalled: Bool
 
-        package init(_ description: String) {
+        package init(_ description: String, serviceStalled: Bool = false) {
             self.description = description
+            self.serviceStalled = serviceStalled
+        }
+    }
+
+    /// Ends a live eval once the STT service stops answering. Each utterance
+    /// otherwise waits out its own timeout, and a corpus of ~150 at 90 s each
+    /// held the Mac for two hours with no output (#821).
+    package struct ServiceWatch {
+        package let endpoint: URL
+        package let limit: Int
+        package private(set) var consecutiveStalls = 0
+
+        package init(endpoint: URL, limit: Int = 3) {
+            self.endpoint = endpoint
+            self.limit = limit
+        }
+
+        package mutating func recordAnswer() {
+            consecutiveStalls = 0
+        }
+
+        /// Throws once `limit` utterances in a row got no answer. Any other
+        /// error (a failed `say`, an empty transcript) leaves the count.
+        package mutating func record(_ error: any Error) throws {
+            guard let failure = error as? Failure, failure.serviceStalled else { return }
+            consecutiveStalls += 1
+            if consecutiveStalls >= limit {
+                throw Failure(
+                    "STT service at \(endpoint) stopped answering: \(consecutiveStalls) utterances "
+                        + "in a row got no transcript; last: \(failure.description)",
+                    serviceStalled: true
+                )
+            }
         }
     }
 
@@ -33,8 +69,11 @@ package enum EvalSpeechStage {
 
     // MARK: - TTS
 
-    package static let englishVoicePreference = ["Samantha", "Alex"]
-    package static let frenchVoicePreference = ["Thomas", "Amélie", "Aurélie", "Audrey"]
+    /// In order of preference. Scores compare only between runs with the
+    /// same voices. Since macOS 27 the Mac's Actions runner lists neither
+    /// Samantha nor Alex and gets Daniel (en_GB) (#960).
+    package static let englishVoicePreference = ["Samantha", "Alex", "Daniel"]
+    package static let frenchVoicePreference = ["Thomas", "Jacques", "Amélie"]
 
     #if os(macOS)
     package static let ttsDataFormat = "LEI16@16000"
@@ -116,57 +155,101 @@ package enum EvalSpeechStage {
     }
 
     /// `say -v ?` through a temp file (no pipes — descriptor-safe by
-    /// construction), parsed by the unit-tested picker.
-    package static func resolveVoice(languagePrefix: String, preferred: [String]) -> String? {
+    /// construction), parsed by the unit-tested picker. Throws when `say`
+    /// fails or lists none of `preferred`.
+    package static func resolveVoice(languagePrefix: String, preferred: [String]) throws -> String {
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("lv-eval-voices-\(UUID().uuidString).txt")
         defer { try? FileManager.default.removeItem(at: outputURL) }
         _ = FileManager.default.createFile(atPath: outputURL.path, contents: nil)
-        guard let handle = try? FileHandle(forWritingTo: outputURL) else { return nil }
+        let handle = try FileHandle(forWritingTo: outputURL)
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
         process.arguments = ["-v", "?"]
         process.standardOutput = handle
         process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            return nil
-        }
+        try process.run()
         process.waitUntilExit()
         try? handle.close()
-        guard process.terminationStatus == 0,
-            let output = try? String(contentsOf: outputURL, encoding: .utf8)
-        else { return nil }
-        return pickVoice(
-            fromSayVoicesOutput: output, languagePrefix: languagePrefix, preferred: preferred
+        guard process.terminationStatus == 0 else {
+            throw Failure("`say -v ?` failed (status \(process.terminationStatus))")
+        }
+        let voice = try requireVoice(
+            fromSayVoicesOutput: String(contentsOf: outputURL, encoding: .utf8),
+            languagePrefix: languagePrefix, preferred: preferred
         )
+        if let note = fallbackNote(chosen: voice, preferred: preferred) {
+            print("eval TTS: \(note)")
+        }
+        return voice
     }
     #endif
 
     // MARK: - Voice picking
 
     /// Picks a TTS voice from `say -v ?` output: the first `preferred` name
-    /// present wins, else the first voice whose locale starts with
-    /// `languagePrefix` ("en"/"fr"), else nil. Voice names may contain spaces
-    /// ("Bad News"), so lines parse as name + 2+ spaces + locale.
+    /// listed for a locale starting with `languagePrefix` ("en"/"fr"), else
+    /// nil. It returns the name as listed, which `say -v` needs: macOS 27
+    /// suffixes most names with their language, "Samantha (English (US))"
+    /// (#960). Voice names may contain spaces ("Bad News"), so lines parse
+    /// as name + 2+ spaces + locale.
     package static func pickVoice(
         fromSayVoicesOutput output: String,
         languagePrefix: String,
         preferred: [String]
     ) -> String? {
-        var candidates: [String] = []
-        for line in output.split(separator: "\n") {
-            guard let (name, locale) = parseVoiceLine(String(line)) else { continue }
+        let listed = voiceNames(fromSayVoicesOutput: output, languagePrefix: languagePrefix)
+        for name in preferred {
+            if let voice = listed.first(where: { isVoice($0, named: name) }) {
+                return voice
+            }
+        }
+        return nil
+    }
+
+    /// One line naming the preferred voices `say` did not list, when
+    /// `chosen` is not the first preference; nil otherwise.
+    package static func fallbackNote(chosen: String, preferred: [String]) -> String? {
+        guard let index = preferred.firstIndex(where: { isVoice(chosen, named: $0) }), index > 0
+        else { return nil }
+        return "\(preferred[..<index].joined(separator: ", ")) not listed by `say -v ?`, using \(chosen)"
+    }
+
+    /// "Samantha" or, as macOS 27 lists it, "Samantha (English (US))".
+    private static func isVoice(_ listed: String, named name: String) -> Bool {
+        listed == name || listed.hasPrefix(name + " (")
+    }
+
+    /// `pickVoice`, failing with the voices on offer when it finds none. No
+    /// fallback to another voice of the language: on macOS 27 that was the
+    /// novelty voice Albert, which speechd could not transcribe (#960).
+    package static func requireVoice(
+        fromSayVoicesOutput output: String,
+        languagePrefix: String,
+        preferred: [String]
+    ) throws -> String {
+        if let voice = pickVoice(
+            fromSayVoicesOutput: output, languagePrefix: languagePrefix, preferred: preferred
+        ) {
+            return voice
+        }
+        let offered = voiceNames(fromSayVoicesOutput: output, languagePrefix: languagePrefix)
+        throw Failure(
+            "no \(languagePrefix) TTS voice named \(preferred.joined(separator: " or ")); "
+                + "`say -v ?` offered: \(offered.isEmpty ? "none" : offered.joined(separator: ", "))"
+        )
+    }
+
+    private static func voiceNames(
+        fromSayVoicesOutput output: String,
+        languagePrefix: String
+    ) -> [String] {
+        output.split(separator: "\n").compactMap { line in
+            guard let (name, locale) = parseVoiceLine(String(line)) else { return nil }
             let normalizedLocale = locale.replacingOccurrences(of: "-", with: "_").lowercased()
-            guard normalizedLocale.hasPrefix(languagePrefix.lowercased()) else { continue }
-            candidates.append(name)
+            return normalizedLocale.hasPrefix(languagePrefix.lowercased()) ? name : nil
         }
-        for name in preferred where candidates.contains(name) {
-            return name
-        }
-        return candidates.first
     }
 
     private static func parseVoiceLine(_ line: String) -> (name: String, locale: String)? {
@@ -252,13 +335,17 @@ package enum EvalSpeechStage {
         }
         let errors = socketErrors.snapshot()
         if !errors.isEmpty {
-            throw Failure("realtime socket error: \(errors.joined(separator: " | "))")
+            throw Failure(
+                "realtime socket error: \(errors.joined(separator: " | "))", serviceStalled: true
+            )
         }
         if allowsEmptyTranscript, !finalized.snapshot().isEmpty {
             return ""
         }
         if outcome != .completed {
-            throw Failure("no final transcript within \(Int(timeout))s from \(endpoint.url)")
+            throw Failure(
+                "no final transcript within \(Int(timeout))s from \(endpoint.url)", serviceStalled: true
+            )
         }
         throw Failure("empty final transcript from \(endpoint.url)")
     }

@@ -155,6 +155,47 @@ struct OpencodePluginRow: View {
     }
 }
 
+/// Install/remove the Codex plugin.
+///
+/// Same shape as `ClaudePluginInstallRow`: one click, because Codex's own CLI
+/// does the install. The status sentence, not a result line, follows a
+/// successful action: after an install it tells the user to trust the hooks
+/// at Codex's next start, the one step the app cannot take for them.
+struct CodexPluginRow: View {
+    @Bindable var model: ClaudeIntegrationSettingsModel
+
+    var body: some View {
+        SettingsFieldRow(
+            title: "Plugin",
+            status: model.codexResult ?? model.codexSentence,
+            statusAccessibilityIdentifier: "integrations.codex.status"
+        ) {
+            HStack(spacing: 8) {
+                if let title = model.codexStatus.primaryActionTitle {
+                    Button(title) {
+                        Task { await model.installCodexPlugin() }
+                    }
+                    .disabled(model.isPerformingCodexAction)
+                    .accessibilityIdentifier("integrations.codex.install")
+                }
+
+                if model.codexStatus.offersRemove {
+                    Button("Remove") {
+                        Task { await model.removeCodexPlugin() }
+                    }
+                    .disabled(model.isPerformingCodexAction)
+                    .accessibilityIdentifier("integrations.codex.remove")
+                }
+
+                if model.isPerformingCodexAction {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            .controlSize(.small)
+        }
+    }
+}
+
 /// Install/remove the Mistral Vibe hooks.
 ///
 /// Same shape as `OpencodePluginRow`: the buttons follow

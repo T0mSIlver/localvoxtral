@@ -1,3 +1,4 @@
+import ClaudeContextWire
 import Foundation
 import XCTest
 @testable import localvoxtralCore
@@ -13,6 +14,7 @@ final class ClaudePluginManifestTests: XCTestCase {
 
     override func setUpWithError() throws {
         try super.setUpWithError()
+        try Self.writePublisherStubsOnce()
         marketplace = try XCTUnwrap(
             ClaudePluginAssets.developmentMarketplaceURL(),
             "the repo checkout must contain integrations/claude-code"
@@ -225,8 +227,18 @@ final class ClaudePluginManifestTests: XCTestCase {
             events,
             [
                 "SessionStart", "UserPromptSubmit", "CwdChanged",
-                "PostToolUse", "Stop", "SessionEnd",
+                "PostToolUse", "Stop", "Notification", "SessionEnd",
             ]
+        )
+    }
+
+    /// Only the waits the app shows (#717); `idle_prompt` and the rest never
+    /// start the publisher.
+    func testTheNotificationHookMatchesOnlyTheWaitsTheWireCarries() throws {
+        let matcher = try XCTUnwrap(try hooksByEvent()["Notification"]?.first?["matcher"] as? String)
+        XCTAssertEqual(
+            Set(matcher.split(separator: "|").map(String.init)),
+            Set(ClaudeNotificationType.allCases.map(\.rawValue))
         )
     }
 
@@ -246,7 +258,7 @@ final class ClaudePluginManifestTests: XCTestCase {
 
     func testEveryHookCommandUsesPluginRootAndTheShim() throws {
         let commands = try allCommands()
-        XCTAssertEqual(commands.count, 6, "one command per event")
+        XCTAssertEqual(commands.count, 7, "one command per event")
         for command in commands {
             // QUOTED (F7): hook commands run through a shell, and the plugin
             // root lives under "~/.claude" today but is an implementation
@@ -359,24 +371,22 @@ final class ClaudePluginManifestTests: XCTestCase {
         let temporary = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temporary) }
 
-        // (1) A publisher that FAILS must not fail the hook: the shim runs it as a
-        // child (never exec) precisely so it can swallow this and still exit 0.
-        let failing = try writeExecutable(
-            "#!/bin/sh\nexit 7\n", named: "failing-publisher", in: temporary
-        )
+        // One run carries both contracts: the publisher records the arguments it
+        // received and then FAILS, so the same invocation proves the event
+        // passthrough AND the swallow — the shim runs the publisher as a child
+        // (never exec) precisely so it can exit 0 over a non-zero child. A
+        // publisher that succeeds still gets exit 0 from the shim; both runs of
+        // testShimPrefersTheAppLinkOverAStaleInstallTimePin pin that half.
+        let argumentsFile = temporary.appendingPathComponent("args")
         XCTAssertEqual(
-            try runShim(shim, hookBin: failing.path, event: "SessionStart").exitCode, 0,
+            try runShim(
+                shim,
+                hookBin: Self.publisherStub.path,
+                event: "Stop",
+                extraEnvironment: ["LVX_ARGS": argumentsFile.path, "LVX_STATUS": "7"]
+            ).exitCode, 0,
             "the shim must exit 0 even when the publisher exits non-zero"
         )
-
-        // (2) The publisher is invoked as a child and receives `--event <Event>`.
-        let argumentsFile = temporary.appendingPathComponent("args")
-        let recorder = try writeExecutable(
-            "#!/bin/sh\nprintf '%s' \"$*\" > \(argumentsFile.path)\nexit 0\n",
-            named: "recording-publisher", in: temporary
-        )
-        let run = try runShim(shim, hookBin: recorder.path, event: "Stop")
-        XCTAssertEqual(run.exitCode, 0, "the shim always exits 0")
         XCTAssertEqual(
             try String(contentsOf: argumentsFile, encoding: .utf8), "--event Stop",
             "the shim must pass the event through to the publisher as --event <Event>"
@@ -385,6 +395,49 @@ final class ClaudePluginManifestTests: XCTestCase {
 
     // MARK: Shim execution helpers
 
+    /// The publisher stubs, written once for the class: executing a script
+    /// the system has not seen before cost 170–260 ms on the build host
+    /// against 23 ms for one it has (measured in `VibeRemoteShimTests`), and
+    /// each shim test used to write its own. Everything that varies per run
+    /// reaches a stub through the environment, so each test still gets its
+    /// own output files.
+    private static let stubDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("lvx-shim-stub-\(UUID().uuidString)")
+
+    /// The publisher the app's link names. Doubles as the failing recorder
+    /// of `testShimIsExecutableAndFailsOpen`: `LVX_ARGS` names the file that
+    /// receives the arguments it was invoked with, `LVX_MARKER` the file its
+    /// baked mark lands in, `LVX_STATUS` its exit status.
+    private static var publisherStub: URL { stubDirectory.appendingPathComponent("publisher") }
+
+    /// The older copy left at the install-time pin. Its mark is baked, not
+    /// env-driven, so a run that wrongly resolves to it cannot write the
+    /// mark the link's publisher would.
+    private static var stalePublisherStub: URL {
+        stubDirectory.appendingPathComponent("stale-publisher")
+    }
+
+    private static func writePublisherStubsOnce() throws {
+        guard !FileManager.default.fileExists(atPath: publisherStub.path) else { return }
+        try FileManager.default.createDirectory(at: stubDirectory, withIntermediateDirectories: true)
+        try writeExecutable(
+            "#!/bin/sh\n"
+                + "printf '%s' \"$*\" > \"${LVX_ARGS:-/dev/null}\"\n"
+                + "printf 'current' > \"${LVX_MARKER:-/dev/null}\"\n"
+                + "exit \"${LVX_STATUS:-0}\"\n",
+            named: "publisher", in: stubDirectory
+        )
+        try writeExecutable(
+            "#!/bin/sh\nprintf 'stale' > \"${LVX_MARKER:-/dev/null}\"\n",
+            named: "stale-publisher", in: stubDirectory
+        )
+    }
+
+    override class func tearDown() {
+        try? FileManager.default.removeItem(at: stubDirectory)
+        super.tearDown()
+    }
+
     private func temporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("shim-\(UUID().uuidString)")
@@ -392,7 +445,7 @@ final class ClaudePluginManifestTests: XCTestCase {
         return url
     }
 
-    private func writeExecutable(_ contents: String, named name: String, in directory: URL) throws -> URL {
+    private static func writeExecutable(_ contents: String, named name: String, in directory: URL) throws -> URL {
         let url = directory.appendingPathComponent(name)
         try contents.write(to: url, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
@@ -434,16 +487,16 @@ final class ClaudePluginManifestTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: temporary) }
         let home = temporary.appendingPathComponent("home")
         let marker = temporary.appendingPathComponent("ran")
-        let current = try writeExecutable(
-            "#!/bin/sh\nprintf current > \(marker.path)\n", named: "current", in: temporary
-        )
-        let stale = try writeExecutable(
-            "#!/bin/sh\nprintf stale > \(marker.path)\n", named: "stale", in: temporary
-        )
+        // The link names a symlink to the shared stub, so this test can make
+        // "the app is gone" by removing the symlink without deleting the stub
+        // the other shim test still runs.
+        let current = temporary.appendingPathComponent("current")
+        try FileManager.default.createSymbolicLink(at: current, withDestinationURL: Self.publisherStub)
         let pin = [
             "HOME": home.path,
             "CLAUDE_PLUGIN_OPTION_"
-                + ClaudePluginInstallService.publisherPathConfigKey.uppercased(): stale.path,
+                + ClaudePluginInstallService.publisherPathConfigKey.uppercased(): Self.stalePublisherStub.path,
+            "LVX_MARKER": marker.path,
         ]
         let shim = pluginRoot.appendingPathComponent("hooks/publish.sh")
         let link = ClaudePublisherPointer.defaultURL(home: home)

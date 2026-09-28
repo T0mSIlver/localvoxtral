@@ -9,6 +9,8 @@ package protocol ProjectTermProposalStoring: Sendable {
     func snapshot() -> LearnedTerms
     func recordProposal(
         _ terms: [String],
+        line: String?,
+        revision: Int?,
         agent: ProjectTermProposal.Agent,
         project: LearnedTermProjectIdentity,
         excluding: [String]
@@ -17,7 +19,7 @@ package protocol ProjectTermProposalStoring: Sendable {
 }
 
 /// Asks a project's coding agent for its terms after the first joined
-/// dictation there (#609).
+/// dictation there (#609; opencode, #642).
 ///
 /// The commit path calls `dictationCommitted` once the text is inserted, and
 /// it returns at once: everything else runs in a detached task, so neither
@@ -42,14 +44,17 @@ package final class ProjectTermProposer: @unchecked Sendable {
     /// Where a remote session's ask goes (#641). Attached once the remote
     /// listener exists; nil on a Mac with no enrolled host.
     private let remoteRequests = Mutex<RemoteProjectTermRequests?>(nil)
+    private let usageRecorder: (any UsageRecording)?
 
     package init(
         store: any ProjectTermProposalStoring,
         runner: any ProjectTermProposalRunning,
         now: @escaping @Sendable () -> Date,
         trackedFiles: @escaping @Sendable (String) async -> [String] = ProjectTermProposer.gitTrackedFiles,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        usageRecorder: (any UsageRecording)? = nil
     ) {
+        self.usageRecorder = usageRecorder
         self.store = store
         self.runner = runner
         self.now = now
@@ -63,8 +68,8 @@ package final class ProjectTermProposer: @unchecked Sendable {
     }
 
     /// Returns the task that asks, or nil when this dictation starts no local
-    /// run: the setting is off, there was no join, or the join is not a local
-    /// Claude Code or Vibe session. A remote Claude Code or Vibe join is
+    /// run: the setting is off, there was no join, or the join is not local.
+    /// A remote Claude Code or Vibe join is
     /// handed to `RemoteProjectTermRequests`, which only marks the session
     /// for its host to run on. Tests await the task; the app drops it.
     ///
@@ -100,7 +105,7 @@ package final class ProjectTermProposer: @unchecked Sendable {
         ), project.key.hasPrefix("/") else { return }
 
         let started = now()
-        guard store.snapshot().needsProposal(projectKey: project.key, now: started),
+        guard store.snapshot().needsProposal(projectKey: project.key, now: started, revision: ProjectTermProposal.promptRevision),
               claim(project.key, at: started)
         else { return }
 
@@ -122,14 +127,22 @@ package final class ProjectTermProposer: @unchecked Sendable {
             "Project terms: asking \(request.agent.rawValue, privacy: .public) for a new project's terms"
         )
         switch await runner.run(invocation) {
-        case .terms(let raw, let usage):
+        case .terms(let raw, let usage, let line):
+            usageRecorder?.record(.agentRun(date: now(), feature: .projectTerms, agent: request.agent, usage: usage))
             let accepted = ProjectTermProposal.acceptedTerms(raw)
             Log.backends.info(
-                "Project terms: \(request.agent.rawValue, privacy: .public) answered \(raw.count, privacy: .public) terms, \(accepted.count, privacy: .public) term-shaped (\(usage?.summary ?? "usage not reported", privacy: .public))"
+                "Project terms: \(request.agent.rawValue, privacy: .public) answered \(raw.count, privacy: .public) terms, \(accepted.count, privacy: .public) term-shaped, \(line.flatMap(ProjectTermProposal.acceptedLine) == nil ? "no" : "a", privacy: .public) description (\(usage?.summary ?? "usage not reported", privacy: .public))"
             )
             asked.withLock { $0[project.key] = .distantFuture }
-            store.recordProposal(accepted, agent: request.agent, project: project, excluding: excluding)
+            // This run's prompt asked for the sentence: an answer without one
+            // still counts as answered, so the project is not asked daily.
+            store.recordProposal(
+                accepted, line: line ?? "", revision: ProjectTermProposal.promptRevision, agent: request.agent,
+                project: project, excluding: excluding)
         case .failed(let failure):
+            if failure.agentRan {
+                usageRecorder?.record(.agentRun(date: now(), feature: .projectTerms, agent: request.agent, usage: nil))
+            }
             Log.backends.error(
                 "Project terms: \(request.agent.rawValue, privacy: .public) run failed: \(String(describing: failure), privacy: .public); retrying after a day"
             )

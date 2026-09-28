@@ -341,6 +341,42 @@ final class ClaudeHookWireCodecTests: XCTestCase {
         XCTAssertNotEqual(ClaudeAgentSessionScope.opencodePrefix, "remote:")
     }
 
+    func testNotificationCarriesItsTypeUnderAGoldenWireName() throws {
+        let wait = ClaudeHookRecord(
+            event: .notification, sessionID: "sess-wait", timestamp: 7,
+            notificationType: .permissionPrompt
+        )
+        let encoded = try XCTUnwrap(ClaudeHookWireCodec.encodeLine(wait))
+        XCTAssertEqual(
+            String(decoding: encoded, as: UTF8.self),
+            #"{"event":"Notification","files":[],"notification_type":"permission_prompt","session_id":"sess-wait","ts":7,"v":2}"# + "\n"
+        )
+        XCTAssertEqual(try ClaudeHookWireCodec.decodeLine(encoded), wait)
+    }
+
+    func testANotificationWithoutAKnownTypeIsDropped() {
+        for extra in ["", #","notification_type":"idle_prompt""#, #","notification_type":7"#] {
+            XCTAssertThrowsError(
+                try ClaudeHookWireCodec.decodeLine(line(validJSON(event: "Notification", extra: extra))),
+                extra
+            ) { error in
+                XCTAssertEqual(error as? ClaudeHookWireError, .malformed, extra)
+            }
+        }
+    }
+
+    func testANotificationTypeOnAnyOtherEventIsDropped() throws {
+        let record = try ClaudeHookWireCodec.decodeLine(
+            line(validJSON(event: "Stop", extra: #","notification_type":"permission_prompt""#))
+        )
+        XCTAssertEqual(record.event, .stop)
+        XCTAssertNil(record.notificationType)
+        let encoded = try XCTUnwrap(ClaudeHookWireCodec.encodeLine(ClaudeHookRecord(
+            event: .stop, sessionID: "s", timestamp: 1, notificationType: .permissionPrompt
+        )))
+        XCTAssertFalse(String(decoding: encoded, as: UTF8.self).contains("notification_type"))
+    }
+
     func testRejectsUnknownEventRatherThanThrowingGenericError() {
         XCTAssertThrowsError(try ClaudeHookWireCodec.decodeLine(line(validJSON(event: "PreCompact")))) { error in
             XCTAssertEqual(error as? ClaudeHookWireError, .unknownEvent("PreCompact"))

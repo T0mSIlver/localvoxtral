@@ -17,7 +17,6 @@
 0.594 RepoVocabularyIndexerEndToEndTests
 0.567 HerdrSocketClientTests
 0.523 ClaudeStatuslineCombineTests
-0.520 DogfoodControlBuildBoundaryTests
 0.449 DictationViewModelFailFastUXTests
 0.365 DictationViewModelPolishTokenGuardTests
 0.308 SpeakerTermSuggestionModelTests
@@ -81,7 +80,7 @@
 0.025 ClaudeRemoteForwardSupervisorTests
 0.025 RepoVocabularyPhoneticTests
 0.022 LearnedTermsTests
-0.022 MistralUsageLedgerTests
+0.022 UsageLedgerTests
 0.022 OpencodePluginManifestTests
 0.022 VibeHookProcessTreeTests
 0.021 ClaudeRemoteForwardPortTests
@@ -219,7 +218,6 @@
 0.001 ClaudeSocketGuardValidationTests
 0.001 CmuxPasswordSettingsRowTests
 0.001 DockIconPolicyTests
-0.001 DogfoodBuildStatusTests
 0.001 HerdrClientTTYProbeTests
 0.001 HerdrSurfaceLogTests
 0.001 HotKeyManagerTests

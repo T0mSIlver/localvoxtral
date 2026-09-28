@@ -33,7 +33,8 @@ enum PolishPromptWarmup {
                 inputText: warmupInputText,
                 replacementDictionary: ""
             ),
-            maxTokens: 1
+            maxTokens: 1,
+            usageFeature: nil
         )
     }
 
@@ -364,7 +365,7 @@ final class PolishPromptWarmupCoordinator {
                     // retries it; the remaining profiles still get theirs.
                     self?.failureCounts[entry.prefix, default: 0] += 1
                     Log.backends.error(
-                        "polish prompt warmup (\(profile, privacy: .public)) failed (log-only): \(error.localizedDescription, privacy: .public)"
+                        "polish prompt warmup (\(profile, privacy: .public)) failed (log-only): \(LLMPolishingError.publicLogDescription(of: error), privacy: .public) \(error.localizedDescription, privacy: .private)"
                     )
                 }
             }

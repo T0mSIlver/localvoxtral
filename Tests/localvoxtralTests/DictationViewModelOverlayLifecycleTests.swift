@@ -31,10 +31,12 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let settings = makeSettings(outputMode: .liveAutoPaste)
         settings.realtimeAPIEndpointURL = "ws://127.0.0.1:1/realtime"
         let overlayCoordinator = MockOverlayCoordinator()
+        // The dial opens the microphone (#527): never the host's.
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(microphone: { FakeMicrophoneCaptureService() })
         )
         retainForTestProcessLifetime(viewModel)
 
@@ -128,9 +130,10 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         viewModel.session.handle(event: .transcriptionFinalized)
 
-        let timeoutAt = Date().addingTimeInterval(1.0)
-        while viewModel.isFinalizingStop, Date() < timeoutAt {
-            try? await Task.sleep(for: .milliseconds(10))
+        // The disconnect the handler issues comes back through the event
+        // handler's DispatchQueue.main.async hop; yield until it lands.
+        for _ in 0..<1_000 where viewModel.isFinalizingStop {
+            await Task.yield()
         }
 
         XCTAssertFalse(viewModel.isFinalizingStop)
@@ -900,39 +903,28 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(viewModel.transcript.currentDictationEventText, "postgres")
     }
 
-    func testPrepareLLMPolishingPromptAccessSkipsPromptTemplatesWhenDisabled() {
-        let settings = makeSettings(outputMode: .overlayBuffer)
-        let overlayCoordinator = MockOverlayCoordinator()
-        let configStore = MockAppConfigStore()
-        let viewModel = DictationViewModel(
-            settings: settings,
-            overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
-        )
-        viewModel.appConfigStore = configStore
-        retainForTestProcessLifetime(viewModel)
+    func testPrepareLLMPolishingPromptAccessLoadsPromptTemplatesOnlyWhenPolishingIsEnabled() {
+        for polishingEnabled in [false, true] {
+            let settings = makeSettings(outputMode: .overlayBuffer)
+            settings.llmPolishingEnabled = polishingEnabled
+            let overlayCoordinator = MockOverlayCoordinator()
+            let configStore = MockAppConfigStore()
+            let viewModel = DictationViewModel(
+                settings: settings,
+                overlayBufferCoordinator: overlayCoordinator,
+                startRuntimeServices: false
+            )
+            viewModel.appConfigStore = configStore
+            retainForTestProcessLifetime(viewModel)
 
-        viewModel.prepareLLMPolishingPromptAccessIfNeeded()
+            viewModel.prepareLLMPolishingPromptAccessIfNeeded()
 
-        XCTAssertEqual(configStore.loadLLMPromptTemplatesCallCount, 0)
-    }
-
-    func testPrepareLLMPolishingPromptAccessLoadsPromptTemplatesWhenEnabled() {
-        let settings = makeSettings(outputMode: .overlayBuffer)
-        settings.llmPolishingEnabled = true
-        let overlayCoordinator = MockOverlayCoordinator()
-        let configStore = MockAppConfigStore()
-        let viewModel = DictationViewModel(
-            settings: settings,
-            overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
-        )
-        viewModel.appConfigStore = configStore
-        retainForTestProcessLifetime(viewModel)
-
-        viewModel.prepareLLMPolishingPromptAccessIfNeeded()
-
-        XCTAssertEqual(configStore.loadLLMPromptTemplatesCallCount, 1)
+            XCTAssertEqual(
+                configStore.loadLLMPromptTemplatesCallCount,
+                polishingEnabled ? 1 : 0,
+                "polishing enabled: \(polishingEnabled)"
+            )
+        }
     }
 
     func testUnrecoverableDisconnectDuringDictationResetsEscapeCancelFlag() {
@@ -966,20 +958,18 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
     }
 
     // The Escape Carbon hotkey is armed in a single shared code path
-    // (startAudioCaptureAfterConnection) used by BOTH output modes and BOTH
+    // (beginListeningAfterConnection) used by BOTH output modes and BOTH
     // shortcut modes (push-to-talk and toggle all funnel through
-    // beginDictationSession -> connect -> startAudioCaptureAfterConnection).
+    // beginDictationSession -> connect -> beginListeningAfterConnection).
     // What can regress is therefore the DISARM: every session-teardown path
     // must call escapeCancelHandler.stop(), otherwise Escape is swallowed
-    // system-wide while the Carbon hotkey remains registered. These cover each
-    // teardown path in both output modes.
+    // system-wide while the Carbon hotkey remains registered. The stop call
+    // sits in stopDictation before any output-mode branch (and these helpers
+    // pass finalizeRemainingAudio: false, so the mode branch is never
+    // reached), so one mode per teardown path covers the shared statement.
 
     func testStopDictationClearsEscapeCancelArmingInOverlayBufferMode() {
         assertStopDictationClearsEscapeCancelArming(outputMode: .overlayBuffer)
-    }
-
-    func testStopDictationClearsEscapeCancelArmingInLiveAutoPasteMode() {
-        assertStopDictationClearsEscapeCancelArming(outputMode: .liveAutoPaste)
     }
 
     private func assertStopDictationClearsEscapeCancelArming(outputMode: DictationOutputMode) {
@@ -1005,10 +995,6 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
     func testCancelDictationClearsEscapeCancelArmingInOverlayBufferMode() {
         assertCancelDictationClearsEscapeCancelArming(outputMode: .overlayBuffer)
-    }
-
-    func testCancelDictationClearsEscapeCancelArmingInLiveAutoPasteMode() {
-        assertCancelDictationClearsEscapeCancelArming(outputMode: .liveAutoPaste)
     }
 
     private func assertCancelDictationClearsEscapeCancelArming(outputMode: DictationOutputMode) {

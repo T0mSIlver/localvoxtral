@@ -25,13 +25,15 @@ nav = [
     { "Claude Code" = "integrations/claude-code/README.md" },
     { "opencode" = "integrations/opencode/README.md" },
     { "Mistral Vibe" = "integrations/vibe/README.md" },
+    { "Codex" = "integrations/codex/README.md" },
+    { "herdr" = "integrations/herdr/README.md" },
     { "Remote Claude Code over SSH" = "docs/remote-claude-context.md" },
   ] },
   { "Developing" = [
     { "All docs" = "docs/README.md" },
     { "Building from source" = "docs/building.md" },
     { "Architecture" = "docs/architecture.md" },
-    { "Dogfood builds" = "docs/dogfood-builds.md" },
+    { "Test harness" = "docs/test-harness.md" },
   ] },
   { "Release notes" = [
     { "v0.9.0" = "docs/release-notes/v0.9.0.md" },

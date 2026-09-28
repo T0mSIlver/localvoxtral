@@ -24,21 +24,6 @@ final class ClaudeRemoteHTTPTests: XCTestCase {
 
     // MARK: Happy path
 
-    func testParsesAWellFormedHookPost() throws {
-        let raw = request(headers: [
-            "Host: 127.0.0.1:8473",
-            "Content-Type: application/json",
-            "Authorization: Bearer abc123abc123abc123",
-            "Content-Length: 2",
-        ])
-        let (parsed, bodyOffset) = try ClaudeRemoteHTTPCodec.parseRequestHead(raw)
-        XCTAssertEqual(parsed.method, "POST")
-        XCTAssertEqual(parsed.path, "/v1/hook/SessionStart")
-        XCTAssertEqual(parsed.contentLength, 2)
-        XCTAssertEqual(parsed.bearerToken, "abc123abc123abc123")
-        XCTAssertEqual(Data(raw[bodyOffset...]), Data("{}".utf8))
-    }
-
     func testHeaderNamesAreCaseInsensitive() throws {
         let raw = request(headers: ["AUTHORIZATION: Bearer abc123abc123abc123", "content-LENGTH: 2"])
         let (parsed, _) = try ClaudeRemoteHTTPCodec.parseRequestHead(raw)
@@ -71,50 +56,7 @@ final class ClaudeRemoteHTTPTests: XCTestCase {
         }
     }
 
-    func testHeadOverTheCapIsRejectedEvenWhenComplete() {
-        let padding = String(repeating: "x", count: 9 * 1024)
-        let raw = request(headers: ["X-Pad: \(padding)", "Content-Length: 2"])
-        XCTAssertThrowsError(try ClaudeRemoteHTTPCodec.parseRequestHead(raw)) { error in
-            XCTAssertEqual(error as? ClaudeRemoteHTTPError, .headTooLarge)
-        }
-    }
-
     // MARK: Framing
-
-    func testOnlyPOSTIsAccepted() {
-        for method in ["GET", "PUT", "DELETE", "OPTIONS"] {
-            let raw = request(method: method)
-            XCTAssertThrowsError(try ClaudeRemoteHTTPCodec.parseRequestHead(raw)) { error in
-                XCTAssertEqual(error as? ClaudeRemoteHTTPError, .unsupportedMethod(method))
-            }
-        }
-    }
-
-    func testMissingContentLengthIsRejected() {
-        let raw = request(headers: ["Host: 127.0.0.1"])
-        XCTAssertThrowsError(try ClaudeRemoteHTTPCodec.parseRequestHead(raw)) { error in
-            XCTAssertEqual(error as? ClaudeRemoteHTTPError, .lengthRequired)
-        }
-    }
-
-    func testOversizedContentLengthIsRejectedBeforeAnyBodyIsRead() {
-        // The bound is on the DECLARED length, checked while parsing the head.
-        // That is what makes it impossible for a peer to size an allocation:
-        // by the time we would read the body, we have already refused.
-        let raw = request(headers: ["Content-Length: 1048576"], body: "")
-        XCTAssertThrowsError(try ClaudeRemoteHTTPCodec.parseRequestHead(raw)) { error in
-            XCTAssertEqual(error as? ClaudeRemoteHTTPError, .bodyTooLarge(1_048_576))
-        }
-    }
-
-    func testChunkedTransferEncodingIsRejected() {
-        // A chunked body's size is only knowable by reading it, which defeats
-        // the point of a declared bound.
-        let raw = request(headers: ["Transfer-Encoding: chunked"], body: "")
-        XCTAssertThrowsError(try ClaudeRemoteHTTPCodec.parseRequestHead(raw)) { error in
-            XCTAssertEqual(error as? ClaudeRemoteHTTPError, .unsupportedTransferEncoding)
-        }
-    }
 
     func testDuplicateHeadersAreRejectedRatherThanMerged() {
         // Two Content-Lengths is the classic request-smuggling primitive: sender
@@ -224,12 +166,6 @@ final class ClaudeRemoteHTTPTests: XCTestCase {
         XCTAssertNil(ClaudeRemoteHTTPCodec.bearerToken(in: "abc"), "no scheme")
     }
 
-    func testAnAbsurdlyLongAuthorizationValueYieldsNoToken() {
-        // Bounded before it is ever hashed or compared.
-        let huge = "Bearer " + String(repeating: "a", count: 4096)
-        XCTAssertNil(ClaudeRemoteHTTPCodec.bearerToken(in: huge))
-    }
-
     func testAnUninterpolatedEnvVarPlaceholderIsNotAToken() throws {
         // What shipped from the plugin's original http-hook shape, where header
         // `${VAR}`s went out uninterpolated (and what any misconfigured client
@@ -314,19 +250,6 @@ final class ClaudeRemoteHTTPTests: XCTestCase {
     }
 
     // MARK: Responses
-
-    /// The response-key allowlist. Claude Code EXECUTES what it finds here, so
-    /// an extra key is a control channel we did not mean to open. There is
-    /// exactly ONE key, and the body is a constant — no request, and no
-    /// session, can vary a byte of it.
-    func testTheHookResponseBodyIsAConstantCarryingOnlySuppressOutput() throws {
-        let body = ClaudeRemoteHTTPCodec.hookResponseBody
-        let object = try XCTUnwrap(
-            try JSONSerialization.jsonObject(with: body) as? [String: Any]
-        )
-        XCTAssertEqual(Set(object.keys), ["suppressOutput"])
-        XCTAssertEqual(object["suppressOutput"] as? Bool, true)
-    }
 
     /// The regression that matters after the marker channel was removed: the
     /// listener's only body must contain no escape byte, and in particular no

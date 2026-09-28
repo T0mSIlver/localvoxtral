@@ -26,7 +26,9 @@
 
 https://github.com/user-attachments/assets/81a341ff-0c53-4fcf-9b7f-ef148b24dfae
 
-localvoxtral streams text as the audio arrives instead of transcribing after you stop speaking. It runs Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) on your own Apple Silicon. It is built first for [prompting coding agents by voice](docs/coding-agents.md), and it works as a general dictation app in any other app too. Everything runs on-device, with no account and no subscription. Nothing leaves your Mac unless you point it at a server yourself.
+localvoxtral streams text as the audio arrives instead of transcribing after you stop speaking. It runs Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) on your own Apple Silicon.
+
+It is built first for [prompting coding agents by voice](docs/coding-agents.md), and it works as a general dictation app in any other app too. Everything runs on-device, with no account and no subscription. Nothing leaves your Mac unless you point it at a server yourself.
 
 ## Install
 
@@ -34,13 +36,21 @@ localvoxtral streams text as the audio arrives instead of transcribing after you
 curl -fsSL https://raw.githubusercontent.com/T0mSIlver/localvoxtral/main/scripts/install.sh | bash
 ```
 
-Or `brew install --cask T0mSIlver/localvoxtral/localvoxtral`, or download the latest `.dmg` from [Releases](https://github.com/T0mSIlver/localvoxtral/releases/latest). Requires an Apple Silicon Mac on macOS 15+. On first launch, a setup wizard asks for permissions and downloads the engine. If Gatekeeper blocks a DMG you installed by hand, see the [install guide](docs/install.md).
+Or install with Homebrew:
+
+```bash
+brew install --cask T0mSIlver/localvoxtral/localvoxtral
+```
+
+You can also download the latest DMG from [Releases](https://github.com/T0mSIlver/localvoxtral/releases/latest). localvoxtral needs an Apple Silicon Mac on macOS 15 or later.
+
+On first launch, a setup wizard asks for permissions and downloads the engine. If Gatekeeper blocks a DMG you installed by hand, see the [install guide](docs/install.md#fix-a-blocked-first-launch).
 
 ## Features
 
-- **Built for coding agents.** Dictate prompts straight into any CLI agent ([opencode](integrations/opencode/README.md) and [Mistral Vibe](integrations/vibe/README.md) get their own integrations), in any terminal: Warp, WezTerm, kitty, Alacritty, and more. Polishing understands developer speech: "dash dash force" becomes `--force`, "use auth dot t s" becomes `useAuth.ts` ([details](docs/coding-agents.md)).
+- **Built for coding agents.** Dictate prompts straight into any CLI agent ([opencode](integrations/opencode/README.md), [Mistral Vibe](integrations/vibe/README.md) and [Codex](integrations/codex/README.md) get their own integrations), in any terminal: Warp, WezTerm, kitty, Alacritty, and more. Polishing understands developer speech: "dash dash force" becomes `--force`, "use auth dot t s" becomes `useAuth.ts` ([details](docs/coding-agents.md)).
 - **Claude Code aware.** Dictation joins the exact session under your cursor: Ghostty, iTerm2, Terminal.app, a single [herdr](https://herdr.dev) or [cmux](https://github.com/manaflow-ai/cmux) pane, over SSH, or a [claude.ai/code](https://claude.ai/code) Remote Control tab in your browser. Polishing is grounded in that session's screen, your last prompt, the files Claude just touched, and the repo's vocabulary ([details](docs/coding-agents.md#dictating-into-claude-code)).
-- **One key, two modes.** Tap for a reviewable overlay with optional LLM polishing, hold to stream words live into the focused app ([shortcuts](docs/dictation.md)).
+- **One key.** Tap or hold to dictate into an overlay you can review, with optional LLM polishing. Press Tab to send the words to an agent that needs you, or to your Inbox ([shortcuts](docs/dictation.md)).
 - **Private.** Audio capture, transcription and polishing run on your Mac. No telemetry, no account, no cloud fallback ([how it works](docs/under-the-hood.md)).
 - **Menu bar native.** The popover shows dictation status and a microphone picker. The app can copy the final text for you, and after a polished commit the raw transcript is one click away.
 - **Bring your own server.** Dictation and polishing can each point at any OpenAI-compatible endpoint, or at Mistral's hosted API with one key, instead of the built-in local engines ([details](docs/under-the-hood.md#bring-your-own-server)).
@@ -51,10 +61,10 @@ Or `brew install --cask T0mSIlver/localvoxtral/localvoxtral`, or download the la
 
 ## Documentation
 
-- [Install](docs/install.md): one-liner, requirements, Gatekeeper notes
+- [Install](docs/install.md): install, update, Gatekeeper fixes, nightly builds
 - [Dictating](docs/dictation.md): shortcuts, output modes, settings, screenshots
 - [Terminals & coding agents](docs/coding-agents.md): Claude Code session joins, the SSH remote plugin, repo vocabulary
-- [Integration matrix](docs/integration-matrix.md): what each harness and terminal gets (join, screen, repo, prompt) and why the gaps are gaps
+- [Integration matrix](docs/integration-matrix.md): what each coding agent and terminal gets, and why the gaps exist
 - [Under the hood](docs/under-the-hood.md): privacy, the bundled engines and their pinned models, hosted and self-hosted alternatives
 - [Building from source](docs/building.md) · [Roadmap](docs/roadmap.md)
 

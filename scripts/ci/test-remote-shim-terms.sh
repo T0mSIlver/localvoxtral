@@ -71,8 +71,11 @@ while [ "$#" -gt 0 ]; do
 done
 case "$url" in
 */v1/terms)
-  cp "$data" "$LVX_T/posted-body"
-  cp "$header" "$LVX_T/posted-header"
+  # posted-body is what the suite waits for, so it lands last, and each file
+  # appears whole by rename (#767).
+  cp "$header" "$LVX_T/posted-header.tmp" && mv "$LVX_T/posted-header.tmp" "$LVX_T/posted-header"
+  cp "$data" "$LVX_T/posted-body.tmp" && mv "$LVX_T/posted-body.tmp" "$LVX_T/posted-body"
+  echo >>"$LVX_T/runs-posted"
   printf '%s' "$(cat "$LVX_T/terms-status" 2>/dev/null || echo 200)"
   ;;
 *)
@@ -99,6 +102,7 @@ env >"$TMP_DIR/$agent-env"
 pwd -P >"$TMP_DIR/$agent-cwd"
 for arg in "\$@"; do printf '%s\n' "\$arg"; done >"$TMP_DIR/$agent-argv"
 : >"$TMP_DIR/$agent-started"
+echo >>"$TMP_DIR/runs-started"
 i=0
 while [ ! -e "$TMP_DIR/release" ] && [ "\$i" -lt 100 ]; do sleep 0.1; i=\$((i + 1)); done
 printf '{"terms":["Quillmark"]}'
@@ -116,10 +120,21 @@ TRANSCRIPT="$TMP_DIR/messages.jsonl"
 echo '{"role": "user", "content": "rename the enum", "injected": false}' >"$TRANSCRIPT"
 VIBE_PAYLOAD="{\"session_id\":\"7f4aefdf\",\"transcript_path\":\"$TRANSCRIPT\",\"cwd\":\"/srv/app\",\"parent_session_id\":null,\"hook_event_name\":\"post_agent\"}"
 
+# Every run the stub agents start ends by posting (their answer is never
+# empty), so equal counts mean no detached run from the previous case can
+# still write into the next one (#767).
+runs_drained() {
+  [ "$(($(cat "$TMP_DIR/runs-started" 2>/dev/null | wc -l)))" \
+    = "$(($(cat "$TMP_DIR/runs-posted" 2>/dev/null | wc -l)))" ]
+}
+
 reset_state() {
+  local i=0
+  while ! runs_drained && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  runs_drained || fail "a run from the previous case never posted"
   rm -rf "$TMP_DIR/run" "$TMP_DIR"/claude-* "$TMP_DIR"/vibe-env "$TMP_DIR"/vibe-cwd \
     "$TMP_DIR"/vibe-argv "$TMP_DIR"/vibe-started "$TMP_DIR/release" \
-    "$TMP_DIR/posted-body" "$TMP_DIR/posted-header" "$TMP_DIR/ask" "$TMP_DIR/terms-status"
+    "$TMP_DIR"/posted-body* "$TMP_DIR"/posted-header* "$TMP_DIR/ask" "$TMP_DIR/terms-status"
   mkdir -p "$TMP_DIR/run"
 }
 
@@ -158,7 +173,7 @@ check_stdout() {
     || fail "$1 shim under $SH_NAME printed '$(cat "$TMP_DIR/stdout")'"
 }
 
-stamp_dirs() { find "$TMP_DIR/run/localvoxtral/terms" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' '; }
+stamp_dirs() { find "$TMP_DIR/run/localvoxtral/terms-3" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' '; }
 
 SHELLS=(/bin/sh)
 BASH_BIN="$(command -v bash || true)"
@@ -174,9 +189,12 @@ for agent in claude vibe; do
   label="$agent shim under $SH_NAME"
 
   # 1. The ask starts one run in the repository root, and the hook returns
-  #    with its usual stdout before the run ends.
+  #    with its usual stdout before the run ends. A project done under the
+  #    prompt before #891, which asked for no sentence, runs again.
   reset_state
-  touch "$TMP_DIR/ask"
+  old_sum="$(git -C "$TMP_DIR/repo" rev-parse --show-toplevel | cksum)"
+  mkdir -p "$TMP_DIR/run/localvoxtral/terms/${old_sum%% *}-${old_sum##* }"
+  touch "$TMP_DIR/run/localvoxtral/terms/${old_sum%% *}-${old_sum##* }/done" "$TMP_DIR/ask"
   run_hook "$agent" "$TMP_DIR/repo/Sources"
   check_stdout "$agent"
   wait_for "$TMP_DIR/$agent-started" || fail "$label: the ask started no run"
@@ -195,7 +213,7 @@ for agent in claude vibe; do
   if [ "$agent" = vibe ]; then
     grep -qx 'X-Lvx-Agent: vibe' "$TMP_DIR/posted-header" || fail "$label: no agent header"
   fi
-  wait_for "$(find "$TMP_DIR/run/localvoxtral/terms" -mindepth 1 -maxdepth 1 -type d | head -n 1)/done" \
+  wait_for "$(find "$TMP_DIR/run/localvoxtral/terms-3" -mindepth 1 -maxdepth 1 -type d | head -n 1)/done" \
     || fail "$label: a 200 did not mark the project done"
   pass "$label: one run, answer posted with the session and token, project marked done"
 
@@ -208,14 +226,14 @@ for agent in claude vibe; do
     || fail "$label: the token reached the run"
   if [ "$agent" = vibe ]; then
     run_home="$(sed -n 's/^VIBE_HOME=//p' "$TMP_DIR/vibe-env")"
-    [ "$run_home" = "$TMP_DIR/.vibe/localvoxtral/remote/vibe-home/$(basename "$(find "$TMP_DIR/run/localvoxtral/terms" -mindepth 1 -maxdepth 1 -type d)")" ] \
+    [ "$run_home" = "$TMP_DIR/.vibe/localvoxtral/remote/vibe-home/$(basename "$(find "$TMP_DIR/run/localvoxtral/terms-3" -mindepth 1 -maxdepth 1 -type d)")" ] \
       || fail "$label: the run's Vibe home is $run_home, not one of its own"
     [ "$(readlink "$run_home/config.toml")" = "$TMP_DIR/.vibe/config.toml" ] \
       || fail "$label: the Vibe home does not link the user's config"
     grep -qx 'Sources/Quillmark.swift' "$TMP_DIR/vibe-argv" || fail "$label: the prompt lists no files"
   else
-    grep -qx -- '--output-format' "$TMP_DIR/claude-argv" && grep -qx text "$TMP_DIR/claude-argv" \
-      || fail "$label: claude does not print text"
+    grep -qx -- '--output-format' "$TMP_DIR/claude-argv" && grep -qx json "$TMP_DIR/claude-argv" \
+      || fail "$label: claude does not print its result object"
   fi
   grep -qx 'USER=tester' "$TMP_DIR/$agent-env" || fail "$label: the run lost USER (macOS keychain logins need it)"
   pass "$label: the run saw only HOME, PATH, LANG, USER and LOGNAME"
@@ -235,7 +253,7 @@ for agent in claude vibe; do
   echo 400 >"$TMP_DIR/terms-status"
   run_hook "$agent" "$TMP_DIR/repo"
   wait_for "$TMP_DIR/posted-body" || fail "$label: the refused run never posted"
-  stamp="$(find "$TMP_DIR/run/localvoxtral/terms" -mindepth 1 -maxdepth 1 -type d)"
+  stamp="$(find "$TMP_DIR/run/localvoxtral/terms-3" -mindepth 1 -maxdepth 1 -type d)"
   sleep 0.3
   [ ! -e "$stamp/done" ] || fail "$label: a refused answer marked the project done"
   rm -f "$TMP_DIR/$agent-started"
@@ -293,7 +311,7 @@ for agent in claude vibe; do
   run_hook "$agent" "$TMP_DIR/repo"
   wait_for "$TMP_DIR/posted-body" || fail "$label: the run never tried to post"
   sleep 0.3
-  [ -z "$(find "$TMP_DIR/run/localvoxtral/terms" -name done)" ] || fail "$label: a dead tunnel marked done"
+  [ -z "$(find "$TMP_DIR/run/localvoxtral/terms-3" -name done)" ] || fail "$label: a dead tunnel marked done"
   pass "$label: no agent or a dead tunnel fails silently"
 done
 done

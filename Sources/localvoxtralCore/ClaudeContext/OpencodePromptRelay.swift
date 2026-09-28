@@ -4,12 +4,12 @@ import Foundation
 import FoundationNetworking
 #endif
 
-/// The one route by which the app writes into an agent (#719): the opencode
+/// opencode's route into an agent (#719): the opencode
 /// TUI half's prompt relay, which appends text to the prompt of the pane that
 /// displays `opencodeSessionID` and submits it. Resolved from a fresh focus
 /// declaration (`ClaudeSessionRegistry.opencodePromptRelay(sessionID:)`), so
 /// it names the pane a verified peer declared. Read docs/agent/invariants.md
-/// ("The app writes into an agent only through opencode's prompt relay")
+/// ("The app writes into an agent only through its routes")
 /// before widening what it may do.
 public struct OpencodePromptRelay: Sendable, Equatable {
     public var address: OpencodePromptRelayAddress
@@ -23,12 +23,9 @@ public struct OpencodePromptRelay: Sendable, Equatable {
     }
 }
 
-/// The two calls the relay takes. There is no third.
-package enum OpencodePromptRelayCall: Sendable, Equatable {
-    case append(String)
-    case submit
-
-    var path: String {
+/// The relay's two endpoints.
+extension AgentPromptCall {
+    var opencodeRelayPath: String {
         switch self {
         case .append: "/tui/append-prompt"
         case .submit: "/tui/submit-prompt"
@@ -36,15 +33,29 @@ package enum OpencodePromptRelayCall: Sendable, Equatable {
     }
 }
 
-package protocol OpencodePromptRelayPosting: Sendable {
-    /// True only when the relay answered 200: the call reached the pane.
-    func post(_ call: OpencodePromptRelayCall, to relay: OpencodePromptRelay) async -> Bool
+/// The relay as a route for `AgentPromptSink`.
+package struct OpencodePromptRoute: AgentPromptRoute {
+    package let relay: OpencodePromptRelay
+    private let client: OpencodePromptRelayClient
+
+    package init(relay: OpencodePromptRelay, client: OpencodePromptRelayClient = .shared) {
+        self.relay = relay
+        self.client = client
+    }
+
+    package var name: String { "opencode prompt relay" }
+
+    /// Every failure types instead, as #719 shipped it. An append that
+    /// timed out after it was sent may still have landed.
+    package func deliver(_ call: AgentPromptCall) async -> AgentPromptDelivery {
+        await client.post(call, to: relay) ? .delivered : .typeInstead
+    }
 }
 
 /// HTTP to `127.0.0.1:<port>`, the host fixed here: the wire carries a port
 /// and nothing else. No proxy, no cookies, no cache, a short timeout; a
 /// relay that is slow is treated as gone, and the text falls back to keys.
-package struct OpencodePromptRelayClient: OpencodePromptRelayPosting {
+package struct OpencodePromptRelayClient: Sendable {
     /// Bytes of text one append may carry. The relay caps its request body
     /// at 64 KiB; anything longer goes by keystrokes instead.
     package static let maxAppendBytes = 32 * 1024
@@ -66,9 +77,9 @@ package struct OpencodePromptRelayClient: OpencodePromptRelayPosting {
         session = URLSession(configuration: configuration)
     }
 
-    package func post(_ call: OpencodePromptRelayCall, to relay: OpencodePromptRelay) async -> Bool {
+    package func post(_ call: AgentPromptCall, to relay: OpencodePromptRelay) async -> Bool {
         guard relay.address.isWellFormed,
-              let url = URL(string: "http://127.0.0.1:\(relay.address.port)\(call.path)")
+              let url = URL(string: "http://127.0.0.1:\(relay.address.port)\(call.opencodeRelayPath)")
         else { return false }
         var body: [String: String] = ["session_id": relay.opencodeSessionID]
         if case .append(let text) = call {
@@ -102,95 +113,5 @@ package struct OpencodePromptRelayClient: OpencodePromptRelayPosting {
             )
             return false
         }
-    }
-}
-
-/// One dictation's writes into the relay, delivered in the order they were
-/// made, one call in flight at a time. The first call that fails ends the
-/// route for the rest of the dictation: that call's text and every append
-/// queued behind it go to `fallback`, in order, and every later append goes
-/// straight there. A submit queued behind a failure is dropped, never turned
-/// into a key: the text it would have sent may have gone elsewhere.
-@MainActor
-package final class OpencodePromptRelaySink {
-    package let relay: OpencodePromptRelay
-    private let poster: any OpencodePromptRelayPosting
-    private let fallback: @MainActor (String) -> Void
-    /// Each call with the fallback its text goes to if it is refused.
-    private var queue: [(call: OpencodePromptRelayCall, fallback: (@MainActor (String) -> Void)?)] = []
-    private var draining = false
-    private var idleWaiters: [CheckedContinuation<Void, Never>] = []
-
-    /// False from the first failed call on.
-    package private(set) var isHealthy = true
-
-    package init(
-        relay: OpencodePromptRelay,
-        poster: any OpencodePromptRelayPosting = OpencodePromptRelayClient.shared,
-        fallback: @escaping @MainActor (String) -> Void
-    ) {
-        self.relay = relay
-        self.poster = poster
-        self.fallback = fallback
-    }
-
-    /// `fallback`, when given, replaces the sink's own for this text: a
-    /// caller that knows where refused text must go (the overlay's commit
-    /// target) says so at hand-off, not when the refusal arrives.
-    package func append(_ text: String, fallback: (@MainActor (String) -> Void)? = nil) {
-        guard !text.isEmpty else { return }
-        guard isHealthy else {
-            (fallback ?? self.fallback)(text)
-            return
-        }
-        enqueue(.append(text), fallback: fallback)
-    }
-
-    /// Submits once every append made before it has landed.
-    package func submit() {
-        guard isHealthy else {
-            Log.backends.notice("opencode prompt relay: route failed earlier; submit dropped")
-            return
-        }
-        enqueue(.submit, fallback: nil)
-    }
-
-    /// Returns once nothing is queued or in flight.
-    package func waitUntilIdle() async {
-        guard draining else { return }
-        await withCheckedContinuation { idleWaiters.append($0) }
-    }
-
-    private func enqueue(_ call: OpencodePromptRelayCall, fallback: (@MainActor (String) -> Void)?) {
-        queue.append((call, fallback))
-        guard !draining else { return }
-        draining = true
-        Task { await drain() }
-    }
-
-    private func drain() async {
-        while let next = queue.first {
-            let delivered = await poster.post(next.call, to: relay)
-            if delivered {
-                queue.removeFirst()
-                continue
-            }
-            isHealthy = false
-            let pending = queue
-            queue.removeAll()
-            let refused = pending.compactMap { entry -> (String, (@MainActor (String) -> Void)?)? in
-                if case .append(let text) = entry.call { return (text, entry.fallback) }
-                return nil
-            }
-            let droppedSubmits = pending.count - refused.count
-            Log.backends.notice(
-                "opencode prompt relay: route failed; \(refused.count, privacy: .public) appends go by keystrokes, \(droppedSubmits, privacy: .public) submits dropped"
-            )
-            for (text, callFallback) in refused { (callFallback ?? fallback)(text) }
-        }
-        draining = false
-        let waiters = idleWaiters
-        idleWaiters.removeAll()
-        for waiter in waiters { waiter.resume() }
     }
 }

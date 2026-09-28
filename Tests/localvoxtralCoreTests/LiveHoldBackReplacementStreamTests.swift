@@ -589,52 +589,49 @@ final class LiveHoldBackReplacementStreamTests: XCTestCase {
             .hasChainingPotential
     }
 
-    func testChainingDetectionFlagsReplacementWordInAnotherRulesKey() {
-        XCTAssertTrue(hasChainingPotential(chainingEntries))
-    }
-
-    func testChainingDetectionIgnoresDisjointRuleSets() {
-        XCTAssertFalse(hasChainingPotential([
-            ReplacementEntry(replaceWith: "QQ", matches: ["x y"]),
-            ReplacementEntry(replaceWith: "FOO", matches: ["foo bar z"]),
-        ]))
+    func testChainingDetection() {
+        let cases: [(name: String, entries: [ReplacementEntry], expected: Bool)] = [
+            // A replacement word feeds another rule's key.
+            ("replacement word in another rule's key", chainingEntries, true),
+            // Simple case folding: replacement "BAR" feeds the key word "bar".
+            ("simple case folding: BAR feeds bar", [
+                ReplacementEntry(replaceWith: "BAR", matches: ["x y"]),
+                ReplacementEntry(replaceWith: "FOO", matches: ["foo bar z"]),
+            ], true),
+            // Full case folding: "ßx" and "ssx" are the same folded word, exactly
+            // as the matcher sees them.
+            ("full case folding: ssx feeds ßx", [
+                ReplacementEntry(replaceWith: "ssx", matches: ["hello"]),
+                ReplacementEntry(replaceWith: "X", matches: ["a ßx b"]),
+            ], true),
+            // A replacement can chain with its own rule when it reproduces an
+            // interior word of its own key.
+            ("own-key interior word", [
+                ReplacementEntry(replaceWith: "b", matches: ["a b c"]),
+            ], true),
+            // No replacement word feeds any rule key.
+            ("disjoint rule sets", [
+                ReplacementEntry(replaceWith: "QQ", matches: ["x y"]),
+                ReplacementEntry(replaceWith: "FOO", matches: ["foo bar z"]),
+            ], false),
+            // Echo-style replacements reproduce their own key's first/last words;
+            // those cannot chain (see `hasChainingPotential`) and must not push
+            // the rule set onto the slow floor.
+            ("own-key edge words: big foo", [
+                ReplacementEntry(replaceWith: "big foo", matches: ["foo"]),
+            ], false),
+            ("own-key edge words: xyz abc def", [
+                ReplacementEntry(replaceWith: "xyz abc def", matches: ["abc def"]),
+            ], false),
+        ]
+        for row in cases {
+            XCTAssertEqual(hasChainingPotential(row.entries), row.expected, row.name)
+        }
         // The suite's shared invariant dictionary must stay on the fast bound,
         // or the batch-equivalence tests would silently stop covering it.
         XCTAssertFalse(
             LiveReplacementCorrector(dictionary: invariantDictionary).hasChainingPotential
         )
-    }
-
-    func testChainingDetectionComparesWithFullCaseFolding() {
-        // Simple case folding: replacement "BAR" feeds the key word "bar".
-        XCTAssertTrue(hasChainingPotential([
-            ReplacementEntry(replaceWith: "BAR", matches: ["x y"]),
-            ReplacementEntry(replaceWith: "FOO", matches: ["foo bar z"]),
-        ]))
-        // Full case folding: "ßx" and "ssx" are the same folded word, exactly
-        // as the matcher sees them.
-        XCTAssertTrue(hasChainingPotential([
-            ReplacementEntry(replaceWith: "ssx", matches: ["hello"]),
-            ReplacementEntry(replaceWith: "X", matches: ["a ßx b"]),
-        ]))
-    }
-
-    func testChainingDetectionIgnoresOwnKeyEdgeWords() {
-        // Echo-style replacements reproduce their own key's first/last words;
-        // those cannot chain (see `hasChainingPotential`) and must not push
-        // the rule set onto the slow floor.
-        XCTAssertFalse(hasChainingPotential([
-            ReplacementEntry(replaceWith: "big foo", matches: ["foo"]),
-        ]))
-        XCTAssertFalse(hasChainingPotential([
-            ReplacementEntry(replaceWith: "xyz abc def", matches: ["abc def"]),
-        ]))
-    }
-
-    func testChainingDetectionFlagsOwnKeyInteriorWord() {
-        XCTAssertTrue(hasChainingPotential([
-            ReplacementEntry(replaceWith: "b", matches: ["a b c"]),
-        ]))
     }
 
     #if DEBUG

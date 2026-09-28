@@ -12,6 +12,8 @@ import Foundation
 ///   path-shaped keys below. File CONTENT (`Write.content`, `Edit.new_string`,
 ///   command strings, `Read` output) never crosses the socket.
 /// * any `origin`-ish key — dropped. Trust comes from the transport.
+/// * `Notification`'s `message` and `title`, and `Stop`'s
+///   `last_assistant_message` — dropped. Only `notification_type` is kept.
 public enum ClaudeHookInputParser {
     /// Tool-input keys that name a single file. Everything else in `tool_input`
     /// is ignored.
@@ -49,6 +51,17 @@ public enum ClaudeHookInputParser {
 
         guard let sessionID = payload["session_id"] as? String, !sessionID.isEmpty else { return nil }
 
+        // A Notification keeps its type and nothing else: `message` and
+        // `title` quote tool names and command text. A type outside the
+        // waits we publish drops the record.
+        var notificationType: ClaudeNotificationType?
+        if event == .notification {
+            guard let raw = payload["notification_type"] as? String,
+                  let type = ClaudeNotificationType(rawValue: raw)
+            else { return nil }
+            notificationType = type
+        }
+
         let toolName = payload["tool_name"] as? String
         var record = ClaudeHookRecord(
             event: event,
@@ -57,7 +70,8 @@ public enum ClaudeHookInputParser {
             rawCwd: workingDirectory(in: payload, event: event),
             prompt: payload["prompt"] as? String,
             toolName: toolName,
-            files: filePaths(in: payload, event: event, toolName: toolName)
+            files: filePaths(in: payload, event: event, toolName: toolName),
+            notificationType: notificationType
         )
         record.version = ClaudeHookWire.version
         return ClaudeHookWireCodec.clamp(record, limits: limits)

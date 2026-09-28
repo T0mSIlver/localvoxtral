@@ -5,6 +5,7 @@ struct GeneralSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
     let loginItem: LoginItemController
+    @State private var commandLineTool = AgentCLIInstallModel()
 
     /// Writes through to the system registration, and reads back from it: the
     /// switch follows what macOS ended up doing, not what was asked for.
@@ -50,17 +51,23 @@ struct GeneralSettingsPane: View {
                         viewModel.reRunOnboarding()
                     }
                 }
+
+                AgentCLIInstallRow(model: commandLineTool)
             }
         }
         // System Settings can turn the login item off while the app runs, so
         // the switch is re-read from the system every time the pane appears —
         // and again when the app comes back to the front, which is how the
         // user returns from turning it off over there.
-        .onAppear { loginItem.refresh() }
+        .onAppear {
+            loginItem.refresh()
+            commandLineTool.refresh()
+        }
         .onReceive(
             NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
         ) { _ in
             loginItem.refresh()
+            commandLineTool.refresh()
         }
     }
 }

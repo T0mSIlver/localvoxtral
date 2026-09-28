@@ -18,12 +18,15 @@ extension SettingsTab {
         case .integrationsClaude: return "Claude Code"
         case .integrationsOpencode: return "opencode"
         case .integrationsVibe: return "Mistral Vibe"
+        case .integrationsCodex: return "Codex"
         case .integrationsHerdr: return "herdr"
         case .integrationsRemote: return "Remote hosts"
         case .terminal: return terminalApp?.displayName ?? "Terminal"
         case .about: return "About"
         case .history: return "History"
         case .insights: return "Insights"
+        case .inbox: return "Inbox"
+        case .projects: return "Projects"
         }
     }
 
@@ -43,6 +46,9 @@ extension SettingsTab {
         case .integrationsClaude: return .brandMark(resourceName: "BrandIcon-claude")
         case .integrationsOpencode: return .brandMark(resourceName: "BrandIcon-opencode")
         case .integrationsVibe: return .brandMark(resourceName: "BrandIcon-vibe")
+        // Neither Simple Icons nor the Codex repository ships a Codex mark to
+        // bundle, so the row draws a symbol.
+        case .integrationsCodex: return .symbolMark(systemName: "chevron.left.forwardslash.chevron.right")
         case .integrationsHerdr: return .brandMark(resourceName: "BrandIcon-herdr")
         case .integrationsRemote: return .symbolMark(systemName: "network")
         case .terminal: return terminalApp?.sidebarIcon ?? .symbolMark(systemName: "terminal")
@@ -51,6 +57,10 @@ extension SettingsTab {
             return .tile(systemImage: "clock.arrow.circlepath", tint: Color(nsColor: .systemOrange))
         case .insights:
             return .tile(systemImage: "chart.bar.fill", tint: Color(nsColor: .systemGreen))
+        case .inbox:
+            return .tile(systemImage: "tray.fill", tint: Color(nsColor: .systemBlue))
+        case .projects:
+            return .tile(systemImage: "folder.fill", tint: Color(nsColor: .systemGreen))
         }
     }
 

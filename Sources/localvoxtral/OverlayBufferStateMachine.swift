@@ -40,6 +40,11 @@ struct OverlayBufferStateMachine {
         /// once, from the join resolved at session start; cleared on every new
         /// session. `.hidden` renders nothing at all.
         let claudeJoin: OverlayClaudeJoinBadge
+        /// Where the words go at stop (#840), nil when the overlay has no
+        /// choice to offer. Replaced whenever Tab moves or the list changes.
+        var destinations: OverlayDestinationStrip? = nil
+        /// The draft a review dictation acts on (#927), nil otherwise.
+        var draftReview: QuickCaptureDraftSnapshot? = nil
         let anchor: OverlayAnchor
     }
 
@@ -49,6 +54,8 @@ struct OverlayBufferStateMachine {
     private(set) var secureInputActive = false
     private(set) var polished = false
     private(set) var claudeJoin: OverlayClaudeJoinBadge = .hidden
+    private(set) var destinations: OverlayDestinationStrip?
+    private(set) var draftReview: QuickCaptureDraftSnapshot?
     private(set) var anchor: OverlayAnchor?
 
     var snapshot: Snapshot? {
@@ -60,6 +67,8 @@ struct OverlayBufferStateMachine {
             secureInputActive: secureInputActive,
             polished: polished,
             claudeJoin: claudeJoin,
+            destinations: destinations,
+            draftReview: draftReview,
             anchor: anchor
         )
     }
@@ -88,7 +97,23 @@ struct OverlayBufferStateMachine {
         // describes the previous dictation's session, and a badge that survived
         // into this one would vouch for a grounding this session was not given.
         self.claudeJoin = claudeJoin
+        destinations = nil
+        draftReview = nil
         self.anchor = anchor
+    }
+
+    /// Shows where the words go. Only while the dictation runs: once it
+    /// stops, the destination is decided.
+    mutating func setDestinations(_ strip: OverlayDestinationStrip?) {
+        guard phase == .buffering else { return }
+        destinations = strip
+    }
+
+    /// Shows the draft under review. Only while the dictation runs; it stays
+    /// through finalizing, so the panel does not jump at the stop.
+    mutating func setDraftReview(_ draft: QuickCaptureDraftSnapshot?) {
+        guard phase == .buffering else { return }
+        draftReview = draft
     }
 
     /// Marks that LLM polishing changed the displayed text vs the raw
@@ -143,6 +168,7 @@ struct OverlayBufferStateMachine {
         secureInputActive = false
         polished = false
         claudeJoin = .hidden
+        destinations = nil
         anchor = nil
     }
 }

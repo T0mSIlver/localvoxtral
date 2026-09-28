@@ -39,7 +39,7 @@ through it or called as a pure step:
 - `StopCommitCoordinator.swift`: everything in the stop-commit that decides
   what reaches the polisher. The transcript's preparation, the profile and
   templates, the pre-task sample (clipboard, screen, join, pane), the
-  gather-assemble-send step, the overlay commit, the dogfood capture record
+  gather-assemble-send step, the overlay commit, the diagnostic record
 - `TranscriptAccumulator.swift` (in `localvoxtralCore`): the transcript the
   realtime events build. Partials, finals, the live insertion a final still
   owes, promotion
@@ -61,28 +61,51 @@ AppKit:
 - the clipboard reader's rules (`PolishContextClipboardReader`; its
   pasteboard half stays in the app)
 - the model catalogs (`BackendCatalog`, `SpeechModelCatalog`, `PolishModelCatalog`)
+- a managed backend's status (`ManagedBackendStatus`, `ModelDownloadProgress`)
+  and the onboarding wizard's download items built from it
+  (`OnboardingBootstrapDriving`); `BackendManager` and the live driver stay
+  in the app
+- the Settings sidebar's status dots (`SettingsStatusDot`,
+  `IntegrationsSidebarStatus`); their rendering stays in the app
 - the Claude session snapshot and its reducer (`ClaudeSessionState`)
 - the config store (`AppConfigStore`, `BundledConfigDefaultHistory`,
   `SpeakerTerms`). The app hands it the resource bundle, and on Linux it
   hashes with `PortableSHA256` instead of CryptoKit
 - the live replacement rewriters (`LiveReplacementCorrector`,
   `LiveHoldBackReplacementStream`)
+- the learned terms: `LearnedTermStore` and the learner that fills it from
+  the user's fixes (`CorrectionLearning`); the one-line notice it shows
+  stays in the app
+- quick capture (`QuickCapture/`, #725, #918): the project descriptions a
+  classifier reads, the polishing model's routing mode and the Jev client,
+  the rule that sends a low or tied answer to the catch-all, the context a
+  first draft reads (`QuickCaptureContext`), the polishing model's first
+  draft sorted by kind (`QuickCaptureFirstDraft`), the agent's check of an
+  issue (`QuickCaptureDrafter`), and the Inbox (`QuickCaptureInboxModel`);
+  the voice memo folder watcher and its ledger (#925), and
+  `RealtimeFileTranscriber`, which streams a recorded file through a
+  realtime client. Decoding the memo (AVFoundation) stays in the app
 - the Claude socket guard (`ClaudeSocketGuard`: `getpeereid` and
   `LOCAL_PEERPID` on Darwin, `SO_PEERCRED` on Linux), with the SHA-256 and
   HMAC helpers the Claude code hashes through
+- the ducking fade (`AudioDuckingController`) and the
+  `SystemOutputVolumeControlling` protocol it writes through; the CoreAudio
+  control stays in the app
 - the realtime clients: the `RealtimeClient` protocol, its event types and
   both websocket clients (#637). On Linux they speak through
   `FoundationNetworking`, whose upgrade and cancel differ from Apple's; the
-  base client's comments say how. The Mistral client reports usage through
-  `MistralRealtimeUsageRecording`, so the ledger and its price table stay in
-  the app.
+  base client's comments say how. Both report the audio each socket sent
+  through `RealtimeUsageRecording`, which the usage ledger implements.
+- the usage ledger (`UsageLedger`, #837): one line per model call, charged
+  to the feature that asked and the backend that answered, with Mistral's
+  price table.
 
 `Sources/localvoxtralCore/ClaudeContext` holds the part of the Claude context
 path that needs no AppKit (#591): the join resolver and its arms, the session
 registry and store, the broker and the remote listener, the herdr and cmux
 clients, the ssh forward and enrollment, the repository collector and its
-selection, the context blocks, and the plugin, statusline, opencode and Vibe
-installers. The settings model, the forward coordinator and supervisor
+selection, the context blocks, and the plugin, statusline, opencode, Vibe and
+Codex installers. The settings model, the forward coordinator and supervisor
 (`@Observable`) and the `--probe-surface` command stay in
 `Sources/localvoxtral/ClaudeContext`.
 
@@ -154,6 +177,9 @@ Key subsystems:
     the app is absent. In the app, `ClaudeContextBroker` verifies the peer UID
     *before reading*. It only ever unlinks a socket it has PROVED stale by
     connect-probe, because a second live instance owns its socket legitimately.
+    The `localvoxtral` command (`Sources/localvoxtral-cli`, #721) asks on the
+    same socket; `AgentCLIService` answers from the history store, the
+    learned terms and Settings (`AgentCLIAppDataSource`).
   - **Remote** (`localvoxtral-remote`, installed on the REMOTE host): command
     hooks run the bundled POSIX-sh shim `hooks/post.sh`, which curls the
     event JSON to `127.0.0.1:<port>/v1/hook/<Event>` through an OpenSSH
@@ -196,7 +222,12 @@ Key subsystems:
     to run. `RemoteProjectTermRequests` marks a joined session, the next
     hook's reply carries `X-Lvx-Terms: wanted`, and the shim starts
     `hooks/terms.sh` detached. Its answer comes back on `POST /v1/terms` and
-    is filed under the project the Mac recorded.
+    is filed under the project the Mac recorded. Quick capture (#745) asks
+    the same way (`RemoteQuickCaptureRequests`): `X-Lvx-Readme` for a
+    project's README summary and `X-Lvx-Draft` for a routed capture's draft,
+    both run by `hooks/capture.sh` and answered on `/v1/readme`,
+    `/v1/draft/words`, `/v1/draft/context`, `/v1/draft/check` (#918; an
+    older shim uses `/v1/draft/prompt`) and `/v1/draft`.
 
     A per-host opt-in (`ClaudeRemoteForwardSupervisor` +
     `ClaudeRemoteForwardCoordinator`, default off) lets the app hold that

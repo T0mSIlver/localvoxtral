@@ -149,15 +149,38 @@ final class LearnedTermsViewTests: XCTestCase {
 
     // MARK: - Sheet
 
-    func testSheetListsProjectsByRecencyWithTheSharedBucketLast() {
+    /// #939: quick capture's projects have their terms in Projects; the
+    /// sheet from Text Processing lists the other buckets that hold terms,
+    /// such as a remote name no hook has named, most recent first, and the
+    /// shared bucket last.
+    func testSheetListsTheBucketsOutsideQuickCapturesProjects() {
+        let now = start + 2 * day
         var terms = LearnedTerms()
-        record("Qwen", in: &terms, at: start + 9 * day, project: LearnedTermProjectResolver.shared)
-        record("herdr", in: &terms, at: start, project: .init(key: "/h", name: "herdr"))
-        record("Voxtral", in: &terms, at: start + day)
+        record("Voxtral", in: &terms, at: start)
+        record("Qwen", in: &terms, at: start + day, project: LearnedTermProjectResolver.shared)
+        record("ScreenPipe", in: &terms, at: start, project: .init(key: "remote:modest-lewin-c92780", name: "modest-lewin-c92780"))
+        record("Kern", in: &terms, at: start + day, project: .init(key: "remote:bold-bose-fac585", name: "bold-bose-fac585"))
+        terms.recordRemoteReport(project: .init(key: "remote:quillmark", name: "quillmark"), asRepository: true, now: now)
+
+        let routed = QuickCaptureProjects.projects(from: terms, userLines: [:], now: now, readme: { _ in nil }).map(\.key)
+        XCTAssertEqual(routed, ["remote:quillmark", project.key])
+        XCTAssertEqual(
+            LearnedTermsSheet.displayOrder(terms, now: now).map(\.key),
+            ["remote:bold-bose-fac585", "remote:modest-lewin-c92780", LearnedTermProjectResolver.shared.key]
+        )
+    }
+
+    /// From a project's sheet: that project's checkouts, in its order.
+    func testSheetListsOneProjectsCheckouts() {
+        var terms = LearnedTerms()
+        record("Voxtral", in: &terms, at: start)
+        record("herdr", in: &terms, at: start + day, project: .init(key: "/h", name: "herdr"))
+        record("Kern", in: &terms, at: start, project: .init(key: "remote:localvoxtral", name: "localvoxtral"))
 
         XCTAssertEqual(
-            LearnedTermsSheet.displayOrder(terms).map(\.name),
-            ["localvoxtral", "herdr", LearnedTermProjectResolver.shared.name]
+            LearnedTermsSheet.displayOrder(terms, now: start + day, projectKeys: [project.key, "remote:localvoxtral", "/gone"])
+                .map(\.key),
+            [project.key, "remote:localvoxtral"]
         )
     }
 
@@ -169,7 +192,10 @@ final class LearnedTermsViewTests: XCTestCase {
         record("Mistral", in: &terms, at: start)
         terms.setPinned(true, term: "Mistral", projectKey: project.key)
 
-        XCTAssertEqual(LearnedTermsSheet.displayOrder(terms).first?.terms.map(\.term), ["Mistral", "Voxtral"])
+        XCTAssertEqual(
+            LearnedTermsSheet.displayOrder(terms, now: start + 3 * day, projectKeys: [project.key]).first?.terms.map(\.term),
+            ["Mistral", "Voxtral"]
+        )
     }
 
     func testSheetDetailLine() {
@@ -211,6 +237,10 @@ final class LearnedTermsViewTests: XCTestCase {
         XCTAssertEqual(
             LearnedTermsSheet.detailParts(for: proposal(.vibe, dictations: 2)).text,
             "Proposed by Mistral Vibe: heard in 2 of 3 dictations"
+        )
+        XCTAssertEqual(
+            LearnedTermsSheet.detailParts(for: proposal(.opencode, dictations: 1)).text,
+            "Proposed by opencode: heard in 1 of 3 dictations"
         )
         XCTAssertEqual(LearnedTermsSheet.detailParts(for: proposal(.claude, dictations: 0, pinned: true)).text, "Not applied yet")
     }

@@ -290,28 +290,24 @@ final class RepoVocabularyPipeline: RepoVocabularyGrounding {
         }
     }
 
-    /// The detached pipeline task, with the ONE dogfood obligation both the
-    /// live pipeline and the DEBUG override seam must share: in a dogfood
-    /// build, the body runs under the tap generation read at creation time
+    /// The detached pipeline task, with the ONE diagnostic-record obligation both the
+    /// live pipeline and the DEBUG override seam must share: the
+    /// body runs under the tap generation read at creation time
     /// (synchronously, in the caller's main-actor context — ordered against
     /// `beginSession`). Task-locals do not cross `Task.detached`, so the
-    /// binding happens inside the closure; see `DogfoodCaptureTap.noteGeneration`
+    /// binding happens inside the closure; see `DiagnosticCaptureTap.noteGeneration`
     /// for why an abandoned pipeline's late harvest note must be rejectable.
     /// Routing the seam through here too is what makes the binding testable —
     /// a pipeline path that skipped it would accept stale notes unchecked.
     private static func detachedRepoVocabularyPipeline(
         _ body: @escaping @Sendable () async -> RepoVocabularyMatcher.GroundingOutcome?
     ) -> Task<RepoVocabularyMatcher.GroundingOutcome?, Never> {
-        #if LOCALVOXTRAL_DOGFOOD
-        let dogfoodGeneration = DogfoodCaptureTap.shared.currentGeneration
+        let captureGeneration = DiagnosticCaptureTap.shared.currentGeneration
         return Task.detached(priority: .utility) {
-            await DogfoodCaptureTap.$noteGeneration.withValue(dogfoodGeneration) {
+            await DiagnosticCaptureTap.$noteGeneration.withValue(captureGeneration) {
                 await body()
             }
         }
-        #else
-        return Task.detached(priority: .utility) { await body() }
-        #endif
     }
 }
 

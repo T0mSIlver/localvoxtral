@@ -138,6 +138,7 @@ EXEMPT=(
   'Sources/localvoxtral/ClaudeContext/AGENTS.md'
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel.swift'  # Settings pane model, and its files by area
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Cmux.swift'
+  'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+Codex.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+EnrollmentActions.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+EnrollmentTypes.swift'
   'Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+HerdrMachines.swift'
@@ -158,6 +159,7 @@ EXEMPT=(
   'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationActionAttempts.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudePluginInstalling.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeShellSetupStatus.swift'
+  'Sources/localvoxtralCore/ClaudeContext/CodexPluginInstallService.swift'
   'Sources/localvoxtralCore/ClaudeContext/RemoteHostSetupRun.swift'
   'Sources/localvoxtralCore/ClaudeContext/HerdrMachineImport.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeIntegrationLiveIO.swift'         # its process/file seams
@@ -167,6 +169,7 @@ EXEMPT=(
   'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+SSHConfig.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+RemoteSetup.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+RemotePlugin.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteMarketplaceFiles.swift'   # the plugin copy the setup writes to a host
   'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+RemoteEnvironment.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+RemoteHerdr.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteEnrollmentService+LocalHerdrPanel.swift'

@@ -2,23 +2,25 @@ import AppKit
 import Foundation
 import os
 
-/// Writing through the focused opencode pane's prompt relay (#719) instead
-/// of typing: no keystroke, so a focus change mid-dictation, Secure Keyboard
-/// Entry or the clipboard cannot take the text elsewhere. Any failed call
-/// sends the text back to the keyboard path, and the rest of the dictation
-/// with it. docs/agent/invariants.md, "The app writes into an agent only
-/// through opencode's prompt relay".
+/// Writing through a route into the joined agent's prompt (opencode's
+/// prompt relay, #719) instead of typing: no keystroke, so a focus change
+/// mid-dictation, Secure Keyboard Entry or the clipboard cannot take the
+/// text elsewhere. Any failed call sends the text back to the keyboard path,
+/// and the rest of the dictation with it. docs/agent/invariants.md, "The app
+/// writes into an agent only through its routes".
 extension DictationSessionController {
     /// Connect time, once per dictation: hands the relay resolved at start to
     /// the insertion service, or disarms the previous one.
     func armPromptRelayForSession() {
-        textInsertion.beginPromptRelay(context.opencodePromptRelay)
+        textInsertion.beginPromptRelay(context.agentPromptRoute, kept: { [weak self] _ in
+            self?.lastError = StatusStrings.agentPromptTextKeptInHistory
+        })
     }
 
-    /// What the overlay commit inserts through: the relay while it is
-    /// healthy, the keyboard otherwise.
+    /// What the overlay commit inserts through: the route while it takes
+    /// text, the keyboard otherwise.
     var overlayTextCommitter: any OverlayTextCommitting {
-        guard textInsertion.promptRelayIsHealthy, let sink = textInsertion.promptRelaySink else {
+        guard textInsertion.promptRelayTakesText, let sink = textInsertion.promptRelaySink else {
             return textInsertion
         }
         return PromptRelayOverlayCommitter(sink: sink) { [weak self] text, pid in
@@ -61,10 +63,10 @@ extension DictationSessionController {
 /// posted.
 @MainActor
 final class PromptRelayOverlayCommitter: OverlayTextCommitting {
-    private let sink: OpencodePromptRelaySink
+    private let sink: AgentPromptSink
     private let refused: @MainActor (String, pid_t?) -> Void
 
-    init(sink: OpencodePromptRelaySink, refused: @escaping @MainActor (String, pid_t?) -> Void) {
+    init(sink: AgentPromptSink, refused: @escaping @MainActor (String, pid_t?) -> Void) {
         self.sink = sink
         self.refused = refused
     }

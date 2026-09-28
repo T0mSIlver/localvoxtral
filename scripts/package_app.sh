@@ -119,27 +119,21 @@ patch_shortcutrecorder_bundle_lookup
 # regenerates DerivedSources every build) and shipped launch-broken artifacts
 # for days (#87). Never patch DerivedSources; only dependency checkouts (the
 # ShortcutRecorder patch above) persist across builds.
-# Dogfooding capture is a COMPILE gate (see Package.swift): the released
-# artifact must not contain the code that writes context to disk. `swift build`
-# inherits this environment, so exporting it here is all the threading needed —
-# but the artifact must also be identifiable at runtime, because "which binary
-# is the owner actually running" has already cost an hour of field debugging
-# once (docs/agent/field-debugging.md). The bundle identifier deliberately does NOT change: a
-# different one would be a different app to TCC and would throw away the
-# Accessibility grant this build exists to exercise.
-#
-# Enablement matches Package.swift exactly: the env var OR the gitignored
-# marker file (which is how it crosses the build gate — see remote-build.sh).
-# Recomputing the same predicate here is deliberate: the loud line and the
-# plist stamp must describe what was actually compiled, not what the caller
-# thought they asked for.
-DOGFOOD_PLIST_ENTRY=""
-if [[ "${LOCALVOXTRAL_DOGFOOD:-}" == "1" || -f "$ROOT_DIR/.dogfood-capture-enable" ]]; then
-  echo "Dogfood capture: ENABLED — this artifact can write context records to disk"
-  DOGFOOD_PLIST_ENTRY="  <key>LVXDogfoodCapture</key>
+# The e2e test harness (control socket, WAV in place of the microphone) is
+# compiled under `DEBUG || LOCALVOXTRAL_E2E_HARNESS` (Package.swift): a debug
+# build has it, a release build only when UI smoke asks. `swift build`
+# inherits the variable. A harness bundle is stamped `LVXE2EHarness` in
+# Info.plist, which the UI gate's `launch --harness` and e2e-dictation.sh
+# read, and every bundle's binary is checked against its stamp below
+# (docs/agent/invariants.md, "The dogfood control socket is an accepted
+# tradeoff").
+HARNESS_PLIST_ENTRY=""
+if [[ "$CONFIGURATION" == debug || "${LOCALVOXTRAL_E2E_HARNESS:-}" == "1" ]]; then
+  echo "E2E harness: INCLUDED (control socket and WAV microphone; never ship this bundle)"
+  HARNESS_PLIST_ENTRY="  <key>LVXE2EHarness</key>
   <true/>"
 else
-  echo "Dogfood capture: disabled (set LOCALVOXTRAL_DOGFOOD=1 to build an instrumented artifact)"
+  echo "E2E harness: absent (release build)"
 fi
 
 swift build --build-system native -c "$CONFIGURATION" --product localvoxtral -Xswiftc -g
@@ -163,6 +157,11 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 
 cp "$BINARY_PATH" "$APP_DIR/Contents/MacOS/localvoxtral"
 chmod +x "$APP_DIR/Contents/MacOS/localvoxtral"
+
+HARNESS_EXPECT=absent
+[[ -n "$HARNESS_PLIST_ENTRY" ]] && HARNESS_EXPECT=present
+"$ROOT_DIR/scripts/packaging/check-harness-symbols.sh" \
+  "$APP_DIR/Contents/MacOS/localvoxtral" "$HARNESS_EXPECT"
 
 # Copy SwiftPM resource bundles into Contents/Resources so the app remains a
 # signable macOS bundle (bundle root must not contain extra unsealed content).
@@ -249,6 +248,17 @@ fi
 cp "$CLAUDE_HOOK_BINARY" "$APP_DIR/Contents/MacOS/localvoxtral-claude-hook"
 chmod +x "$APP_DIR/Contents/MacOS/localvoxtral-claude-hook"
 
+# The `localvoxtral` command (#721). Settings links /usr/local/bin/localvoxtral
+# to this copy, so it must keep this name and place (`AgentCLIInstallState`).
+swift build --build-system native -c "$CONFIGURATION" --product localvoxtral-cli -Xswiftc -g
+AGENT_CLI_BINARY="$(find "$ROOT_DIR/.build" -type f -path "*/${CONFIGURATION}/localvoxtral-cli" | head -n 1)"
+if [[ -z "$AGENT_CLI_BINARY" ]]; then
+  echo "Unable to find built localvoxtral-cli binary under .build."
+  exit 1
+fi
+cp "$AGENT_CLI_BINARY" "$APP_DIR/Contents/MacOS/localvoxtral-cli"
+chmod +x "$APP_DIR/Contents/MacOS/localvoxtral-cli"
+
 # The marketplace is copied whole from the repo — it is NOT a SwiftPM resource
 # (SwiftPM cannot declare a resource outside its target directory, and a
 # duplicated tree would give us two sources of truth for a user-installable
@@ -274,9 +284,10 @@ if [[ ! -x "$CLAUDE_HOOK_SHIM" ]]; then
 fi
 # The remote plugin's shims ship in the same marketplace copy. Claude Code
 # execs post.sh directly; statusline.sh is run by the user's statusLine
-# setting. Same assert-not-hope rule as publish.sh above.
-for REMOTE_SHIM in post.sh statusline.sh; do
-  REMOTE_SHIM_PATH="$APP_DIR/Contents/Resources/claude-code-marketplace/plugins/localvoxtral-remote/hooks/$REMOTE_SHIM"
+# setting; bin/localvoxtral is on the agent's PATH and runs hooks/doctor.sh.
+# Same assert-not-hope rule as publish.sh above.
+for REMOTE_SHIM in hooks/post.sh hooks/statusline.sh hooks/doctor.sh bin/localvoxtral; do
+  REMOTE_SHIM_PATH="$APP_DIR/Contents/Resources/claude-code-marketplace/plugins/localvoxtral-remote/$REMOTE_SHIM"
   chmod +x "$REMOTE_SHIM_PATH"
   if [[ ! -x "$REMOTE_SHIM_PATH" ]]; then
     echo "Claude Code remote shim is not executable: $REMOTE_SHIM_PATH"
@@ -316,6 +327,20 @@ done
 mkdir -p "$APP_DIR/Contents/Resources/vibe-hooks/remote"
 cp "$VIBE_HOOKS_SOURCE/remote/post.sh" "$VIBE_HOOKS_SOURCE/remote/compact.py" \
   "$VIBE_HOOKS_SOURCE/remote/hooks.toml" "$APP_DIR/Contents/Resources/vibe-hooks/remote/"
+
+# The Codex marketplace, copied whole like the Claude Code one. Codex runs the
+# shim through `sh`, so it needs no +x. CodexPluginAssets resolves this
+# location, and the app mirrors it to a fixed path at launch.
+CODEX_MARKETPLACE_SOURCE="$ROOT_DIR/integrations/codex"
+for codex_file in .agents/plugins/marketplace.json plugins/localvoxtral/.codex-plugin/plugin.json \
+  plugins/localvoxtral/hooks/hooks.json plugins/localvoxtral/hooks/publish.sh; do
+  if [[ ! -f "$CODEX_MARKETPLACE_SOURCE/$codex_file" ]]; then
+    echo "Codex plugin file missing at $CODEX_MARKETPLACE_SOURCE/$codex_file"
+    exit 1
+  fi
+done
+rm -rf "$APP_DIR/Contents/Resources/codex-marketplace"
+cp -R "$CODEX_MARKETPLACE_SOURCE" "$APP_DIR/Contents/Resources/codex-marketplace"
 
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -363,24 +388,22 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
   <string>localvoxtral reads project files from Claude Code sessions when project context is enabled.</string>
   <key>NSRemovableVolumesUsageDescription</key>
   <string>localvoxtral reads project files from Claude Code sessions when project context is enabled.</string>
-${DOGFOOD_PLIST_ENTRY}
+${HARNESS_PLIST_ENTRY}
 </dict>
 </plist>
 PLIST
 
-# Verify the stamp in the artifact agrees with the predicate above — the loud
-# "Dogfood capture" line must describe the Info.plist that actually shipped,
-# not just the branch this script took.
-DOGFOOD_STAMP="$(/usr/libexec/PlistBuddy -c 'Print :LVXDogfoodCapture' "$APP_DIR/Contents/Info.plist" 2>/dev/null || echo absent)"
-if [[ -n "$DOGFOOD_PLIST_ENTRY" && "$DOGFOOD_STAMP" != "true" ]]; then
-  echo "Dogfood capture was enabled but LVXDogfoodCapture is not stamped in Info.plist (got: $DOGFOOD_STAMP)"
+# Verify the stamp in the artifact agrees with the predicate above.
+HARNESS_STAMP="$(/usr/libexec/PlistBuddy -c 'Print :LVXE2EHarness' "$APP_DIR/Contents/Info.plist" 2>/dev/null || echo absent)"
+if [[ -n "$HARNESS_PLIST_ENTRY" && "$HARNESS_STAMP" != "true" ]]; then
+  echo "The harness was compiled in but LVXE2EHarness is not stamped in Info.plist (got: $HARNESS_STAMP)"
   exit 1
 fi
-if [[ -z "$DOGFOOD_PLIST_ENTRY" && "$DOGFOOD_STAMP" != "absent" ]]; then
-  echo "Dogfood capture is disabled but Info.plist carries LVXDogfoodCapture=$DOGFOOD_STAMP"
+if [[ -z "$HARNESS_PLIST_ENTRY" && "$HARNESS_STAMP" != "absent" ]]; then
+  echo "A release build's Info.plist carries LVXE2EHarness=$HARNESS_STAMP"
   exit 1
 fi
-echo "Info.plist LVXDogfoodCapture stamp: $DOGFOOD_STAMP"
+echo "Info.plist LVXE2EHarness stamp: $HARNESS_STAMP"
 
 # --- Bundled polishing helper (localvoxtral-polishd, PolishHelper/) --------
 # MUST build with xcodebuild: SwiftPM CLI cannot compile mlx-swift's Metal

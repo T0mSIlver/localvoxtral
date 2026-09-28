@@ -19,7 +19,7 @@ set -euo pipefail
 
 # Only what no other check reaches: text insertion into another app's
 # window, focus handling and the commit that inserts (stop-commit and the
-# overlay commit). Plus the check itself, and the dogfood capture it dictates
+# overlay commit). Plus the check itself, and the test harness it dictates
 # through (owner decision 2026-09-25, to take load off the Mac).
 #
 # Deliberately NOT here: session start and stop, audio capture, the realtime
@@ -28,7 +28,8 @@ set -euo pipefail
 # PolishRequestGoldenTests proves it), the overlay's look (wrap, layout,
 # anchor; UI change rules apply), settings, onboarding, the Claude context
 # path, the helpers (their integration lanes), docs and CI plumbing. The
-# evening runs on main catch what a path list misses.
+# owner's runs on main, which the releases require, catch what a path list
+# misses.
 PATTERNS=(
   'Sources/localvoxtral/DictationSessionController+StopCommit.swift'
   'Sources/localvoxtral/StopCommitCoordinator*.swift'      # the stop-commit, in both modes

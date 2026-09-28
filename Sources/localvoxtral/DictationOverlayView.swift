@@ -88,6 +88,16 @@ struct DictationOverlayView: View {
     /// What this dictation's Claude Code session join resolved to. `.hidden`
     /// renders nothing — see `OverlayClaudeJoinBadge`.
     var claudeJoin: OverlayClaudeJoinBadge = .hidden
+    /// Where the words go at stop (#840). When shown, it takes the join
+    /// badge's place: the first pill carries the join.
+    var destinations: OverlayDestinationStrip? = nil
+    /// The one draft a review dictation acts on (#927). It takes the
+    /// destinations' place in the header, and its text sits above the words.
+    var draftReview: QuickCaptureDraftSnapshot? = nil
+    /// Where each destination pill sits, in the view's global space (top
+    /// left origin), and nil once it is gone: the panel swallows every
+    /// click, so it finds the clicked pill from these (#880).
+    var onDestinationFrame: ((DictationDestination, CGRect?) -> Void)? = nil
     private let cornerRadius: CGFloat = 12
 
     /// Warning text needs explicit light/dark variants: system `.red` over
@@ -188,6 +198,111 @@ struct DictationOverlayView: View {
         }
     }
 
+    /// One pill per destination, the picked one filled in its own color:
+    /// the Inbox never inserts, and a session is another pane, so neither
+    /// may look like the focused app. The trailing ⇥ says how to move.
+    private func destinationPills(_ strip: OverlayDestinationStrip) -> some View {
+        HStack(spacing: 4) {
+            ForEach(strip.items, id: \.destination) { item in
+                destinationPill(item)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                        onDestinationFrame?(item.destination, frame)
+                    }
+                    .onDisappear { onDestinationFrame?(item.destination, nil) }
+            }
+            Text("\u{21E5}")
+                .font(.system(size: metrics.badgeFontSize, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .accessibilityLabel("Tab changes where the words go")
+        }
+        .layoutPriority(-1)
+    }
+
+    private func destinationPill(_ item: OverlayDestinationStrip.Item) -> some View {
+        let tint: Color
+        let systemImage: String?
+        let accessibility: String
+        switch item.kind {
+        case .focusedApp(let joined):
+            tint = .accentColor
+            systemImage = joined.map { $0 ? "link" : "link.slash" }
+            accessibility = "Into \(item.label)"
+        case .session:
+            tint = .orange
+            systemImage = "circle.fill"
+            accessibility = "Answer \(item.label), which needs you"
+        case .inbox:
+            tint = .purple
+            systemImage = "tray"
+            accessibility = "Save to the Inbox"
+        }
+        return HStack(spacing: 3) {
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.system(size: metrics.badgeFontSize * (item.kind == .session ? 0.6 : 0.9)))
+                    .foregroundStyle(item.isSelected ? Color.white : (item.kind == .session ? tint : Color.secondary))
+            }
+            Text(item.label)
+                .font(.system(size: metrics.badgeFontSize, weight: .semibold))
+                .foregroundStyle(item.isSelected ? Color.white : Color.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .padding(.horizontal, metrics.badgeHorizontalPadding)
+        .padding(.vertical, metrics.badgeVerticalPadding)
+        .background(
+            Capsule(style: .continuous).fill(item.isSelected ? tint : Color.primary.opacity(0.08))
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .strokeBorder(Color.primary.opacity(item.isSelected ? 0 : 0.15), lineWidth: 0.5)
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibility)
+        .accessibilityAddTraits(item.isSelected ? .isSelected : [])
+    }
+
+    /// The Inbox pill, filled: the words go to the draft, never into an app.
+    private func draftReviewPill(_ draft: QuickCaptureDraftSnapshot) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: "tray")
+                .font(.system(size: metrics.badgeFontSize * 0.9))
+            Text("Inbox for \(draft.projectName)")
+                .font(.system(size: metrics.badgeFontSize, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .foregroundStyle(Color.white)
+        .padding(.horizontal, metrics.badgeHorizontalPadding)
+        .padding(.vertical, metrics.badgeVerticalPadding)
+        .background(Capsule(style: .continuous).fill(Color.purple))
+        .layoutPriority(-1)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Reviewing a draft in the Inbox for \(draft.projectName)")
+    }
+
+    /// Title, the start of the body, and what to say. Heights mirror
+    /// `OverlayLayoutMetrics.draftReviewHeight`.
+    private func draftReviewBlock(_ draft: QuickCaptureDraftSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: OverlayLayoutMetrics.draftReviewSpacing) {
+            Text(draft.title)
+                .font(.system(size: metrics.bodyFontSize, weight: .semibold))
+                .fixedSize(horizontal: false, vertical: true)
+            let excerpt = draft.bodyExcerpt
+            if !excerpt.isEmpty {
+                Text(excerpt)
+                    .font(.system(size: metrics.errorFontSize))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(OverlayLayoutMetrics.draftReviewHint)
+                .font(.system(size: metrics.badgeFontSize))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private func joinPill(
         systemImage: String,
         title: String,
@@ -226,12 +341,22 @@ struct DictationOverlayView: View {
                         .controlSize(.small)
                 }
                 Spacer(minLength: 0)
-                claudeJoinBadge
+                if let draftReview {
+                    draftReviewPill(draftReview)
+                } else if let destinations {
+                    destinationPills(destinations)
+                } else {
+                    claudeJoinBadge
+                }
                 if polished {
                     polishedBadge
                 }
             }
             .frame(height: metrics.headerHeight)
+
+            if let draftReview {
+                draftReviewBlock(draftReview)
+            }
 
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: true) {

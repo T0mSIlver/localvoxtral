@@ -123,9 +123,15 @@ How it works (`scripts/mac/lv-test-servers.sh` is the single source of truth):
   server just bumps the trigger mtime, resetting the idle window, so a burst of
   runs reuses one warm process (no cold reload every few seconds).
 - **Reaping:** a third LaunchAgent (`com.localvoxtral.testservers-reaper`) runs
-  `lv-test-servers.sh reap` on a `StartInterval`. For any service idle longer
-  than the window (default 20 min, `LV_TEST_SERVER_IDLE_SECONDS`) it removes the
-  trigger (so launchd won't relaunch it) **and** sends the job an explicit
+  `lv-test-servers.sh reap` on a `StartInterval`. A client connection counts as
+  use: an open connection at a reaper run, or one that opens while the reaper
+  watches the port (60 s, `LV_TEST_SERVER_USE_WATCH_SECONDS`) before stopping a
+  server, refreshes the reaper's own stamp. So a consumer that runs `ensure`
+  once and then sends a request at least once a minute keeps its server; one
+  silent for longer than that past the window loses it. A client that hangs
+  with its connection open keeps the server up until it exits. For any service
+  idle longer than the window (default 20 min, `LV_TEST_SERVER_IDLE_SECONDS`)
+  with no client, it removes the trigger (so launchd won't relaunch it) **and** sends the job an explicit
   `launchctl kill SIGTERM` — because launchd does not reliably terminate an
   already-running process when a `KeepAlive` `PathState` condition flips false,
   removing the trigger alone would leave the weights resident. The reaper runs
@@ -138,6 +144,21 @@ How it works (`scripts/mac/lv-test-servers.sh` is the single source of truth):
   target is `all`. Stop signals BOTH the new (`testspeechd`/`testpolishd`) and
   retired (`voxmlx`/`mlxlm`) labels plus a port-bound fallback, so it works
   whichever generation is loaded.
+- **Diagnosis:** `lv-test-servers.sh diagnose [<service>]` says in its first
+  line whether the service is `up`, `GONE` (nothing listens and the trigger is
+  gone: reaped or stopped), `DOWN` (trigger present, nothing listens: loading
+  or crash-looping) or `TAKEN` (another process holds its port, or its last
+  start failed with `Address already in use`), then prints the listener, the
+  client count, the reaper's last lines for it and the service log's tail. The
+  release gate and eval-e2e run it when their live step fails. Reaper lines
+  carry a UTC timestamp to match against a run's clock.
+- **Ports:** the test services own 8000-8080. The app's managed speechd and
+  polishd bind 8471 and 8472 (`BackendCatalog`), and speechd's own default is
+  8471, so the owner's app never takes a test port. The app does default its
+  External URL endpoint to `ws://127.0.0.1:8000`; in that mode it is a client
+  of the test service, which counts as use. 8000 is also the default of many
+  dev servers (`python -m http.server`, Django, mkdocs); `diagnose` names such
+  a holder.
 - **Robustness:** an interrupted run or a sleeping Mac just leaves the trigger
   behind; the server stays warm and the reaper collects it later. There is no
   lock to get stuck and no orphan process (launchd owns each server; the reaper
@@ -281,7 +302,7 @@ cat > ~/Library/LaunchAgents/com.localvoxtral.testservers-reaper.plist <<'PLIST'
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>/Users/REPLACE_ME/work/localvoxtral/scripts/mac/lv-test-servers.sh</string>
+    <string>/Users/Shared/localvoxtral/lv-test-servers.sh</string>
     <string>reap</string>
   </array>
   <!-- Every 5 min: finer than the 20-min idle window, so RAM is reclaimed
@@ -297,14 +318,15 @@ PLIST
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.localvoxtral.testservers-reaper.plist
 ```
 
-(Point the script path at a stable checkout of this repo, or copy
-`lv-test-servers.sh` to a fixed location. A copy without
+(The reaper runs a copy of the script, so a change to `reap` reaches it only
+when the copy is refreshed:
+`install -m 0755 scripts/mac/lv-test-servers.sh /Users/Shared/localvoxtral/`. A copy without
 `test-speech-models.tsv` beside it reads the list `install-speech-models`
 installed; with neither, the reaper sees only Voxtral and polishd and never
 frees another speech model. Override the idle window by adding an
 `EnvironmentVariables` dict with `LV_TEST_SERVER_IDLE_SECONDS`. During the
-migration, `git pull` that stable checkout so the reaper runs the new script —
-though an OLD reaper still reaps the new services via its port-bound fallback,
+migration, refresh that copy so the reaper runs the new script, though an OLD
+reaper still reaps the new services via its port-bound fallback,
 since it keeps reading the same `run/voxmlx.want` / `run/mlxlm.want` triggers.)
 
 ### Verify (owner-side proof)
@@ -604,7 +626,7 @@ full-screen capture anywhere in it:
 | verb | what it does |
 | --- | --- |
 | `state` | JSON: lock state, idle seconds, AC/battery, the Accessibility + Screen Recording preflight, whether an app under test is running, which terminals this gate opened — and a `setup` section that says which verbs will work before you try them (below) |
-| `launch [--dogfood] [--keychain] <artifact>` | launches a `.app` that is under an allowlisted root **and** has `CFBundleIdentifier com.localvoxtral.app`; records pid + start time + executable path; prints the pid. Refuses beside any running localvoxtral, including one this gate did not start. Starts it with the login keychain off and the keys from `~/.localvoxtral-ui-gate.secrets`, so no modal prompt can block an unattended run — `--keychain` opts back in |
+| `launch [--harness] [--keychain] <artifact>` | launches a `.app` that is under an allowlisted root **and** has `CFBundleIdentifier com.localvoxtral.app`; records pid + start time + executable path; prints the pid. Refuses beside any running localvoxtral, including one this gate did not start. Starts it with the login keychain off and the keys from `~/.localvoxtral-ui-gate.secrets`, so no modal prompt can block an unattended run — `--keychain` opts back in |
 | `shot [settings\|popover\|overlay\|window <n>]` | base64 PNG of ONE window, resolved from the window list filtered to that pid, refused if the resolved window's owner is anything else. stdout is pure base64; the `shot: window …` line is on **stderr**, so pipe straight into `base64 -d` — no `tail` |
 | `ax dump [all\|settings\|overlay\|window <n>]` | the AX element tree of that pid's windows, as JSON |
 | `ax find <selector>` | `ax dump` narrowed to the nodes the selector matches, each with its own (bounded) subtree — same grammar and validator as `ax click`, so what it prints is what `click` would press. Read-only, no warning |
@@ -613,7 +635,7 @@ full-screen capture anywhere in it:
 | `key <escape\|tab\|return>` | one keycode from a three-entry allowlist; brings the app under test frontmost first and refuses if that did not take, so a keystroke never lands in whatever the owner last touched |
 | `menu open` / `menu click <item-title>` / `menu dismiss` | drives the status item of the recorded pid. localvoxtral opens no window at launch, so this is what makes every row above it reachable. `open`/`dismiss` confirm the result against the window list — the same layer the `shot popover` row resolves — so they cannot report a menu that is not on screen |
 | `dictate tap` / `dictate hold <seconds>` / `dictate cancel` | posts the app's OWN configured modifier trigger (read from its defaults) as a gesture at the HID tap — the only way to start a dictation, and therefore to exercise the Claude Code / herdr join |
-| `app <control command>` | forwards ONE line to the **dogfood** control socket of the app under test and returns the reply. Five shapes only: `session start overlay\|live`, `session stop`, `join report`, `surface probe`, `registry list`. Refuses a build with no `LVXDogfoodCapture` stamp — see "`app` — asking the app what it joined" |
+| `app <control command>` | forwards ONE line to the **dogfood** control socket of the app under test and returns the reply. Five shapes only: `session start overlay\|live`, `session stop`, `join report`, `surface probe`, `registry list`. Refuses a build with no `LVXE2EHarness` stamp — see "`app` — asking the app what it joined" |
 | `log [minutes]` | localvoxtral's own unified-log lines over a clamped window (default 15, max 120), line-capped and token-scrubbed. Predicate-scoped to `subsystem == "com.localvoxtral"` **and** to one process — the recorded pid, else the app's process name, which it says. Never a system-log reader. Read-only, so it works while the screen is locked |
 | `gate-log [lines]` | the last N lines of this gate's OWN log (default 20, max 200) — where a denial's reason is written. Read-only, works while the screen is locked |
 | `quit` | terminates the recorded pid |
@@ -834,7 +856,7 @@ So `state` reports setup:
   "helper": {"mode": "compiled", "binary": "ui-gate-helper-5dfd77c3401a1bbf"},
   "lock_probe": {"installed": true},
   "gate_conf": {"present": true, "status": "ok"},
-  "artifacts": [{"name": "localvoxtral-dogfood.app", "dogfood": true}],
+  "artifacts": [{"name": "localvoxtral-harness.app", "harness": true}],
   "term_open": {"terminals": ["ghostty", "iterm", "terminal"],
                 "commands": ["lv-attach"], "refused_by_denylist": [],
                 "unresolvable": []},
@@ -870,7 +892,7 @@ Reading it:
   `ok`, `missing`, `no-destination`, `invalid-destination`, `invalid-session`,
   `present-unchecked` (a config with no wrapper to validate it) or
   `wrapper-too-old`.
-- `artifacts` lists what `launch` would accept, by name, with the dogfood slot
+- `artifacts` lists what `launch` would accept, by name, with the harness slot
   marked. Anything that is not a validated localvoxtral bundle is not listed.
 - `control_socket` is the two halves `app` needs: `consent` is
   `debug.dogfood_control_socket_enabled`, `present` is whether a socket is
@@ -1010,9 +1032,9 @@ per-process — so `localvoxtral --probe-surface`, a separate one-shot process,
 sees only the sessions the app last **saved to disk**, never the live
 registry.
 
-A dogfood build answers both, over a local AF_UNIX socket it binds only when
+A harness build answers both, over a local AF_UNIX socket it binds only when
 `debug.dogfood_control_socket_enabled` is armed
-(`docs/dogfood-builds.md`). `app` forwards one line to it:
+(`docs/test-harness.md`). `app` forwards one line to it:
 
 ```bash
 ssh lv-ui 'app registry list'         # is the registry empty, or the surface unidentified?
@@ -1030,8 +1052,8 @@ What bounds the verb:
 
 - **The socket path is fixed**, not an argument. No shape of this verb points
   it at another socket on the machine.
-- **Dogfood only.** A shipped build compiles no socket at all, so the verb
-  refuses unless `launch --dogfood` recorded a stamped bundle — one clear line
+- **Harness only.** A shipped build compiles no socket at all, so the verb
+  refuses unless `launch --harness` recorded a stamped bundle — one clear line
   instead of a connect that never answers.
 - **Five shapes, allowlisted in the gate.** A verb added to the app's socket is
   not automatically reachable through an already-installed gate.
@@ -1043,15 +1065,17 @@ What bounds the verb:
   work while locked.
 - **A started session is capped** by the app itself, so an SSH command that
   dies mid-dictation cannot leave it recording.
-- **The socket's runtime consent is a SECOND grant, and stays one.** A dogfood
-  build writes capture records when `debug.dogfood_capture_enabled` is armed
-  (which `launch --dogfood` does); it binds the control socket only when
+- **The socket's runtime consent is a SECOND grant, and stays one.** A
+  harness build ships diagnostic records on by default (History > Storage >
+  "Keep diagnostic records on this Mac", `docs/agent/diagnostic-records.md`);
+  it binds the control socket only when
   `debug.dogfood_control_socket_enabled` is armed as well, and nothing arms
-  that for you — not `try-pr.sh --ui-gate`, not the CI install step. The split
-  is deliberate: "records what I do" and "accepts commands on a local socket
-  **any** process on this Mac can connect to" are different permissions, and
-  this machine is also the self-hosted CI runner. `state` reports
-  `setup.control_socket.consent`, and the refusal names the fix:
+  that for you — not `try-pr.sh --ui-gate`, not the CI install step, not
+  `launch --harness`. The split
+  is deliberate: "keep diagnostic records" and "accept commands on a local
+  socket **any** process on this Mac can connect to" are different
+  permissions, and this machine is also the self-hosted CI runner. `state`
+  reports `setup.control_socket.consent`, and the refusal names the fix:
 
   ```bash
   defaults write com.localvoxtral.app debug.dogfood_control_socket_enabled -bool true
@@ -1072,8 +1096,8 @@ ssh lv-ui 'log 60'     # clamped 1..120
 Predicate-scoped to `subsystem == "com.localvoxtral"`. It is deliberately not a
 general system-log reader: this is the owner's personal machine, and every
 other application's activity stays out of reach. Output is capped at 400 lines
-(the drop is announced, never silent) and passed through the same 43-character
-base64url scrub the dogfood records use — the app writes its categories
+(the drop is announced, never silent) and passed through the diagnostic
+records' 43-character token scrub — the app writes its categories
 `privacy: .public` on purpose, but "every line anyone ever adds is safe" is not
 an assumption worth depending on.
 
@@ -1128,7 +1152,6 @@ never the roots.
 # On the Mac's GUI account. Fetches the CI artifact and installs it; does NOT
 # launch it, because launching is the gate's job.
 ./scripts/try-pr.sh 238 --ui-gate
-./scripts/try-pr.sh main --dogfood --ui-gate     # instrumented build
 
 # A locally packaged bundle, same destination:
 ./scripts/mac/install-ui-artifact.sh dist/localvoxtral.app
@@ -1138,26 +1161,24 @@ never the roots.
 `try-pr.sh`, so CI does the install instead.** The self-hosted runner is a
 launchd agent inside the owner's GUI session — its `$HOME` is the GUI
 account's home, which is where the artifact root lives — so a
-`workflow_dispatch` of `ci.yml` with `dogfood=true` builds *and* installs:
+`workflow_dispatch` of UI Smoke builds *and* installs a harness build:
 
 ```bash
-gh workflow run CI --ref <branch> -f dogfood=true -f herdr=false
-# the run summary then carries the exact:  ssh lv-ui 'launch --dogfood …'
+gh workflow run "UI Smoke" --ref <branch>
+# the run summary then carries the exact:  ssh lv-ui 'launch --harness …'
 ```
 
-`herdr=false` because a dispatch otherwise forces the live herdr lane on, and
-an install dispatch has no reason to wait on it — see
-`.github/workflows/README.md`. The install happens before the live lanes
-either way, so a red lane never costs you the install.
+Its e2e-dictation job runs first and the install step runs after, once it
+has quit its own app, so a red e2e-dictation check never costs you the
+install.
 
-That step is gated to `workflow_dispatch` **and** `dogfood=true` — narrower
-than the dogfood lane itself, whose `[dogfood-package]` marker fires on
-ordinary PR pushes, none of which should write into the owner's home. If the
-target slot is running the step warns and skips rather than failing the build
-(exit 3 from the installer); every other install failure is red.
+That step is gated to `workflow_dispatch`, so no PR label or schedule writes
+into the owner's home. If the target slot is running the step warns and
+skips rather than failing the build (exit 3 from the installer); every other
+install failure is red.
 
-Two slots, replaced in place: `localvoxtral.app` and (for a
-`LVXDogfoodCapture`-stamped build) `localvoxtral-dogfood.app`. Keeping one copy
+Two slots, replaced in place: `localvoxtral.app` and (for an
+`LVXE2EHarness`-stamped build) `localvoxtral-harness.app`. Keeping one copy
 per build would be worse than useless — they share a bundle id, a defaults
 domain and a TCC grant, so a stale one is indistinguishable at runtime, which
 is the wrong-binary confusion `docs/agent/field-debugging.md` is about. What
@@ -1421,7 +1442,7 @@ ssh lv-ui 'ax dump overlay'             # the Claude-join badge names the sessio
 ssh lv-ui 'log 5'                       # the app-under-test pid's own lines
                                         # (subsystem alone also matches CI's
                                         # xctest runs on this same machine)
-ssh lv-ui 'app registry list'           # dogfood build only; refused otherwise
+ssh lv-ui 'app registry list'           # harness build only; refused otherwise
 ssh lv-ui 'app surface probe'           # resolve the focused surface, live registry
 ssh lv-ui 'app rm -rf /'                # must print "denied command"
 ssh lv-ui 'ax dump settings' | python3 -m json.tool | head

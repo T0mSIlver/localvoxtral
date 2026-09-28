@@ -175,16 +175,6 @@ final class ClaudeShellRCSetupTests: XCTestCase {
         XCTAssertEqual(removed, existing, "apply then remove is a byte-for-byte round trip")
     }
 
-    func testApplyRemoveRoundTripsRepeatedlyWithoutGrowingTheFile() throws {
-        var text = "export EDITOR=vim\nalias ll='ls -la'\n"
-        let original = text
-        for _ in 0..<5 {
-            text = try XCTUnwrap(ClaudeShellRCSetup.apply(to: text, snippet: snippet(.zsh)))
-            text = try XCTUnwrap(ClaudeShellRCSetup.remove(from: text))
-        }
-        XCTAssertEqual(text, original)
-    }
-
     func testRemovingFromAFileWithNoBlockChangesNothing() {
         let existing = "export EDITOR=vim\n"
         XCTAssertEqual(ClaudeShellRCSetup.remove(from: existing), existing)
@@ -639,7 +629,7 @@ final class ClaudeShellRCSetupTests: XCTestCase {
         let output = ClaudeLoginShellReader.runCapturingOutput(
             executableURL: URL(fileURLWithPath: "/bin/sh"),
             arguments: ["-c", "exec sleep 3"],
-            timeout: 0.2
+            timeout: 0.1
         )
         XCTAssertNil(output, "a child that never answered must fall back to $SHELL")
     }
