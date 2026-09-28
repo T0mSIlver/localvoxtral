@@ -143,17 +143,16 @@ final class TermRecallEvalTests: XCTestCase {
         }
 
         let recordings = try config.recordingDirectory.map { try loadRecordings($0, cases: cases) }
-        // English falls back to the system voice, as in the agent-dictation
-        // eval; French has no fallback, since an English voice reading French
-        // would measure the voice.
+        // A missing preferred voice fails setup rather than falling back to
+        // another voice, which would measure the voice (#960).
         #if os(macOS)
         var englishVoice: String?
         var frenchVoice: String?
         if recordings == nil {
-            englishVoice = EvalSpeechStage.resolveVoice(
+            englishVoice = try EvalSpeechStage.resolveVoice(
                 languagePrefix: "en", preferred: EvalSpeechStage.englishVoicePreference
             )
-            frenchVoice = EvalSpeechStage.resolveVoice(
+            frenchVoice = try EvalSpeechStage.resolveVoice(
                 languagePrefix: "fr", preferred: EvalSpeechStage.frenchVoicePreference
             )
             progress("term-recall: voices en=\(englishVoice ?? "default") fr=\(frenchVoice ?? "none")")
