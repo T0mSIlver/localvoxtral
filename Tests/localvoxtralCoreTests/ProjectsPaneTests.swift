@@ -166,7 +166,80 @@ final class ProjectsPaneTests: XCTestCase {
         ])
         learned.recordOriginRepository("me/quill", projectKey: "/w/quill")
         learned.recordRemoteReport(project: remote("quill"), asRepository: true, repository: "me/quill", now: now)
-        XCTAssertEqual(rows(learned).first?.terms, ["Tokio", "Serde", "Kern"])
+        XCTAssertEqual(rows(learned).first?.terms.map(\.term), ["Tokio", "Serde", "Kern"])
+    }
+
+    /// A pinned copy on one checkout leads the project's list and shows
+    /// the pin, whichever checkout holds it.
+    func testAPinnedCopyLeadsAndShowsThePin() {
+        var pinned = term("kern", dictations: 1)
+        pinned.pinned = true
+        var learned = LearnedTerms(projects: [
+            LearnedTermProject(key: "/w/quill", name: "quill", terms: [term("Kern", dictations: 9), term("Tokio", dictations: 5)], lastSeen: now),
+            LearnedTermProject(key: "remote:quill", name: "quill", terms: [pinned], lastSeen: now),
+        ])
+        learned.recordOriginRepository("me/quill", projectKey: "/w/quill")
+        learned.recordRemoteReport(project: remote("quill"), asRepository: true, repository: "me/quill", now: now)
+        let terms = rows(learned).first?.terms
+        XCTAssertEqual(terms?.map(\.term), ["kern", "Tokio"])
+        XCTAssertEqual(terms?.first?.isPinned, true)
+    }
+
+    /// #972: Text Processing's count said "49 in 6 projects" while its sheet
+    /// listed only the terms outside projects. Now every stored term shows
+    /// under exactly one entry: its project's row, or "No project" for a
+    /// bucket no row holds (a remote label no host named, the shared
+    /// bucket), most recent first and the shared bucket last.
+    func testEveryTermShowsUnderExactlyOneEntry() {
+        var learned = LearnedTerms(projects: [
+            LearnedTermProject(key: "/w/quill", name: "quill", terms: [term("Kern")], lastSeen: now),
+            LearnedTermProject(key: "remote:quill", name: "quill", terms: [term("Serde")], lastSeen: now),
+            LearnedTermProject(
+                key: LearnedTermProjectResolver.shared.key, name: LearnedTermProjectResolver.shared.name,
+                terms: [term("Qwen")], lastSeen: now),
+            LearnedTermProject(
+                key: "remote:bold-bose-fac585", name: "bold-bose-fac585", terms: [term("Tokio"), term("qwen")],
+                lastSeen: now.addingTimeInterval(-60)),
+            LearnedTermProject(
+                key: "remote:modest-lewin-c92780", name: "modest-lewin-c92780", terms: [term("Obsidian")],
+                lastSeen: now.addingTimeInterval(-30)),
+        ])
+        learned.recordOriginRepository("me/quill", projectKey: "/w/quill")
+        learned.recordRemoteReport(project: remote("quill"), asRepository: true, repository: "me/quill", now: now)
+
+        let rows = rows(learned)
+        let unlisted = ProjectsPane.unlisted(learned: learned, rows: rows)
+        XCTAssertEqual(rows.map(\.name), ["quill"])
+        XCTAssertEqual(rows.first?.terms.map(\.term), ["Kern", "Serde"])
+        XCTAssertEqual(
+            unlisted?.keys,
+            ["remote:modest-lewin-c92780", "remote:bold-bose-fac585", LearnedTermProjectResolver.shared.key]
+        )
+        XCTAssertEqual(Set(unlisted?.terms.map(\.term) ?? []), ["Qwen", "Tokio", "Obsidian"], "each spelling once")
+        XCTAssertEqual(unlisted?.lastUsed, now)
+
+        let entries = rows.map(\.keys) + [unlisted?.keys ?? []]
+        for bucket in learned.projects {
+            XCTAssertEqual(entries.filter { $0.contains(bucket.key) }.count, 1, bucket.key)
+        }
+        let shown = rows.map(\.terms.count).reduce(0, +) + (unlisted?.terms.count ?? 0)
+        XCTAssertEqual(shown, learned.termCount - 1, "only qwen, a second spelling in one entry, folds away")
+    }
+
+    func testNoUnlistedEntryWhenEveryTermHasAProject() {
+        let learned = LearnedTerms(projects: [
+            LearnedTermProject(key: "/w/quill", name: "quill", terms: [term("Kern")], lastSeen: now),
+            LearnedTermProject(key: "remote:old", name: "old", terms: [], lastSeen: now),
+        ])
+        XCTAssertNil(ProjectsPane.unlisted(learned: learned, rows: rows(learned)))
+    }
+
+    func testSearchMatchesPartOfASpellingIgnoringCase() {
+        let terms = [term("GlyphAtlasCache"), term("Kern"), term("useAuth")]
+        XCTAssertEqual(ProjectsPane.matching(terms, query: "atlas").map(\.term), ["GlyphAtlasCache"])
+        XCTAssertEqual(ProjectsPane.matching(terms, query: " AUTH ").map(\.term), ["useAuth"])
+        XCTAssertEqual(ProjectsPane.matching(terms, query: "").count, 3)
+        XCTAssertEqual(ProjectsPane.matching(terms, query: "zzz"), [])
     }
 
     func testLastUsedReadsLikeTheTable() {

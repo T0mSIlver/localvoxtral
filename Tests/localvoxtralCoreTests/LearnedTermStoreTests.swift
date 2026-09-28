@@ -2,7 +2,7 @@ import XCTest
 @testable import localvoxtralCore
 
 /// The file around `LearnedTerms`: what survives a relaunch, what a damaged
-/// file costs, and what Forget forgets.
+/// file costs, and what a project's Forget and Forget All forget.
 final class LearnedTermStoreTests: XCTestCase {
     private let project = LearnedTermProjectResolver.Identity(
         key: "/Users/t/work/localvoxtral", name: "localvoxtral"
@@ -46,20 +46,45 @@ final class LearnedTermStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
     }
 
-    func testForgetAllClearsTheFileAndTheMemory() throws {
-        let fileURL = try makeFileURL()
-        let store = LearnedTermStore(fileURL: fileURL, now: { Self.start })
-        store.record(observations("Voxtral"), project: project)
+    /// A project's sheet shows a spelling once for all its checkouts, so
+    /// its pin and forget reach every checkout that holds it (#972).
+    func testPinAndForgetReachEveryCheckoutOfAProject() {
+        let store = LearnedTermStore(fileURL: nil, now: { Self.start })
+        let remote = LearnedTermProjectResolver.Identity(key: "remote:localvoxtral", name: "localvoxtral")
+        let other = LearnedTermProjectResolver.Identity(key: "/Users/t/work/other", name: "other")
+        store.record(observations("Voxtral", "Mistral"), project: project)
+        store.record(observations("voxtral", "Mistral"), project: remote)
+        store.record(observations("Mistral"), project: other)
+        let keys = [project.key, remote.key]
+
+        store.setPinned(true, term: "Voxtral", projectKeys: keys)
+        store.forget("Mistral", projectKeys: keys)
         store.waitForPendingWrites()
 
-        store.forgetAll()
+        let byKey = Dictionary(uniqueKeysWithValues: store.snapshot().projects.map { ($0.key, $0.terms) })
+        XCTAssertEqual(byKey[project.key]?.map(\.term), ["Voxtral"])
+        XCTAssertEqual(byKey[remote.key]?.map(\.term), ["voxtral"])
+        XCTAssertEqual(byKey[project.key]?.first?.isPinned, true)
+        XCTAssertEqual(byKey[remote.key]?.first?.isPinned, true)
+        XCTAssertEqual(byKey[other.key]?.map(\.term), ["Mistral"], "another project keeps its copy")
+    }
+
+    /// Forget All in a project's sheet empties that project and no other;
+    /// a bucket kept for its proposal stamp stays, empty, so its agent is
+    /// not asked again.
+    func testForgetTermsEmptiesOnlyThatProject() {
+        let store = LearnedTermStore(fileURL: nil, now: { Self.start })
+        let other = LearnedTermProjectResolver.Identity(key: "/Users/t/work/other", name: "other")
+        store.record(observations("Voxtral", "Mistral"), project: project)
+        store.record(observations("Kern"), project: other)
+        store.recordProposalFailure(project: project)
+
+        store.forgetTerms(projectKeys: [project.key])
         store.waitForPendingWrites()
 
-        XCTAssertEqual(store.summary().terms, 0)
-        XCTAssertFalse(
-            FileManager.default.fileExists(atPath: fileURL.path),
-            "forgotten terms must not come back after a relaunch"
-        )
+        let projects = store.snapshot().projects
+        XCTAssertEqual(projects.first { $0.key == project.key }?.terms, [])
+        XCTAssertEqual(projects.first { $0.key == other.key }?.terms.map(\.term), ["Kern"])
     }
 
     /// A torn write or a hand edit starts over empty rather than refusing to
