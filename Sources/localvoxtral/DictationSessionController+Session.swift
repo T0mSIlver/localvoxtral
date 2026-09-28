@@ -510,15 +510,16 @@ extension DictationSessionController {
     }
 
     /// Overlay Buffer with polishing polishes settled pieces while the user
-    /// speaks (#709). Not with a second pass: Mistral's realtime stream
-    /// settles nothing before the stop, and the batch text replaces the
-    /// realtime text there anyway. Not for a quick capture or a draft
+    /// speaks (#709), unless early polish is off: then the stop polishes the
+    /// whole text, as before #709. Not with a second pass: Mistral's realtime
+    /// stream settles nothing before the stop, and the batch text replaces
+    /// the realtime text there anyway. Not for a quick capture or a draft
     /// review either: their stops never use the pieces. Latched after
     /// `latchSessionAudio`, which decides the second pass.
     func armEarlyPolish(outputMode: DictationOutputMode) {
         earlyPolishRun?.cancel()
         earlyPolishRun = nil
-        guard outputMode == .overlayBuffer, !sessionHasStopSecondPass,
+        guard outputMode == .overlayBuffer, settings.earlyPolishEnabled, !sessionHasStopSecondPass,
             !sessionIsQuickCapture, sessionDraftReview == nil,
             let configuration = settings.llmPolishingConfiguration
         else { return }

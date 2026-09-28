@@ -35,6 +35,14 @@ for how developers talk. The toggles below sit in **Settings → Text
 Processing → Polishing**, except the two context sources, which sit in
 **Settings → Context**.
 
+- **Polish while you speak** (on by default with the bundled helper, off
+  with Mistral API or an external URL). A long dictation is polished a few
+  sentences at a time while you speak, so the stop waits about 1 s instead of
+  4 s with the bundled helper. Each piece resends the polishing instructions,
+  so a long dictation sends about 3 times the input tokens, which a paid
+  endpoint bills. With it off, the whole text is polished at the stop. About 1 word in
+  100 comes out differently because each piece is polished without the words
+  that follow it.
 - **Agent prompt profile in terminals and Claude Desktop** (on by default).
   In a terminal, or in a Claude Code session in Claude Desktop's Code tab,
   polishing switches to an agent-tuned prompt. The details follow this list.

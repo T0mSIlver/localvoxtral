@@ -562,9 +562,10 @@ enum StopCommitCoordinator {
             return PolishOutcome(material: material, assembly: assembly, reply: .notSent)
         }
         // The pieces polished while the user spoke (#709), when this request
-        // would carry nothing they lacked; the whole text otherwise.
+        // would carry nothing they lacked; the whole text otherwise. Without
+        // early polish the path below is the pre-#709 one, unchanged.
         let earlyHandoff = await input.earlyPolish?.finish()
-        guard !Task.isCancelled else { return nil }
+        if input.earlyPolish != nil, Task.isCancelled { return nil }
         let early = earlyHandoff.flatMap {
             earlyPolishTail($0, assembly: assembly, workingText: workingText, input: input)
         }

@@ -65,9 +65,11 @@ talk.
 
 Your words collect in a floating overlay while you speak. When you stop, the
 text goes through the replacement dictionary and optional LLM polishing,
-then commits into the focused app. A long dictation is polished a few
-sentences at a time while you speak, so the stop only waits for the last
-ones.
+then commits into the focused app. With **Polish while you speak** on, a
+long dictation is polished a few sentences at a time while you speak, so the
+stop only waits for the last ones. The toggle sits in **Settings → Text
+Processing → Polishing**; see
+[Polishing](coding-agents.md#polishing) for its cost and default.
 
 The overlay shows a **Polished** badge when the LLM changed your text. The
 menu bar popover keeps the raw transcript.

@@ -107,6 +107,26 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.first?.polishedText, "<\(Self.settledPiece)> <\(Self.tail)>")
     }
 
+    /// With Polish while you speak off, nothing is polished while the user
+    /// speaks: the stop sends the whole text in one request, as before #709.
+    func testOverlayBufferWithEarlyPolishOffPolishesOnlyTheWholeTextAtStop() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish, earlyPolish: false)
+        let whole = "\(Self.settledPiece) \(Self.tail)"
+
+        await startAndSpeak(pipeline)
+        XCTAssertNil(pipeline.viewModel.session.earlyPolishRun)
+        pipeline.server.send(["type": "transcription.done", "text": Self.settledPiece])
+
+        await stopAndFinalize(pipeline, finalText: Self.tail)
+
+        let requests = await polish.requests
+        XCTAssertEqual(requests.map(\.inputText), [whole])
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(whole)>"])
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [whole])
+        XCTAssertEqual(pipeline.records.all.first?.polishedText, "<\(whole)>")
+    }
+
     /// Grounding is sampled at stop: when the stop's request carries context
     /// the piece was polished without (here the clipboard), the piece is
     /// discarded and the whole text is polished in one request, as before.
@@ -1837,7 +1857,8 @@ final class DictationPipelineTests: XCTestCase {
 
     private func makePipeline(
         outputMode: DictationOutputMode,
-        polish: FakePolishingService? = nil
+        polish: FakePolishingService? = nil,
+        earlyPolish: Bool = true
     ) async throws -> Pipeline {
         let server = try FakeRealtimeServer()
         addTeardownBlock { server.stop() }
@@ -1874,6 +1895,7 @@ final class DictationPipelineTests: XCTestCase {
         if let polish {
             settings.llmPolishingEnabled = true
             settings.llmPolishingEndpointURL = "http://127.0.0.1:8080/v1/chat/completions"
+            settings.earlyPolishEnabled = earlyPolish
             settings.polishClipboardContextEnabled = false
             settings.terminalScreenContextEnabled = false
             settings.repoVocabularyEnabled = false

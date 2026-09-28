@@ -294,6 +294,9 @@ there is not.
   keeps generating a dropped request on its one slot. Sessions with a
   second pass never start early polish: Mistral's realtime stream settles
   nothing before the stop, and the batch text replaces the realtime text.
+  With **Polish while you speak** off (`SettingsStore.earlyPolishEnabled`,
+  default on for the bundled helper only) no run starts, and the stop takes
+  the pre-#709 path unchanged.
 - **Claude Desktop is a text field whose Return sends, and gets its
   newlines as Shift+Return** (#660). Three lists name it, each for one
   capability: `TerminalTargetDetector`'s text-field list fixes its verdict

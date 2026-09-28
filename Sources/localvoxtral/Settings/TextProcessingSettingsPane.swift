@@ -138,6 +138,11 @@ struct TextProcessingSettingsPane: View {
                             .labelsHidden()
                     }
 
+                    SettingsFieldRow(title: "Polish while you speak") {
+                        Toggle("", isOn: $settings.earlyPolishEnabled)
+                            .labelsHidden()
+                    }
+
                     SettingsFieldRow(title: "Agent prompt profile in terminals and Claude Desktop") {
                         Toggle("", isOn: $settings.agentPolishProfileEnabled)
                             .labelsHidden()
