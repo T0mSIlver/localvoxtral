@@ -1055,7 +1055,14 @@ extension AppConfigStore {
                         )
                         continue
                     }
-                    try bundled.data.write(to: userURL, options: .atomic)
+                    do {
+                        try bundled.data.write(to: userURL, options: .atomic)
+                    } catch {
+                        // The file is untouched, and a kept copy would pile
+                        // up with every launch that retries.
+                        try? fileManager.removeItem(at: backupURL)
+                        throw error
+                    }
                     result.refreshedFileNames.append(file.fileName)
                     markResolved(file, hash: bundled.hash)
                     Log.config.notice(
