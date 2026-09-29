@@ -605,6 +605,30 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertFalse(reloadedStore.agentPolishProfileEnabled)
     }
 
+    // MARK: - earlyPolishEnabled (#709)
+
+    func testEarlyPolishEnabled_defaultsOnForTheBundledHelperOnly() {
+        let store = makeStore()
+        store.polishingBackendMode = .managedLocal
+        XCTAssertTrue(store.earlyPolishEnabled)
+        store.polishingBackendMode = .mistralAPI
+        XCTAssertFalse(store.earlyPolishEnabled)
+        store.polishingBackendMode = .externalURL
+        XCTAssertFalse(store.earlyPolishEnabled)
+    }
+
+    func testEarlyPolishEnabled_userChoicePersistsAndOutranksTheBackendDefault() {
+        let store = makeStore()
+        store.polishingBackendMode = .managedLocal
+        store.earlyPolishEnabled = false
+
+        let reloadedStore = makeStore()
+        XCTAssertFalse(reloadedStore.earlyPolishEnabled)
+        reloadedStore.polishingBackendMode = .mistralAPI
+        reloadedStore.earlyPolishEnabled = true
+        XCTAssertTrue(makeStore().earlyPolishEnabled)
+    }
+
     // MARK: - clipboardPayloadMacroEnabled
 
     func testClipboardPayloadMacroEnabled_defaultsToTrue() {
