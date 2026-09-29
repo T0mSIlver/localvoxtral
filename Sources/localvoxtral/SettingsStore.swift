@@ -81,6 +81,7 @@ final class SettingsStore {
         static let managedLLMPolishingModel = "settings.managed_llm_polishing_model"
         static let replacementDictionaryEnabled = "settings.replacement_dictionary_enabled"
         static let agentPolishProfileEnabled = "settings.agent_polish_profile_enabled"
+        static let earlyPolishEnabled = "settings.early_polish_enabled"
         static let polishClipboardContextEnabled = "settings.polish_clipboard_context_enabled"
         static let polishSpeakerProfile = "settings.polish_speaker_profile"
         static let polishSpeakerTerms = "settings.polish_speaker_terms"
@@ -475,6 +476,27 @@ final class SettingsStore {
         didSet {
             defaults.set(agentPolishProfileEnabled, forKey: Keys.agentPolishProfileEnabled)
         }
+    }
+
+    /// The user's own choice for early polish (#709), nil until they flip the
+    /// toggle. See `earlyPolishEnabled` for the default.
+    var earlyPolishChoice: Bool? {
+        didSet {
+            if let earlyPolishChoice {
+                defaults.set(earlyPolishChoice, forKey: Keys.earlyPolishEnabled)
+            } else {
+                defaults.removeObject(forKey: Keys.earlyPolishEnabled)
+            }
+        }
+    }
+
+    /// Whether Overlay Buffer polishes settled pieces while the user speaks
+    /// (#709). Until the user chooses, on for the bundled helper only: early
+    /// polish sends about 3 times the input characters per dictation, which
+    /// costs money on a paid endpoint and nothing on the helper.
+    var earlyPolishEnabled: Bool {
+        get { earlyPolishChoice ?? (polishingBackendMode == .managedLocal) }
+        set { earlyPolishChoice = newValue }
     }
 
     /// The user's own description of who they are and the names they use,
@@ -1174,6 +1196,7 @@ final class SettingsStore {
             defaults: defaults, key: Keys.replacementDictionaryEnabled, fallback: false)
         agentPolishProfileEnabled = Self.loadBool(
             defaults: defaults, key: Keys.agentPolishProfileEnabled, fallback: true)
+        earlyPolishChoice = defaults.object(forKey: Keys.earlyPolishEnabled) as? Bool
         polishSpeakerProfile = defaults.string(forKey: Keys.polishSpeakerProfile) ?? ""
         polishDismissedTermSuggestions =
             defaults.stringArray(forKey: Keys.polishDismissedTermSuggestions) ?? []
