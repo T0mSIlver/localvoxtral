@@ -749,10 +749,10 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     ///
     /// MONOTONE by construction: the recorded value is the HIGHEST report
     /// this app session (`nil` < `.headerAbsent` < `.version` in numeric
-    /// order) and only a strictly higher report replaces it. Claude Code
-    /// applies a plugin update only on session restart, so after "Update
-    /// Plugin…" succeeds a host's already-running sessions keep executing the
-    /// OLD plugin's shim — their hooks arrive header-less, and a
+    /// order) and only a strictly higher report replaces it. After "Update
+    /// Plugin…" succeeds, a host's already-running sessions keep executing the
+    /// OLD plugin's shim until `/reload-plugins` (Claude Code 2.1.283) or a
+    /// restart (Vibe) — their hooks arrive header-less, and a
     /// last-writer-wins record would let them flip a verified host back to
     /// "Plugin update available" (the 2026-09-17 follow-up defect). The
     /// accepted cost: a genuine plugin DOWNGRADE on the host stays unread
