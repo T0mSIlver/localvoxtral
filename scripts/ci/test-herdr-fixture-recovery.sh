@@ -321,8 +321,8 @@ herdr_cli() {
   count=$((count + 1))
   printf '%s\n' "$count" > "$TMP_DIR/pane-read-count"
   case "$count" in
-    1|2) printf '{"pane_id":"w1:p1"}\n' ;;
-    *) printf '{"pane_id":"w2:p1"}\n' ;;
+    1|2) printf '{"id":"cli:pane:current","result":{"pane":{"pane_id":"w1:p1","workspace_id":"w1"},"type":"pane_current"}}\n' ;;
+    *) printf '{"id":"cli:pane:current","result":{"pane":{"pane_id":"w2:p1","workspace_id":"w2"},"type":"pane_current"}}\n' ;;
   esac
 }
 sleep() { :; }

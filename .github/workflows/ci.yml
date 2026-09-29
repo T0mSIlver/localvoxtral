@@ -254,6 +254,7 @@ jobs:
             ./scripts/ci/test-lane-diff-facts.sh \
             ./scripts/ci/test-remote-doctor.sh \
             ./scripts/ci/test-herdr-fixture-recovery.sh \
+            ./scripts/ci/test-json-value.sh \
             ./scripts/ci/test-clean-stale-outputs.sh \
             ./scripts/ci/test-workflow-step-names.sh \
             ./scripts/ci/test-agents-guide-budget.sh \

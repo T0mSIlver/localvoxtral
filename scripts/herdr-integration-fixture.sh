@@ -80,6 +80,9 @@
 # because something was missing.
 set -euo pipefail
 
+# shellcheck source=lib/json-value.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/json-value.sh"
+
 FIXTURE_ALIAS="lvx-herdr-fixture"
 # The integration id the fixture reports its pane's agent under. Deliberately
 # NOT "localvoxtral": the app's own metadata source must stay distinguishable
@@ -751,7 +754,7 @@ settle_focused_pane() {
     # pane_not_found ERROR and a non-zero status, which `pipefail` would
     # otherwise turn into an abort on the very first poll.
     pane_id="$({ herdr_cli pane current 2>/dev/null || true; } \
-      | sed -n 's/.*"pane_id":"\([^"]*\)".*/\1/p' | head -1)"
+      | lv_json_value result.pane.pane_id || true)"
     if [[ -n "$pane_id" ]] && herdr_cli pane get "$pane_id" >/dev/null 2>&1; then
       if [[ "$pane_id" == "$candidate" ]]; then
         stable_reads=$((stable_reads + 1))
@@ -1032,7 +1035,7 @@ command_federation() {
   log "herdr.version=$version"
 
   local alias_used hermetic=0 fed_target remote_home=""
-  alias_used="$(sed -n 's/.*"alias":"\([^"]*\)".*/\1/p' "$dir/fixture.json" | head -1)"
+  alias_used="$(lv_json_value alias <"$dir/fixture.json" || true)"
   [[ -n "$alias_used" ]] || die "fixture.json has no alias; re-run 'up' first"
   if [[ -f "$dir/id-fed" ]]; then
     hermetic=1
@@ -1098,42 +1101,51 @@ $add_out"
   local remote_socket="$dir/$FEDERATION_REMOTE_SOCKET_NAME"
   # Destination mode only: snapshot the second host's existing workspaces so
   # teardown closes ONLY the workspace this step creates. FAIL CLOSED: if the
-  # list fails, or does not answer in the JSON shape the guard reads
-  # (`"workspace_id":"…"`), the created id is NOT recorded and teardown
-  # closes nothing — closing a workspace the lane cannot prove it created is
+  # list fails, or does not answer with a JSON `result.workspaces` list, the
+  # created id is NOT recorded and teardown closes nothing — closing a workspace the lane cannot prove it created is
   # the same harm class as stopping the host's server (review-2 NEW-1).
-  local pre_existing_workspaces="" pre_existing_known=0
+  local pre_existing_workspaces="" pre_existing_known=0 workspace_list index id
   if ! (( hermetic )); then
-    if pre_existing_workspaces="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -T -- "$alias_used" \
-      "herdr workspace list" </dev/null 2>&1)" \
-      && grep -qF '"workspace_id":"' <<<"$pre_existing_workspaces"; then
-      pre_existing_known=1
+    if workspace_list="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -T -- "$alias_used" \
+      "herdr workspace list" </dev/null 2>/dev/null)" \
+      && [[ "$(lv_json_value result.type <<<"$workspace_list" || true)" == "workspace_list" ]]; then
+      for ((index = 0; ; index++)); do
+        id="$(lv_json_value "result.workspaces.$index.workspace_id" <<<"$workspace_list")" || break
+        pre_existing_workspaces+=" $id "
+      done
+      # A list naming no workspace proves nothing either, as before.
+      if (( index > 0 )); then pre_existing_known=1; fi
     else
       log "WARNING: could not list the destination's workspaces (or the output was not JSON); teardown will close nothing"
     fi
   fi
+  # stderr apart: ssh's own notices there would break the JSON on stdout.
+  local create_err="$dir/workspace-create.err"
   if (( hermetic )); then
     create_out="$(HERDR_SOCKET_PATH="$remote_socket" XDG_CONFIG_HOME="$remote_home" XDG_STATE_HOME="$dir/remote-state-home" \
-      "$HERDR_BINARY" workspace create </dev/null 2>&1)" \
+      "$HERDR_BINARY" workspace create </dev/null 2>"$create_err")" \
       || die "remote workspace create failed:
-$create_out"
+$create_out
+$(cat "$create_err" 2>/dev/null)"
   else
     create_out="$(ssh -o BatchMode=yes -o ConnectTimeout=10 -T -- "$alias_used" \
-      "herdr workspace create" </dev/null 2>&1)" \
+      "herdr workspace create" </dev/null 2>"$create_err")" \
       || die "remote workspace create over ssh to $alias_used failed:
-$create_out"
+$create_out
+$(cat "$create_err" 2>/dev/null)"
   fi
-  remote_pane_id="$(sed -n 's/.*"pane_id":"\([^"]*\)".*/\1/p' <<<"$create_out" | head -1)"
-  [[ -n "$remote_pane_id" ]] || die "could not parse a remote pane id from workspace create output:
-$create_out"
+  remote_pane_id="$(lv_json_value result.root_pane.pane_id <<<"$create_out" || true)"
+  [[ -n "$remote_pane_id" ]] || die "could not read result.root_pane.pane_id from workspace create output:
+$create_out
+$(cat "$create_err" 2>/dev/null)"
   if ! (( hermetic )); then
     # Exactly what this step CREATED on the second host: teardown closes this
     # workspace and never stops that host's server. If the id pre-existed
     # (an empty server answers create with its own w1, measured 2026-09-13),
     # there is nothing of ours to close — record nothing.
-    remote_workspace_id="$(sed -n 's/.*"workspace_id":"\([^"]*\)".*/\1/p' <<<"$create_out" | head -1)"
+    remote_workspace_id="$(lv_json_value result.workspace.workspace_id <<<"$create_out" || true)"
     if [[ -n "$remote_workspace_id" ]] && (( pre_existing_known )) \
-      && ! grep -qF "\"workspace_id\":\"$remote_workspace_id\"" <<<"$pre_existing_workspaces" 2>/dev/null; then
+      && [[ "$pre_existing_workspaces" != *" $remote_workspace_id "* ]]; then
       record_hold_field federationRemoteWorkspace "$remote_workspace_id"
       log "remote workspace created: $remote_workspace_id (closed on teardown; the server is left running)"
     elif [[ -n "$remote_workspace_id" ]] && (( pre_existing_known )); then
@@ -1267,8 +1279,8 @@ close_destination_federation_workspace() {
   local dir="$1" target workspace hold_workdir
   hold_workdir="$(hold_field federationWorkdir)"
   if [[ -f "$dir/federation.json" ]]; then
-    target="$(sed -n 's/.*"target":"\([^"]*\)".*/\1/p' "$dir/federation.json" | head -1)"
-    workspace="$(sed -n 's/.*"remoteWorkspaceID":"\([^"]*\)".*/\1/p' "$dir/federation.json" | head -1)"
+    target="$(lv_json_value target <"$dir/federation.json" || true)"
+    workspace="$(lv_json_value remoteWorkspaceID <"$dir/federation.json" || true)"
   fi
   if [[ "$hold_workdir" == "$dir" || "$(hold_field workdir)" == "$dir" ]]; then
     [[ -n "$target" ]] || target="$(hold_field federationTarget)"
