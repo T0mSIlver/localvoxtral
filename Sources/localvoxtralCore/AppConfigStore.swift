@@ -1040,11 +1040,26 @@ extension AppConfigStore {
 
             if knownDefaultHashes[file.fileName, default: []].contains(userHash) {
                 do {
+                    // The file may be an old default the user restored on
+                    // purpose, so its bytes are kept (#1040). The refresh goes
+                    // ahead only if what was copied is still a known default.
+                    let backupName = availableBackupName(
+                        for: file.fileName, suffix: backupSuffix(), in: directory)
+                    let backupURL = directory.appendingPathComponent(backupName, isDirectory: false)
+                    try fileManager.copyItem(at: userURL, to: backupURL)
+                    let backedUp = try Data(contentsOf: backupURL)
+                    guard knownDefaultHashes[file.fileName, default: []].contains(Self.sha256Hex(backedUp)) else {
+                        try? fileManager.removeItem(at: backupURL)
+                        Log.config.notice(
+                            "Skipped refreshing \(file.fileName, privacy: .public): it changed while being checked"
+                        )
+                        continue
+                    }
                     try bundled.data.write(to: userURL, options: .atomic)
                     result.refreshedFileNames.append(file.fileName)
                     markResolved(file, hash: bundled.hash)
                     Log.config.notice(
-                        "Refreshed unedited default \(file.fileName, privacy: .public) to the current bundled version"
+                        "Refreshed unedited default \(file.fileName, privacy: .public) to the current bundled version; the old file is \(backupName, privacy: .public)"
                     )
                 } catch {
                     Log.config.error(
