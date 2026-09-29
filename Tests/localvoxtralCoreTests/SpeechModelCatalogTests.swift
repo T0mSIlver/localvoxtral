@@ -71,16 +71,12 @@ final class SpeechModelCatalogTests: XCTestCase {
         XCTAssertLessThan(option.sizeOnDiskGB, SpeechModelCatalog.defaultOption.sizeOnDiskGB)
     }
 
-    /// The helper picks its engine from the repo id it is launched with, so a
-    /// catalog entry whose id does not map to its declared engine would load
-    /// the wrong model class. The helper's own inference is unit-tested in
-    /// `SpeechASREngineKindTests`; this pins the two sides together.
-    func testCatalogEngineMatchesTheRepoIDTheHelperInfersFrom() {
+    /// The app passes `--engine <rawValue>` and the helper's
+    /// `SpeechASREngineKind` parses it; the helper is a separate package, so
+    /// its accepted values are spelled out here.
+    func testCatalogEnginesAreNamesTheHelperAccepts() {
         for option in SpeechModelCatalog.options {
-            let inferred = option.repoID.lowercased().contains("nemotron")
-                ? SpeechEngineKind.nemotron
-                : SpeechEngineKind.voxtral
-            XCTAssertEqual(option.engine, inferred, option.repoID)
+            XCTAssertTrue(["voxtral", "nemotron"].contains(option.engine.rawValue), option.repoID)
         }
     }
 
