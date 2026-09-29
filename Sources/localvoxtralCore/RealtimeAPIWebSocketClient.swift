@@ -33,6 +33,9 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         var isGenerationInProgress = false
         var finalCommitCompletionGate: FinalCommitCompletionGate = .idle
         var pendingMessages: [PendingFrame] = []
+        /// The handshake's replay of `pendingMessages` is under way: new
+        /// frames queue behind it until it has emptied the queue (#1058).
+        var isReplayingHandshakeQueue = false
         var pendingModelName = ""
         /// The open socket's ledger line: who serves it, the model it asked
         /// for, and the PCM bytes handed to it. Nil backend records nothing.
@@ -42,6 +45,8 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         #if DEBUG
         var skipsSocketCreationForTesting = false
         var lastConnectConfigurationForTesting: RealtimeSessionConfiguration?
+        var beforeHandshakeDrainForTesting: (@Sendable () -> Void)?
+        var transmitObserverForTesting: (@Sendable (URLSessionWebSocketTask, String) -> Void)?
         #endif
     }
 
@@ -229,37 +234,27 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         switch type {
         case "session.created":
             emit(.status("Session ready."), from: generation)
-            let startup: (modelName: String, shouldSendUpdate: Bool, queuedMessages: [PendingFrame])? =
-                state.withLock { s in
-                    // The socket this frame was read from, not whichever one
-                    // the client holds now: a stale handshake applied here
-                    // drains the NEW socket's queue ahead of its own
-                    // session.update.
-                    guard isCurrentConnectionLocked(s.base, generation) else { return nil }
-                    guard s.base.socketState == .connected else { return nil }
-                    guard !s.hasReceivedSessionCreated else { return nil }
-                    s.hasReceivedSessionCreated = true
-                    stopSessionReadyTimerLocked(&s)
-                    let modelName = s.pendingModelName
-                    let shouldSendUpdate = !s.hasSentSessionUpdate && !modelName.isEmpty
-                    if shouldSendUpdate {
-                        s.hasSentSessionUpdate = true
-                    }
-                    let queuedMessages = s.pendingMessages
-                    s.pendingMessages.removeAll(keepingCapacity: true)
-                    return (
-                        modelName: modelName, shouldSendUpdate: shouldSendUpdate,
-                        queuedMessages: queuedMessages
-                    )
-                }
-
-            guard let startup else { return }
-            if startup.shouldSendUpdate {
-                send(event: ["type": "session.update", "model": startup.modelName])
+            let opened: Bool = state.withLock { s in
+                // The socket this frame was read from, not whichever one
+                // the client holds now: a stale handshake applied here
+                // drains the NEW socket's queue ahead of its own
+                // session.update.
+                guard isCurrentConnectionLocked(s.base, generation) else { return false }
+                guard s.base.socketState == .connected else { return false }
+                guard !s.hasReceivedSessionCreated else { return false }
+                s.hasReceivedSessionCreated = true
+                stopSessionReadyTimerLocked(&s)
+                // The compatibility timer opened the gate already, and its
+                // replay may still be draining: a second one would race it.
+                guard !s.hasBypassedSessionCreatedGate else { return false }
+                openSendGateLocked(&s)
+                return true
             }
-            for message in startup.queuedMessages {
-                sendText(message.text, audioBytes: message.audioBytes)
-            }
+            guard opened else { return }
+            #if DEBUG
+            state.withLock { $0.beforeHandshakeDrainForTesting }?()
+            #endif
+            replayHandshakeQueue(for: generation)
         case "session.updated":
             emit(.status("Session updated."), from: generation)
         case "transcription.delta",
@@ -360,7 +355,11 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         let action: SendAction = state.withLock { s in
             switch s.base.socketState {
             case .connected:
-                guard s.hasReceivedSessionCreated || s.hasBypassedSessionCreatedGate else {
+                // Behind the handshake's replay too: sent now, this frame
+                // would pass session.update and the audio queued before it.
+                guard s.hasReceivedSessionCreated || s.hasBypassedSessionCreatedGate,
+                      !s.isReplayingHandshakeQueue
+                else {
                     s.pendingMessages.append(PendingFrame(text: text, audioBytes: audioBytes))
                     return .queued
                 }
@@ -381,8 +380,57 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         guard case .send(let task, let payloadText) = action else {
             return
         }
+        transmit(payloadText, on: task)
+    }
 
-        task.send(.string(payloadText)) { [weak self] error in
+    /// The handshake, or the compatibility timer standing in for it, opens
+    /// the send gate: session.update goes to the front of the queue, and
+    /// frames sent from here on queue behind the replay.
+    private func openSendGateLocked(_ s: inout State) {
+        let modelName = s.pendingModelName
+        if !s.hasSentSessionUpdate, !modelName.isEmpty,
+           let data = try? JSONSerialization.data(withJSONObject: ["type": "session.update", "model": modelName]),
+           let text = String(data: data, encoding: .utf8) {
+            s.hasSentSessionUpdate = true
+            s.pendingMessages.insert(PendingFrame(text: text, audioBytes: 0), at: 0)
+            debugLog("queue event type=session.update")
+        }
+        s.isReplayingHandshakeQueue = true
+    }
+
+    /// Sends what queued before the gate opened, then whatever queued while
+    /// those were being sent, until the queue is empty; only then do frames
+    /// go straight to the socket again. It stops, sending nothing more, once
+    /// the socket that opened the gate is no longer this client's: its
+    /// replacement keeps its own queue (#1058).
+    private func replayHandshakeQueue(for generation: RealtimeConnectionGeneration) {
+        while true {
+            let batch: (task: URLSessionWebSocketTask, frames: [PendingFrame])? = state.withLock { s in
+                guard isCurrentConnectionLocked(s.base, generation), s.base.socketState == .connected,
+                      let task = s.base.webSocketTask
+                else { return nil }
+                guard !s.pendingMessages.isEmpty else {
+                    s.isReplayingHandshakeQueue = false
+                    return nil
+                }
+                let frames = s.pendingMessages
+                s.pendingMessages.removeAll(keepingCapacity: true)
+                s.sentAudioBytes += frames.reduce(0) { $0 + $1.audioBytes }
+                return (task, frames)
+            }
+            guard let batch else { return }
+            for frame in batch.frames {
+                transmit(frame.text, on: batch.task)
+            }
+        }
+    }
+
+    private func transmit(_ text: String, on task: URLSessionWebSocketTask) {
+        #if DEBUG
+        state.withLock { $0.transmitObserverForTesting }?(task, text)
+        #endif
+
+        task.send(.string(text)) { [weak self] error in
             guard let self, let error else { return }
             self.handleTerminalSocketError(
                 for: task,
@@ -435,44 +483,33 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         timer.schedule(deadline: .now() + 3)
         timer.setEventHandler { [weak self] in
-            guard let self else { return }
-            let startup:
-                (modelName: String, shouldSendUpdate: Bool, queuedMessages: [PendingFrame])? = self.state
-                    .withLock { s in
-                        // Cancelling a DispatchSourceTimer does not unqueue a
-                        // handler already on its way: without this, a timer
-                        // armed for the previous socket puts the NEW one into
-                        // compatibility mode and flushes its queue early.
-                        guard self.isCurrentConnectionLocked(s.base, generation) else { return nil }
-                        guard s.base.socketState == .connected else { return nil }
-                        guard !s.hasReceivedSessionCreated else { return nil }
-                        self.stopSessionReadyTimerLocked(&s)
-                        s.hasBypassedSessionCreatedGate = true
-                        let modelName = s.pendingModelName
-                        let shouldSendUpdate = !s.hasSentSessionUpdate && !modelName.isEmpty
-                        if shouldSendUpdate {
-                            s.hasSentSessionUpdate = true
-                        }
-                        let queuedMessages = s.pendingMessages
-                        s.pendingMessages.removeAll(keepingCapacity: true)
-                        return (
-                            modelName: modelName, shouldSendUpdate: shouldSendUpdate,
-                            queuedMessages: queuedMessages
-                        )
-                    }
-            guard let startup else { return }
-            self.emit(
-                .status("Connected without session.created; using compatibility mode."),
-                from: generation)
-            if startup.shouldSendUpdate {
-                self.send(event: ["type": "session.update", "model": startup.modelName])
-            }
-            for message in startup.queuedMessages {
-                self.sendText(message.text, audioBytes: message.audioBytes)
-            }
+            self?.bypassSessionCreatedGate(for: generation)
         }
         s.sessionReadyTimer = timer
         timer.resume()
+    }
+
+    /// No `session.created` within the timer: compatibility mode opens the
+    /// gate itself.
+    private func bypassSessionCreatedGate(for generation: RealtimeConnectionGeneration) {
+        let opened: Bool = state.withLock { s in
+            // Cancelling a DispatchSourceTimer does not unqueue a
+            // handler already on its way: without this, a timer
+            // armed for the previous socket puts the NEW one into
+            // compatibility mode and flushes its queue early.
+            guard isCurrentConnectionLocked(s.base, generation) else { return false }
+            guard s.base.socketState == .connected else { return false }
+            guard !s.hasReceivedSessionCreated else { return false }
+            stopSessionReadyTimerLocked(&s)
+            s.hasBypassedSessionCreatedGate = true
+            openSendGateLocked(&s)
+            return true
+        }
+        guard opened else { return }
+        emit(
+            .status("Connected without session.created; using compatibility mode."),
+            from: generation)
+        replayHandshakeQueue(for: generation)
     }
 
     private func stopPingTimerLocked(_ s: inout State) {
@@ -561,6 +598,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         s.isGenerationInProgress = false
         s.finalCommitCompletionGate = .idle
         s.pendingMessages.removeAll(keepingCapacity: false)
+        s.isReplayingHandshakeQueue = false
         s.pendingModelName = ""
     }
 
@@ -623,15 +661,33 @@ extension RealtimeAPIWebSocketClient {
         state.withLock { $0.lastConnectConfigurationForTesting }
     }
 
+    /// Runs between the handshake opening the send gate and the queue
+    /// replay, so a test can send or swap the socket there (#1058).
+    package func debugSetBeforeHandshakeDrain(_ hook: (@Sendable () -> Void)?) {
+        state.withLock { $0.beforeHandshakeDrainForTesting = hook }
+    }
+
+    /// What the session-ready timer does when it fires, run now.
+    package func debugBypassSessionCreatedGateForTesting() {
+        bypassSessionCreatedGate(for: connectionGeneration)
+    }
+
+    /// Hears every frame as it is handed to a socket, in order.
+    package func debugObserveTransmits(_ observer: (@Sendable (URLSessionWebSocketTask, String) -> Void)?) {
+        state.withLock { $0.transmitObserverForTesting = observer }
+    }
+
     package func debugPrimeConnectedStateForTesting(
         task: URLSessionWebSocketTask,
         isUserInitiatedDisconnect: Bool = false,
         hasReceivedSessionCreated: Bool = false,
         usageBackend: UsageEntry.Backend? = nil,
-        usageModel: String = ""
+        usageModel: String = "",
+        modelName: String = ""
     ) {
         state.withLock { s in
             closeSocketLocked(&s, cancelTask: false)
+            s.pendingModelName = modelName
             s.base.connectionGeneration = .next()
             s.base.webSocketTask = task
             s.base.socketState = .connected
