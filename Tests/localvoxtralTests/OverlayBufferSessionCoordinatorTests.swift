@@ -199,6 +199,28 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
         )
     }
 
+    /// #1074: levels move the bars while the user speaks, and never
+    /// re-render the panel, which would re-measure it 30 times a second.
+    func testMicLevelsReachTheBarsOnlyWhileListeningAndRenderNothing() {
+        let renderer = MockOverlayRenderer()
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: MockOverlayAnchorResolver()
+        )
+        coordinator.updateMicLevel(0.2)
+        coordinator.startSession()
+        let renders = renderer.snapshots.count
+        coordinator.updateMicLevel(0.5)
+        coordinator.updateMicLevel(0.8)
+        XCTAssertEqual(renderer.micLevels, [0.5, 0.8], "none before the session")
+        XCTAssertEqual(renderer.snapshots.count, renders, "a level renders no snapshot")
+
+        coordinator.beginFinalizing(displayBufferText: "hi", commitBufferText: "hi")
+        coordinator.updateMicLevel(0.9)
+        XCTAssertEqual(renderer.micLevels, [0.5, 0.8], "the mic is off once the dictation stops")
+    }
+
     func testCommitUsesPIDCapturedAtStopTime() {
         let renderer = MockOverlayRenderer()
         let anchorResolver = MockOverlayAnchorResolver()
@@ -553,6 +575,11 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
 private final class MockOverlayRenderer: OverlayBufferRendering {
     var snapshots: [OverlayBufferStateMachine.Snapshot?] = []
     var hideCallCount = 0
+    var micLevels: [Double] = []
+
+    func updateMicLevel(_ level: Double) {
+        micLevels.append(level)
+    }
 
     func render(snapshot: OverlayBufferStateMachine.Snapshot?) {
         snapshots.append(snapshot)
