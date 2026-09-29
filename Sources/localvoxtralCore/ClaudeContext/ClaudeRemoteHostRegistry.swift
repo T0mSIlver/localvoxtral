@@ -615,12 +615,7 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     }
 
     public static func defaultFileURL() -> URL {
-        let applicationSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        return applicationSupport
-            .appendingPathComponent("localvoxtral", isDirectory: true)
+        return LocalvoxtralDataDirectory.url()
             // The shared app-support directory already exists as 0755 on
             // normal installs. The hardened store requires a leaf it alone
             // owns at 0700; never try to tighten permissions on the shared

@@ -18,7 +18,7 @@ if [[ $# -ne 1 ]]; then
 fi
 OUT="$1"
 SUPPORT="$HOME/Library/Application Support"
-STORE="$SUPPORT/default.store"
+STORE="$SUPPORT/localvoxtral/history.store"
 AUDIO="$SUPPORT/localvoxtral/dictation-audio"
 LEARNED="$SUPPORT/localvoxtral/learned-terms.json"
 DOMAIN="com.localvoxtral.app"

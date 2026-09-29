@@ -149,6 +149,20 @@ final class DiagnosticRecordStoreTests: XCTestCase {
 
     /// A record belongs to a History entry; an id that is not one is refused
     /// rather than written under a name nothing can delete it by.
+    /// The launch sweep keeps every record while the history holds no
+    /// dictation: an empty store is one that lost its rows (#985).
+    @MainActor
+    func testTheLaunchSweepKeepsEveryRecordWhenTheHistoryIsEmpty() async throws {
+        let store = makeStore()
+        try store.write(makeRecord())
+        try store.write(makeRecord())
+        let history = try XCTUnwrap(DictationSessionStore.inMemory())
+        history.diagnosticRecordStore = store
+        await history.removeOrphanedAudio().value
+
+        XCTAssertEqual(store.storedIDs().count, 2)
+    }
+
     func testWriteRefusesAnIDThatIsNotAHistoryID() {
         XCTAssertThrowsError(try makeStore().write(makeRecord(id: "not-a-uuid"))) {
             XCTAssertEqual($0 as? DiagnosticRecordStore.StoreError, .invalidID("not-a-uuid"))

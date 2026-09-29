@@ -239,6 +239,9 @@ defaults write "$BUNDLE_ID" "settings.onboarding_completed" -bool true
 defaults write "$BUNDLE_ID" "settings.modifier_only_hotkey_enabled" -bool true
 defaults write "$BUNDLE_ID" "settings.llm_polishing_enabled" -bool true
 LAUNCHED_APP=1
+# The captured app keeps its History and other stores out of the owner's (#985).
+lv_isolate_data lv-readme-assets-data \
+  || { echo "Could not make a data folder for the captured app; not launching it on the owner's data." >&2; exit 1; }
 lv_open "$APP_PATH"
 for _ in $(seq 1 20); do pgrep -xq "$APP_PROCESS" && break; sleep 0.5; done
 APP_PID="$(pgrep -xn "$APP_PROCESS")"

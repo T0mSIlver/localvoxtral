@@ -167,7 +167,11 @@ from your issue and say so in your report. Don't ask whether to file it.
   builds (#87). App resources resolve through `Bundle.localvoxtralResources`.
 - The launch smoke copies the packaged app outside the workspace with
   `.build` hidden, because same-tree launches mask the #87 class of breakage.
-  Don't simplify it.
+  Don't simplify it. The runner runs as the owner, so any launch of the app
+  there gets data of its own, or it opens the owner's History (#985): the
+  smokes set `CFFIXED_USER_HOME` (`scripts/ci/launch-smoke.py`), and lanes
+  that need the owner's preferences export `LOCALVOXTRAL_DATA_HOME` for
+  `lv_open`.
 
 ## Code
 

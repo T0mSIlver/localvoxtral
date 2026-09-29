@@ -29,4 +29,11 @@ final class LaunchWindowPolicyTests: XCTestCase {
             .window
         )
     }
+
+    func testALaunchSmokeShowsNoWindowEvenBeforeOnboarding() {
+        XCTAssertEqual(
+            LaunchWindowPolicy.decide(
+                onboardingCompleted: false, opensWindowAtLaunch: true, isLaunchSmoke: true),
+            .nothing)
+    }
 }

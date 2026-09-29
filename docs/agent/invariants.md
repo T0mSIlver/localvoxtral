@@ -2596,7 +2596,7 @@ there is not.
   and it never reaches the registry. The trust is the hook path's, unchanged:
   the 0700 directory, the 0600 socket and `getpeereid` before the first byte,
   so only processes running as the user can ask, and each of them could read
-  `default.store` and `learned-terms.json` from disk already. That equivalence
+  `history.store` and `learned-terms.json` from disk already. That equivalence
   is the whole argument, so it bounds what the command may do: no TCP
   listener, ever (a loopback port is reachable by every local user and every
   page a browser loads); no command that writes history or starts a
