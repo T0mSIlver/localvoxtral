@@ -131,12 +131,11 @@ package struct VoiceMemoLedger: Codable, Equatable, Sendable {
         entries = entries.filter { names.contains($0.key) }
     }
 
-    package static func load(from url: URL) -> VoiceMemoLedger {
-        guard let data = try? Data(contentsOf: url),
-              let ledger = try? JSONDecoder().decode(VoiceMemoLedger.self, from: data),
-              ledger.version <= currentVersion
-        else { return VoiceMemoLedger() }
-        return ledger
+    /// An unreadable or future ledger is refused and left in place (#989):
+    /// read as empty, every memo still in the folder would become a second
+    /// capture.
+    package static func load(from url: URL) -> StoredFileLoad<VoiceMemoLedger> {
+        StoredFile.load(VoiceMemoLedger.self, from: url, currentVersion: currentVersion)
     }
 
     package func save(to url: URL) throws {

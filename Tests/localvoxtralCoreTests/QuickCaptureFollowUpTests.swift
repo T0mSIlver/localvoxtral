@@ -72,7 +72,7 @@ final class QuickCaptureFollowUpTests: XCTestCase {
         XCTAssertEqual(statuses.last, "Added to an earlier capture")
         XCTAssertEqual(routed, ["reach", "Added to a reach capture"])
         XCTAssertTrue(item.bodyToFile.hasSuffix("> Add a dark mode\n> \n> Also, the settings window"))
-        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).items.first?.followUps?.first?.text, "Also, the settings window")
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.first?.followUps?.first?.text, "Also, the settings window")
     }
 
     /// The router's pick of an open capture joins it only past the bars; an
@@ -196,7 +196,7 @@ final class QuickCaptureFollowUpTests: XCTestCase {
         XCTAssertEqual(
             classifier.calls.withLock { $0.last?.compactMap(\.captureID) }, [], "a split capture is never joined back"
         )
-        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).items.map(\.id), [followUp, id])
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.map(\.id), [followUp, id])
     }
 
     func testSplittingAnEarlierFollowUpRedraftsFromTheRemainingWords() async throws {

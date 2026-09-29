@@ -11,6 +11,8 @@ import Synchronization
 @Observable
 final class QuickCaptureInboxViewModel {
     private(set) var items: [QuickCaptureItem] = []
+    /// Set while the inbox file is refused (#989).
+    private(set) var storeProblem: StoredFileProblem?
     /// Bumped when a project's repository, GitHub description or filing
     /// choice lands, so the Projects pane reads them again.
     private(set) var projectsRevision = 0
@@ -78,9 +80,11 @@ final class QuickCaptureInboxViewModel {
         self.learnedTerms = learnedTerms
         linker = learnedTermStore.map { QuickCaptureProjectLinker(store: $0, github: github) }
         items = model.items
+        storeProblem = model.storeProblem
         model.onChange = { [weak self] in
             guard let self else { return }
             self.items = self.model.items
+            self.storeProblem = self.model.storeProblem
         }
         model.onRepositoryAnswered = { [weak learnedTermStore] key, repository in
             learnedTermStore?.recordTypedRepository(repository, projectKey: key)
