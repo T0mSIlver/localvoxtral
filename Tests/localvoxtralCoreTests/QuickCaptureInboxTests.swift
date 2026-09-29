@@ -372,6 +372,19 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: earlier), Data("earlier".utf8))
     }
 
+    /// A voice memo's capture into a refused Inbox throws, so the intake
+    /// leaves the memo in its folder (#988).
+    func testAVoiceMemoCaptureIntoARefusedInboxThrows() async throws {
+        let data = try writeInboxFile("{ not json")
+        let model = model(answer: ["reach": 0.9])
+
+        XCTAssertThrowsError(
+            try model.captureVoiceMemo(text: "Add a dark mode", historyRecordID: nil, id: UUID(), capturedAt: Date(timeIntervalSince1970: 1_000_000))
+        ) { XCTAssertTrue($0 is QuickCaptureInboxModel.StoreRefused) }
+        XCTAssertEqual(try Data(contentsOf: fileURL), data)
+        XCTAssertTrue(model.items.isEmpty)
+    }
+
     /// Start Over moves the file beside itself under a new name, and the
     /// Inbox saves again.
     func testStartOverMovesTheInboxFileAsideAndSavesAgain() async throws {

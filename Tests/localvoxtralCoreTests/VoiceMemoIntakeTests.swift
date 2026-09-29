@@ -233,7 +233,7 @@ final class VoiceMemoIntakeTests: XCTestCase {
 
         XCTAssertEqual(taken, 0)
         XCTAssertEqual(trashed, [], "the original stays until its capture is on disk")
-        let entry = try XCTUnwrap(VoiceMemoLedger.load(from: ledgerURL).entries["walk.m4a"])
+        let entry = try XCTUnwrap(VoiceMemoLedger.load(from: ledgerURL).value?.entries["walk.m4a"])
         guard case .transcribing(let itemID) = entry.state else {
             return XCTFail("the ledger says \(entry.state), not transcribing")
         }
@@ -243,7 +243,7 @@ final class VoiceMemoIntakeTests: XCTestCase {
         model.setTitle("A walk", for: itemID)
         _ = await intake.scan()
         XCTAssertEqual(trashed, ["walk.m4a"])
-        XCTAssertEqual(VoiceMemoLedger.load(from: ledgerURL).entries["walk.m4a"]?.state, .captured(itemID: itemID))
+        XCTAssertEqual(VoiceMemoLedger.load(from: ledgerURL).value?.entries["walk.m4a"]?.state, .captured(itemID: itemID))
         XCTAssertEqual(transcriber.calls.withLock { $0 }, ["walk.m4a"], "transcribed once")
     }
 

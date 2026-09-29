@@ -2,7 +2,8 @@ import XCTest
 @testable import localvoxtral
 
 /// #988: the launch sweep of voice memo recordings keeps every capture still
-/// in the Inbox, follow-ups included, whether voice memos are on or off.
+/// in the Inbox, follow-ups included, whether voice memos are on or off, and
+/// skips an Inbox it could not load.
 @MainActor
 final class VoiceMemoRecordingSweepTests: XCTestCase {
     private var directory: URL!
@@ -41,27 +42,52 @@ final class VoiceMemoRecordingSweepTests: XCTestCase {
                 try audioStore.write(pcm16: Data(repeating: 1, count: 320), for: id)
             }
 
-            let defaults = makeSettingsDefaults()
-            let settings = makeSettings(defaults: defaults)
-            settings.voiceMemosEnabled = enabled
-            let inboxModel = QuickCaptureInboxViewModel(
-                settings: settings, learnedTerms: { LearnedTerms() }, fileURL: inboxURL, applicationSupport: directory
-            )
-            _ = VoiceMemoController(
-                settings: settings,
-                inbox: inboxModel,
-                audioStore: audioStore,
-                ledgerURL: directory.appendingPathComponent("voice-memos.json"),
-                transcriber: UnusedTranscriber(),
-                isDictationActive: { false },
-                saveHistory: { _, _ in nil }
-            )
+            launch(inboxURL: inboxURL, audioStore: audioStore, voiceMemosEnabled: enabled)
 
             XCTAssertEqual(
                 audioStore.storedIDs(), [parent, followUp],
                 "voice memos \(enabled ? "on" : "off"): the unfiled capture and its follow-up keep their recordings"
             )
         }
+    }
+
+    /// An Inbox file the app cannot read holds captures it cannot list, so a
+    /// launch keeps every recording until the Inbox loads again.
+    func testALaunchWithAnUnreadableInboxKeepsEveryRecording() throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let inboxURL = directory.appendingPathComponent("quick-captures.json")
+        try Data(#"{"version":1,"items":[{"text":"half"#.utf8).write(to: inboxURL)
+        let audioStore = DictationAudioStore(directoryURL: directory.appendingPathComponent("voice-memo-audio"))
+        let ids: Set<UUID> = [UUID(), UUID()]
+        for id in ids {
+            try audioStore.write(pcm16: Data(repeating: 1, count: 320), for: id)
+        }
+
+        let inboxModel = launch(inboxURL: inboxURL, audioStore: audioStore, voiceMemosEnabled: true)
+
+        XCTAssertEqual(inboxModel.model.storeProblem, .unreadable)
+        XCTAssertEqual(audioStore.storedIDs(), ids)
+    }
+
+    @discardableResult
+    private func launch(
+        inboxURL: URL, audioStore: DictationAudioStore, voiceMemosEnabled: Bool
+    ) -> QuickCaptureInboxViewModel {
+        let settings = makeSettings(defaults: makeSettingsDefaults())
+        settings.voiceMemosEnabled = voiceMemosEnabled
+        let inboxModel = QuickCaptureInboxViewModel(
+            settings: settings, learnedTerms: { LearnedTerms() }, fileURL: inboxURL, applicationSupport: directory
+        )
+        _ = VoiceMemoController(
+            settings: settings,
+            inbox: inboxModel,
+            audioStore: audioStore,
+            ledgerURL: directory.appendingPathComponent("voice-memos.json"),
+            transcriber: UnusedTranscriber(),
+            isDictationActive: { false },
+            saveHistory: { _, _ in nil }
+        )
+        return inboxModel
     }
 
     private struct UnusedTranscriber: VoiceMemoTranscribing {
