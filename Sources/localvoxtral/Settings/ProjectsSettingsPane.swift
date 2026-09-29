@@ -194,11 +194,29 @@ struct ProjectDetailSheet: View {
     let openInbox: () -> Void
     let onDone: () -> Void
 
+    init(
+        projectKey: String, settings: SettingsStore, viewModel: DictationViewModel,
+        inbox: QuickCaptureInboxViewModel?, dictationProjectKeys: [String?],
+        openInbox: @escaping () -> Void, onDone: @escaping () -> Void, exportMessage: String? = nil
+    ) {
+        self.projectKey = projectKey
+        _settings = Bindable(settings)
+        self.viewModel = viewModel
+        self.inbox = inbox
+        self.dictationProjectKeys = dictationProjectKeys
+        self.openInbox = openInbox
+        self.onDone = onDone
+        _exportMessage = State(initialValue: exportMessage)
+    }
+
     @State private var isEditingRepository = false
     @State private var repositoryDraft = ""
     @State private var isEditingDescription = false
     @State private var descriptionDraft = ""
     @State private var removal: Removal?
+    /// What Export Terms… reported: a failed backup must show before the
+    /// user forgets the only copy.
+    @State private var exportMessage: String?
     private var row: ProjectsPaneRow? {
         _ = viewModel.learnedTermRevision
         // Any of its keys: the leading checkout changes when the Mac's
@@ -231,6 +249,12 @@ struct ProjectDetailSheet: View {
                         .accessibilityIdentifier("projects.forget")
                     Button("Ignore Project…") { removal = .ignore(row) }
                         .accessibilityIdentifier("projects.ignore")
+                }
+                if let exportMessage {
+                    Text(exportMessage)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .accessibilityIdentifier("projects.exportStatus")
                 }
                 Spacer()
                 Button("Done", action: onDone)
@@ -303,7 +327,7 @@ struct ProjectDetailSheet: View {
     private func exportButton(_ row: ProjectsPaneRow) -> some View {
         if !row.terms.isEmpty {
             Button("Export Terms…") {
-                LearnedTermsTransfer.exportTerms(from: viewModel.learnedTermStore) { _ in }
+                LearnedTermsTransfer.exportTerms(from: viewModel.learnedTermStore) { exportMessage = $0 }
             }
         }
     }
@@ -649,7 +673,7 @@ struct ProjectTermsGroup: View {
 
 /// The repositories the user ignored (#1006), collapsed at the bottom of
 /// Projects, each with Un-ignore. Shown once there is one, or while
-/// `ignored-projects.json` could not be read.
+/// `ignored-projects.json` could not be read or written.
 struct IgnoredProjectsGroup: View {
     let store: LearnedTermStore
     /// Read so the group redraws when the store changes.
@@ -670,12 +694,13 @@ struct IgnoredProjectsGroup: View {
                     _ = try await store.moveIgnoredListAsideAndStartOver()
                 }
             }
-        } else if !ignored.isEmpty {
+        } else if !ignored.isEmpty || store.ignoredListUnsaved {
             SettingsGroup(
                 title: "Ignored",
                 headerAction: (title: isExpanded ? "Hide" : "Show", action: { isExpanded.toggle() })
             ) {
                 if isExpanded {
+                    if store.ignoredListUnsaved { unsavedRow }
                     ForEach(ignored, id: \.key) { project in
                         SettingsGroupRow {
                             HStack(spacing: 10) {
@@ -687,6 +712,7 @@ struct IgnoredProjectsGroup: View {
                         }
                     }
                 } else {
+                    if store.ignoredListUnsaved { unsavedRow }
                     SettingsGroupRow {
                         Text(ignored.count == 1 ? "1 project" : "\(ignored.count) projects")
                             .foregroundStyle(.secondary)
@@ -694,6 +720,16 @@ struct IgnoredProjectsGroup: View {
                 }
             }
             .accessibilityIdentifier("projects.ignored")
+        }
+    }
+
+    /// `ignored-projects.json` could not be written: the store keeps the
+    /// change and tries again at its next write (#1006).
+    private var unsavedRow: some View {
+        SettingsGroupRow {
+            Text("Not saved yet. Retried at the next change.")
+                .foregroundStyle(.red)
+                .accessibilityIdentifier("projects.ignored.unsaved")
         }
     }
 }

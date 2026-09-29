@@ -156,9 +156,9 @@ final class ViewSnapshotTests: XCTestCase {
     /// Projects (#939), light and dark: the table, with a fork waiting for
     /// a choice, a project with no GitHub repository and the "No project"
     /// entry (#972), the collapsed Ignored group (#1006), then that group
-    /// open, one project's sheet with its whole term list and the "No
-    /// project" sheet. Made-up projects and hosts: the artifacts are
-    /// public.
+    /// open and with its list unsaved, one project's sheet with its whole
+    /// term list and after a failed Export Terms…, and the "No project"
+    /// sheet. Made-up projects and hosts: the artifacts are public.
     func testProjectsPane() async throws {
         for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             try await recordSettings(
@@ -173,6 +173,12 @@ final class ViewSnapshotTests: XCTestCase {
                     .background(Color(nsColor: .windowBackgroundColor)),
                 name: "projects-ignored-expanded-\(theme)",
                 width: 600, height: 200, growToFit: false, appearance: appearance)
+            try record(
+                IgnoredProjectsGroup(store: try unsavedIgnoringStore(), revision: 0, expanded: true)
+                    .padding(20)
+                    .background(Color(nsColor: .windowBackgroundColor)),
+                name: "projects-ignored-unsaved-\(theme)",
+                width: 600, height: 200, growToFit: false, appearance: appearance)
             let (settings, viewModel) = makeViewModel()
             let inbox = try projectsInbox(settings)
             try record(
@@ -184,6 +190,14 @@ final class ViewSnapshotTests: XCTestCase {
                 // window has none.
                 .background(Color(nsColor: .windowBackgroundColor)),
                 name: "projects-sheet-\(theme)",
+                width: 560, height: 760, growToFit: false, appearance: appearance)
+            try record(
+                ProjectDetailSheet(
+                    projectKey: "/work/demo", settings: settings, viewModel: viewModel, inbox: inbox,
+                    dictationProjectKeys: [], openInbox: {}, onDone: {},
+                    exportMessage: "Could not save the file.")
+                .background(Color(nsColor: .windowBackgroundColor)),
+                name: "projects-sheet-export-failed-\(theme)",
                 width: 560, height: 760, growToFit: false, appearance: appearance)
             try record(
                 UnlistedTermsSheet(viewModel: viewModel, inbox: inbox, onDone: {})
@@ -198,6 +212,22 @@ final class ViewSnapshotTests: XCTestCase {
         let store = LearnedTermStore(fileURL: nil)
         store.ignoreProject(key: "repo:github.com/example/side-project", name: "side-project", keys: [])
         store.ignoreProject(key: "/work/diary", name: "diary", keys: [])
+        store.waitForPendingWrites()
+        return store
+    }
+
+    /// A made-up ignored repository whose `ignored-projects.json` could not
+    /// be written: a folder sits where the file goes.
+    private func unsavedIgnoringStore() throws -> LearnedTermStore {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ViewSnapshotTests-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let store = LearnedTermStore(fileURL: directory.appendingPathComponent("learned-terms.json"))
+        store.waitForPendingWrites()
+        let ignoredURL = try XCTUnwrap(store.ignoredFileURL)
+        try FileManager.default.createDirectory(at: ignoredURL, withIntermediateDirectories: true)
+        try Data().write(to: ignoredURL.appendingPathComponent("blocker"))
+        store.ignoreProject(key: "repo:github.com/example/side-project", name: "side-project", keys: [])
         store.waitForPendingWrites()
         return store
     }

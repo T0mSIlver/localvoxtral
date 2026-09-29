@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import XCTest
 
 @testable import localvoxtralCore
@@ -137,6 +138,63 @@ final class LearnedTermsIgnoreTests: XCTestCase {
             XCTAssertFalse(after.needsProposal(projectKey: key, now: Self.start), key)
         }
         XCTAssertTrue(after.needsProposal(projectKey: "/w/new", now: Self.start), "other repos are still asked")
+    }
+
+    /// At the project cap, a dictation in an ignored checkout must not
+    /// evict another project before the sweep drops it (review,
+    /// 2026-09-29): that project's terms would be lost for good.
+    func testDictatingInAnIgnoredCheckoutAtTheCapEvictsNoOtherProject() async {
+        let moment = Mutex(Self.start.addingTimeInterval(-3_600))
+        let store = LearnedTermStore(fileURL: nil, now: { moment.withLock { $0 } })
+        let full = (0..<LearnedTerms.maxProjects).map {
+            LearnedTermProject(key: "/w/p\($0)", name: "p\($0)", terms: [term("T\($0)")], lastSeen: moment.withLock { $0 })
+        }
+        _ = await withCheckedContinuation { continuation in
+            store.importProjects(full) { continuation.resume(returning: $0) }
+        }
+        store.ignoreProject(key: quill.key, name: "quill", keys: ["/w/quill"])
+        moment.withLock { $0 = Self.start }
+
+        let mac = LearnedTermProjectIdentity(key: "/w/quill", name: "quill")
+        store.record(observations("Kern"), project: mac)
+        store.recordCorrection("Glyph", project: mac)
+        store.recordProposal(["Typesetter"], agent: .claude, project: mac, excluding: [])
+        store.waitForPendingWrites()
+
+        XCTAssertEqual(store.snapshot().projects.map(\.key).sorted(), full.map(\.key).sorted())
+    }
+
+    /// The ignore list could not be written (review, 2026-09-29): the
+    /// deletion is not written without it, the store says so, and the next
+    /// write tries again, so a relaunch never lifts the opt-out silently.
+    func testAnIgnoreListThatCouldNotBeWrittenIsRetriedAndNeverLiftedSilently() throws {
+        let fileURL = makeFileURL()
+        let store = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        let mac = LearnedTermProjectIdentity(key: "/w/quill", name: "quill")
+        store.record(observations("Kern"), project: mac)
+        store.waitForPendingWrites()
+        // A folder where the file goes makes its write fail.
+        let ignoredURL = try XCTUnwrap(store.ignoredFileURL)
+        try FileManager.default.createDirectory(at: ignoredURL, withIntermediateDirectories: true)
+        try Data().write(to: ignoredURL.appendingPathComponent("blocker"))
+
+        store.ignoreProject(key: quill.key, name: "quill", keys: [mac.key])
+        store.waitForPendingWrites()
+
+        XCTAssertTrue(store.snapshot().projects.isEmpty, "this session keeps it out")
+        XCTAssertTrue(store.ignoredListUnsaved, "Settings says it is not saved")
+        let onDisk = try XCTUnwrap(LearnedTermStore.terms(fromFileContents: Data(contentsOf: fileURL)).value)
+        XCTAssertEqual(onDisk.projects.map(\.key), [mac.key], "no deletion on disk without its ignore entry")
+
+        try FileManager.default.removeItem(at: ignoredURL)
+        store.record(observations("Inkwell"), project: .init(key: "/w/ink", name: "ink"))
+        store.waitForPendingWrites()
+        XCTAssertFalse(store.ignoredListUnsaved)
+
+        let reopened = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        reopened.waitForPendingWrites()
+        XCTAssertEqual(reopened.snapshot().ignored.projects.map(\.key), [quill.key], "the next write saved the list")
+        XCTAssertEqual(reopened.snapshot().projects.map(\.key), ["/w/ink"])
     }
 
     func testUnignoreLetsTheNextDictationRecordIt() {

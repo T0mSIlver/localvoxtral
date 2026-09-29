@@ -28,6 +28,9 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         /// Set, `ignored-projects.json` is left alone, and nothing is
         /// learned: without the list, any repo could be an ignored one.
         var ignoredListProblem: StoredFileProblem?
+        /// The last ignore-list write failed: memory holds a change the file
+        /// lacks, and every write tries it again before the terms' file.
+        var ignoredListUnsaved = false
     }
 
     package let fileURL: URL?
@@ -44,16 +47,20 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     /// `fileURL` nil keeps everything in memory (tests, previews). The file is
     /// read on the write queue right away, and every later read and write is
     /// ordered behind that, so nothing else ever has to load it.
+    /// `beforeLaunchLoad` runs on that queue first: tests hold the load there
+    /// to see what a slow launch answers.
     package init(
         fileURL: URL?,
         now: @escaping @Sendable () -> Date = { Date() },
-        onChange: (@Sendable () -> Void)? = nil
+        onChange: (@Sendable () -> Void)? = nil,
+        beforeLaunchLoad: (@Sendable () -> Void)? = nil
     ) {
         self.fileURL = fileURL
         self.now = now
         self.onChange = onChange
         if fileURL != nil {
             writeQueue.async { [self] in
+                beforeLaunchLoad?()
                 let ignoredLoad = loadIgnoredFromDisk()
                 var ignored = ignoredLoad.value ?? IgnoredProjects()
                 if let problem = ignoredLoad.problem {
@@ -89,7 +96,10 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
                     return true
                 }
                 if folded + dropped > 0, adopted, ignoredLoad.problem == nil {
-                    if loaded.ignored != ignored { writeIgnored(loaded.ignored) }
+                    if loaded.ignored != ignored, !writeIgnored(loaded.ignored) {
+                        onChange?()
+                        return
+                    }
                     Log.polishing.info(
                         "Learned terms: folded \(folded, privacy: .public) worktrees and checkouts into their projects, dropped \(dropped, privacy: .public) proposals shaped like code or records of ignored repos"
                     )
@@ -115,10 +125,14 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     /// What is in memory, without ever reading the disk: callers are the
     /// `@MainActor` commit path and Settings, and neither may block on a
     /// volume (review, 2026-09-20). Before the launch load lands this answers
-    /// empty, which costs the first dictation its remembered terms and nothing
-    /// else.
+    /// empty, which costs the first dictation its remembered terms, and with
+    /// the ignore list unknown, so no agent is asked for any repo until it
+    /// lands (#1006).
     package func snapshot() -> LearnedTerms {
-        state.withLock { $0.terms } ?? LearnedTerms()
+        if let terms = state.withLock({ $0.terms }) { return terms }
+        var pending = LearnedTerms()
+        pending.ignored.isUnreadable = fileURL != nil
+        return pending
     }
 
     /// The confirmed spellings for one project, strongest evidence first.
@@ -151,6 +165,14 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     /// learned or recorded until the user moves it aside.
     package var ignoredListProblem: StoredFileProblem? {
         state.withLock { $0.ignoredListProblem }
+    }
+
+    /// Whether the last write of `ignored-projects.json` failed. The change
+    /// holds in memory and is written again at the next change; the terms'
+    /// file is not written meanwhile, so a relaunch finds the project as it
+    /// was, not forgotten with no entry to keep it out.
+    package var ignoredListUnsaved: Bool {
+        state.withLock { $0.ignoredListUnsaved }
     }
 
     /// Terms, then the projects that hold them.
@@ -414,7 +436,7 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
                 // an ignored repo goes before it is kept or written (#1006).
                 terms.removeIgnoredProjects()
                 state.terms = terms
-                return (terms, terms.ignored != ignoredBefore)
+                return (terms, terms.ignored != ignoredBefore || state.ignoredListUnsaved)
             }
             guard let changed else {
                 Log.persistence.error("learned terms: a change was refused, a file could not be loaded")
@@ -424,7 +446,10 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
             // The ignore list first: a crash between the two writes then
             // leaves an ignored repo's records to the next load's sweep, never
             // a forgotten record with no ignore entry to keep it out.
-            if changed.ignoredChanged { writeIgnored(changed.terms.ignored) }
+            if changed.ignoredChanged, !writeIgnored(changed.terms.ignored) {
+                onChange?()
+                return
+            }
             write(changed.terms)
             onChange?()
         }
@@ -548,19 +573,25 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
             decoder: Self.decoder)
     }
 
-    /// Called on the write queue, never off it.
-    private func writeIgnored(_ ignored: IgnoredProjects) {
-        guard let ignoredFileURL, state.withLock({ $0.ignoredListProblem }) == nil else { return }
+    /// Called on the write queue, never off it. False when the write
+    /// failed, which `ignoredListUnsaved` then says.
+    @discardableResult
+    private func writeIgnored(_ ignored: IgnoredProjects) -> Bool {
+        guard let ignoredFileURL, state.withLock({ $0.ignoredListProblem }) == nil else { return true }
         do {
             let data = try Self.encoder.encode(ignored)
             try FileManager.default.createDirectory(
                 at: ignoredFileURL.deletingLastPathComponent(), withIntermediateDirectories: true
             )
             try data.write(to: ignoredFileURL, options: .atomic)
+            state.withLock { $0.ignoredListUnsaved = false }
+            return true
         } catch {
             Log.persistence.error(
-                "ignored projects: write failed: \(error.localizedDescription, privacy: .public)"
+                "ignored projects: write failed, kept in memory until the next change: \(error.localizedDescription, privacy: .public)"
             )
+            state.withLock { $0.ignoredListUnsaved = true }
+            return false
         }
     }
 

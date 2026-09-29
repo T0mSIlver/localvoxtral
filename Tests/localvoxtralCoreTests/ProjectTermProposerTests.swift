@@ -174,6 +174,30 @@ final class ProjectTermProposerTests: XCTestCase {
         XCTAssertTrue(store.snapshot().ignored.contains(key: repo), "and its key is known from now on")
     }
 
+    /// Until the launch load lands, the store cannot tell which repos are
+    /// ignored; a dictation then asks no agent (review, 2026-09-29).
+    func testADictationBeforeTheLaunchLoadAsksNoAgent() async throws {
+        let repo = try checkout("quillmark")
+        let fileURL = root.appendingPathComponent("support/learned-terms.json")
+        let seeded = LearnedTermStore(fileURL: fileURL, now: clock.now)
+        seeded.ignoreProject(key: repo, name: "quillmark", keys: [])
+        seeded.waitForPendingWrites()
+        let launch = DispatchSemaphore(value: 0)
+        let store = LearnedTermStore(fileURL: fileURL, now: clock.now, beforeLaunchLoad: { launch.wait() })
+        let runner = FakeRunner(.terms(["inkwell"]))
+        let proposer = ProjectTermProposer(
+            store: store, runner: runner, now: clock.now, trackedFiles: { _ in [] }, origin: { _ in nil },
+            usageRecorder: nil)
+
+        await commit(proposer, join(repo))
+        launch.signal()
+        store.waitForPendingWrites()
+        XCTAssertEqual(runner.count, 0)
+
+        await commit(proposer, join(try checkout("inkwell")))
+        XCTAssertEqual(runner.count, 1, "once loaded, a repo nobody ignored is asked")
+    }
+
     func testASecondDictationDoesNotRunAgain() async throws {
         let repo = try checkout("quillmark")
         let runner = FakeRunner(.terms(["inkwell"]))
