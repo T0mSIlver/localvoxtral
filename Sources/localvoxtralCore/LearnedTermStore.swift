@@ -390,7 +390,7 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
             write: { data, url in
                 try FileManager.default.createDirectory(
                     at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try data.write(to: url, options: .atomic)
+                try DurableFile.write(data, to: url)
             },
             change: change)
         switch update {
