@@ -491,6 +491,99 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
+    /// Mockups for #1074: how the overlay could show that polish changed the
+    /// text, frame by frame over the hold between insertion and close.
+    func testPolishCueMockups() throws {
+        let metrics = OverlayLayoutMetrics(bodyFontSize: OverlayLayoutMetrics.defaultBodyFontSize)
+        let raw = "so um rename the retry helper to retry with back off and run the unit test again"
+        let polished = "Rename the retry helper to retryWithBackoff and run the unit tests again."
+        typealias Cue = PolishCueMockup
+        var shots: [(name: String, cue: Cue?, chip: Bool, dark: Bool)] = [
+            ("today", nil, true, false),
+            ("today-dark", nil, true, true),
+            ("d-header", Cue(style: .headerTitle, progress: 0, raw: raw), false, false),
+            ("d-header-dark", Cue(style: .headerTitle, progress: 0, raw: raw), false, true),
+        ]
+        for p in [0.0, 0.5, 0.75, 0.95] {
+            shots.append(("a-marks-\(Int(p * 100))", Cue(style: .wordMarks, progress: p, raw: raw), false, false))
+        }
+        shots.append(("a-marks-dark", Cue(style: .wordMarks, progress: 0, raw: raw), false, true))
+        shots.append(("a-marks-reduce", Cue(style: .wordMarks, progress: 0.9, raw: raw, reduceMotion: true), false, false))
+        for p in [0.0, 0.2, 0.4, 0.6] {
+            shots.append(("b-fade-\(Int(p * 100))", Cue(style: .crossFade, progress: p, raw: raw), false, false))
+        }
+        shots.append(("b-fade-dark", Cue(style: .crossFade, progress: 0.3, raw: raw), false, true))
+        for p in [0.0, 0.3, 0.55, 0.8] {
+            shots.append(("c-pulse-\(Int(p * 100))", Cue(style: .borderPulse, progress: p, raw: raw), false, false))
+        }
+        shots.append(("c-pulse-dark", Cue(style: .borderPulse, progress: 0.3, raw: raw), false, true))
+        shots.append(("c-pulse-reduce", Cue(style: .borderPulse, progress: 0.9, raw: raw, reduceMotion: true), false, false))
+        for shot in shots {
+            let view = DictationOverlayView(
+                phase: .finalizing, text: polished, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, polished: shot.chip, polishCue: shot.cue)
+            let height = metrics.contentHeight(
+                text: raw, errorMessage: nil, draftReview: nil, destinations: nil)
+            let inset: CGFloat = 16
+            let framed = view
+                .frame(width: metrics.panelWidth, height: height)
+                .padding(inset)
+                .background(Color(white: shot.dark ? 0.22 : 0.55))
+            try record(
+                framed, name: "cue-\(shot.name)",
+                width: metrics.panelWidth + 2 * inset, height: height + 2 * inset, growToFit: false,
+                appearance: shot.dark ? .darkAqua : .aqua)
+        }
+
+        // Option E: a mark beside the menu bar mic for a moment after the close.
+        let template = try MenuBarIconFixture.template()
+        let mark = NSImage(size: template.size, flipped: false) { rect in
+            template.draw(in: rect)
+            NSColor.labelColor.set()
+            rect.fill(using: .sourceAtop)
+            let cell = rect.width / 22
+            NSColor.controlAccentColor.setFill()
+            for (x, y) in [(18, 1), (17, 2), (18, 2), (19, 2), (18, 3), (18, 0), (16, 2), (20, 2), (18, 4)] {
+                NSRect(
+                    x: rect.minX + (0.5 + CGFloat(x)) * cell,
+                    y: rect.maxY - (1.5 + CGFloat(y)) * cell,
+                    width: cell, height: cell
+                ).fill()
+            }
+            return true
+        }
+        mark.isTemplate = false
+        for (theme, appearance, bar) in [
+            ("light", NSAppearance.Name.aqua, Color(white: 0.9)),
+            ("dark", NSAppearance.Name.darkAqua, Color(white: 0.15)),
+        ] {
+            let renders = try [Self.tinted(template), mark].map { icon in
+                let rep = try MenuBarIconFixture.render(icon, appearance: appearance)
+                let image = NSImage(size: rep.size)
+                image.addRepresentation(rep)
+                return image
+            }
+            let view = HStack(alignment: .top, spacing: 20) {
+                ForEach(renders.indices, id: \.self) { index in
+                    VStack(spacing: 8) {
+                        Image(nsImage: renders[index])
+                            .resizable().scaledToFit()
+                            .frame(width: 13, height: 16).frame(height: 24)
+                        Image(nsImage: renders[index])
+                            .resizable().interpolation(.none)
+                            .frame(width: 88, height: 88)
+                        Text(index == 0 ? "idle" : "polished").font(.caption)
+                    }
+                }
+            }
+            .padding(16)
+            .background(bar)
+            .environment(\.colorScheme, theme == "light" ? .light : .dark)
+            try record(view, name: "cue-e-menubar-\(theme)", width: 260, height: 200, growToFit: false,
+                       appearance: appearance)
+        }
+    }
+
     /// A ready draft under spoken review (#927).
     private static let draft = QuickCaptureDraftSnapshot(
         id: UUID(uuidString: "00000000-0000-0000-0000-000000000927")!,

@@ -98,6 +98,8 @@ struct DictationOverlayView: View {
     /// (top left origin), and nil once it is gone: the panel swallows every
     /// click, so it finds the clicked one from these (#880).
     var onDestinationFrame: ((OverlayDestinationTarget, CGRect?) -> Void)? = nil
+    /// Mockup only (#1074): how the panel shows that polish changed the text.
+    var polishCue: PolishCueMockup? = nil
     private let cornerRadius: CGFloat = 12
 
     /// Warning text needs explicit light/dark variants: system `.red` over
@@ -373,10 +375,17 @@ struct DictationOverlayView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: OverlayLayoutMetrics.stackSpacing) {
             HStack(alignment: .center, spacing: 6) {
-                Text(phaseTitle)
-                    .font(.system(size: metrics.titleFontSize, weight: .semibold))
-                    .foregroundStyle(isSecureInputTitle ? Self.warningColor : Color.secondary)
-                if phase == .finalizing {
+                if let polishCue, polishCue.style == .headerTitle {
+                    Label(polishCue.headerTitle, systemImage: "wand.and.stars")
+                        .labelStyle(.titleAndIcon)
+                        .font(.system(size: metrics.titleFontSize, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                } else {
+                    Text(phaseTitle)
+                        .font(.system(size: metrics.titleFontSize, weight: .semibold))
+                        .foregroundStyle(isSecureInputTitle ? Self.warningColor : Color.secondary)
+                }
+                if phase == .finalizing, polishCue?.style != .headerTitle {
                     ProgressView()
                         .controlSize(.small)
                 }
@@ -402,7 +411,11 @@ struct DictationOverlayView: View {
 
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: true) {
-                    OverlayBodyScrollContent(text: displayText, metrics: metrics)
+                    if let polishCue {
+                        PolishCueBody(cue: polishCue, polished: displayText, metrics: metrics)
+                    } else {
+                        OverlayBodyScrollContent(text: displayText, metrics: metrics)
+                    }
                 }
                 .scrollDisabled(textHeight <= maxScrollableHeight)
                 .frame(
@@ -441,6 +454,11 @@ struct DictationOverlayView: View {
             // against light desktops.
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.25), lineWidth: 1)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .strokeBorder(Color.accentColor, lineWidth: 2)
+                .opacity(polishCue?.borderOpacity ?? 0)
         )
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .compositingGroup()
@@ -530,5 +548,81 @@ struct OverlayBodyScrollContent: View {
                 .frame(height: Self.bottomAnchorHeight)
                 .id(Self.bottomAnchorID)
         }
+    }
+}
+
+
+/// Mockup only (#1074): the options for showing that polish changed the text.
+struct PolishCueMockup {
+    enum Style { case wordMarks, crossFade, borderPulse, headerTitle }
+    var style: Style
+    /// 0 when the polished text lands (insertion runs in the same turn), 1 at
+    /// the panel's close.
+    var progress: Double
+    var raw: String
+    var reduceMotion = false
+
+    var headerTitle: String { "Polished" }
+
+    var borderOpacity: Double {
+        guard style == .borderPulse else { return 0 }
+        if reduceMotion { return 1 }
+        // One pulse: up over the first 30 %, down by 80 %.
+        if progress < 0.3 { return progress / 0.3 }
+        return max(0, 1 - (progress - 0.3) / 0.5)
+    }
+
+    var markOpacity: Double {
+        guard style == .wordMarks else { return 0 }
+        if reduceMotion { return 1 }
+        // Held for the first half, faded out by the close.
+        return progress < 0.5 ? 1 : max(0, 1 - (progress - 0.5) / 0.5)
+    }
+
+    var polishedOpacity: Double {
+        guard style == .crossFade, !reduceMotion else { return 1 }
+        return min(1, progress / 0.6)
+    }
+}
+
+struct PolishCueBody: View {
+    let cue: PolishCueMockup
+    let polished: String
+    let metrics: OverlayLayoutMetrics
+
+    private var marked: AttributedString {
+        var out = AttributedString(polished)
+        guard cue.style == .wordMarks else { return out }
+        let diff = TranscriptDiff.words(from: cue.raw, to: polished)
+        for range in diff.added {
+            let lower = polished.distance(from: polished.startIndex, to: range.lowerBound)
+            let upper = polished.distance(from: polished.startIndex, to: range.upperBound)
+            let a = out.index(out.startIndex, offsetByCharacters: lower)
+            let b = out.index(out.startIndex, offsetByCharacters: upper)
+            out[a..<b].backgroundColor = Color.accentColor.opacity(0.32 * cue.markOpacity)
+            if cue.markOpacity > 0 {
+                out[a..<b].underlineStyle = Text.LineStyle(
+                    pattern: .solid, color: Color.accentColor.opacity(cue.markOpacity))
+            }
+        }
+        return out
+    }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            if cue.style == .crossFade, cue.polishedOpacity < 1 {
+                Text(cue.raw)
+                    .font(.system(size: metrics.bodyFontSize))
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .opacity(1 - cue.polishedOpacity)
+            }
+            Text(marked)
+                .font(.system(size: metrics.bodyFontSize))
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+                .opacity(cue.polishedOpacity)
+        }
+        .frame(maxWidth: .infinity, minHeight: metrics.bodyLineHeight, alignment: .topLeading)
     }
 }
