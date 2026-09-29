@@ -177,8 +177,9 @@ final class DictationHistoryStoreFileTests: XCTestCase {
         let directory = makeDirectory()
         let legacy = directory.appendingPathComponent("default.store")
         let destination = directory.appendingPathComponent("localvoxtral/history.store")
-        try await seedStore(at: legacy, texts: ["one", "two"])
-        let before = try settledLegacyFile(legacy)
+        let seeded = directory.appendingPathComponent("seed.store")
+        try await seedStore(at: seeded, texts: ["one", "two"])
+        let before = try copySettled(seeded, to: legacy)
 
         XCTAssertEqual(
             DictationHistoryStoreFile.importLegacyStore(from: legacy, to: destination), .imported)
@@ -208,9 +209,10 @@ final class DictationHistoryStoreFileTests: XCTestCase {
     func testALegacyStoreTheMailAgentMigratedIsNotCopiedAndIsKept() async throws {
         let directory = makeDirectory()
         let legacy = directory.appendingPathComponent("default.store")
-        try await seedStore(at: legacy, texts: ["one"])
-        _ = try rawTexts(ForeignRequestModel.self, at: legacy, \.path)
-        let before = try settledLegacyFile(legacy)
+        let seeded = directory.appendingPathComponent("seed.store")
+        try await seedStore(at: seeded, texts: ["one"])
+        _ = try rawTexts(ForeignRequestModel.self, at: seeded, \.path)
+        let before = try copySettled(seeded, to: legacy)
 
         let store = try DictationSessionStore.open(
             directory: directory.appendingPathComponent("localvoxtral"), legacyStore: legacy).get()
@@ -260,14 +262,18 @@ final class DictationHistoryStoreFileTests: XCTestCase {
         XCTAssertEqual(DictationHistoryStoreFile.defaultDirectoryURL().lastPathComponent, "localvoxtral")
     }
 
-    /// The legacy file with its WAL folded in, so SwiftData releasing the
-    /// seeding store later (it checkpoints on close) cannot change it.
-    private func settledLegacyFile(_ url: URL) throws -> Data {
+    /// Copies `seeded`, its WAL folded in, to `legacy`: no SwiftData
+    /// connection ever holds the copy, so only the code under test can
+    /// change it. SwiftData releases a seeding store, and may write to it,
+    /// at a moment the test does not control.
+    private func copySettled(_ seeded: URL, to legacy: URL) throws -> Data {
         var db: OpaquePointer?
-        XCTAssertEqual(sqlite3_open(url.path, &db), SQLITE_OK)
+        XCTAssertEqual(sqlite3_open(seeded.path, &db), SQLITE_OK)
         XCTAssertEqual(sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil), SQLITE_OK)
+        let data = try Data(contentsOf: seeded)
         sqlite3_close(db)
-        return try Data(contentsOf: url)
+        try data.write(to: legacy)
+        return data
     }
 
     /// Nothing was written to the file, nor to its WAL.
