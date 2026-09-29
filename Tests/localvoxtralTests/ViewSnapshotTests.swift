@@ -514,6 +514,58 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
+    /// Mockups for #1074's colors: the chosen parts under each palette.
+    func testOverlayPaletteMockups() throws {
+        let metrics = OverlayLayoutMetrics(bodyFontSize: OverlayLayoutMetrics.defaultBodyFontSize)
+        let partial = "so um rename the retry helper to retry with back off and"
+        let raw = "so um rename the retry helper to retry with back off and run the unit test again"
+        let polished = "Rename the retry helper to retryWithBackoff and run the unit tests again."
+        let speaking = OverlayMicLevel()
+        for level in [0.35, 0.95, 0.6, 0.8] { speaking.push(level) }
+        let teal = OverlayPalette.polish
+        let palettes: [(String, polish: Color, focused: Color)] = [
+            ("a", teal, .secondary),
+            ("b", .accentColor, .secondary),
+            ("c", .accentColor, .accentColor),
+            ("d", .primary, .secondary),
+        ]
+        defer {
+            OverlayPalette.polish = teal
+            OverlayPalette.focusedApp = .secondary
+        }
+        for palette in palettes {
+            OverlayPalette.polish = palette.polish
+            OverlayPalette.focusedApp = palette.focused
+            let states: [(String, DictationOverlayView)] = [
+                ("1-listening", DictationOverlayView(
+                    phase: .buffering, text: partial, errorMessage: nil, secureInputActive: false,
+                    metrics: metrics, micLevel: speaking, motion: .frozen,
+                    destinations: Self.strip(waiting: 3, open: true))),
+                ("2-polishing", DictationOverlayView(
+                    phase: .finalizing, text: raw, errorMessage: nil, secureInputActive: false,
+                    metrics: metrics, polishing: true, motion: .frozen)),
+                ("3-landed", DictationOverlayView(
+                    phase: .finalizing, text: polished, errorMessage: nil, secureInputActive: false,
+                    metrics: metrics, polished: true, polishedFrom: raw, motion: .frozen)),
+            ]
+            for (name, overlay) in states {
+                for dark in [false, true] {
+                    let height = metrics.contentHeight(
+                        text: raw, errorMessage: nil, draftReview: nil, destinations: overlay.destinations)
+                    let inset: CGFloat = 16
+                    let view = overlay
+                        .frame(width: metrics.panelWidth, height: height)
+                        .padding(inset)
+                        .background(Color(white: dark ? 0.22 : 0.55))
+                    try record(
+                        view, name: "palette-\(palette.0)-\(name)\(dark ? "-dark" : "")",
+                        width: metrics.panelWidth + 2 * inset, height: height + 2 * inset, growToFit: false,
+                        appearance: dark ? .darkAqua : .aqua)
+                }
+            }
+        }
+    }
+
     /// A ready draft under spoken review (#927).
     private static let draft = QuickCaptureDraftSnapshot(
         id: UUID(uuidString: "00000000-0000-0000-0000-000000000927")!,
