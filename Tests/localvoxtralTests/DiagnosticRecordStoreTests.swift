@@ -163,6 +163,23 @@ final class DiagnosticRecordStoreTests: XCTestCase {
         XCTAssertEqual(store.storedIDs().count, 2)
     }
 
+    /// A record already in quarantine is never overwritten: another running
+    /// copy may have moved the same record there a moment ago.
+    func testQuarantineNeverOverwritesARecordAlreadyThere() throws {
+        let store = makeStore()
+        let record = makeRecord()
+        let url = try store.write(record)
+        let folder = URL(fileURLWithPath: "/tmp/lvx-quarantine-test")
+        let earlier = folder.appendingPathComponent(url.lastPathComponent)
+        io.seed(Data([9]), at: earlier)
+
+        XCTAssertEqual(store.quarantine([try XCTUnwrap(UUID(uuidString: record.id))], into: folder), 1)
+
+        XCTAssertEqual(try io.read(from: earlier), Data([9]))
+        XCTAssertEqual(io.fileNames.filter { $0.hasSuffix(url.lastPathComponent) }.count, 2)
+        XCTAssertTrue(store.storedIDs().isEmpty)
+    }
+
     func testWriteRefusesAnIDThatIsNotAHistoryID() {
         XCTAssertThrowsError(try makeStore().write(makeRecord(id: "not-a-uuid"))) {
             XCTAssertEqual($0 as? DiagnosticRecordStore.StoreError, .invalidID("not-a-uuid"))

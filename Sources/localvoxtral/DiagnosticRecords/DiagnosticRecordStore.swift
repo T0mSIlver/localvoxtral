@@ -271,7 +271,14 @@ struct DiagnosticRecordStore: Sendable {
             for record in ((try? listRecords()) ?? []) where ids.contains(record.id) {
                 do {
                     guard let data = try io.read(from: record.url) else { continue }
-                    try io.write(data, to: folder.appendingPathComponent(record.url.lastPathComponent))
+                    // Never over a record already there: another running copy
+                    // may have quarantined the same one a moment ago.
+                    var destination = folder.appendingPathComponent(record.url.lastPathComponent)
+                    if try io.read(from: destination) != nil {
+                        destination = folder.appendingPathComponent(
+                            "\(UUID().uuidString)-\(record.url.lastPathComponent)")
+                    }
+                    try io.write(data, to: destination)
                     try directoryIO.remove(at: record.url)
                     moved += 1
                 } catch {
