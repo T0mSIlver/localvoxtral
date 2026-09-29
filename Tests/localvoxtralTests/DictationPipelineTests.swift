@@ -346,6 +346,39 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(waiting.focuser.readBackSessionIDs, ["pay"], "the stop asked which session the pane shows")
     }
 
+    /// The dictation starts in a session with a prompt route, and Tab picks
+    /// another one: the words go into the picked pane by keyboard, and the
+    /// start session's route gets nothing (#1054).
+    func testTabToAnotherSessionNeverWritesThroughTheStartSessionsRoute() async throws {
+        let relay = try FakeOpencodePromptRelay()
+        addTeardownBlock { relay.stop() }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.overlay.insertsThroughCommitter = true
+        pipeline.overlay.passesTargetPIDToCommitter = false
+        joinOpencodePane(pipeline, relay: relay.relay(sessionID: "ses_a").address)
+        let waiting = installWaitingSessions(pipeline, ["pay": "/r/payments"])
+        let typed = recordTypedText(pipeline)
+        let terminalPID: pid_t = 4343
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == terminalPID ? TerminalScreenAllowlist.ghosttyBundleID : nil
+        }
+
+        await startAndSpeak(pipeline)
+        XCTAssertTrue(pipeline.viewModel.textInsertion.promptRelayTakesText, "precondition: the relay is armed")
+        pipeline.viewModel.session.moveDestination(forward: false)
+        await pipeline.viewModel.session.destinationFocusTask?.value
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
+
+        pipeline.overlay.commitTargetAppPID = terminalPID
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline)
+
+        XCTAssertEqual(waiting.focuser.readBackSessionIDs, ["pay"])
+        let typedAll = await typed.waitFor(Self.phrase)
+        XCTAssertTrue(typedAll, "typed: \(typed.text.debugDescription)")
+        XCTAssertEqual(relay.calls.map(\.path), [], "the start session's prompt gets nothing")
+    }
+
     /// Two sessions in two tabs of one terminal share its app. The user
     /// switched tabs between the pick and the stop: the focused pane no
     /// longer shows the picked session, so the words stay in History.
