@@ -464,6 +464,10 @@ final class DictationSessionController {
     /// focus, kept from the stop to the commit.
     @ObservationIgnored
     var sessionCommitGuard: DestinationCommitGuard?
+    /// The picked pane that read back before the polish, read back again
+    /// right before the insertion (#1056).
+    @ObservationIgnored
+    var sessionPickedPane: (sessionID: String, bundleID: String)?
     @ObservationIgnored
     var sessionStartedAt: Date?
     /// This start's press → socket → microphone → first buffer line (#527).
