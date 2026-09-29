@@ -354,6 +354,7 @@ extension DictationSessionController {
     /// tells them apart. What fails keeps the words in History as not
     /// inserted.
     func checkDestinationBeforeCommit(sessionMode: DictationOutputMode) -> DestinationCommitCheck {
+        sessionPickedPane = nil
         guard let commitGuard = sessionCommitGuard else { return .commit }
         sessionCommitGuard = nil
         let targetPID = overlayBufferCoordinator.commitTargetAppPID
@@ -420,8 +421,34 @@ extension DictationSessionController {
                 self.keepOverlayInHistory(sessionMode: sessionMode, status: DestinationStatus.paneLeftFront, record: record)
                 return
             }
+            self.sessionPickedPane = (sessionID, bundleID)
             proceed()
         }
+    }
+
+    /// Asked by a commit task after an await (the polish, the second pass),
+    /// right before it inserts: two tabs of one terminal share its pid, so
+    /// a tab switch while the task waited would take the words (#1056).
+    /// True when no pane was picked or the focused pane still shows the
+    /// picked session. Otherwise the text is saved as not inserted, the stop
+    /// finishes, and the caller inserts nothing; a cancelled task returns
+    /// false and changes nothing.
+    func pickedPaneStillShownBeforeInsertion(sessionMode: DictationOutputMode) async -> Bool {
+        guard let picked = sessionPickedPane else { return true }
+        var shows = false
+        if let navigator = sessionNavigator {
+            shows = await navigator.focusedPaneShows(sessionID: picked.sessionID, bundleID: picked.bundleID)
+        }
+        guard !Task.isCancelled else { return false }
+        guard !shows else { return true }
+        Log.dictation.notice("destination: the picked session's pane left the front while the commit waited; kept in History")
+        let saveNotInserted = saveInterruptedPolishCommit
+        saveInterruptedPolishCommit = nil
+        saveNotInserted?()
+        overlayBufferCoordinator.reset()
+        completeStoppedSessionCleanup(sessionMode: sessionMode, overlayCommitOutcome: nil, shouldCommitOverlay: true)
+        statusText = DestinationStatus.paneLeftFront
+        return false
     }
 
     /// Saves the stopped overlay dictation as not inserted and finishes the

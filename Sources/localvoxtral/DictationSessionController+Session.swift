@@ -44,6 +44,7 @@ extension DictationSessionController {
         sessionIsQuickCapture = false
         sessionDraftReview = nil
         sessionCommitGuard = nil
+        sessionPickedPane = nil
         sessionStartedAt = nil
         sessionCaptureTimeline = nil
         sessionProvider = nil
