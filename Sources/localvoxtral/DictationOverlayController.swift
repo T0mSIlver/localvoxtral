@@ -207,6 +207,9 @@ final class DictationOverlayController {
     /// Where each destination pill or list row sits, top-left origin in the
     /// hosting view, as the view last reported it.
     private var destinationFrames: [OverlayDestinationTarget: CGRect] = [:]
+    /// The level bars read this directly, so a level never re-renders or
+    /// re-measures the panel.
+    private let micLevel = OverlayMicLevel()
 
     /// A click, not a drag, on a destination (#880). The panel keeps
     /// swallowing the click, so the target app keeps the focus.
@@ -334,6 +337,9 @@ final class DictationOverlayController {
             secureInputActive: snapshot.secureInputActive,
             metrics: metrics,
             polished: snapshot.polished,
+            polishedFrom: snapshot.polishedFrom,
+            polishing: snapshot.polishing,
+            micLevel: micLevel,
             claudeJoin: snapshot.claudeJoin,
             destinations: snapshot.destinations,
             draftReview: snapshot.draftReview,
@@ -353,6 +359,9 @@ final class DictationOverlayController {
             height: min(contentHeight, metrics.maximumPanelHeight)
         )
 
+        // A polished panel is only held so its marks can be seen: the text
+        // is already in, so clicks reach the field under it (#1074).
+        panel.ignoresMouseEvents = snapshot.phase == .finalizing && snapshot.polished
         lastPositioning = (anchor: snapshot.anchor, contentSize: size)
         positionPanel(near: snapshot.anchor, contentSize: size)
         applyFrameViewMask()
@@ -374,7 +383,13 @@ final class DictationOverlayController {
         lastPositioning = nil
         destinationFrames = [:]
         metricsLock.unlock()
+        micLevel.reset()
+        panel.ignoresMouseEvents = false
         panel.orderOut(nil)
+    }
+
+    func updateMicLevel(_ level: Double) {
+        micLevel.push(level)
     }
 
     // MARK: - Dragging
