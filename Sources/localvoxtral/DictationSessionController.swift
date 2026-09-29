@@ -649,6 +649,9 @@ final class DictationSessionController {
             statusText = StatusStrings.ready
         } else if isFinalizingStop {
             activeRealtimeClient.disconnect()
+            // A commit already polishing is cancelled and saved as not
+            // inserted, as a new dictation does to it (#1059).
+            guard !cancelPolishingForNewSessionIfNeeded() else { return }
             finishStoppedSession(promotePendingSegment: false)
         }
     }
@@ -868,6 +871,7 @@ final class DictationSessionController {
 
         guard finalizeRemainingAudio else {
             activeRealtimeClient.disconnect()
+            ownStopWithoutFinalization()
             finishStoppedSession(promotePendingSegment: true)
             return
         }
@@ -880,6 +884,16 @@ final class DictationSessionController {
         }
         scheduleStopFinalization()
         startStopFinalizationWatchdog()
+    }
+
+    /// A stop that skips finalization owns its commit until it completes,
+    /// as a finalizing stop does: a start meanwhile (a new microphone,
+    /// #1055) must go through `cancelPolishingForNewSessionIfNeeded`, which
+    /// saves the text. The socket is gone, so nothing it still emits may
+    /// reach the transcript the commit is using.
+    func ownStopWithoutFinalization() {
+        sessionConnectionGeneration = .none
+        isFinalizingStop = true
     }
 
     func clearTranscript() {
