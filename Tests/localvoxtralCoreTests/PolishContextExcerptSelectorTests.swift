@@ -14,14 +14,11 @@ final class PolishContextExcerptSelectorTests: XCTestCase {
 
     /// The common case must be untouched: a short clipboard reaches the model
     /// exactly as copied, with no filtering, trimming, or markers.
-    func testTextThatFitsIsReturnedVerbatim() {
-        let text = "error in UserSessionManager.swift\n\n  at line 42\n"
-        XCTAssertEqual(select(text, transcript: "fix the user session manager", cap: 6000), text)
-    }
-
-    func testTextExactlyAtTheCapIsReturnedVerbatim() {
-        let text = String(repeating: "a", count: 100)
-        XCTAssertEqual(select(text, transcript: "anything", cap: 100), text)
+    func testTextThatFitsOrSitsExactlyAtTheCapIsReturnedVerbatim() {
+        let fits = "error in UserSessionManager.swift\n\n  at line 42\n"
+        XCTAssertEqual(select(fits, transcript: "fix the user session manager", cap: 6000), fits, "fits")
+        let exact = String(repeating: "a", count: 100)
+        XCTAssertEqual(select(exact, transcript: "anything", cap: 100), exact, "exactly at the cap")
     }
 
     func testZeroCapRendersNothing() {
@@ -40,20 +37,6 @@ final class PolishContextExcerptSelectorTests: XCTestCase {
             )
             XCTAssertLessThanOrEqual(excerpt.count, cap, "cap=\(cap)")
         }
-    }
-
-    /// Elision markers are added after selection and cost characters; the cap
-    /// still holds, which is what the budget's arithmetic depends on.
-    func testCapHoldsEvenWhenElisionMarkersAreAdded() {
-        let lines = (0..<60).map { index -> String in
-            index % 2 == 0 ? "AlphaEntity\(index).swift" : "irrelevant filler prose here"
-        }
-        let excerpt = PolishContextExcerptSelector.select(
-            lines: lines,
-            transcript: "alpha entity",
-            characterCap: 120
-        )
-        XCTAssertLessThanOrEqual(excerpt.count, 120)
     }
 
     // MARK: - Transcript-aware selection
@@ -173,7 +156,8 @@ final class PolishContextExcerptSelectorTests: XCTestCase {
         let lines = (0..<200).map { index -> String in
             index % 2 == 0 ? "AlphaEntity.swift" : "totally unrelated filler text goes here"
         }
-        for cap in [50, 200, 1000, 4000] {
+        // 120 is the cap the old alternating-marker test pinned.
+        for cap in [50, 120, 200, 1000, 4000] {
             let excerpt = PolishContextExcerptSelector.select(
                 lines: lines,
                 transcript: "alpha entity dot swift",

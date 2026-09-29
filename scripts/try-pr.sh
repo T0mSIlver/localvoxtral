@@ -9,8 +9,7 @@ set -euo pipefail
 #   ./scripts/try-pr.sh <pr-number>            # e.g. ./scripts/try-pr.sh 30
 #   ./scripts/try-pr.sh main                   # main's newest build; offers to
 #                                              # build main's head when behind
-#   ./scripts/try-pr.sh main --dogfood         # instrumented dogfood build
-#   ./scripts/try-pr.sh 42 --dogfood --ui-gate # install where the UI gate can launch it
+#   ./scripts/try-pr.sh 42 --ui-gate           # install where the UI gate can launch it
 #
 # --ui-gate installs the bundle into the SSH UI gate's artifact root
 # (~/localvoxtral-ui-artifacts) instead of leaving it in /tmp, and does NOT
@@ -19,15 +18,10 @@ set -euo pipefail
 # that root on purpose (a world-writable root would let any local process plant
 # a bundle claiming com.localvoxtral.app), so the install destination is what
 # moves, never the roots. Default behaviour is unchanged: /tmp, then `open`.
+# A build with the test harness (the gate's `app` verbs) comes from a UI Smoke
+# dispatch instead, which installs it for the gate (docs/test-harness.md).
 #
-# --dogfood fetches the LOCALVOXTRAL_DOGFOOD-instrumented artifact
-# (localvoxtral-app-dogfood), verifies its Info.plist stamp, arms the runtime
-# capture opt-in default, and launches it. The dogfood artifact is OPT-IN in
-# CI ([dogfood-package] marker or a manual dispatch with dogfood=true), so if
-# the target's run doesn't carry one, this script offers to trigger a build
-# and shows the latest run that does have one.
-#
-# That dispatch passes herdr=false. The dispatch exists to produce an
+# A dispatch this script starts passes herdr=false. The dispatch exists to produce an
 # artifact, and the live herdr lane — which a dispatch otherwise forces on —
 # only adds time and one more way for `gh run watch --exit-status` to give up
 # before downloading anything. The herdr
@@ -42,13 +36,11 @@ if [[ "$(uname)" != "Darwin" ]]; then
   exit 1
 fi
 
-USAGE="usage: $0 <pr-number|main> [--dogfood] [--ui-gate]"
+USAGE="usage: $0 <pr-number|main> [--ui-gate]"
 TARGET=""
-DOGFOOD=0
 UI_GATE=0
 for arg in "$@"; do
   case "$arg" in
-    --dogfood) DOGFOOD=1 ;;
     --ui-gate) UI_GATE=1 ;;
     -*)
       echo "unknown flag: $arg" >&2
@@ -70,7 +62,6 @@ if [[ -z "$TARGET" ]]; then
 fi
 
 ARTIFACT="localvoxtral-app"
-(( DOGFOOD )) && ARTIFACT="localvoxtral-app-dogfood"
 
 # BRANCH is what a workflow_dispatch would target; empty when dispatch is
 # impossible (cross-repo fork PRs have no branch in this repo to dispatch on).
@@ -129,7 +120,7 @@ watch_run() {
 }
 
 # Dispatch CI on $BRANCH with the extra inputs given, then watch_run it.
-# herdr=false: see the --dogfood note in the header.
+# herdr=false: see the note in the header.
 dispatch_and_wait() {
   # gh workflow run doesn't return the run id; detect the new run by
   # comparing against the newest dispatch run that existed beforehand.
@@ -156,7 +147,7 @@ dispatch_and_wait() {
 
 # A draft PR's run is green without mac-lanes, the job that builds the bundle
 # (ci.yml), so say that instead of letting `gh run download` fail on a name.
-if (( ! DOGFOOD )) && ! run_has_artifact "$RUN_ID"; then
+if ! run_has_artifact "$RUN_ID"; then
   # One head can carry a draft's run (no bundle) and the run `gh pr ready`
   # started, so look past the newest green one before giving up.
   WITH_ARTIFACT=""
@@ -201,7 +192,7 @@ fi
 
 # Main's bundles come only from dispatches, so the newest one is usually
 # behind main. Say by how much, and offer to build main's head.
-if [[ "$TARGET" == "main" ]] && (( ! DOGFOOD )); then
+if [[ "$TARGET" == "main" ]]; then
   MAIN_HEAD="$(gh api "repos/{owner}/{repo}/commits/main" --jq '.sha')"
   BUILT_SHA=""
   [[ -n "$RUN_ID" ]] && BUILT_SHA="$(gh run view "$RUN_ID" --json headSha --jq '.headSha')"
@@ -257,68 +248,6 @@ if [[ "$TARGET" == "main" ]] && (( ! DOGFOOD )); then
   fi
 fi
 
-if (( DOGFOOD )) && ! run_has_artifact "$RUN_ID"; then
-  echo "No dogfood artifact on CI run $RUN_ID for '$TARGET' — the dogfood lane is opt-in"
-  echo "([dogfood-package] in the PR body / head commit message, or a manual dispatch)."
-  echo
-
-  # Newest non-expired dogfood artifact anywhere in the repo, so there is
-  # always a concrete "latest build that HAS one" to point at (or use).
-  # sort_by(.created_at) because the REST endpoint documents no response
-  # ordering; 7-day retention keeps the population well inside one page.
-  LATEST="$(gh api "repos/{owner}/{repo}/actions/artifacts?name=localvoxtral-app-dogfood&per_page=100" \
-    --jq '[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | last
-          | if . == null then ""
-            else "\(.workflow_run.id)\t\(.workflow_run.head_branch)\t\(.workflow_run.head_sha[0:7])\t\(.created_at)"
-            end')"
-  LATEST_RUN=""
-  if [[ -n "$LATEST" ]]; then
-    IFS=$'\t' read -r LATEST_RUN LATEST_BRANCH LATEST_SHA LATEST_DATE <<<"$LATEST"
-    echo "Latest existing dogfood build: $LATEST_BRANCH @ $LATEST_SHA (run $LATEST_RUN, created $LATEST_DATE)"
-  else
-    echo "No dogfood artifact exists anywhere yet (or all have expired — 7-day retention)."
-  fi
-
-  if [[ ! -t 0 ]]; then
-    echo >&2
-    echo "stdin is not a TTY — rerun interactively, or trigger a build yourself:" >&2
-    if [[ -n "$BRANCH" ]]; then
-      echo "  gh workflow run CI --ref $BRANCH -f dogfood=true -f herdr=false" >&2
-    else
-      echo "  (cross-repo fork PR: fork PRs run on GitHub-hosted runners and never build" >&2
-      echo "   dogfood artifacts — push the branch to this repo instead)" >&2
-    fi
-    exit 1
-  fi
-
-  echo
-  [[ -n "$BRANCH" ]] && echo "  [t] trigger a fresh dogfood CI build of '$TARGET' and wait for it"
-  [[ -n "$LATEST_RUN" ]] && echo "  [l] use that latest existing dogfood build instead"
-  echo "  [q] quit"
-  read -r -p "Choice: " CHOICE
-  case "$CHOICE" in
-    t|T)
-      if [[ -z "$BRANCH" ]]; then
-        echo "Can't dispatch for a cross-repo fork PR — and fork PRs run on GitHub-hosted" >&2
-        echo "runners, which never build dogfood artifacts (the lane is self-hosted-only)." >&2
-        echo "Push the branch to this repo instead." >&2
-        exit 1
-      fi
-      dispatch_and_wait -f dogfood=true
-      ;;
-    l|L)
-      if [[ -z "$LATEST_RUN" ]]; then
-        echo "No existing dogfood build to use." >&2
-        exit 1
-      fi
-      RUN_ID="$LATEST_RUN"
-      ;;
-    *)
-      exit 0
-      ;;
-  esac
-fi
-
 DEST="$(mktemp -d /tmp/localvoxtral-try.XXXXXX)"
 gh run download "$RUN_ID" -n "$ARTIFACT" -D "$DEST"
 ditto -x -k "$DEST/${ARTIFACT}.zip" "$DEST/extracted"
@@ -327,22 +256,17 @@ xattr -cr "$APP" 2>/dev/null || true
 
 # Which binary is this? The Info.plist stamp is the ground truth (docs/agent/field-debugging.md:
 # "confirm WHICH binary the user is actually running" has cost an hour once).
-STAMP="$(/usr/libexec/PlistBuddy -c 'Print :LVXDogfoodCapture' "$APP/Contents/Info.plist" 2>/dev/null || echo absent)"
-echo "Dogfood capture stamp: $STAMP"
-if (( DOGFOOD )) && [[ "$STAMP" != "true" ]]; then
-  echo "FATAL: --dogfood requested but the downloaded bundle is not stamped (LVXDogfoodCapture: $STAMP)." >&2
-  echo "Refusing to launch a build that can't capture — this is exactly the wrong-binary confusion." >&2
+STAMP="$(/usr/libexec/PlistBuddy -c 'Print :LVXE2EHarness' "$APP/Contents/Info.plist" 2>/dev/null || echo absent)"
+if [[ "$STAMP" != "absent" ]]; then
+  echo "FATAL: this CI bundle is stamped LVXE2EHarness=$STAMP: it carries the test harness, which no release build may." >&2
   exit 1
-fi
-if (( ! DOGFOOD )) && [[ "$STAMP" != "absent" ]]; then
-  echo "WARNING: this 'clean' artifact is stamped LVXDogfoodCapture=$STAMP — it can capture if armed."
 fi
 
 # --ui-gate: move the bundle out of /tmp and into the gate's artifact root
 # BEFORE signing, so the copy that actually runs is the one that got the
 # ad-hoc re-sign (macOS 26 stalls the first launch of an unsigned-locally
 # downloaded bundle, and TCC keys the grant to the signature of the binary
-# that launches). Done after the stamp check so a wrong-variant artifact is
+# that launches). Done after the stamp check so a harness artifact is
 # rejected before a few hundred MB get copied.
 if (( UI_GATE )); then
   APP="$("$(dirname "$0")/mac/install-ui-artifact.sh" "$APP" --no-hint \
@@ -380,20 +304,7 @@ if pgrep -x localvoxtral >/dev/null 2>&1; then
   echo "      two menu bar icons / hotkey conflicts."
 fi
 
-if (( DOGFOOD )); then
-  # Arm the runtime opt-in BEFORE launch so the first session already
-  # captures. Same bundle id as the clean build, so this is the app's normal
-  # defaults domain — and harmless to leave armed: release binaries don't
-  # contain the capture code at all (compile gate), so a later clean try-pr
-  # ignores the key.
-  defaults write com.localvoxtral.app debug.dogfood_capture_enabled -bool true
-  echo "Dogfood capture ARMED (debug.dogfood_capture_enabled = true)."
-  echo "  records: ~/Library/Application Support/localvoxtral/dogfood"
-  echo "  disarm:  defaults write com.localvoxtral.app debug.dogfood_capture_enabled -bool false"
-fi
-
 LAUNCH_LABEL="$SIGNER"
-(( DOGFOOD )) && LAUNCH_LABEL="$LAUNCH_LABEL, dogfood"
 if (( UI_GATE )); then
   echo "Installed build of '$TARGET' (CI run $RUN_ID, ${LAUNCH_LABEL}): $APP"
 else
@@ -405,7 +316,7 @@ fi
 # exactly why the app has to be re-added in System Settings each time.
 echo "Designated requirement (compare across try-pr runs — stable == TCC grant survives):"
 codesign -d --requirements - "$APP" 2>&1 | sed 's/^/  /' || true
-if [[ "$SIGNER" == "Authority=ad-hoc" ]]; then
+if (( IS_ADHOC )); then
   echo "NOTE: ad-hoc signed build — if text insertion fails, remove and re-add"
   echo "      localvoxtral in System Settings > Privacy & Security > Accessibility"
   echo "      (TCC grants don't survive ad-hoc signature changes)."
@@ -423,10 +334,8 @@ if (( UI_GATE )); then
   case "$APP" in
     "$HOME"/*) GATE_ARG="${APP#"$HOME"/}" ;;
   esac
-  GATE_FLAG=""
-  (( DOGFOOD )) && GATE_FLAG="--dogfood "
   echo "Not launched — the UI gate owns launching. From the dev box:"
-  echo "  ssh lv-ui 'launch ${GATE_FLAG}${GATE_ARG}'"
+  echo "  ssh lv-ui 'launch ${GATE_ARG}'"
   exit 0
 fi
 

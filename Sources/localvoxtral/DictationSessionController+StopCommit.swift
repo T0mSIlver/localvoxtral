@@ -81,6 +81,10 @@ extension DictationSessionController {
     /// An Overlay Buffer session that was not cancelled: transcribed again
     /// first when the session has a second pass, then committed.
     private func commitOverlayBufferSession(sessionMode: DictationOutputMode) {
+        if let review = sessionDraftReview {
+            commitDraftReview(review, sessionMode: sessionMode)
+            return
+        }
         if sessionIsQuickCapture {
             commitQuickCapture(sessionMode: sessionMode)
             return
@@ -88,6 +92,10 @@ extension DictationSessionController {
         let destinationCheck = checkDestinationBeforeCommit(sessionMode: sessionMode)
         if destinationCheck == .kept { return }
         let sessionAudio = audio.sessionRecording.finish()
+        // The stop's own from here: the session cleanup no longer reaches it.
+        let earlyPolish = earlyPolishRun
+        earlyPolishRun = nil
+        earlyPolish?.close()
         let polishingConfig = settings.llmPolishingConfiguration
         let sample = OverlayStopSample(
             record: StoppedSessionRecordFields(
@@ -113,10 +121,11 @@ extension DictationSessionController {
         let proceed: @MainActor () -> Void = { [weak self] in
             guard let self else { return }
             if let secondPass = self.stopSecondPassRequest(audio: sessionAudio, capture: sample.capture) {
+                earlyPolish?.cancel()
                 self.startStopSecondPass(secondPass, sessionMode: sessionMode, sample: sample)
                 return
             }
-            self.commitOverlayBufferText(sessionMode: sessionMode, sample: sample)
+            self.commitOverlayBufferText(sessionMode: sessionMode, sample: sample, earlyPolish: earlyPolish)
         }
         if case .readBack(let sessionID, let bundleID) = destinationCheck {
             commitAfterPaneReadBack(
@@ -136,11 +145,15 @@ extension DictationSessionController {
         sessionMode: DictationOutputMode,
         sample: OverlayStopSample,
         goToChecked: Bool = false,
-        addressedTo: ClaudeSessionSnapshot? = nil
+        addressedTo: ClaudeSessionSnapshot? = nil,
+        earlyPolish: EarlyPolishRun? = nil
     ) {
         if !goToChecked,
            startGoToSessionIfSpoken(sessionMode: sessionMode, sample: sample)
             || startAddressedSendIfSpoken(sessionMode: sessionMode, sample: sample) {
+            // A spoken command took the dictation. Any commit it makes
+            // later polishes the whole text, without the pieces.
+            earlyPolish?.cancel()
             return
         }
         // Before the dictionary and the polisher: the trigger is a command,
@@ -236,11 +249,13 @@ extension DictationSessionController {
                     ),
                     polishProfile: capturedPolishProfile,
                     spokenSend: spokenSend,
-                    addressedTo: addressedTo
+                    addressedTo: addressedTo,
+                    earlyPolish: earlyPolish
                 )
             }
             return
         }
+        earlyPolish?.cancel()
 
         if let addressedTo {
             let historyJoin = (sample.capture?.claudeJoin ?? context.claudeSessionJoin).map(AgentCLIJoin.init)
@@ -362,7 +377,8 @@ extension DictationSessionController {
         record: StoppedSessionRecordFields,
         polishProfile capturedPolishProfile: String,
         spokenSend: OverlaySpokenSend?,
-        addressedTo: ClaudeSessionSnapshot?
+        addressedTo: ClaudeSessionSnapshot?,
+        earlyPolish: EarlyPolishRun?
     ) async {
         let originalText = preparation.originalText
         let workingText = preparation.workingText
@@ -386,7 +402,8 @@ extension DictationSessionController {
                 context: self.context,
                 repoVocabularyGrounding: self.repoVocabularyGrounding,
                 learnedTermStore: self.learnedTermStore,
-                service: self.llmPolishingService
+                service: self.llmPolishingService,
+                earlyPolish: earlyPolish
             )
         ) else { return }
         let assembly = outcome.assembly
@@ -394,6 +411,7 @@ extension DictationSessionController {
         var processedTextForPersistence: String? =
             workingText != originalText ? workingText : nil
         var polishingDuration: Double? = nil
+        var polishPromptTokens: Int? = nil
         var sessionStatus: DictationSessionStatus = .completed
         var llmConnectionFailure: PolishOutcomeClassifier.Failure?
         // The model's raw reply and the (placeholder-bearing)
@@ -409,6 +427,7 @@ extension DictationSessionController {
             break
         case .polished(let polished):
             polishingDuration = polished.durationSeconds
+            polishPromptTokens = polished.promptTokens
             let committedText = polished.committedText
 
             // Persist the PLACEHOLDER-bearing committed text —
@@ -471,6 +490,7 @@ extension DictationSessionController {
                         clipboardVocabularyCount: assembly.clipboardVocabularyCount
                     )
                 ),
+                polishPromptTokens: polishPromptTokens,
                 clipboardPayload: preparation.clipboardPayload,
                 audio: record.audio,
                 joined: capture.claudeJoin.map(AgentCLIJoin.init)
@@ -547,6 +567,7 @@ extension DictationSessionController {
                     clipboardVocabularyCount: assembly.clipboardVocabularyCount
                 )
             ),
+            polishPromptTokens: polishPromptTokens,
             clipboardPayload: preparation.clipboardPayload,
             audio: record.audio,
             joined: capture.claudeJoin.map(AgentCLIJoin.init)
@@ -717,6 +738,8 @@ extension DictationSessionController {
         // transcript, polishing disabled, cancelled overlay.
         context.discardTerminalScreenCapture()
         clearLatchedSessionMetadata()
+        // A stop is a break: drafts held for one show now (#927).
+        agentAttention?.reachedBreak()
         if holdFailureIndicatorUntilStopCompletes {
             holdFailureIndicatorUntilStopCompletes = false
             markRecentConnectionFailureIndicator()
@@ -860,6 +883,7 @@ extension DictationSessionController {
         commitSucceeded: Bool,
         polishProfile: String? = nil,
         polishContextSummary: String? = nil,
+        polishPromptTokens: Int? = nil,
         clipboardPayload: String? = nil,
         quickCaptureDestination: String? = nil,
         audio: Data? = nil,
@@ -893,6 +917,7 @@ extension DictationSessionController {
         record.projectKey = joined?.project?.key
         record.projectName = joined?.project?.name
         record.joinedAgent = joined?.agent
+        record.polishPromptTokens = polishPromptTokens
         lastDictationJoin = joined
         dependencies.onSessionRecord?(record)
         let retention = settings.dictationHistoryRetention

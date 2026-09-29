@@ -45,6 +45,9 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
                 // `.git`), and this is where it reaches the main checkout.
                 // Idempotent, so a file with nothing to fold is not rewritten.
                 let folded = loaded.foldWorktreesIntoMainCheckouts(now: now())
+                    // A checkout whose `origin` a hook or the linker already
+                    // recorded gives its terms to its repository (#971).
+                    + loaded.linkCheckoutsToRepositories(now: now())
                 // Proposals agents made before answers were filtered (#914).
                 let dropped = loaded.dropIdentifierProposals()
                 let adopted = state.withLock { state in
@@ -54,7 +57,7 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
                 }
                 if folded + dropped > 0, adopted {
                     Log.polishing.info(
-                        "Learned terms: folded \(folded, privacy: .public) worktree projects into their main checkouts, dropped \(dropped, privacy: .public) proposals shaped like code"
+                        "Learned terms: folded \(folded, privacy: .public) worktrees and checkouts into their projects, dropped \(dropped, privacy: .public) proposals shaped like code"
                     )
                     write(loaded)
                     onChange?()
@@ -105,7 +108,7 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         }
     }
 
-    /// Terms, then projects — what the Settings row states.
+    /// Terms, then the projects that hold them.
     package func summary() -> (terms: Int, projects: Int) {
         let terms = snapshot()
         return (terms.termCount, terms.projects.filter { !$0.terms.isEmpty }.count)
@@ -216,19 +219,24 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     }
 
     /// A hook from a remote session named its project (#819), and its
-    /// `origin`'s GitHub repository when the host sent one (#926).
-    package func recordRemoteReport(project: LearnedTermProjectIdentity, asRepository: Bool, repository: String?) {
+    /// `origin`'s GitHub repository when the host sent one (#926), and the
+    /// host it came from.
+    package func recordRemoteReport(
+        project: LearnedTermProjectIdentity, asRepository: Bool, repository: String?, hostID: String? = nil
+    ) {
         let moment = now()
         mutate { memory in
-            if memory.recordRemoteReport(project: project, asRepository: asRepository, repository: repository, now: moment) {
+            if memory.recordRemoteReport(
+                project: project, asRepository: asRepository, repository: repository, hostID: hostID, now: moment
+            ) {
                 Log.polishing.info("Learned terms: a remote hook named a new repository")
             }
         }
     }
 
     /// A local checkout's `origin` (#926).
-    package func recordOriginRepository(_ repository: String, projectKey: String) {
-        mutate { memory in memory.recordOriginRepository(repository, projectKey: projectKey) }
+    package func recordOrigin(_ remote: ProjectRemote, projectKey: String) {
+        mutate { memory in memory.recordOrigin(remote, projectKey: projectKey) }
     }
 
     /// The user's `owner/name` for a project with no GitHub `origin`.
@@ -275,6 +283,29 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         Log.polishing.info("Learned terms: one term \(pinned ? "pinned" : "unpinned", privacy: .public)")
     }
 
+    /// The pin in a project's sheet: every one of the project's buckets
+    /// that holds the spelling, since the sheet shows it once.
+    package func setPinned(_ pinned: Bool, term: String, projectKeys: [String]) {
+        mutate { terms in
+            for key in projectKeys { terms.setPinned(pinned, term: term, projectKey: key) }
+        }
+        Log.polishing.info("Learned terms: one term \(pinned ? "pinned" : "unpinned", privacy: .public)")
+    }
+
+    /// Forget in a project's sheet: the spelling leaves every bucket of it.
+    package func forget(_ term: String, projectKeys: [String]) {
+        mutate { terms in
+            for key in projectKeys { terms.forget(term, projectKey: key) }
+        }
+        Log.polishing.info("Learned terms: one term forgotten")
+    }
+
+    /// A project's Forget All.
+    package func forgetTerms(projectKeys: [String]) {
+        mutate { terms in terms.forgetTerms(projectKeys: projectKeys) }
+        Log.polishing.info("Learned terms: \(projectKeys.count, privacy: .public) buckets forgotten")
+    }
+
     /// Folds an imported file's projects in (`LearnedTerms.merge`), ordered
     /// on the write queue like every write. `completion` runs on that queue.
     package func importProjects(
@@ -284,6 +315,8 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         let moment = now()
         mutate { terms in
             let summary = terms.merge(importing: projects, now: moment)
+            // Terms imported onto a linked checkout belong to its repository.
+            terms.linkCheckoutsToRepositories(now: moment)
             let kept = terms.termCount
             Log.polishing.info(
                 "Learned terms imported: \(summary.terms, privacy: .public) terms in \(summary.projects, privacy: .public) projects, \(kept, privacy: .public) kept"
@@ -306,25 +339,6 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
             write(updated)
             onChange?()
         }
-    }
-
-    /// The Forget button. Drops the file as well as the memory: a user who
-    /// asks to forget should not find the terms back after a relaunch.
-    ///
-    /// Memory clears at once so the row reads zero under the click; the file is
-    /// removed on the queue, ordered behind any record already in flight, so a
-    /// dictation that was mid-fold cannot re-create the file afterwards.
-    package func forgetAll() {
-        state.withLock { state in state.terms = LearnedTerms() }
-        Log.polishing.info("Learned terms forgotten")
-        writeQueue.async { [self] in
-            state.withLock { state in state.terms = LearnedTerms() }
-            if let fileURL {
-                try? FileManager.default.removeItem(at: fileURL)
-            }
-            onChange?()
-        }
-        onChange?()
     }
 
     /// Blocks until the queued writes have landed. For tests and for nothing

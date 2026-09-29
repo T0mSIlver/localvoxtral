@@ -42,6 +42,7 @@ extension DictationSessionController {
         sessionConnectionGeneration = .none
         sessionOutputMode = nil
         sessionIsQuickCapture = false
+        sessionDraftReview = nil
         sessionCommitGuard = nil
         sessionStartedAt = nil
         sessionCaptureTimeline = nil
@@ -51,6 +52,8 @@ extension DictationSessionController {
         sessionRealtimeConfiguration = nil
         sessionStoresAudio = false
         sessionHasStopSecondPass = false
+        earlyPolishRun?.cancel()
+        earlyPolishRun = nil
     }
 
     /// Live Auto-Paste preflight for Secure Keyboard Entry: a live session
@@ -490,17 +493,58 @@ extension DictationSessionController {
         clearLatchedSessionMetadata()
         sessionOutputMode = requestedOutputMode
         sessionIsQuickCapture = requestedQuickCapture && requestedOutputMode == .overlayBuffer
+        sessionDraftReview = requestedOutputMode == .overlayBuffer ? requestedDraftReview : nil
         sessionStoppedBySpokenPhrase = false
         requestedQuickCapture = false
+        requestedDraftReview = nil
         sessionStartedAt = Date()
         sessionCaptureTimeline = CaptureTimeline(
             pressedAt: dependencies.clock.now(), now: dependencies.clock.now)
         latchSessionAudio(outputMode: requestedOutputMode)
+        armEarlyPolish(outputMode: requestedOutputMode)
         sessionReplacementDictionary = StopCommitCoordinator.effectiveReplacementDictionary(
             settings: settings,
             appConfigStore: appConfigStore
         )
         setRealtimeIndicatorIdle()
+    }
+
+    /// Overlay Buffer with polishing polishes settled pieces while the user
+    /// speaks (#709), unless early polish is off: then the stop polishes the
+    /// whole text, as before #709. Not with a second pass: Mistral's realtime
+    /// stream settles nothing before the stop, and the batch text replaces
+    /// the realtime text there anyway. Not for a quick capture or a draft
+    /// review either: their stops never use the pieces. Latched after
+    /// `latchSessionAudio`, which decides the second pass.
+    func armEarlyPolish(outputMode: DictationOutputMode) {
+        earlyPolishRun?.cancel()
+        earlyPolishRun = nil
+        guard outputMode == .overlayBuffer, settings.earlyPolishEnabled, !sessionHasStopSecondPass,
+            !sessionIsQuickCapture, sessionDraftReview == nil,
+            let configuration = settings.llmPolishingConfiguration
+        else { return }
+        earlyPolishRun = EarlyPolishRun(
+            service: llmPolishingService,
+            configuration: configuration,
+            templates: { [weak self] in
+                self?.earlyPolishTemplates() ?? LLMPromptTemplates(systemContent: "", userContent: "")
+            },
+            now: dependencies.clock.now
+        )
+    }
+
+    /// The templates the stop would pick for this session's target and join
+    /// as they are now; the stop discards the pieces if its own differ.
+    private func earlyPolishTemplates() -> LLMPromptTemplates {
+        StopCommitCoordinator.promptTemplates(
+            profile: StopCommitCoordinator.polishProfile(
+                forTargetBundleID: resolveTargetAppBundleID(),
+                claudeJoin: context.claudeSessionJoin,
+                settings: settings
+            ),
+            settings: settings,
+            appConfigStore: appConfigStore
+        )
     }
 
     /// Whether this session's audio goes to the audio store, and whether it
@@ -950,7 +994,7 @@ extension DictationSessionController {
         let endpoint = sanitizedRealtimeEndpointForLogging()
         if let technicalDetails {
             Log.dictation.error(
-                "Realtime connection failure [provider: \(provider, privacy: .public), endpoint: \(endpoint, privacy: .public)] \(message, privacy: .public) details: \(technicalDetails, privacy: .public)"
+                "Realtime connection failure [provider: \(provider, privacy: .public), endpoint: \(endpoint, privacy: .public)] \(message, privacy: .public) details: \(RealtimeConnectionFailureClassifier.publicLogDescription(of: technicalDetails), privacy: .public) \(technicalDetails, privacy: .private)"
             )
         } else {
             Log.dictation.error(
@@ -1063,7 +1107,12 @@ extension DictationSessionController {
             // commit re-checks secure input and falls back to the clipboard.
             overlayBufferCoordinator.showSecureInputWarning()
         }
-        beginDestinations()
+        // A review shows its one draft and offers no other destination.
+        if let review = sessionDraftReview {
+            overlayBufferCoordinator.showDraftReview(review)
+        } else {
+            beginDestinations()
+        }
     }
 
     func beginOverlayFinalization() {

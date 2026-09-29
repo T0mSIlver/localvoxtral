@@ -9,6 +9,7 @@ import Synchronization
 import XCTest
 @testable import ClaudeHookPublisherCore
 @testable import localvoxtralCore
+import localvoxtralTestSupport
 
 // Payload shapes below were captured from Vibe 2.25.4 with a probe hook
 // (`model_dump_json` of `PostToolInvocation` / `PostAgentInvocation`).
@@ -62,19 +63,20 @@ final class VibeHookInputParserTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(VibeHookInputParser.parse(data: data)).files, [])
     }
 
-    func testSubagentInvocationsAreDropped() {
-        XCTAssertNil(VibeHookInputParser.parse(data: payload(event: "post_agent", parent: #""parent-1""#)))
-    }
-
-    func testAPayloadWithoutTheParentFieldIsNotProvablyTopLevel() {
-        let data = Data(#"{"session_id":"s","cwd":"/r","hook_event_name":"post_agent"}"#.utf8)
-        XCTAssertNil(VibeHookInputParser.parse(data: data))
-    }
-
-    func testPreToolAndUnknownEventsAreDropped() {
-        XCTAssertNil(VibeHookInputParser.parse(data: payload(event: "pre_tool")))
-        XCTAssertNil(VibeHookInputParser.parse(data: payload(event: "SessionStart")))
-        XCTAssertNil(VibeHookInputParser.parse(data: Data("not json".utf8)))
+    func testPayloadsThatAreNotATopLevelTurnEndOrFileToolAreDropped() {
+        let dropped: [(String, Data)] = [
+            ("a subagent invocation", payload(event: "post_agent", parent: #""parent-1""#)),
+            (
+                "a payload without the parent field is not provably top-level",
+                Data(#"{"session_id":"s","cwd":"/r","hook_event_name":"post_agent"}"#.utf8)
+            ),
+            ("pre_tool", payload(event: "pre_tool")),
+            ("an unknown event", payload(event: "SessionStart")),
+            ("not json", Data("not json".utf8)),
+        ]
+        for (name, data) in dropped {
+            XCTAssertNil(VibeHookInputParser.parse(data: data), name)
+        }
     }
 
     func testAPayloadLargerThanTheWireLineLimitStillParses() throws {
@@ -343,7 +345,14 @@ final class VibeHookPublisherRunTests: XCTestCase {
         done.expectedFulfillmentCount = 2
         broker.debugConfigureIngestHook { _ in done.fulfill() }
 
-        XCTAssertEqual(publisher().runVibe(stdin: payload(event: "post_agent"), vibe: vibe), .published)
+        // Claude session handles inherited from a parent Claude session are
+        // not published; the terminal's pane handle is.
+        let inherited = publisher(variables: [
+            "CLAUDE_CODE_BRIDGE_SESSION_ID": "session_inherited",
+            "CLAUDE_CODE_HOST_SESSION_ID": "local_inherited",
+            "HERDR_PANE_ID": "w1:p2",
+        ])
+        XCTAssertEqual(inherited.runVibe(stdin: payload(event: "post_agent"), vibe: vibe), .published)
         wait(for: [done], timeout: 5)
 
         XCTAssertNil(registry.snapshot(sessionID: "abc"), "a Vibe id is never a bare Claude key")
@@ -354,6 +363,9 @@ final class VibeHookPublisherRunTests: XCTestCase {
         XCTAssertEqual(snapshot.process?.claudePID, 300, "Vibe, not the wrapper shell that exits with the hook")
         XCTAssertEqual(snapshot.process?.tty, "/dev/ttys042")
         XCTAssertEqual(snapshot.process?.agentStartMicros, 1_700_000_000_000_123, "Vibe's, not the wrapper's")
+        XCTAssertNil(snapshot.process?.bridgeSessionID)
+        XCTAssertNil(snapshot.process?.desktopSessionID)
+        XCTAssertEqual(snapshot.process?.herdrPaneID, "w1:p2", "the pane handle is the terminal's, and is kept")
     }
 
     func testAFileToolRecordsTheTouchAndKeepsTheTurnWorking() throws {
@@ -372,25 +384,6 @@ final class VibeHookPublisherRunTests: XCTestCase {
         XCTAssertEqual(snapshot.recentFiles.map(\.path), ["/tmp/a.swift"])
         XCTAssertEqual(snapshot.recentFiles.map(\.kind), [.edited])
         XCTAssertEqual(snapshot.activity, .working)
-    }
-
-    func testClaudeSessionHandlesInheritedFromAParentClaudeSessionAreNotPublished() throws {
-        let done = expectation(description: "ingested")
-        done.expectedFulfillmentCount = 2
-        broker.debugConfigureIngestHook { _ in done.fulfill() }
-
-        let inherited = publisher(variables: [
-            "CLAUDE_CODE_BRIDGE_SESSION_ID": "session_inherited",
-            "CLAUDE_CODE_HOST_SESSION_ID": "local_inherited",
-            "HERDR_PANE_ID": "w1:p2",
-        ])
-        XCTAssertEqual(inherited.runVibe(stdin: payload(event: "post_agent"), vibe: vibe), .published)
-        wait(for: [done], timeout: 5)
-
-        let process = try XCTUnwrap(registry.snapshot(sessionID: "vibe:abc")?.process)
-        XCTAssertNil(process.bridgeSessionID)
-        XCTAssertNil(process.desktopSessionID)
-        XCTAssertEqual(process.herdrPaneID, "w1:p2", "the pane handle is the terminal's, and is kept")
     }
 
     func testAnAbsentAppIsATransportFailureAfterOneDial() {
@@ -575,10 +568,16 @@ final class VibeIntegrationFilesTests: XCTestCase {
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
 
+        // Both declared commands are the same string today, so each DISTINCT
+        // command runs once: re-running an identical command can only repeat an
+        // assertion, while a future edit that makes the two differ still gets
+        // one run per command here.
+        var seen = Set<String>()
         for line in commands {
             // TOML basic string: strip `command = "` and the closing quote, unescape `\"`.
             let command = String(line.dropFirst(#"command = ""#.count).dropLast())
                 .replacingOccurrences(of: #"\""#, with: "\"")
+            guard seen.insert(command).inserted else { continue }
             let output = home.appendingPathComponent("out")
             FileManager.default.createFile(atPath: output.path, contents: nil)
             let process = Process()
@@ -589,8 +588,7 @@ final class VibeIntegrationFilesTests: XCTestCase {
             let sink = try FileHandle(forWritingTo: output)
             process.standardOutput = sink
             process.standardError = sink
-            try process.run()
-            process.waitUntilExit()
+            try process.runUntilExit()
             try sink.close()
             XCTAssertEqual(process.terminationStatus, 0, command)
             XCTAssertEqual(try Data(contentsOf: output), Data(), command)

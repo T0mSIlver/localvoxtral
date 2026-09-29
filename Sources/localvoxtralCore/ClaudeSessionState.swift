@@ -85,6 +85,12 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
     /// layout (`ClaudeWorkspaceReference.claudeWorktreeRepository`). A label,
     /// like `workspace`; remote only.
     public var remoteWorktreeRepository: String?
+    /// The shim version a remote session's last accepted hook sent: the
+    /// Claude Code plugin's `X-Lvx-Plugin-Version`, or the Vibe hooks'
+    /// version. A running session keeps the shim it loaded, so this can
+    /// trail its host's (`AgentCLIDoctorChecks.staleSessions`). Nil for a
+    /// local session; not persisted.
+    package var remoteShimVersion: ClaudeRemotePluginVersionReport?
     public var firstSeen: Date
     public var lastActivity: Date
 

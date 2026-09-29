@@ -3,7 +3,7 @@ import Foundation
 /// The join, reduced to the handful of facts that can be reported outside the
 /// process without leaking anything the logs redact.
 ///
-/// One type for every consumer: the dogfood capture record's `join` block, the
+/// One type for every consumer: the diagnostic record's `join` block, the
 /// `--probe-surface` diagnostic verb, and the per-dictation outcome line in the
 /// unified log. Two mappings of one vocabulary is one too many — an arm
 /// renamed on one side and not the other would make a probe run and a captured

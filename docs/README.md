@@ -10,6 +10,8 @@ its code.
   screenshots
 - [Terminals & coding agents](coding-agents.md): dictating into Claude Code
   and other CLI agents, session joins, the SSH remote plugin
+- [Work with several agents](agents.md): being told an agent needs you,
+  jumping to it, and naming, reaching and sending to sessions by voice
 - [Integration matrix](integration-matrix.md): for each coding agent and
   terminal, what joins, what context is attached, and why the gaps exist
 - [Under the hood](under-the-hood.md): privacy, the managed local engines
@@ -48,7 +50,7 @@ These live in the agent folder of the docs. Agents load them on demand from
 - [Test tiers & eval lanes](agent/test-tiers.md): the full tier matrix,
   when the LLM lanes must run, eval recordings and ablations
 - [Field debugging](agent/field-debugging.md): try-pr, crashlog dispatch,
-  signing/TCC, dogfood capture
+  signing/TCC, diagnostic records
 
 Machine-local scratch (setup runbooks, handoff notes, drafts) goes in the
 gitignored `local-notes/` directory, never in the docs folder.

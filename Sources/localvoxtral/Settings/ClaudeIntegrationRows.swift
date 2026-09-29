@@ -100,6 +100,7 @@ struct ClaudeStatuslineRow: View {
         }
         .sheet(isPresented: $isShowingSetup) {
             ClaudeStatuslineSetupSheet(model: model) { isShowingSetup = false }
+                .opensWithNothingFocused()
         }
     }
 }
@@ -151,6 +152,7 @@ struct OpencodePluginRow: View {
         }
         .sheet(isPresented: $isShowingSetup) {
             OpencodePluginSetupSheet(model: model) { isShowingSetup = false }
+                .opensWithNothingFocused()
         }
     }
 }
@@ -236,6 +238,7 @@ struct VibeHooksRow: View {
         }
         .sheet(isPresented: $isShowingSetup) {
             VibeHooksSetupSheet(model: model) { isShowingSetup = false }
+                .opensWithNothingFocused()
         }
     }
 }
@@ -323,6 +326,7 @@ struct ClaudeShellSetupRow: View {
         }
         .sheet(isPresented: $isShowingShellSetup) {
             ClaudeShellSetupSheet(model: model) { isShowingShellSetup = false }
+                .opensWithNothingFocused()
         }
     }
 
@@ -676,6 +680,7 @@ struct ClaudeIntegrationPresentations: ViewModifier {
                         model.dismissPlan()
                     }
                     .interactiveDismissDisabled(model.isEnrollmentBusy)
+                    .opensWithNothingFocused()
                 }
                 // The current API, not `alert(item:)` — that one is deprecated
                 // and the repo builds warning-free. The detail lives HERE and

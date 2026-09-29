@@ -334,7 +334,16 @@ final class BackendProcessSupervisor {
             }
         }
 
-        Log.backends.info("\(formatted, privacy: .public)")
+        Log.backends.info(
+            "\(Self.publicOutputLogDescription(name: self.configuration.name, source: source, line: line), privacy: .public) \(line, privacy: .private)"
+        )
+    }
+
+    /// A helper output line without its text: nothing stops a helper from
+    /// printing what it transcribes, so only its origin and length are
+    /// public (#936). The text stays in `recentOutput` for the failure alert.
+    nonisolated static func publicOutputLogDescription(name: String, source: String, line: String) -> String {
+        "[\(name) \(source)] \(line.count) characters"
     }
 
     private func handleProcessExit(pid: pid_t, status: Int32) {

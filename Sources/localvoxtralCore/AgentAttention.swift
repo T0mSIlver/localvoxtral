@@ -120,11 +120,15 @@ package final class AgentAttentionTracker {
     package var onCue: ((AgentAttentionEntry) -> Void)?
     /// Called after every change to `queue`.
     package var onChange: (() -> Void)?
+    /// Called when a turn ends in the pane the user is looking at: a break,
+    /// where held drafts show (#927).
+    package var onWatchedTurnEnd: (() -> Void)?
 
     private let isEnabled: () -> Bool
     private let isWatching: (ClaudeSessionSnapshot) async -> Bool
     private let liveSessionIDs: () -> Set<String>
     private let now: () -> Date
+    private let name: (ClaudeSessionSnapshot) -> String
     /// Bumped by every event of a session and never reset, so a turn's end
     /// whose pane check finished after the session's next event does not
     /// undo that event.
@@ -138,16 +142,19 @@ package final class AgentAttentionTracker {
     ///     an agent needs you"). Off, nothing is queued and the queue empties.
     ///   - isWatching: whether the user is looking at the session's pane now.
     ///     Asked only at a turn's end.
+    ///   - name: what the entry calls the session.
     package init(
         isEnabled: @escaping () -> Bool,
         isWatching: @escaping (ClaudeSessionSnapshot) async -> Bool,
         liveSessionIDs: @escaping () -> Set<String>,
-        now: @escaping () -> Date
+        now: @escaping () -> Date,
+        name: @escaping (ClaudeSessionSnapshot) -> String = AgentAttentionText.name(of:)
     ) {
         self.isEnabled = isEnabled
         self.isWatching = isWatching
         self.liveSessionIDs = liveSessionIDs
         self.now = now
+        self.name = name
     }
 
     /// Takes one event, in the order the registry accepted them. A turn's
@@ -169,10 +176,9 @@ package final class AgentAttentionTracker {
         }
         eventCount[id, default: 0] += 1
         let count = eventCount[id]
-        let name = AgentAttentionText.name(of: session)
         switch signal {
         case .waiting:
-            let entry = queue.wait(sessionID: id, name: name, agent: session.agent, at: now())
+            let entry = queue.wait(sessionID: id, name: name(session), agent: session.agent, at: now())
             changed()
             cue(entry)
             return nil
@@ -183,6 +189,7 @@ package final class AgentAttentionTracker {
             return nil
         case .turnEnded:
             let endedAt = now()
+            let name = name(session)
             return Task { @MainActor [weak self] in
                 guard let self else { return }
                 let watched = await self.isWatching(session)
@@ -193,7 +200,7 @@ package final class AgentAttentionTracker {
                     sessionID: id, name: name, agent: session.agent, at: endedAt, watched: watched
                 )
                 self.changed()
-                if let entry { self.cue(entry) }
+                if let entry { self.cue(entry) } else { self.onWatchedTurnEnd?() }
             }
         }
     }
@@ -241,27 +248,59 @@ package enum AgentAttentionText {
     package static let maxNameLength = 24
     package static let unnamed = "An agent"
 
-    /// The session's git root or working directory name, with no
-    /// filesystem walk: the queue is fed on every hook.
+    /// The session's working directory name, with no filesystem walk: the
+    /// queue is fed on every hook.
     package static func name(of session: ClaudeSessionSnapshot) -> String {
-        let names = SessionDefaultNames.of(session, repositoryRoot: .unknown)
-        guard let name = names.primary, !name.isEmpty else { return unnamed }
+        name(of: session, among: [session])
+    }
+
+    /// The session's shown name among the live sessions
+    /// (`SessionShownNames`), with no git-root walk: the queue is fed on
+    /// every hook.
+    ///
+    /// - Parameters:
+    ///   - title: the harness's title for a session.
+    ///   - nickname: what the user called a session.
+    package static func name(
+        of session: ClaudeSessionSnapshot,
+        among live: [ClaudeSessionSnapshot],
+        title: (ClaudeSessionSnapshot) -> String? = { _ in nil },
+        nickname: (String) -> String? = { _ in nil }
+    ) -> String {
+        var sessions = live.filter { $0.sessionID != session.sessionID }
+        sessions.append(session)
+        let candidates = sessions.map {
+            SessionNameCandidate(
+                snapshot: $0,
+                names: SessionDefaultNames.of($0, repositoryRoot: .unknown, title: title($0)),
+                nickname: nickname($0.sessionID)
+            )
+        }
+        guard let name = SessionShownNames.of(candidates)[session.sessionID] else { return unnamed }
         return shortened(name)
     }
 
-    package static func shortened(_ name: String) -> String {
+    package static func shortened(_ name: String, to maxLength: Int = maxNameLength) -> String {
         let clean = String(name.unicodeScalars.map {
             CharacterSet.controlCharacters.contains($0) ? " " : Character($0)
         })
-        guard clean.count > maxNameLength else { return clean }
-        return String(clean.prefix(maxNameLength - 1)) + "…"
+        guard clean.count > maxLength else { return clean }
+        return String(clean.prefix(maxLength - 1)) + "…"
     }
 
     /// "payments needs you", "payments finished", with a count of the others.
-    package static func popoverLine(_ queue: AgentAttentionQueue) -> String? {
-        guard let next = queue.next else { return nil }
-        let others = queue.entries.count - 1
-        let line = sentence(next)
+    /// Agents come first; shown drafts (#927) add to the count, and name the
+    /// line only when no agent is queued.
+    package static func popoverLine(_ queue: AgentAttentionQueue, drafts: [QuickCaptureDraftCue.Entry] = []) -> String? {
+        let line: String
+        if let next = queue.next {
+            line = sentence(next)
+        } else if let draft = drafts.first {
+            line = QuickCaptureDraftCueText.sentence(draft)
+        } else {
+            return nil
+        }
+        let others = queue.entries.count + drafts.count - 1
         return others > 0 ? "\(line) (+\(others))" : line
     }
 

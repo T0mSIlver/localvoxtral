@@ -14,6 +14,8 @@ package final class FakeRealtimeClient: RealtimeClient, @unchecked Sendable {
         var sentAudioBytes = 0
         var connectionGeneration: RealtimeConnectionGeneration = .none
         var handler: (@Sendable (RealtimeEvent, RealtimeConnectionGeneration) -> Void)?
+        var onConnect: (@Sendable () -> Void)?
+        var onCommit: (@Sendable (_ final: Bool) -> Void)?
     }
 
     private let state = Mutex(State())
@@ -31,6 +33,23 @@ package final class FakeRealtimeClient: RealtimeClient, @unchecked Sendable {
     package var sentAudioBytes: Int { state.withLock { $0.sentAudioBytes } }
     package var connectConfigurations: [RealtimeSessionConfiguration] {
         state.withLock { $0.connectConfigurations }
+    }
+
+    /// Runs after each `connect`, outside the lock, so it may `emit`.
+    package func setOnConnect(_ hook: (@Sendable () -> Void)?) {
+        state.withLock { $0.onConnect = hook }
+    }
+
+    /// Runs after each `sendCommit`, outside the lock, so it may `emit`.
+    package func setOnCommit(_ hook: (@Sendable (_ final: Bool) -> Void)?) {
+        state.withLock { $0.onCommit = hook }
+    }
+
+    /// Hands `event` to the handler as the current socket's, the way a real
+    /// client reports what its server sent.
+    package func emit(_ event: RealtimeEvent) {
+        let (handler, generation) = state.withLock { ($0.handler, $0.connectionGeneration) }
+        handler?(event, generation)
     }
 
     package func setConnected(_ connected: Bool) {
@@ -54,11 +73,13 @@ package final class FakeRealtimeClient: RealtimeClient, @unchecked Sendable {
     }
 
     package func connect(configuration: RealtimeSessionConfiguration) throws {
-        state.withLock {
+        let hook = state.withLock {
             $0.connectCount += 1
             $0.connectConfigurations.append(configuration)
             $0.connectionGeneration = .next()
+            return $0.onConnect
         }
+        hook?()
     }
 
     package func disconnect() {
@@ -73,6 +94,10 @@ package final class FakeRealtimeClient: RealtimeClient, @unchecked Sendable {
     }
 
     package func sendCommit(final: Bool) {
-        state.withLock { $0.commits.append(final) }
+        let hook = state.withLock {
+            $0.commits.append(final)
+            return $0.onCommit
+        }
+        hook?(final)
     }
 }

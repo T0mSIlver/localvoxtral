@@ -6,14 +6,11 @@ import XCTest
 final class PolishContextClipboardReaderTests: XCTestCase {
     // MARK: - Sensitive-type skips
 
-    func testConcealedTypeReturnsNil() {
-        let stub = PasteboardStub(string: "hunter2", types: [.nsPasteboardConcealed, .string])
-        XCTAssertNil(PolishContextClipboardReader.readClipboardContext(from: stub))
-    }
-
-    func testTransientTypeReturnsNil() {
-        let stub = PasteboardStub(string: "one-shot", types: [.nsPasteboardTransient, .string])
-        XCTAssertNil(PolishContextClipboardReader.readClipboardContext(from: stub))
+    func testConcealedOrTransientTypeReturnsNil() {
+        let concealed = PasteboardStub(string: "hunter2", types: [.nsPasteboardConcealed, .string])
+        XCTAssertNil(PolishContextClipboardReader.readClipboardContext(from: concealed), "concealed")
+        let transient = PasteboardStub(string: "one-shot", types: [.nsPasteboardTransient, .string])
+        XCTAssertNil(PolishContextClipboardReader.readClipboardContext(from: transient), "transient")
     }
 
     // F4: the Settings enrollment-token / remote-command Copy actions write
@@ -44,19 +41,18 @@ final class PolishContextClipboardReaderTests: XCTestCase {
 
     // MARK: - Empty / missing string
 
-    func testNoStringReturnsNil() {
-        let stub = PasteboardStub(string: nil)
-        XCTAssertNil(PolishContextClipboardReader.readClipboardContext(from: stub))
-    }
-
-    func testEmptyStringReturnsNil() {
-        let stub = PasteboardStub(string: "")
-        XCTAssertNil(PolishContextClipboardReader.readClipboardContext(from: stub))
-    }
-
-    func testWhitespaceOnlyStringReturnsNil() {
-        let stub = PasteboardStub(string: "   \n\t  ")
-        XCTAssertNil(PolishContextClipboardReader.readClipboardContext(from: stub))
+    func testMissingEmptyOrWhitespaceOnlyStringReturnsNil() {
+        let cases: [(name: String, string: String?)] = [
+            ("no string", nil),
+            ("empty string", ""),
+            ("whitespace only", "   \n\t  "),
+        ]
+        for row in cases {
+            XCTAssertNil(
+                PolishContextClipboardReader.readClipboardContext(from: PasteboardStub(string: row.string)),
+                row.name
+            )
+        }
     }
 
     // MARK: - Retention
@@ -102,36 +98,19 @@ final class PolishContextClipboardReaderTests: XCTestCase {
 
     // MARK: - Full retained text feeds vocabulary matching
 
-    /// The regression the old `prefix(2000)` head cap caused: a term the user
-    /// copied at character ~4000 was invisible to grounding. Retained capture
-    /// makes it groundable again.
-    func testTermBeyondTheOldTwoThousandCharacterCapStillGrounds() {
-        let filler = String(repeating: "unrelated boilerplate prose. ", count: 150)
-        XCTAssertGreaterThan(filler.count, 2000, "the term must sit past the old cap")
-        let stub = PasteboardStub(string: filler + "\nthrown from PaymentReconciler.swift\n")
-
-        let context = PolishContextClipboardReader.readClipboardContext(from: stub)
-        let retained = context?.retainedText ?? ""
-        XCTAssertEqual(retained.count, filler.count + 37)
-        let outcome = ClipboardVocabulary.candidateOutcome(
-            transcript: "the crash in payment reconciler dot swift",
-            clipboardText: retained
-        )
-        XCTAssertTrue(
-            outcome.entries.contains { $0.replaceWith == "PaymentReconciler.swift" },
-            "a term past character 2000 must still ground; got: \(outcome.entries)"
-        )
-    }
-
     /// Rendering and matching are different budgets. The excerpt the model sees
     /// may be a few hundred characters and need not contain the term at all —
     /// grounding is input-side and pre-applies the exact bytes anyway.
     func testMatchingUsesCompleteTextEvenWhenTheRenderedExcerptIsSmaller() {
         let filler = String(repeating: "unrelated boilerplate prose. ", count: 150)
+        // The regression the old `prefix(2000)` head cap caused: a term the
+        // user copied past character 2000 was invisible to grounding.
+        XCTAssertGreaterThan(filler.count, 2000, "the term must sit past the old cap")
         let clipboard = filler + "\nthrown from PaymentReconciler.swift\n"
         let stub = PasteboardStub(string: clipboard)
         let context = PolishContextClipboardReader.readClipboardContext(from: stub)
         let retained = context?.retainedText ?? ""
+        XCTAssertEqual(retained.count, filler.count + 37)
         let transcript = "the crash in payment reconciler dot swift"
 
         // A cap far below the clipboard size: the excerpt is a strict subset.
@@ -147,7 +126,10 @@ final class PolishContextClipboardReaderTests: XCTestCase {
             transcript: transcript,
             clipboardText: retained
         )
-        XCTAssertTrue(outcome.entries.contains { $0.replaceWith == "PaymentReconciler.swift" })
+        XCTAssertTrue(
+            outcome.entries.contains { $0.replaceWith == "PaymentReconciler.swift" },
+            "a term past character 2000 must still ground; got: \(outcome.entries)"
+        )
 
         // And the exact bytes reach the transcript through pre-application.
         let grounded = RepoVocabularyMatcher.preapplying(

@@ -156,7 +156,12 @@ struct OverlayLayoutMetrics: Equatable {
     /// Full panel content height: header + spacing + body + optional error +
     /// padding. Mirrors `DictationOverlayView.body` exactly.
     @MainActor
-    func contentHeight(text: String, errorMessage: String?) -> CGFloat {
+    func contentHeight(
+        text: String,
+        errorMessage: String?,
+        draftReview: QuickCaptureDraftSnapshot? = nil,
+        destinations: OverlayDestinationStrip? = nil
+    ) -> CGFloat {
         let displayText = text.trimmed.isEmpty ? "" : text
 
         var total = Self.contentPadding * 2
@@ -164,12 +169,53 @@ struct OverlayLayoutMetrics: Equatable {
             + Self.stackSpacing
             + bodyTextHeight(for: displayText)
 
+        if let draftReview {
+            total += Self.stackSpacing + draftReviewHeight(draftReview)
+        } else if let destinations, destinations.isOpen {
+            total += Self.stackSpacing + destinationListHeight(rows: destinations.items.count)
+        }
+
         if let errorMessage, !errorMessage.trimmed.isEmpty {
             total += Self.stackSpacing
                 + OverlayTextMeasurer.height(
                     of: errorMessage, fontSize: errorFontSize, width: textMeasurementWidth)
         }
 
+        return total
+    }
+}
+
+extension OverlayLayoutMetrics {
+    /// The open destination list (#1015) shows this many rows, then scrolls.
+    static let maximumVisibleDestinationRows = 6
+    static let destinationRowSpacing: CGFloat = 2
+
+    /// One destination row: a pill's text plus its padding.
+    var destinationRowHeight: CGFloat { ceil(16 * scale) }
+
+    /// The open destination list, as `DictationOverlayView` draws it.
+    func destinationListHeight(rows: Int) -> CGFloat {
+        let visible = CGFloat(min(max(rows, 1), Self.maximumVisibleDestinationRows))
+        return visible * destinationRowHeight + (visible - 1) * Self.destinationRowSpacing
+    }
+
+    /// Spacing between the draft's title, excerpt and hint.
+    static let draftReviewSpacing: CGFloat = 2
+    static let draftReviewHint = "Say \u{201C}file it\u{201D}, \u{201C}drop it\u{201D}, or a change"
+
+    /// The draft block of a review (#927): title, excerpt and hint, as
+    /// `DictationOverlayView.draftReviewBlock` lays them out.
+    @MainActor
+    func draftReviewHeight(_ draft: QuickCaptureDraftSnapshot) -> CGFloat {
+        var total = OverlayTextMeasurer.height(
+            of: draft.title, fontSize: bodyFontSize, weight: .semibold, width: textMeasurementWidth)
+        let excerpt = draft.bodyExcerpt
+        if !excerpt.isEmpty {
+            total += Self.draftReviewSpacing
+                + OverlayTextMeasurer.height(of: excerpt, fontSize: errorFontSize, width: textMeasurementWidth)
+        }
+        total += Self.draftReviewSpacing
+            + OverlayTextMeasurer.height(of: Self.draftReviewHint, fontSize: badgeFontSize, width: textMeasurementWidth)
         return total
     }
 }
@@ -186,12 +232,12 @@ struct OverlayLayoutMetrics: Equatable {
 private enum OverlayTextMeasurer {
     private static let host = NSHostingController(rootView: AnyView(EmptyView()))
 
-    static func height(of text: String, fontSize: CGFloat, width: CGFloat) -> CGFloat {
+    static func height(of text: String, fontSize: CGFloat, weight: Font.Weight = .regular, width: CGFloat) -> CGFloat {
         // Same font and wrapping modifiers as the body and error rows in
         // `DictationOverlayView`.
         host.rootView = AnyView(
             Text(text)
-                .font(.system(size: fontSize))
+                .font(.system(size: fontSize, weight: weight))
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(width: width, alignment: .topLeading)
         )

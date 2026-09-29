@@ -2,7 +2,7 @@ import XCTest
 @testable import localvoxtral
 
 /// What the per-term view shows and changes (#522): the applied counter, the
-/// pin, and the sheet's order and wording. The rest of the memory's rules are
+/// pin, and the line under a term in a project's sheet. The rest of the memory's rules are
 /// `LearnedTermsTests`'.
 final class LearnedTermsViewTests: XCTestCase {
     private let project = LearnedTermProjectResolver.Identity(
@@ -147,51 +147,7 @@ final class LearnedTermsViewTests: XCTestCase {
         XCTAssertEqual(terms?.first?.isPinned, true)
     }
 
-    // MARK: - Sheet
-
-    func testSheetListsProjectsByRecencyWithTheSharedBucketLast() {
-        var terms = LearnedTerms()
-        record("Qwen", in: &terms, at: start + 9 * day, project: LearnedTermProjectResolver.shared)
-        record("herdr", in: &terms, at: start, project: .init(key: "/h", name: "herdr"))
-        record("Voxtral", in: &terms, at: start + day)
-
-        XCTAssertEqual(
-            LearnedTermsSheet.displayOrder(terms, now: start + 10 * day).map(\.name),
-            ["localvoxtral", "herdr", LearnedTermProjectResolver.shared.name]
-        )
-    }
-
-    /// #891: the sheet's projects are quick capture's, in its order, even
-    /// one no term was learned in yet; a remote name no hook has named, and
-    /// the shared bucket, follow with their terms.
-    func testSheetListsQuickCapturesProjectsThenTheOtherBuckets() {
-        let now = start + 2 * day
-        var terms = LearnedTerms()
-        record("Voxtral", in: &terms, at: start)
-        record("ScreenPipe", in: &terms, at: start + day, project: .init(key: "remote:modest-lewin-c92780", name: "modest-lewin-c92780"))
-        record("Qwen", in: &terms, at: start, project: LearnedTermProjectResolver.shared)
-        terms.recordRemoteReport(project: .init(key: "remote:quillmark", name: "quillmark"), asRepository: true, now: now)
-
-        let routed = QuickCaptureProjects.projects(from: terms, userLines: [:], now: now, readme: { _ in nil }).map(\.key)
-        XCTAssertEqual(routed, ["remote:quillmark", project.key])
-        let sheet = LearnedTermsSheet.displayOrder(terms, now: now)
-        XCTAssertEqual(
-            sheet.map(\.key),
-            routed + ["remote:modest-lewin-c92780", LearnedTermProjectResolver.shared.key]
-        )
-        XCTAssertEqual(sheet.first?.terms, [])
-    }
-
-    func testSheetListsPinnedTermsFirst() {
-        var terms = LearnedTerms()
-        for index in 0..<3 {
-            record("Voxtral", in: &terms, at: start + Double(index) * day)
-        }
-        record("Mistral", in: &terms, at: start)
-        terms.setPinned(true, term: "Mistral", projectKey: project.key)
-
-        XCTAssertEqual(LearnedTermsSheet.displayOrder(terms, now: start + 3 * day).first?.terms.map(\.term), ["Mistral", "Voxtral"])
-    }
+    // MARK: - Detail line
 
     func testSheetDetailLine() {
         func term(dictations: Int, applied: Int?, pinned: Bool? = nil) -> LearnedTerm {
@@ -201,19 +157,19 @@ final class LearnedTermsViewTests: XCTestCase {
             )
         }
         XCTAssertEqual(
-            LearnedTermsSheet.detailParts(for: term(dictations: 1, applied: nil)).text,
+            ProjectsPane.detail(for: term(dictations: 1, applied: nil)).text,
             "Learning: heard in 1 of 3 dictations"
         )
-        XCTAssertEqual(LearnedTermsSheet.detailParts(for: term(dictations: 3, applied: nil)).text, "Not applied yet")
+        XCTAssertEqual(ProjectsPane.detail(for: term(dictations: 3, applied: nil)).text, "Not applied yet")
         XCTAssertEqual(
-            LearnedTermsSheet.detailParts(for: term(dictations: 1, applied: nil, pinned: true)).text,
+            ProjectsPane.detail(for: term(dictations: 1, applied: nil, pinned: true)).text,
             "Not applied yet",
             "a pinned term is in use"
         )
-        let once = LearnedTermsSheet.detailParts(for: term(dictations: 4, applied: 1))
+        let once = ProjectsPane.detail(for: term(dictations: 4, applied: 1))
         XCTAssertEqual(once.text, "Applied once,")
         XCTAssertEqual(once.lastApplied, start)
-        XCTAssertEqual(LearnedTermsSheet.detailParts(for: term(dictations: 9, applied: 6)).text, "Applied 6 times, last")
+        XCTAssertEqual(ProjectsPane.detail(for: term(dictations: 9, applied: 6)).text, "Applied 6 times, last")
     }
 
     /// #609: a proposal says which agent proposed it until use or a pin
@@ -226,17 +182,17 @@ final class LearnedTermsViewTests: XCTestCase {
             )
         }
         XCTAssertEqual(
-            LearnedTermsSheet.detailParts(for: proposal(.claude, dictations: 0)).text,
+            ProjectsPane.detail(for: proposal(.claude, dictations: 0)).text,
             "Proposed by Claude Code: heard in 0 of 3 dictations"
         )
         XCTAssertEqual(
-            LearnedTermsSheet.detailParts(for: proposal(.vibe, dictations: 2)).text,
+            ProjectsPane.detail(for: proposal(.vibe, dictations: 2)).text,
             "Proposed by Mistral Vibe: heard in 2 of 3 dictations"
         )
         XCTAssertEqual(
-            LearnedTermsSheet.detailParts(for: proposal(.opencode, dictations: 1)).text,
+            ProjectsPane.detail(for: proposal(.opencode, dictations: 1)).text,
             "Proposed by opencode: heard in 1 of 3 dictations"
         )
-        XCTAssertEqual(LearnedTermsSheet.detailParts(for: proposal(.claude, dictations: 0, pinned: true)).text, "Not applied yet")
+        XCTAssertEqual(ProjectsPane.detail(for: proposal(.claude, dictations: 0, pinned: true)).text, "Not applied yet")
     }
 }

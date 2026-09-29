@@ -2,7 +2,7 @@
 import CryptoKit
 #endif
 import Foundation
-import XCTest
+import Synchronization
 import localvoxtralCore
 
 /// The speech stage the live evals share: `say` audio from the cache both
@@ -69,8 +69,11 @@ package enum EvalSpeechStage {
 
     // MARK: - TTS
 
-    package static let englishVoicePreference = ["Samantha", "Alex"]
-    package static let frenchVoicePreference = ["Thomas", "Amélie", "Aurélie", "Audrey"]
+    /// In order of preference. Scores compare only between runs with the
+    /// same voices. Since macOS 27 the Mac's Actions runner lists neither
+    /// Samantha nor Alex and gets Daniel (en_GB) (#960).
+    package static let englishVoicePreference = ["Samantha", "Alex", "Daniel"]
+    package static let frenchVoicePreference = ["Thomas", "Jacques", "Amélie"]
 
     #if os(macOS)
     package static let ttsDataFormat = "LEI16@16000"
@@ -137,85 +140,132 @@ package enum EvalSpeechStage {
         }
         arguments.append(text)
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
-        process.arguments = arguments
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
+        let status = try EvalChildProcess.run("/usr/bin/say", arguments: arguments)
+        guard status == 0 else {
             throw Failure(
-                "say failed (status \(process.terminationStatus)) for voice \(voice ?? "default")"
+                "say failed (status \(status)) for voice \(voice ?? "default")"
             )
         }
         try FileManager.default.moveItem(at: temporary, to: wavURL)
         return try IntegrationTestSupport.extractPCMDataFromWAV(at: wavURL)
     }
 
+    /// What xctest hands its children, printed once to compare with eval-e2e's
+    /// "Voices the runner's shell lists" step (#960).
+    private static let reportEnvironmentOnce: Void = {
+        for line in EvalChildProcess.currentEnvironmentReport() {
+            print("eval TTS env: \(line)")
+        }
+    }()
+
     /// `say -v ?` through a temp file (no pipes — descriptor-safe by
-    /// construction), parsed by the unit-tested picker.
-    package static func resolveVoice(languagePrefix: String, preferred: [String]) -> String? {
+    /// construction), parsed by the unit-tested picker. Throws when `say`
+    /// fails or lists none of `preferred`.
+    package static func resolveVoice(languagePrefix: String, preferred: [String]) throws -> String {
+        _ = reportEnvironmentOnce
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("lv-eval-voices-\(UUID().uuidString).txt")
         defer { try? FileManager.default.removeItem(at: outputURL) }
-        _ = FileManager.default.createFile(atPath: outputURL.path, contents: nil)
-        guard let handle = try? FileHandle(forWritingTo: outputURL) else { return nil }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
-        process.arguments = ["-v", "?"]
-        process.standardOutput = handle
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            return nil
-        }
-        process.waitUntilExit()
-        try? handle.close()
-        guard process.terminationStatus == 0,
-            let output = try? String(contentsOf: outputURL, encoding: .utf8)
-        else { return nil }
-        return pickVoice(
-            fromSayVoicesOutput: output, languagePrefix: languagePrefix, preferred: preferred
+        let status = try EvalChildProcess.run(
+            "/usr/bin/say", arguments: ["-v", "?"],
+            standardOutput: outputURL.path, discardStandardError: true
         )
+        guard status == 0 else {
+            throw Failure("`say -v ?` failed (status \(status))")
+        }
+        let voice = try requireVoice(
+            fromSayVoicesOutput: String(contentsOf: outputURL, encoding: .utf8),
+            languagePrefix: languagePrefix, preferred: preferred
+        )
+        if let note = fallbackNote(chosen: voice, preferred: preferred) {
+            print("eval TTS: \(note)")
+        }
+        return voice
     }
     #endif
 
     // MARK: - Voice picking
 
     /// Picks a TTS voice from `say -v ?` output: the first `preferred` name
-    /// present wins, else the first voice whose locale starts with
-    /// `languagePrefix` ("en"/"fr"), else nil. Voice names may contain spaces
-    /// ("Bad News"), so lines parse as name + 2+ spaces + locale.
+    /// listed for a locale starting with `languagePrefix` ("en"/"fr"), else
+    /// nil. It returns the name as listed, which `say -v` needs: macOS 27
+    /// suffixes most names with their language, "Samantha (English (US))"
+    /// (#960). Voice names may contain spaces ("Bad News"), so lines parse
+    /// as name + 2+ spaces + locale.
     package static func pickVoice(
         fromSayVoicesOutput output: String,
         languagePrefix: String,
         preferred: [String]
     ) -> String? {
-        var candidates: [String] = []
-        for line in output.split(separator: "\n") {
-            guard let (name, locale) = parseVoiceLine(String(line)) else { continue }
+        let listed = voiceNames(fromSayVoicesOutput: output, languagePrefix: languagePrefix)
+        for name in preferred {
+            if let voice = listed.first(where: { isVoice($0, named: name) }) {
+                return voice
+            }
+        }
+        return nil
+    }
+
+    /// One line naming the preferred voices `say` did not list, when
+    /// `chosen` is not the first preference; nil otherwise.
+    package static func fallbackNote(chosen: String, preferred: [String]) -> String? {
+        guard let index = preferred.firstIndex(where: { isVoice(chosen, named: $0) }), index > 0
+        else { return nil }
+        return "\(preferred[..<index].joined(separator: ", ")) not listed by `say -v ?`, using \(chosen)"
+    }
+
+    /// "Samantha" or, as macOS 27 lists it, "Samantha (English (US))".
+    private static func isVoice(_ listed: String, named name: String) -> Bool {
+        listed == name || listed.hasPrefix(name + " (")
+    }
+
+    /// `pickVoice`, failing with the voices on offer when it finds none. No
+    /// fallback to another voice of the language: on macOS 27 that was the
+    /// novelty voice Albert, which speechd could not transcribe (#960).
+    package static func requireVoice(
+        fromSayVoicesOutput output: String,
+        languagePrefix: String,
+        preferred: [String]
+    ) throws -> String {
+        if let voice = pickVoice(
+            fromSayVoicesOutput: output, languagePrefix: languagePrefix, preferred: preferred
+        ) {
+            return voice
+        }
+        let offered = voiceNames(fromSayVoicesOutput: output, languagePrefix: languagePrefix)
+        throw Failure(
+            "no \(languagePrefix) TTS voice named \(preferred.joined(separator: " or ")); "
+                + "`say -v ?` offered: \(offered.isEmpty ? "none" : offered.joined(separator: ", "))"
+        )
+    }
+
+    private static func voiceNames(
+        fromSayVoicesOutput output: String,
+        languagePrefix: String
+    ) -> [String] {
+        output.split(separator: "\n").compactMap { line in
+            guard let (name, locale) = parseVoiceLine(String(line)) else { return nil }
             let normalizedLocale = locale.replacingOccurrences(of: "-", with: "_").lowercased()
-            guard normalizedLocale.hasPrefix(languagePrefix.lowercased()) else { continue }
-            candidates.append(name)
+            return normalizedLocale.hasPrefix(languagePrefix.lowercased()) ? name : nil
         }
-        for name in preferred where candidates.contains(name) {
-            return name
-        }
-        return candidates.first
     }
 
     private static func parseVoiceLine(_ line: String) -> (name: String, locale: String)? {
-        // "Thomas              fr_FR    # Bonjour! ..." — name up to the first
-        // run of 2+ spaces, locale is the next token.
-        guard let separator = line.range(of: "  ") else { return nil }
-        let name = String(line[..<separator.lowerBound]).trimmingCharacters(in: .whitespaces)
+        // "Thomas              fr_FR    # Bonjour! ..." — the locale is the
+        // last token before the "#", the name everything before it. A long
+        // name can leave a single space, a tab or a no-break space before
+        // the locale (#960).
+        let entry = line.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+            .first ?? Substring(line)
+        guard let localeToken = entry.split(whereSeparator: \.isWhitespace).last,
+            let localeRange = entry.range(of: localeToken, options: .backwards)
+        else { return nil }
+        let name = entry[..<localeRange.lowerBound].trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { return nil }
-        let rest = line[separator.upperBound...].trimmingCharacters(in: .whitespaces)
-        guard let locale = rest.split(whereSeparator: \.isWhitespace).first else { return nil }
         // Locale tokens look like en_US / fr-FR / fr_CA.
+        let locale = String(localeToken)
         guard locale.contains("_") || locale.contains("-") else { return nil }
-        return (name, String(locale))
+        return (name, locale)
     }
 
     // MARK: - ASR
@@ -226,23 +276,27 @@ package enum EvalSpeechStage {
     /// carries the whole utterance in one event, which the join handles as
     /// the one-element case it already is.
     ///
-    /// An empty transcript is a failure unless `allowsEmptyTranscript`: then
-    /// the final commit's completion (`.transcriptionFinalized`) with no text
-    /// returns "", a result the ASR-only eval scores. The end-to-end eval
-    /// keeps the failure, since polish has nothing to work on.
+    /// The final commit's completion (`.transcriptionFinalized`) with no text
+    /// ends the utterance at once. It returns "" when `allowsEmptyTranscript`,
+    /// a result the ASR-only eval scores. Otherwise it fails as an answer,
+    /// not a stall (#961): the end-to-end eval keeps the failure, since
+    /// polish has nothing to work on, but `ServiceWatch` does not count it.
+    ///
+    /// `clock` times the wait for an answer and the grace after it; tests
+    /// pass a `ManualSessionClock`.
     package static func transcribe(
         pcm: Data,
         client: any RealtimeClient,
         endpoint: Endpoint,
         timeout: TimeInterval,
-        allowsEmptyTranscript: Bool = false
+        allowsEmptyTranscript: Bool = false,
+        clock: SessionClock = .live
     ) async throws -> String {
         let chunks = IntegrationTestSupport.splitPCM16IntoChunks(pcm, chunkSizeBytes: 3_200)
         let finals = SpeechStageStrings()
         let socketErrors = SpeechStageStrings()
         let finalized = SpeechStageStrings()
-        let firstFinal = XCTestExpectation(description: "final transcript")
-        firstFinal.assertForOverFulfill = false
+        let firstAnswer = SpeechStageWait()
 
         client.setEventHandler { event, _ in
             switch event {
@@ -258,13 +312,15 @@ package enum EvalSpeechStage {
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return }
                 finals.append(trimmed)
-                firstFinal.fulfill()
-            case .transcriptionFinalized where allowsEmptyTranscript:
+                firstAnswer.finish(answered: true)
+            case .transcriptionFinalized:
+                // The final commit's `transcription.done`. With no text
+                // before it, the service answered with nothing.
                 finalized.append("")
-                firstFinal.fulfill()
+                firstAnswer.finish(answered: true)
             case .error(let message):
                 socketErrors.append(message)
-                firstFinal.fulfill()  // fail fast, don't wait the full timeout
+                firstAnswer.finish(answered: true)  // fail fast, don't wait the full timeout
             default:
                 break
             }
@@ -277,9 +333,11 @@ package enum EvalSpeechStage {
                 model: endpoint.model
             )
         )
-        let outcome = await XCTWaiter.fulfillment(of: [firstFinal], timeout: timeout)
-        // Short grace so trailing final segments of a longer utterance land.
-        try? await Task.sleep(for: .seconds(1))
+        let answered = await firstAnswer.value(timeout: timeout, clock: clock)
+        if answered {
+            // Short grace so trailing final segments of a longer utterance land.
+            await clock.sleep(.seconds(1))
+        }
         client.disconnect()
 
         let transcript = finals.snapshot().joined(separator: " ")
@@ -295,12 +353,61 @@ package enum EvalSpeechStage {
         if allowsEmptyTranscript, !finalized.snapshot().isEmpty {
             return ""
         }
-        if outcome != .completed {
+        if !answered {
             throw Failure(
                 "no final transcript within \(Int(timeout))s from \(endpoint.url)", serviceStalled: true
             )
         }
         throw Failure("empty final transcript from \(endpoint.url)")
+    }
+}
+
+/// Ends once: `true` on the first answer, `false` when `timeout` passes on
+/// the clock first or the waiting task is cancelled. The timer is armed only
+/// when no answer is in yet, so a test's clock sees no sleep for an answer
+/// that came with `connect`.
+private final class SpeechStageWait: Sendable {
+    private enum State {
+        case waiting(CheckedContinuation<Bool, Never>?)
+        case done(Bool)
+    }
+
+    private let state = Mutex(State.waiting(nil))
+
+    func finish(answered: Bool) {
+        let continuation = state.withLock { state -> CheckedContinuation<Bool, Never>? in
+            guard case .waiting(let continuation) = state else { return nil }
+            state = .done(answered)
+            return continuation
+        }
+        continuation?.resume(returning: answered)
+    }
+
+    func value(timeout: TimeInterval, clock: SessionClock) async -> Bool {
+        let isDone = state.withLock { state in
+            if case .done = state { return true }
+            return false
+        }
+        let timer: Task<Void, Never>? =
+            isDone
+            ? nil
+            : Task { [self] in
+                await clock.sleep(.seconds(timeout))
+                finish(answered: false)
+            }
+        defer { timer?.cancel() }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                let done = state.withLock { state -> Bool? in
+                    if case .done(let answered) = state { return answered }
+                    state = .waiting(continuation)
+                    return nil
+                }
+                if let done { continuation.resume(returning: done) }
+            }
+        } onCancel: {
+            finish(answered: false)
+        }
     }
 }
 

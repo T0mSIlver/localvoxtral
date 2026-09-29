@@ -76,10 +76,15 @@ AppKit:
 - the learned terms: `LearnedTermStore` and the learner that fills it from
   the user's fixes (`CorrectionLearning`); the one-line notice it shows
   stays in the app
-- quick capture routing (`QuickCapture/`, #725): the project descriptions a
-  classifier reads, the Jev client, the polishing model's routing mode as
-  its fallback, and the rule that sends a low or tied answer to the
-  catch-all
+- quick capture (`QuickCapture/`, #725, #918): the project descriptions a
+  classifier reads, the polishing model's routing mode and the Jev client,
+  the rule that sends a low or tied answer to the catch-all, the context a
+  first draft reads (`QuickCaptureContext`), the polishing model's first
+  draft sorted by kind (`QuickCaptureFirstDraft`), the agent's check of an
+  issue (`QuickCaptureDrafter`), and the Inbox (`QuickCaptureInboxModel`);
+  the voice memo folder watcher and its ledger (#925), and
+  `RealtimeFileTranscriber`, which streams a recorded file through a
+  realtime client. Decoding the memo (AVFoundation) stays in the app
 - the Claude socket guard (`ClaudeSocketGuard`: `getpeereid` and
   `LOCAL_PEERPID` on Darwin, `SO_PEERCRED` on Linux), with the SHA-256 and
   HMAC helpers the Claude code hashes through
@@ -221,7 +226,8 @@ Key subsystems:
     the same way (`RemoteQuickCaptureRequests`): `X-Lvx-Readme` for a
     project's README summary and `X-Lvx-Draft` for a routed capture's draft,
     both run by `hooks/capture.sh` and answered on `/v1/readme`,
-    `/v1/draft/prompt` and `/v1/draft`.
+    `/v1/draft/words`, `/v1/draft/context`, `/v1/draft/check` (#918; an
+    older shim uses `/v1/draft/prompt`) and `/v1/draft`.
 
     A per-host opt-in (`ClaudeRemoteForwardSupervisor` +
     `ClaudeRemoteForwardCoordinator`, default off) lets the app hold that

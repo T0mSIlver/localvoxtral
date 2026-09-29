@@ -520,11 +520,12 @@ enum DiagnosticRecordWriter {
     /// Off the commit path entirely — by the time this runs the dictation has
     /// been finished for seconds — and, like `write`, it can only ever cost the
     /// record.
+    @discardableResult
     nonisolated static func attach(
         _ behavior: DiagnosticRecord.Behavior,
         toRecordAt url: URL,
         store: DiagnosticRecordStore
-    ) async {
+    ) async -> Bool {
         attachSynchronously(behavior, toRecordAt: url, store: store)
     }
 
@@ -532,20 +533,24 @@ enum DiagnosticRecordWriter {
     /// is not guaranteed to run — see
     /// `EditSignalWatcher.flushForTermination`. The work is one small
     /// JSON rewrite either way; only the caller's urgency differs.
+    /// Whether the record took the patch: false when it is gone.
+    @discardableResult
     nonisolated static func attachSynchronously(
         _ behavior: DiagnosticRecord.Behavior,
         toRecordAt url: URL,
         store: DiagnosticRecordStore
-    ) {
+    ) -> Bool {
         do {
             try store.attachBehavior(behavior, toRecordAt: url)
             Log.backends.info(
                 "Diagnostic record behavior: \(behavior.outcome.rawValue, privacy: .public) (\(behavior.signal?.rawValue ?? "none", privacy: .public), window \(behavior.watchWindowSeconds, privacy: .public)s) -> \(url.lastPathComponent, privacy: .public)"
             )
+            return true
         } catch {
             Log.backends.error(
                 "Diagnostic record behavior patch failed: \(error.localizedDescription, privacy: .public)"
             )
+            return false
         }
     }
 }

@@ -10,6 +10,8 @@ public struct AgentCLIRunner: Sendable {
         case refused = 1
         case usage = 2
         case notRunning = 3
+        /// `doctor` answered and at least one check failed.
+        case checkFailed = 4
     }
 
     public struct Outcome: Equatable, Sendable {
@@ -72,6 +74,8 @@ public struct AgentCLIRunner: Sendable {
         let exitCode: ExitCode
         if let error = response.error {
             exitCode = error.code == .notRunning ? .notRunning : .refused
+        } else if response.doctor?.hasFailure == true {
+            exitCode = .checkFailed
         } else {
             exitCode = .answered
         }
@@ -103,6 +107,7 @@ public struct AgentCLIText: Sendable {
         if let terms = response.terms { lines += render(terms) }
         if let proposal = response.proposal { lines += render(proposal) }
         if let status = response.status { lines += render(status) }
+        if let doctor = response.doctor { lines += render(doctor) }
         if let captures = response.captures { lines += render(captures) }
         if let capture = response.capture { lines += render(capture) }
         return lines.map { $0 + "\n" }.joined()
@@ -129,7 +134,7 @@ public struct AgentCLIText: Sendable {
     }
 
     private func render(_ terms: AgentCLITerms) -> [String] {
-        var lines = ["Names and terms: " + (terms.userTerms.isEmpty ? "none" : terms.userTerms.joined(separator: ", "))]
+        var lines = ["Global terms: " + (terms.userTerms.isEmpty ? "none" : terms.userTerms.joined(separator: ", "))]
         for project in terms.projects {
             lines.append("")
             let where_ = project.project.key.hasPrefix("/") ? " (\(project.project.key))" : ""
@@ -163,7 +168,7 @@ public struct AgentCLIText: Sendable {
         for skipped in proposal.skipped {
             let reason = switch skipped.reason {
             case .known: "the project already has it"
-            case .userList: "in your names and terms, or a suggestion you refused"
+            case .userList: "in your global terms, or a suggestion you refused"
             case .notTermShaped: "not a term"
             case .overLimit: "over \(AgentCLIWire.maxProposedTerms) terms"
             }
@@ -189,6 +194,10 @@ public struct AgentCLIText: Sendable {
             lines.append("Last dictation joined: no session")
         }
         return lines
+    }
+
+    private func render(_ doctor: AgentCLIDoctor) -> [String] {
+        doctor.textLines() + ["", doctor.summaryLine]
     }
 
     private func render(_ captures: AgentCLICaptures) -> [String] {

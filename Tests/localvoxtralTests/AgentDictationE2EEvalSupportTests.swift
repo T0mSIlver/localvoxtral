@@ -793,6 +793,28 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         assert payload["temperature"] == 0.0
         assert payload["top_k"] == 0
         assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+        mistral = module.RequestOptions(shape="mistral", temperature=0.3, reasoning_effort="low")
+        payload = module.request_payload("model", messages, mistral)
+        assert payload["reasoning_effort"] == "low" and payload["temperature"] == 0.3
+        assert not {"top_k", "min_p", "chat_template_kwargs"} & set(payload)
+        assert module.experiment_hash("case", "http://one/v1", "model", "variant", messages, mistral) != left
+        assert module.response_text([
+            {"type": "thinking", "thinking": [{"type": "text", "text": "trace"}]},
+            {"type": "text", "text": "answer"},
+        ]) == "answer"
+        score = {"tokensPass": True, "matchedTokens": [], "accuracy": 1.0, "surfaceExact": True}
+        rows = [
+            dict(score, stage=f"25 model current-production@{arm}", caseID="case", output="x")
+            for arm in ("main", "main-repeat")
+        ]
+        deltas = module.paired_variant_deltas(rows, "main")
+        assert [item["variant"] for item in deltas] == ["current-production@main-repeat"]
+        added = {case["caseID"]: case for case in module.polish_only_cases_missing_from([])}
+        assert added["k-en-pr-glued"]["polishInputText"] == "Rebase this branch on PR349 before you push."
+        assert added["k-en-pr-glued"]["forbiddenSubstrings"] == ["PR349"]
+        assert "b-en-flag-force" not in added
+        logged = module.polish_only_cases_missing_from([{"caseID": "k-en-pr-glued"}])
+        assert "k-en-pr-glued" not in {case["caseID"] for case in logged}
         experiment = module.Experiment("case", "model", "variant", messages, left)
         filtered = module.current_results(
             {left: {"output": "current"}, right: {"output": "stale"}}, [experiment]
@@ -1410,72 +1432,6 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         }
         XCTAssertTrue(
             TerminalTargetDetector.isTerminalLikeBundleID(Support.terminalTargetBundleID)
-        )
-    }
-
-    // MARK: - Voice picking
-
-    private let sampleVoices = """
-        Alex                en_US    # Most people recognize me by my voice.
-        Amélie              fr_CA    # Bonjour! Je m'appelle Amélie.
-        Bad News            en_US    # The light you see at the end of the tunnel...
-        Samantha            en_US    # Hello! My name is Samantha.
-        Thomas              fr_FR    # Bonjour! Je m'appelle Thomas.
-        """
-
-    func testPickVoicePrefersNamedVoice() {
-        XCTAssertEqual(
-            EvalSpeechStage.pickVoice(
-                fromSayVoicesOutput: sampleVoices, languagePrefix: "fr",
-                preferred: ["Thomas", "Amélie"]
-            ),
-            "Thomas"
-        )
-        XCTAssertEqual(
-            EvalSpeechStage.pickVoice(
-                fromSayVoicesOutput: sampleVoices, languagePrefix: "en",
-                preferred: ["Samantha"]
-            ),
-            "Samantha"
-        )
-    }
-
-    func testPickVoiceFallsBackToFirstLanguageMatch() {
-        XCTAssertEqual(
-            EvalSpeechStage.pickVoice(
-                fromSayVoicesOutput: sampleVoices, languagePrefix: "fr",
-                preferred: ["Nonexistent"]
-            ),
-            "Amélie"
-        )
-    }
-
-    func testPickVoiceReturnsNilWhenLanguageAbsent() {
-        XCTAssertNil(
-            EvalSpeechStage.pickVoice(
-                fromSayVoicesOutput: sampleVoices, languagePrefix: "de", preferred: ["Anna"]
-            )
-        )
-    }
-
-    /// Multi-word names ("Bad News") parse whole, and hyphenated locales
-    /// (fr-FR, seen on newer macOS) still match the language prefix.
-    func testPickVoiceParsesMultiWordNamesAndHyphenLocales() {
-        let output = """
-            Bad News            en_US    # ...
-            Jacques             fr-FR    # ...
-            """
-        XCTAssertEqual(
-            EvalSpeechStage.pickVoice(
-                fromSayVoicesOutput: output, languagePrefix: "en", preferred: ["Bad News"]
-            ),
-            "Bad News"
-        )
-        XCTAssertEqual(
-            EvalSpeechStage.pickVoice(
-                fromSayVoicesOutput: output, languagePrefix: "fr", preferred: []
-            ),
-            "Jacques"
         )
     }
 

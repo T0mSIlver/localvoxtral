@@ -329,6 +329,10 @@ public enum ClaudeRemoteHTTPCodec {
     public static let readmeHeaderName = "X-Lvx-Readme"
     public static let readmeHeaderValue = "wanted"
     public static let draftHeaderName = "X-Lvx-Draft"
+    /// The reply header of `/v1/doctor` (`RemoteDoctorRoute`): how many of
+    /// the Mac's checks failed, in decimal. The host's `localvoxtral doctor`
+    /// takes its exit status from this number, not from the body's wording.
+    public static let doctorFailedHeaderName = "X-Lvx-Doctor-Failed"
 
     /// A draft id as the Mac mints it and the host shim accepts it: 32
     /// lowercase hex digits.
@@ -348,11 +352,13 @@ public enum ClaudeRemoteHTTPCodec {
         sessionStatus: ClaudeRemoteSessionStatus? = nil,
         termsWanted: Bool = false,
         readmeWanted: Bool = false,
-        draftID: String? = nil
+        draftID: String? = nil,
+        doctorFailed: Int? = nil,
+        contentType: String = "application/json"
     ) -> Data {
         var head = "HTTP/1.1 \(status) \(reasonPhrase(for: status))\r\n"
         head += "Connection: close\r\n"
-        head += "Content-Type: application/json\r\n"
+        head += "Content-Type: \(contentType)\r\n"
         head += "Content-Length: \(body?.count ?? 0)\r\n"
         if status == 401 { head += "WWW-Authenticate: Bearer\r\n" }
         if status == 200, let sessionStatus {
@@ -369,6 +375,9 @@ public enum ClaudeRemoteHTTPCodec {
         }
         if status == 200, let draftID, isDraftID(draftID) {
             head += "\(draftHeaderName): \(draftID)\r\n"
+        }
+        if status == 200, let doctorFailed, doctorFailed >= 0 {
+            head += "\(doctorFailedHeaderName): \(doctorFailed)\r\n"
         }
         head += "\r\n"
         var data = Data(head.utf8)
@@ -395,6 +404,8 @@ public enum ClaudeRemoteHTTPCodec {
     static func reasonPhrase(for status: Int) -> String {
         switch status {
         case 200: return "OK"
+        case 202: return "Accepted"
+        case 204: return "No Content"
         case 400: return "Bad Request"
         case 401: return "Unauthorized"
         case 404: return "Not Found"
@@ -403,6 +414,7 @@ public enum ClaudeRemoteHTTPCodec {
         case 409: return "Conflict"
         case 413: return "Payload Too Large"
         case 431: return "Request Header Fields Too Large"
+        case 503: return "Service Unavailable"
         default: return "Error"
         }
     }

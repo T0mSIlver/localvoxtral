@@ -190,11 +190,20 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
         XCTAssertEqual(host.mode(".vibe/localvoxtral/remote"), 0o700)
         XCTAssertEqual(host.text(".vibe/hooks.toml"), Self.userHooks + "\n" + files.hooksBlock)
         XCTAssertEqual(host.mode(".vibe/hooks.toml"), 0o644, "an existing hooks.toml keeps its mode")
+
+        // A second run is an update and leaves the file byte-identical.
+        let before = host.text(".vibe/hooks.toml")
+        XCTAssertEqual(try setUp(host), .updated)
+        XCTAssertEqual(host.text(".vibe/hooks.toml"), before)
     }
 
+    /// One fresh-host setup answers three contracts: what the runs carry, the
+    /// runner budget they ask for, and the hooks.toml a host without one gets.
     func testTheTokenIsInNoArgvAndEveryRunIsABatchModeShOverStdin() throws {
         let host = try VibeFakeHost()
         _ = try setUp(host)
+        XCTAssertEqual(host.text(".vibe/hooks.toml"), try shippedFiles().hooksBlock)
+        XCTAssertEqual(host.mode(".vibe/hooks.toml"), 0o600, "a host without hooks.toml gets one at 0600")
         XCTAssertEqual(host.invocations.count, 4, "probe, stage, read back, activate")
         for invocation in host.invocations {
             XCTAssertEqual(invocation.argv, [
@@ -207,11 +216,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
         }
         XCTAssertEqual(carriers.count, 1, "only the activation carries it, on stdin")
         XCTAssertEqual(carriers.first, host.invocations.last, "and it is the last thing written")
-    }
 
-    func testTheRunNeedsTheLargerRunnerBudgetAndAsksForItByName() throws {
-        let host = try VibeFakeHost()
-        _ = try setUp(host)
         let stage = host.invocations[1]
         XCTAssertGreaterThan(
             stage.standardInput.count, ClaudeRemoteEnrollmentService.Invocation.Budget.standard.standardInputBytes,
@@ -246,22 +251,6 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
         XCTAssertEqual(failure.exitCode, 46)
         XCTAssertTrue(failure.message.contains("too large"))
         XCTAssertNil(host.text(".vibe/localvoxtral/remote/post.sh"))
-    }
-
-    func testAHostWithoutHooksTomlGetsOneAt0600() throws {
-        let host = try VibeFakeHost()
-        _ = try setUp(host)
-        XCTAssertEqual(host.text(".vibe/hooks.toml"), try shippedFiles().hooksBlock)
-        XCTAssertEqual(host.mode(".vibe/hooks.toml"), 0o600)
-    }
-
-    func testASecondRunIsAnUpdateAndLeavesTheFileByteIdentical() throws {
-        let host = try VibeFakeHost()
-        try host.write(Self.userHooks, to: ".vibe/hooks.toml")
-        _ = try setUp(host)
-        let before = host.text(".vibe/hooks.toml")
-        XCTAssertEqual(try setUp(host), .updated)
-        XCTAssertEqual(host.text(".vibe/hooks.toml"), before)
     }
 
     func testTheInstalledShimDialsWithTheTokenAndPortThatWereWritten() throws {
@@ -377,7 +366,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
         host.beforeScript[3] = {
             let path = host.path(".vibe/localvoxtral/remote/post.sh")
             let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
-            try? text.replacingOccurrences(of: "Hooks-Version: 1.8.0", with: "Hooks-Version: 6.6.6")
+            try? text.replacingOccurrences(of: "Hooks-Version: 1.11.0", with: "Hooks-Version: 6.6.6")
                 .write(toFile: path, atomically: true, encoding: .utf8)
         }
         let failure = try XCTUnwrap(failure { _ = try self.setUp(host) })
@@ -415,7 +404,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
 
     func testTheShippedFilesCarryOneVersionAndTheRemoteBlock() throws {
         let files = try shippedFiles()
-        XCTAssertEqual(files.version, "1.8.0")
+        XCTAssertEqual(files.version, "1.11.0")
         XCTAssertNotNil(VibeHooksBlockEditor.remote.snippet(fromBundled: files.hooksBlock))
         let names = files.hooksBlock.split(separator: "\n").filter { $0.hasPrefix("name = ") }
             .map { String($0.dropFirst("name = \"".count).dropLast()) }

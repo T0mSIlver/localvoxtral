@@ -11,6 +11,10 @@ public protocol ChatResponding: Sendable {
         chatTemplateArguments: [String: ChatTemplateArgumentValue]?,
         sampling: ChatSamplingParameters
     ) async throws -> ChatReply
+
+    /// The tokens `text` encodes to with the model's tokenizer, without
+    /// special tokens or a chat template: what one part of a prompt adds.
+    func tokenCount(of text: String) async throws -> Int
 }
 
 public enum ChatRespondingError: Error, CustomStringConvertible {
@@ -193,6 +197,12 @@ public final class MLXPolishModel: ChatResponding, @unchecked Sendable {
                 acceptedDraftTokens: info?.acceptedDraftTokens
             )
             return ChatReply(content: output, timings: timings)
+        }
+    }
+
+    public func tokenCount(of text: String) async throws -> Int {
+        await container.perform { context in
+            context.tokenizer.encode(text: text, addSpecialTokens: false).count
         }
     }
 

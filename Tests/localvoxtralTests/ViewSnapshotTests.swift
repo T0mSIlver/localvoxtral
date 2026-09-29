@@ -1,4 +1,5 @@
 import AppKit
+import ClaudeContextWire
 import SwiftUI
 import XCTest
 
@@ -78,6 +79,7 @@ final class ViewSnapshotTests: XCTestCase {
 
     private func recordSettings(
         pane: SettingsTab, name: String, setUp: Bool,
+        appearance: NSAppearance.Name = .aqua,
         configure: ((DictationViewModel) throws -> Void)? = nil,
         insightsModel: (() -> DictationInsightsModel?)? = nil
     ) async throws {
@@ -101,11 +103,13 @@ final class ViewSnapshotTests: XCTestCase {
         .environment(\.shortcutRecorderStandIn, true)
         try record(
             view, name: name,
-            width: Self.settingsSize.width, height: Self.settingsSize.height, growToFit: true)
+            width: Self.settingsSize.width, height: Self.settingsSize.height, growToFit: true,
+            appearance: appearance)
     }
 
-    /// The Inbox with a drafted capture, one no project took, and one filed
-    /// (#725). Made-up words: the artifacts are public.
+    /// The Inbox with a drafted capture that has a follow-up and extends an
+    /// issue (#965), one no project took, and one filed (#725). Made-up
+    /// words: the artifacts are public.
     func testInboxWithCaptures() async throws {
         try await recordSettings(pane: .inbox, name: "settings-inbox-captures", setUp: false) { viewModel in
             let directory = FileManager.default.temporaryDirectory
@@ -121,6 +125,12 @@ final class ViewSnapshotTests: XCTestCase {
             drafted.repository = "example/demo"
             drafted.title = "Remember the overlay's size per display"
             drafted.body = "## Scope\nStore the overlay's size with its position, per display.\n\n## Proof\nA test that restores both."
+            drafted.followUps = [.init(
+                id: UUID(), capturedAt: now.addingTimeInterval(-120),
+                text: "also when a display is unplugged and plugged back", historyRecordID: nil, draftBefore: nil
+            )]
+            drafted.relation = .extends
+            drafted.relatedIssue = 8
             var unplaced = QuickCaptureItem(capturedAt: now.addingTimeInterval(-3_600), text: "renew the passport before December")
             unplaced.state = .ready
             unplaced.note = "Not routed to a project. Move it to one."
@@ -143,89 +153,169 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
-    /// Advanced → Terms learned from polishing → Show: empty, which is where
-    /// a new machine imports (#523), and with terms, where Export… shows,
-    /// agent proposals (#609) included.
-    func testLearnedTermsSheet() throws {
-        let frozen = Date(timeIntervalSince1970: 1_790_000_000)
-        for filled in [false, true] {
-            let (_, viewModel) = makeViewModel()
-            let store = LearnedTermStore(fileURL: nil, now: { frozen })
-            if filled {
-                store.importProjects([
-                    LearnedTermProject(key: "/work/demo", name: "demo", terms: [
-                        LearnedTerm(
-                            term: "speechd", sources: ["repo"], dictations: 4,
-                            firstSeen: frozen, lastSeen: frozen),
-                        LearnedTerm(
-                            term: "Voxtral", sources: ["repo"], dictations: 2,
-                            firstSeen: frozen, lastSeen: frozen),
-                        // What a new project's agents proposed (#609).
-                        LearnedTerm(
-                            term: "inkwell", sources: [ProjectTermProposal.Agent.claude.source],
-                            dictations: 0, firstSeen: frozen, lastSeen: frozen),
-                        LearnedTerm(
-                            term: "GlyphAtlasCache", sources: [ProjectTermProposal.Agent.vibe.source],
-                            dictations: 1, firstSeen: frozen, lastSeen: frozen),
-                    ], lastSeen: frozen),
-                ]) { _ in }
+    /// Projects (#939), light and dark: the table, with a fork waiting for
+    /// a choice, a project with no GitHub repository and the "No project"
+    /// entry (#972), and Import… and Export… under it (#999); then one
+    /// project's sheet with its whole term list and the "No project" sheet.
+    /// Made-up projects and hosts: the artifacts are public.
+    func testProjectsPane() async throws {
+        for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            try await recordSettings(
+                pane: .projects, name: "settings-projects-\(theme)", setUp: false, appearance: appearance
+            ) { viewModel in
+                viewModel.installQuickCaptureInbox(try self.projectsInbox(viewModel.settings))
+                // Export… shows only when the store holds terms (#999).
+                let store = LearnedTermStore(fileURL: nil)
+                store.importProjects(self.projectsLearnedTerms().projects) { _ in }
                 store.waitForPendingWrites()
+                viewModel.learnedTermStore = store
             }
-            viewModel.learnedTermStore = store
+            let (settings, viewModel) = makeViewModel()
+            let inbox = try projectsInbox(settings)
             try record(
-                LearnedTermsSheet(viewModel: viewModel, onDone: {}),
-                name: "learned-terms-\(filled ? "filled" : "empty")",
-                width: 520, height: 440, growToFit: false)
+                ProjectDetailSheet(
+                    projectKey: "/work/demo", settings: settings, viewModel: viewModel, inbox: inbox,
+                    dictationProjectKeys: Array(repeating: "/work/demo", count: 142) + ["remote:demo", nil],
+                    openInbox: {}, onDone: {})
+                // A sheet draws on its window's background; the snapshot
+                // window has none.
+                .background(Color(nsColor: .windowBackgroundColor)),
+                name: "projects-sheet-\(theme)",
+                width: 560, height: 760, growToFit: false, appearance: appearance)
+            try record(
+                UnlistedTermsSheet(viewModel: viewModel, inbox: inbox, onDone: {})
+                    .background(Color(nsColor: .windowBackgroundColor)),
+                name: "projects-no-project-sheet-\(theme)",
+                width: 560, height: 480, growToFit: false, appearance: appearance)
         }
     }
 
-    /// Context → Quick capture → Project descriptions → Edit… (#811, #891,
-    /// #926): the user's line, GitHub's description on a fork with its
-    /// filing picker, the agent's line, a README summary, and a project
-    /// with none.
-    func testQuickCaptureProjectLinesSheet() throws {
-        let (settings, _) = makeViewModel()
-        settings.setQuickCaptureProjectLine("Dictation app; shortcuts, quick capture, Inbox, polish", for: "remote:demo")
+    /// The polish prompt's sizes (#1007): Global terms with a count and
+    /// tokens, and the instructions under Advanced for both profiles, at the
+    /// ratio twenty measured Mistral requests give.
+    func testTextProcessingPromptSizes() async throws {
+        try await recordSettings(pane: .textProcessing, name: "settings-textProcessing-prompt-sizes", setUp: false) {
+            viewModel in
+            let settings = viewModel.settings
+            settings.polishSpeakerTerms = [
+                "Qwen", "Claude Code", "vLLM", "Ghostty", "SwiftPM", "herdr", "Voxtral", "MLX",
+                "Tailscale", "PostgreSQL", "Kubernetes", "OpenTelemetry",
+            ]
+            settings.agentPolishProfileEnabled = true
+            settings.polishingBackendMode = .mistralAPI
+            let ledger = UsageLedger(fileURL: nil)
+            for _ in 0..<20 {
+                ledger.record(UsageEntry(
+                    date: Date(), feature: .polish, backend: .mistral, model: "zai-glm-5-3",
+                    promptTokens: 1_949, promptCharacters: 9_100))
+            }
+            viewModel.installUsageLedger(ledger)
+        }
+    }
+
+    /// A History row opened: its details line ends with the prompt tokens
+    /// the polish request sent (#1007). Made-up words.
+    func testHistoryEntryDetails() async throws {
+        let (settings, viewModel) = makeViewModel()
+        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let dictation = DictationSessionRecord(
+            startedAt: Date().addingTimeInterval(-120), finishedAt: Date().addingTimeInterval(-110),
+            rawText: "the mac queue is stuck again, check the runner",
+            polishedText: "The Mac queue is stuck again; check the runner.",
+            polishingDurationSeconds: 0.84, provider: "mistral", model: "zai-glm-5-3",
+            outputMode: "overlay_buffer", targetAppBundleID: "com.mitchellh.ghostty", status: .completed,
+            commitSucceeded: true, polishProfile: PolishPromptProfile.agent.rawValue)
+        dictation.polishPromptTokens = 1_949
+        await store.save(dictation).value
+        viewModel.sessionStore = store
+        let model = DictationHistoryModel(store: { store })
+        await model.reload()
+        model.expandedEntryID = dictation.id
+        try record(
+            HistorySettingsPane(settings: settings, viewModel: viewModel, model: model),
+            name: "settings-history-entry-details",
+            width: Self.settingsSize.width, height: Self.settingsSize.height, growToFit: true)
+    }
+
+    private func projectsLearnedTerms() -> LearnedTerms {
+        let now = Date()
+        func term(_ spelling: String, _ dictations: Int, sources: [String] = ["repo"], pinned: Bool? = nil) -> LearnedTerm {
+            LearnedTerm(
+                term: spelling, sources: sources, dictations: dictations, firstSeen: now, lastSeen: now,
+                applied: dictations > 4 ? dictations - 2 : nil, lastApplied: dictations > 4 ? now.addingTimeInterval(-3_600) : nil,
+                pinned: pinned)
+        }
         func project(
-            _ name: String, summary: String? = nil, agentLine: String? = nil,
-            repository: String? = nil, github: GitHubRepositoryFacts? = nil
+            _ key: String, _ name: String, ago hours: Double, terms: [LearnedTerm] = [],
+            repository: String? = nil, github: GitHubRepositoryFacts? = nil, hosts: [String]? = nil
         ) -> LearnedTermProject {
-            var project = LearnedTermProject(
-                key: "remote:\(name)", name: name, terms: [], lastSeen: Date(timeIntervalSince1970: 1_800_000_000))
-            project.reportedAsRepository = true
-            project.summary = summary
-            project.agentLine = agentLine
+            var project = LearnedTermProject(key: key, name: name, terms: terms, lastSeen: now.addingTimeInterval(-hours * 3_600))
+            project.reportedAsRepository = key.hasPrefix("remote:") ? true : nil
             project.repository = repository
             project.github = github
+            project.hostIDs = hosts
             return project
         }
-        let learned = LearnedTerms(projects: [
-            project("demo", summary: "Realtime dictation for the menu bar."),
+        let demoFacts = GitHubRepositoryFacts(
+            description: "Turns talks into timestamped, citable notes for agents: an MCP server, a web app and a worker",
+            topics: ["mcp"], parent: nil)
+        return LearnedTerms(projects: [
             project(
-                "mlx-audio-swift", summary: "Text to speech and speech to text on Apple silicon.",
-                repository: "me/mlx-audio-swift",
-                github: GitHubRepositoryFacts(
-                    description: "A modular Swift SDK for audio processing with MLX on Apple Silicon",
-                    topics: ["mlx", "tts"], parent: "Blaizzy/mlx-audio-swift")),
+                "/work/demo", "demo", ago: 0.2,
+                terms: [term("demo", 9), term("job-status", 7), term("worker", 6), term("Vespa", 5, pinned: true),
+                        term("shelf", 4), term("youtu.be", 4), term("receipt", 3), term("ghcr.io", 3),
+                        term("citable", 3), term("MCP", 3), term("timestamped", 2), term("transcript-id", 2),
+                        term("fetch_video", 1), term("inkwell", 0, sources: [ProjectTermProposal.Agent.claude.source])],
+                repository: "example/demo", github: demoFacts),
+            project("remote:demo", "demo", ago: 2, terms: [term("reindex", 3)], repository: "example/demo",
+                    github: demoFacts, hosts: ["h1"]),
+            project("remote:glossator", "glossator", ago: 20, repository: "example/glossator", hosts: ["h1"]),
+            project("remote:working-set", "working-set", ago: 50, repository: "example/working-set", hosts: ["h2"]),
             project(
-                "quill", summary: "Quill typesets Markdown.",
-                agentLine: "Markdown to PDF renderer: the qmk CLI, page sizes, fonts, the glyph cache."),
-            project("site", summary: "A personal site and blog built with Astro."),
-            project("notes"),
+                "/work/mlx-audio-swift", "mlx-audio-swift", ago: 74, repository: "example/mlx-audio-swift",
+                github: GitHubRepositoryFacts(description: "Speech on Apple silicon", topics: [], parent: "upstream-org/mlx-audio-swift")),
+            project("/work/scratch-notes", "scratch-notes", ago: 196),
+            // Outside every project: the "No project" entry.
+            project(LearnedTermProjectResolver.shared.key, LearnedTermProjectResolver.shared.name, ago: 30,
+                    terms: [term("Qwen", 6), term("Ghostty", 3)]),
+            // A remote label no host named.
+            LearnedTermProject(
+                key: "remote:bold-bose-fac585", name: "bold-bose-fac585", terms: [term("speechd", 2)],
+                lastSeen: now.addingTimeInterval(-90 * 3_600)),
         ])
-        let inbox = QuickCaptureInboxViewModel(
-            settings: settings,
-            learnedTerms: { learned },
-            fileURL: nil,
-            applicationSupport: FileManager.default.temporaryDirectory
-        )
-        try record(
-            QuickCaptureProjectLinesSheet(settings: settings, inbox: inbox, onDone: {}),
-            name: "quick-capture-project-lines",
-            width: 720, height: 420, growToFit: false)
     }
 
-    /// Dictation → Output → Phrases that press Return (#839): the saved
+    private func projectsInbox(_ settings: SettingsStore) throws -> QuickCaptureInboxViewModel {
+        let now = Date()
+        let learned = projectsLearnedTerms()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("projects-snapshot-\(UUID().uuidString)")
+        let fileURL = directory.appendingPathComponent("quick-captures.json")
+        func capture(_ key: String, _ state: QuickCaptureItem.State) -> QuickCaptureItem {
+            var item = QuickCaptureItem(capturedAt: now, text: "a note")
+            item.projectKey = key
+            item.state = state
+            return item
+        }
+        try QuickCaptureInboxFile.save(QuickCaptureInbox(items: [
+            capture("/work/demo", .ready), capture("/work/demo", .ready), capture("remote:demo", .drafting),
+            capture("/work/demo", .filed), capture("/work/demo", .filed),
+            capture("remote:working-set", .ready), capture("/work/mlx-audio-swift", .ready),
+        ]), to: fileURL)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let inbox = QuickCaptureInboxViewModel(
+            settings: settings, learnedTerms: { learned }, fileURL: fileURL, applicationSupport: directory)
+        inbox.enrolledHosts = { [(id: "h1", name: "devbox"), (id: "h2", name: "buildbox")] }
+        let local = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
+        var claude = ClaudeSessionSnapshot(sessionID: "s1", origin: local, firstSeen: now)
+        claude.workspace = .make(rawCwd: "/work/demo", origin: local)
+        var opencode = ClaudeSessionSnapshot(sessionID: "s2", origin: .remote(channel: "ssh:h1"), firstSeen: now)
+        opencode.agent = .opencode
+        opencode.workspace = .make(rawCwd: "/home/me/demo", origin: .remote(channel: "ssh:h1"))
+        inbox.liveSessions = { [claude, opencode] }
+        return inbox
+    }
+
+    /// Dictation → Output → Send phrases (#839): the saved
     /// list, and a refused one with its reason under the row.
     func testSendPhrasesRow() throws {
         let (settings, _) = makeViewModel()
@@ -355,15 +445,12 @@ final class ViewSnapshotTests: XCTestCase {
             ("listening-unjoined", DictationOverlayView(
                 phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
                 metrics: metrics, claudeJoin: .unjoined)),
-            ("destinations-here", DictationOverlayView(
-                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
-                metrics: metrics, destinations: Self.strip(selected: .focusedApp))),
-            ("destinations-session", DictationOverlayView(
-                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
-                metrics: metrics, destinations: Self.strip(selected: .session(id: "pay")))),
-            ("destinations-inbox", DictationOverlayView(
-                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
-                metrics: metrics, destinations: Self.strip(selected: .inbox))),
+            ("draft-review", DictationOverlayView(
+                phase: .buffering, text: "", errorMessage: nil, secureInputActive: false,
+                metrics: metrics, draftReview: Self.draft)),
+            ("draft-review-change", DictationOverlayView(
+                phase: .buffering, text: "Make it only the popover part", errorMessage: nil,
+                secureInputActive: false, metrics: metrics, draftReview: Self.draft)),
             ("secure-input", DictationOverlayView(
                 phase: .buffering, text: sample, errorMessage: nil, secureInputActive: true,
                 metrics: metrics)),
@@ -378,8 +465,20 @@ final class ViewSnapshotTests: XCTestCase {
                 errorMessage: "Couldn't insert. Copied for manual paste.",
                 secureInputActive: false, metrics: metrics)),
         ]
-        for state in states {
-            let height = metrics.contentHeight(text: state.view.text, errorMessage: state.view.errorMessage)
+        // Where the words go (#1015), with 1, 3 and 10 agents waiting: the
+        // list closed on the second agent, then open on it.
+        let destinations = [1, 3, 10].flatMap { waiting in
+            [false, true].map { open in
+                (name: "destinations-\(waiting)-\(open ? "open" : "closed")",
+                 view: DictationOverlayView(
+                    phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
+                    metrics: metrics, destinations: Self.strip(waiting: waiting, open: open)))
+            }
+        }
+        for state in states + destinations {
+            let height = metrics.contentHeight(
+                text: state.view.text, errorMessage: state.view.errorMessage, draftReview: state.view.draftReview,
+                destinations: state.view.destinations)
             // A flat backdrop stands in for the desktop the panel floats over.
             let inset: CGFloat = 16
             let view = state.view
@@ -392,13 +491,46 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
-    /// The overlay's destinations (#840) with one session waiting.
-    private static func strip(selected: DictationDestination) -> OverlayDestinationStrip {
-        OverlayDestinationStrip(
-            list: DictationDestinationList(waitingSessionIDs: ["pay"], focusedSessionID: nil, selected: selected),
-            focusedAppLabel: "localvoxtral",
+    /// A ready draft under spoken review (#927).
+    private static let draft = QuickCaptureDraftSnapshot(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000927")!,
+        projectName: "localvoxtral",
+        title: "Show drafting progress in the Inbox row",
+        body: """
+        ## Problem
+        A capture shows "Drafting" with a spinner for minutes and never says which step it is on.
+
+        ## Scope
+        The Inbox row names the drafting step. The popover is unchanged.
+        """
+    )
+
+    /// Made-up session names as long as real ones: worktree folders, and
+    /// Claude Desktop titles, which run to about 70 characters (#1013).
+    private static let sessionNames = [
+        "Fix test-remote-doctor.sh broken-pipe flake in the harness scripts",
+        "history-store-own-file-a41c2e",
+        "Polish prompt token sizes in Settings and History",
+        "quick-capture-polish-before-routing",
+        "Voice memos keep follow-up recordings",
+        "overlay-destination-list-1015",
+        "Learned terms import and export move to Projects",
+        "remote-join-diagnosis-3b9d10",
+        "Boost the user's terms while Nemotron decodes",
+        "eval-e2e-scheduled-run-guard-874",
+    ]
+
+    /// The overlay's destinations (#840) with `waiting` sessions waiting,
+    /// the first of them picked: the second Tab.
+    private static func strip(waiting: Int, open: Bool) -> OverlayDestinationStrip {
+        let ids = (0..<waiting).map { "s\($0)" }
+        return OverlayDestinationStrip(
+            list: DictationDestinationList(
+                waitingSessionIDs: ids, focusedSessionID: nil, selected: .session(id: ids[0])),
+            focusedAppLabel: "ci-speed-optimizations-7ffef0",
             focusedAppJoined: true,
-            sessionName: { _ in "payments" }
+            sessionName: { id in sessionNames[Int(id.dropFirst())!] },
+            isOpen: open
         )
     }
 
@@ -537,10 +669,11 @@ final class ViewSnapshotTests: XCTestCase {
     }
 
     private func record<V: View>(
-        _ view: V, name: String, width: CGFloat, height: CGFloat, growToFit: Bool
+        _ view: V, name: String, width: CGFloat, height: CGFloat, growToFit: Bool,
+        appearance: NSAppearance.Name = .aqua
     ) throws {
         let url = try ViewSnapshot.record(
-            view, name: name, width: width, height: height, growToFit: growToFit)
+            view, name: name, width: width, height: height, growToFit: growToFit, appearance: appearance)
         // The hosting view sizes its window to the content, so the image is
         // the view's own size, not necessarily the one asked for.
         let image = try XCTUnwrap(NSImage(contentsOf: url), "\(name).png does not read back")

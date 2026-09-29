@@ -12,14 +12,33 @@ final class DictationInsightsTests: XCTestCase {
         polishSeconds: Double? = nil,
         bundleID: String? = nil,
         status: DictationSessionStatus = .completed,
-        commitSucceeded: Bool = true
+        commitSucceeded: Bool = true,
+        editOutcome: EditSignalOutcome? = nil
     ) -> DictationHistoryEntry {
         DictationHistoryEntry(
             id: UUID(), startedAt: origin, finishedAt: origin.addingTimeInterval(seconds),
             rawText: rawText, polishedText: polished, polishingDurationSeconds: polishSeconds,
             provider: "p", model: "m", outputMode: "overlay_buffer", targetAppBundleID: bundleID,
             status: status, commitSucceeded: commitSucceeded, polishProfile: nil,
-            polishContextSummary: nil)
+            polishContextSummary: nil, editOutcome: editOutcome?.rawValue)
+    }
+
+    /// The "edited soon after insertion" share: erased over watched. A window
+    /// a new dictation cut short, and a dictation nothing watched, are in
+    /// neither count.
+    func testEditedSoonCountsErasedInsertionsOverWatchedOnes() {
+        let insights = DictationInsights(entries: [
+            entry("one", editOutcome: .edited),
+            entry("two", editOutcome: .clean),
+            entry("three", editOutcome: .clean),
+            entry("four", editOutcome: .clean),
+            entry("five", editOutcome: .superseded),
+            entry("six"),
+        ])
+
+        XCTAssertEqual(insights.dictations, 6)
+        XCTAssertEqual(insights.editWatched, 4)
+        XCTAssertEqual(insights.editedSoon, 1)
     }
 
     func testNoDictationsIsAllZeroesAndNoRatios() {
@@ -41,6 +60,26 @@ final class DictationInsightsTests: XCTestCase {
         XCTAssertEqual(insights.words, 6)
         XCTAssertEqual(insights.dictatingSeconds, 60)
         XCTAssertEqual(insights.wordsPerMinute, 6)
+    }
+
+    /// A quick capture is polished after its record is written (#970): its
+    /// polish is not taken out of its time, and it is not a polish wait.
+    func testAQuickCapturesPolishIsNeitherTakenOutOfItsTimeNorAPolishWait() {
+        let capture = DictationHistoryEntry(
+            id: UUID(), startedAt: origin, finishedAt: origin.addingTimeInterval(30),
+            rawText: "the local voxroll docs", polishedText: "The localvoxtral docs.", polishingDurationSeconds: 9,
+            provider: "p", model: "m", outputMode: DictationSessionRecord.quickCaptureOutputMode, targetAppBundleID: nil,
+            status: .sttCompleted, commitSucceeded: true, polishProfile: nil, polishContextSummary: nil)
+        let insights = DictationInsights(entries: [
+            capture,
+            entry("one two", polished: "One, two.", seconds: 32, polishSeconds: 2),
+        ])
+
+        XCTAssertEqual(insights.dictatingSeconds, 60)
+        XCTAssertEqual(insights.polishRan, 1)
+        XCTAssertEqual(insights.polishChanged, 1)
+        XCTAssertEqual(insights.medianPolishSeconds, 2)
+        XCTAssertEqual(insights.slowPolishSeconds, 2)
     }
 
     func testTimeSavedIsTypingTimeLessDictatingTimeAndNeverNegative() {

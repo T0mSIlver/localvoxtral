@@ -2,7 +2,7 @@ import Foundation
 import os
 
 /// Stopping by voice (#839): an Overlay Buffer dictation whose words end in
-/// a send phrase, with no new text for `SpokenStopRule.silenceWindow`, stops
+/// a send phrase, with no new text for `settings.spokenStopWait`, stops
 /// exactly as the stop key would (`stopDictation`). The stop then cuts the
 /// phrase, polishes, commits and sends through the one commit path
 /// (`stripOverlaySpokenSendTrigger`); a quick capture saves to the Inbox
@@ -21,7 +21,7 @@ extension DictationSessionController {
     /// may turn a running dictation into a capture.
     var spokenStopGesture: SpokenStopRule.Gesture {
         if isHoldGestureSession { return .held }
-        return sessionIsQuickCapture ? .quickCapture : .toggled
+        return sessionIsQuickCapture || sessionDraftReview != nil ? .quickCapture : .toggled
     }
 
     /// After every transcript change of an Overlay Buffer dictation.
@@ -34,14 +34,15 @@ extension DictationSessionController {
         guard spokenStopWouldStop(text) else { return }
         spokenStopArmedWords = words
         let clock = dependencies.clock
+        let wait = settings.spokenStopWait
         spokenStopTask = Task { @MainActor [weak self] in
-            await clock.sleep(SpokenStopRule.silenceWindow)
+            await clock.sleep(wait.duration)
             guard let self, !Task.isCancelled else { return }
             self.spokenStopTask = nil
             self.spokenStopArmedWords = nil
-            self.fireSpokenStop()
+            self.fireSpokenStop(after: wait)
         }
-        Log.dictation.info("spoken stop armed: a send phrase ends the dictation")
+        Log.dictation.info("spoken stop armed: a send phrase ends the dictation after \(wait.displayName, privacy: .public)")
     }
 
     func disarmSpokenStop() {
@@ -50,7 +51,7 @@ extension DictationSessionController {
         spokenStopArmedWords = nil
     }
 
-    private func fireSpokenStop() {
+    private func fireSpokenStop(after wait: SpokenStopWait) {
         guard isDictating, !isFinalizingStop, !isReconnectingRealtimeSession,
               isOverlayBufferModeEnabled,
               spokenStopWouldStop(transcript.overlayDisplayText)
@@ -60,7 +61,7 @@ extension DictationSessionController {
         }
         sessionStoppedBySpokenPhrase = true
         Log.dictation.notice(
-            "spoken stop: a send phrase and \(Int(SpokenStopRule.silenceWindow.components.seconds), privacy: .public)s without new text; stopping as if pressed quick_capture=\(self.sessionIsQuickCapture, privacy: .public)"
+            "spoken stop: a send phrase and \(wait.displayName, privacy: .public) without new text; stopping as if pressed quick_capture=\(self.sessionIsQuickCapture, privacy: .public)"
         )
         stopDictation(reason: "spoken stop")
     }
@@ -71,6 +72,7 @@ extension DictationSessionController {
         guard SpokenStopRule.stopsByVoice(gesture) else { return false }
         switch gesture {
         case .quickCapture:
+            if sessionDraftReview != nil { return draftReviewStopsByVoice(text) }
             // The Inbox never presses Return, so no send gate applies.
             return settings.overlaySpokenSendEnabled
                 && SpokenStopRule.endsInSendPhrase(text, phrases: settings.spokenSendTriggerPhrases)

@@ -49,6 +49,18 @@ final class DictationSessionRecord {
     /// `outputMode` of a quick capture, which is never inserted anywhere.
     static let quickCaptureOutputMode = "quickCapture"
 
+    /// Whether the user erased the insertion within seconds of it
+    /// (`EditSignalOutcome`: `edited`, `clean`, `superseded`), copied from the
+    /// diagnostic record when its watch window closes. Nil when nothing was
+    /// watched: records off, Live Auto-Paste, a failed insertion, or an older
+    /// build. Additive optional field, like the ones above.
+    var editOutcome: String?
+
+    /// The prompt tokens the dictation's polish request sent, as the backend
+    /// reported them. Nil when no polish answered or the backend reported no
+    /// usage. Additive optional field, like the ones above.
+    var polishPromptTokens: Int?
+
     init(
         id: UUID = UUID(),
         startedAt: Date,
@@ -67,7 +79,8 @@ final class DictationSessionRecord {
         projectKey: String? = nil,
         projectName: String? = nil,
         joinedAgent: String? = nil,
-        quickCaptureDestination: String? = nil
+        quickCaptureDestination: String? = nil,
+        editOutcome: String? = nil
     ) {
         self.id = id
         self.startedAt = startedAt
@@ -87,5 +100,6 @@ final class DictationSessionRecord {
         self.projectName = projectName
         self.joinedAgent = joinedAgent
         self.quickCaptureDestination = quickCaptureDestination
+        self.editOutcome = editOutcome
     }
 }

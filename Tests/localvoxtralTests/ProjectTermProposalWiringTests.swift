@@ -139,17 +139,15 @@ final class ProjectTermProposalWiringTests: XCTestCase {
         XCTAssertEqual(harness.runner.all.count, 1, "a second dictation in the project asks nothing")
     }
 
-    func testAJoinedVibeDictationAsksVibe() async {
-        let harness = makeHarness()
-        await dictate(harness, join: join(agent: .vibe))
-        XCTAssertEqual(harness.runner.all.map(\.invocation.agent), [.vibe])
-        XCTAssertEqual(harness.runner.all.first?.invocation.arguments, ProjectTermProposal.vibeArguments(trackedFiles: []))
-    }
+    func testAJoinedVibeOrOpencodeDictationAsksThatAgent() async {
+        let vibe = makeHarness()
+        await dictate(vibe, join: join(agent: .vibe))
+        XCTAssertEqual(vibe.runner.all.map(\.invocation.agent), [.vibe])
+        XCTAssertEqual(vibe.runner.all.first?.invocation.arguments, ProjectTermProposal.vibeArguments(trackedFiles: []))
 
-    func testAJoinedOpencodeDictationAsksOpencode() async {
-        let harness = makeHarness()
-        await dictate(harness, join: join(agent: .opencode))
-        XCTAssertEqual(harness.runner.all.map(\.invocation), [
+        let opencode = makeHarness()
+        await dictate(opencode, join: join(agent: .opencode))
+        XCTAssertEqual(opencode.runner.all.map(\.invocation), [
             ProjectTermProposal.Invocation(
                 agent: .opencode,
                 workingDirectory: Self.projectDirectory,

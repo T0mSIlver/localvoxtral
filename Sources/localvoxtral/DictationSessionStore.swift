@@ -25,6 +25,9 @@ struct DictationHistoryEntry: Identifiable, Equatable, Sendable {
     var joinedAgent: String? = nil
     /// Where a quick capture went; nil for every other dictation.
     var quickCaptureDestination: String? = nil
+    /// `EditSignalOutcome`'s raw value, nil when nothing was watched.
+    var editOutcome: String? = nil
+    var polishPromptTokens: Int? = nil
 
     /// What the dictation ended up as, the transcript when nothing changed it.
     var finalText: String { polishedText ?? rawText }
@@ -54,7 +57,8 @@ struct DictationHistoryEntry: Identifiable, Equatable, Sendable {
             commitSucceeded: commitSucceeded, polishProfile: polishProfile,
             polishContextSummary: polishContextSummary, projectKey: projectKey,
             projectName: projectName, joinedAgent: joinedAgent,
-            quickCaptureDestination: quickCaptureDestination)
+            quickCaptureDestination: quickCaptureDestination, editOutcome: editOutcome,
+            polishPromptTokens: polishPromptTokens)
     }
 
     /// What "Copy last dictation" copies, nil when there is no text.
@@ -84,12 +88,14 @@ extension DictationHistoryEntry {
             projectKey: record.projectKey,
             projectName: record.projectName,
             joinedAgent: record.joinedAgent,
-            quickCaptureDestination: record.quickCaptureDestination
+            quickCaptureDestination: record.quickCaptureDestination,
+            editOutcome: record.editOutcome,
+            polishPromptTokens: record.polishPromptTokens
         )
     }
 
     fileprivate func makeRecord() -> DictationSessionRecord {
-        DictationSessionRecord(
+        let record = DictationSessionRecord(
             id: id,
             startedAt: startedAt,
             finishedAt: finishedAt,
@@ -107,8 +113,11 @@ extension DictationHistoryEntry {
             projectKey: projectKey,
             projectName: projectName,
             joinedAgent: joinedAgent,
-            quickCaptureDestination: quickCaptureDestination
+            quickCaptureDestination: quickCaptureDestination,
+            editOutcome: editOutcome
         )
+        record.polishPromptTokens = polishPromptTokens
+        return record
     }
 }
 
@@ -220,6 +229,22 @@ final class DictationSessionStore {
                 FetchDescriptor<DictationSessionRecord>(
                     predicate: #Predicate<DictationSessionRecord> { $0.id == id }))
             for record in records { record.quickCaptureDestination = destination }
+            return records.count
+        }
+    }
+
+    /// A quick capture's polished words (#970). The record was written with
+    /// the raw words before the Inbox polished them.
+    @discardableResult
+    func setQuickCapturePolish(_ polishedText: String, seconds: Double, id: UUID) -> Task<Void, Never> {
+        enqueueWrite("polish quick capture \(id)") { context in
+            let records = try context.fetch(
+                FetchDescriptor<DictationSessionRecord>(
+                    predicate: #Predicate<DictationSessionRecord> { $0.id == id }))
+            for record in records {
+                record.polishedText = polishedText
+                record.polishingDurationSeconds = seconds
+            }
             return records.count
         }
     }
@@ -368,6 +393,18 @@ final class DictationSessionStore {
         }
         lastWrite = Task { _ = await task.value }
         return await task.value
+    }
+
+    /// Copies the edit watch's verdict onto the dictation, for Insights.
+    @discardableResult
+    func setEditOutcome(_ outcome: EditSignalOutcome, forDictation id: UUID) -> Task<Void, Never> {
+        let value = outcome.rawValue
+        return enqueueWrite("record the edit outcome of dictation \(id)") { context in
+            let records = try context.fetch(FetchDescriptor<DictationSessionRecord>(
+                predicate: #Predicate { $0.id == id }))
+            for record in records { record.editOutcome = value }
+            return records.count
+        }
     }
 
     /// Deletes every diagnostic record and keeps the dictations: the

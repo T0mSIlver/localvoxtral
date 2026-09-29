@@ -1,6 +1,7 @@
 import ClaudeContextWire
 import Foundation
 import localvoxtralTestSupport
+import Synchronization
 import XCTest
 @testable import localvoxtral
 
@@ -79,6 +80,103 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, true)
     }
 
+    /// A settled sentence past 30 words, the first piece early polish takes.
+    private static let settledPiece =
+        "the first part of this dictation is long enough to settle into a piece of its own "
+        + "because it has more than thirty words in it and ends right here."
+    private static let tail = "and this is the tail."
+
+    /// Overlay Buffer with polishing (#709): a settled piece is polished
+    /// while the user still speaks, and the stop polishes only the tail.
+    func testOverlayBufferPolishesTheSettledPieceWhileDictatingAndOnlyTheTailAtStop() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish)
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.done", "text": Self.settledPiece])
+        let pieceSent = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(pieceSent, "no piece was polished while dictating")
+        XCTAssertTrue(pipeline.viewModel.isDictating, "polished before the stop, not by it")
+
+        await stopAndFinalize(pipeline, finalText: Self.tail)
+
+        let inputs = await polish.requests.map(\.inputText)
+        XCTAssertEqual(inputs, [Self.settledPiece, Self.tail])
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(Self.settledPiece)> <\(Self.tail)>"])
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), ["\(Self.settledPiece) \(Self.tail)"])
+        XCTAssertEqual(pipeline.records.all.first?.polishedText, "<\(Self.settledPiece)> <\(Self.tail)>")
+    }
+
+    /// With Polish while you speak off, nothing is polished while the user
+    /// speaks: the stop sends the whole text in one request, as before #709.
+    func testOverlayBufferWithEarlyPolishOffPolishesOnlyTheWholeTextAtStop() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish, earlyPolish: false)
+        let whole = "\(Self.settledPiece) \(Self.tail)"
+
+        await startAndSpeak(pipeline)
+        XCTAssertNil(pipeline.viewModel.session.earlyPolishRun)
+        pipeline.server.send(["type": "transcription.done", "text": Self.settledPiece])
+
+        await stopAndFinalize(pipeline, finalText: Self.tail)
+
+        let requests = await polish.requests
+        XCTAssertEqual(requests.map(\.inputText), [whole])
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(whole)>"])
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [whole])
+        XCTAssertEqual(pipeline.records.all.first?.polishedText, "<\(whole)>")
+    }
+
+    /// Grounding is sampled at stop: when the stop's request carries context
+    /// the piece was polished without (here the clipboard), the piece is
+    /// discarded and the whole text is polished in one request, as before.
+    func testOverlayBufferPolishesTheWholeTextWhenTheStopGroundsItInContext() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish)
+        pipeline.viewModel.settings.polishClipboardContextEnabled = true
+        pipeline.viewModel.dependencies.pasteboardReader = {
+            PasteboardStub(string: "error in PolishContextBudget.swift line 40", types: [.string])
+        }
+        let whole = "\(Self.settledPiece) \(Self.tail)"
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.done", "text": Self.settledPiece])
+        let pieceSent = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(pieceSent, "no piece was polished while dictating")
+
+        await stopAndFinalize(pipeline, finalText: Self.tail)
+
+        let requests = await polish.requests
+        XCTAssertEqual(requests.map(\.inputText), [Self.settledPiece, whole])
+        XCTAssertTrue(
+            requests.last?.userPrompts.last?.contains("PolishContextBudget.swift") == true,
+            "the stop's request carries the clipboard"
+        )
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(whole)>"])
+    }
+
+    /// A quick capture is never polished, so no piece of it is sent to the
+    /// polisher while the user speaks (#709).
+    func testAQuickCaptureSendsNoPieceToThePolisher() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish)
+        let captured = QuickCaptures()
+        pipeline.viewModel.session.onQuickCapture = { text, _ in
+            captured.all.append((text, pipeline.records.all.count))
+        }
+
+        await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
+        XCTAssertNil(pipeline.viewModel.session.earlyPolishRun)
+        pipeline.server.send(["type": "transcription.done", "text": Self.settledPiece])
+        await stopAndFinalize(
+            pipeline, finalText: Self.tail, finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved
+        )
+
+        let requests = await polish.requests
+        XCTAssertEqual(requests.count, 0)
+        XCTAssertEqual(captured.all.count, 1)
+    }
+
     /// Quick capture (#725): the shortcut's dictation runs as Overlay Buffer,
     /// but its stop commits nothing to the focused app. The History record
     /// is written first, then the words go to the Inbox.
@@ -137,6 +235,43 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertFalse(pipeline.viewModel.session.sessionIsQuickCapture, "the next dictation is an ordinary one")
     }
 
+    /// The overlay lists every destination while the user moves between
+    /// them (#1015): Tab opens the list, each move keeps it open for
+    /// another `DestinationListRule.openFor`, and it closes on the pick.
+    /// Closed, a click on the picked destination opens it without a move.
+    func testTabOpensTheDestinationListUntilTheMovesStop() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.session.onQuickCapture = { _, _ in }
+        await startAndSpeak(pipeline)
+        let session = pipeline.viewModel.session
+        func shown() -> OverlayDestinationStrip? { pipeline.overlay.shownDestinations.last ?? nil }
+        XCTAssertEqual(shown()?.isOpen, false, "the overlay opens with the list closed")
+        let openFor = Double(DestinationListRule.openFor.components.seconds)
+
+        let armed = pipeline.clock.pendingSleepers
+        session.moveDestination(forward: true)
+        XCTAssertEqual(shown()?.isOpen, true)
+        XCTAssertEqual(shown()?.selectedKind, .inbox)
+        await pipeline.clock.waitForSleepers(armed + 1)
+        pipeline.clock.advance(by: openFor - 0.5)
+
+        session.moveDestination(forward: true)
+        XCTAssertEqual(shown()?.selectedKind, .focusedApp(joined: nil))
+        await pipeline.clock.waitForSleepers(armed + 1)
+        pipeline.clock.advance(by: 0.5)
+        XCTAssertEqual(shown()?.isOpen, true, "the second Tab restarted the wait")
+        pipeline.clock.advance(by: openFor - 0.5)
+        await session.destinationListCloseTask?.value
+        XCTAssertEqual(shown()?.isOpen, false)
+        XCTAssertEqual(shown()?.selectedKind, .focusedApp(joined: nil), "closing keeps the pick")
+
+        session.clickDestination(.focusedApp)
+        XCTAssertEqual(shown()?.isOpen, true, "a click on the picked destination opens the list")
+        XCTAssertEqual(shown()?.selectedKind, .focusedApp(joined: nil))
+        session.cancelDictation()
+        XCTAssertNil(session.destinationListCloseTask, "the stop ends the wait")
+    }
+
     /// A quick capture opens on the Inbox; Tab from there wraps to the
     /// focused app, and the stop commits there as any dictation does.
     func testTabFromTheInboxBackToTheFocusedAppCommitsThere() async throws {
@@ -190,15 +325,17 @@ final class DictationPipelineTests: XCTestCase {
 
         await startAndSpeak(pipeline)
         let strip = try XCTUnwrap(pipeline.overlay.shownDestinations.last ?? nil)
-        XCTAssertEqual(strip.items.map(\.label).dropFirst(), ["payments", "Inbox"])
+        XCTAssertEqual(strip.items.map(\.label).dropFirst(), ["Inbox", "payments"])
 
+        pipeline.viewModel.session.moveDestination(forward: true)
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .inbox, "the first Tab reaches the Inbox")
         pipeline.viewModel.session.moveDestination(forward: true)
         await pipeline.viewModel.session.destinationFocusTask?.value
         XCTAssertEqual(waiting.focuser.focusedSessionIDs, ["pay"])
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
         XCTAssertTrue(waiting.tracker.queue.isEmpty, "answering takes it out of the queue")
         XCTAssertEqual(
-            pipeline.overlay.shownDestinations.last??.items.map(\.label).dropFirst(), ["payments", "Inbox"],
+            pipeline.overlay.shownDestinations.last??.items.map(\.label).dropFirst(), ["Inbox", "payments"],
             "the picked session keeps its pill after it left the queue"
         )
 
@@ -220,7 +357,7 @@ final class DictationPipelineTests: XCTestCase {
             $0 == terminalPID ? TerminalScreenAllowlist.ghosttyBundleID : nil
         }
         await startAndSpeak(pipeline)
-        pipeline.viewModel.session.moveDestination(forward: true)
+        pipeline.viewModel.session.moveDestination(forward: false)
         await pipeline.viewModel.session.destinationFocusTask?.value
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
 
@@ -247,7 +384,7 @@ final class DictationPipelineTests: XCTestCase {
         }
 
         await startAndSpeak(pipeline)
-        pipeline.viewModel.session.moveDestination(forward: true)
+        pipeline.viewModel.session.moveDestination(forward: false)
         await pipeline.viewModel.session.destinationFocusTask?.value
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
 
@@ -272,7 +409,7 @@ final class DictationPipelineTests: XCTestCase {
         )
 
         await startAndSpeak(pipeline)
-        pipeline.viewModel.session.moveDestination(forward: true)
+        pipeline.viewModel.session.moveDestination(forward: false)
         await pipeline.viewModel.session.destinationFocusTask?.value
 
         XCTAssertEqual(waiting.focuser.focusedSessionIDs, ["pay"])
@@ -282,10 +419,11 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.session.cancelDictation()
     }
 
-    /// Back from a session pane to a focused app in the same terminal, with
-    /// no session to find its pane by: activating the terminal would show
-    /// the session pane, so the overlay refuses and stays on the session.
-    func testShiftTabBackToTheSameTerminalWithNoSessionIsRefused() async throws {
+    /// ⇧Tab from the focused app wraps to the last session. Tab from there
+    /// wraps back to a focused app in the same terminal, with no session to
+    /// find its pane by: activating the terminal would show the session
+    /// pane, so the overlay refuses and stays on the session.
+    func testTabBackToTheSameTerminalWithNoSessionIsRefused() async throws {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
         let terminalPID: pid_t = 4343
         pipeline.overlay.commitTargetAppPID = terminalPID
@@ -298,11 +436,11 @@ final class DictationPipelineTests: XCTestCase {
         _ = installWaitingSessions(pipeline, ["pay": "/r/payments"])
 
         await startAndSpeak(pipeline)
-        pipeline.viewModel.session.moveDestination(forward: true)
+        pipeline.viewModel.session.moveDestination(forward: false)
         await pipeline.viewModel.session.destinationFocusTask?.value
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
 
-        pipeline.viewModel.session.moveDestination(forward: false)
+        pipeline.viewModel.session.moveDestination(forward: true)
         await pipeline.viewModel.session.destinationFocusTask?.value
         XCTAssertEqual(activated, [], "activating the terminal would bring the session pane, not the start")
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
@@ -312,7 +450,7 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.dependencies.bundleIdentifier = {
             $0 == terminalPID ? "com.apple.Safari" : TerminalScreenAllowlist.ghosttyBundleID
         }
-        pipeline.viewModel.session.moveDestination(forward: false)
+        pipeline.viewModel.session.moveDestination(forward: true)
         await pipeline.viewModel.session.destinationFocusTask?.value
         XCTAssertEqual(activated, [terminalPID])
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .focusedApp(joined: nil))
@@ -327,7 +465,7 @@ final class DictationPipelineTests: XCTestCase {
         await startAndSpeak(pipeline)
         sendPartials(pipeline)
 
-        pipeline.viewModel.session.moveDestination(forward: true)
+        pipeline.viewModel.session.moveDestination(forward: false)
         // The focus task has not run yet.
         await stopAndFinalize(pipeline, finalStatus: DictationSessionController.DestinationStatus.stoppedWhileSwitching)
 
@@ -351,7 +489,7 @@ final class DictationPipelineTests: XCTestCase {
             $0 == originPID ? "com.apple.Safari" : TerminalScreenAllowlist.ghosttyBundleID
         }
         await startAndSpeak(pipeline)
-        pipeline.viewModel.session.moveDestination(forward: true)
+        pipeline.viewModel.session.moveDestination(forward: false)
         await pipeline.viewModel.session.destinationFocusTask?.value
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .focusedApp(joined: nil))
 
@@ -362,8 +500,8 @@ final class DictationPipelineTests: XCTestCase {
     }
 
     /// ← and → move as ⇧Tab and Tab do (#880), each through the key
-    /// handler the overlay registers: back to the Inbox at once, back again
-    /// to the waiting session once its pane is confirmed, then forward to
+    /// handler the overlay registers: forward to the Inbox at once, forward
+    /// again to the waiting session once its pane is confirmed, then back to
     /// the Inbox and on to the focused app, brought back over the pane.
     func testTheArrowsMoveBetweenDestinationsAsTabDoes() async throws {
         let expected: [OverlayDestinationStrip.Kind?] = [.inbox, .session, .inbox, .focusedApp(joined: nil)]
@@ -383,7 +521,7 @@ final class DictationPipelineTests: XCTestCase {
             await startAndSpeak(pipeline)
 
             var picked: [OverlayDestinationStrip.Kind?] = []
-            for key in [back, back, forward, forward] {
+            for key in [forward, forward, back, back] {
                 pipeline.viewModel.session.destinationKeyHandler.handle(key)
                 await pipeline.viewModel.session.destinationFocusTask?.value
                 picked.append(pipeline.overlay.shownDestinations.last??.selectedKind)
@@ -1201,9 +1339,9 @@ final class DictationPipelineTests: XCTestCase {
 
     // MARK: - Stopping by voice (#839)
 
-    /// A trailing "send it" and three seconds without new words stop the
-    /// dictation as the key would: the stop's commit inserts the text
-    /// without the phrase, once, then presses Return once.
+    /// A trailing "send it" and three seconds without new words, the
+    /// default wait, stop the dictation as the key would: the stop's commit
+    /// inserts the text without the phrase, once, then presses Return once.
     func testATrailingSendPhraseAndSilenceStopsCommitsAndSendsOnce() async throws {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
         var returns: [pid_t] = []
@@ -1281,6 +1419,69 @@ final class DictationPipelineTests: XCTestCase {
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask)
         await pipeline.clock.waitForSleepers(3)
         pipeline.clock.advance(by: 2.9)
+        await sendDelta(pipeline, " and then report.")
+        await armed.value
+        XCTAssertNil(pipeline.viewModel.session.spokenStopTask, "new words cancelled the stop")
+        pipeline.clock.advance(by: 10)
+        XCTAssertTrue(pipeline.viewModel.isDictating)
+
+        let said = "run the tests, send it. and then report."
+        await stopAndFinalize(pipeline, finalText: said)
+        XCTAssertEqual(pipeline.overlay.committedTexts, [said])
+        XCTAssertEqual(returns, [])
+    }
+
+    /// The wait is the user's (#1009): at 1 s the stop fires one second
+    /// after the phrase, not a hundredth sooner, and sends as the 3 s
+    /// default does.
+    func testAConfiguredWaitStopsAtThatWait() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.settings.spokenStopWait = .oneSecond
+        var returns: [pid_t] = []
+        targetClaudeDesktop(pipeline, returns: { returns.append($0) })
+
+        await startAndSpeak(pipeline)
+        // The send loop and the periodic commit sleep on this clock too: the
+        // stop's sleep is the one the phrase added.
+        let sessionSleeps = pipeline.clock.pendingDeadlines
+        let saidAt = pipeline.clock.now
+        await sendDelta(pipeline, "run the tests, send it.")
+        let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "armed by the trailing phrase")
+        await pipeline.clock.waitForSleepers(3)
+        var stopSleeps = pipeline.clock.pendingDeadlines
+        for deadline in sessionSleeps {
+            if let index = stopSleeps.firstIndex(of: deadline) { stopSleeps.remove(at: index) }
+        }
+        let waits = stopSleeps.map { $0.timeIntervalSince(saidAt) }
+        XCTAssertEqual(waits, [1], "the stop's sleep")
+        let stopsAtOneSecond = waits == [1]
+        pipeline.clock.advance(by: 1 - 0.01)
+        XCTAssertTrue(pipeline.viewModel.isDictating, "one hundredth short, still dictating")
+
+        pipeline.clock.advance(by: 0.01)
+        // A longer wait must still end, or the session outlives the test.
+        if !stopsAtOneSecond { pipeline.clock.advance(by: 2) }
+        await armed.value
+        XCTAssertFalse(pipeline.viewModel.isDictating)
+        await finishStoppedSession(pipeline, finalText: "run the tests, send it.")
+
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["run the tests"])
+        XCTAssertEqual(returns, [Self.desktopPID])
+    }
+
+    /// New words inside a configured 1.5 s wait cancel the stop, as they do
+    /// inside the default 3 s.
+    func testSpeechWithinAConfiguredWaitKeepsTheDictationGoing() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.settings.spokenStopWait = .oneAndAHalfSeconds
+        var returns: [pid_t] = []
+        targetClaudeDesktop(pipeline, returns: { returns.append($0) })
+
+        await startAndSpeak(pipeline)
+        await sendDelta(pipeline, "run the tests, send it.")
+        let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask)
+        await pipeline.clock.waitForSleepers(3)
+        pipeline.clock.advance(by: 1.4)
         await sendDelta(pipeline, " and then report.")
         await armed.value
         XCTAssertNil(pipeline.viewModel.session.spokenStopTask, "new words cancelled the stop")
@@ -1527,6 +1728,131 @@ final class DictationPipelineTests: XCTestCase {
         await stopAndFinalize(pipeline)
     }
 
+    // MARK: - Reviewing a ready draft (#927)
+
+    /// A finished draft waits for a break: nothing shows while the user is
+    /// mid-task, and the stop of the next dictation lights the mark and the
+    /// popover line.
+    func testAStoppedDictationIsTheBreakThatShowsAReadyDraft() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        _ = try await installInboxWithDraft(pipeline)
+        XCTAssertNil(pipeline.viewModel.agentAttentionLine, "held until a break")
+        XCTAssertEqual(pipeline.viewModel.menuBarIndicatorState, .idle)
+
+        await startAndSpeak(pipeline)
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline)
+
+        XCTAssertEqual(pipeline.viewModel.agentAttentionLine, "Draft ready: Inbox for reach")
+        XCTAssertEqual(pipeline.viewModel.menuBarIndicatorState, .agentNeedsYou)
+    }
+
+    /// With nobody waiting, the answer key opens the draft: the overlay shows
+    /// that one draft and no other destination. "file it" files it as shown
+    /// and nothing reaches the focused app.
+    func testTheAnswerKeyOpensTheDraftAndFileItFilesIt() async throws {
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        let inbox = try await installInboxWithDraft(pipeline, shown: true)
+        XCTAssertEqual(pipeline.viewModel.agentAttentionLine, "Draft ready: Inbox for reach")
+
+        await startAndSpeak(pipeline, start: { $0.session.answerAgentThatNeedsYou() })
+        XCTAssertEqual(pipeline.overlay.startSessionAnchors.count, 1, "a review opens the overlay whatever the menu bar mode")
+        XCTAssertEqual(pipeline.overlay.shownDraftReviews.last??.title, "Dark mode")
+        XCTAssertTrue(pipeline.overlay.shownDestinations.isEmpty, "a review offers no other destination")
+
+        await sendDelta(pipeline, "File it.")
+        await stopAndFinalize(pipeline, finalText: "File it.", finalStatus: QuickCaptureReviewStatus.filing)
+        await pipeline.viewModel.session.draftReviewTask?.value
+
+        XCTAssertEqual(inbox.github.created.withLock { $0.map(\.[1]) }, ["Dark mode"])
+        XCTAssertEqual(inbox.model.items.first?.state, .filed)
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing reaches the focused app")
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), ["File it."], "the words are in History")
+        XCTAssertNil(pipeline.viewModel.session.sessionDraftReview, "the next dictation is an ordinary one")
+        XCTAssertNil(pipeline.viewModel.agentAttentionLine, "filed, it left the cue")
+    }
+
+    /// A review that files, drops and changes nothing keeps its draft in the
+    /// cue, as does a start the app refused: the next press opens it again.
+    func testAReviewThatSaysNothingKeepsTheDraftInTheCue() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        _ = try await installInboxWithDraft(pipeline, shown: true)
+
+        await startAndSpeak(pipeline, start: { $0.session.answerAgentThatNeedsYou() })
+        // Only the send phrase: nothing left to act on.
+        await stopAndFinalize(pipeline, finalText: "send it", finalStatus: QuickCaptureReviewStatus.kept)
+
+        XCTAssertEqual(pipeline.viewModel.agentAttentionLine, "Draft ready: Inbox for reach")
+    }
+
+    /// "drop it" alone, then three seconds of silence, stops the review by
+    /// voice and discards the draft.
+    func testDropItAndSilenceStopTheReviewAndDiscardTheDraft() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        let inbox = try await installInboxWithDraft(pipeline, shown: true)
+
+        await startAndSpeak(pipeline, start: { $0.session.answerAgentThatNeedsYou() })
+        await sendDelta(pipeline, "Drop it.")
+        let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "armed by the whole phrase")
+        await pipeline.clock.waitForSleepers(3)
+        pipeline.clock.advance(by: 3)
+        await armed.value
+        XCTAssertFalse(pipeline.viewModel.isDictating)
+        await finishStoppedSession(pipeline, finalText: "Drop it.", finalStatus: QuickCaptureReviewStatus.dropped)
+
+        XCTAssertTrue(inbox.model.items.isEmpty)
+        XCTAssertTrue(inbox.github.created.withLock { $0.isEmpty })
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0)
+    }
+
+    /// Anything else is a change: the drafter reruns with the dictated
+    /// words, the draft and the change, and a trailing send phrase is not
+    /// part of it. The redraft is a new draft, held for the next break.
+    func testAChangeRedraftsTheDraft() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        let inbox = try await installInboxWithDraft(pipeline, shown: true)
+        inbox.runner.nextTitles.withLock { $0 = ["Popover dark mode"] }
+
+        await startAndSpeak(pipeline, start: { $0.session.answerAgentThatNeedsYou() })
+        await sendDelta(pipeline, "Make it only the popover part, send it.")
+        let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "armed by the send phrase")
+        await pipeline.clock.waitForSleepers(3)
+        pipeline.clock.advance(by: 3)
+        await armed.value
+        await finishStoppedSession(
+            pipeline, finalText: "Make it only the popover part, send it.", finalStatus: QuickCaptureReviewStatus.redrafting
+        )
+        await pipeline.viewModel.session.draftReviewTask?.value
+
+        XCTAssertEqual(inbox.model.items.first?.title, "Popover dark mode")
+        XCTAssertEqual(inbox.model.items.first?.changes, ["Make it only the popover part"])
+        let prompt = inbox.runner.arguments.withLock { $0.last?.joined(separator: " ") ?? "" }
+        XCTAssertTrue(prompt.contains("Make it only the popover part"))
+        XCTAssertFalse(prompt.contains("send it"))
+        XCTAssertTrue(inbox.github.created.withLock { $0.isEmpty })
+        XCTAssertNil(pipeline.viewModel.agentAttentionLine, "the redraft waits for the next break")
+    }
+
+    /// An agent that needs you comes before a draft.
+    func testTheAnswerKeyGoesToAWaitingAgentBeforeADraft() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        // An unconfirmed focus starts no dictation, so the press is all
+        // there is to observe.
+        let waiting = installWaitingSessions(
+            pipeline, ["pay": "/r/payments"], outcome: .unverified(bundleID: TerminalScreenAllowlist.ghosttyBundleID)
+        )
+        _ = try await installInboxWithDraft(pipeline, shown: true, attention: pipeline.viewModel.agentAttention)
+        XCTAssertEqual(pipeline.viewModel.agentAttentionLine, "payments needs you (+1)")
+
+        pipeline.viewModel.session.answerAgentThatNeedsYou()
+        await pipeline.viewModel.session.answerAgentTask?.value
+        XCTAssertEqual(waiting.focuser.focusedSessionIDs, ["pay"])
+        XCTAssertEqual(pipeline.viewModel.agentAttentionLine, "Draft ready: Inbox for reach", "the draft waits its turn")
+        XCTAssertTrue(pipeline.overlay.shownDraftReviews.isEmpty)
+    }
+
     // MARK: - The two halves every scenario shares
 
     /// Start, open the microphone, connect, and get one captured chunk to the
@@ -1622,7 +1948,21 @@ final class DictationPipelineTests: XCTestCase {
         let records: SessionRecords
     }
 
-    private func makePipeline(outputMode: DictationOutputMode) async throws -> Pipeline {
+    /// True once `count` polish requests arrived, false after 10 s of wall time.
+    private func waitForPolishRequests(_ polish: FakePolishingService, _ count: Int) async -> Bool {
+        let arrived = BoundedWait()
+        Task {
+            await polish.waitForRequests(count)
+            arrived.resolve()
+        }
+        return await arrived.value(failAfter: 10)
+    }
+
+    private func makePipeline(
+        outputMode: DictationOutputMode,
+        polish: FakePolishingService? = nil,
+        earlyPolish: Bool = true
+    ) async throws -> Pipeline {
         let server = try FakeRealtimeServer()
         addTeardownBlock { server.stop() }
         let endpoint = try await server.start()
@@ -1655,6 +1995,16 @@ final class DictationPipelineTests: XCTestCase {
             )
         )
         viewModel.appConfigStore = MockAppConfigStore()
+        if let polish {
+            settings.llmPolishingEnabled = true
+            settings.llmPolishingEndpointURL = "http://127.0.0.1:8080/v1/chat/completions"
+            settings.earlyPolishEnabled = earlyPolish
+            settings.polishClipboardContextEnabled = false
+            settings.terminalScreenContextEnabled = false
+            settings.repoVocabularyEnabled = false
+            settings.claudeRepoContextEnabled = false
+            viewModel.llmPolishingService = polish
+        }
         retainForTestProcessLifetime(viewModel)
         // The session start arms Escape as a cancel key; keep it off the
         // host's global hotkeys.
@@ -1712,6 +2062,33 @@ final class DictationPipelineTests: XCTestCase {
             tracker.receive(.notification, session: session)
         }
         return (tracker, focuser)
+    }
+
+    /// An Inbox with one draft for "reach", ready and held for a break
+    /// (shown, when `shown`), with the cue on and nobody waiting unless
+    /// `attention` is already installed.
+    private func installInboxWithDraft(
+        _ pipeline: Pipeline, shown: Bool = false, attention: AgentAttentionModel? = nil
+    ) async throws -> (model: QuickCaptureInboxModel, github: FakeQuickCaptureGitHub, runner: FakeQuickCaptureDraftRunner) {
+        let settings = pipeline.viewModel.settings
+        settings.agentAttentionEnabled = true
+        if attention == nil {
+            let tracker = AgentAttentionTracker(
+                isEnabled: { settings.agentAttentionEnabled },
+                isWatching: { _ in false },
+                liveSessionIDs: { [] },
+                now: { Date(timeIntervalSince1970: 0) }
+            )
+            pipeline.viewModel.agentAttention = AgentAttentionModel(tracker: tracker, announcer: nil)
+        }
+        let github = FakeQuickCaptureGitHub()
+        let runner = FakeQuickCaptureDraftRunner()
+        let model = QuickCaptureFixture.model(fileURL: nil, answer: ["reach": 0.9], github: github, runner: runner)
+        pipeline.viewModel.installDraftCue(for: model)
+        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        XCTAssertEqual(model.items.first?.isReadyDraft, true)
+        if shown { pipeline.viewModel.agentAttention?.reachedBreak() }
+        return (model, github, runner)
     }
 
     /// 100 ms of 16 kHz mono PCM16, different for each seed, so a frame on

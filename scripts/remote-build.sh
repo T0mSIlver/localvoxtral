@@ -6,7 +6,7 @@ set -euo pipefail
 # tree (no commit needed) and runs the toolchain remotely over SSH.
 #
 # Usage:
-#   ./scripts/remote-build.sh [build|test|test-cost-budgets|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-e2e|eval-term-recall|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
+#   ./scripts/remote-build.sh [build|test|test-cost-budgets|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-capture-polish-latency|eval-e2e|eval-term-recall|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
 #     build        swift build
 #     test         swift build + unit tests (default; needs --filter, or
 #                  LV_ALLOW_HEAVY_MAC_RUN=1 for the full suite; skips live-backend suites
@@ -71,6 +71,13 @@ set -euo pipefail
 #                  absolute path on the build host to a baseline helper binary
 #                  (e.g. another LV_BUILD_DIR's packaged one), added as a
 #                  fourth arm at temperature 0.3; requires a prior `package`
+#     eval-capture-polish-latency
+#                  time a quick capture's polish request (#970) on the
+#                  packaged polishing helper; prints model, n, median and
+#                  p90 (QuickCapturePolishLatencyTests). Optional args =
+#                  rounds (default 3) and an absolute path on the build host
+#                  to a JSON-lines file of {"text": ...} captures (default: a
+#                  synthetic set); requires a prior `package`
 #     eval-llm     default-polish-prompt eval against a live chat/completions
 #                  server (the bundled polishd test service by default);
 #                  optional args = chat/completions endpoint and external
@@ -115,13 +122,6 @@ set -euo pipefail
 #                  score {"id","text"} rows with no speech engine;
 #                  `compare <before> <after>` pairs two runs by label, e.g.
 #                  eval-term-recall --asr nemotron
-#     dogfood     build the instrumented (LOCALVOXTRAL_DOGFOOD) tree and run
-#                  the context-capture suite; the capture is a compile gate, so
-#                  no other lane ever builds it
-#     dogfood-package
-#                  package an instrumented .app for hand-dogfooding (same
-#                  bundle id, so the Accessibility grant survives; the artifact
-#                  is identifiable by LVXDogfoodCapture in its Info.plist)
 #     package      ./scripts/package_app.sh release
 #     exec         run the extra args verbatim in the remote work dir
 #     diag         build-host diagnostic summary (gate v2 required)
@@ -751,6 +751,35 @@ case "$CMD" in
     fi
     REMOTE_CMD=(swift test --build-system native --filter HerdrIntegrationTests)
     ;;
+  eval-capture-polish-latency)
+    # Marker-gated XCTest, like polishd-bench: the gate cannot run the
+    # packaged helper directly or pass env vars.
+    if [[ $# -gt 2 ]]; then
+      echo "eval-capture-polish-latency accepts optional rounds and captures-path arguments" >&2
+      exit 1
+    fi
+    CAPTURE_LATENCY_ROUNDS="${1:-3}"
+    CAPTURE_LATENCY_CAPTURES="${2:-}"
+    if [[ ! "$CAPTURE_LATENCY_ROUNDS" =~ ^[1-9][0-9]*$ ]]; then
+      echo "eval-capture-polish-latency rounds must be a positive integer" >&2
+      exit 1
+    fi
+    if [[ -n "$CAPTURE_LATENCY_CAPTURES" && ! "$CAPTURE_LATENCY_CAPTURES" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+      echo "eval-capture-polish-latency captures-path must be an absolute path on the build host" >&2
+      exit 1
+    fi
+    CAPTURE_LATENCY_MARKER="$ROOT_DIR/.quick-capture-polish-latency-enable.json"
+    trap 'cleanup_transient_marker "$CAPTURE_LATENCY_MARKER"' EXIT
+    CAPTURE_LATENCY_HELPER="PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd"
+    if [[ -n "$CAPTURE_LATENCY_CAPTURES" ]]; then
+      printf '{"helperPath": "%s", "rounds": %s, "capturesPath": "%s"}\n' \
+        "$CAPTURE_LATENCY_HELPER" "$CAPTURE_LATENCY_ROUNDS" "$CAPTURE_LATENCY_CAPTURES" >"$CAPTURE_LATENCY_MARKER"
+    else
+      printf '{"helperPath": "%s", "rounds": %s}\n' \
+        "$CAPTURE_LATENCY_HELPER" "$CAPTURE_LATENCY_ROUNDS" >"$CAPTURE_LATENCY_MARKER"
+    fi
+    REMOTE_CMD=(swift test --build-system native --filter QuickCapturePolishLatencyTests)
+    ;;
   polishd-bench)
     # Marker-gated XCTest, like speechd-bench: the gate cannot run the
     # packaged helper directly.
@@ -1218,28 +1247,6 @@ case "$CMD" in
     fi
     REMOTE_CMD=(swift test --build-system native --filter LLMPolishPromptEvalTests)
     ;;
-  dogfood|dogfood-package)
-    # The dogfooding capture is a COMPILE gate (Package.swift), and the build
-    # gate allowlists exact payloads, so enablement travels as the same kind of
-    # gitignored marker the eval lanes use rather than an env prefix.
-    #
-    # `dogfood`         — build + run the capture suite in an instrumented tree.
-    # `dogfood-package` — package an instrumented .app for hand-dogfooding.
-    #                     The bundle identifier is unchanged (the TCC grant is
-    #                     part of what is being exercised); the artifact
-    #                     identifies itself through Info.plist's
-    #                     LVXDogfoodCapture, which Settings > About reports.
-    DOGFOOD_MARKER="$ROOT_DIR/.dogfood-capture-enable"
-    # Registered before the marker exists, so no kill window can leave an
-    # instrumented tree behind — locally or in the remote work dir.
-    trap 'cleanup_transient_marker "$DOGFOOD_MARKER"' EXIT
-    printf 'dogfood capture build marker; removed automatically\n' >"$DOGFOOD_MARKER"
-    if [[ "$CMD" == "dogfood-package" ]]; then
-      REMOTE_CMD=(./scripts/package_app.sh release "$@")
-    else
-      REMOTE_CMD=(swift test --build-system native --filter Dogfood "$@")
-    fi
-    ;;
   package) REMOTE_CMD=(./scripts/package_app.sh release "$@") ;;
   exec)
     if [[ $# -eq 0 ]]; then
@@ -1249,7 +1256,7 @@ case "$CMD" in
     REMOTE_CMD=("$@")
     ;;
   *)
-    echo "Usage: $0 [build|test|test-cost-budgets|integration|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-e2e|eval-term-recall|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
+    echo "Usage: $0 [build|test|test-cost-budgets|integration|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-e2e|eval-term-recall|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
     exit 1
     ;;
 esac

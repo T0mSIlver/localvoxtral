@@ -341,9 +341,12 @@ final class CmuxSocketClientTests: XCTestCase {
     func testAnOversizedResponseLineIsRefused() async throws {
         let server = try CmuxTestServer { request, _ in
             guard let id = cmuxRequest(request)?["id"] as? String else { return nil }
-            // One byte of text past the ceiling, never newline-terminated
-            // within the cap.
-            let filler = String(repeating: "x", count: CmuxSocketClient.maxResponseLineBytes)
+            // Filler of exactly the documented 1 MiB response cap, so the
+            // envelope around it pushes the line just past the ceiling. The
+            // line is real, newline-terminated JSON on purpose: with the cap
+            // deleted it parses and the assertion below fails, rather than
+            // passing for the unrelated reason that no newline ever arrived.
+            let filler = String(repeating: "x", count: 1024 * 1024)
             return cmuxLine([
                 "id": id, "ok": true,
                 "result": ["active": ["surface_id": filler]],

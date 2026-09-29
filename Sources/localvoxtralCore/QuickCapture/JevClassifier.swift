@@ -46,6 +46,10 @@ package enum Jev {
     /// to 0 at the 0.9 bar, with no right one lost.
     package static let instructions =
         "A developer dictated this note. Which of their software projects is it about? Choose inbox unless the note clearly concerns one project."
+    /// `instructions` when open captures are options too (#965); a request
+    /// with none keeps the measured wording.
+    package static let followUpInstructions =
+        "A developer dictated this note. Which of their software projects is it about, or which earlier note does it add to? Choose an earlier note only when this note adds to that same idea. Choose inbox unless the note clearly concerns one project or one earlier note."
     package static let maxOptions = 255
     /// Jev's list price: $0.042 per million input tokens, output free, on
     /// both hosts (typesafe.ai/blog/introducing-system-one-models-and-jev,
@@ -80,7 +84,7 @@ package enum Jev {
             "questions": [
                 questionID: [
                     "type": "choice",
-                    "instructions": instructions,
+                    "instructions": options.contains { $0.captureID != nil } ? followUpInstructions : instructions,
                     "criteria": criteria,
                 ],
             ],

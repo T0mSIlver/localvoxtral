@@ -137,6 +137,17 @@ class Experiment:
 
 
 @dataclasses.dataclass(frozen=True)
+class RequestOptions:
+    """How every request is sent. Part of each result's hash, so changing the
+    shape or sampling never reuses a cached answer."""
+
+    shape: str = "llamacpp"
+    temperature: float = 0.0
+    reasoning_effort: str | None = None
+    api_key: str | None = dataclasses.field(default=None, compare=False, repr=False)
+
+
+@dataclasses.dataclass(frozen=True)
 class ContextCandidate:
     exact: str
     family: str
@@ -171,6 +182,33 @@ def parse_args() -> argparse.Namespace:
         "--variants",
         default=",".join(DEFAULT_VARIANTS),
         help="comma-separated variants: " + ", ".join(VARIANT_HELP),
+    )
+    parser.add_argument(
+        "--request-shape",
+        choices=("llamacpp", "mistral"),
+        default="llamacpp",
+        help="llamacpp sends greedy sampling and llama.cpp extras; mistral sends "
+        "only the fields Mistral's closed schema accepts",
+    )
+    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument(
+        "--reasoning-effort",
+        help="Mistral reasoning_effort (GLM 5.3 takes low/high/max; none is a 400)",
+    )
+    parser.add_argument(
+        "--api-key-file",
+        type=Path,
+        help="file holding a bearer token for the endpoint",
+    )
+    parser.add_argument(
+        "--prompt-arm",
+        action="append",
+        default=[],
+        metavar="NAME=DIR",
+        help="run the current-production variants once per arm, with the four "
+        "llm_*_prompt*.toml files read from DIR. Repeat the flag; the first arm is "
+        "the baseline the deltas pair against. Two arms naming the same DIR are "
+        "a same-prompt repeat, the noise floor for a non-deterministic model",
     )
     parser.add_argument("--jobs", type=int, default=8, help="parallel requests")
     parser.add_argument("--timeout", type=float, default=1200, help="request timeout seconds")
@@ -244,6 +282,36 @@ def enrich_report_contract(records: list[dict[str, Any]]) -> None:
                 raise ValueError(f"report case {record['caseID']} has stale caseInsensitive")
         else:
             record["caseInsensitive"] = expected_insensitive
+
+
+def polish_only_cases_missing_from(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Corpus polish-only cases the log predates. Their input is the corpus text
+    itself, not a recording, so a frozen log can score them as if it had run them."""
+    logged = {record["caseID"] for record in records}
+    added: list[dict[str, Any]] = []
+    for path in sorted((ROOT / "EvalCorpus/agent-dictation/strata").glob("*.json")):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("pipeline") != "polish-only":
+            continue
+        for item in payload.get("cases") or []:
+            if item["id"] in logged:
+                continue
+            added.append(
+                {
+                    "caseID": item["id"],
+                    "stratum": payload["stratum"],
+                    "pipeline": "polish-only",
+                    "lang": item["lang"],
+                    "spokenForm": item["spokenForm"],
+                    "polishInputText": item["spokenForm"],
+                    "intendedText": item["intendedText"],
+                    "requiredTokens": item["requiredTokens"],
+                    "forbiddenSubstrings": item.get("forbiddenSubstrings") or [],
+                    "caseInsensitive": bool(item.get("caseInsensitive")),
+                    "statusByMetric": item["status"],
+                }
+            )
+    return added
 
 
 def load_report(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -379,13 +447,16 @@ def reference_guide() -> str:
     return section
 
 
-def production_system_prompt(name: str) -> str:
+BUNDLED_CONFIG = ROOT / "Sources/localvoxtral/Resources/Config"
+
+
+def production_system_prompt(name: str, directory: Path = BUNDLED_CONFIG) -> str:
     """A bundled system prompt as the app sends it: with the reference guide."""
-    return f"{bundled_prompt_content(name)}\n\n{reference_guide()}\n"
+    return f"{bundled_prompt_content(name, directory)}\n\n{reference_guide()}\n"
 
 
-def bundled_prompt_content(name: str) -> str:
-    path = ROOT / "Sources/localvoxtral/Resources/Config" / name
+def bundled_prompt_content(name: str, directory: Path = BUNDLED_CONFIG) -> str:
+    path = directory / name
     text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
     match = re.fullmatch(r'\s*content\s*=\s*"""(.*)"""\s*', text, flags=re.DOTALL)
     if match is None or not match.group(1).strip():
@@ -877,6 +948,7 @@ def messages_for(
     fallback_request_record: dict[str, Any] | None,
     current_prompts: dict[str, tuple[str, str]],
 ) -> list[dict[str, str]]:
+    variant = variant.partition("@")[0]
     raw = record.get("transcript") or record.get("polishInputText") or record["spokenForm"]
     pre = record.get("polishInputText") or raw
     input_text = raw if variant.startswith("raw-") else pre
@@ -989,11 +1061,24 @@ def messages_for(
     ]
 
 
-def request_payload(model: str, messages: list[dict[str, str]]) -> dict[str, Any]:
+def request_payload(
+    model: str, messages: list[dict[str, str]], options: RequestOptions = RequestOptions()
+) -> dict[str, Any]:
+    if options.shape == "mistral":
+        # Mistral rejects top_k, min_p and chat_template_kwargs.
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": options.temperature,
+            "max_tokens": 2048,
+        }
+        if options.reasoning_effort:
+            payload["reasoning_effort"] = options.reasoning_effort
+        return payload
     return {
         "model": model,
         "messages": messages,
-        "temperature": 0.0,
+        "temperature": options.temperature,
         "top_p": 1.0,
         "top_k": 0,
         "min_p": 0.0,
@@ -1009,13 +1094,14 @@ def experiment_hash(
     model: str,
     variant: str,
     messages: list[dict[str, str]],
+    options: RequestOptions = RequestOptions(),
 ) -> str:
     canonical = json.dumps(
         {
             "caseID": case_id,
             "endpoint": endpoint,
             "variant": variant,
-            "payload": request_payload(model, messages),
+            "payload": request_payload(model, messages, options),
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -1027,9 +1113,12 @@ def experiment_hash(
 def make_experiments(
     records: list[dict[str, Any]], header: dict[str, Any], endpoint: str,
     models: list[str], variants: list[str],
-    current_prompts: dict[str, tuple[str, str]],
+    current_prompts: dict[str, Any],
+    options: RequestOptions = RequestOptions(),
     existing_results: dict[str, dict[str, Any]] | None = None,
 ) -> list[Experiment]:
+    """`current_prompts` maps profile to (system, user template), or, for a
+    run with prompt arms, arm name to such a map; "@arm" in a variant picks."""
     experiments: list[Experiment] = []
     fallback_request_record = next(
         (
@@ -1045,18 +1134,22 @@ def make_experiments(
     for model in models:
         for record in records:
             for variant in variants:
+                base_variant, _, arm = variant.partition("@")
+                prompts = current_prompts.get(arm, {}) if arm else current_prompts
                 try:
-                    if variant in {
+                    if base_variant in {
                         "current-production-grounded-repair",
                         "current-production-oracle-repair",
                         "current-production-ranked-repair",
                     }:
+                        if arm:
+                            raise ValueError("repair variants do not take prompt arms")
                         baseline_messages = messages_for(
                             record,
                             header,
                             "current-production",
                             fallback_request_record,
-                            current_prompts,
+                            prompts,
                         )
                         baseline_hash = experiment_hash(
                             record["caseID"],
@@ -1064,6 +1157,7 @@ def make_experiments(
                             model,
                             "current-production",
                             baseline_messages,
+                            options,
                         )
                         baseline = (existing_results or {}).get(baseline_hash) or {}
                         current_output = baseline.get("output")
@@ -1084,10 +1178,10 @@ def make_experiments(
                             )
                     else:
                         messages = messages_for(
-                            record, header, variant, fallback_request_record, current_prompts
+                            record, header, variant, fallback_request_record, prompts
                         )
                 except ValueError as error:
-                    if variant in OPTIONAL_EXPERIMENT_VARIANTS:
+                    if base_variant in OPTIONAL_EXPERIMENT_VARIANTS:
                         print(
                             f"warning: skipped {record['caseID']} {variant}: {error}",
                             file=sys.stderr,
@@ -1103,7 +1197,7 @@ def make_experiments(
                         variant=variant,
                         messages=messages,
                         request_hash=experiment_hash(
-                            record["caseID"], endpoint, model, variant, messages
+                            record["caseID"], endpoint, model, variant, messages, options
                         ),
                     )
                 )
@@ -1149,12 +1243,30 @@ def pending_model_arms(
     ]
 
 
+def response_text(content: Any) -> Any:
+    """Mistral can answer with chunks (a thinking trace, then text): keep text."""
+    if isinstance(content, list):
+        return "".join(
+            chunk.get("text", "")
+            for chunk in content
+            if isinstance(chunk, dict) and chunk.get("type") == "text"
+        )
+    return content
+
+
 def request_experiment(
-    experiment: Experiment, endpoint: str, timeout: float, retries: int
+    experiment: Experiment,
+    endpoint: str,
+    timeout: float,
+    retries: int,
+    options: RequestOptions,
 ) -> dict[str, Any]:
-    # Match the production Qwen request shape explicitly. Server preset defaults
+    # Match the production request shape explicitly. Server preset defaults
     # must not silently change the ablation when another model is loaded.
-    payload = request_payload(experiment.model, experiment.messages)
+    payload = request_payload(experiment.model, experiment.messages, options)
+    headers = {"Content-Type": "application/json"}
+    if options.api_key:
+        headers["Authorization"] = f"Bearer {options.api_key}"
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     error: Exception | None = None
     started = time.monotonic()
@@ -1163,12 +1275,12 @@ def request_experiment(
             request = urllib.request.Request(
                 endpoint,
                 data=body,
-                headers={"Content-Type": "application/json"},
+                headers=headers,
                 method="POST",
             )
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 decoded = json.loads(response.read())
-            content = decoded["choices"][0]["message"]["content"]
+            content = response_text(decoded["choices"][0]["message"]["content"])
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("empty model output")
             return {
@@ -1177,8 +1289,21 @@ def request_experiment(
                 "variant": experiment.variant,
                 "requestHash": experiment.request_hash,
                 "output": content.strip(),
+                "usage": decoded.get("usage"),
                 "durationSeconds": round(time.monotonic() - started, 3),
             }
+        except urllib.error.HTTPError as exc:
+            # A 4xx is the request's fault (bad key, rejected field): retrying
+            # only spends money. 429 and 5xx are worth another attempt.
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")[:300]
+            except OSError:
+                detail = ""
+            error = ValueError(f"HTTP {exc.code}: {detail}")
+            if exc.code < 500 and exc.code != 429:
+                break
+            if attempt < retries:
+                time.sleep(min(2**attempt, 10))
         except (urllib.error.URLError, TimeoutError, ValueError, KeyError, json.JSONDecodeError) as exc:
             error = exc
             if attempt < retries:
@@ -1372,17 +1497,30 @@ def summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return output
 
 
-def paired_variant_deltas(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Compare every model technique with that model's current-production arm."""
+def paired_variant_deltas(
+    rows: list[dict[str, Any]], baseline_arm: str | None = None
+) -> list[dict[str, Any]]:
+    """Compare every model technique with that model's current-production arm.
+
+    With prompt arms, each arm's variant pairs with the same variant on the
+    baseline arm instead."""
     by_stage_case = {(row["stage"], row["caseID"]): row for row in rows}
     stages = sorted({row["stage"] for row in rows if row["stage"].startswith("25 ")})
     output: list[dict[str, Any]] = []
     for stage in stages:
         parts = stage.split(" ", 2)
-        if len(parts) != 3 or parts[2] == "current-production":
+        if len(parts) != 3:
             continue
         model, variant = parts[1], parts[2]
-        baseline_stage = f"25 {model} current-production"
+        base_variant, _, arm = variant.partition("@")
+        if baseline_arm is not None and arm:
+            if arm == baseline_arm:
+                continue
+            baseline_stage = f"25 {model} {base_variant}@{baseline_arm}"
+        elif variant == "current-production":
+            continue
+        else:
+            baseline_stage = f"25 {model} current-production"
         paired = [
             (by_stage_case[(baseline_stage, row["caseID"])], row)
             for row in rows
@@ -1499,9 +1637,12 @@ def technical_attribution(
         categories[category].append(case_id)
 
     term_categories: dict[str, list[str]] = defaultdict(list)
-    oracle_primary_stage = f"25 {primary_model} current-production-oracle"
+    # With prompt arms, the oracle arm to read is the one on the same arm.
+    arm = variant.partition("@")[2]
+    oracle_variant = "current-production-oracle" + (f"@{arm}" if arm else "")
+    oracle_primary_stage = f"25 {primary_model} {oracle_variant}"
     oracle_ceiling_stage = (
-        f"25 {ceiling_model} current-production-oracle" if ceiling_model else None
+        f"25 {ceiling_model} {oracle_variant}" if ceiling_model else None
     )
     has_oracle = any(row["stage"] == oracle_primary_stage for row in rows)
     if has_oracle:
@@ -1691,6 +1832,13 @@ def main() -> int:
             "current-production oracle variants require current-production for attribution"
         )
     header, records = load_report(args.log)
+    added = polish_only_cases_missing_from(records)
+    if added:
+        print(
+            f"added {len(added)} polish-only corpus case(s) the log predates",
+            file=sys.stderr,
+        )
+        records += added
     if args.strata:
         selected_strata = {value.strip() for value in args.strata.split(",") if value.strip()}
         records = [record for record in records if record.get("stratum") in selected_strata]
@@ -1707,18 +1855,45 @@ def main() -> int:
         raise ValueError("--ceiling-model must differ from --model")
     if args.ceiling_model:
         models.append(args.ceiling_model)
-    current_prompts: dict[str, tuple[str, str]] = {}
+    arms: dict[str, Path] = {"": BUNDLED_CONFIG}
+    if args.prompt_arm:
+        arms = {}
+        for value in args.prompt_arm:
+            name, separator, directory = value.partition("=")
+            if not separator or not name or "@" in name or name in arms:
+                raise ValueError(f"--prompt-arm wants a unique NAME=DIR, got {value!r}")
+            arms[name] = Path(directory)
+        variants = [
+            f"{variant}@{arm}" if variant.startswith("current-production") else variant
+            for variant in variants
+            for arm in (arms if variant.startswith("current-production") else [""])
+        ]
+    baseline_arm = next(iter(arms)) if args.prompt_arm else None
+    current_prompts: dict[str, Any] = {}
     if any(variant.startswith("current-production") for variant in variants):
         current_prompts = {
-            "standard": (
-                production_system_prompt("llm_system_prompt.toml"),
-                bundled_prompt_content("llm_user_prompt.toml"),
-            ),
-            "agent": (
-                production_system_prompt("llm_system_prompt_agent.toml"),
-                bundled_prompt_content("llm_user_prompt_agent.toml"),
-            ),
+            arm: {
+                "standard": (
+                    production_system_prompt("llm_system_prompt.toml", directory),
+                    bundled_prompt_content("llm_user_prompt.toml", directory),
+                ),
+                "agent": (
+                    production_system_prompt("llm_system_prompt_agent.toml", directory),
+                    bundled_prompt_content("llm_user_prompt_agent.toml", directory),
+                ),
+            }
+            for arm, directory in arms.items()
         }
+        if not args.prompt_arm:
+            current_prompts = current_prompts[""]
+    options = RequestOptions(
+        shape=args.request_shape,
+        temperature=args.temperature,
+        reasoning_effort=args.reasoning_effort,
+        api_key=args.api_key_file.read_text(encoding="utf-8").strip()
+        if args.api_key_file
+        else None,
+    )
     existing = load_results(args.results)
     experiments = make_experiments(
         records,
@@ -1727,6 +1902,7 @@ def main() -> int:
         models,
         variants,
         current_prompts,
+        options,
         existing,
     )
 
@@ -1747,7 +1923,12 @@ def main() -> int:
             ) as executor:
                 futures = {
                     executor.submit(
-                        request_experiment, item, args.endpoint, args.timeout, args.retries
+                        request_experiment,
+                        item,
+                        args.endpoint,
+                        args.timeout,
+                        args.retries,
+                        options,
                     ): item
                     for item in model_pending
                 }
@@ -1766,8 +1947,9 @@ def main() -> int:
                     )
 
     rows = collect_rows(header, records, current_results(existing, experiments))
-    attribution_variant = (
-        "current-production" if "current-production" in variants else variants[0]
+    attribution_variant = next(
+        (variant for variant in variants if variant.partition("@")[0] == "current-production"),
+        variants[0],
     )
     attribution = technical_attribution(
         records, rows, args.model, args.ceiling_model, attribution_variant
@@ -1784,9 +1966,25 @@ def main() -> int:
             f"markdown={item['markdown']}/{item['cases']} "
             f"large-expansion={item['largeExpansions']}/{item['cases']}"
         )
-    deltas = paired_variant_deltas(rows)
+    active = current_results(existing, experiments).values()
+    usages = [item["usage"] for item in active if isinstance(item.get("usage"), dict)]
+    if usages:
+        cached = sum(
+            (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0
+            for usage in usages
+        )
+        print(
+            f"\nTokens over {len(usages)} responses: "
+            f"prompt={sum(usage.get('prompt_tokens') or 0 for usage in usages)} "
+            f"(cached {cached}) "
+            f"completion={sum(usage.get('completion_tokens') or 0 for usage in usages)}"
+        )
+    deltas = paired_variant_deltas(rows, baseline_arm)
     if deltas:
-        print("\nPaired technique deltas vs current-production:")
+        print(
+            "\nPaired technique deltas vs "
+            + (f"the same variant on arm {baseline_arm}:" if baseline_arm else "current-production:")
+        )
         for item in deltas:
             print(
                 f"{item['model']} {item['variant']}: n={item['cases']} "

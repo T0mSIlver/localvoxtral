@@ -124,6 +124,9 @@ public final class ClaudeRemoteContextListener: Sendable {
     /// Quick capture's asks for a remote project's README and drafts (#745),
     /// and their three routes. Nil without an Inbox; the routes then 404.
     private let quickCapture: RemoteQuickCaptureRequests?
+    /// The Mac's half of a host's `localvoxtral doctor` (#910). Nil without
+    /// the app's checks; the route then 404s.
+    private let doctor: RemoteDoctorRoute?
 
     #if DEBUG
     private let debugPostAuthenticationHook = Mutex<(@Sendable () -> Void)?>(nil)
@@ -174,8 +177,10 @@ public final class ClaudeRemoteContextListener: Sendable {
         uptimeNanos: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
         onRemoteHerdrActivity: @escaping @Sendable (String, String) -> Void = { _, _ in },
         projectTerms: RemoteProjectTermRequests? = nil,
-        quickCapture: RemoteQuickCaptureRequests? = nil
+        quickCapture: RemoteQuickCaptureRequests? = nil,
+        doctor: RemoteDoctorRoute? = nil
     ) {
+        self.doctor = doctor
         self.projectTerms = projectTerms
         self.quickCapture = quickCapture
         self.registry = registry
@@ -556,11 +561,19 @@ public final class ClaudeRemoteContextListener: Sendable {
             RemoteQuickCaptureRequests.readmePath,
             RemoteQuickCaptureRequests.draftPromptPath,
             RemoteQuickCaptureRequests.draftAnswerPath,
+            RemoteQuickCaptureRequests.draftWordsPath,
+            RemoteQuickCaptureRequests.draftContextPath,
+            RemoteQuickCaptureRequests.draftCheckPath,
         ].contains(request.path) {
             serveQuickCaptureAnswer(
                 fd: fd, request: request, buffer: &buffer, bodyOffset: bodyOffset,
                 deadline: deadline, token: token, host: host
             )
+            return
+        }
+
+        if request.path == RemoteDoctorRoute.path {
+            serveDoctor(fd: fd, request: request, token: token, host: host)
             return
         }
 
@@ -585,7 +598,7 @@ public final class ClaudeRemoteContextListener: Sendable {
         // serializing body parsing behind it would stall every other host's
         // auth behind one slow payload. Only the COMMIT — the part the
         // revocation race is about — re-authenticates under the lock.
-        guard let prepared = prepareIngest(body: body, request: request, host: host) else {
+        guard var prepared = prepareIngest(body: body, request: request, host: host) else {
             // Unparseable payloads never touch the session registry, so
             // revocation has nothing to protect. The body stays identical to
             // an ingested record; only this fixed status header differs.
@@ -600,6 +613,11 @@ public final class ClaudeRemoteContextListener: Sendable {
                 sessionStatus: .unknown
             )
             return
+        }
+        prepared.shimVersion = switch prepared.record.agent {
+        case .claude: pluginVersionReport
+        case .vibe: vibeHooksVersion.map { .version($0) }
+        case .opencode, .codex: nil
         }
         guard let commitIngestStatus = hosts.withAuthenticatedHost(
             token: token,
@@ -756,15 +774,17 @@ public final class ClaudeRemoteContextListener: Sendable {
         respond(fd: fd, status: 200)
     }
 
-    /// `POST /v1/readme`, `/v1/draft/prompt` and `/v1/draft`: a host
-    /// answering one of quick capture's asks (#745). Authenticated like a
+    /// `POST /v1/readme`, `/v1/draft/prompt`, `/v1/draft/words`,
+    /// `/v1/draft/context`, `/v1/draft/check` and `/v1/draft`: a host
+    /// answering one of quick capture's asks (#745, #918). Authenticated like a
     /// hook before this is reached, and scoped like `/v1/terms`: the session
     /// id is scoped under the host whose token authenticated THIS request,
     /// then under the agent the request names, and `RemoteQuickCaptureRequests`
     /// takes an answer only from the session and agent it asked. The bodies are untrusted: README bytes the Mac only
     /// summarizes, an issue list it only quotes into a prompt, and the
-    /// agent's output, read as #731 reads a local run's. Refusals log a
-    /// category, never a byte of a body.
+    /// agent's output, read as #731 reads a local run's; a context bundle
+    /// only quoted into the first draft's prompt. Refusals log a category,
+    /// never a byte of a body.
     private func serveQuickCaptureAnswer(
         fd: Int32,
         request: ClaudeRemoteHTTPRequest,
@@ -778,7 +798,7 @@ public final class ClaudeRemoteContextListener: Sendable {
             respond(fd: fd, status: 404)
             return
         }
-        enum Route { case readme, prompt(String), answer(String) }
+        enum Route { case readme, prompt(String), answer(String), words(String), context(String), check(String) }
         let route: Route
         let cap: Int
         let draftID = request.headers[RemoteQuickCaptureRequests.draftIDHeaderName.lowercased()]
@@ -791,6 +811,18 @@ public final class ClaudeRemoteContextListener: Sendable {
             guard let draftID else { return refuseQuickCapture(fd: fd, status: 400, "no valid draft id") }
             route = .prompt(draftID)
             cap = RemoteQuickCaptureRequests.maxIssueListBytes
+        case RemoteQuickCaptureRequests.draftWordsPath:
+            guard let draftID else { return refuseQuickCapture(fd: fd, status: 400, "no valid draft id") }
+            route = .words(draftID)
+            cap = 0
+        case RemoteQuickCaptureRequests.draftContextPath:
+            guard let draftID else { return refuseQuickCapture(fd: fd, status: 400, "no valid draft id") }
+            route = .context(draftID)
+            cap = QuickCaptureContext.maxBundleBytes
+        case RemoteQuickCaptureRequests.draftCheckPath:
+            guard let draftID else { return refuseQuickCapture(fd: fd, status: 400, "no valid draft id") }
+            route = .check(draftID)
+            cap = 0
         default:
             guard let draftID else { return refuseQuickCapture(fd: fd, status: 400, "no valid draft id") }
             route = .answer(draftID)
@@ -821,7 +853,7 @@ public final class ClaudeRemoteContextListener: Sendable {
         // Under the host lock, check to store, as for `/v1/terms`. Unlike
         // there, the session need not be live: the ask recorded its host,
         // session and agent, and a draft outlives a session the user closed.
-        enum Verdict { case notAsked, accepted(Data?) }
+        enum Verdict { case notAsked, accepted(Data?), status(Int) }
         guard let verdict = hosts.withAuthenticatedHost(token: token, expectedHostID: host.id, { _ -> Verdict in
             switch route {
             case .readme:
@@ -834,6 +866,19 @@ public final class ClaudeRemoteContextListener: Sendable {
                     draftID: id, sessionID: sessionID, agent: agent, exit: exit, output: body,
                     reportedUsage: agent == .vibe ? RemoteProjectTermRequests.reportedUsage(in: request.headers) : nil
                 ) ? .accepted(nil) : .notAsked
+            case .words(let id):
+                return quickCapture.words(draftID: id, sessionID: sessionID, agent: agent)
+                    .map { .accepted(Data($0.utf8)) } ?? .notAsked
+            case .context(let id):
+                return quickCapture.acceptContext(draftID: id, sessionID: sessionID, agent: agent, bundle: body)
+                    ? .accepted(nil) : .notAsked
+            case .check(let id):
+                switch quickCapture.checkPrompt(draftID: id, sessionID: sessionID, agent: agent) {
+                case .notAsked: return .notAsked
+                case .wait: return .status(202)
+                case .done: return .status(204)
+                case .prompt(let prompt): return .accepted(Data(prompt.utf8))
+                }
             }
         }) else {
             Log.claudeContext.error("Rejected remote connection: host was revoked before ingest")
@@ -845,10 +890,39 @@ public final class ClaudeRemoteContextListener: Sendable {
         case .notAsked:
             refuseQuickCapture(fd: fd, status: 409, "\(request.path) from a session not asked")
         case .accepted(let reply):
-            Log.backends.info(
+            Log.backends.notice(
                 "Quick capture: remote \(agent.rawValue, privacy: .public) answered \(request.path, privacy: .public) with \(body.count, privacy: .public) bytes"
             )
             respond(fd: fd, status: 200, body: reply)
+        case .status(let status):
+            respond(fd: fd, status: status)
+        }
+    }
+
+    /// A host's doctor asks for the Mac's checks. Reads no body, records no
+    /// activity: running doctor is not the host sending context.
+    private func serveDoctor(fd: Int32, request: ClaudeRemoteHTTPRequest, token: String, host: ClaudeRemoteHost) {
+        guard let doctor else {
+            respond(fd: fd, status: 404)
+            return
+        }
+        // Re-authenticated as ingest is: a host revoked since the first
+        // check gets nothing.
+        guard hosts.withAuthenticatedHost(token: token, expectedHostID: host.id, { _ in true }) == true else {
+            Log.claudeContext.error("Rejected remote doctor request: host was revoked")
+            respond(fd: fd, status: 401)
+            return
+        }
+        let json = request.headers["accept"]?.contains("application/json") == true
+        switch doctor.answer(hostID: host.id, json: json) {
+        case .timedOut:
+            Log.backends.error("Remote doctor: the app did not answer in time")
+            respond(fd: fd, status: 503)
+        case .body(let body, let contentType, let failed):
+            Log.backends.info(
+                "Remote doctor: answered a host, \(body.count, privacy: .public) bytes, \(failed, privacy: .public) failed"
+            )
+            respond(fd: fd, status: 200, body: body, doctorFailed: failed, contentType: contentType)
         }
     }
 
@@ -876,6 +950,8 @@ public final class ClaudeRemoteContextListener: Sendable {
         let snippets: [ClaudeContentSnippet]
         let environment: ClaudeRemoteSessionEnvironment?
         let hostID: String
+        /// This request's shim version, per the agent the record names.
+        var shimVersion: ClaudeRemotePluginVersionReport?
     }
 
     /// The parse/scope half of ingest, safe outside any lock.
@@ -970,7 +1046,8 @@ public final class ClaudeRemoteContextListener: Sendable {
             prepared.record,
             origin: origin,
             snippets: prepared.snippets,
-            environment: prepared.environment
+            environment: prepared.environment,
+            remoteShimVersion: prepared.shimVersion
         )
         // Shape only. A remote record carries the user's prompt and excerpts of
         // their code; a log is the wrong place for either.
@@ -998,7 +1075,9 @@ public final class ClaudeRemoteContextListener: Sendable {
         sessionStatus: ClaudeRemoteSessionStatus? = nil,
         readmeWanted: Bool = false,
         draftID: String? = nil,
-        termsWanted: Bool = false
+        termsWanted: Bool = false,
+        doctorFailed: Int? = nil,
+        contentType: String = "application/json"
     ) {
         let data = ClaudeRemoteHTTPCodec.response(
             status: status,
@@ -1006,7 +1085,9 @@ public final class ClaudeRemoteContextListener: Sendable {
             sessionStatus: sessionStatus,
             termsWanted: termsWanted,
             readmeWanted: readmeWanted,
-            draftID: draftID
+            draftID: draftID,
+            doctorFailed: doctorFailed,
+            contentType: contentType
         )
         _ = data.withUnsafeBytes { raw -> Int in
             guard let base = raw.baseAddress else { return 0 }

@@ -197,8 +197,10 @@ host posts into a port nothing forwards. The hooks fail open, so this looks
 exactly like nothing happening.
 
 The remote plugin, localvoxtral-remote, is separate from the local localvoxtral
-plugin, not a mode of it. It declares only hooks, with no skill, command, agent
-or status line, so it never spends your tokens.
+plugin, not a mode of it. It declares hooks and one executable,
+`localvoxtral`, which Claude Code puts on its sessions' PATH and which runs
+only `localvoxtral doctor` (see [Checking the setup](#checking-the-setup)).
+It adds no skill, agent or status line, so it never spends your tokens.
 
 Its [hook script](../integrations/claude-code/plugins/localvoxtral-remote/hooks/post.sh)
 needs only POSIX sh and curl. The host needs no localvoxtral binary, no jq and
@@ -267,6 +269,16 @@ arguments while it runs (see above).
 
 Use **Check Setup** in the enrollment sheet. It runs two read-only checks and
 explains the results. The checks below run them by hand.
+
+On the host, `localvoxtral doctor` runs them all from there: the forward
+port, the 401 without the token and the 200 with it, the plugin version each
+running session loaded, the Vibe hooks and the last hook's outcome. It then
+prints the Mac's own checks for this host. It reads the token from
+`~/.claude/.credentials.json` or `~/.vibe/localvoxtral/remote/token` and
+never prints it. On a macOS host, Claude Code keeps the token in the
+Keychain, and the token check says so. Without the Claude Code plugin, run
+`sh ~/.vibe/localvoxtral/remote/doctor.sh`. It needs plugin 1.25.0 or Vibe
+hooks 1.10.0 on the host.
 
 ### Is the tunnel live, and is localvoxtral behind it?
 
@@ -455,6 +467,10 @@ marketplace copy and the plugin, stores this Mac's allocated port, and rewrites
 this host's SSH config block in the same action, so the two halves always
 agree.
 
+Sessions already running on the host keep the old hook script until you run
+`/reload-plugins` in a Claude Code session (Claude Code 2.1.283) or restart a
+Vibe session, since Vibe has no such command.
+
 Your token is preserved: `claude plugin update` keeps the stored config, and
 each --config option merges per key.
 
@@ -627,9 +643,21 @@ only sessions on older hooks, the capture waits in the Inbox with your words
 and a note.
 
 The hook script starts the capture script's draft run detached, one at a time
-and at most 20 a day. The run lists the open issues with the host's gh issue
-list when gh works there, posts them to the listener, and gets back the
-drafting prompt with your words in it.
+and at most 20 a day. With localvoxtral-remote 1.24.0 or Vibe hooks 1.9.0, the
+run drafts in two stages:
+
+1. It asks the listener for the capture's search words, then posts the
+   project's context: the openings of its README and AGENTS.md (or
+   CLAUDE.md), `git grep` hits for those words, and, when gh works there, the
+   open issues, the last 40 closed issues and the last 20 merged pull
+   requests, 96 KiB at most.
+2. The Mac writes the first draft from it. The run polls the listener every 3
+   seconds, for 3 minutes at most, until it answers: no check due (a
+   question, a task or a note), or the prompt to check the issue's draft
+   against the code.
+
+An older hook script lists the open issues only, and gets back the prompt to
+draft from your words alone.
 
 It then runs the Mac's drafting command in the project:
 
@@ -637,17 +665,20 @@ It then runs the Mac's drafting command in the project:
   $0.50;
 - or Vibe with its read-only tools, hooks and MCP off, capped at $0.30.
 
-Both get 20 turns and a 240-second watchdog. The run posts the output, at most
-60 KiB, to the listener with how the run ended. A Vibe run (hooks 1.4.0) adds
-its token counts in a header; Claude Code's output already carries its usage.
+Both get 20 turns and a 6-minute watchdog (4 minutes before 1.24.0 and 1.9.0).
+The run posts the output, at most 60 KiB, to the listener with how the run
+ended. A Vibe run (hooks 1.4.0) adds its token counts in a header; Claude
+Code's output already carries its usage.
 
 **What crosses and what can't.** Each route takes one answer, only from the
 host, session and agent the Mac asked, and files it under the project the Mac
-recorded. Your words cross the tunnel only in the prompt reply, to the session
-of the project the router chose.
+recorded. Your words cross the tunnel only in the prompt reply and, as search
+words, in the words reply, to the session of the project the router chose.
 
-Nothing is filed on the host. gh only lists issues, and the agent has no
-shell. The draft is untrusted text, read as a local draft is.
+Nothing is filed on the host. gh only lists issues and pull requests, git only
+greps, and the agent has no shell. The context and the draft are untrusted
+text: the context is only quoted into the first draft's request, and the
+draft is read as a local draft is.
 
 Whatever answers on the forward port can send both asks. It never sees a
 capture, since those go only to the Mac's listener, but it can hand the host a

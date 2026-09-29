@@ -6,7 +6,7 @@
 # environment. LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN has to be passed explicitly
 # or a lane that sets it still gets the modal keychain prompt it set the flag to
 # avoid (see Sources/localvoxtralCore/StartupPermissionSuppression.swift). The same
-# goes for LOCALVOXTRAL_DOGFOOD_AUDIO_FILE, the WAV a dogfood build dictates
+# goes for LOCALVOXTRAL_DOGFOOD_AUDIO_FILE, the WAV a harness build dictates
 # from in place of the microphone (docs/test-harness.md).
 #
 # Written for the runner's bash 3.2: no arrays, no `${x[@]}` under `set -u`.

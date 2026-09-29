@@ -150,25 +150,32 @@ there is not.
 - **A voice stop is the stop key, never a second commit path** (#839).
   An Overlay Buffer dictation whose words (settled segments plus the
   partial in flight: the Mistral API sends no final before the stop) end in
-  a send phrase, followed by `SpokenStopRule.silenceWindow` (3 s) with no
-  new words, calls `stopDictation` like the key; the stop's commit then
+  a send phrase, followed by the user's `SpokenStopWait` (3 s unless set,
+  #1009) with no new words, calls `stopDictation` like the key; the stop's commit then
   cuts the phrase and sends as above. It arms only when the commit would
   send (`planOverlaySpokenSend`, asked again when the timer fires), so a
   phrase the commit would keep as text never ends the dictation. A held
   dictation never arms: its release is the stop, and a stop while the key
   is down would leave a release with nothing to stop (#840). A quick
   capture stops the same way, saves without the phrase and presses
-  nothing. The window is measured, not guessed: on the owner's 138
+  nothing. The 3 s default is measured, not guessed: on the owner's 138
   dictations with audio, 5.6 % of speech pauses reach 3 s and the one
   mid-sentence "send it" was followed by 2.4 s; a false stop sends half a
-  prompt, a late one costs a key press. The user's phrase list
+  prompt, a late one costs a key press. No choice goes under 1 s: streaming
+  ASR delivers words 0.5–1 s behind speech, so a shorter wait can fire
+  before the rest of the sentence arrives. The user's phrase list
   (`SendTriggerPhrases`) refuses one common word and anything over four
   words, and a stored list that no longer validates loads as the default.
 - **"Go to <name>" is a command only when the name resolves** (#723 step
   1). An Overlay Buffer dictation (a Live Auto-Paste segment, #747) that
-  is only "go to" plus at most four words is looked up against the live registry's default names (the git
-  root's directory name first, then the main checkout's) before the spoken
-  send cut, the dictionary and the polisher. No match: it is ordinary text
+  is only "go to" plus at most four words is looked up against the live
+  registry's names (`SessionNameResolver`: nickname, the folder name with
+  duplicates told apart, the git root's directory or named branch, the main
+  checkout's, the harness's title, the title's first two to four words)
+  before the spoken send cut, the dictionary and the polisher. A title
+  never outranks a folder name: the session sets its own title (Desktop's
+  `titleSource: tool`), so it could otherwise take a name the user meant
+  for another session. No match: it is ordinary text
   and commits as dictated, because "go to the tests" is a prompt too. A
   match: nothing is inserted, no Return is pressed, and nothing is saved to
   History. Two panes on one name is ambiguous and does nothing; sessions on
@@ -180,6 +187,17 @@ there is not.
   `.focused` only when that tty is the session's. A Return after a focus
   (#723 step 3) or #717's answer hotkey must require `.focused`, never
   `.unverified`.
+- **A session's title is a name, never evidence** (#1013). Claude
+  Desktop's title for a session is read from Desktop's own file on this
+  Mac (`ClaudeDesktopSessionTitles`, keyed by the `local_<uuid>` the hooks
+  reported), for an ssh-host session too, so no title crosses the wire.
+  It names the session in the overlay, the popover, banners and go-to,
+  and nothing else: no join, route or capture reads it, the registry file
+  does not keep it, and no log line carries it. Other harnesses' titles
+  (Claude Code's `session_title`, Codex's `thread_name`, opencode's and
+  Vibe's `title`) stay on their host until a wire step carries them: the
+  auto-generated ones summarize the first prompt, which needs an owner
+  ruling (#1013).
 - **Live Auto-Paste holds back only what may still read "go to"** (#747).
   Typed words cannot be taken back, so while a session is live a segment is
   held while its words so far may still become "go to" ("G", "Go", "go t")
@@ -274,6 +292,29 @@ there is not.
   goes last against the 100-term cap: a listed term nobody says is
   sometimes written anyway. A new dictation that cancels
   the pass saves the realtime text as not inserted, as it does for a polish.
+- **Early polish reuses a piece only when the stop would have sent it the
+  same way** (#709). In Overlay Buffer with polishing, `EarlyPolishRun`
+  polishes each settled piece (whole sentences past 30 words of backend
+  finals, `EarlyPolishPlan`) while the user speaks, alone and one at a
+  time. A piece request carries only the templates, the reference guide and
+  About you. The stop still gathers and assembles the request for the whole
+  text, and polishes only the tail when that request equals the bare one
+  (`PolishRequestAssembler.bareRequest`), the templates and endpoint are the
+  pieces', and the prepared text starts with the pieces' exact prefix.
+  Otherwise the pieces are dropped and the whole text is polished: context,
+  vocabulary or a pre-applied spelling from the stop sample, a changed
+  profile, the dictionary, the payload macro and the spoken send cut all
+  land here, so learned terms, the macro and the trigger keep working on
+  the whole text. A piece is never given the text polished before it, and
+  the stop never re-polishes a piece's last sentence: both changed more
+  words than polishing it alone on the #709 replay. The stop waits for the
+  piece in flight and keeps it rather than cancelling it, because polishd
+  keeps generating a dropped request on its one slot. Sessions with a
+  second pass never start early polish: Mistral's realtime stream settles
+  nothing before the stop, and the batch text replaces the realtime text.
+  With **Polish while you speak** off (`SettingsStore.earlyPolishEnabled`,
+  default on for the bundled helper only) no run starts, and the stop takes
+  the pre-#709 path unchanged.
 - **Claude Desktop is a text field whose Return sends, and gets its
   newlines as Shift+Return** (#660). Three lists name it, each for one
   capability: `TerminalTargetDetector`'s text-field list fixes its verdict
@@ -366,22 +407,35 @@ there is not.
   (`…/<repo>/.claude/worktrees/<name>`: a Desktop session keeps the plugin
   it started with for days), else its cwd label, so two repositories with one
   basename on one host share a bucket: the price of never holding a remote
-  path), and once three separate
+  path. That key names a checkout; the terms live on its repository's
+  record, `repo:<host/owner/repo>`, once its `origin` is known (#971,
+  `ProjectRemote`). The Mac reads a local checkout's `origin` off the
+  commit path (`QuickCaptureProjectLinker`, once a launch), and a host
+  sends its own as `X-Lvx-Env-Repository`, a label like the project name.
+  So a host that claims a repository shares that repository's record with
+  the Mac's checkout: its sessions' dictations are polished with the
+  record's confirmed terms, at the user's own endpoint, and what they
+  teach counts toward it. What a host can push into it unasked is
+  `/v1/terms` proposals, which stay unconfirmed under the three-dictation
+  bar. The record is never keyed or reached by a path.), and once three separate
   dictations have resolved it, it grounds later ones and rides in the prompt
   under its own header — with no endpoint check and no re-check of the
   setting that first produced it. Owner ruling, 2026-09-20: a name the
   speaker keeps saying is their vocabulary, exactly like a name typed into
-  Names and terms, which has always been sent to whatever endpoint is
+  Global terms, which has always been sent to whatever endpoint is
   configured. What the app owes in exchange is stated here rather than
   enforced by a gate: each term keeps the sources that proposed it, so a
   later setting can drop what one source taught; nothing below the
   three-dictation bar is ever sent unless the user pinned it or fixed it by
-  hand, and an import (`LearnedTerms.merge`, #523) confirms nothing the
+  hand (a quick capture's polish, #970, matches every routable project's
+  confirmed terms, which the router already sends with each project), and
+  an import (`LearnedTerms.merge`, #523) confirms nothing the
   file does not record as earned, taking the max of the counts, never the
   sum; a remembered term never outranks a live
   source (`.learned` is LAST in `PolishContextSource`, so a contested span
-  abstains); unpinned terms decay at 90 days; and Text processing →
-  Advanced → Terms learned from polishing → Forget drops the file (Show forgets one). Verification candidates are never
+  abstains); unpinned terms decay at 90 days; and a forget in Settings →
+  Projects (one term, or a project's Forget All, #972) rewrites the file
+  without them, so nothing forgotten comes back after a relaunch. Verification candidates are never
   recorded — they are questions put to the model, not answers. A dictation
   whose project cannot be established teaches nothing at all, which is not
   the same as one with no project: the latter teaches the shared bucket,
@@ -607,7 +661,8 @@ there is not.
     and a submit is `pane.send_keys {pane_id, keys: ["enter"]}`
     (`HerdrPaneWriting`; wire shapes from herdr 0.9.0, the version installed
     when this was written). Never `pane.run`, never another key, never
-    `agent.prompt`, `agent.send_keys`, `pane.send_input` or a focus call.
+    `agent.prompt`, `agent.send_keys`, `pane.send_input` or a focus call
+    (navigation's focus, below, is its own bounded write).
     *Only the joined pane:* the route exists only for a herdr pane join
     (local, remote or federated) and is keyed by the binding the arm captured
     (`ClaudeSessionJoinResolver.herdrPromptRoute(for:)`), so it writes to
@@ -637,6 +692,39 @@ there is not.
     never kept as a join, reads nothing from the pane, never reaches a
     remote or federated herdr, and asks the focused TTY only while a live
     local session sits in a herdr pane.
+  - *herdr focus for navigation* (#1012, `HerdrSessionPaneFocuser`; owner
+    ruling on #1012, 2026-09-28). *One call, nothing else:* `pane.focus
+    {pane_id}` (`HerdrPaneFocusing`), only for the pane of the session the
+    user asked to reach (Tab, the answer shortcut, "go to"), over the pane's
+    local socket or the join's `ssh -L` forward. No keys, no text, no layout,
+    tab, workspace or pane creation, no `agent.focus`, no machine switch.
+    *Confirmed by reading back:* `.focused`, the only outcome that starts a
+    dictation, needs herdr's `pane.current` to name that pane AND the
+    terminal's focused tty to be the window raised; the answer to
+    `pane.focus` alone never is. *Window first* (#1033): `pane.focus` is sent
+    only after the window reads back in front, so a window that does not
+    come up leaves herdr's pane as it was, and a failure after the raise is
+    `.unverified`, never an outcome that reads as nothing moved. The
+    previous pane is not restored: that would be a second `pane.focus`.
+    *The window, never by title:* herdr has no client introspection, so
+    `HerdrWindowLocator` takes the join's process-table evidence and wants
+    exactly one tty. For a local pane: the one live local herdr socket is the
+    pane's, the machine selection shows Local (a lone client once machines
+    are saved), and one tty runs a herdr client. For a remote pane: a tty
+    whose foreground ssh goes to exactly that enrolled host with a plain herdr
+    client of that socket's session and no competing herdr view, or the lone
+    herdr client whose selection names that host and session. Several
+    candidates raise none, even though clients of one server mirror it.
+    Not reached: `ssh host` then a typed `herdr` (only the panel nonce could
+    prove that window, and it needs the window frontmost first), argv an ssh
+    wrapper hides, and a client showing another machine.
+    *herdr's side, measured on 0.9.0 and 0.9.1:* `pane.focus` answers
+    `pane_info` with `focused: true`, or `pane_not_found`, and switches
+    workspace and tab itself. The CLI has no command for it (`herdr pane
+    focus` is directional only); `agent.focus {target}` refuses a pane herdr
+    does not see as an agent (`agent_not_found`). Focus is per server: every
+    attached TUI client moves to the pane, and an explicit focus marks the
+    agent seen (`done` becomes `idle`).
   - *cmux surfaces* (#727, `CmuxSurfaceRoute`). *Exactly two calls:*
     `surface.send_text` with `surface_id` and `text`, and `surface.send_key`
     with `surface_id` and `key: "enter"`. Never a call without `surface_id`:
@@ -772,8 +860,9 @@ there is not.
     `HerdrSocketClient` (hand-written and capability-bounded — reads are only
     `pane.current`, `pane.process_info`, and `pane.read`; its mutations are
     the remote panel probe's short-lived `lvmark` through
-    `pane.report_metadata` and the herdr pane route's two writes, bounded in
-    "The app writes into an agent only through its routes". herdr was AGPL when this
+    `pane.report_metadata`, the herdr pane route's two writes, bounded in
+    "The app writes into an agent only through its routes", and navigation's
+    `pane.focus`, bounded in "herdr focus for navigation". herdr was AGPL when this
     was written and is Apache-2.0 since v0.8.0, repo `herdrdev/herdr`, so its
     docs and source are freely readable; the client stays hand-written anyway,
     because a vendored dependency would be a second implementation of the trust
@@ -2359,7 +2448,13 @@ there is not.
   three. The capture text leaves the Mac only in the prompt reply. The
   README bytes are only summarized, the host's issue list only quoted into
   the prompt (a related issue counts only if listed there), the output read
-  as a local draft. A squatter on the port can send both headers and answer
+  as a local draft. A shim from #918 on asks `/v1/draft/words` (the
+  capture's search words, which go only where the capture goes), posts its
+  context bundle to `/v1/draft/context` (96 KiB, parsed into
+  `QuickCaptureContext` and only quoted), and polls `/v1/draft/check` (202,
+  204, or the check's prompt); the host greps only words that start with a
+  letter or digit, after `-e`, so no word reads as an option. The first
+  draft runs on the Mac, off the listener's threads. A squatter on the port can send both headers and answer
   the prompt request with a prompt of its own, so the host's run is the
   Mac's drafting command with Claude Code's reads confined to the checkout
   (`--permission-mode dontAsk --allowedTools Read(./**)`; without it Read
@@ -2403,8 +2498,7 @@ there is not.
     (`DogfoodAudioFileSource`). A release build compiles none of it: no
     listener, no path, no code that could create one, and no setting or
     argument that turns it on. Only the UI smoke workflow's package sets
-    `LOCALVOXTRAL_E2E_HARNESS=1` (a dogfood package implies it, until the
-    dogfood build is removed in #792). `package_app.sh` searches every
+    `LOCALVOXTRAL_E2E_HARNESS=1`. `package_app.sh` searches every
     bundle's binary for the harness types
     (`scripts/packaging/check-harness-symbols.sh`): a release build fails if
     one is there, a harness build fails if one is missing. Within a build that
@@ -2464,21 +2558,58 @@ there is not.
   list. The hook receipt (`ClaudeBrokerResponse`) is untouched and still
   carries nothing a hook could print.
 
-- **A quick capture never reaches the focused app, and only File reaches
-  GitHub** (#725). A session started by the quick capture shortcut latches
+- **A quick capture never reaches the focused app, and only File and
+  Comment on #N reach GitHub** (#725, #965). A session started by the quick capture shortcut latches
   `sessionIsQuickCapture` with its output mode (always Overlay Buffer), and
   its stop takes `commitQuickCapture` before any polish, second pass, screen
   or clipboard sample, or insertion: the History record is written first,
   the overlay closes as a cancelled one does, and the words go to
-  `QuickCaptureInboxModel`, which writes them to its 0600 file before
-  routing. The router sends a low or tied answer to the catch-all, never a
-  guessed project. Jev and the chat model both need 0.9: on the replay
+  `QuickCaptureInboxModel`, which writes them to its 0600 file before it
+  polishes them. The capture is polished once there (#970), before the
+  follow-up check and routing: one request to the polishing endpoint with
+  the standard profile's prompt and the user's terms, and no screen,
+  clipboard or session context. Its vocabulary is every routable project's
+  name, repository name and confirmed learned terms
+  (`QuickCapturePolishVocabulary`, capped per project and in total; no
+  proposals), matched against the words as a dictation's learned terms are.
+  The router, drafter and follow-ups read the polished words; History keeps
+  the raw ones and gets the polished text on the same record, which
+  Insights leaves out of its polish waits. A failed
+  polish, or none configured, routes the raw words. Polishes run side by
+  side, but captures join or route in the order they were made: an "also"
+  whose polish answers first waits for the capture before it. The router sends a low or tied answer to the catch-all, never a
+  guessed project: the guess is kept as the route's `suggestion`, and
+  nothing drafts until the user accepts it (#938). Jev and the chat model both need 0.9: on the replay
   (#741, #744) every right project came at 0.95 or more, and nearly every
-  wrong one under 0.9. The drafting agent has
-  read-only tools and no shell, so it cannot run `gh`; the open issues reach
-  it through the prompt, from the app's own `gh issue list`. Its answer is
-  untrusted text: a one-line capped title, a body without control
-  characters, a related issue only if it was listed. `QuickCaptureInboxModel.file`
+  wrong one under 0.9. Drafting has two stages (#918). The first is one
+  request to the polishing model with the context the app gathers
+  (`QuickCaptureContext`: README and guide openings, `git grep` hits for the
+  capture's words, `gh` issue and PR lists), every field capped and only
+  quoted; it sorts the capture by kind, and only an issue can be filed
+  (`QuickCaptureItem.canFile`) or checked. The second, an issue's check, is
+  the drafting agent: read-only tools and no shell, so it cannot run `gh`;
+  the open issues reach it through the prompt, from the app's own `gh issue
+  list`. Both answers are untrusted text: a one-line capped title, a body
+  without control characters, a related issue only if it was listed, files
+  read only as relative paths that exist in the checkout. A check never
+  overwrites a draft the user edited, and never lands on a capture filed or
+  moved meanwhile. `QuickCaptureInboxModel.file`
   is the one call to `gh issue create`, reached only from the Inbox's File
-  button. A remote project is drafted on its host (#745, below): a remote
-  label never becomes a working directory here.
+  button and from a spoken "file it" (#927). That one works only in a review
+  dictation, whose overlay shows exactly one draft, and `applySpokenReview`
+  files only when the draft's title and body still match what the overlay
+  showed. `QuickCaptureInboxModel.comment` is the one call to `gh issue
+  comment` (#965), reached only from the Inbox's Comment on #N button, and
+  only for a draft whose `relation` is `extends`: the issue number comes from
+  the app's own open-issue list. A follow-up joins an open capture (not
+  filed, within the hour) only on its first words ("also", "for that idea")
+  or on a router pick past the same 0.9 and 0.15 bars; an unsure pick joins
+  nothing and suggests that capture's project. The join keeps the
+  follow-up's words apart for Split, and a draft run it supersedes is
+  dropped. The router's request changes only when there is an open capture
+  to offer; that capture's title or first words then go to the same
+  classifier as the new capture. A remote project is drafted on its host (#745, below): a remote
+  label never becomes a working directory here. A capture keeps the
+  checkout key it was routed to; when that checkout's repository gains a
+  checkout on the Mac, the Inbox moves it to the Mac's (#971), except while
+  a draft runs for it.

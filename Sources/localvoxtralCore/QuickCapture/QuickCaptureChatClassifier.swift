@@ -19,12 +19,30 @@ package enum QuickCaptureChatRouting {
         Read the note and the project descriptions, then pick the one project \
         the note is about. Pick "\(QuickCaptureRouting.catchAllID)" when it fits \
         none of them, when two fit equally, or when you would be guessing. \
-        Reply with JSON only: {"project": "<id>", "confidence": <0 to 1>}.
+        Reply with JSON only: {"project": "<id>", "confidence": <0 to 1>}. \
+        Confidence: 0.95 when the note names the project or can only be about it; \
+        0.5 or less when you are guessing.
         """
 
+    /// Added to `systemPrompt` only when open captures are options (#965),
+    /// so a request with none is what it was before.
+    package static let followUpInstruction = """
+        Some options are earlier notes the speaker made in the last hour and \
+        has not filed. When this note continues one of them (a detail, a \
+        correction or a second thought about the same thing), pick that \
+        earlier note, not its project. A new idea for the same project picks \
+        the project.
+        """
+
+    package static func systemPrompt(for options: [QuickCaptureOption]) -> String {
+        options.contains { $0.captureID != nil } ? systemPrompt + " " + followUpInstruction : systemPrompt
+    }
+
     package static func userMessage(capture: String, options: [QuickCaptureOption]) -> String {
-        let list = options.map { "- \($0.id): \($0.description)" }.joined(separator: "\n")
-        return "Projects:\n\(list)\n\nNote:\n\(capture)"
+        let list = options.filter { $0.captureID == nil }.map { "- \($0.id): \($0.description)" }.joined(separator: "\n")
+        let earlier = options.filter { $0.captureID != nil }.map { "- \($0.id): \($0.description)" }
+        let notes = earlier.isEmpty ? "" : "\n\nEarlier notes:\n" + earlier.joined(separator: "\n")
+        return "Projects:\n\(list)\(notes)\n\nNote:\n\(capture)"
     }
 
     /// - Parameter extraBody: fields the polishing configuration adds to
@@ -40,7 +58,7 @@ package enum QuickCaptureChatRouting {
             "temperature": 0,
             "max_tokens": maxTokens,
             "messages": [
-                ["role": "system", "content": systemPrompt],
+                ["role": "system", "content": systemPrompt(for: options)],
                 ["role": "user", "content": userMessage(capture: capture, options: options)],
             ],
         ]

@@ -78,6 +78,13 @@ struct DictationInsights: Equatable, Sendable {
     /// Of those, the ones it changed. A dictation only the replacement
     /// dictionary changed is in neither count.
     var polishChanged = 0
+    /// Dictations whose insertion was watched to the end of its window: the
+    /// ones the user erased right away plus the ones left alone. A window a
+    /// new dictation cut short says neither, so it is in neither count.
+    var editWatched = 0
+    /// Of those, the ones erased within seconds (Backspace, forward delete or
+    /// ⌘A): the "edited soon after insertion" share #519 trends.
+    var editedSoon = 0
     var medianPolishSeconds: Double?
     var slowPolishSeconds: Double?
     var recurringFixes: [RecurringFix] = []
@@ -107,20 +114,33 @@ struct DictationInsights: Equatable, Sendable {
             if Task.isCancelled { break }
             dictations += 1
             words += TranscriptDiff.wordRanges(in: entry.finalText).count
+            // A quick capture is polished in the Inbox after its record
+            // is written (#970): its polish is not in its duration, and
+            // nobody waited on it, so it is left out of the polish counts.
+            let isQuickCapture = entry.outputMode == DictationSessionRecord.quickCaptureOutputMode
             let elapsed = entry.finishedAt.timeIntervalSince(entry.startedAt)
-                - (entry.polishingDurationSeconds ?? 0)
+                - (isQuickCapture ? 0 : entry.polishingDurationSeconds ?? 0)
             dictatingSeconds += min(max(0, elapsed), Self.maxDictationSeconds)
             if !entry.commitSucceeded { notInserted += 1 }
             if entry.status == .llmFailed { polishFailed += 1 }
-            if entry.polishRan, let seconds = entry.polishingDurationSeconds {
+            if entry.polishRan, !isQuickCapture, let seconds = entry.polishingDurationSeconds {
                 polishRan += 1
                 polishSeconds.append(seconds)
+            }
+            switch entry.editOutcome.flatMap(EditSignalOutcome.init(rawValue:)) {
+            case .edited:
+                editWatched += 1
+                editedSoon += 1
+            case .clean:
+                editWatched += 1
+            case .superseded, nil:
+                break
             }
             if let bundleID = entry.targetAppBundleID, !bundleID.isEmpty {
                 appCounts[bundleID, default: 0] += 1
             }
             if entry.polishRan, entry.textWasChanged {
-                polishChanged += 1
+                if !isQuickCapture { polishChanged += 1 }
                 // A set: the same fix twice in one dictation is one dictation.
                 let fixes = Self.fixes(in: entry).map { FixKey(heard: $0.heard, written: $0.written) }
                 for fix in Set(fixes) { fixDictations[fix, default: 0] += 1 }

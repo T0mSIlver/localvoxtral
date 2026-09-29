@@ -407,12 +407,31 @@ final class DictationSessionController {
     /// never into the focused app.
     @ObservationIgnored
     var sessionIsQuickCapture = false
+    /// Asked for by the answer shortcut's start (#927); latched into
+    /// `sessionDraftReview` like `requestedQuickCapture`.
+    @ObservationIgnored
+    var requestedDraftReview: QuickCaptureDraftSnapshot?
+    /// This session reviews the one draft the overlay shows (#927): its
+    /// words file, drop or change it, and are never inserted.
+    @ObservationIgnored
+    var sessionDraftReview: QuickCaptureDraftSnapshot?
+    /// The filing or redraft the last review started, for tests to await.
+    @ObservationIgnored
+    var draftReviewTask: Task<Void, Never>?
+    /// The Inbox the review acts on. The view model installs it.
+    @ObservationIgnored
+    var quickCaptureInbox: QuickCaptureInboxModel?
     /// Where a stopped quick capture's words go, with its History record's
     /// id when History kept it. The view model points it at the Inbox.
     @ObservationIgnored
     var onQuickCapture: (@MainActor (_ text: String, _ historyRecordID: UUID?) -> Void)?
     @ObservationIgnored
     var polishAndCommitTask: Task<Void, Never>?
+    /// This Overlay Buffer dictation's pieces polished while the user speaks
+    /// (#709). Handed to the stop's polish task, and cancelled on every
+    /// other session exit.
+    @ObservationIgnored
+    var earlyPolishRun: EarlyPolishRun?
     /// Saves the dictation `polishAndCommitTask` is polishing, as not
     /// inserted, if the task never gets to. A new dictation started over the
     /// polish cancels it, and that dictation used to reach neither the
@@ -438,6 +457,9 @@ final class DictationSessionController {
     /// Brings a picked pane forward, or the focused app back.
     @ObservationIgnored
     var destinationFocusTask: Task<Void, Never>?
+    /// Closes the overlay's destination list once the user stops moving.
+    @ObservationIgnored
+    var destinationListCloseTask: Task<Void, Never>?
     /// What the commit checks when the stopped dictation's picks moved the
     /// focus, kept from the stop to the commit.
     @ObservationIgnored
@@ -675,8 +697,13 @@ final class DictationSessionController {
     /// capture restarts as a capture, never as a dictation into the app.
     private func restartOnNewInput(reason: String) {
         let quickCapture = sessionIsQuickCapture
+        let draftReview = sessionDraftReview
         stopDictation(reason: reason, finalizeRemainingAudio: false)
-        startDictation(outputMode: quickCapture ? .overlayBuffer : nil, quickCapture: quickCapture)
+        startDictation(
+            outputMode: quickCapture || draftReview != nil ? .overlayBuffer : nil,
+            quickCapture: quickCapture,
+            draftReview: draftReview
+        )
     }
 
     func startDictation(outputMode: DictationOutputMode? = nil) {
@@ -696,7 +723,9 @@ final class DictationSessionController {
         startDictation(outputMode: .overlayBuffer, quickCapture: true)
     }
 
-    func startDictation(outputMode: DictationOutputMode?, quickCapture: Bool) {
+    func startDictation(
+        outputMode: DictationOutputMode?, quickCapture: Bool, draftReview: QuickCaptureDraftSnapshot? = nil
+    ) {
         guard !isDictating else { return }
         onDictationStartRequested?()
         guard !isConnectingRealtimeSession else {
@@ -742,6 +771,7 @@ final class DictationSessionController {
             // Set only where the start goes ahead: a start refused above must
             // leave nothing for the next one (#732 review).
             requestedQuickCapture = quickCapture
+            requestedDraftReview = draftReview
             beginDictationAfterManagedBackendIfNeeded(outputMode: outputMode)
         case .notDetermined:
             isAwaitingMicrophonePermission = true
@@ -766,6 +796,7 @@ final class DictationSessionController {
                     // This start's kind, not whatever a press made of the
                     // flag while the prompt was up.
                     self.requestedQuickCapture = quickCapture
+                    self.requestedDraftReview = draftReview
                     self.beginDictationAfterManagedBackendIfNeeded(outputMode: outputMode)
                     // The grant may land long after the initiating tap ended
                     // (toggle taps have no release event). If secure input

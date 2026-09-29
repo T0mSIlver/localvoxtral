@@ -23,11 +23,35 @@ private final class StubResponder: ChatResponding, @unchecked Sendable {
         received = (messages, chatTemplateArguments, sampling)
         return try result.get()
     }
+
+    /// One token per whitespace-separated word.
+    func tokenCount(of text: String) async throws -> Int {
+        text.split(whereSeparator: \.isWhitespace).count
+    }
 }
 
 final class PolishdRouterTests: XCTestCase {
     private func chatRequest(_ json: String) -> HTTPRequest {
         HTTPRequest(method: "POST", path: "/v1/chat/completions", body: Data(json.utf8))
+    }
+
+    func testTokenizeCountsTheTextWithTheModelsTokenizer() async throws {
+        let router = PolishdRouter(responder: StubResponder(), modelName: "m")
+        let response = await router.handle(
+            HTTPRequest(method: "POST", path: "/v1/tokenize", body: Data(#"{"text": "Global terms: Qwen, vLLM"}"#.utf8)))
+
+        XCTAssertEqual(response.status, 200)
+        let decoded = try JSONSerialization.jsonObject(with: response.body) as? [String: Int]
+        XCTAssertEqual(decoded, ["tokens": 4])
+    }
+
+    func testTokenizeRefusesABodyWithoutText() async {
+        let router = PolishdRouter(responder: StubResponder(), modelName: "m")
+        let post = await router.handle(HTTPRequest(method: "POST", path: "/v1/tokenize", body: Data("{}".utf8)))
+        let get = await router.handle(HTTPRequest(method: "GET", path: "/v1/tokenize"))
+
+        XCTAssertEqual(post.status, 400)
+        XCTAssertEqual(get.status, 405)
     }
 
     func testHealthAnswersOK() async {

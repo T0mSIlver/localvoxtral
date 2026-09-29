@@ -7,44 +7,10 @@ import localvoxtralTestSupport
 
 @MainActor
 final class QuickCaptureInboxTests: XCTestCase {
-    private final class GitHub: QuickCaptureGitHub, @unchecked Sendable {
-        let created = Mutex<[[String]]>([])
-        var createResult: Result<String, QuickCaptureFiling.Failure> = .success("https://github.com/o/reach/issues/9")
-        func repository(ofCheckout path: String) async -> String? { path == "/w/reach" ? "o/reach" : nil }
-        let issuesListed = Mutex<[String?]>([])
-        func openIssues(ofCheckout path: String, repository: String?) async -> [QuickCaptureDraft.OpenIssue]? {
-            issuesListed.withLock { $0.append(repository) }
-            return []
-        }
-        func repositoryFacts(_ repository: String) async -> GitHubRepositoryFacts? { nil }
-        func createIssue(repository: String, title: String, body: String) async -> Result<String, QuickCaptureFiling.Failure> {
-            created.withLock { $0.append([repository, title, body]) }
-            return createResult
-        }
-    }
-
-    private final class Classifier: QuickCaptureClassifying, @unchecked Sendable {
-        let answer: [String: Double]
-        init(_ answer: [String: Double]) { self.answer = answer }
-        var kind: QuickCaptureRoute.Classifier { .jev }
-        func classify(capture: String, options: [QuickCaptureOption]) async throws -> [String: Double] { answer }
-    }
-
-    private final class Runner: QuickCaptureDraftRunning, @unchecked Sendable {
-        let runs = Mutex(0)
-        func run(_ invocation: ProjectTermProposal.Invocation, openIssues: [Int]) async -> QuickCaptureDraft.Outcome {
-            runs.withLock { $0 += 1 }
-            return .draft(.init(title: "Dark mode", body: "## Scope\nAll pages.", relation: .none, issue: nil), usage: nil)
-        }
-    }
-
-    private let projects = [
-        QuickCaptureProject(key: "/w/reach", name: "reach", summary: nil, terms: [], userLine: nil),
-        QuickCaptureProject(key: "remote:website", name: "website", summary: nil, terms: [], userLine: nil),
-    ]
+    private let projects = QuickCaptureFixture.projects
     private var fileURL: URL!
-    private let github = GitHub()
-    private let runner = Runner()
+    private let github = FakeQuickCaptureGitHub()
+    private let runner = FakeQuickCaptureDraftRunner()
     private var statuses: [String] = []
     private var routed: [String] = []
 
@@ -62,25 +28,11 @@ final class QuickCaptureInboxTests: XCTestCase {
         answer: [String: Double],
         github: (any QuickCaptureGitHub)? = nil,
         projects: [QuickCaptureProject]? = nil,
-        remote: (@Sendable (String, QuickCaptureProject) async -> QuickCaptureDraft.Outcome)? = nil
+        remote: QuickCaptureDrafter.Remote? = nil
     ) -> QuickCaptureInboxModel {
-        let github = github ?? self.github, runner = runner, projects = projects ?? self.projects
-        let model = QuickCaptureInboxModel(
-            fileURL: fileURL,
-            makeRouter: { QuickCaptureRouter(classifiers: [Classifier(answer)]) },
-            projects: { projects },
-            agents: { [.claude] },
-            drafter: {
-                QuickCaptureDrafter(
-                    runner: runner,
-                    openIssues: { await github.openIssues(ofCheckout: $0, repository: $1) },
-                    trackedFiles: { _ in [] },
-                    directoryExists: { $0.hasPrefix("/w/") || FileManager.default.fileExists(atPath: $0) },
-                    remote: remote
-                )
-            },
-            github: github,
-            now: { Date(timeIntervalSince1970: 1_000_000) }
+        let model = QuickCaptureFixture.model(
+            fileURL: fileURL, answer: answer, github: github ?? self.github, runner: runner,
+            projects: projects ?? self.projects, remote: remote
         )
         model.onStatus = { [weak self] in self?.statuses.append($0) }
         model.onRouted = { [weak self] _, destination in self?.routed.append(destination) }
@@ -155,6 +107,58 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(model.markFiled(id, url: "https://github.com/o/reach/issues/13"), .failure(.notReady(.filed)))
     }
 
+    /// #938: an unsure capture waits unplaced with the router's guess; no
+    /// agent runs until one click moves it there.
+    func testAnUnsureCaptureWaitsWithASuggestionAndDraftsOnlyOnceAccepted() async throws {
+        let model = model(answer: ["reach": 0.85])
+        await model.capture(text: "Add a dark mode", historyRecordID: UUID()).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        var item = try XCTUnwrap(model.items.first)
+        XCTAssertNil(item.projectKey)
+        XCTAssertEqual(item.suggestion, .init(projectKey: "/w/reach", projectName: "reach"))
+        XCTAssertEqual(item.note, "Not routed to a project. Move it to one.")
+        XCTAssertEqual(statuses, ["Sent to inbox"])
+        XCTAssertEqual(routed, ["Inbox"])
+        XCTAssertEqual(runner.runs.withLock { $0 }, 0, "no agent spend on a guess")
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).items.first?.suggestion?.projectKey, "/w/reach")
+
+        await model.acceptSuggestion(id)?.value
+        item = try XCTUnwrap(model.items.first)
+        XCTAssertEqual(item.projectName, "reach")
+        XCTAssertNil(item.suggestion)
+        XCTAssertEqual(item.title, "Dark mode")
+        XCTAssertEqual(runner.runs.withLock { $0 }, 1)
+        XCTAssertTrue(item.canFile)
+    }
+
+    func testMovingElsewhereDropsTheSuggestion() async throws {
+        let model = model(answer: ["reach": 0.5])
+        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        await model.move(id, toProjectKey: "remote:website")?.value
+        XCTAssertNil(model.items.first?.suggestion)
+        XCTAssertNil(model.acceptSuggestion(id))
+    }
+
+    func testASuggestionWhoseProjectIsGoneSaysSoInsteadOfMoving() async throws {
+        var listed = projects
+        let model = QuickCaptureInboxModel(
+            fileURL: fileURL,
+            makeRouter: { QuickCaptureRouter(classifiers: [FixedQuickCaptureClassifier(["reach": 0.5])]) },
+            projects: { listed },
+            agents: { [.claude] },
+            drafter: { QuickCaptureDrafter(runner: self.runner, openIssues: { _, _ in [] }, trackedFiles: { _ in [] }) },
+            github: github
+        )
+        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        listed.removeAll { $0.name == "reach" }
+        XCTAssertNil(model.acceptSuggestion(id))
+        XCTAssertNil(model.items.first?.projectKey)
+        XCTAssertNil(model.items.first?.suggestion)
+        XCTAssertEqual(model.items.first?.note, "reach is no longer a project. Move it to one.")
+    }
+
     func testAFailedFilingKeepsTheCaptureAndARemoteProjectNeedsARepository() async throws {
         github.createResult = .failure(.failed(exitCode: 1))
         let model = model(answer: ["website": 0.9])
@@ -168,6 +172,28 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(model.items.first?.state, .ready)
         XCTAssertEqual(model.items.first?.note, "Filing failed. Check that gh is logged in.")
         XCTAssertEqual(github.created.withLock { $0.first?.last }, "Dictated:\n\n> Update the about page")
+    }
+
+    /// A voice memo's audio is kept under its item's id until the capture is
+    /// filed or discarded (#925); a failed filing keeps it.
+    func testACaptureIsDoneWhenFiledOrDiscardedNotWhenFilingFails() async throws {
+        let model = model(answer: ["reach": 0.9])
+        var done: [UUID] = []
+        model.onDone = { done.append($0) }
+        let memo = UUID(), other = UUID()
+        let recordedAt = Date(timeIntervalSince1970: 999_000)
+        await model.capture(text: "Add a dark mode", historyRecordID: nil, id: memo, capturedAt: recordedAt).value
+        await model.capture(text: "Add a light mode", historyRecordID: nil, id: other).value
+        XCTAssertEqual(model.items.first { $0.id == memo }?.capturedAt, recordedAt)
+
+        github.createResult = .failure(.failed(exitCode: 1))
+        await model.file(memo)?.value
+        XCTAssertEqual(done, [])
+        github.createResult = .success("https://github.com/o/reach/issues/9")
+        await model.file(memo)?.value
+        XCTAssertEqual(done, [memo])
+        model.discard(other)
+        XCTAssertEqual(done, [memo, other])
     }
 
     /// #926: the project's repository files and lists issues without
@@ -199,7 +225,7 @@ final class QuickCaptureInboxTests: XCTestCase {
 
     func testARemoteDraftSaysItWaitsForASessionUntilTheHostAnswers() async throws {
         let sleeper = ManualSleeper()
-        let model = model(answer: ["website": 0.9]) { _, _ in
+        let model = model(answer: ["website": 0.9]) { _, _, _, _ in
             await sleeper.sleep(0)
             return .notRun(.noHostSession)
         }

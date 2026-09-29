@@ -23,7 +23,7 @@ if [ "$1" = -m ]; then echo arm64; else echo Darwin; fi
 STUB
 stub plistbuddy <<'STUB'
 #!/bin/sh
-echo "$STUB_DOGFOOD_STAMP"
+echo "$STUB_HARNESS_STAMP"
 STUB
 stub nc <<'STUB'
 #!/bin/sh
@@ -62,30 +62,30 @@ untouched() {
 
 export STUB_NC_STATUS=1
 
-STUB_DOGFOOD_STAMP=false LV_SCREEN_LOCK_STATE=unlocked run "$WORK/app.app"
-[ "$STATUS" -eq 1 ] || fail "a non-dogfood bundle exited $STATUS, want 1"
-grep -q "is not a dogfood build" "$WORK/out" || fail "a non-dogfood bundle was not named as the reason"
-untouched "non-dogfood bundle"
-echo "PASS: a non-dogfood bundle is refused"
+STUB_HARNESS_STAMP=false LV_SCREEN_LOCK_STATE=unlocked run "$WORK/app.app"
+[ "$STATUS" -eq 1 ] || fail "a non-harness bundle exited $STATUS, want 1"
+grep -q "is not a harness build" "$WORK/out" || fail "a non-harness bundle was not named as the reason"
+untouched "non-harness bundle"
+echo "PASS: a non-harness bundle is refused"
 
-STUB_DOGFOOD_STAMP=true LV_SCREEN_LOCK_STATE=unlocked run "$WORK/missing.app"
+STUB_HARNESS_STAMP=true LV_SCREEN_LOCK_STATE=unlocked run "$WORK/missing.app"
 [ "$STATUS" -eq 1 ] || fail "a missing bundle exited $STATUS, want 1"
 untouched "missing bundle"
 echo "PASS: a missing bundle is refused"
 
-STUB_DOGFOOD_STAMP=true LV_SCREEN_LOCK_STATE=unlocked run "$WORK/app.app" "$WORK/no-such.scenario"
+STUB_HARNESS_STAMP=true LV_SCREEN_LOCK_STATE=unlocked run "$WORK/app.app" "$WORK/no-such.scenario"
 [ "$STATUS" -eq 1 ] || fail "a missing scenario exited $STATUS, want 1"
 untouched "missing scenario"
 echo "PASS: a missing scenario file is refused"
 
 for state in locked no-session error; do
-  STUB_DOGFOOD_STAMP=true LV_SCREEN_LOCK_STATE="$state" run "$WORK/app.app"
+  STUB_HARNESS_STAMP=true LV_SCREEN_LOCK_STATE="$state" run "$WORK/app.app"
   [ "$STATUS" -eq 3 ] || fail "screen state '$state' exited $STATUS, want 3 (not runnable)"
   untouched "screen state $state"
 done
 echo "PASS: a screen that is not unlocked is 'not runnable', not a failure"
 
-STUB_DOGFOOD_STAMP=true LV_SCREEN_LOCK_STATE=unlocked run "$WORK/app.app"
+STUB_HARNESS_STAMP=true LV_SCREEN_LOCK_STATE=unlocked run "$WORK/app.app"
 [ "$STATUS" -eq 3 ] || fail "an absent STT server exited $STATUS, want 3 (not runnable)"
 grep -q "nc -z -w 3 127.0.0.1 59999" "$EVENTS" || fail "the STT endpoint's host and port were not probed"
 untouched "absent STT server"
@@ -94,7 +94,7 @@ echo "PASS: an absent STT server is 'not runnable', and nothing was touched"
 : >"$EVENTS"
 set +e
 HOME="$WORK/home" PATH="$BIN:$PATH" LV_E2E_PLISTBUDDY="$BIN/plistbuddy" LV_E2E_ANNOUNCE=0 \
-  STUB_DOGFOOD_STAMP=true LV_SCREEN_LOCK_STATE=unlocked \
+  STUB_HARNESS_STAMP=true LV_SCREEN_LOCK_STATE=unlocked \
   LV_E2E_REALTIME_ENDPOINT="wss://stt.example/v1/realtime" \
   "$ROOT_DIR/scripts/e2e-dictation.sh" "$WORK/app.app" >"$WORK/out" 2>&1
 set -e
@@ -109,7 +109,7 @@ stub swiftc <<'STUB'
 echo "swiftc $*" >>"$EVENTS"
 exit 1
 STUB
-STUB_DOGFOOD_STAMP=true LV_SCREEN_LOCK_STATE=unlocked STUB_NC_STATUS=0 run "$WORK/app.app"
+STUB_HARNESS_STAMP=true LV_SCREEN_LOCK_STATE=unlocked STUB_NC_STATUS=0 run "$WORK/app.app"
 [ "$STATUS" -eq 3 ] || fail "a failed target compile exited $STATUS, want 3 (not runnable)"
 grep -qE '^swiftc .*-target arm64-apple-macos15\.0 ' "$EVENTS" \
   || fail "the target app was not compiled for arm64-apple-macos15.0"
@@ -138,7 +138,7 @@ while [ ! -s "$port_file" ]; do python3 -c 'import time; time.sleep(0.05)'; done
 : >"$EVENTS"
 set +e
 HOME="$WORK/home" PATH="$BIN:$PATH" LV_E2E_PLISTBUDDY="$BIN/plistbuddy" LV_E2E_ANNOUNCE=0 \
-  STUB_DOGFOOD_STAMP=true LV_SCREEN_LOCK_STATE=unlocked STUB_NC_STATUS=0 \
+  STUB_HARNESS_STAMP=true LV_SCREEN_LOCK_STATE=unlocked STUB_NC_STATUS=0 \
   LV_E2E_REALTIME_ENDPOINT="ws://127.0.0.1:$(cat "$port_file")/v1/realtime" \
   "$ROOT_DIR/scripts/e2e-dictation.sh" "$WORK/app.app" >"$WORK/out" 2>&1
 STATUS=$?
@@ -146,9 +146,10 @@ set -e
 [ "$STATUS" -eq 3 ] || fail "a lagging speech service exited $STATUS, want 3 (not runnable): $(cat "$WORK/out")"
 grep -q "NOT RUN: The speech service .* finished a clip [0-9.]* s after the speech ended, past the 3.5 s" "$WORK/out" \
   || fail "the NOT RUN line does not give the measured lag: $(cat "$WORK/out")"
-# Compiling the target, writing the probe's WAV and sweeping the run's own
-# target app touch nothing of the owner's.
-untouched "lagging speech service" '^(swiftc |say -o |pkill -f .*/e2e-target\.app/)'
+# Compiling the target and writing the probe's WAV touch nothing of the
+# owner's. The run ends its targets by the pids they wrote, never by a
+# command-line match (#1011), so no pkill runs at all.
+untouched "lagging speech service" '^(swiftc |say -o )'
 echo "PASS: a speech service lagging before the app starts is 'not runnable', with its lag"
 
 # The scenarios that ship must parse.

@@ -67,6 +67,9 @@ struct SettingsGroup<Content: View>: View {
     /// page (owner review, 2026-09-07): what a row's title cannot say lives in
     /// the docs, never in a line under the row.
     var learnMoreURL: URL?
+    /// A link-styled button in the header's place of Learn more, for a
+    /// group whose header acts on its whole content ("Forget All…").
+    var headerAction: (title: String, action: () -> Void)? = nil
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -78,6 +81,11 @@ struct SettingsGroup<Content: View>: View {
                 if let learnMoreURL {
                     Spacer(minLength: 12)
                     Link("Learn more", destination: learnMoreURL)
+                        .font(.callout)
+                } else if let headerAction {
+                    Spacer(minLength: 12)
+                    Button(headerAction.title, action: headerAction.action)
+                        .buttonStyle(.link)
                         .font(.callout)
                 }
             }
@@ -329,8 +337,14 @@ struct SettingsFieldRow<Content: View, Footer: View>: View {
 
     private var stackedRow: some View {
         VStack(alignment: .leading, spacing: 8) {
-            label
-                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                label
+
+                if let status {
+                    statusText(status)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 6) {
                 content

@@ -301,20 +301,28 @@ final class ClaudeDesktopAttentionTests: XCTestCase {
         XCTAssertEqual(h.opened.get(), [], "opening the link would launch Desktop")
     }
 
-    func testTheRouterSendsDesktopSessionsToDesktopAndTabsToTheTerminal() async {
+    func testTheRouterSendsDesktopSessionsToDesktopHerdrPanesToHerdrAndTabsToTheTerminal() async {
         let terminal = FakeSessionPaneFocuser(outcome: .focused(bundleID: TerminalScreenAllowlist.ghosttyBundleID))
         let desktop = FakeSessionPaneFocuser(outcome: .focused(bundleID: ClaudeDesktopAllowlist.bundleID))
-        let router = SessionPaneFocuserRouter(terminal: terminal, claudeDesktop: desktop)
+        let herdr = FakeSessionPaneFocuser(outcome: .focused(bundleID: TerminalScreenAllowlist.ghosttyBundleID))
+        let router = SessionPaneFocuserRouter(terminal: terminal, claudeDesktop: desktop, herdr: herdr)
         let local = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
         var tab = ClaudeSessionSnapshot(sessionID: "tab", origin: local, firstSeen: epoch)
         tab.process = ClaudeHookProcessInfo(hookPID: 1, claudePID: 2, tty: "/dev/ttys004")
         var remote = ClaudeSessionSnapshot(sessionID: "ssh", origin: .remote(channel: "h"), firstSeen: epoch)
         remote.remoteEnvironment = ClaudeRemoteSessionEnvironment(desktopSessionID: desktopID)
 
+        var pane = ClaudeSessionSnapshot(sessionID: "pane", origin: local, firstSeen: epoch)
+        pane.process = ClaudeHookProcessInfo(
+            hookPID: 3, claudePID: 4, tty: "/dev/ttys005", herdrPaneID: "w1:p2", herdrSocketPath: "/tmp/h.sock"
+        )
+
         _ = await router.focusPane(of: tab)
         _ = await router.focusPane(of: remote)
+        _ = await router.focusPane(of: pane)
 
         XCTAssertEqual(terminal.focusedSessionIDs, ["tab"])
         XCTAssertEqual(desktop.focusedSessionIDs, ["ssh"])
+        XCTAssertEqual(herdr.focusedSessionIDs, ["pane"])
     }
 }

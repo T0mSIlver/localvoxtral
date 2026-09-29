@@ -119,6 +119,41 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             allowSubset: enablement.recordingSubset
         )
 
+        let allCaseIDs = Set(strata.flatMap { $0.stratum.cases.map(\.id) })
+        if let requested = enablement.caseIDs {
+            let unknown = requested.subtracting(allCaseIDs).sorted()
+            guard unknown.isEmpty else {
+                throw EvalInfraError(
+                    "unknown focused eval case id(s): \(unknown.joined(separator: ", "))"
+                )
+            }
+        }
+        let selectedCaseIDs = enablement.caseIDs ?? Support.selectedCaseIDs(
+            strata: strata,
+            recordedCaseIDs: Set(recordedAudio?.pcmByCaseID.keys.map { $0 } ?? []),
+            isSubset: recordedAudio?.isSubset == true
+        )
+
+        // Voices and every case's TTS audio before anything loads a model, so
+        // no `say` runs beside the polish helper (#960). Synthesis lands in
+        // the wav cache, which the cases then read.
+        let enVoice = try recordedAudio == nil
+            ? Self.resolveVoice(
+                languagePrefix: "en", preferred: EvalSpeechStage.englishVoicePreference
+            )
+            : nil
+        let frVoice = try recordedAudio == nil
+            ? Self.resolveVoice(
+                languagePrefix: "fr", preferred: EvalSpeechStage.frenchVoicePreference
+            )
+            : nil
+        if recordedAudio == nil {
+            try synthesizeCorpusAudio(
+                strata: strata, selectedCaseIDs: selectedCaseIDs,
+                enVoice: enVoice, frVoice: frVoice
+            )
+        }
+
         // Fixture repos: git-inited at runtime from the corpus specs (paths
         // are the vocabulary; the branch is part of it too).
         var fixtureRepos: [String: URL] = [:]
@@ -202,16 +237,6 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         // prefill — the CI failure mode of 2026-07-11.
         await warmPromptPrefixes(configStore: configStore, configuration: polishConfiguration)
 
-        let enVoice = recordedAudio == nil
-            ? Self.resolveVoice(
-                languagePrefix: "en", preferred: EvalSpeechStage.englishVoicePreference
-            )
-            : nil
-        let frVoice = recordedAudio == nil
-            ? Self.resolveVoice(
-                languagePrefix: "fr", preferred: EvalSpeechStage.frenchVoicePreference
-            )
-            : nil
         if let recordedAudio {
             print(
                 "agent-e2e: audio=\(recordedAudio.audioLabel) "
@@ -220,26 +245,12 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             )
         } else {
             print(
-                "agent-e2e: audio=tts voices en=\(enVoice ?? "<system default>") "
-                    + "fr=\(frVoice ?? "<none — fr TTS cases skip>")"
+                "agent-e2e: audio=tts voices en=\(enVoice ?? "-") "
+                    + "fr=\(frVoice ?? "-")"
             )
         }
 
         let vocabularyCache = RepoVocabularyCache()
-        let allCaseIDs = Set(strata.flatMap { $0.stratum.cases.map(\.id) })
-        if let requested = enablement.caseIDs {
-            let unknown = requested.subtracting(allCaseIDs).sorted()
-            guard unknown.isEmpty else {
-                throw EvalInfraError(
-                    "unknown focused eval case id(s): \(unknown.joined(separator: ", "))"
-                )
-            }
-        }
-        let selectedCaseIDs = enablement.caseIDs ?? Support.selectedCaseIDs(
-            strata: strata,
-            recordedCaseIDs: Set(recordedAudio?.pcmByCaseID.keys.map { $0 } ?? []),
-            isSubset: recordedAudio?.isSubset == true
-        )
         let totalCases = strata.reduce(0) { total, loaded in
             total + loaded.stratum.cases.filter {
                 selectedCaseIDs?.contains($0.id) ?? true
@@ -306,7 +317,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             results: results,
             header: "polish model: \(polishConfiguration.model), "
                 + "asr: \(asrConfiguration.model) @ \(asrConfiguration.endpoint), "
-                + "audio: \(recordedAudio.map(\.audioLabel) ?? "macOS say"), "
+                + "audio: \(recordedAudio.map(\.audioLabel) ?? "macOS say en=\(enVoice ?? "-") fr=\(frVoice ?? "-")"), "
                 + "polish backend: \(polishBackend)"
         )
         print(board.text)
@@ -685,8 +696,38 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         try EvalSpeechStage.synthesizedPCM16(text: text, voice: voice)
     }
 
-    private static func resolveVoice(languagePrefix: String, preferred: [String]) -> String? {
-        EvalSpeechStage.resolveVoice(languagePrefix: languagePrefix, preferred: preferred)
+    /// Fills the wav cache for every selected case that runs speech
+    /// recognition, so no case calls `say` once models are loaded (#960).
+    private func synthesizeCorpusAudio(
+        strata: [AgentDictationEvalCorpus.LoadedStratum],
+        selectedCaseIDs: Set<String>?,
+        enVoice: String?,
+        frVoice: String?
+    ) throws {
+        let clock = ContinuousClock()
+        let start = clock.now
+        var count = 0
+        for loaded in strata
+        where AgentDictationEvalCorpus.stagePlan(for: loaded.stratum.resolvedPipeline).runsSpeechRecognition {
+            for evalCase in loaded.stratum.cases {
+                if let selectedCaseIDs, !selectedCaseIDs.contains(evalCase.id) { continue }
+                let voice: String?
+                switch evalCase.lang {
+                case .en: voice = enVoice
+                case .fr:
+                    guard let frVoice else { continue }
+                    voice = frVoice
+                }
+                _ = try synthesizedPCM16(text: evalCase.spokenForm, voice: voice)
+                count += 1
+            }
+        }
+        print("agent-e2e: TTS audio for \(count) cases ready in \(clock.now - start)")
+        fflush(nil)
+    }
+
+    private static func resolveVoice(languagePrefix: String, preferred: [String]) throws -> String {
+        try EvalSpeechStage.resolveVoice(languagePrefix: languagePrefix, preferred: preferred)
     }
 
     // MARK: - ASR (production websocket client vs live speechd STT service)

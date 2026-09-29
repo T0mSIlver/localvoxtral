@@ -150,7 +150,7 @@ final class AgentCLIHistoryWiringTests: XCTestCase {
         let term = try XCTUnwrap(viewModel.learnedTermStore?.snapshot().projects.first?.terms.first)
         XCTAssertTrue(term.isUnconfirmedProposal)
         XCTAssertEqual(
-            LearnedTermsSheet.detailParts(for: term).text,
+            ProjectsPane.detail(for: term).text,
             "Proposed by Codex: heard in 0 of 3 dictations"
         )
     }

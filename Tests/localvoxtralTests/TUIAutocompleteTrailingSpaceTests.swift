@@ -22,9 +22,7 @@ final class TUIAutocompleteTrailingSpaceTests: XCTestCase {
         XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("/init "), "/init")
         XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("/agent-eval "), "/agent-eval")
         XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("/run_2 "), "/run_2")
-    }
-
-    func testLoneSlashCommandWithoutTrailingWhitespaceIsUntouched() {
+        // Without trailing whitespace there is nothing to cut.
         XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("/compact"), "/compact")
     }
 
@@ -39,13 +37,6 @@ final class TUIAutocompleteTrailingSpaceTests: XCTestCase {
             TUIAutocompleteTrailingSpace.stripped(" @Sources/Foo.swift "),
             " @Sources/Foo.swift"
         )
-    }
-
-    /// A token holding a second `/` is a filesystem path, not a slash command.
-    func testPathsAreNotSlashCommands() {
-        XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("/usr/bin "), "/usr/bin ")
-        XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("/tmp/x "), "/tmp/x ")
-        XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("/ "), "/ ")
     }
 
     /// A SINGLE-component token satisfies the slash-command syntax too, but
@@ -86,35 +77,40 @@ final class TUIAutocompleteTrailingSpaceTests: XCTestCase {
         )
     }
 
-    func testMultiWordTextIsUntouched() {
-        XCTAssertEqual(
-            TUIAutocompleteTrailingSpace.stripped(" /cmd extra words "),
-            " /cmd extra words "
-        )
-        XCTAssertEqual(
-            TUIAutocompleteTrailingSpace.stripped("run /compact "),
-            "run /compact "
-        )
-        XCTAssertEqual(
-            TUIAutocompleteTrailingSpace.stripped("read Sources/App.swift then stop "),
-            "read Sources/App.swift then stop "
-        )
-    }
-
-    func testFrenchProseIsUntouched() {
-        XCTAssertEqual(
-            TUIAutocompleteTrailingSpace.stripped("Relis le fichier et corrige la faute. "),
-            "Relis le fichier et corrige la faute. "
-        )
-        // Slash-command names are ASCII in every agent TUI we target: abstain
-        // rather than guess on an accented token.
-        XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("/compacté "), "/compacté ")
-    }
-
-    func testEmptyAndWhitespaceOnlyTextIsUntouched() {
-        XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped(""), "")
-        XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("   "), "   ")
-        XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("\n"), "\n")
+    /// Shapes that are neither a lone slash command nor a trailing mention keep
+    /// every character.
+    func testShapesThatAreNotALoneCommandOrTrailingMentionAreUntouched() {
+        let untouched: [(name: String, text: String)] = [
+            // A token holding a second `/` is a filesystem path, not a slash command.
+            ("path /usr/bin", "/usr/bin "),
+            ("path /tmp/x", "/tmp/x "),
+            ("bare slash", "/ "),
+            ("command with words", " /cmd extra words "),
+            ("command after prose", "run /compact "),
+            ("prose mentioning a path", "read Sources/App.swift then stop "),
+            ("French prose", "Relis le fichier et corrige la faute. "),
+            // Slash-command names are ASCII in every agent TUI we target:
+            // abstain rather than guess on an accented token.
+            ("accented command", "/compacté "),
+            ("empty", ""),
+            ("spaces only", "   "),
+            ("newline only", "\n"),
+            // A bare `@` proposes nothing; `a@b` is an email address, not a
+            // mention; a token carrying prose punctuation is prose.
+            ("bare at sign", "@ "),
+            ("email fragment", "a@b "),
+            ("email in prose", "mail him at dev@example.com "),
+            ("mention with prose punctuation", "check @file, "),
+            // A mention that is not the LAST token had its picker closed by
+            // the words that followed it.
+            ("mention in the middle", "@Sources/Foo.swift needs a test "),
+        ]
+        for row in untouched {
+            XCTAssertEqual(
+                TUIAutocompleteTrailingSpace.stripped(row.text), row.text,
+                "must not rewrite: \(row.name)"
+            )
+        }
     }
 
     func testTrailingMentionLosesItsTrailingWhitespace() {
@@ -133,18 +129,6 @@ final class TUIAutocompleteTrailingSpaceTests: XCTestCase {
         )
     }
 
-    /// A bare `@` proposes nothing; `a@b` is an email address, not a mention;
-    /// a token carrying prose punctuation is prose.
-    func testNonMentionAtSignsAreUntouched() {
-        XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("@ "), "@ ")
-        XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("a@b "), "a@b ")
-        XCTAssertEqual(
-            TUIAutocompleteTrailingSpace.stripped("mail him at dev@example.com "),
-            "mail him at dev@example.com "
-        )
-        XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("check @file, "), "check @file, ")
-    }
-
     /// A mention name must hold at least one name character: `.` and `/` are
     /// allowed so paths qualify, but a token made only of them names no file
     /// and opens no picker.
@@ -156,15 +140,6 @@ final class TUIAutocompleteTrailingSpaceTests: XCTestCase {
         // A real path keeps working.
         XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("@~/notes.md "), "@~/notes.md")
         XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("@./Package.swift "), "@./Package.swift")
-    }
-
-    /// A mention that is not the LAST token had its picker closed by the words
-    /// that followed it.
-    func testMentionInTheMiddleIsUntouched() {
-        XCTAssertEqual(
-            TUIAutocompleteTrailingSpace.stripped("@Sources/Foo.swift needs a test "),
-            "@Sources/Foo.swift needs a test "
-        )
     }
 
     // MARK: - Overlay Buffer commit path (characterization)
@@ -186,43 +161,40 @@ final class TUIAutocompleteTrailingSpaceTests: XCTestCase {
 
     /// Field shape: "slash compact" into a terminal in Live Auto-Paste. The ASR
     /// segment carries a trailing space, the terminal stream buffers it, and the
-    /// stop flush types it — dismissing the popup the user opened.
-    func testTerminalLoneSlashCommandDoesNotTypeTrailingSpace() {
-        let typed = Box<[String]>([])
-        let service = makeService(capturing: typed)
-        service.beginLiveReplacementSession(
-            dictionary: nil,
-            preferredAppPID: nil,
-            isTerminalLikeTarget: true
-        )
-
-        service.enqueueRealtimeInsertion("/compact ")
-        service.flushFinalLiveReplacementCorrections()
-
-        XCTAssertEqual(
-            typed.value.joined(), "/compact",
-            "a lone slash command must reach the TUI without the space that dismisses its popup"
-        )
-        service.endLiveReplacementSession()
-    }
-
-    /// Same shape when the trailing space only arrives as its own delta.
-    func testTerminalLoneSlashCommandWithSeparateSpaceDeltaDoesNotTypeTrailingSpace() {
-        let typed = Box<[String]>([])
-        let service = makeService(capturing: typed)
-        service.beginLiveReplacementSession(
-            dictionary: nil,
-            preferredAppPID: nil,
-            isTerminalLikeTarget: true
-        )
-
-        service.enqueueRealtimeInsertion("/rev")
-        service.enqueueRealtimeInsertion("iew")
-        service.enqueueRealtimeInsertion(" ")
-        service.flushFinalLiveReplacementCorrections()
-
-        XCTAssertEqual(typed.value.joined(), "/review")
-        service.endLiveReplacementSession()
+    /// stop flush types it - dismissing the popup the user opened. Each row is
+    /// a fresh Live Auto-Paste session into a terminal-like target.
+    func testTerminalLiveSessionWithholdsOnlyTheTuiPopupTrailingSpace() {
+        let cases: [(name: String, deltas: [String], typed: String)] = [
+            // A lone slash command must reach the TUI without the space that
+            // dismisses its popup.
+            ("lone slash command", ["/compact "], "/compact"),
+            // Same shape when the trailing space only arrives as its own delta.
+            ("separate space delta", ["/rev", "iew", " "], "/review"),
+            // An utterance ending on an `@file` mention: the file picker is
+            // open and the trailing space would accept what it has highlighted.
+            ("trailing mention", ["look at @Sources/Foo.swift "], "look at @Sources/Foo.swift"),
+            // `/usr/bin` is a filesystem path: its space is dictated content.
+            ("path-like token", ["/usr/bin "], "/usr/bin "),
+            // Ordinary prose keeps every character the user dictated.
+            ("sentence", ["run the tests and fix /compact "], "run the tests and fix /compact "),
+            // The space between a command and the words after it is content.
+            ("command followed by words", ["/compact ", "now"], "/compact now"),
+        ]
+        for row in cases {
+            let typed = Box<[String]>([])
+            let service = makeService(capturing: typed)
+            service.beginLiveReplacementSession(
+                dictionary: nil,
+                preferredAppPID: nil,
+                isTerminalLikeTarget: true
+            )
+            for delta in row.deltas {
+                service.enqueueRealtimeInsertion(delta)
+            }
+            service.flushFinalLiveReplacementCorrections()
+            XCTAssertEqual(typed.value.joined(), row.typed, row.name)
+            service.endLiveReplacementSession()
+        }
     }
 
     /// The subtlest interaction: the slash command is assembled across SEVERAL
@@ -258,79 +230,7 @@ final class TUIAutocompleteTrailingSpaceTests: XCTestCase {
         service.endLiveReplacementSession()
     }
 
-    /// An utterance ending on an `@file` mention: the file picker is open and
-    /// the trailing space would accept whatever it has highlighted.
-    func testTerminalTrailingMentionDoesNotTypeTrailingSpace() {
-        let typed = Box<[String]>([])
-        let service = makeService(capturing: typed)
-        service.beginLiveReplacementSession(
-            dictionary: nil,
-            preferredAppPID: nil,
-            isTerminalLikeTarget: true
-        )
-
-        service.enqueueRealtimeInsertion("look at @Sources/Foo.swift ")
-        service.flushFinalLiveReplacementCorrections()
-
-        XCTAssertEqual(typed.value.joined(), "look at @Sources/Foo.swift")
-        service.endLiveReplacementSession()
-    }
-
     // MARK: - Live Auto-Paste path (what must NOT change)
-
-    /// `/usr/bin` is a filesystem path, not a slash command — its trailing
-    /// space is dictated content and stays.
-    func testTerminalPathLikeTokenKeepsItsTrailingSpace() {
-        let typed = Box<[String]>([])
-        let service = makeService(capturing: typed)
-        service.beginLiveReplacementSession(
-            dictionary: nil,
-            preferredAppPID: nil,
-            isTerminalLikeTarget: true
-        )
-
-        service.enqueueRealtimeInsertion("/usr/bin ")
-        service.flushFinalLiveReplacementCorrections()
-
-        XCTAssertEqual(typed.value.joined(), "/usr/bin ")
-        service.endLiveReplacementSession()
-    }
-
-    /// Ordinary prose keeps every character the user dictated.
-    func testTerminalSentenceKeepsItsTrailingSpace() {
-        let typed = Box<[String]>([])
-        let service = makeService(capturing: typed)
-        service.beginLiveReplacementSession(
-            dictionary: nil,
-            preferredAppPID: nil,
-            isTerminalLikeTarget: true
-        )
-
-        service.enqueueRealtimeInsertion("run the tests and fix /compact ")
-        service.flushFinalLiveReplacementCorrections()
-
-        XCTAssertEqual(typed.value.joined(), "run the tests and fix /compact ")
-        service.endLiveReplacementSession()
-    }
-
-    /// The space between a slash command and the words that follow it is
-    /// dictated content and must be typed as the session goes.
-    func testTerminalSlashCommandFollowedByWordsKeepsTheInteriorSpace() {
-        let typed = Box<[String]>([])
-        let service = makeService(capturing: typed)
-        service.beginLiveReplacementSession(
-            dictionary: nil,
-            preferredAppPID: nil,
-            isTerminalLikeTarget: true
-        )
-
-        service.enqueueRealtimeInsertion("/compact ")
-        service.enqueueRealtimeInsertion("now")
-        service.flushFinalLiveReplacementCorrections()
-
-        XCTAssertEqual(typed.value.joined(), "/compact now")
-        service.endLiveReplacementSession()
-    }
 
     /// ACCEPTED LIMITATION, pinned (codex review of #198, finding 1): the
     /// stop-flush verdict sees only THIS session's text. Here the focused

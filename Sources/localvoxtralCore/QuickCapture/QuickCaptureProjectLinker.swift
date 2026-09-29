@@ -4,15 +4,16 @@ import Foundation
 /// (`LearnedTermStore`).
 package protocol QuickCaptureProjectLinkStoring: Sendable {
     func snapshot() -> LearnedTerms
-    func recordOriginRepository(_ repository: String, projectKey: String)
+    /// A checkout's `origin` names `remote` (#971).
+    func recordOrigin(_ remote: ProjectRemote, projectKey: String)
     func recordGitHub(_ facts: GitHubRepositoryFacts, repository: String)
 }
 
-/// Links quick capture's projects to GitHub (#926). A local checkout's
-/// repository is its `origin`, read once a launch; a remote one's comes
+/// Links quick capture's projects to their repositories (#926, #971). A
+/// local checkout's repository is its `origin`, read once a launch; a remote one's comes
 /// from its host's hook (`RemoteQuickCaptureRequests.noteReport`). Then
-/// `gh api` describes each repository once a week, or whenever the Project
-/// descriptions sheet opens. Nothing here waits on the capture path: a
+/// `gh api` describes each repository once a week, or whenever the Projects
+/// pane opens. Nothing here waits on the capture path: a
 /// capture routes with what is already kept.
 @MainActor
 package final class QuickCaptureProjectLinker {
@@ -54,15 +55,15 @@ package final class QuickCaptureProjectLinker {
     private func link(force: Bool) async {
         let moment = now()
         let learned = store.snapshot()
-        let listed = learned.listedProjects(now: moment)
+        let listed = learned.listedCheckouts(now: moment)
         var wanted = learned.repositoriesNeedingGitHub(now: moment, force: force)
         for project in listed where project.key.hasPrefix("/") && !originsRead.contains(project.key) {
             originsRead.insert(project.key)
-            guard let repository = await github.repository(ofCheckout: project.key) else { continue }
-            if repository != project.repository {
-                Log.backends.info("Quick capture: a local project's origin is \(repository, privacy: .public)")
-                store.recordOriginRepository(repository, projectKey: project.key)
-                if !wanted.contains(repository) { wanted.append(repository) }
+            guard let remote = await github.remote(ofCheckout: project.key) else { continue }
+            if remote.value != project.remote {
+                Log.backends.info("Quick capture: a local project's origin is \(remote.value, privacy: .public)")
+                store.recordOrigin(remote, projectKey: project.key)
+                if let repository = remote.githubRepository, !wanted.contains(repository) { wanted.append(repository) }
             }
         }
         if force { failed.removeAll() }

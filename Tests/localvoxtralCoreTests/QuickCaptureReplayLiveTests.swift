@@ -5,24 +5,44 @@ import XCTest
 
 /// Replays labelled captures through the production router (#730) and
 /// prints the scoreboard: the right-project rate, the catch-all count and
-/// the captures sent to a wrong project. Spends real tokens, so it runs only
-/// through `scripts/linux/quick-capture-replay.sh`, on Linux.
+/// the captures sent to a wrong project. A capture kept in the catch-all
+/// with a suggestion (#938) counts as the catch-all there, and its
+/// suggestion in its own counts. Spends real tokens, so it runs only through
+/// `scripts/linux/quick-capture-replay.sh`, on Linux.
 ///
 /// Inputs (paths, from the script's flags):
 /// - `QC_CAPTURES`: JSON lines `{"id", "expected", "text"}`; `expected` is a
 ///   project name, or `inbox` for the catch-all. A name missing from the
 ///   project set expects the catch-all.
-/// - `QC_PROJECTS`: `[{"key", "name", "terms", "userLine"?, "hostReadme"?}]`;
+/// - `QC_PROJECTS`: `[{"key", "name", "terms", "userLine"?, "hostReadme"?,
+///   "github"?: {"description"?, "topics", "parent"?}}]`, `github` as
+///   `gh api repos/<owner>/<name>` answers it (#926);
 ///   a key that is a path gets its README read, as the app does for a local
 ///   checkout, and `hostReadme` is the README a remote project's host would
 ///   report (#745), summarized as the Mac summarizes that report.
 /// - `QC_JEV_HOST` + `QC_JEV_KEY_FILE`, and/or `QC_CHAT_URL` + `QC_CHAT_MODEL`
 ///   (+ `QC_CHAT_KEY_FILE`, `QC_CHAT_EXTRA` as a JSON object), in router order.
+/// - `QC_FOLLOW_UPS=1` (#965): the captures are one stream, in file order,
+///   as the Inbox sees them within the hour: each earlier capture not joined
+///   to another is open (the last five are offered), a capture that says
+///   "also" joins the latest, and the rest go to the router with the open
+///   ones as options. A capture's optional `join` names the earlier capture
+///   it continues; without it, joining anything is wrong.
+/// - `QC_POLISH_URL` + `QC_POLISH_MODEL` (+ `QC_POLISH_KEY_FILE`,
+///   `QC_POLISH_EXTRA`) (#970): each capture is first polished through the
+///   core builder at that endpoint, as the app polishes it, and routed and
+///   joined from the polished words. The vocabulary is every project's name
+///   and its `terms`, which in an exported project file may hold proposals.
+///   `QC POLISH` counts the captures where a project's name appears in the
+///   raw and in the polished words.
+/// - `QC_DRY_RUN=1`: builds each capture's polish request and prints counts,
+///   then stops before any request.
 final class QuickCaptureReplayLiveTests: XCTestCase {
     private struct Capture: Decodable {
         let id: String
         let expected: String
         let text: String
+        let join: String?
     }
 
     private struct ProjectEntry: Decodable {
@@ -31,6 +51,7 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
         let terms: [String]
         let userLine: String?
         let hostReadme: String?
+        let github: GitHubRepositoryFacts?
     }
 
     /// Prints a classifier's error (`Log` is silent on Linux), and retries a
@@ -57,6 +78,7 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
         }
     }
 
+    @MainActor
     func testReplay() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard environment["LV_QUICK_CAPTURE_REPLAY"] == "1" else {
@@ -79,7 +101,8 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
                         .flatMap { FileManager.default.contents(atPath: $0) }
                         .flatMap(QuickCaptureProjects.summary(ofRemoteReadme:)),
                 terms: entry.terms,
-                userLine: entry.userLine
+                userLine: entry.userLine,
+                github: entry.github
             )
         }
 
@@ -89,6 +112,22 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
             else { return "" }
             return text.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        let listedNames = entries.map(\.name)
+        let vocabulary = QuickCapturePolishVocabulary.terms(names: entries.map { [$0.name] }, confirmed: entries.map(\.terms))
+        if environment["QC_DRY_RUN"] == "1" {
+            let inputs = try QuickCaptureReplayPolish.inputs()
+            var built = 0, characters = 0, named = 0
+            for capture in captures {
+                let request = QuickCapturePolishPrompt.request(transcript: capture.text, vocabulary: vocabulary, inputs: inputs)
+                built += 1
+                characters += request.messages.map { $0["content"]?.count ?? 0 }.reduce(0, +)
+                if QuickCaptureReplayPolish.namesAProject(capture.text, names: listedNames) { named += 1 }
+            }
+            print("QC DRY captures=\(captures.count) projects=\(entries.count) vocabulary=\(vocabulary.count) requests-built=\(built) mean-request-chars=\(built == 0 ? 0 : characters / built) name-in-raw=\(named) requests-sent=0")
+            return
+        }
+        let polisher = try QuickCaptureReplayPolish.polisher(environment: environment, key: key)
+        var polishTally = QuickCaptureReplayPolish.Tally()
         var classifiers: [any QuickCaptureClassifying] = []
         if let host = environment["QC_JEV_HOST"].flatMap(Jev.Host.init(rawValue:)) {
             let key = key("QC_JEV_KEY_FILE")
@@ -112,16 +151,69 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
             print("QC   \(option.id): \(option.description)")
         }
         let router = QuickCaptureRouter(classifiers: classifiers.map { Printing(inner: $0) })
+        let followUps = environment["QC_FOLLOW_UPS"] == "1"
+        // Most recent first: (capture id, its option).
+        var open: [(id: String, capture: QuickCaptureOpenCapture)] = []
+        var joinsExpected = 0, joinedRight = 0, joinedWrong = 0, joinsMissed = 0, joinedByWords = 0
         let names = Dictionary(projects.map { ($0.key, $0.name) }, uniquingKeysWith: { first, _ in first })
         let projectNames = Set(projects.map(\.name))
         var right = 0, projectExpected = 0, projectRight = 0, catchAll = 0, wrongProject = 0, inboxRight = 0, failed = 0
+        var suggested = 0, suggestedRight = 0
         for capture in captures {
             let expected = projectNames.contains(capture.expected) ? capture.expected : "inbox"
-            let route = await router.route(capture: capture.text, projects: projects)
+            var text = capture.text
+            if let polisher {
+                let polished = await polisher.polish(capture.text, vocabulary: vocabulary)
+                if polished == nil { print("QC polish error: \(polisher.lastError.map { "\($0)" } ?? "empty reply")") }
+                let named = polishTally.add(raw: capture.text, polished: polished?.text, names: listedNames)
+                print("QC PNAME \(capture.id) raw=\(named.raw ? 1 : 0) polished=\(named.polished ? 1 : 0)")
+                text = polished?.text ?? capture.text
+            }
+            var joined: String?
+            var answer: QuickCaptureRouteAnswer = .route(QuickCaptureRoute(
+                destination: .catchAll, classifier: .none, reason: .noProjects, topProbability: nil))
+            if followUps, QuickCaptureInbox.saysFollowUp(text) || QuickCaptureInbox.saysFollowUp(capture.text),
+               let latest = open.first
+            {
+                joined = latest.id
+                joinedByWords += 1
+            } else {
+                let offered = followUps ? Array(open.prefix(QuickCaptureRouting.maxOpenCaptures).map(\.capture)) : []
+                answer = await router.answer(capture: text, projects: projects, openCaptures: offered)
+                if case .join(let target, _, _) = answer {
+                    joined = open.first { $0.capture.id == target }?.id
+                }
+            }
+            if capture.join != nil { joinsExpected += 1 }
+            if let joined {
+                let probability: String
+                if case .join(_, _, let p) = answer { probability = String(format: "%.2f", p) } else { probability = "words" }
+                if joined == capture.join { joinedRight += 1 } else { joinedWrong += 1 }
+                print("QC \(joined == capture.join ? "JOK" : "JBAD") \(capture.id) joined=\(joined) expected-join=\(capture.join ?? "-") p=\(probability)")
+                if let index = open.firstIndex(where: { $0.id == joined }) { open.insert(open.remove(at: index), at: 0) }
+                continue
+            }
+            if capture.join != nil { joinsMissed += 1 }
+            let route: QuickCaptureRoute
+            switch answer {
+            case .route(let answered): route = answered
+            case .join: continue
+            }
+            if followUps {
+                open.insert((capture.id, QuickCaptureOpenCapture(
+                    id: UUID(), projectKey: route.destination.projectKey,
+                    summary: QuickCaptureDraft.oneLine(text, limit: 160)
+                )), at: 0)
+            }
             let got: String
             switch route.destination {
             case .project(let key): got = names[key] ?? key
             case .catchAll: got = "inbox"
+            }
+            let picked = route.suggestion.map { names[$0] ?? $0 } ?? got
+            if route.suggestion != nil {
+                suggested += 1
+                if picked == expected { suggestedRight += 1 }
             }
             if got == expected { right += 1 }
             if expected == "inbox" {
@@ -132,10 +224,22 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
             }
             if got == "inbox" { catchAll += 1 } else if got != expected { wrongProject += 1 }
             if route.reason == .classifierFailed { failed += 1 }
-            let mark = got == expected ? "ok " : (got == "inbox" ? "inb" : "BAD")
+            let mark = route.suggestion != nil
+                ? (picked == expected ? "sug" : "SUG")
+                : got == expected ? "ok " : (got == "inbox" ? "inb" : "BAD")
             let probability = route.topProbability.map { String(format: "%.2f", $0) } ?? "-"
-            print("QC \(mark) \(capture.id) expected=\(expected) got=\(got) by=\(route.classifier.rawValue) \(route.reason.rawValue) p=\(probability)")
+            print("QC \(mark) \(capture.id) expected=\(expected) got=\(picked) by=\(route.classifier.rawValue) \(route.reason.rawValue) p=\(probability)")
         }
-        print("QC SCORE captures=\(captures.count) right=\(right) project-expected=\(projectExpected) right-project=\(projectRight) catch-all=\(catchAll) wrong-project=\(wrongProject) inbox-expected=\(captures.count - projectExpected) inbox-right=\(inboxRight) failed=\(failed)")
+        if polisher != nil { print(polishTally.line) }
+        if followUps {
+            print("QC JOINS expected=\(joinsExpected) right=\(joinedRight) wrong=\(joinedWrong) missed=\(joinsMissed) by-words=\(joinedByWords)")
+        }
+        print("QC SCORE captures=\(captures.count) right=\(right) project-expected=\(projectExpected) right-project=\(projectRight) catch-all=\(catchAll) wrong-project=\(wrongProject) inbox-expected=\(captures.count - projectExpected) inbox-right=\(inboxRight) failed=\(failed) suggested=\(suggested) suggested-right=\(suggestedRight) suggested-wrong=\(suggested - suggestedRight)")
+    }
+}
+
+private extension QuickCaptureRoute.Destination {
+    var projectKey: String? {
+        if case .project(let key) = self { key } else { nil }
     }
 }

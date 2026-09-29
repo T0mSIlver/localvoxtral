@@ -182,6 +182,9 @@ from your issue and say so in your report. Don't ask whether to file it.
 - Never read a child process pipe with `FileHandle.availableData`. It raises an
   uncatchable ObjC exception on a descriptor error and aborts the app (#60).
   Use `POSIXPipeRead.nextChunk(fromDescriptor:)`.
+- Prefer exit codes, typed errors and `--json` output to matching prose,
+  ours or another tool's; match text only where the tool offers nothing
+  structured (#1011).
 - GLM (`zai-glm-*`) on the Mistral API bills the Vibe plan key
   (`VIBE_MISTRAL_API_KEY`, else `MISTRAL_API_KEY=` in `~/.vibe/.env`), never
   `MISTRAL_API_KEY` or `~/.config/localvoxtral/mistral_api_key`: that is the

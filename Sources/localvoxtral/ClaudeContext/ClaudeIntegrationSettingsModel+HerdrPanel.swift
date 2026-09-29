@@ -36,7 +36,7 @@ extension ClaudeIntegrationSettingsModel {
                 detail: Self.enrollmentFailureDetail(failure, subject: "Local herdr panel setup")
             )
             Log.claudeContext.error(
-                "Claude local herdr panel configuration failed: \(failure.describedError, privacy: .public)"
+                "Claude local herdr panel configuration failed: \(failure.publicLogDescription, privacy: .public) \(failure.describedError, privacy: .private)"
             )
         } else {
             localHerdrPanelResult = attempt.steps.first?.message

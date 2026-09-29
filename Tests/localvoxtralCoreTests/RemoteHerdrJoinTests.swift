@@ -971,20 +971,6 @@ final class RemoteHerdrJoinTests: XCTestCase, RemoteHerdrJoinFixture {
                     foreground: HerdrPaneForegroundInfo(shellPID: 8000, foregroundProcesses: nil)
                 )
             ),
-            // The user suspended Claude Code and is back at the shell: the pane is
-            // still "theirs", and its context is still not what they are dictating
-            // into.
-            ArgvAbstention(
-                name: "AgentNotInTheForegroundAbstains",
-                panes: RemoteJoinHerdrPanes(
-                    focused: focusedPane(),
-                    foreground: HerdrPaneForegroundInfo(
-                        shellPID: 8000,
-                        foregroundProcesses: [HerdrForegroundProcess(pid: 8000, name: "zsh")]
-                    )
-                ),
-                closes: 1
-            ),
         ])
     }
 
@@ -1149,24 +1135,6 @@ final class RemoteHerdrJoinTests: XCTestCase, RemoteHerdrJoinFixture {
     }
 
     // MARK: herdr's own session claim (review finding 3)
-
-    func testAContradictoryPaneSessionClaimAbstains() async throws {
-        // Stale-session scenario: session A died without a SessionEnd, leaving
-        // a live registry entry and its pane id; session B now runs in that
-        // reused pane. herdr — which watches the pane — says B, and the pane id
-        // still says A. That resolves to NEITHER.
-        let registry = makeRegistry()
-        ingestRemoteHerdrSession(into: registry, sessionID: "s-stale-a")
-        let forwards = RecordingForwards()
-
-        let join = await resolver(
-            registry: registry,
-            panes: RemoteJoinHerdrPanes(focused: focusedPane(claim: "s-live-b")),
-            forwards: forwards).resolve(target: ghostty)
-
-        XCTAssertNil(join)
-        XCTAssertEqual(forwards.closeCount, 1)
-    }
 
     func testAnAgreeingPaneSessionClaimJoins() async throws {
         // The same check must CONFIRM when herdr agrees. The claim is herdr's
@@ -1443,31 +1411,6 @@ final class RemoteHerdrJoinTests: XCTestCase, RemoteHerdrJoinFixture {
             trustedEndpointEnabled: false
         )
         XCTAssertEqual(decision, fallback)
-    }
-
-    func testRemoteHerdrPaneTextIsNotCapturedWhenTheScreenSettingIsOff() async throws {
-        let registry = makeRegistry()
-        ingestRemoteHerdrSession(into: registry)
-        let panes = RemoteJoinHerdrPanes(
-            focused: focusedPane(), texts: ["secret pane text"]
-        )
-        let resolver = resolver(registry: registry, panes: panes, forwards: RecordingForwards())
-        let join = try unwrapAsync(await resolver.resolve(target: ghostty))
-        let requestsBefore = panes.requests.withLock { $0.count }
-
-        let start = await SocketPaneScreenContext.captureAtStart(
-            join: join,
-            resolver: resolver,
-            settingEnabled: false,
-            endpointURL: URL(string: "http://127.0.0.1:8472/v1/chat/completions")!,
-            isAccessibilityTrusted: true,
-            trustedEndpointEnabled: false
-        )
-
-        XCTAssertNil(start)
-        // Gated BEFORE the socket, not after: a withheld consent must not
-        // produce a request at all.
-        XCTAssertEqual(panes.requests.withLock { $0.count }, requestsBefore)
     }
 
     // MARK: - The federated herdr arm

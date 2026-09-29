@@ -7,95 +7,49 @@ import XCTest
 final class ClaudePluginInstallServiceArgumentsTests: XCTestCase {
     private let path = "/Applications/localvoxtral.app/Contents/Resources/claude-code-marketplace"
 
-    private func arguments(_ action: ClaudePluginInstallService.Action) -> [String] {
-        ClaudePluginInstallService.arguments(for: action, marketplacePath: path)
-    }
-
-    func testPluginReferenceIsFullyQualified() {
-        XCTAssertEqual(ClaudePluginInstallService.pluginReference, "localvoxtral@localvoxtral")
-    }
-
-    func testAddMarketplaceCommand() {
-        XCTAssertEqual(arguments(.addMarketplace), ["plugin", "marketplace", "add", path])
-    }
-
-    func testInstallCommand() {
-        XCTAssertEqual(arguments(.install), ["plugin", "install", "localvoxtral@localvoxtral"])
-    }
-
-    // MARK: publisher_path userConfig
-
-    func testInstallPassesPublisherPathAsUserConfig() {
-        // This is what makes the plugin work for an app outside /Applications:
-        // the shim reads it back as CLAUDE_PLUGIN_OPTION_PUBLISHER_PATH.
-        XCTAssertEqual(
-            ClaudePluginInstallService.arguments(
-                for: .install,
-                marketplacePath: path,
-                publisherPath: "/Volumes/Dev/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook"
-            ),
-            [
-                "plugin", "install", "localvoxtral@localvoxtral",
-                "--config",
-                "publisher_path=/Volumes/Dev/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook",
-            ]
-        )
-    }
-
-    func testAbsentPublisherPathAddsNoConfigArguments() {
-        // Nothing to say is better than `--config publisher_path=` — an empty
-        // value would override the shim's own search with a dead path.
-        XCTAssertEqual(
-            ClaudePluginInstallService.arguments(for: .install, marketplacePath: path, publisherPath: nil),
-            ["plugin", "install", "localvoxtral@localvoxtral"]
-        )
-        XCTAssertEqual(
-            ClaudePluginInstallService.arguments(for: .install, marketplacePath: path, publisherPath: ""),
-            ["plugin", "install", "localvoxtral@localvoxtral"]
-        )
-    }
-
-    func testUninstallCarriesNoPublisherConfig() {
-        XCTAssertEqual(
-            ClaudePluginInstallService.arguments(
-                for: .uninstall, marketplacePath: path, publisherPath: "/A/hook"
-            ),
-            ["plugin", "uninstall", "localvoxtral@localvoxtral"]
-        )
-    }
-
-    func testConfigKeyMatchesTheEnvironmentVariableTheShimReads() {
-        // CLAUDE_PLUGIN_OPTION_<KEY>. The manifest test pins the other half.
-        XCTAssertEqual(ClaudePluginInstallService.publisherPathConfigKey, "publisher_path")
-    }
-
-    func testUninstallCommand() {
-        XCTAssertEqual(arguments(.uninstall), ["plugin", "uninstall", "localvoxtral@localvoxtral"])
-    }
-
-    func testRemoveMarketplaceCommand() {
-        XCTAssertEqual(arguments(.removeMarketplace), ["plugin", "marketplace", "remove", "localvoxtral"])
-    }
-
-    func testEveryCommandTargetsOnlyOurOwnPlugin() {
-        // A qualified reference is what keeps `uninstall` from ever matching a
-        // same-named plugin from someone else's marketplace.
-        for action: ClaudePluginInstallService.Action in [.install, .uninstall] {
-            XCTAssertTrue(arguments(action).contains("localvoxtral@localvoxtral"))
-        }
-    }
-
-    func testNoCommandEverTouchesSettingsJSON() {
-        // The load-bearing rule: settings.json is the user's and Claude Code
-        // owns its schema. We drive the CLI; we never write that file.
-        let actions: [ClaudePluginInstallService.Action] = [
-            .addMarketplace, .install, .uninstall, .removeMarketplace,
+    /// The exact argv for every action, one row each. This is the surface where
+    /// a typo silently uninstalls the wrong thing, so each row pins the whole
+    /// command by equality — which also proves, per action, that the plugin
+    /// reference stays the qualified `localvoxtral@localvoxtral` (so
+    /// `uninstall` can never match a same-named plugin from someone else's
+    /// marketplace) and that no argument ever names the user's settings.json:
+    /// that file is Claude Code's, and we drive the CLI instead of writing it.
+    func testEveryActionPinsItsExactCommand() {
+        let publisher = "/Volumes/Dev/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook"
+        let rows: [(
+            label: String, action: ClaudePluginInstallService.Action,
+            publisherPath: String?, expected: [String]
+        )] = [
+            ("addMarketplace", .addMarketplace, nil,
+             ["plugin", "marketplace", "add", path]),
+            ("install without a publisher", .install, nil,
+             ["plugin", "install", "localvoxtral@localvoxtral"]),
+            // The publisher path is what makes the plugin work for an app
+            // outside /Applications: the shim reads it back as
+            // CLAUDE_PLUGIN_OPTION_PUBLISHER_PATH.
+            ("install passes the publisher path as userConfig", .install, publisher,
+             ["plugin", "install", "localvoxtral@localvoxtral",
+              "--config", "publisher_path=\(publisher)"]),
+            // Nothing to say is better than `--config publisher_path=` — an
+            // empty value would override the shim's own search with a dead
+            // path.
+            ("install with an empty publisher path adds no config", .install, "",
+             ["plugin", "install", "localvoxtral@localvoxtral"]),
+            ("uninstall", .uninstall, nil,
+             ["plugin", "uninstall", "localvoxtral@localvoxtral"]),
+            ("uninstall carries no publisher config", .uninstall, "/A/hook",
+             ["plugin", "uninstall", "localvoxtral@localvoxtral"]),
+            ("removeMarketplace", .removeMarketplace, nil,
+             ["plugin", "marketplace", "remove", "localvoxtral"]),
         ]
-        for action in actions {
-            for argument in arguments(action) {
-                XCTAssertFalse(argument.contains("settings.json"), "\(action) must not name settings.json")
-                XCTAssertFalse(argument.contains(".claude/settings"), "\(action) must not touch user settings")
-            }
+        for row in rows {
+            XCTAssertEqual(
+                ClaudePluginInstallService.arguments(
+                    for: row.action, marketplacePath: path, publisherPath: row.publisherPath
+                ),
+                row.expected,
+                row.label
+            )
         }
     }
 }
@@ -140,22 +94,20 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
         )
     }
 
-    func testServiceThreadsItsPublisherURLIntoTheInstallCommand() throws {
+    func testInstallRegistersMarketplaceThenInstallsAndThreadsItsPublisherURL() throws {
+        let plain = RecordingRunner()
+        try makeService(runner: plain).installPlugin()
+        XCTAssertEqual(plain.argumentLists, [
+            ["plugin", "marketplace", "add", marketplace.path],
+            ["plugin", "install", "localvoxtral@localvoxtral"],
+        ])
+
         let runner = RecordingRunner()
         let publisher = URL(fileURLWithPath: "/Users/me/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook")
         try makeService(runner: runner, publisherURL: publisher).installPlugin()
         XCTAssertEqual(runner.argumentLists, [
             ["plugin", "marketplace", "add", marketplace.path],
             ["plugin", "install", "localvoxtral@localvoxtral", "--config", "publisher_path=\(publisher.path)"],
-        ])
-    }
-
-    func testInstallRegistersMarketplaceThenInstalls() throws {
-        let runner = RecordingRunner()
-        try makeService(runner: runner).installPlugin()
-        XCTAssertEqual(runner.argumentLists, [
-            ["plugin", "marketplace", "add", marketplace.path],
-            ["plugin", "install", "localvoxtral@localvoxtral"],
         ])
     }
 
@@ -263,11 +215,6 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
         XCTAssertEqual(runner.argumentLists, [["plugin", "marketplace", "add", marketplace.path]])
     }
 
-    func testRunResultSuccessPredicate() {
-        XCTAssertTrue(ClaudePluginInstallService.RunResult(exitCode: 0, message: "").succeeded)
-        XCTAssertFalse(ClaudePluginInstallService.RunResult(exitCode: 1, message: "").succeeded)
-    }
-
     // MARK: Bounded teardown
     //
     // Every seam is injected, so these prove the escalation ordering without a
@@ -328,7 +275,7 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
     // installed, so a probe against the real filesystem would pass or fail by
     // accident rather than by logic.
 
-    func testCandidatesCoverTheUsualInstallLocations() {
+    func testCandidatesCoverTheUsualInstallLocationsAndTolerateMissingHomeAndPath() {
         let candidates = ClaudePluginInstallService.claudeCLICandidates(
             environment: ["HOME": "/Users/tester", "PATH": "/opt/bin:/usr/bin"]
         )
@@ -340,40 +287,35 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
             "/opt/homebrew/bin/claude",
             "/usr/local/bin/claude",
         ])
+        XCTAssertEqual(
+            ClaudePluginInstallService.claudeCLICandidates(environment: [:]),
+            ["/opt/homebrew/bin/claude", "/usr/local/bin/claude"],
+            "a missing HOME and PATH leave only the fixed fallbacks"
+        )
     }
 
-    func testCandidatesTolerateMissingHomeAndPath() {
-        let candidates = ClaudePluginInstallService.claudeCLICandidates(environment: [:])
-        XCTAssertEqual(candidates, ["/opt/homebrew/bin/claude", "/usr/local/bin/claude"])
-    }
-
-    func testLocateReturnsFirstExecutableCandidateInProbeOrder() {
+    func testLocateReturnsTheFirstExecutableCandidateInProbeOrder() {
+        let environment = ["HOME": "/Users/tester", "PATH": "/opt/bin"]
         let located = ClaudePluginInstallService.locateClaudeCLI(
-            environment: ["HOME": "/Users/tester", "PATH": "/opt/bin"],
+            environment: environment,
             isExecutable: { $0 == "/opt/bin/claude" || $0 == "/usr/local/bin/claude" }
         )
         XCTAssertEqual(located?.path, "/opt/bin/claude", "PATH must win over the fixed fallbacks")
-    }
-
-    func testLocatePrefersUserInstallOverPath() {
-        let located = ClaudePluginInstallService.locateClaudeCLI(
-            environment: ["HOME": "/Users/tester", "PATH": "/opt/bin"],
-            isExecutable: { _ in true }
+        XCTAssertEqual(
+            ClaudePluginInstallService.locateClaudeCLI(
+                environment: environment, isExecutable: { _ in true }
+            )?.path,
+            "/Users/tester/.claude/local/claude",
+            "the user install wins over PATH"
         )
-        XCTAssertEqual(located?.path, "/Users/tester/.claude/local/claude")
-    }
-
-    func testLocateReturnsNilWhenNothingIsExecutable() {
-        let located = ClaudePluginInstallService.locateClaudeCLI(
-            environment: ["HOME": "/Users/tester", "PATH": "/opt/bin"],
-            isExecutable: { _ in false }
-        )
-        XCTAssertNil(located)
+        XCTAssertNil(ClaudePluginInstallService.locateClaudeCLI(
+            environment: environment, isExecutable: { _ in false }
+        ))
     }
 
     // MARK: Subprocess runner — real child processes
 
-    func testProcessRunnerCapturesOutputAndExitCode() throws {
+    func testProcessRunnerCapturesOutputAndExitCodeAndMergesStderr() throws {
         let runner = ClaudePluginInstallService.processRunner(
             executableURL: URL(fileURLWithPath: "/bin/sh")
         )
@@ -381,14 +323,9 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
         XCTAssertEqual(result.exitCode, 3)
         XCTAssertEqual(result.message, "hello")
         XCTAssertFalse(result.succeeded)
-    }
 
-    func testProcessRunnerMergesStderr() throws {
-        let runner = ClaudePluginInstallService.processRunner(
-            executableURL: URL(fileURLWithPath: "/bin/sh")
-        )
-        let result = try runner(.init(arguments: ["-c", "echo oops >&2; exit 1"]))
-        XCTAssertEqual(result.message, "oops")
+        let stderrOnly = try runner(.init(arguments: ["-c", "echo oops >&2; exit 1"]))
+        XCTAssertEqual(stderrOnly.message, "oops")
     }
 
     /// A `claude` that hangs — on a network fetch, or a prompt we did not
@@ -398,7 +335,7 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
     func testProcessRunnerTerminatesAChildThatHangsSilently() {
         let runner = ClaudePluginInstallService.processRunner(
             executableURL: URL(fileURLWithPath: "/bin/sh"),
-            timeout: 0.5
+            timeout: 0.1
         )
         // Writes nothing and never exits: the exact shape a deadline-between-
         // chunks check cannot catch.
@@ -406,7 +343,7 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
             guard case .commandTimedOut(_, _, let seconds)? = error as? ClaudePluginInstallService.ServiceError else {
                 return XCTFail("expected .commandTimedOut, got \(error)")
             }
-            XCTAssertEqual(seconds, 0.5)
+            XCTAssertEqual(seconds, 0.1)
         }
     }
 
@@ -436,7 +373,7 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
         // EOF never arrives, so only the deadline ends this.
         let runner = ClaudePluginInstallService.processRunner(
             executableURL: URL(fileURLWithPath: "/bin/sh"),
-            timeout: 0.5
+            timeout: 0.1
         )
         XCTAssertThrowsError(try runner(.init(arguments: ["-c", "sleep 30 & exit 0"])))
     }

@@ -38,12 +38,19 @@ package struct QuickCaptureRoute: Codable, Equatable, Sendable {
     package let reason: Reason
     /// The winning option's probability, when a classifier answered.
     package let topProbability: Double?
+    /// The project a low or tied answer named (#938): the capture waits in
+    /// the Inbox, and one click moves it there.
+    package let suggestion: String?
 
-    package init(destination: Destination, classifier: Classifier, reason: Reason, topProbability: Double?) {
+    package init(
+        destination: Destination, classifier: Classifier, reason: Reason, topProbability: Double?,
+        suggestion: String? = nil
+    ) {
         self.destination = destination
         self.classifier = classifier
         self.reason = reason
         self.topProbability = topProbability
+        self.suggestion = suggestion
     }
 }
 
@@ -51,15 +58,40 @@ package struct QuickCaptureRoute: Codable, Equatable, Sendable {
 /// text that describes it.
 package struct QuickCaptureOption: Equatable, Sendable {
     package let id: String
-    /// Nil for the catch-all.
+    /// Nil for the catch-all. For an open capture, its project, if it has one.
     package let projectKey: String?
     package let description: String
+    /// Set for an open capture the new one can join (#965).
+    package let captureID: UUID?
 
-    package init(id: String, projectKey: String?, description: String) {
+    package init(id: String, projectKey: String?, description: String, captureID: UUID? = nil) {
         self.id = id
         self.projectKey = projectKey
         self.description = description
+        self.captureID = captureID
     }
+}
+
+/// An Inbox item a new capture may be a follow-up to (#965): not filed, and
+/// captured or joined within the hour.
+package struct QuickCaptureOpenCapture: Equatable, Sendable {
+    package let id: UUID
+    package let projectKey: String?
+    /// The draft's title, else the capture's first words.
+    package let summary: String
+
+    package init(id: UUID, projectKey: String?, summary: String) {
+        self.id = id
+        self.projectKey = projectKey
+        self.summary = summary
+    }
+}
+
+/// The router's answer once open captures are options too (#965): a route,
+/// or the open capture the new one continues.
+package enum QuickCaptureRouteAnswer: Equatable, Sendable {
+    case route(QuickCaptureRoute)
+    case join(UUID, classifier: QuickCaptureRoute.Classifier, probability: Double)
 }
 
 /// Picks one option for a capture. Answers a probability per option id it
@@ -88,10 +120,16 @@ package enum QuickCaptureRouting {
     /// only a classifier whose numbers do not sum to one can tie.
     package static let minimumMargin = 0.15
 
-    /// The options a classifier gets: one per project, then the catch-all.
+    /// At most this many open captures become options, the most recent.
+    package static let maxOpenCaptures = 5
+
+    /// The options a classifier gets: one per project, one per open capture
+    /// (`capture-1`, …), then the catch-all.
     /// Ids are the project names made safe (letters, digits, `-`), with a
     /// numeric suffix where two projects share a name.
-    package static func options(for projects: [QuickCaptureProject]) -> [QuickCaptureOption] {
+    package static func options(
+        for projects: [QuickCaptureProject], openCaptures: [QuickCaptureOpenCapture] = []
+    ) -> [QuickCaptureOption] {
         var used: Set<String> = [catchAllID]
         var options: [QuickCaptureOption] = []
         for project in projects {
@@ -105,32 +143,69 @@ package enum QuickCaptureRouting {
             used.insert(id)
             options.append(QuickCaptureOption(id: id, projectKey: project.key, description: project.description))
         }
+        let names = Dictionary(projects.map { ($0.key, $0.name) }, uniquingKeysWith: { first, _ in first })
+        for (index, capture) in openCaptures.prefix(maxOpenCaptures).enumerated() {
+            var id = "capture-\(index + 1)"
+            while used.contains(id) { id += "-note" }
+            used.insert(id)
+            let project = capture.projectKey.flatMap { names[$0] }.map { " (\($0))" } ?? ""
+            options.append(QuickCaptureOption(
+                id: id, projectKey: capture.projectKey,
+                description: "An earlier note, not filed yet\(project): \"\(capture.summary)\"",
+                captureID: capture.id
+            ))
+        }
         options.append(QuickCaptureOption(id: catchAllID, projectKey: nil, description: catchAllDescription))
         return options
     }
 
     /// The decision on one answer. The catch-all wins whenever the top
     /// option is the catch-all, below `minimumTopProbability`, or within
-    /// `minimumMargin` of the runner-up; never a guessed project.
+    /// `minimumMargin` of the runner-up; never a guessed project. A guessed
+    /// project is kept as the route's suggestion, for the user to confirm.
     package static func decide(
         probabilities: [String: Double],
         options: [QuickCaptureOption],
         classifier: QuickCaptureRoute.Classifier
     ) -> QuickCaptureRoute {
+        switch answer(probabilities: probabilities, options: options, classifier: classifier) {
+        case .route(let route): route
+        // Only an open capture's option joins, and callers of `decide` list none.
+        case .join(_, _, let probability):
+            QuickCaptureRoute(destination: .catchAll, classifier: classifier, reason: .lowConfidence, topProbability: probability)
+        }
+    }
+
+    /// `decide`, where an open capture's option (#965) may win: it joins
+    /// only past the same bars as a project. Under them the capture waits
+    /// unplaced, with that capture's project as the suggestion.
+    package static func answer(
+        probabilities: [String: Double],
+        options: [QuickCaptureOption],
+        classifier: QuickCaptureRoute.Classifier
+    ) -> QuickCaptureRouteAnswer {
         let ranked = options
             .map { ($0, probabilities[$0.id] ?? 0) }
             .sorted { $0.1 > $1.1 }
         guard let (top, topProbability) = ranked.first else {
-            return QuickCaptureRoute(destination: .catchAll, classifier: classifier, reason: .noProjects, topProbability: nil)
+            return .route(QuickCaptureRoute(destination: .catchAll, classifier: classifier, reason: .noProjects, topProbability: nil))
         }
-        func catchAll(_ reason: QuickCaptureRoute.Reason) -> QuickCaptureRoute {
-            QuickCaptureRoute(destination: .catchAll, classifier: classifier, reason: reason, topProbability: topProbability)
+        func catchAll(_ reason: QuickCaptureRoute.Reason, suggesting key: String? = nil) -> QuickCaptureRouteAnswer {
+            .route(QuickCaptureRoute(
+                destination: .catchAll, classifier: classifier, reason: reason, topProbability: topProbability,
+                suggestion: key
+            ))
+        }
+        guard top.captureID != nil || top.projectKey != nil else { return catchAll(.classifierChoseCatchAll) }
+        let suggestion = topProbability > 0 ? top.projectKey : nil
+        guard topProbability >= minimumTopProbability else { return catchAll(.lowConfidence, suggesting: suggestion) }
+        let runnerUp = ranked.count > 1 ? ranked[1].1 : 0
+        guard topProbability - runnerUp >= minimumMargin else { return catchAll(.nearTie, suggesting: suggestion) }
+        if let captureID = top.captureID {
+            return .join(captureID, classifier: classifier, probability: topProbability)
         }
         guard let key = top.projectKey else { return catchAll(.classifierChoseCatchAll) }
-        guard topProbability >= minimumTopProbability else { return catchAll(.lowConfidence) }
-        let runnerUp = ranked.count > 1 ? ranked[1].1 : 0
-        guard topProbability - runnerUp >= minimumMargin else { return catchAll(.nearTie) }
-        return QuickCaptureRoute(destination: .project(key), classifier: classifier, reason: .confident, topProbability: topProbability)
+        return .route(QuickCaptureRoute(destination: .project(key), classifier: classifier, reason: .confident, topProbability: topProbability))
     }
 
     private static func slug(_ name: String) -> String {
@@ -162,33 +237,52 @@ package struct QuickCaptureRouter: Sendable {
     }
 
     package func route(capture: String, projects: [QuickCaptureProject]) async -> QuickCaptureRoute {
+        switch await answer(capture: capture, projects: projects) {
+        case .route(let route): route
+        case .join(_, let classifier, let probability):
+            QuickCaptureRoute(destination: .catchAll, classifier: classifier, reason: .lowConfidence, topProbability: probability)
+        }
+    }
+
+    /// `route`, with the open captures the new one may continue (#965) as
+    /// options on the same call.
+    package func answer(
+        capture: String, projects: [QuickCaptureProject], openCaptures: [QuickCaptureOpenCapture] = []
+    ) async -> QuickCaptureRouteAnswer {
         let text = capture.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
-            return QuickCaptureRoute(destination: .catchAll, classifier: .none, reason: .emptyCapture, topProbability: nil)
+            return .route(QuickCaptureRoute(destination: .catchAll, classifier: .none, reason: .emptyCapture, topProbability: nil))
         }
         // With no project there is nothing to choose, and nothing leaves the Mac.
         guard !projects.isEmpty else {
             Log.backends.info("Quick capture: no joined project, kept in the inbox")
-            return QuickCaptureRoute(destination: .catchAll, classifier: .none, reason: .noProjects, topProbability: nil)
+            return .route(QuickCaptureRoute(destination: .catchAll, classifier: .none, reason: .noProjects, topProbability: nil))
         }
-        let options = QuickCaptureRouting.options(for: projects)
+        let options = QuickCaptureRouting.options(for: projects, openCaptures: openCaptures)
         for classifier in classifiers {
             Log.backends.info(
                 "Quick capture: asking \(classifier.kind.rawValue, privacy: .public) across \(options.count, privacy: .public) options"
             )
             do {
                 let probabilities = try await classifier.classify(capture: text, options: options)
-                let route = QuickCaptureRouting.decide(probabilities: probabilities, options: options, classifier: classifier.kind)
-                Log.backends.info(
-                    "Quick capture: \(classifier.kind.rawValue, privacy: .public) answered, \(route.reason.rawValue, privacy: .public) at \(route.topProbability ?? 0, privacy: .public)"
-                )
-                return route
+                let answer = QuickCaptureRouting.answer(probabilities: probabilities, options: options, classifier: classifier.kind)
+                switch answer {
+                case .route(let route):
+                    Log.backends.info(
+                        "Quick capture: \(classifier.kind.rawValue, privacy: .public) answered, \(route.reason.rawValue, privacy: .public) at \(route.topProbability ?? 0, privacy: .public)"
+                    )
+                case .join(_, _, let probability):
+                    Log.backends.info(
+                        "Quick capture: \(classifier.kind.rawValue, privacy: .public) answered a follow-up to an open capture at \(probability, privacy: .public)"
+                    )
+                }
+                return answer
             } catch {
                 Log.backends.error(
                     "Quick capture: \(classifier.kind.rawValue, privacy: .public) failed: \(String(describing: error), privacy: .public)"
                 )
             }
         }
-        return QuickCaptureRoute(destination: .catchAll, classifier: .none, reason: .classifierFailed, topProbability: nil)
+        return .route(QuickCaptureRoute(destination: .catchAll, classifier: .none, reason: .classifierFailed, topProbability: nil))
     }
 }

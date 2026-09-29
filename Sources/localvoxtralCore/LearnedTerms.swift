@@ -22,7 +22,7 @@ package struct LearnedTerm: Codable, Equatable, Sendable {
     /// Provenance only. A remembered term stays in the vocabulary whatever the
     /// context toggles say later (owner ruling, 2026-09-20): once the speaker
     /// keeps saying a name, it is their vocabulary, the way a name typed into
-    /// Names and terms is. The field is here so a future setting can drop
+    /// Global terms is. The field is here so a future setting can drop
     /// what one source taught without dropping the rest.
     package var sources: [String]
     /// Distinct dictations that resolved it. The confirmation counter.
@@ -178,8 +178,18 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
     /// When `github` was fetched; asked again after `githubRefreshDays`.
     package var githubAt: Date? = nil
     /// The user files this fork's issues in its upstream (GitHub's
-    /// `parent`), not in the fork. Nil reads as false.
+    /// `parent`), not in the fork. Nil until the user picks; it files in
+    /// the fork meanwhile.
     package var filesUpstream: Bool? = nil
+    /// The enrolled hosts (`ClaudeRemoteHost.id`) whose hooks named this
+    /// remote project, so the Projects pane can say where it is checked
+    /// out. Nil on a local project and on one no hook named since.
+    package var hostIDs: [String]? = nil
+    /// The repository this checkout's `origin` names, `host/owner/repo`
+    /// (`ProjectRemote`, #971). Set, the checkout holds no terms: they live
+    /// on the repository's record (`repo:<remote>`), which every checkout
+    /// of it shares. The repository's record carries it too.
+    package var remote: String? = nil
 
     package init(
         key: String,
@@ -218,7 +228,10 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
 
     /// Kept with no terms: a proposal stamp, or a hook that named it. A
     /// project holding neither is dropped once its last term goes.
-    var isKeptWithoutTerms: Bool { hasProposalStamp || reportedAt != nil }
+    var isKeptWithoutTerms: Bool { hasProposalStamp || reportedAt != nil || isLinkedCheckout }
+
+    /// A checkout whose terms live on its repository's record.
+    package var isLinkedCheckout: Bool { !isRepositoryRecord && repositoryRecordKey != nil }
 }
 
 /// A repository's description and topics as GitHub reports them
@@ -292,7 +305,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// A remote README summary is asked for again after this long.
     package static let summaryRefreshDays = 7
     /// GitHub's description and topics are fetched again after this long,
-    /// or when the Project descriptions sheet opens.
+    /// or when the Projects pane opens.
     package static let githubRefreshDays = 7
 
     /// Longest spelling remembered. Matches `SpeakerTerms.maxTermCharacters`,
@@ -325,7 +338,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         projectKey: String,
         minimumDictations: Int = LearnedTerms.confirmedDictations
     ) -> [LearnedTerm] {
-        guard let project = projects.first(where: { $0.key == projectKey }) else { return [] }
+        guard let project = termRecord(projectKey) else { return [] }
         return project.terms
             .filter { $0.isConfirmed(minimumDictations: minimumDictations) }
             .sorted(by: LearnedTerms.isStrongerEvidence)
@@ -335,7 +348,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// evidence first. They take part in matching only where repo vocabulary
     /// may (`LearnedTermGrounding`), and never in `confirmed`.
     package func unconfirmedProposals(projectKey: String) -> [String] {
-        guard let project = projects.first(where: { $0.key == projectKey }) else { return [] }
+        guard let project = termRecord(projectKey) else { return [] }
         return project.terms
             .filter(\.isUnconfirmedProposal)
             .sorted(by: LearnedTerms.isStrongerEvidence)
@@ -369,13 +382,15 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// only stamps a project a dictation already added: every worktree has
     /// its own label, and none of them is a project. Returns true when it
     /// added the project.
-    /// `repository` is the host's `origin`, kept only with a repository's
-    /// name.
+    /// `repository` is the host's `origin` (`X-Lvx-Env-Repository`: GitHub's
+    /// `owner/name`, or `host/path` elsewhere), kept only with a repository's
+    /// name. It links the project to that repository's record (#971).
     @discardableResult
     package mutating func recordRemoteReport(
         project: LearnedTermProjectIdentity,
         asRepository: Bool,
         repository: String? = nil,
+        hostID: String? = nil,
         now: Date
     ) -> Bool {
         guard project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix) else { return false }
@@ -389,9 +404,15 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
             index = projects.count - 1
         }
         projects[index].reportedAt = now
+        if let hostID, !(projects[index].hostIDs ?? []).contains(hostID) {
+            projects[index].hostIDs = (projects[index].hostIDs ?? []) + [hostID]
+        }
         if asRepository {
             projects[index].reportedAsRepository = true
-            if let repository { setOriginRepository(repository, at: index) }
+            if let remote = repository.flatMap(ProjectRemote.init(header:)) {
+                if let github = remote.githubRepository { setOriginRepository(github, at: index) }
+                link(checkoutAt: index, to: remote)
+            }
         }
         prune(now: now)
         return added
@@ -401,8 +422,12 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// the project is gone or the value is no `owner/name`.
     @discardableResult
     package mutating func recordOriginRepository(_ repository: String, projectKey: String) -> Bool {
-        guard let index = projects.firstIndex(where: { $0.key == projectKey }) else { return false }
-        return setOriginRepository(repository, at: index)
+        guard let index = projects.firstIndex(where: { $0.key == projectKey }),
+              setOriginRepository(repository, at: index),
+              let remote = ProjectRemote(githubRepository: repository)
+        else { return false }
+        link(checkoutAt: index, to: remote)
+        return true
     }
 
     @discardableResult
@@ -447,10 +472,11 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     }
 
     /// The "File issues here" choice, on every project that names
-    /// `repository`.
+    /// `repository`. Kept either way: a fork with no choice yet is one the
+    /// Projects pane asks about.
     package mutating func setFilesUpstream(_ upstream: Bool, repository: String) {
         for index in projects.indices where projects[index].repository == repository {
-            projects[index].filesUpstream = upstream ? true : nil
+            projects[index].filesUpstream = upstream
         }
     }
 
@@ -477,15 +503,15 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// listed while its sessions run, gone a week after.
     package static let remoteLabelListedDays = 7
 
-    /// The projects, most recent first: what the learned-terms sheet groups
-    /// terms under and what quick capture routes to (#891). A local main
+    /// The checkouts, most recent first (#891; `listedProjects` groups them
+    /// by repository, #971). A local main
     /// checkout; a remote project a hook named as a repository, or whose
     /// host sent its README in the last 90 days (only a 1.17.0 shim does,
     /// and it names the repository); an old shim's working-directory name within
     /// `remoteLabelListedDays` of its last hook (#819). A remote name no
     /// hook has named, such as a worktree's from before #652, is no project,
     /// and neither is the shared bucket; their terms still apply.
-    package func listedProjects(now: Date) -> [LearnedTermProject] {
+    package func listedCheckouts(now: Date) -> [LearnedTermProject] {
         func recency(_ project: LearnedTermProject) -> Date {
             max(project.lastSeen, project.reportedAt ?? project.lastSeen)
         }
@@ -508,7 +534,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     }
 
     package func needsProposal(projectKey: String, now: Date, revision: Int = 1) -> Bool {
-        guard let project = projects.first(where: { $0.key == projectKey }) else { return true }
+        guard let project = termRecord(projectKey) else { return true }
         if let answered = project.answeredRevision, answered >= revision { return false }
         guard let attempted = project.proposalAttemptedAt else { return true }
         return now.timeIntervalSince(attempted) >= ProjectTermProposal.retryAfter
@@ -565,17 +591,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         let folded = LearnedTerms.folded(observations)
         guard !folded.isEmpty else { return }
 
-        var index = projects.firstIndex { $0.key == project.key }
-        if index == nil {
-            projects.append(
-                LearnedTermProject(key: project.key, name: project.name, terms: [], lastSeen: now)
-            )
-            index = projects.count - 1
-        }
-        guard let index else { return }
-        projects[index].name = project.name
-        projects[index].lastSeen = now
-
+        let index = projectIndex(for: project, now: now)
         for observation in folded {
             if let existing = projects[index].terms.firstIndex(where: {
                 $0.term.caseFoldedForMatching == observation.term.caseFoldedForMatching
@@ -736,9 +752,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         prune(now: now)
         // A full project evicts proposals first, so the cap can take back
         // what was just added.
-        let kept = Set(
-            projects.first { $0.key == project.key }?.terms.map(\.term.caseFoldedForMatching) ?? []
-        )
+        let kept = Set(termRecord(project.key)?.terms.map(\.term.caseFoldedForMatching) ?? [])
         return added.filter { kept.contains($0.caseFoldedForMatching) }
     }
 
@@ -756,7 +770,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     package mutating func setPinned(_ pinned: Bool, term raw: String, projectKey: String) -> Bool {
         let key = LearnedTerms.sanitized(raw).caseFoldedForMatching
         guard !key.isEmpty,
-              let index = projects.firstIndex(where: { $0.key == projectKey }),
+              let index = termRecordIndex(projectKey),
               let termIndex = projects[index].terms.firstIndex(where: {
                   $0.term.caseFoldedForMatching == key
               })
@@ -772,25 +786,44 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     package mutating func forget(_ raw: String, projectKey: String) {
         let key = LearnedTerms.sanitized(raw).caseFoldedForMatching
         guard !key.isEmpty,
-              let index = projects.firstIndex(where: { $0.key == projectKey })
+              let index = termRecordIndex(projectKey)
         else { return }
         projects[index].terms.removeAll { $0.term.caseFoldedForMatching == key }
-        projects.removeAll { $0.terms.isEmpty && !$0.isKeptWithoutTerms }
+        removeEmptyProjects()
     }
 
+    /// Drops every term of these buckets: a project's Forget All in
+    /// Settings → Projects. A bucket kept for its proposal stamp or its
+    /// host's report stays, empty.
+    package mutating func forgetTerms(projectKeys: [String]) {
+        // A linked checkout's terms are its repository's (#971).
+        let keys = Set(projectKeys + projectKeys.compactMap { termRecord($0)?.key })
+        for index in projects.indices where keys.contains(projects[index].key) {
+            projects[index].terms = []
+        }
+        let linked = Set(projects.compactMap { $0.isLinkedCheckout ? $0.repositoryRecordKey : nil })
+        projects.removeAll { keys.contains($0.key) && !$0.isKeptWithoutTerms && !linked.contains($0.key) }
+    }
+
+    /// The record `project`'s terms go to, made when missing: the
+    /// checkout's own, or its repository's once it is linked (#971).
     private mutating func projectIndex(
         for project: LearnedTermProjectIdentity,
         now: Date
     ) -> Int {
-        if let index = projects.firstIndex(where: { $0.key == project.key }) {
-            projects[index].name = project.name
-            projects[index].lastSeen = now
-            return index
+        guard let index = projects.firstIndex(where: { $0.key == project.key }) else {
+            projects.append(
+                LearnedTermProject(key: project.key, name: project.name, terms: [], lastSeen: now)
+            )
+            return projects.count - 1
         }
-        projects.append(
-            LearnedTermProject(key: project.key, name: project.name, terms: [], lastSeen: now)
-        )
-        return projects.count - 1
+        if !projects[index].isRepositoryRecord { projects[index].name = project.name }
+        projects[index].lastSeen = now
+        guard projects[index].isLinkedCheckout, let remote = projects[index].projectRemote
+        else { return index }
+        let repositoryIndex = repositoryRecordIndex(for: remote, lastSeen: now)
+        projects[repositoryIndex].lastSeen = max(projects[repositoryIndex].lastSeen, now)
+        return repositoryIndex
     }
 
     /// Drops the proposals shaped like code (`SpokenTermShape`) that the user
@@ -807,7 +840,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
             }
             dropped += before - projects[index].terms.count
         }
-        projects.removeAll { $0.terms.isEmpty && !$0.isKeptWithoutTerms }
+        removeEmptyProjects()
         return dropped
     }
 
@@ -829,10 +862,20 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
                 )
             }
         }
+        // A linked checkout no dictation or hook has touched for as long as a
+        // term lasts goes once its repository has no terms left either:
+        // while it has, the checkout must keep pointing there, or its next
+        // dictation would start an empty record of its own.
+        let repositoriesWithTerms = Set(projects.filter { $0.isRepositoryRecord && !$0.terms.isEmpty }.map(\.key))
+        projects.removeAll {
+            $0.isLinkedCheckout && $0.terms.isEmpty
+                && max($0.lastSeen, $0.reportedAt ?? $0.lastSeen) < cutoff
+                && !repositoriesWithTerms.contains($0.repositoryRecordKey ?? "")
+        }
         // A stamped project stays with no terms: dropping it would ask its
         // agent again at the next dictation. A reported one stays until its
         // report is as old as a stale term.
-        projects.removeAll { $0.terms.isEmpty && !$0.isKeptWithoutTerms }
+        removeEmptyProjects()
         if projects.count > LearnedTerms.maxProjects {
             // A project holding a pinned term is evicted last, one kept only
             // for a hook's report first.

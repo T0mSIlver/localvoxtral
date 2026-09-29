@@ -57,6 +57,7 @@ final class SettingsStore {
         static let overlaySpokenSendEnabled = "settings.overlay_spoken_send_enabled"
         static let liveSpokenSendEnabled = "settings.live_spoken_send_enabled"
         static let spokenSendTriggerPhrases = "settings.spoken_send_trigger_phrases"
+        static let spokenStopWait = "settings.spoken_stop_wait_ms"
         static let audioDuckingEnabled = "settings.audio_ducking_enabled"
         static let audioDuckingFadeDuration = "settings.audio_ducking_fade_duration"
         /// The device and volume a launch ducked away from, written at the
@@ -80,6 +81,7 @@ final class SettingsStore {
         static let managedLLMPolishingModel = "settings.managed_llm_polishing_model"
         static let replacementDictionaryEnabled = "settings.replacement_dictionary_enabled"
         static let agentPolishProfileEnabled = "settings.agent_polish_profile_enabled"
+        static let earlyPolishEnabled = "settings.early_polish_enabled"
         static let polishClipboardContextEnabled = "settings.polish_clipboard_context_enabled"
         static let polishSpeakerProfile = "settings.polish_speaker_profile"
         static let polishSpeakerTerms = "settings.polish_speaker_terms"
@@ -150,7 +152,11 @@ final class SettingsStore {
         static let quickCaptureShortcutModifiers = "settings.quick_capture_shortcut_carbon_modifiers"
         static let quickCaptureShortcutEnabled = "settings.quick_capture_shortcut_enabled"
         static let quickCaptureShortcutChord = "settings.quick_capture_shortcut_chord"
+        /// Retired with #918: its "on" meant Jev first, and the polishing
+        /// model is now everyone's router until they pick Jev.
         static let quickCaptureJevEnabled = "settings.quick_capture_jev_enabled"
+        static let quickCaptureRouter = "settings.quick_capture_router"
+        static let voiceMemosEnabled = "settings.voice_memos_enabled"
         static let quickCaptureProjectLines = "settings.quick_capture_project_lines"
         static let jevAPIKeyNeverStored = "settings.jev_api_key"
     }
@@ -263,14 +269,28 @@ final class SettingsStore {
         didSet { persistSecret(jevAPIKey, for: .jevAPIKey) }
     }
 
-    /// "Send quick captures to Jev for routing": off until the user turns it
-    /// on, like every hosted feature.
-    var quickCaptureJevEnabled: Bool {
+    /// Which model routes quick captures (#918): the polishing model unless
+    /// the user picks Jev, a hosted service like every other off by default.
+    enum QuickCaptureRouterChoice: String, CaseIterable, Sendable {
+        case polishingModel = "polishing_model"
+        case jev
+    }
+
+    var quickCaptureRouter: QuickCaptureRouterChoice {
         didSet {
-            defaults.set(quickCaptureJevEnabled, forKey: Keys.quickCaptureJevEnabled)
-            if quickCaptureJevEnabled { ensureSecretsLoaded([.jevAPIKey]) }
+            defaults.set(quickCaptureRouter.rawValue, forKey: Keys.quickCaptureRouter)
+            if quickCaptureRouter == .jev { ensureSecretsLoaded([.jevAPIKey]) }
         }
     }
+
+    /// "Transcribe voice memos stored in iCloud Drive" (#925): off until the
+    /// user turns it on, since the audio sits in Apple's cloud.
+    var voiceMemosEnabled: Bool {
+        didSet { defaults.set(voiceMemosEnabled, forKey: Keys.voiceMemosEnabled) }
+    }
+
+    /// Jev routes, so its key is read.
+    var quickCaptureJevEnabled: Bool { quickCaptureRouter == .jev }
 
     /// The line the user wrote about each project, by project key, which
     /// the quick capture router reads with the README summary (#811).
@@ -329,6 +349,12 @@ final class SettingsStore {
     /// loads as the default.
     var spokenSendTriggerPhrases: [String] {
         didSet { defaults.set(spokenSendTriggerPhrases, forKey: Keys.spokenSendTriggerPhrases) }
+    }
+
+    /// How long an Overlay Buffer dictation that ends in a send phrase waits
+    /// for new words before it stops (#1009). Read when the wait starts.
+    var spokenStopWait: SpokenStopWait {
+        didSet { defaults.set(spokenStopWait.rawValue, forKey: Keys.spokenStopWait) }
     }
 
     /// Lower other audio while dictating, and fade it back on stop. On by
@@ -452,6 +478,27 @@ final class SettingsStore {
         }
     }
 
+    /// The user's own choice for early polish (#709), nil until they flip the
+    /// toggle. See `earlyPolishEnabled` for the default.
+    var earlyPolishChoice: Bool? {
+        didSet {
+            if let earlyPolishChoice {
+                defaults.set(earlyPolishChoice, forKey: Keys.earlyPolishEnabled)
+            } else {
+                defaults.removeObject(forKey: Keys.earlyPolishEnabled)
+            }
+        }
+    }
+
+    /// Whether Overlay Buffer polishes settled pieces while the user speaks
+    /// (#709). Until the user chooses, on for the bundled helper only: early
+    /// polish sends about 3 times the input characters per dictation, which
+    /// costs money on a paid endpoint and nothing on the helper.
+    var earlyPolishEnabled: Bool {
+        get { earlyPolishChoice ?? (polishingBackendMode == .managedLocal) }
+        set { earlyPolishChoice = newValue }
+    }
+
     /// The user's own description of who they are and the names they use,
     /// sent with every polish request (any app, any endpoint — like the
     /// replacement dictionary, it is text they typed for this purpose).
@@ -461,7 +508,7 @@ final class SettingsStore {
         }
     }
 
-    /// The user's names and terms, correct spelling only (`SpeakerTerms`).
+    /// The user's global terms, correct spelling only (`SpeakerTerms`).
     /// An ABSENT key means "never set", which is what lets the one-time import
     /// from the replacement dictionary tell a new install from an emptied list.
     var polishSpeakerTerms: [String] {
@@ -1041,8 +1088,10 @@ final class SettingsStore {
             secrets, .mistralAPIKey, envKey: "MISTRAL_API_KEY", environment: environment)
         jevAPIKey = Self.resolveSecret(
             secrets, .jevAPIKey, envKey: "TYPESAFE_API_KEY", environment: environment)
-        quickCaptureJevEnabled = Self.loadBool(
-            defaults: defaults, key: Keys.quickCaptureJevEnabled, fallback: false)
+        quickCaptureRouter = defaults.string(forKey: Keys.quickCaptureRouter)
+            .flatMap(QuickCaptureRouterChoice.init(rawValue:)) ?? .polishingModel
+        voiceMemosEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.voiceMemosEnabled, fallback: false)
         quickCaptureProjectLines =
             defaults.dictionary(forKey: Keys.quickCaptureProjectLines) as? [String: String] ?? [:]
         // Empty is the stored form of "use the pinned default": the defaults
@@ -1070,6 +1119,9 @@ final class SettingsStore {
             defaults: defaults, key: Keys.liveSpokenSendEnabled, fallback: false)
         spokenSendTriggerPhrases = SendTriggerPhrases.loaded(
             defaults.stringArray(forKey: Keys.spokenSendTriggerPhrases))
+        spokenStopWait =
+            (defaults.object(forKey: Keys.spokenStopWait) as? Int)
+            .flatMap(SpokenStopWait.init(rawValue:)) ?? .default
         audioDuckingEnabled = Self.loadBool(
             defaults: defaults, key: Keys.audioDuckingEnabled, fallback: true)
         let storedDuckingFade = defaults.object(forKey: Keys.audioDuckingFadeDuration) != nil
@@ -1144,6 +1196,7 @@ final class SettingsStore {
             defaults: defaults, key: Keys.replacementDictionaryEnabled, fallback: false)
         agentPolishProfileEnabled = Self.loadBool(
             defaults: defaults, key: Keys.agentPolishProfileEnabled, fallback: true)
+        earlyPolishChoice = defaults.object(forKey: Keys.earlyPolishEnabled) as? Bool
         polishSpeakerProfile = defaults.string(forKey: Keys.polishSpeakerProfile) ?? ""
         polishDismissedTermSuggestions =
             defaults.stringArray(forKey: Keys.polishDismissedTermSuggestions) ?? []

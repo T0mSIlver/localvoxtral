@@ -419,7 +419,7 @@ final class ClaudeSessionJoinSummaryJSONTests: XCTestCase {
     }
 
     func testEveryMechanismHasItsOwnArmName() async {
-        // Two arms sharing a name would make a probe run and a dogfood record
+        // Two arms sharing a name would make a probe run and a diagnostic record
         // agree on a lie.
         let mechanisms: [ClaudeSessionJoinMechanism] = [
             .ttyDevice, .herdrPane, .browserTab, .cmuxSurface, .remoteHerdrPane,

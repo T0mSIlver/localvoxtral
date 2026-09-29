@@ -9,15 +9,25 @@ actor FakePolishingService: LLMPolishingServicing {
 
     private let reply: Reply
     private let durationSeconds: TimeInterval
+    /// What the reply reports it used; nil reports nothing, as a server
+    /// without `usage` does.
+    private let usage: LLMTokenUsage?
     private(set) var requests: [LLMPolishingRequest] = []
     private(set) var configurations: [LLMPolishingConfiguration] = []
+    private var holdsNextRequest = false
+    private var heldRequest: CheckedContinuation<Void, Never>?
+    private var countWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
     var lastRequest: LLMPolishingRequest? { requests.last }
     var lastConfiguration: LLMPolishingConfiguration? { configurations.last }
 
-    init(durationSeconds: TimeInterval = 0.01, reply: @escaping Reply = { $0.inputText }) {
+    init(
+        durationSeconds: TimeInterval = 0.01, usage: LLMTokenUsage? = nil,
+        reply: @escaping Reply = { $0.inputText }
+    ) {
         self.reply = reply
         self.durationSeconds = durationSeconds
+        self.usage = usage
     }
 
     init(returning text: String, durationSeconds: TimeInterval = 0.01) {
@@ -38,10 +48,35 @@ actor FakePolishingService: LLMPolishingServicing {
     ) async throws -> LLMPolishingResult {
         requests.append(request)
         configurations.append(configuration)
+        let reached = countWaiters.filter { $0.count <= requests.count }
+        countWaiters.removeAll { $0.count <= requests.count }
+        reached.forEach { $0.continuation.resume() }
+        if holdsNextRequest {
+            holdsNextRequest = false
+            await withCheckedContinuation { heldRequest = $0 }
+        }
         return LLMPolishingResult(
             rawText: request.inputText,
             polishedText: try reply(request),
-            durationSeconds: durationSeconds
+            durationSeconds: durationSeconds,
+            usage: usage
         )
+    }
+
+    /// The next request waits for `releaseHeldRequest()` before it answers,
+    /// so a test can act while it is in flight.
+    func holdNextRequest() {
+        holdsNextRequest = true
+    }
+
+    func releaseHeldRequest() {
+        heldRequest?.resume()
+        heldRequest = nil
+    }
+
+    /// Returns once `count` requests have arrived; at once if they already have.
+    func waitForRequests(_ count: Int) async {
+        guard requests.count < count else { return }
+        await withCheckedContinuation { countWaiters.append((count, $0)) }
     }
 }

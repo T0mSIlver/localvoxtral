@@ -68,6 +68,11 @@ final class SessionContextResolver {
         Log.claudeContext.notice("Claude join outcome: \(line, privacy: .public)")
     }
 
+    /// The last lines `joinOutcomeLog` got, most recent first, for
+    /// `localvoxtral doctor`. The unified log keeps them too, but only
+    /// `localvoxtral logs` knows the predicate.
+    private(set) var recentJoinOutcomes: [AgentCLIDoctorFacts.JoinLine] = []
+
     init(settings: SettingsStore, textInsertion: TextInsertionService) {
         self.settings = settings
         self.textInsertion = textInsertion
@@ -294,7 +299,7 @@ final class SessionContextResolver {
     /// or the gate or abstention chain that stopped it. `.notice`, because
     /// the unified log keeps no `.info` line past the moment, and a join is
     /// only ever questioned after the dictation. Categories only — the same
-    /// `ClaudeSessionJoinSummary` a dogfood record and `--probe-surface`
+    /// `ClaudeSessionJoinSummary` a diagnostic record and `--probe-surface`
     /// print, which carries no id, path, host or address.
     private func noteJoinOutcome(_ attempt: ClaudeJoinAttempt, causes: [String]) {
         var causes = causes
@@ -303,6 +308,10 @@ final class SessionContextResolver {
             DiagnosticCaptureTap.shared.noteJoinAbstention(gate.rawValue)
         }
         let summary = ClaudeSessionJoinSummary.summarize(join: attempt.join, abstentions: causes)
+        recentJoinOutcomes = Array(
+            ([AgentCLIDoctorFacts.JoinLine(at: Date(), line: summary.noticeText)] + recentJoinOutcomes)
+                .prefix(AgentCLIDoctorChecks.recentJoinLimit)
+        )
         joinOutcomeLog(summary.noticeText)
         #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         // Snapshotted HERE, at the single resolution, because the commit path

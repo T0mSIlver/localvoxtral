@@ -427,7 +427,7 @@ package enum RepoVocabularyMatcher {
         package let entries: [ReplacementEntry]
         package let isFallbackOnly: Bool
         /// Always empty from `groundedCandidates`: phonetic hits nominate now
-        /// (see there). Kept because the cross-source merge and the dogfood
+        /// (see there). Kept because the cross-source merge and the diagnostic
         /// record still carry the grade.
         package let phoneticEntries: [ReplacementEntry]
         /// Every sound-alike hit, strongest tier first. The transcript bytes

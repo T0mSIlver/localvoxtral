@@ -34,6 +34,9 @@ extension ClaudeSessionJoinResolver {
         switch SessionPaneFocusRoute.of(session) {
         case .terminalTTY:
             return .terminalPane
+        case .herdrPane:
+            // Handled above: a local herdr pane is written through its route.
+            return .unsupported(.herdr)
         case .claudeDesktop:
             // The Return exception is ruled for terminal tabs only.
             Log.claudeContext.notice("send to session: no route (claudeDesktop)")

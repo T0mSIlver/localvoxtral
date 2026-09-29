@@ -51,6 +51,7 @@ package final class ClaudeRemoteForwardLiveProcess: ClaudeRemoteForwardProcess, 
         process = Process()
         process.executableURL = sshExecutableURL
         process.arguments = Array(argv.dropFirst())
+        process.environment = Self.childEnvironment(from: ProcessInfo.processInfo.environment)
         stderrPipe = Pipe()
         process.standardError = stderrPipe
         // ssh -N produces no stdout; discarding it keeps the app out of the
@@ -83,6 +84,17 @@ package final class ClaudeRemoteForwardLiveProcess: ClaudeRemoteForwardProcess, 
         Log.claudeContext.info(
             "Claude remote forward spawned: \(argv.joined(separator: " "), privacy: .public)"
         )
+    }
+
+    /// The app's environment with the locale pinned to C. The supervisor
+    /// reads ssh's stderr for `forwardFailureSignature`: OpenSSH has no
+    /// structured signal for a refused remote bind, and it does not translate
+    /// its messages today; the pinned locale keeps the line in English if a
+    /// build ever does.
+    package static func childEnvironment(from parent: [String: String]) -> [String: String] {
+        var environment = parent
+        environment["LC_ALL"] = "C"
+        return environment
     }
 
     private func ingest(_ data: Data) {

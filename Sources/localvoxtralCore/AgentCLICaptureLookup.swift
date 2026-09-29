@@ -67,9 +67,8 @@ package enum AgentCLICaptureLookup {
             id: item.id.uuidString.lowercased(),
             capturedAt: item.capturedAt,
             project: item.projectKey.map { AgentCLIProject(key: $0, name: item.projectName ?? $0) },
-            // #918 adds question, task and note; every draft is an issue
-            // until then.
-            kind: drafted ? "issue" : nil,
+            // A draft from before #918's kinds is an issue.
+            kind: item.kind?.rawValue ?? (drafted ? "issue" : nil),
             title: title(of: item),
             state: AgentCLICapture.State(rawValue: item.state.rawValue) ?? .ready,
             repository: item.repository,
@@ -77,7 +76,7 @@ package enum AgentCLICaptureLookup {
             relatedIssue: item.relatedIssue,
             note: item.note,
             filedURL: item.filedURL,
-            text: detail ? item.text : nil,
+            text: detail ? item.words : nil,
             body: detail && drafted ? item.body : nil,
             issueBody: detail ? item.bodyToFile : nil
         )

@@ -76,6 +76,7 @@ public enum AgentCLICommand: String, Sendable, CaseIterable {
     case termsList = "terms.list"
     case termsPropose = "terms.propose"
     case status
+    case doctor
     case captureList = "capture.list"
     case captureShow = "capture.show"
     case captureFiled = "capture.filed"
@@ -284,7 +285,7 @@ public struct AgentCLITermProject: Sendable, Equatable, Codable {
 }
 
 public struct AgentCLITerms: Sendable, Equatable, Codable {
-    /// Settings' Names and terms, which apply everywhere.
+    /// Settings' Global terms, which apply everywhere.
     public var userTerms: [String]
     public var projects: [AgentCLITermProject]
 
@@ -299,7 +300,7 @@ public struct AgentCLIProposal: Sendable, Equatable, Codable {
         public enum Reason: String, Sendable, Codable {
             /// The project already holds it, in any state.
             case known
-            /// In Names and terms, or a suggestion the user refused.
+            /// In Global terms, or a suggestion the user refused.
             case userList
             /// Not a term: too long, a sentence, control characters.
             case notTermShaped
@@ -387,6 +388,75 @@ public struct AgentCLIStatus: Sendable, Equatable, Codable {
     public static let notRunning = AgentCLIStatus(running: false)
 }
 
+/// One `doctor` check: what was checked, what was found, and when it is not
+/// fine, the one step that fixes it. No dictated text and no key; a remote
+/// host's check names the host.
+public struct AgentCLICheck: Sendable, Equatable, Codable {
+    public enum State: String, Sendable, Codable {
+        case ok
+        case warning
+        case failed
+        /// Nothing to check here (a feature that is off, an engine the app
+        /// does not run).
+        case skipped
+    }
+
+    /// Stable across versions, so an agent can match on it.
+    public var id: String
+    public var title: String
+    public var state: State
+    public var detail: String
+    public var fix: String?
+    /// Supporting lines, such as the last dictations' join lines, most
+    /// recent first.
+    public var lines: [String]?
+
+    public init(
+        id: String, title: String, state: State, detail: String, fix: String? = nil, lines: [String]? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.state = state
+        self.detail = detail
+        self.fix = fix
+        self.lines = lines
+    }
+}
+
+public struct AgentCLIDoctor: Sendable, Equatable, Codable {
+    public var checks: [AgentCLICheck]
+
+    public init(checks: [AgentCLICheck]) {
+        self.checks = checks
+    }
+
+    public var hasFailure: Bool { checks.contains { $0.state == .failed } }
+
+    /// Numbered, so a person can say "check 4" and an agent can quote it.
+    /// The Mac's `doctor` and a remote host's print the same form.
+    public func textLines(numberedFrom first: Int = 1) -> [String] {
+        var lines: [String] = []
+        for (index, check) in checks.enumerated() {
+            let mark = switch check.state {
+            case .ok: "ok  "
+            case .warning: "warn"
+            case .failed: "FAIL"
+            case .skipped: "--  "
+            }
+            lines.append("\(first + index). [\(mark)] \(check.title): \(check.detail)")
+            for line in check.lines ?? [] { lines.append("   \(line)") }
+            if let fix = check.fix, check.state != .ok { lines.append("   fix: \(fix)") }
+        }
+        return lines
+    }
+
+    public var summaryLine: String {
+        let failed = checks.filter { $0.state == .failed }.count
+        let warned = checks.filter { $0.state == .warning }.count
+        return failed + warned == 0 ? "No problems found." : "\(failed) failed, \(warned) to look at."
+    }
+}
+
 /// One quick capture in the Inbox (#923). "Capture" is the Inbox item's name
 /// here, not "issue": an agent reads "the issue about X" as a GitHub issue.
 public struct AgentCLICapture: Sendable, Equatable, Codable {
@@ -403,8 +473,8 @@ public struct AgentCLICapture: Sendable, Equatable, Codable {
     public var capturedAt: Date
     /// Nil while the capture belongs to no project.
     public var project: AgentCLIProject?
-    /// What the draft is: `issue` for every draft today. Nil without a
-    /// draft.
+    /// What the draft is: `issue`, `question`, `task` or `note` (#918).
+    /// Only an issue is filed. Nil without a draft.
     public var kind: String?
     /// The draft's title, or the capture's first words while it has none.
     public var title: String
@@ -478,6 +548,7 @@ public struct AgentCLIResponse: Sendable, Equatable, Codable {
     public var terms: AgentCLITerms?
     public var proposal: AgentCLIProposal?
     public var status: AgentCLIStatus?
+    public var doctor: AgentCLIDoctor?
     /// `capture list`.
     public var captures: AgentCLICaptures?
     /// `capture show` and `capture filed`.
@@ -489,6 +560,7 @@ public struct AgentCLIResponse: Sendable, Equatable, Codable {
         terms: AgentCLITerms? = nil,
         proposal: AgentCLIProposal? = nil,
         status: AgentCLIStatus? = nil,
+        doctor: AgentCLIDoctor? = nil,
         captures: AgentCLICaptures? = nil,
         capture: AgentCLICapture? = nil
     ) {
@@ -499,6 +571,7 @@ public struct AgentCLIResponse: Sendable, Equatable, Codable {
         self.terms = terms
         self.proposal = proposal
         self.status = status
+        self.doctor = doctor
         self.captures = captures
         self.capture = capture
     }

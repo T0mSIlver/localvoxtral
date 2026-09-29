@@ -18,6 +18,11 @@ endpoint on loopback.
 A non-local endpoint receives that context only if you also turn on **Send
 context to non-local polishing servers**, which is off by default.
 
+[Quick capture](coding-agents.md#quick-capture) is the exception you trigger
+yourself: a capture goes to your polishing model with its project's context
+(README and AGENTS.md openings, code search hits, issue and pull request
+titles), wherever polishing runs, to be routed and drafted.
+
 What the app keeps on this Mac (your dictations, optionally their audio, and
 diagnostic records of how each was polished) is described under
 [History](dictation.md#history), where each can be turned off and deleted.
@@ -64,7 +69,7 @@ projection from ~30 ms to ~3 ms per token and saves ~530 MB of memory, with
 no loss in transcription quality.
 
 One dictation can run for up to an hour. The limit guards against a session
-left running and is not a speed limit. The helper holds a steady 4.2 GB and
+left running and is not a speed limit. The helper holds a steady 3.5 GB and
 stays ahead of live speech for at least three hours. When a dictation reaches
 the limit, the helper stops and the menu bar says so.
 
@@ -122,6 +127,8 @@ then paste one API key from
   socket, at 0.006 USD per minute of audio.
 - Polishing uses Mistral Medium 3.5 (mistral-medium-3-5) with reasoning off,
   at 1.5 USD per million input tokens and 7.5 USD per million output tokens.
+  **Polish while you speak** is off by default here, because it sends about
+  3 times the input tokens per long dictation.
 
 In this mode your audio and transcripts reach Mistral.
 
@@ -147,7 +154,7 @@ Mini Transcribe 2 (voxtral-mini-latest) with up to 100 terms.
 
 The terms come from:
 
-- your Names and terms;
+- your Global terms;
 - your replacement dictionary's spellings;
 - only with **Send context to non-local polishing servers** on, this
   dictation's context. That is the terms learned from polishing, the ones the

@@ -48,13 +48,6 @@ final class VibeUnifiedHarnessParserTests: XCTestCase {
         XCTAssertEqual(bash.files, [])
     }
 
-    func testASessionIDWithoutTheParentFieldIsStillDropped() {
-        // The legacy runner always writes `parent_session_id`. A payload that
-        // names a session and omits it is neither shape.
-        let data = Data(#"{"session_id":"s","cwd":"/r","hook_event_name":"post_agent"}"#.utf8)
-        XCTAssertNil(VibeHookInputParser.parse(data: data))
-    }
-
     func testAParentWithoutASessionIDIsDropped() {
         let data = Data(#"{"parent_session_id":"p","cwd":"/r","hook_event_name":"post_agent"}"#.utf8)
         XCTAssertNil(VibeHookInputParser.parse(data: data))

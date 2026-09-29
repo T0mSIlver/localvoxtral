@@ -4,7 +4,8 @@ import SwiftUI
 struct TextProcessingSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
-    @State private var isShowingLearnedTerms = false
+    @State private var instructionsTokens: String?
+    @State private var globalTermsTokens: String?
 
     static let speakerProfileExample = """
         Backend engineer at Acme, mostly Swift and Python.
@@ -22,21 +23,50 @@ struct TextProcessingSettingsPane: View {
         settings.isOverlayBufferSessionReachable
     }
 
-    /// Reading `learnedTermRevision` is what re-renders the row after a
-    /// dictation: the store is a plain class, so nothing else observes it.
-    private var learnedTermCount: Int {
-        _ = viewModel.learnedTermRevision
-        return viewModel.learnedTermStore?.summary().terms ?? 0
+    private var tokenCounter: PolishPromptTokenCounter {
+        PolishPromptTokenCounter(settings: settings, ledger: viewModel.engines.usageLedger)
     }
 
-    private var learnedTermStatus: String {
-        _ = viewModel.learnedTermRevision
-        guard let summary = viewModel.learnedTermStore?.summary(), summary.terms > 0 else {
-            return "0"
+    /// What a count depends on; the backend picks exact or estimated.
+    private struct TokenCountKey: Equatable {
+        let backend: BackendMode
+        let agentProfile: Bool
+        let terms: [String]
+        /// With About-you text, the header is its, not the terms'.
+        let hasProfile: Bool
+    }
+
+    private var tokenCountKey: TokenCountKey {
+        TokenCountKey(
+            backend: settings.polishingBackendMode,
+            agentProfile: settings.agentPolishProfileEnabled,
+            terms: settings.polishSpeakerTerms,
+            hasProfile: !settings.polishSpeakerProfile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    /// Reads the prompt files once per visit and change, not on every render.
+    private func countPromptParts() async {
+        let counter = tokenCounter
+        let instructions = { (profile: PolishPromptProfile) in
+            PolishPromptParts.instructionText(
+                viewModel.appConfigStore.loadLLMPromptTemplates(profile: profile).withReferenceGuide())
         }
-        return summary.projects > 1
-            ? "\(summary.terms) in \(summary.projects) projects"
-            : "\(summary.terms)"
+        let standardText = instructions(.standard)
+        let agentText = settings.agentPolishProfileEnabled ? instructions(.agent) : nil
+        let terms = SpeakerTerms.sanitized(settings.polishSpeakerTerms)
+        // What the terms add does not depend on the instructions.
+        let termText = PolishPromptParts.globalTermText(
+            LLMPromptTemplates(systemContent: "", userContent: ""),
+            profile: settings.polishSpeakerProfile, terms: terms)
+
+        if let standard = await counter.count(standardText) {
+            var agent: PolishPromptTokenCounter.Count?
+            if let agentText { agent = await counter.count(agentText) }
+            instructionsTokens = PolishPromptTokenText.instructions(standard: standard, agent: agent)
+        }
+        globalTermsTokens = await counter.count(termText, termList: true).map {
+            PolishPromptTokenText.globalTerms(count: terms.count, tokens: $0)
+        }
     }
 
     private var llmPolishingEnabledBinding: Binding<Bool> {
@@ -93,7 +123,8 @@ struct TextProcessingSettingsPane: View {
                 }
 
                 SettingsFieldRow(
-                    title: "Names and terms",
+                    title: "Global terms",
+                    status: globalTermsTokens,
                     layout: .stacked
                 ) {
                     SpeakerTermsField(terms: $settings.polishSpeakerTerms)
@@ -138,6 +169,11 @@ struct TextProcessingSettingsPane: View {
                             .labelsHidden()
                     }
 
+                    SettingsFieldRow(title: "Polish while you speak") {
+                        Toggle("", isOn: $settings.earlyPolishEnabled)
+                            .labelsHidden()
+                    }
+
                     SettingsFieldRow(title: "Agent prompt profile in terminals and Claude Desktop") {
                         Toggle("", isOn: $settings.agentPolishProfileEnabled)
                             .labelsHidden()
@@ -165,29 +201,6 @@ struct TextProcessingSettingsPane: View {
                     .disabled(settings.polishDismissedTermSuggestions.isEmpty)
                 }
 
-                SettingsFieldRow(
-                    title: "Terms learned from polishing",
-                    status: learnedTermStatus
-                ) {
-                    HStack(spacing: 8) {
-                        // Enabled at zero: the sheet is where a new machine
-                        // imports terms (#523).
-                        Button("Show") {
-                            isShowingLearnedTerms = true
-                        }
-                        .accessibilityIdentifier("settings.learnedTerms.show")
-                        Button("Forget") {
-                            viewModel.learnedTermStore?.forgetAll()
-                        }
-                        .disabled(learnedTermCount == 0)
-                    }
-                }
-                .sheet(isPresented: $isShowingLearnedTerms) {
-                    LearnedTermsSheet(viewModel: viewModel) {
-                        isShowingLearnedTerms = false
-                    }
-                }
-
                 SettingsFieldRow(title: "Ask the coding agent for each new project's terms") {
                     Toggle("", isOn: $settings.projectTermProposalsEnabled)
                         .labelsHidden()
@@ -197,6 +210,13 @@ struct TextProcessingSettingsPane: View {
                 SettingsFieldRow(title: "Replacement dictionary (legacy)") {
                     Toggle("", isOn: $settings.replacementDictionaryEnabled)
                         .labelsHidden()
+                }
+
+                SettingsFieldRow(title: "Polishing instructions", status: instructionsTokens) {
+                    EmptyView()
+                }
+                .task(id: tokenCountKey) {
+                    await countPromptParts()
                 }
 
                 SettingsFieldRow(title: "Config folder") {
