@@ -130,6 +130,7 @@ final class SettingsStore {
         static let overlayBufferVisibleLines = "settings.overlay_buffer_visible_lines"
         static let overlayBufferSilenceAutoStop = "settings.overlay_buffer_silence_auto_stop"
         static let overlayBufferWordHold = "settings.overlay_buffer_word_hold"
+        static let overlayBufferPolishColor = "settings.overlay_buffer_polish_color"
         static let overlayBufferPositionScreenID = "settings.overlay_buffer_position_screen_id"
         static let overlayBufferPositionOffsetX = "settings.overlay_buffer_position_offset_x"
         static let overlayBufferPositionOffsetY = "settings.overlay_buffer_position_offset_y"
@@ -877,6 +878,12 @@ final class SettingsStore {
         didSet { defaults.set(overlayBufferWordHold.rawValue, forKey: Keys.overlayBufferWordHold) }
     }
 
+    /// The color the overlay shows polish in: the sweep and the changed
+    /// words (#1074).
+    var overlayBufferPolishColor: OverlayPolishColor {
+        didSet { defaults.set(overlayBufferPolishColor.rawValue, forKey: Keys.overlayBufferPolishColor) }
+    }
+
     /// Stop an Overlay Buffer tap session after this long without new text.
     var overlayBufferSilenceAutoStop: SilenceAutoStop {
         didSet { defaults.set(overlayBufferSilenceAutoStop.rawValue, forKey: Keys.overlayBufferSilenceAutoStop) }
@@ -1275,6 +1282,9 @@ final class SettingsStore {
         overlayBufferWordHold =
             (defaults.object(forKey: Keys.overlayBufferWordHold) as? Int)
             .flatMap(OverlayWordHold.init(rawValue:)) ?? .off
+        overlayBufferPolishColor =
+            defaults.string(forKey: Keys.overlayBufferPolishColor)
+            .flatMap(OverlayPolishColor.init(rawValue:)) ?? .teal
         overlayBufferSilenceAutoStop =
             (defaults.object(forKey: Keys.overlayBufferSilenceAutoStop) as? Int)
             .flatMap(SilenceAutoStop.init(rawValue:)) ?? .off
