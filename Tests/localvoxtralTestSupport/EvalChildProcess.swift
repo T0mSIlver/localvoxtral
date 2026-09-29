@@ -6,41 +6,45 @@ import Darwin
 import Glibc
 #endif
 
-/// Runs the eval's `say` calls, directly or as launchd jobs.
+/// Runs the eval's `say` calls, directly or through the say proxy.
 ///
-/// Under the Actions runner, `say -v ?` spawned from xctest lists only the
-/// built-in voices, while the runner's shell and a `launchctl submit` job
-/// list the downloaded ones (#960). With `LV_EVAL_SAY_VIA_LAUNCHD=1`, each
-/// call is submitted to launchd instead, so `say` inherits nothing from
-/// xctest. Output goes to files either way; no pipe is read.
+/// Under the Actions runner, anything xctest starts, launchd jobs included,
+/// lists only the built-in voices, while the runner's shell lists the
+/// downloaded ones (#960). With `LV_EVAL_SAY_PROXY_DIR` set, eval-e2e's shell
+/// runs `scripts/ci/say-proxy.sh` on that directory, and each call becomes a
+/// request it serves. Output goes to files either way; no pipe is read.
 package enum EvalChildProcess {
     package struct Failure: Error, CustomStringConvertible {
         package let description: String
     }
 
-    package static let launchdGate = "LV_EVAL_SAY_VIA_LAUNCHD"
+    package static let proxyDirectoryVariable = "LV_EVAL_SAY_PROXY_DIR"
 
-    package static var launchdRequested: Bool {
-        ProcessInfo.processInfo.environment[launchdGate] == "1"
+    package static var proxyDirectory: URL? {
+        guard let path = ProcessInfo.processInfo.environment[proxyDirectoryVariable], !path.isEmpty
+        else { return nil }
+        return URL(fileURLWithPath: path, isDirectory: true)
     }
 
     /// Runs `executable` and returns its exit status.
     /// - Parameters:
     ///   - standardOutput: a file the child's stdout truncates and writes,
-    ///     or nil to inherit ours (discarded under launchd).
-    ///   - discardStandardError: sends stderr to /dev/null. Under launchd,
-    ///     stderr goes to a file whose text is printed unless discarded.
+    ///     or nil to inherit ours (discarded through the proxy).
+    ///   - discardStandardError: sends stderr to /dev/null. Through the
+    ///     proxy, stderr's text is printed unless discarded.
+    ///   - proxy: the say proxy's directory; `arguments` go to its `say`,
+    ///     and `executable` is ignored.
     package static func run(
         _ executable: String,
         arguments: [String],
         standardOutput: String? = nil,
         discardStandardError: Bool = false,
-        viaLaunchd: Bool = launchdRequested,
+        proxy: URL? = proxyDirectory,
         timeout: Duration = .seconds(120)
     ) throws -> Int32 {
-        if viaLaunchd {
-            return try runViaLaunchd(
-                executable, arguments: arguments, standardOutput: standardOutput,
+        if let proxy {
+            return try runThroughProxy(
+                proxy, arguments: arguments, standardOutput: standardOutput,
                 discardStandardError: discardStandardError, timeout: timeout
             )
         }
@@ -50,101 +54,66 @@ package enum EvalChildProcess {
         )
     }
 
-    // MARK: - launchd
+    // MARK: - Say proxy
 
-    /// The files one launchd job writes, in a directory of its own.
-    package struct JobFiles {
-        package let directory: URL
-        package var status: URL { directory.appendingPathComponent("status") }
-        package var standardError: URL { directory.appendingPathComponent("stderr") }
-
-        package init(directory: URL) {
-            self.directory = directory
+    /// A request's bytes: each argument followed by a NUL, which no argument
+    /// can hold.
+    package static func proxyRequest(arguments: [String]) -> Data {
+        var data = Data()
+        for argument in arguments {
+            data.append(contentsOf: argument.utf8)
+            data.append(0)
         }
+        return data
     }
 
-    /// The `/bin/sh -c` script a job runs: the command, then its exit status
-    /// written to `status` through a rename, so a reader never sees half a
-    /// number. launchd restarts a `submit` job that exits, so a rerun that
-    /// finds `status` does nothing.
-    package static func jobScript(
-        executable: String,
-        arguments: [String],
-        standardOutput: String?,
-        files: JobFiles
-    ) -> String {
-        let status = shellQuoted(files.status.path)
-        let pending = shellQuoted(files.status.path + ".tmp")
-        let command = ([executable] + arguments).map(shellQuoted).joined(separator: " ")
-        let output = shellQuoted(standardOutput ?? "/dev/null")
-        let errors = shellQuoted(files.standardError.path)
-        return "[ -e \(status) ] || { \(command) >\(output) 2>\(errors); "
-            + "echo $? >\(pending); mv \(pending) \(status); }"
-    }
-
-    /// `launchctl` arguments that submit `script` under `label`.
-    package static func submitArguments(label: String, script: String) -> [String] {
-        ["submit", "-l", label, "--", "/bin/sh", "-c", script]
-    }
-
-    /// Single-quotes `value` for `/bin/sh`.
-    package static func shellQuoted(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
-    }
-
-    private static func runViaLaunchd(
-        _ executable: String,
+    private static func runThroughProxy(
+        _ directory: URL,
         arguments: [String],
         standardOutput: String?,
         discardStandardError: Bool,
         timeout: Duration
     ) throws -> Int32 {
-        let label = "com.localvoxtral.eval.\(UUID().uuidString)"
-        let files = JobFiles(
-            directory: FileManager.default.temporaryDirectory
-                .appendingPathComponent("lv-launchd-\(UUID().uuidString)", isDirectory: true)
-        )
-        try FileManager.default.createDirectory(at: files.directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: files.directory) }
-
-        let script = jobScript(
-            executable: executable, arguments: arguments,
-            standardOutput: standardOutput, files: files
-        )
-        let submitted = try runDirectly(
-            "/bin/launchctl", arguments: submitArguments(label: label, script: script),
-            standardOutput: "/dev/null", standardError: files.standardError.path
-        )
-        guard submitted == 0 else {
-            let errors = (try? String(contentsOf: files.standardError, encoding: .utf8)) ?? ""
-            throw Failure(
-                description: "launchctl submit failed (status \(submitted)); it needs the account's "
-                    + "GUI login session: \(errors)"
-            )
-        }
+        let id = UUID().uuidString
+        let requests = directory.appendingPathComponent("requests", isDirectory: true)
+        let results = directory.appendingPathComponent("results", isDirectory: true)
+        let status = results.appendingPathComponent("\(id).status")
+        let output = results.appendingPathComponent("\(id).out")
+        let errors = results.appendingPathComponent("\(id).err")
         defer {
-            _ = try? runDirectly(
-                "/bin/launchctl", arguments: ["remove", label],
-                standardOutput: "/dev/null", standardError: "/dev/null"
-            )
+            for file in [status, output, errors] {
+                try? FileManager.default.removeItem(at: file)
+            }
         }
+
+        // Written under another name, then renamed: the proxy only picks up
+        // complete `.req` files.
+        let pending = requests.appendingPathComponent("\(id).tmp")
+        try proxyRequest(arguments: arguments).write(to: pending)
+        try FileManager.default.moveItem(at: pending, to: requests.appendingPathComponent("\(id).req"))
 
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: timeout)
         while true {
-            if let text = try? String(contentsOf: files.status, encoding: .utf8),
-                let status = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines))
+            if let text = try? String(contentsOf: status, encoding: .utf8),
+                let code = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines))
             {
-                if !discardStandardError,
-                    let errors = try? String(contentsOf: files.standardError, encoding: .utf8),
-                    !errors.isEmpty
-                {
-                    print(errors, terminator: errors.hasSuffix("\n") ? "" : "\n")
+                if let standardOutput {
+                    try? FileManager.default.removeItem(atPath: standardOutput)
+                    try FileManager.default.moveItem(at: output, to: URL(fileURLWithPath: standardOutput))
                 }
-                return status
+                if !discardStandardError || code == 64,
+                    let text = try? String(contentsOf: errors, encoding: .utf8), !text.isEmpty
+                {
+                    print(text, terminator: text.hasSuffix("\n") ? "" : "\n")
+                }
+                return code
             }
             guard clock.now < deadline else {
-                throw Failure(description: "launchd job \(executable) did not finish within \(timeout)")
+                throw Failure(
+                    description: "say proxy at \(directory.path) did not answer within \(timeout); "
+                        + "is scripts/ci/say-proxy.sh running?"
+                )
             }
             Thread.sleep(forTimeInterval: 0.1)
         }

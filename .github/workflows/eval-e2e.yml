@@ -137,7 +137,6 @@ jobs:
         run: |
           echo "say -v ? lines: $(say -v '?' | wc -l)"
           echo "Samantha/Daniel/Thomas lines: $(say -v '?' | grep -c -E '^(Samantha|Daniel|Thomas)')"
-          echo "launchd session: $(launchctl managername)"
           # The same report as the eval's "eval TTS env:" lines, home and
           # user masked: the difference is what hides the voices from xctest.
           home=$(perl -e 'print((getpwuid($<))[7])')
@@ -151,6 +150,21 @@ jobs:
             esac
           done
 
+      - name: Start the say proxy
+        # The eval's `say` calls run here, in a process the runner's shell
+        # starts, which sees the downloaded voices (#960).
+        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
+        run: |
+          rm -rf "$RUNNER_TEMP/say-proxy"
+          nohup ./scripts/ci/say-proxy.sh "$RUNNER_TEMP/say-proxy" >"$RUNNER_TEMP/say-proxy.log" 2>&1 &
+          echo $! >"$RUNNER_TEMP/say-proxy.pid"
+          for _ in $(seq 1 50); do
+            grep -q watching "$RUNNER_TEMP/say-proxy.log" && break
+            sleep 0.2
+          done
+          cat "$RUNNER_TEMP/say-proxy.log"
+          grep -q watching "$RUNNER_TEMP/say-proxy.log"
+
       - name: Run agent-dictation E2E eval
         id: eval
         if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
@@ -159,9 +173,9 @@ jobs:
         timeout-minutes: 60
         env:
           LV_AGENT_EVAL_E2E_ENABLE: "1"
-          # Run `say` as launchd jobs: spawned from xctest here it lists only
-          # the built-in voices (#960).
-          LV_EVAL_SAY_VIA_LAUNCHD: "1"
+          # `say` runs in the proxy the step above started: anything xctest
+          # starts here lists only the built-in voices (#960).
+          LV_EVAL_SAY_PROXY_DIR: ${{ runner.temp }}/say-proxy
           LV_AGENT_EVAL_E2E_HELPER_PATH: PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd
           LV_AGENT_EVAL_E2E_ASR_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead
         run: |
@@ -185,6 +199,16 @@ jobs:
           # unit step rebuilt it back — the same flag-flip PR #157 fixed
           # inside ci.yml (PR #157 review finding).
           swift test --build-system native --filter AgentDictationE2EEvalTests --enable-code-coverage 2>&1 | tee logs/eval-e2e.log
+
+      - name: Stop the say proxy
+        if: always() && (github.event_name != 'schedule' || steps.guard.outputs.run != 'false')
+        continue-on-error: true
+        run: |
+          if [ -f "$RUNNER_TEMP/say-proxy.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/say-proxy.pid")" 2>/dev/null || true
+            rm -f "$RUNNER_TEMP/say-proxy.pid"
+          fi
+          cat "$RUNNER_TEMP/say-proxy.log" 2>/dev/null || true
 
       - name: Voices the runner's shell lists after the eval
         # Still 187 here while the eval saw 27 means something tied to the

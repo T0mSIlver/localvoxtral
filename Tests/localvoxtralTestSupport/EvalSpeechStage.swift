@@ -156,11 +156,11 @@ package enum EvalSpeechStage {
         for line in EvalChildProcess.currentEnvironmentReport() {
             print("eval TTS env: \(line)")
         }
-        print("eval TTS: `say` via launchd: \(EvalChildProcess.launchdRequested)")
+        print("eval TTS: `say` through the say proxy: \(EvalChildProcess.proxyDirectory != nil)")
     }()
 
     /// `say -v ?` through a temp file (no pipes — descriptor-safe by
-    /// construction), as a launchd job under `LV_EVAL_SAY_VIA_LAUNCHD=1`
+    /// construction), through the say proxy under `LV_EVAL_SAY_PROXY_DIR`
     /// (#960), parsed by the unit-tested picker. Throws when `say`
     /// fails or lists none of `preferred`.
     package static func resolveVoice(languagePrefix: String, preferred: [String]) throws -> String {
