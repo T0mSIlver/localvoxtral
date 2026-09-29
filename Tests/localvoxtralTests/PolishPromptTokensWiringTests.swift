@@ -28,7 +28,7 @@ final class PolishPromptTokensWiringTests: XCTestCase {
         viewModel.appConfigStore = MockAppConfigStore(promptTemplates: template, agentPromptTemplates: template)
         viewModel.llmPolishingService = FakePolishingService(usage: usage) { _ in "The Mac queue is stuck." }
         viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding(outcome: nil)
-        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
         viewModel.sessionStore = store
         viewModel.learnedTermStore = LearnedTermStore(fileURL: nil)
         retainForTestProcessLifetime(viewModel)
