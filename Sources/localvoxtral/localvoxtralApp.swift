@@ -279,11 +279,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             remoteHosts = nil
         }
-        let activeRemoteChannels = Set(
-            (remoteHosts?.hosts() ?? [])
-                .filter { !$0.isRevoked }
-                .map { ClaudeRemoteSessionScope.channel(hostID: $0.id) }
-        )
+        // Nil when the registry failed to load: channels unknown, not none,
+        // so the restore keeps remote sessions in the file (#1041).
+        let activeRemoteChannels = remoteHosts.map { registry in
+            Set(
+                registry.hosts()
+                    .filter { !$0.isRevoked }
+                    .map { ClaudeRemoteSessionScope.channel(hostID: $0.id) }
+            )
+        }
         claudeSessionRegistry = ClaudeSessionRegistry(
             store: ClaudeSessionFileStore(),
             allowedRemoteChannels: activeRemoteChannels

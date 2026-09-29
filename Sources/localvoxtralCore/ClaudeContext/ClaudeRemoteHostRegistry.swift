@@ -215,12 +215,19 @@ public protocol ClaudeRemoteHostStoreIO: Sendable {
     /// Runs `body` as the only writer of `url` among the running copies of
     /// the app (#990).
     func withExclusiveAccess<T>(to url: URL, _ body: () throws -> T) throws -> T
+    /// Renames a file this build refused to `<name>.incompatible-<time>`,
+    /// for diagnosis, so a fresh one can be written without losing it (#1041).
+    func moveAside(_ url: URL) throws -> URL
 }
 
 extension ClaudeRemoteHostStoreIO {
     /// A store no other process sees needs no lock.
     public func withExclusiveAccess<T>(to url: URL, _ body: () throws -> T) throws -> T {
         try body()
+    }
+
+    public func moveAside(_ url: URL) throws -> URL {
+        try StoredFile.moveAside(url, label: "incompatible", id: String(Int(Date().timeIntervalSince1970)))
     }
 }
 

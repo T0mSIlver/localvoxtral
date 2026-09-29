@@ -14,6 +14,9 @@ public protocol ClaudeSessionStore: Sendable {
     func load() throws -> Data?
     func save(_ data: Data) throws
     func clear() throws
+    /// Moves a file this build refused out of the way, keeping its bytes
+    /// (#1041). Called before the first save or clear after a refused load.
+    func moveAside() throws
 }
 
 public struct ClaudeSessionFileStore: ClaudeSessionStore {
@@ -34,6 +37,10 @@ public struct ClaudeSessionFileStore: ClaudeSessionStore {
 
     public func save(_ data: Data) throws {
         try io.write(data, to: fileURL)
+    }
+
+    public func moveAside() throws {
+        _ = try io.moveAside(fileURL)
     }
 
     public func clear() throws {
@@ -68,6 +75,9 @@ package final class ClaudeSessionStoreWriter: @unchecked Sendable {
     private struct State {
         var pending: Operation?
         var scheduled = false
+        /// Set when the restore refused the file: nothing is saved or
+        /// cleared until it has been moved aside.
+        var fileRefused = false
     }
 
     private let store: any ClaudeSessionStore
@@ -89,21 +99,38 @@ package final class ClaudeSessionStoreWriter: @unchecked Sendable {
         queue.async { [self] in drain() }
     }
 
+    /// The restore could not use the file on disk: move it aside before any
+    /// write replaces or removes it.
+    package func keepRefusedFile() {
+        state.withLock { $0.fileRefused = true }
+    }
+
     package func flush() {
         queue.sync {}
     }
 
     private func drain() {
         while true {
-            guard let operation = state.withLock({ state -> Operation? in
+            guard let (operation, fileRefused) = state.withLock({ state -> (Operation, Bool)? in
                 guard let pending = state.pending else {
                     state.scheduled = false
                     return nil
                 }
                 state.pending = nil
-                return pending
+                return (pending, state.fileRefused)
             }) else { return }
 
+            if fileRefused {
+                do {
+                    try store.moveAside()
+                    state.withLock { $0.fileRefused = false }
+                } catch {
+                    Log.claudeContext.error(
+                        "Claude session store could not move its refused file aside; not writing: \(String(describing: error), privacy: .public)"
+                    )
+                    continue
+                }
+            }
             do {
                 switch operation {
                 case .save(let data): try store.save(data)
