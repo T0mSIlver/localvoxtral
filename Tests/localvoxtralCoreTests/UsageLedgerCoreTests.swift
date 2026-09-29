@@ -59,6 +59,7 @@ final class UsageLedgerCoreTests: XCTestCase {
             (.polish, .mistral, "polish"),
             (.termSuggestions, .mistral, "polish"),
             (.quickCaptureRouting, .mistral, "polish"),
+            (.quickCapturePolish, .mistral, "polish"),
             (.polish, .bundledHelper, nil),
             (.termSuggestions, .userServer, nil),
             (.quickCaptureRouting, .jev, nil),

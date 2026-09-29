@@ -64,8 +64,10 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
 
     package let id: UUID
     package let capturedAt: Date
-    /// The words as dictated. Never edited, so a bad draft can be redone.
-    package let text: String
+    /// The words as dictated, then as polished once before routing (#970).
+    /// Never edited after that, so a bad draft can be redone. History keeps
+    /// the raw transcript.
+    package var text: String
     /// The History record this capture was saved as, when History is on.
     package var historyRecordID: UUID?
     package var state: State
