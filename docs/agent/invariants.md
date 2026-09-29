@@ -642,6 +642,13 @@ there is not.
     token, a `Host` other than its own address, and any call for a session
     the pane no longer displays. It forwards through the TUI's in-process
     client, so the app never needs or sees opencode's server password.
+    *Typed only into the same prompt* (#1057): a call the relay refused
+    with a status other than 409, or one that never reached it (connection
+    refused, text too long), is typed only while the terminal the dictation
+    started in is frontmost and its focused pane still resolves to this
+    relay. A 409 (the pane shows another session now) and a request with no
+    answer read back (timeout, dropped connection: it may have landed) stay
+    in History (`keepInHistory`).
     *Resolution:* it reuses the join's session when the join resolved, and
     otherwise asks only local questions
     (`ClaudeSessionJoinResolver.opencodePromptRelay(target:)`): the focused
