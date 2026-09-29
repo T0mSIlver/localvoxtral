@@ -452,13 +452,24 @@ final class ViewSnapshotTests: XCTestCase {
     func testOverlayPanelStates() throws {
         let metrics = OverlayLayoutMetrics(bodyFontSize: OverlayLayoutMetrics.defaultBodyFontSize)
         let sample = "Rename the retry helper and run the unit tests again."
+        // What polish landed on (#1074): the raw words, then the polished.
+        let raw = "so um rename the retry helper to retry with back off and run the unit test again"
+        let polishedText = "Rename the retry helper to retryWithBackoff and run the unit tests again."
+        let speaking = OverlayMicLevel()
+        for level in [0.35, 0.95, 0.6, 0.8] { speaking.push(level) }
         let states: [(name: String, view: DictationOverlayView)] = [
             ("ready", DictationOverlayView(
                 phase: .idle, text: "", errorMessage: nil, secureInputActive: false,
                 metrics: metrics)),
             ("listening", DictationOverlayView(
                 phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
-                metrics: metrics)),
+                metrics: metrics, micLevel: speaking, motion: .frozen)),
+            ("listening-silent", DictationOverlayView(
+                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, micLevel: OverlayMicLevel(), motion: .frozen)),
+            ("listening-reduce-motion", DictationOverlayView(
+                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, micLevel: speaking, motion: .reduced)),
             ("listening-joined", DictationOverlayView(
                 phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
                 metrics: metrics, claudeJoin: .joined(label: "localvoxtral"))),
@@ -477,9 +488,24 @@ final class ViewSnapshotTests: XCTestCase {
             ("finalizing", DictationOverlayView(
                 phase: .finalizing, text: sample, errorMessage: nil, secureInputActive: false,
                 metrics: metrics)),
+            ("polishing", DictationOverlayView(
+                phase: .finalizing, text: raw, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, polishing: true, motion: .frozen)),
+            ("polishing-reduce-motion", DictationOverlayView(
+                phase: .finalizing, text: raw, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, polishing: true, motion: .reduced)),
             ("polished", DictationOverlayView(
-                phase: .finalizing, text: sample, errorMessage: nil, secureInputActive: false,
-                metrics: metrics, polished: true)),
+                phase: .finalizing, text: polishedText, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, polished: true, polishedFrom: raw, motion: .frozen)),
+            // "Color for polished words" set to the system accent.
+            ("polishing-accent", DictationOverlayView(
+                phase: .finalizing, text: raw, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, polishing: true, motion: .frozen,
+                polishColor: OverlayPolishColor.systemAccent.color)),
+            ("polished-accent", DictationOverlayView(
+                phase: .finalizing, text: polishedText, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, polished: true, polishedFrom: raw, motion: .frozen,
+                polishColor: OverlayPolishColor.systemAccent.color)),
             ("commit-failed", DictationOverlayView(
                 phase: .commitFailed, text: sample,
                 errorMessage: "Couldn't insert. Copied for manual paste.",
@@ -495,19 +521,27 @@ final class ViewSnapshotTests: XCTestCase {
                     metrics: metrics, destinations: Self.strip(waiting: waiting, open: open)))
             }
         }
-        for state in states + destinations {
+        // The #1074 states on a dark desktop too: the marks, the band and
+        // the tints must read on both.
+        let darkNames: Set = [
+            "listening", "polishing", "polished", "polished-accent", "destinations-3-open", "destinations-3-closed",
+        ]
+        let renders: [(String, DictationOverlayView, NSAppearance.Name)] = (states + destinations).map { ($0.name, $0.view, .aqua) }
+            + (states + destinations).filter { darkNames.contains($0.name) }.map { ("\($0.name)-dark", $0.view, .darkAqua) }
+        for (name, overlay, appearance) in renders {
             let height = metrics.contentHeight(
-                text: state.view.text, errorMessage: state.view.errorMessage, draftReview: state.view.draftReview,
-                destinations: state.view.destinations)
+                text: overlay.text, errorMessage: overlay.errorMessage, draftReview: overlay.draftReview,
+                destinations: overlay.destinations)
             // A flat backdrop stands in for the desktop the panel floats over.
             let inset: CGFloat = 16
-            let view = state.view
+            let view = overlay
                 .frame(width: metrics.panelWidth, height: height)
                 .padding(inset)
-                .background(Color(white: 0.55))
+                .background(Color(white: appearance == .darkAqua ? 0.22 : 0.55))
             try record(
-                view, name: "overlay-\(state.name)",
-                width: metrics.panelWidth + 2 * inset, height: height + 2 * inset, growToFit: false)
+                view, name: "overlay-\(name)",
+                width: metrics.panelWidth + 2 * inset, height: height + 2 * inset, growToFit: false,
+                appearance: appearance)
         }
     }
 

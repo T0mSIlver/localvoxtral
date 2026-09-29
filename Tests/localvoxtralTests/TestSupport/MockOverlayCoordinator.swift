@@ -39,6 +39,22 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     var lastDismissAfterHoldMinimumVisibility: TimeInterval? { dismissHoldVisibilities.last }
     var resetCallCount = 0
     var markPolishedCalls: [Bool] = []
+    var markPolishingCalls: [Bool] = []
+    var micLevels: [Double] = []
+    /// The polish-to-close calls in order (#1074), for tests of what the
+    /// user sees against when the text goes in.
+    enum Event: Equatable {
+        case polishing(Bool)
+        case polished(Bool)
+        case committed(String)
+        case held(TimeInterval)
+    }
+    var events: [Event] = []
+    /// One entry per commit after a `markPolished`: whether the commit ran
+    /// in the same main-actor turn, with no suspension since. A task queued
+    /// at `markPolished` flips the flag the moment the code yields.
+    var commitsInPolishedTurn: [Bool] = []
+    private var polishedTurnEnded: Bool?
     /// Every destination strip the overlay was asked to show (#840).
     var shownDestinations: [OverlayDestinationStrip?] = []
     /// Every draft a review asked the overlay to show (#927).
@@ -76,6 +92,10 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     ) -> OverlayBufferCommitOutcome {
         commitCallCount += 1
         committedTexts.append(commitBufferText)
+        events.append(.committed(commitBufferText))
+        if let polishedTurnEnded {
+            commitsInPolishedTurn.append(!polishedTurnEnded)
+        }
         if insertsThroughCommitter,
            !textCommitter.insertTextPrioritizingKeyboard(
                commitBufferText, preferredAppPID: passesTargetPIDToCommitter ? commitTargetAppPID : nil
@@ -88,6 +108,7 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
 
     func dismissAfterHold(minimumVisibility: TimeInterval) {
         dismissHoldVisibilities.append(minimumVisibility)
+        events.append(.held(minimumVisibility))
     }
 
     func reset() {
@@ -106,5 +127,19 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
 
     func markPolished(_ polished: Bool) {
         markPolishedCalls.append(polished)
+        events.append(.polished(polished))
+        polishedTurnEnded = false
+        Task { @MainActor [weak self] in self?.polishedTurnEnded = true }
+    }
+
+    func markPolishing(_ polishing: Bool) {
+        markPolishingCalls.append(polishing)
+        events.append(.polishing(polishing))
+    }
+
+    var showsPolishChange: Bool { markPolishedCalls.last ?? false }
+
+    func updateMicLevel(_ level: Double) {
+        micLevels.append(level)
     }
 }
