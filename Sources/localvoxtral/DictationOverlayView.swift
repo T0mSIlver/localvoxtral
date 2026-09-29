@@ -289,7 +289,7 @@ struct DictationOverlayView: View {
         .frame(height: metrics.destinationRowHeight)
         .background(
             RoundedRectangle(cornerRadius: metrics.destinationRowHeight / 3, style: .continuous)
-                .fill(item.isSelected ? (softRows ? style.tint.opacity(0.18) : style.tint) : Color.clear)
+                .fill(item.isSelected ? (softRows ? style.tint.opacity(design?.tabRowTint ?? 0.18) : style.tint) : Color.clear)
         )
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
@@ -374,6 +374,44 @@ struct DictationOverlayView: View {
             .accessibilityLabel(accessibilityLabel)
     }
 
+    @ViewBuilder
+    private func levelMeter(_ design: OverlayDesignMockup) -> some View {
+        switch design.meter {
+        case .fiveBars, .threeBars, .sevenBars:
+            let levels: [Double] = {
+                switch design.meter {
+                case .threeBars: return [design.levels[1], design.levels[3], design.levels[2]]
+                case .sevenBars:
+                    let l = design.levels
+                    return [l[0] * 0.5, l[1] * 0.75, l[2], l[3], l[4], l[1] * 0.7, l[0] * 0.45]
+                default: return design.levels
+                }
+            }()
+            let width: CGFloat = design.meter == .threeBars ? 4 : (design.meter == .sevenBars ? 2 : 3)
+            HStack(alignment: .center, spacing: design.meter == .threeBars ? 2.5 : 2) {
+                ForEach(levels.indices, id: \.self) { index in
+                    Capsule()
+                        .fill(Self.listeningColor)
+                        .frame(width: width, height: 3 + 11 * levels[index])
+                }
+            }
+            .frame(height: 14)
+        case .micFill:
+            let level = design.levels.max() ?? 0
+            ZStack {
+                Image(systemName: "mic")
+                    .foregroundStyle(Self.listeningColor.opacity(0.55))
+                Image(systemName: "mic.fill")
+                    .foregroundStyle(Self.listeningColor)
+                    .mask(alignment: .bottom) {
+                        Rectangle().frame(height: metrics.titleFontSize * 1.3 * (0.15 + 0.85 * level))
+                    }
+            }
+            .font(.system(size: metrics.titleFontSize, weight: .semibold))
+            .frame(height: metrics.titleFontSize * 1.3)
+        }
+    }
+
     private var softRows: Bool {
         design?.destination == .outline || design?.destination == .footer
     }
@@ -409,14 +447,7 @@ struct DictationOverlayView: View {
                 }
             case .bars:
                 HStack(spacing: 6) {
-                    HStack(alignment: .center, spacing: 2) {
-                        ForEach(design.levels.indices, id: \.self) { index in
-                            Capsule()
-                                .fill(Self.listeningColor)
-                                .frame(width: 3, height: 3 + 11 * design.levels[index])
-                        }
-                    }
-                    .frame(height: 14)
+                    levelMeter(design)
                     title
                 }
             }
@@ -426,18 +457,38 @@ struct DictationOverlayView: View {
                 title
                 ProgressView().controlSize(.small)
             case .shimmer:
-                Label {
+                if design.polishingIcon {
+                    Label {
+                        title
+                    } icon: {
+                        Image(systemName: "wand.and.stars")
+                            .font(.system(size: metrics.titleFontSize))
+                            .foregroundStyle(Color.secondary)
+                    }
+                } else {
                     title
-                } icon: {
-                    Image(systemName: "wand.and.stars")
-                        .font(.system(size: metrics.titleFontSize))
-                        .foregroundStyle(Color.secondary)
                 }
             }
         }
     }
 
+    @ViewBuilder
     private func tabHint(_ strip: OverlayDestinationStrip) -> some View {
+        if design?.tabChevrons == true {
+            HStack(spacing: 2) {
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: metrics.badgeFontSize * 0.8, weight: .semibold))
+                Text(strip.position)
+                    .font(.system(size: metrics.badgeFontSize, weight: .semibold).monospacedDigit())
+            }
+            .foregroundStyle(.tertiary)
+            .fixedSize()
+        } else {
+            keyHint(strip)
+        }
+    }
+
+    private func keyHint(_ strip: OverlayDestinationStrip) -> some View {
         HStack(spacing: 4) {
             Text("Tab")
                 .font(.system(size: metrics.badgeFontSize * 0.85, weight: .semibold))
@@ -469,8 +520,8 @@ struct DictationOverlayView: View {
         .foregroundStyle(style.tint)
         .padding(.horizontal, metrics.badgeHorizontalPadding)
         .padding(.vertical, metrics.badgeVerticalPadding)
-        .background(Capsule(style: .continuous).fill(style.tint.opacity(0.14)))
-        .overlay(Capsule(style: .continuous).strokeBorder(style.tint.opacity(0.45), lineWidth: 0.5))
+        .background(Capsule(style: .continuous).fill(style.tint.opacity(design?.tabTint ?? 0.14)))
+        .overlay(Capsule(style: .continuous).strokeBorder(style.tint.opacity(design?.tabOutline == false ? 0 : 0.45), lineWidth: 0.5))
     }
 
     private func outlineHeader(_ strip: OverlayDestinationStrip) -> some View {
@@ -510,7 +561,11 @@ struct DictationOverlayView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: OverlayLayoutMetrics.stackSpacing) {
             HStack(alignment: .center, spacing: 6) {
-                if let polishCue, polishCue.style == .headerTitle || design != nil {
+                if let polishCue, design?.polishingIcon == false {
+                    Text(polishCue.headerTitle)
+                        .font(.system(size: metrics.titleFontSize, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                } else if let polishCue, polishCue.style == .headerTitle || design != nil {
                     Label(polishCue.headerTitle, systemImage: "wand.and.stars")
                         .labelStyle(.titleAndIcon)
                         .font(.system(size: metrics.titleFontSize, weight: .semibold))
@@ -556,7 +611,8 @@ struct DictationOverlayView: View {
                         PolishCueBody(cue: polishCue, polished: displayText, metrics: metrics)
                     } else if let design, design.polishing == .shimmer, phase == .finalizing {
                         ShimmerBody(text: displayText, sweep: design.sweep,
-                                    reduceMotion: design.reduceMotion, metrics: metrics)
+                                    reduceMotion: design.reduceMotion, metrics: metrics,
+                                    band: design.sweepBand, blue: design.sweepBlue)
                     } else {
                         OverlayBodyScrollContent(text: displayText, metrics: metrics)
                     }
@@ -712,6 +768,12 @@ struct PolishCueMockup {
     var progress: Double
     var raw: String
     var reduceMotion = false
+    var underline = true
+    var markAlpha = 0.32
+    /// The words polish wrote are drawn in blue too.
+    var changedBlue = false
+    /// The whole polished text lands blue and settles to black.
+    var allBlue = false
 
     var headerTitle: String { "Polished" }
 
@@ -750,8 +812,11 @@ struct PolishCueBody: View {
             let upper = polished.distance(from: polished.startIndex, to: range.upperBound)
             let a = out.index(out.startIndex, offsetByCharacters: lower)
             let b = out.index(out.startIndex, offsetByCharacters: upper)
-            out[a..<b].backgroundColor = Color.accentColor.opacity(0.32 * cue.markOpacity)
-            if cue.markOpacity > 0 {
+            out[a..<b].backgroundColor = Color.accentColor.opacity(cue.markAlpha * cue.markOpacity)
+            if cue.changedBlue, cue.markOpacity > 0 {
+                out[a..<b].foregroundColor = Color.accentColor
+            }
+            if cue.underline, cue.markOpacity > 0 {
                 out[a..<b].underlineStyle = Text.LineStyle(
                     pattern: .solid, color: Color.accentColor.opacity(cue.markOpacity))
             }
@@ -770,7 +835,7 @@ struct PolishCueBody: View {
             }
             Text(marked)
                 .font(.system(size: metrics.bodyFontSize))
-                .foregroundStyle(.primary)
+                .foregroundStyle(cue.allBlue && cue.markOpacity > 0.5 ? Color.accentColor : Color.primary)
                 .fixedSize(horizontal: false, vertical: true)
                 .opacity(cue.polishedOpacity)
         }
@@ -783,6 +848,7 @@ struct OverlayDesignMockup {
     enum Listening { case today, dot, dotOnly, bars, mic }
     enum Destination { case today, outline, footer }
     enum Polishing { case today, titled, shimmer }
+    enum Meter { case fiveBars, threeBars, sevenBars, micFill }
     var listening: Listening = .today
     var destination: Destination = .today
     var polishing: Polishing = .today
@@ -793,6 +859,14 @@ struct OverlayDesignMockup {
     /// Where the polishing sweep is across the text, 0...1.
     var sweep: Double = 0.45
     var reduceMotion = false
+    var meter: Meter = .fiveBars
+    var polishingIcon = true
+    var sweepBand: Double = 0.22
+    var sweepBlue = false
+    var tabTint: Double = 0.14
+    var tabOutline = true
+    var tabRowTint: Double = 0.18
+    var tabChevrons = false
 }
 
 struct ShimmerBody: View {
@@ -800,6 +874,8 @@ struct ShimmerBody: View {
     let sweep: Double
     let reduceMotion: Bool
     let metrics: OverlayLayoutMetrics
+    var band: Double = 0.22
+    var blue = false
 
     private var base: some View {
         Text(text)
@@ -814,13 +890,13 @@ struct ShimmerBody: View {
             .overlay {
                 if !reduceMotion {
                     base
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(blue ? Color.accentColor : Color.primary)
                         .mask(
                             LinearGradient(
                                 stops: [
-                                    .init(color: .clear, location: max(0, sweep - 0.22)),
+                                    .init(color: .clear, location: max(0, sweep - band)),
                                     .init(color: .black, location: sweep),
-                                    .init(color: .clear, location: min(1, sweep + 0.22)),
+                                    .init(color: .clear, location: min(1, sweep + band)),
                                 ],
                                 startPoint: .leading, endPoint: .trailing)
                         )

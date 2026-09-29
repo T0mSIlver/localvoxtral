@@ -677,6 +677,105 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
+    /// #1074 fine-tuning: small variations of each part Tom picked.
+    func testOverlayTuneMockups() throws {
+        let metrics = OverlayLayoutMetrics(bodyFontSize: OverlayLayoutMetrics.defaultBodyFontSize)
+        let partial = "so um rename the retry helper to retry with back off and"
+        let raw = "so um rename the retry helper to retry with back off and run the unit test again"
+        let polished = "Rename the retry helper to retryWithBackoff and run the unit tests again."
+        typealias Design = OverlayDesignMockup
+        typealias Cue = PolishCueMockup
+        struct Shot {
+            var name: String
+            var phase: OverlayBufferPhase
+            var text: String
+            var strip: OverlayDestinationStrip? = nil
+            var design: Design
+            var cue: Cue? = nil
+            var dark = false
+        }
+        var shots: [Shot] = []
+        let levelSets: [(String, [Double])] = [
+            ("quiet", [0.06, 0.1, 0.08, 0.12, 0.05]),
+            ("speaking", [0.35, 0.8, 0.55, 0.95, 0.4]),
+            ("loud", [0.8, 1.0, 0.9, 1.0, 0.85]),
+        ]
+        for (meterName, meter) in [("m1", Design.Meter.fiveBars), ("m2", .threeBars), ("m3", .sevenBars), ("m4", .micFill)] {
+            for (levelName, levels) in levelSets {
+                shots.append(Shot(name: "mic-\(meterName)-\(levelName)", phase: .buffering, text: partial,
+                                  design: Design(listening: .bars, levels: levels, meter: meter, polishingIcon: false)))
+            }
+            shots.append(Shot(name: "mic-\(meterName)-dark", phase: .buffering, text: partial,
+                              design: Design(listening: .bars, levels: levelSets[1].1, meter: meter, polishingIcon: false),
+                              dark: true))
+        }
+        shots.append(Shot(name: "mic-reduce", phase: .buffering, text: partial,
+                          design: Design(listening: .mic, reduceMotion: true, polishingIcon: false)))
+        let tabs: [(String, Design)] = [
+            ("t1", Design(destination: .outline, polishingIcon: false)),
+            ("t2", Design(destination: .outline, polishingIcon: false, tabTint: 0.2, tabOutline: false, tabRowTint: 0.22)),
+            ("t3", Design(destination: .outline, polishingIcon: false, tabChevrons: true)),
+            ("t4", Design(destination: .outline, polishingIcon: false, tabTint: 0.09, tabRowTint: 0.12)),
+        ]
+        for (name, design) in tabs {
+            for open in [false, true] {
+                shots.append(Shot(name: "tab-\(name)-\(open ? "open" : "closed")", phase: .buffering, text: partial,
+                                  strip: Self.strip(waiting: 3, open: open), design: design))
+            }
+            shots.append(Shot(name: "tab-\(name)-dark", phase: .buffering, text: partial,
+                              strip: Self.strip(waiting: 3, open: true), design: design, dark: true))
+        }
+        let sweeps: [(String, Design)] = [
+            ("s1", Design(polishing: .shimmer, polishingIcon: false)),
+            ("s2", Design(polishing: .shimmer, polishingIcon: false, sweepBand: 0.12)),
+            ("s3", Design(polishing: .shimmer, polishingIcon: false, sweepBlue: true)),
+        ]
+        for (name, base) in sweeps {
+            for sweep in [0.3, 0.75] {
+                var design = base
+                design.sweep = sweep
+                shots.append(Shot(name: "sweep-\(name)-\(Int(sweep * 100))", phase: .finalizing, text: raw, design: design))
+            }
+            var dark = base
+            dark.sweep = 0.5
+            shots.append(Shot(name: "sweep-\(name)-dark", phase: .finalizing, text: raw, design: dark, dark: true))
+        }
+        let landings: [(String, Cue)] = [
+            ("l1", Cue(style: .wordMarks, progress: 0, raw: raw, underline: false)),
+            ("l2", Cue(style: .wordMarks, progress: 0, raw: raw, underline: false, markAlpha: 0.22, changedBlue: true)),
+            ("l3", Cue(style: .wordMarks, progress: 0, raw: raw, underline: false, allBlue: true)),
+            ("l4", Cue(style: .wordMarks, progress: 0, raw: raw, underline: false, markAlpha: 0.18)),
+        ]
+        let landingDesign = Design(polishing: .shimmer, polishingIcon: false)
+        for (name, base) in landings {
+            for progress in [0.0, 0.75] {
+                var cue = base
+                cue.progress = progress
+                shots.append(Shot(name: "land-\(name)-\(Int(progress * 100))", phase: .finalizing, text: polished,
+                                  design: landingDesign, cue: cue))
+            }
+            shots.append(Shot(name: "land-\(name)-dark", phase: .finalizing, text: polished,
+                              design: landingDesign, cue: base, dark: true))
+        }
+
+        for shot in shots {
+            let view = DictationOverlayView(
+                phase: shot.phase, text: shot.text, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, destinations: shot.strip, polishCue: shot.cue, design: shot.design)
+            let height = metrics.contentHeight(
+                text: raw, errorMessage: nil, draftReview: nil, destinations: shot.strip)
+            let inset: CGFloat = 16
+            let framed = view
+                .frame(width: metrics.panelWidth, height: height)
+                .padding(inset)
+                .background(Color(white: shot.dark ? 0.22 : 0.55))
+            try record(
+                framed, name: "tune-\(shot.name)",
+                width: metrics.panelWidth + 2 * inset, height: height + 2 * inset, growToFit: false,
+                appearance: shot.dark ? .darkAqua : .aqua)
+        }
+    }
+
     /// A ready draft under spoken review (#927).
     private static let draft = QuickCaptureDraftSnapshot(
         id: UUID(uuidString: "00000000-0000-0000-0000-000000000927")!,
