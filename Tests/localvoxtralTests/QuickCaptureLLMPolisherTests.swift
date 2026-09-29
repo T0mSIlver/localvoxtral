@@ -120,7 +120,7 @@ final class QuickCaptureLLMPolisherTests: XCTestCase {
     }
 
     func testHistoryKeepsTheRawWordsAndGetsThePolishedOnes() async throws {
-        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
         let id = UUID()
         let startedAt = Date(timeIntervalSince1970: 1_800_000_000)
         store.save(DictationSessionRecord(

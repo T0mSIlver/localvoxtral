@@ -691,6 +691,9 @@ package struct AppConfigStore: AppConfigServing {
             return configDirectoryOverride
         }
 
+        if LocalvoxtralDataDirectory.isOverridden() {
+            return LocalvoxtralDataDirectory.url().appendingPathComponent("config", isDirectory: true)
+        }
         do {
             let appSupport = try fileManager.url(
                 for: .applicationSupportDirectory,

@@ -62,6 +62,13 @@ struct InsightsSettingsPane: View {
                 .fixedSize()
                 .accessibilityIdentifier("insights.period")
             }
+            if let unavailable = model.unavailableText {
+                SettingsGroupRow {
+                    Text(unavailable)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("insights.unavailable")
+                }
+            }
             InsightRow(title: "Dictations", value: count(insights.dictations))
             InsightRow(title: "Words", value: count(insights.words))
             InsightRow(

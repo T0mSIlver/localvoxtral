@@ -217,7 +217,7 @@ final class ViewSnapshotTests: XCTestCase {
     /// the polish request sent (#1007). Made-up words.
     func testHistoryEntryDetails() async throws {
         let (settings, viewModel) = makeViewModel()
-        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
         let dictation = DictationSessionRecord(
             startedAt: Date().addingTimeInterval(-120), finishedAt: Date().addingTimeInterval(-110),
             rawText: "the mac queue is stuck again, check the runner",

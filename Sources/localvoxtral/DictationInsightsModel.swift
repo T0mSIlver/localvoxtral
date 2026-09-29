@@ -26,11 +26,15 @@ final class DictationInsightsModel {
     /// usage ledger. Summed apart from the dictation count: the ledger
     /// changes on every request, and a sum of it is cheap.
     private(set) var featureUsage: [FeatureUsage] = []
+    /// Shown instead of the numbers when the store did not open or failed to
+    /// answer (#985): a zero would read as a fact.
+    private(set) var unavailableText: String?
 
     /// A slow count must not overwrite the result of the one started after it.
     @ObservationIgnored private var reloadGeneration = 0
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let store: @MainActor () -> DictationSessionStore?
+    @ObservationIgnored private let unavailable: @MainActor () -> String?
     @ObservationIgnored private let terms: @MainActor () -> [String]
     @ObservationIgnored private let appName: @MainActor (String) -> String?
     @ObservationIgnored private let usage: @MainActor () -> [UsageEntry]
@@ -38,12 +42,14 @@ final class DictationInsightsModel {
     init(
         defaults: UserDefaults = .standard,
         store: @escaping @MainActor () -> DictationSessionStore?,
+        unavailable: @escaping @MainActor () -> String? = { nil },
         terms: @escaping @MainActor () -> [String],
         appName: @escaping @MainActor (String) -> String? = DictationHistoryModel.installedAppName,
         usage: @escaping @MainActor () -> [UsageEntry] = { [] }
     ) {
         self.defaults = defaults
         self.store = store
+        self.unavailable = unavailable
         self.terms = terms
         self.appName = appName
         self.usage = usage
@@ -56,6 +62,7 @@ final class DictationInsightsModel {
     convenience init(viewModel: DictationViewModel) {
         self.init(
             store: { [weak viewModel] in viewModel?.sessionStore },
+            unavailable: { [weak viewModel] in viewModel?.historyUnavailableText },
             terms: { [weak viewModel] in
                 guard let viewModel else { return [] }
                 return viewModel.settings.polishSpeakerTerms
@@ -76,10 +83,7 @@ final class DictationInsightsModel {
         let generation = reloadGeneration
         let period = period
         guard let store = store() else {
-            insights = DictationInsights()
-            trend = DictationLearningTrend()
-            countedPeriod = period
-            countedSince = nil
+            showUnavailable()
             return
         }
         let since = period.start(now: now)
@@ -88,6 +92,12 @@ final class DictationInsightsModel {
         let trendEntries = since.map { $0 <= trendStart } == true
             ? entries.filter { $0.startedAt >= trendStart }
             : await store.entries(since: trendStart)
+        guard generation == reloadGeneration else { return }
+        if unavailable() != nil {
+            showUnavailable()
+            return
+        }
+        unavailableText = nil
         let terms = terms()
         // A year of dictations is thousands of word diffs: not on the main
         // actor, and stopped when the pane closes or the period changes. The
@@ -118,5 +128,22 @@ final class DictationInsightsModel {
         }
         guard !Task.isCancelled, generation == reloadGeneration else { return }
         trend = computedTrend
+    }
+
+    /// No store, or one that failed to answer: the reason when there is one,
+    /// and no numbers. With History off there is no reason and the counts are
+    /// zero.
+    private func showUnavailable() {
+        unavailableText = unavailable()
+        if unavailableText == nil {
+            insights = DictationInsights()
+            trend = DictationLearningTrend()
+            countedPeriod = period
+        } else {
+            insights = nil
+            trend = nil
+            countedPeriod = nil
+        }
+        countedSince = nil
     }
 }
