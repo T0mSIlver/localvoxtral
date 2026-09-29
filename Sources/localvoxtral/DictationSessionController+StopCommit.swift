@@ -425,7 +425,8 @@ extension DictationSessionController {
 
         switch outcome.reply {
         case .notSent:
-            break
+            // Nothing to polish (blank text): end the sweep started above.
+            overlayBufferCoordinator.markPolishing(false)
         case .polished(let polished):
             polishingDuration = polished.durationSeconds
             polishPromptTokens = polished.promptTokens
