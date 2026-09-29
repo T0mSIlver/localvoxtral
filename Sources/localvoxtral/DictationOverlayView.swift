@@ -113,10 +113,6 @@ struct DictationOverlayView: View {
         motion == .reduced || (motion == .system && systemReduceMotion)
     }
 
-    /// The menu bar's session-active orange: the level bars say "recording"
-    /// the way the menu bar mic does.
-    static let listeningColor = Color(nsColor: MenuBarStatusIcon.accentColor)
-
     /// Warning text needs explicit light/dark variants: system `.red` over
     /// the translucent panel material washes out on light desktops.
     static let warningColor = Color(nsColor: NSColor(name: nil) { appearance in
@@ -150,7 +146,7 @@ struct DictationOverlayView: View {
     }
 
     private var titleColor: Color {
-        if phase == .finalizing, polished { return .accentColor }
+        if phase == .finalizing, polished { return OverlayPalette.polish }
         return isSecureInputTitle ? Self.warningColor : .secondary
     }
 
@@ -224,8 +220,8 @@ struct DictationOverlayView: View {
                     .reportingFrame(of: OverlayDestinationTarget(destination: item.destination, inList: false), to: onDestinationFrame)
             }
             HStack(spacing: 4) {
-                Text("Tab")
-                    .font(.system(size: metrics.badgeFontSize * 0.85, weight: .semibold))
+                Image(systemName: "arrow.right.to.line")
+                    .font(.system(size: metrics.badgeFontSize * 0.8, weight: .semibold))
                     .padding(.horizontal, 4)
                     .padding(.vertical, 1)
                     .overlay(
@@ -338,11 +334,11 @@ struct DictationOverlayView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
         }
-        .foregroundStyle(Color.purple)
+        .foregroundStyle(OverlayPalette.inbox)
         .padding(.horizontal, metrics.badgeHorizontalPadding)
         .padding(.vertical, metrics.badgeVerticalPadding)
-        .background(Capsule(style: .continuous).fill(Color.purple.opacity(Self.pillTintOpacity)))
-        .overlay(Capsule(style: .continuous).strokeBorder(Color.purple.opacity(0.45), lineWidth: 0.5))
+        .background(Capsule(style: .continuous).fill(OverlayPalette.inbox.opacity(Self.pillTintOpacity)))
+        .overlay(Capsule(style: .continuous).strokeBorder(OverlayPalette.inbox.opacity(0.45), lineWidth: 0.5))
         .layoutPriority(-1)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Reviewing a draft in the Inbox for \(draft.projectName)")
@@ -488,15 +484,15 @@ private struct DestinationStyle {
     init(_ kind: OverlayDestinationStrip.Kind) {
         switch kind {
         case .focusedApp(let joined):
-            tint = .accentColor
+            tint = OverlayPalette.focusedApp
             systemImage = joined.map { $0 ? "link" : "link.slash" }
             accessibility = { "Into \($0)" }
         case .session:
-            tint = .orange
+            tint = OverlayPalette.session
             systemImage = "circle.fill"
             accessibility = { "Answer \($0), which needs you" }
         case .inbox:
-            tint = .purple
+            tint = OverlayPalette.inbox
             systemImage = "tray"
             accessibility = { _ in "Save to the Inbox" }
         }
@@ -603,9 +599,9 @@ struct OverlayBodyScrollContent: View {
     }
 }
 
-/// The polish wait (#1074): the words dim and a blue band crosses them,
-/// left to right, until the reply lands. Under Reduce Motion the words only
-/// dim.
+/// The polish wait (#1074): the words dim and a band in the polish color
+/// crosses them, left to right, until the reply lands. Under Reduce Motion
+/// the words only dim.
 struct OverlayPolishSweep: View {
     /// One crossing, in seconds.
     static let period: TimeInterval = 1.2
@@ -638,7 +634,7 @@ struct OverlayPolishSweep: View {
             .foregroundStyle(.secondary)
             .overlay(alignment: .topLeading) {
                 text
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(OverlayPalette.polish)
                     .mask(
                         LinearGradient(
                             stops: [
@@ -652,7 +648,7 @@ struct OverlayPolishSweep: View {
     }
 }
 
-/// What polish changed (#1074): the words it wrote turn blue on a light-blue
+/// What polish changed (#1074): the words it wrote take the polish color on a
 /// highlight, then fade back to plain text as the panel closes. Under Reduce
 /// Motion they stay marked until the close.
 struct OverlayChangedWords: View {
@@ -695,15 +691,15 @@ struct OverlayChangedWords: View {
             }
     }
 
-    /// `text` with only the words `before` lacked drawn, in blue on the
-    /// highlight; the rest is clear, so the plain text shows through.
+    /// `text` with only the words `before` lacked drawn, in the polish color
+    /// on its highlight; the rest is clear, so the plain text shows through.
     static func marked(_ text: String, before: String) -> AttributedString {
         var marked = AttributedString(text)
         marked.foregroundColor = .clear
         for range in TranscriptDiff.words(from: before, to: text).added {
             guard let changed = Range<AttributedString.Index>(range, in: marked) else { continue }
-            marked[changed].foregroundColor = .accentColor
-            marked[changed].backgroundColor = Color.accentColor.opacity(highlightOpacity)
+            marked[changed].foregroundColor = OverlayPalette.polish
+            marked[changed].backgroundColor = OverlayPalette.polish.opacity(highlightOpacity)
         }
         return marked
     }
@@ -757,7 +753,7 @@ struct OverlayLevelBars: View {
             if reduceMotion {
                 Image(systemName: "mic.fill")
                     .font(.system(size: metrics.titleFontSize, weight: .semibold))
-                    .foregroundStyle(DictationOverlayView.listeningColor)
+                    .foregroundStyle(OverlayPalette.live)
             } else {
                 let fullHeight = metrics.headerHeight - 2
                 let heights = Self.heights(
@@ -765,7 +761,7 @@ struct OverlayLevelBars: View {
                 HStack(alignment: .center, spacing: 2) {
                     ForEach(heights.indices, id: \.self) { index in
                         Capsule()
-                            .fill(DictationOverlayView.listeningColor)
+                            .fill(OverlayPalette.live)
                             .frame(
                                 width: Self.barWidth,
                                 height: Self.restingHeight + (fullHeight - Self.restingHeight) * heights[index])
