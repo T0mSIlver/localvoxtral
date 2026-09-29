@@ -140,7 +140,7 @@ package enum EvalSpeechStage {
         }
         arguments.append(text)
 
-        let status = try DisclaimedSpawn.run("/usr/bin/say", arguments: arguments).status
+        let status = try EvalChildProcess.run("/usr/bin/say", arguments: arguments)
         guard status == 0 else {
             throw Failure(
                 "say failed (status \(status)) for voice \(voice ?? "default")"
@@ -150,23 +150,30 @@ package enum EvalSpeechStage {
         return try IntegrationTestSupport.extractPCMDataFromWAV(at: wavURL)
     }
 
+    /// What xctest hands its children, printed once to compare with eval-e2e's
+    /// "Voices the runner's shell lists" step (#960).
+    private static let reportEnvironmentOnce: Void = {
+        for line in EvalChildProcess.currentEnvironmentReport() {
+            print("eval TTS env: \(line)")
+        }
+        print("eval TTS: `say` via launchd: \(EvalChildProcess.launchdRequested)")
+    }()
+
     /// `say -v ?` through a temp file (no pipes — descriptor-safe by
-    /// construction), spawned as its own responsible process (#960), parsed
-    /// by the unit-tested picker. Throws when `say`
+    /// construction), as a launchd job under `LV_EVAL_SAY_VIA_LAUNCHD=1`
+    /// (#960), parsed by the unit-tested picker. Throws when `say`
     /// fails or lists none of `preferred`.
     package static func resolveVoice(languagePrefix: String, preferred: [String]) throws -> String {
+        _ = reportEnvironmentOnce
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("lv-eval-voices-\(UUID().uuidString).txt")
         defer { try? FileManager.default.removeItem(at: outputURL) }
-        let listed = try DisclaimedSpawn.run(
+        let status = try EvalChildProcess.run(
             "/usr/bin/say", arguments: ["-v", "?"],
             standardOutput: outputURL.path, discardStandardError: true
         )
-        if !listed.disclaimed {
-            print("eval TTS: `say` ran without responsibility disclaimed")
-        }
-        guard listed.status == 0 else {
-            throw Failure("`say -v ?` failed (status \(listed.status))")
+        guard status == 0 else {
+            throw Failure("`say -v ?` failed (status \(status))")
         }
         let voice = try requireVoice(
             fromSayVoicesOutput: String(contentsOf: outputURL, encoding: .utf8),

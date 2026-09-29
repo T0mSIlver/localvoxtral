@@ -137,6 +137,18 @@ jobs:
         run: |
           echo "say -v ? lines: $(say -v '?' | wc -l)"
           echo "Samantha/Daniel/Thomas lines: $(say -v '?' | grep -c -E '^(Samantha|Daniel|Thomas)')"
+          # The same report as the eval's "eval TTS env:" lines, home and
+          # user masked: the difference is what hides the voices from xctest.
+          home=$(perl -e 'print((getpwuid($<))[7])')
+          user=$(id -un)
+          mask() { sed -e "s|$home|<home>|g" -e "s|$user|<user>|g"; }
+          echo "shell env: keys: $(compgen -e | LC_ALL=C sort | tr '\n' ' ')"
+          for name in $(compgen -e | LC_ALL=C sort); do
+            case "$name" in
+              HOME|TMPDIR|CFFIXED_USER_HOME|DYLD_*|__XPC_*|XPC_*|__CF*)
+                echo "shell env: $name=${!name}" | mask ;;
+            esac
+          done
 
       - name: Run agent-dictation E2E eval
         id: eval
@@ -146,6 +158,9 @@ jobs:
         timeout-minutes: 60
         env:
           LV_AGENT_EVAL_E2E_ENABLE: "1"
+          # Run `say` as launchd jobs: spawned from xctest here it lists only
+          # the built-in voices (#960).
+          LV_EVAL_SAY_VIA_LAUNCHD: "1"
           LV_AGENT_EVAL_E2E_HELPER_PATH: PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd
           LV_AGENT_EVAL_E2E_ASR_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead
         run: |
