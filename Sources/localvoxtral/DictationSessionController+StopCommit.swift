@@ -516,6 +516,7 @@ extension DictationSessionController {
             }
             return
         }
+        guard await self.pickedPaneStillShownBeforeInsertion(sessionMode: sessionMode) else { return }
         // From here the task commits and saves the dictation itself.
         self.saveInterruptedPolishCommit = nil
         let commitTargetPID = self.overlayBufferCoordinator.commitTargetAppPID
@@ -1212,7 +1213,9 @@ extension DictationSessionController {
                 return MistralBatchTranscription.restoringPhrases(
                     in: text, candidates: terms.candidates)
             }
-            guard let self, outcome != .cancelled, !Task.isCancelled else { return }
+            guard let self, outcome != .cancelled, !Task.isCancelled,
+                  await self.pickedPaneStillShownBeforeInsertion(sessionMode: sessionMode)
+            else { return }
             self.applyStopSecondPass(outcome)
             self.commitOverlayBufferText(sessionMode: sessionMode, sample: sample)
             // The commit may hand off to a polish task; this one ends with it,
