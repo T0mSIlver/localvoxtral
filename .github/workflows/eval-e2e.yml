@@ -150,6 +150,50 @@ jobs:
             esac
           done
 
+      - name: Probe the voices while an xctest process runs
+        # The eval's `say -v ?` lists the 27 built-in voices even before any
+        # model loads, while the shell lists them all before and after (#960).
+        # The shell lists voices again while (a) this package's test bundle,
+        # then (b) an empty package's, sleeps in a test.
+        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
+        continue-on-error: true
+        timeout-minutes: 20
+        run: |
+          probe() {  # <label> <package dir> <filter> [swift test flags...]
+            local label="$1" dir="$2" filter="$3"
+            shift 3
+            local marker="$RUNNER_TEMP/voice-probe-$label.marker" log="$RUNNER_TEMP/voice-probe-$label.log"
+            rm -f "$marker"
+            (cd "$dir" && LV_VOICE_PROBE_MARKER="$marker" swift test "$@" --filter "$filter" >"$log" 2>&1) &
+            local pid=$!
+            for _ in $(seq 1 900); do
+              [ -e "$marker" ] && break
+              kill -0 "$pid" 2>/dev/null || break
+              sleep 1
+            done
+            if [ -e "$marker" ]; then
+              sleep 5
+              echo "voice probe $label: xctest running, shell lists $(say -v '?' | wc -l) voices," \
+                "$(say -v '?' | grep -c -E '^(Samantha|Daniel|Thomas)') Samantha/Daniel/Thomas"
+            else
+              echo "voice probe $label: the test never started"
+              tail -20 "$log"
+            fi
+            wait "$pid"
+            echo "voice probe $label: after xctest, shell lists $(say -v '?' | wc -l) voices"
+          }
+          probe package "$PWD" VoiceProbeTests --build-system native --enable-code-coverage
+
+          empty="$RUNNER_TEMP/voice-probe-empty"
+          rm -rf "$empty"
+          mkdir -p "$empty/Tests/ProbeTests"
+          printf '%s\n' '// swift-tools-version:5.9' 'import PackageDescription' \
+            'let package = Package(name: "Probe", targets: [.testTarget(name: "ProbeTests")])' \
+            >"$empty/Package.swift"
+          sed -n '/^import Foundation/,$p' Tests/localvoxtralCoreTests/VoiceProbeTests.swift \
+            >"$empty/Tests/ProbeTests/VoiceProbeTests.swift"
+          probe empty "$empty" VoiceProbeTests
+
       - name: Run agent-dictation E2E eval
         id: eval
         if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
