@@ -713,9 +713,11 @@ struct IgnoredProjectsGroup: View {
                     }
                 } else {
                     if store.ignoredListUnsaved { unsavedRow }
-                    SettingsGroupRow {
-                        Text(ignored.count == 1 ? "1 project" : "\(ignored.count) projects")
-                            .foregroundStyle(.secondary)
+                    if !ignored.isEmpty {
+                        SettingsGroupRow {
+                            Text(ignored.count == 1 ? "1 project" : "\(ignored.count) projects")
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
