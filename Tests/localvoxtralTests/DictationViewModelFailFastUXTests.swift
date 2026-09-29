@@ -884,6 +884,37 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
     }
 
+    /// A stored repo this build doesn't know runs as the default but stays
+    /// in defaults (#1040). Picking the default in Settings must replace it,
+    /// or a newer build would bring the unknown repo back.
+    func testPickingTheFallbackModelReplacesAnUnknownStoredRepo() async {
+        let defaults = makeSettingsDefaults()
+        defaults.set("someone/newer-model", forKey: "settings.managed_speech_model")
+        let settings = makeSettings(defaults: defaults)
+        settings.dictationBackendMode = .managedLocal
+        settings.onboardingCompleted = true
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            backendManager: backendManager,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false,
+            dependencies: .init(microphone: { FakeMicrophoneCaptureService() })
+        )
+        viewModel.appConfigStore = MockAppConfigStore()
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.engines.applyManagedSpeechModelChange(SpeechModelCatalog.defaultOption.repoID)
+
+        XCTAssertEqual(
+            defaults.string(forKey: "settings.managed_speech_model"),
+            SpeechModelCatalog.defaultOption.repoID
+        )
+        // The running model is already the default: no restart.
+        XCTAssertNil(viewModel.engines.dictationShutdownTask)
+        XCTAssertEqual(backendManager.stopDictationCallCount, 0)
+    }
+
     private static let nemotronRepoID = "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
 
     func testDictationModeSwitchToManagedStartsDictationWarmup() async {

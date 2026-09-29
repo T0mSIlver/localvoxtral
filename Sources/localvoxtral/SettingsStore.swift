@@ -1025,18 +1025,27 @@ final class SettingsStore {
         let resolvedBackendModes = Self.resolveBackendModes(defaults: defaults, environment: environment)
         dictationBackendMode = resolvedBackendModes.dictation
         polishingBackendMode = resolvedBackendModes.polishing
-        defaults.set(resolvedBackendModes.dictation.rawValue, forKey: Keys.dictationBackendMode)
-        defaults.set(resolvedBackendModes.polishing.rawValue, forKey: Keys.polishingBackendMode)
+        // Only a missing mode is persisted. One this build can't parse may
+        // come from a newer build, and saving the migrated mode over it would
+        // erase that choice (#1040).
+        if defaults.object(forKey: Keys.dictationBackendMode) == nil {
+            defaults.set(resolvedBackendModes.dictation.rawValue, forKey: Keys.dictationBackendMode)
+        }
+        if defaults.object(forKey: Keys.polishingBackendMode) == nil {
+            defaults.set(resolvedBackendModes.polishing.rawValue, forKey: Keys.polishingBackendMode)
+        }
 
-        // A repo that left the catalog (or was hand-written into the plist)
-        // must never reach a helper launch: fall back to the default and
-        // rewrite the stored value so the picker and the launch agree.
+        // A repo outside this build's catalog must never reach a helper
+        // launch, so the default runs instead. The stored repo stays: a newer
+        // build may have added it (#1040).
         let storedSpeechModel = defaults.string(forKey: Keys.managedSpeechModel)?.trimmed ?? ""
         if let option = SpeechModelCatalog.option(forRepoID: storedSpeechModel) {
             managedSpeechModel = option.repoID
         } else {
             managedSpeechModel = SpeechModelCatalog.defaultOption.repoID
-            defaults.set(SpeechModelCatalog.defaultOption.repoID, forKey: Keys.managedSpeechModel)
+            if storedSpeechModel.isEmpty {
+                defaults.set(SpeechModelCatalog.defaultOption.repoID, forKey: Keys.managedSpeechModel)
+            }
         }
 
         let configuredProvider = Self.loadString(
