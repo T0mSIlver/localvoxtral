@@ -232,7 +232,7 @@ final class OpencodePromptRelayTests: XCTestCase {
         let server = try FakeOpencodePromptRelay()
         addTeardownBlock { server.stop() }
         var fellBack: [String] = []
-        let sink = AgentPromptSink(route: OpencodePromptRoute(relay: server.relay(sessionID: "ses_a"))) { fellBack.append($0) }
+        let sink = AgentPromptSink(route: OpencodePromptRoute(relay: server.relay(sessionID: "ses_a"), keysReachThePrompt: { true })) { fellBack.append($0) }
 
         sink.append("run the ")
         sink.append("tests")
@@ -252,11 +252,11 @@ final class OpencodePromptRelayTests: XCTestCase {
 
     @MainActor
     func testTheFirstRefusalSendsItsTextAndEverythingAfterToTheKeyboard() async throws {
-        // The relay refuses the second append (the pane switched session).
-        let server = try FakeOpencodePromptRelay { call in call.text == "second " ? 409 : 200 }
+        // The relay refuses the second append, and keys reach its prompt.
+        let server = try FakeOpencodePromptRelay { call in call.text == "second " ? 502 : 200 }
         addTeardownBlock { server.stop() }
         var fellBack: [String] = []
-        let sink = AgentPromptSink(route: OpencodePromptRoute(relay: server.relay(sessionID: "ses_a"))) { fellBack.append($0) }
+        let sink = AgentPromptSink(route: OpencodePromptRoute(relay: server.relay(sessionID: "ses_a"), keysReachThePrompt: { true })) { fellBack.append($0) }
 
         sink.append("first ")
         sink.append("second ")
@@ -280,7 +280,7 @@ final class OpencodePromptRelayTests: XCTestCase {
             opencodeSessionID: "ses_a"
         )
         var fellBack: [String] = []
-        let sink = AgentPromptSink(route: OpencodePromptRoute(relay: relay)) { fellBack.append($0) }
+        let sink = AgentPromptSink(route: OpencodePromptRoute(relay: relay, keysReachThePrompt: { true })) { fellBack.append($0) }
 
         sink.append("hello ")
         sink.append("world")
@@ -291,13 +291,72 @@ final class OpencodePromptRelayTests: XCTestCase {
         XCTAssertFalse(sink.isHealthy)
     }
 
+    // A call that may have landed, or whose text keys would put elsewhere,
+    // is typed nowhere (#1057).
+
+    @MainActor
+    func testAnAppendTheRelayReadButNeverAnsweredIsNotTyped() async throws {
+        let server = try FakeOpencodePromptRelay { _ in 0 }
+        addTeardownBlock { server.stop() }
+        var fellBack: [String] = []
+        var kept: [String] = []
+        let sink = AgentPromptSink(
+            route: OpencodePromptRoute(relay: server.relay(sessionID: "ses_a"), keysReachThePrompt: { true }),
+            kept: { kept.append($0) }
+        ) { fellBack.append($0) }
+
+        sink.append("hello ")
+        sink.append("world")
+        await sink.waitUntilIdle()
+
+        XCTAssertEqual(server.calls.compactMap(\.text), ["hello "])
+        XCTAssertEqual(fellBack, [], "it may be in the prompt already")
+        XCTAssertEqual(kept, ["hello ", "world"])
+    }
+
+    @MainActor
+    func testAPaneShowingAnotherSessionKeepsTheTextInHistory() async throws {
+        let server = try FakeOpencodePromptRelay { _ in 409 }
+        addTeardownBlock { server.stop() }
+        var fellBack: [String] = []
+        var kept: [String] = []
+        let sink = AgentPromptSink(
+            route: OpencodePromptRoute(relay: server.relay(sessionID: "ses_a"), keysReachThePrompt: { true }),
+            kept: { kept.append($0) }
+        ) { fellBack.append($0) }
+
+        sink.append("hello")
+        await sink.waitUntilIdle()
+
+        XCTAssertEqual(fellBack, [], "keys would type into the other session")
+        XCTAssertEqual(kept, ["hello"])
+    }
+
+    @MainActor
+    func testARefusalWhileKeysGoElsewhereKeepsTheTextInHistory() async throws {
+        let server = try FakeOpencodePromptRelay { _ in 502 }
+        addTeardownBlock { server.stop() }
+        var fellBack: [String] = []
+        var kept: [String] = []
+        let sink = AgentPromptSink(
+            route: OpencodePromptRoute(relay: server.relay(sessionID: "ses_a"), keysReachThePrompt: { false }),
+            kept: { kept.append($0) }
+        ) { fellBack.append($0) }
+
+        sink.append("hello")
+        await sink.waitUntilIdle()
+
+        XCTAssertEqual(fellBack, [])
+        XCTAssertEqual(kept, ["hello"])
+    }
+
     @MainActor
     func testARefusedTextGoesToTheFallbackNamedWhenItWasHandedOff() async throws {
         let server = try FakeOpencodePromptRelay { _ in 502 }
         addTeardownBlock { server.stop() }
         var sinkFallback: [String] = []
         var overlayTarget: [String] = []
-        let sink = AgentPromptSink(route: OpencodePromptRoute(relay: server.relay(sessionID: "ses_a"))) { sinkFallback.append($0) }
+        let sink = AgentPromptSink(route: OpencodePromptRoute(relay: server.relay(sessionID: "ses_a"), keysReachThePrompt: { true })) { sinkFallback.append($0) }
 
         sink.append("committed text") { overlayTarget.append($0) }
         sink.append("later")
