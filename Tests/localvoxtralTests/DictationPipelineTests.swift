@@ -116,7 +116,7 @@ final class DictationPipelineTests: XCTestCase {
 
         await startAndSpeak(pipeline)
         XCTAssertNil(pipeline.viewModel.session.earlyPolishRun)
-        pipeline.server.send(["type": "transcription.done", "text": Self.settledPiece])
+        await sendSettledFinal(pipeline, Self.settledPiece)
 
         await stopAndFinalize(pipeline, finalText: Self.tail)
 
@@ -167,7 +167,7 @@ final class DictationPipelineTests: XCTestCase {
 
         await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
         XCTAssertNil(pipeline.viewModel.session.earlyPolishRun)
-        pipeline.server.send(["type": "transcription.done", "text": Self.settledPiece])
+        await sendSettledFinal(pipeline, Self.settledPiece)
         await stopAndFinalize(
             pipeline, finalText: Self.tail, finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved
         )
@@ -1882,6 +1882,22 @@ final class DictationPipelineTests: XCTestCase {
         await pipeline.server.awaitFrame("the captured audio", file: file, line: line) {
             $0.audio == spoken
         }
+    }
+
+    /// Sends a segment's final and returns once the overlay shows it. A
+    /// stop sent before the client read it would take it for the answer to
+    /// the final commit, and finish without the text that follows.
+    private func sendSettledFinal(
+        _ pipeline: Pipeline, _ text: String, file: StaticString = #filePath, line: UInt = #line
+    ) async {
+        let shown = BoundedWait()
+        pipeline.overlay.onRefresh = { call in
+            if call.displayText.contains(text) { shown.resolve() }
+        }
+        pipeline.server.send(["type": "transcription.done", "text": text])
+        let arrived = await shown.value(failAfter: 10)
+        XCTAssertTrue(arrived, "the overlay never showed the final", file: file, line: line)
+        pipeline.overlay.onRefresh = nil
     }
 
     /// The transcript arrives as partials, split mid-phrase the way a
