@@ -81,10 +81,20 @@ final class TerminalSessionPaneFocuser: SessionPaneFocusing {
         case .claudeDesktop:
             // `ClaudeDesktopSessionPaneFocuser`'s route, never a terminal's.
             return .unsupported(.claudeDesktop)
+        case .herdrPane:
+            // `HerdrSessionPaneFocuser`'s route: the tty is herdr's pane's.
+            return .unsupported(.herdr)
         case .terminalTTY(let sessionTTY, let program):
             tty = sessionTTY
             termProgram = program
         }
+        return await focus(tty: tty, termProgram: termProgram)
+    }
+
+    /// Selects the tab or split holding `tty` and activates its terminal;
+    /// `.focused` only when the terminal reads that tty back. The herdr
+    /// focuser raises the window showing a herdr through this.
+    func focus(tty: String, termProgram: String?) async -> SessionPaneFocusOutcome {
         guard Self.isScriptSafeTTY(tty) else {
             Log.claudeContext.error("go to session: the session's tty is not a device path; not asking any terminal")
             return .paneNotFound

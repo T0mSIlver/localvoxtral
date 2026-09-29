@@ -204,6 +204,32 @@ final class HerdrIntegrationTests: XCTestCase {
         })
     }
 
+    // MARK: - External assumption: navigation's one focus write (#1012)
+
+    /// `pane.focus` through the app's forward focuses the named pane, and
+    /// `pane.current` reads it back: the two calls `HerdrSessionPaneFocuser`
+    /// confirms a focus with. A refused pane is herdr's own error.
+    func testPaneFocusThroughTheForwardIsReadBackByPaneCurrent() async throws {
+        let split = try fixture.herdrCLI(["pane", "split", fixture.info.paneID, "--direction", "right", "--no-focus"])
+        guard let data = split.data(using: .utf8),
+              let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let pane = (root["result"] as? [String: Any])?["pane"] as? [String: Any],
+              let otherPaneID = pane["pane_id"] as? String
+        else { throw HerdrLaneError.fixtureFailed("pane split gave no pane: \(split)") }
+        let (service, handle) = try await openForward()
+        defer { handle.close(); service.stopAllForQuit() }
+        let client = Self.makeLaneClient()
+
+        let before = await client.focusedPane(socketPath: handle.localSocketPath)?.paneID
+        XCTAssertEqual(before, fixture.info.paneID, "--no-focus left the fixture pane focused")
+        let focused = await client.focusPane(socketPath: handle.localSocketPath, paneID: otherPaneID)
+        XCTAssertEqual(focused, .ok)
+        let after = await client.focusedPane(socketPath: handle.localSocketPath)?.paneID
+        XCTAssertEqual(after, otherPaneID)
+        let missing = await client.focusPane(socketPath: handle.localSocketPath, paneID: "w99:p99")
+        XCTAssertEqual(missing, .refused)
+    }
+
     // MARK: - External assumption: what a whole-view client renders
 
     /// The positive half of the panel-binding premise: a whole-view App client

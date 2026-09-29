@@ -316,7 +316,7 @@ fi
 # exactly why the app has to be re-added in System Settings each time.
 echo "Designated requirement (compare across try-pr runs — stable == TCC grant survives):"
 codesign -d --requirements - "$APP" 2>&1 | sed 's/^/  /' || true
-if [[ "$SIGNER" == "Authority=ad-hoc" ]]; then
+if (( IS_ADHOC )); then
   echo "NOTE: ad-hoc signed build — if text insertion fails, remove and re-add"
   echo "      localvoxtral in System Settings > Privacy & Security > Accessibility"
   echo "      (TCC grants don't survive ad-hoc signature changes)."

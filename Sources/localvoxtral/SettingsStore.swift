@@ -57,6 +57,7 @@ final class SettingsStore {
         static let overlaySpokenSendEnabled = "settings.overlay_spoken_send_enabled"
         static let liveSpokenSendEnabled = "settings.live_spoken_send_enabled"
         static let spokenSendTriggerPhrases = "settings.spoken_send_trigger_phrases"
+        static let spokenStopWait = "settings.spoken_stop_wait_ms"
         static let audioDuckingEnabled = "settings.audio_ducking_enabled"
         static let audioDuckingFadeDuration = "settings.audio_ducking_fade_duration"
         /// The device and volume a launch ducked away from, written at the
@@ -347,6 +348,12 @@ final class SettingsStore {
     /// loads as the default.
     var spokenSendTriggerPhrases: [String] {
         didSet { defaults.set(spokenSendTriggerPhrases, forKey: Keys.spokenSendTriggerPhrases) }
+    }
+
+    /// How long an Overlay Buffer dictation that ends in a send phrase waits
+    /// for new words before it stops (#1009). Read when the wait starts.
+    var spokenStopWait: SpokenStopWait {
+        didSet { defaults.set(spokenStopWait.rawValue, forKey: Keys.spokenStopWait) }
     }
 
     /// Lower other audio while dictating, and fade it back on stop. On by
@@ -1090,6 +1097,9 @@ final class SettingsStore {
             defaults: defaults, key: Keys.liveSpokenSendEnabled, fallback: false)
         spokenSendTriggerPhrases = SendTriggerPhrases.loaded(
             defaults.stringArray(forKey: Keys.spokenSendTriggerPhrases))
+        spokenStopWait =
+            (defaults.object(forKey: Keys.spokenStopWait) as? Int)
+            .flatMap(SpokenStopWait.init(rawValue:)) ?? .default
         audioDuckingEnabled = Self.loadBool(
             defaults: defaults, key: Keys.audioDuckingEnabled, fallback: true)
         let storedDuckingFade = defaults.object(forKey: Keys.audioDuckingFadeDuration) != nil

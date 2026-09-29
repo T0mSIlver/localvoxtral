@@ -710,7 +710,12 @@ final class DictationViewModel {
                     learnedTermStore: learnedTermStore,
                     fileURL: QuickCaptureInboxViewModel.defaultFileURL(),
                     applicationSupport: LearnedTermStore.defaultFileURL().deletingLastPathComponent(),
-                    usageRecorder: usageLedger
+                    usageRecorder: usageLedger,
+                    polisher: QuickCaptureLLMPolisher(
+                        settings: settings,
+                        appConfigStore: { [weak self] in self?.appConfigStore ?? AppConfigStore() },
+                        service: { [weak self] in self?.llmPolishingService ?? LLMPolishingService() }
+                    )
                 )
             )
             session.termSuggestionCadence = TermSuggestionCadence(
@@ -939,7 +944,8 @@ extension DictationViewModel {
 
 extension DictationViewModel {
     /// Points stopped quick captures at the Inbox, its routing sentence at
-    /// the popover, and where each capture went at its History record.
+    /// the popover, and each capture's polish and destination at its History
+    /// record.
     func installQuickCaptureInbox(_ inbox: QuickCaptureInboxViewModel) {
         quickCapture = inbox
         session.onQuickCapture = { [weak inbox] text, historyRecordID in
@@ -949,6 +955,9 @@ extension DictationViewModel {
             // Mid-session the status line belongs to the session.
             guard let self, !self.isDictating, !self.isFinalizingStop, !self.isConnectingRealtimeSession else { return }
             self.statusText = sentence
+        }
+        inbox.model.onPolished = { [weak self] recordID, polishedText, seconds in
+            self?.sessionStore?.setQuickCapturePolish(polishedText, seconds: seconds, id: recordID)
         }
         inbox.model.onRouted = { [weak self] recordID, destination in
             self?.sessionStore?.setQuickCaptureDestination(destination, id: recordID)

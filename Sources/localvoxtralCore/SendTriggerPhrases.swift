@@ -98,6 +98,33 @@ package enum SendTriggerPhrases {
     ]
 }
 
+/// How long a trailing send phrase waits for new words before it stops the
+/// dictation (#1009): the setting "Wait before pressing Return". The default
+/// was measured on the owner's 138 Overlay Buffer dictations with audio
+/// (2026-09-26/27, PR for #839): 9.4 % of speech pauses reach 2 s and 5.6 %
+/// reach 3 s, and the one "send it" said mid-sentence was followed by a
+/// 2.4 s pause. A false stop sends half a prompt and cannot be undone; a
+/// late one costs a key press at most. Nothing goes under 1 s: streaming ASR
+/// delivers words 0.5–1 s behind speech, so a shorter wait can fire before
+/// the rest of the sentence arrives.
+package enum SpokenStopWait: Int, CaseIterable, Identifiable, Sendable {
+    case oneSecond = 1000
+    case oneAndAHalfSeconds = 1500
+    case twoSeconds = 2000
+    case threeSeconds = 3000
+
+    package static let `default` = SpokenStopWait.threeSeconds
+
+    package var id: Int { rawValue }
+
+    package var duration: Duration { .milliseconds(rawValue) }
+
+    /// "1 s", "1.5 s": whole seconds without a decimal.
+    package var displayName: String {
+        rawValue % 1000 == 0 ? "\(rawValue / 1000) s" : "\(Double(rawValue) / 1000) s"
+    }
+}
+
 /// Stopping a dictation by voice (#839, #840): a trailing send phrase
 /// followed by silence stops the dictation the way the stop key does. The
 /// one place that decides, so a shortcut model can call it.
@@ -111,14 +138,6 @@ package enum SpokenStopRule {
         /// A capture to the Inbox, toggled.
         case quickCapture
     }
-
-    /// No new transcript text for this long after a trailing send phrase
-    /// stops the dictation. Measured on the owner's 138 Overlay Buffer
-    /// dictations with audio (2026-09-26/27, PR for #839): 9.4 % of speech
-    /// pauses reach 2 s and 5.6 % reach 3 s, and the one "send it" said
-    /// mid-sentence was followed by a 2.4 s pause. A false stop sends half a
-    /// prompt and cannot be undone; a late one costs a key press at most.
-    package static let silenceWindow: Duration = .seconds(3)
 
     /// Whether a trailing send phrase stops a dictation started this way.
     /// A held dictation never waits for silence: its release commits at

@@ -130,6 +130,26 @@ jobs:
                  "resident STT service; see scripts/mac/README.md to enable on-demand."
           fi
 
+      - name: Voices the runner's shell lists
+        # What `say` offers outside xctest, next to the eval's voices line (#960).
+        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
+        continue-on-error: true
+        run: |
+          echo "say -v ? lines: $(say -v '?' | wc -l)"
+          echo "Samantha/Daniel/Thomas lines: $(say -v '?' | grep -c -E '^(Samantha|Daniel|Thomas)')"
+          # The same report as the eval's "eval TTS env:" lines, home and
+          # user masked: the difference is what hides the voices from xctest.
+          home=$(perl -e 'print((getpwuid($<))[7])')
+          user=$(id -un)
+          mask() { sed -e "s|$home|<home>|g" -e "s|$user|<user>|g"; }
+          echo "shell env: keys: $(compgen -e | LC_ALL=C sort | tr '\n' ' ')"
+          for name in $(compgen -e | LC_ALL=C sort); do
+            case "$name" in
+              HOME|TMPDIR|CFFIXED_USER_HOME|DYLD_*|__XPC_*|XPC_*|__CF*)
+                echo "shell env: $name=${!name}" | mask ;;
+            esac
+          done
+
       - name: Run agent-dictation E2E eval
         id: eval
         if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
@@ -161,6 +181,14 @@ jobs:
           # unit step rebuilt it back — the same flag-flip PR #157 fixed
           # inside ci.yml (PR #157 review finding).
           swift test --build-system native --filter AgentDictationE2EEvalTests --enable-code-coverage 2>&1 | tee logs/eval-e2e.log
+
+      - name: Voices the runner's shell lists after the eval
+        # Next to the eval's own listing (#960).
+        if: always() && (github.event_name != 'schedule' || steps.guard.outputs.run != 'false')
+        continue-on-error: true
+        run: |
+          echo "say -v ? lines: $(say -v '?' | wc -l)"
+          echo "Samantha/Daniel/Thomas lines: $(say -v '?' | grep -c -E '^(Samantha|Daniel|Thomas)')"
 
       - name: Name the STT service's state
         # A stalled eval reads the same whether the reaper stopped the server

@@ -55,7 +55,7 @@ extension ClaudeIntegrationSettingsModel {
         let service = pluginService()
         if let failure = await performAsync({ try service.repairMarketplaceRegistration() }) {
             Log.claudeContext.error(
-                "Claude marketplace repair at launch failed: \(failure.describedError, privacy: .public)"
+                "Claude marketplace repair at launch failed: \(failure.publicLogDescription, privacy: .public) \(failure.describedError, privacy: .private)"
             )
         } else {
             Log.claudeContext.info("Claude Code marketplace re-pointed")
@@ -146,7 +146,7 @@ extension ClaudeIntegrationSettingsModel {
         let service = pluginService()
         if let failure = await performAsync({ try service.updateInstalledPlugin() }) {
             Log.claudeContext.error(
-                "Claude plugin update at launch failed: \(failure.describedError, privacy: .public)"
+                "Claude plugin update at launch failed: \(failure.publicLogDescription, privacy: .public) \(failure.describedError, privacy: .private)"
             )
         } else {
             Log.claudeContext.info("Claude Code plugin updated to \(bundled, privacy: .public)")
@@ -168,7 +168,7 @@ extension ClaudeIntegrationSettingsModel {
         Log.claudeContext.info("Updating the Mistral Vibe hooks to this build's")
         if let failure = await performAsync({ try service.install() }) {
             Log.claudeContext.error(
-                "Vibe hooks update at launch failed: \(failure.describedError, privacy: .public)"
+                "Vibe hooks update at launch failed: \(failure.publicLogDescription, privacy: .public) \(failure.describedError, privacy: .private)"
             )
         } else {
             Log.claudeContext.info("Mistral Vibe hooks updated")
@@ -199,7 +199,7 @@ extension ClaudeIntegrationSettingsModel {
             detail: Self.pluginFailureDetail(failure)
         )
         Log.claudeContext.error(
-            "Claude plugin action failed: \(failure.describedError, privacy: .public)"
+            "Claude plugin action failed: \(failure.publicLogDescription, privacy: .public) \(failure.describedError, privacy: .private)"
         )
         await refreshLocalPluginStatus()
     }

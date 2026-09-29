@@ -96,9 +96,10 @@ its words already, so neither stops on silence.
   app reconnects.
 - A change to the setting applies from the next dictation.
 
-**With "send it".** A dictation that ends in a send phrase stops three
-seconds after the last new word, sooner than the shortest silence setting
-(see [Press Return with "send it"](#press-return-with-send-it)). A silence
+**With "send it".** A dictation that ends in a send phrase stops after
+**Wait before pressing Return** (3 s unless you change it), sooner than the
+shortest silence setting (see
+[Press Return with "send it"](#press-return-with-send-it)). A silence
 stop presses Return only when that send-phrase stop would have. Code:
 [silence stop](../Sources/localvoxtral/DictationSessionController+SilenceAutoStop.swift),
 [send-phrase stop](../Sources/localvoxtral/DictationSessionController+SpokenStop.swift).
@@ -132,21 +133,27 @@ The committed text is the same either way.
 
 ## Where the words go
 
-While you dictate, the top of the overlay lists where the words can go.
-**Tab** moves to the next one and **⇧Tab** to the previous:
+While you dictate, the top of the overlay names where the words go, and
+"2 of 5" says how many places they could go. **Tab** moves to the next one
+and **⇧Tab** to the previous, in this order:
 
 - **The app you started in**, named after its coding agent session when it
   has one. A dictation goes here unless you press Tab.
-- **Each coding agent session that needs you**, oldest first, when
-  [Tell me when an agent needs you](coding-agents.md#jump-to-the-agent-that-needs-you)
-  is on. Picking one brings its pane forward, and your words go there when
-  you stop.
 - **Inbox**: a [quick capture](coding-agents.md#quick-capture). The words are
   saved there and never typed anywhere.
+- **Each coding agent session that needs you**, oldest first, when
+  [Tell me when an agent needs you](agents.md#when-an-agent-needs-you)
+  is on. Picking one brings its pane forward, and your words go there when
+  you stop.
 
-**→** and **←** move the same way, and a click on a destination picks it.
-None of these keys reach the app you are dictating into while the overlay is
-open. With nobody waiting, one Tab therefore sends the dictation to the Inbox.
+**→** and **←** move the same way. None of these keys reach the app you are
+dictating into while the overlay is open. One Tab therefore always sends the
+dictation to the Inbox, and a second reaches the session that has waited
+longest.
+
+While you move, the overlay lists every destination under its top line. The
+list closes two seconds after your last move. A click on a destination in
+the list picks it, and a click on the name at the top opens the list.
 
 The optional **Quick capture to Inbox** shortcut under **Settings →
 Dictation → Output** starts a dictation with the Inbox already picked.
@@ -156,9 +163,9 @@ again, it stops. It can be a
 
 ## Voice commands
 
-Four spoken phrases act instead of being typed: one presses Return, one
-switches sessions, one sends a dictation to another session, and one names a
-session.
+Some spoken phrases act instead of being typed. "Send it" presses Return.
+"Go to", "send that to" and "call this session" reach your coding agent
+sessions by name, in [Work with several agents](agents.md).
 
 ### Press Return with "send it"
 
@@ -170,22 +177,34 @@ keyboard.
 The option is off by default. Turn it on per mode in **Settings →
 Dictation**; the Live Auto-Paste switch is under **Advanced**.
 
-**Your own phrases.** **Settings → Dictation → Output → Phrases that press
-Return** replaces "send it" and "send now" with your list, separated by
-commas, in both modes. A phrase has at most four words. The app refuses a
+**Your own phrases.** **Settings → Dictation → Output → Send phrases**
+replaces "send it" and "send now" with your list, separated by commas, in
+both modes. A phrase has at most four words. The app refuses a
 single common word ("go", "done", "enter"), since you say it in ordinary
 prompts.
 
 **Overlay Buffer stops on its own.** When the words end in a send phrase and
-three seconds pass with no new words, the dictation stops as if you pressed
-the key: polish, commit, then Return.
+the wait passes with no new words, the dictation stops as if you pressed
+the key: polish, commit, then Return. **Settings → Dictation → Output → Wait
+before pressing Return** sets the wait: 1, 1.5, 2 or 3 seconds, 3 by
+default.
 
 - A phrase in the middle of a sentence does nothing.
-- Speaking again within the three seconds keeps the dictation going.
+- Speaking again within the wait keeps the dictation going.
 - The key still stops it at once.
 - A held (push to talk) dictation stops only on release.
 - A quick capture stops the same way and goes to the Inbox without the
   phrase. It never presses Return.
+- Live Auto-Paste does not wait: it presses Return when you finish the
+  phrase.
+
+**Choosing the wait.** A shorter wait sends sooner, but it also ends a
+dictation where you said a send phrase and then paused mid-sentence. In
+measured dictations, about 6 % of pauses in speech last 3 s or more and
+about 9 % last 2 s or more. The choices stop at 1 s because words reach the
+app half a second to a second after you say them: a shorter wait could press
+Return before the end of your sentence arrives, and a sent prompt cannot be
+taken back.
 
 **Overlay Buffer and polishing.** The app removes the phrase before
 polishing, so the polisher never sees it.
@@ -205,57 +224,6 @@ nothing until the dictation ends.
 The app treats an app as a terminal only if it is a known terminal or listed
 in **Settings → Terminals**. The app recognizes Claude Desktop on its own.
 Listing it there would make localvoxtral treat its prompt box as a terminal.
-
-### Switch to a session with "go to"
-
-Say only "go to payments" and the app brings the pane of the joined coding
-agent session named payments to the front instead of typing anything. In
-Live Auto-Paste, say it as a phrase between pauses.
-
-A session answers to its repository's name and, in a linked worktree, to the
-worktree's name. It also answers to a
-[name you gave it](#name-a-session).
-
-"Go to" reaches the sessions that Tab can bring forward
-([Which sessions come forward](coding-agents.md#which-sessions-come-forward)).
-
-When no session has that name, the app types the dictation as usual. When
-more than one does, or its pane can't be reached, nothing is typed and the
-menu bar popover says so.
-
-In Live Auto-Paste, what you say next is typed into the session you went to.
-
-### Send to a session with "send that to"
-
-In Overlay Buffer, end a dictation with "send that to payments". The session
-named payments gets the text and presses Enter, and the app you are in gets
-nothing.
-
-The name has one to four words. Sessions answer to names the way they do for
-"go to", your own names first. What happens next depends on the session:
-
-- **A Ghostty, iTerm2 or Terminal.app tab** comes forward and gets the text.
-  Enter is pressed only if that pane is still the one in front.
-- **An opencode session, or a session in a
-  [herdr](../integrations/herdr/README.md) pane on this Mac,** gets the text
-  without coming forward.
-- **A remote, Claude Desktop or cmux session** gets nothing, and the popover
-  says "Can't send to that session yet".
-
-When no session has that name, the app inserts the whole dictation where you
-are, as spoken. When more than one does, nothing is sent and the text stays
-in History.
-
-When a delivery fails, nothing reaches the app you are in. The text stays in
-History, and the popover says whether it was typed without Enter.
-
-### Name a session
-
-While dictating into a joined session, say "call this session payments" (or
-"name this session payments"). Nothing is typed. From then on "go to
-payments" reaches that session, ahead of any repository or worktree name.
-
-Naming another session payments moves the name to it.
 
 ## Recover a dictation
 
@@ -690,15 +658,15 @@ History; the panes sit under the sidebar's Settings header.
   - **Mistral API**: Mistral's hosted models on one API key, entered in the
     pane's Mistral API group.
 - **Dictation**: the [trigger](#shortcuts), **Copy on stop**, the
-  [phrases that press Return](#press-return-with-send-it) and the Overlay
-  Buffer "send it" switch, the
-  [needs-you cue and its shortcut](coding-agents.md#jump-to-the-agent-that-needs-you),
+  [send phrases](#press-return-with-send-it), the wait before pressing
+  Return and the Overlay Buffer send phrase switch, the
+  [needs-you cue and its shortcut](agents.md#jump-to-it),
   the [Quick capture to Inbox shortcut](#where-the-words-go),
   [ducking other audio](#lower-other-audio-while-dictating), and the
   overlay's font size, lines before scrolling,
   [word wrapping](#keeping-words-on-their-line) and
   [stop after silence](#stop-after-silence). **Advanced** holds
-  [Live Auto-Paste](#live-auto-paste) and its own "send it" switch, the menu
+  [Live Auto-Paste](#live-auto-paste) and its own send phrase switch, the menu
   bar mode and the [Copy last dictation](#recover-a-dictation) shortcut.
 - **Text Processing**: [About you](#add-your-global-terms),
   [Suggest terms](#get-term-suggestions), the LLM Polishing switch, the

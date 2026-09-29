@@ -52,7 +52,8 @@ enum WidgetSnapshotAssembler {
                 if isToday {
                     spend.speechTodayEUR += cost
                 }
-            case .polish, .termSuggestions, .projectTerms, .quickCaptureRouting, .quickCaptureDrafting:
+            case .polish, .termSuggestions, .projectTerms, .quickCaptureRouting, .quickCaptureDrafting,
+                 .quickCapturePolish:
                 // The other chat requests were recorded as polishes before
                 // #837 and stay in this share.
                 spend.polishLast30DaysEUR += cost

@@ -30,69 +30,9 @@ In a terminal, live dictation changes in three ways:
 
 ## Jump to the agent that needs you
 
-Run several coding agents at once, and localvoxtral tells you when one waits
-for you. Press Tab while you dictate, and that agent's pane comes to the
-front so you can read what it asked while you answer. Your words go into
-that pane when you stop.
-
-Turn it on with **Tell me when an agent needs you** under **Settings →
-Dictation → Output**. It covers the sessions localvoxtral joins: Claude Code
-([Dictating into Claude Code](#dictating-into-claude-code)), Codex, opencode
-and Mistral Vibe
-([Connect opencode, Mistral Vibe and Codex](#connect-opencode-mistral-vibe-and-codex)).
-
-### What counts as waiting
-
-A session waits when Claude Code, Codex or opencode shows a permission
-prompt or asks a question, on this Mac or an enrolled host. A session that
-finishes its turn while you look at another window or pane counts too, and
-Mistral Vibe sessions count only then, since Vibe reports no waits. A turn
-that ends in the pane you are looking at counts for nothing.
-
-Each time, the app shows a macOS banner with a sound, and the menu bar icon
-gets an orange dot. **Menu bar mark when an agent needs you** can make it a
-square or an exclamation mark instead. The popover names the session:
-"payments needs you" or "payments finished". The sound is your alert sound,
-and macOS controls it: turn off **Play sound for notifications** under
-**System Settings → Notifications → localvoxtral** to keep the banner
-without it. Focus silences both.
-
-A session stops waiting when you send it a prompt, when it starts working
-again, when it ends, or when you dictate into it. The app never receives
-what the agent wrote or asked, only that it waits.
-
-### Tab or one shortcut
-
-During a dictation, the overlay lists each waiting session among
-[where the words go](dictation.md#where-the-words-go), oldest first. Tab to
-one and its pane comes forward. The overlay moves to it only once the
-terminal confirms the pane is in front. Otherwise it stays where it was and
-the popover says why.
-
-The optional **Answer the agent that needs you** shortcut, under **Settings
-→ Dictation → Output**, does the same in one press. It brings forward the session that has waited longest, or else
-the one that finished first, and starts a dictation there. Press it again to
-stop; the next press goes to the next session. During a dictation it picks
-that session the way Tab would. It can be a
-[chord of modifier keys](dictation.md#record-a-chord-of-modifier-keys). With
-no session waiting, it opens the oldest ready quick capture draft instead
-([Review a draft by voice](#review-a-draft-by-voice)).
-
-After Tab moves to a session, Tab can bring back the app you started in,
-except in one case: you started in the same terminal app as that session, in
-a pane with no joined session. The app has no way to find that pane again,
-and bringing the terminal forward would only show the session's pane.
-
-### Which sessions come forward
-
-- Ghostty, iTerm2 and Terminal.app on this Mac.
-- Claude Desktop Code-tab sessions, on this Mac or on an ssh host Desktop
-  runs them on. Desktop switches to the session, and the words go there once
-  its prompt has focus.
-
-herdr and cmux panes can't come forward yet
-([#1012](https://github.com/T0mSIlver/localvoxtral/issues/1012)). For those,
-and any other session, the popover says it can't bring that session forward.
+The needs-you cue, Tab to a waiting agent, and the voice commands that name,
+reach and send to sessions are in
+[Work with several agents](agents.md).
 
 ## Polishing
 
@@ -119,7 +59,8 @@ Processing → Polishing**, except the two context sources, which sit in
 
 The agent-tuned prompt turns spoken symbol forms into written ones. "Dash
 dash force" becomes "--force", "src slash auth" becomes "src/auth", and "the
-dot env file" becomes ".env".
+dot env file" becomes ".env". An issue or PR number becomes a GitHub
+reference the agent can look up: "PR seven twelve" becomes "PR #712".
 
 It puts backticks around code-like tokens, and only those. Filler words go,
 self-corrections resolve to the final intent, and explicit enumerations
@@ -539,27 +480,35 @@ drafts it for one of your projects. Your words never reach the focused app.
 They are saved in History, then shown on the **Inbox** page of the
 localvoxtral window.
 
-To capture, press Tab during a dictation until the overlay shows **Inbox**
+To capture, press Tab once during a dictation: the overlay shows **Inbox**
 ([Where the words go](dictation.md#where-the-words-go)). You can also set the
 optional **Quick capture to Inbox** shortcut in **Settings → Dictation**.
 
-A capture then goes through four steps.
+A capture then goes through five steps.
 
-1. **Route.** A classifier picks one of your projects (see
+1. **Polish.** Your polishing model corrects the words once, with your
+   polish prompt and [Global terms](dictation.md#add-your-global-terms).
+   The project names and confirmed learned terms of every project a
+   capture can go to are matched against your words, and the ones that
+   match go with the request. It gets no screen, clipboard or session
+   context. The later steps read the polished words;
+   History keeps what you said beside them. With polishing off, or when the
+   request fails, the capture goes on with the words as heard.
+2. **Route.** A classifier picks one of your projects (see
    [Which projects a capture can go to](#which-projects-a-capture-can-go-to)).
    When it is unsure, or two projects tie, the capture stays unplaced with
    a **Move to** button for its best guess; nothing is drafted until you
    click it or move the capture yourself.
-2. **First draft.** Your polishing model sorts the capture as an **Issue**, a
+3. **First draft.** Your polishing model sorts the capture as an **Issue**, a
    **Question**, a **Task** or a **Note** and writes a draft within
    seconds (see [How the draft is written](#how-the-draft-is-written)). A
    question shows its answer. A task or a note is restated and stays in the
    Inbox; it is never filed.
-3. **Check against the code**, issues only. An agent reads the code the issue
+4. **Check against the code**, issues only. An agent reads the code the issue
    touches, corrects the draft, and lists the files it read. The row says
    **Checked against the code** when it is done. You don't have to wait for
    it.
-4. **Review.** On the Inbox page you edit the draft, move the capture to
+5. **Review.** On the Inbox page you edit the draft, move the capture to
    another project, or discard it. **File** creates the issue with your
    GitHub CLI, with your dictated words quoted under the draft. The Inbox
    fills in the project's repository (see
@@ -584,7 +533,7 @@ it had before.
 
 ### Review a draft by voice
 
-With [Tell me when an agent needs you](#jump-to-the-agent-that-needs-you)
+With [Tell me when an agent needs you](agents.md#when-an-agent-needs-you)
 on, a finished draft (for an issue,
 once it is checked against the code) lights the
 menu bar mark and the popover says "Draft ready: Inbox for localvoxtral".

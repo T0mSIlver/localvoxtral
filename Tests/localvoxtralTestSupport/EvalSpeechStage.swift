@@ -140,40 +140,38 @@ package enum EvalSpeechStage {
         }
         arguments.append(text)
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
-        process.arguments = arguments
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
+        let status = try EvalChildProcess.run("/usr/bin/say", arguments: arguments)
+        guard status == 0 else {
             throw Failure(
-                "say failed (status \(process.terminationStatus)) for voice \(voice ?? "default")"
+                "say failed (status \(status)) for voice \(voice ?? "default")"
             )
         }
         try FileManager.default.moveItem(at: temporary, to: wavURL)
         return try IntegrationTestSupport.extractPCMDataFromWAV(at: wavURL)
     }
 
+    /// What xctest hands its children, printed once to compare with eval-e2e's
+    /// "Voices the runner's shell lists" step (#960).
+    private static let reportEnvironmentOnce: Void = {
+        for line in EvalChildProcess.currentEnvironmentReport() {
+            print("eval TTS env: \(line)")
+        }
+    }()
+
     /// `say -v ?` through a temp file (no pipes — descriptor-safe by
     /// construction), parsed by the unit-tested picker. Throws when `say`
     /// fails or lists none of `preferred`.
     package static func resolveVoice(languagePrefix: String, preferred: [String]) throws -> String {
+        _ = reportEnvironmentOnce
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("lv-eval-voices-\(UUID().uuidString).txt")
         defer { try? FileManager.default.removeItem(at: outputURL) }
-        _ = FileManager.default.createFile(atPath: outputURL.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: outputURL)
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
-        process.arguments = ["-v", "?"]
-        process.standardOutput = handle
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
-        try? handle.close()
-        guard process.terminationStatus == 0 else {
-            throw Failure("`say -v ?` failed (status \(process.terminationStatus))")
+        let status = try EvalChildProcess.run(
+            "/usr/bin/say", arguments: ["-v", "?"],
+            standardOutput: outputURL.path, discardStandardError: true
+        )
+        guard status == 0 else {
+            throw Failure("`say -v ?` failed (status \(status))")
         }
         let voice = try requireVoice(
             fromSayVoicesOutput: String(contentsOf: outputURL, encoding: .utf8),
@@ -253,16 +251,21 @@ package enum EvalSpeechStage {
     }
 
     private static func parseVoiceLine(_ line: String) -> (name: String, locale: String)? {
-        // "Thomas              fr_FR    # Bonjour! ..." — name up to the first
-        // run of 2+ spaces, locale is the next token.
-        guard let separator = line.range(of: "  ") else { return nil }
-        let name = String(line[..<separator.lowerBound]).trimmingCharacters(in: .whitespaces)
+        // "Thomas              fr_FR    # Bonjour! ..." — the locale is the
+        // last token before the "#", the name everything before it. A long
+        // name can leave a single space, a tab or a no-break space before
+        // the locale (#960).
+        let entry = line.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+            .first ?? Substring(line)
+        guard let localeToken = entry.split(whereSeparator: \.isWhitespace).last,
+            let localeRange = entry.range(of: localeToken, options: .backwards)
+        else { return nil }
+        let name = entry[..<localeRange.lowerBound].trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { return nil }
-        let rest = line[separator.upperBound...].trimmingCharacters(in: .whitespaces)
-        guard let locale = rest.split(whereSeparator: \.isWhitespace).first else { return nil }
         // Locale tokens look like en_US / fr-FR / fr_CA.
+        let locale = String(localeToken)
         guard locale.contains("_") || locale.contains("-") else { return nil }
-        return (name, String(locale))
+        return (name, locale)
     }
 
     // MARK: - ASR
