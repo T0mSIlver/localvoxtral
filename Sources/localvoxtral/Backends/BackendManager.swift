@@ -630,6 +630,8 @@ final class BackendManager: ManagedBackendManaging {
                 option.repoID,
                 "--model-revision",
                 option.revision,
+                "--engine",
+                option.engine.rawValue,
                 "--port",
                 "\(spec.port)",
                 "--parent-pid",
