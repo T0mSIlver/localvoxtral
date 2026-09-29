@@ -2,6 +2,19 @@ import Foundation
 
 /// Hands a committed, joined dictation to `ProjectTermProposer` (#609).
 extension DictationSessionController {
+    /// The project names every polish carries (#1024), from the learned
+    /// terms' project list. Empty without a store.
+    func polishProjectNames() -> [String] {
+        guard let learnedTermStore else { return [] }
+        return PolishProjectNames.names(from: learnedTermStore.snapshot(), now: Date())
+    }
+
+    /// The skill names every polish carries (#1024): this Mac's and every
+    /// reporting host's.
+    func polishSkillNames() -> [String] {
+        agentSkillStore?.names() ?? []
+    }
+
     /// Called once the commit inserted `inserted`. Returns at once: the
     /// proposer resolves the project and runs the agent in a detached task,
     /// so neither this commit nor the next dictation waits for it. Nothing
@@ -16,7 +29,7 @@ extension DictationSessionController {
         projectTermProposalTask = projectTermProposer?.dictationCommitted(
             join: join?.snapshot,
             enabled: settings.projectTermProposalsEnabled,
-            excluding: settings.polishSpeakerTerms + settings.polishDismissedTermSuggestions
+            excluding: settings.polishSpeakerTerms + settings.polishDismissedTermSuggestions + polishProjectNames() + polishSkillNames()
         )
     }
 }

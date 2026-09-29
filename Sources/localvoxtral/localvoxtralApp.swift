@@ -1070,6 +1070,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         )
                     }
                 },
+                onRemoteSkills: { [store = viewModel.session.agentSkillStore] hostID, names in
+                    store?.record(hostID: hostID, names: names)
+                },
                 projectTerms: projectTerms,
                 quickCapture: quickCapture,
                 doctor: RemoteDoctorRoute { @MainActor [weak viewModel, claudeSessionRegistry] hostID in
