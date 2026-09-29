@@ -1,5 +1,5 @@
 import Foundation
-import LocalvoxtralCLICore
+import ClaudeContextWire
 import XCTest
 
 @testable import localvoxtral

@@ -1,5 +1,5 @@
 import AppKit
-import LocalvoxtralCLICore
+import ClaudeContextWire
 import SwiftUI
 
 /// The log categories that tell a failure's story. Deltas and Insertion,

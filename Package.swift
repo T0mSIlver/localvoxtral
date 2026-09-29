@@ -141,7 +141,6 @@ targets += [
         dependencies: [
             .product(name: "ShortcutRecorder", package: "ShortcutRecorder"),
             "ClaudeContextWire",
-            "LocalvoxtralCLICore",
             "localvoxtralCore",
         ],
         // Colocated agent-guide markdown, not a bundle resource.
