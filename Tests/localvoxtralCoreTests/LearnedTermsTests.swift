@@ -175,6 +175,81 @@ final class LearnedTermsTests: XCTestCase {
         )
     }
 
+    /// Pins are exempt from the term cap (#989): a project holding more
+    /// pins than the cap, as an import brings in, keeps every one, and
+    /// unpinned terms find no room.
+    func testPinnedTermsSurvivePastTheTermCap() {
+        let overflow = LearnedTerms.maxTermsPerProject + 1
+        let pins = (0..<overflow).map {
+            LearnedTerm(
+                term: "pin\($0)", sources: ["repository"], dictations: 1, firstSeen: start, lastSeen: start,
+                pinned: true)
+        }
+        let strong = LearnedTerm(
+            term: "strong", sources: ["repository"], dictations: 9, firstSeen: start, lastSeen: start + day)
+        var terms = LearnedTerms(
+            version: LearnedTerms.currentVersion,
+            projects: [LearnedTermProject(key: project.key, name: project.name, terms: pins + [strong], lastSeen: start)])
+        terms.prune(now: start + day)
+
+        let kept = terms.projects.first?.terms ?? []
+        XCTAssertEqual(kept.filter(\.isPinned).count, overflow)
+        XCTAssertFalse(kept.contains { $0.term == "strong" })
+    }
+
+    /// A project the user pinned in, typed a repository for or chose a
+    /// fork's filing in is never evicted (#989); the rest share the room.
+    func testExplicitProjectsSurvivePastTheProjectCap() {
+        func project(_ key: String, pinned: Bool = false, lastSeen: Date) -> LearnedTermProject {
+            LearnedTermProject(
+                key: key, name: key,
+                terms: [LearnedTerm(
+                    term: "term", sources: ["repository"], dictations: 1, firstSeen: lastSeen, lastSeen: lastSeen,
+                    pinned: pinned ? true : nil)],
+                lastSeen: lastSeen)
+        }
+        var typed = project("/typed", lastSeen: start)
+        typed.repository = "o/typed"
+        typed.repositoryTyped = true
+        var fork = project("/fork", lastSeen: start)
+        fork.filesUpstream = true
+        // More pinned projects than the cap, as an import brings in, all
+        // older than a project with nothing chosen.
+        var terms = LearnedTerms(
+            version: LearnedTerms.currentVersion,
+            projects: (0...LearnedTerms.maxProjects).map { project("/pin\($0)", pinned: true, lastSeen: start) }
+                + [typed, fork, project("/new", lastSeen: start + day)])
+        terms.prune(now: start + day)
+
+        XCTAssertEqual(terms.projects.count, LearnedTerms.maxProjects + 3)
+        XCTAssertTrue(terms.projects.contains { $0.key == "/pin0" })
+        XCTAssertTrue(terms.projects.contains { $0.key == "/typed" })
+        XCTAssertTrue(terms.projects.contains { $0.key == "/fork" })
+        XCTAssertFalse(terms.projects.contains { $0.key == "/new" }, "no room is left for the rest")
+    }
+
+    /// At capacity the pin is refused instead, and a project already
+    /// holding a pin can still pin more.
+    func testAPinIsRefusedWhenExplicitProjectsFillTheCap() {
+        var terms = LearnedTerms()
+        for index in 0..<LearnedTerms.maxProjects {
+            let identity = LearnedTermProjectResolver.Identity(key: "/pin\(index)", name: "pin\(index)")
+            terms.record([observation("term"), observation("other")], project: identity, now: start + day)
+            XCTAssertTrue(terms.setPinned(true, term: "term", projectKey: identity.key))
+        }
+        XCTAssertTrue(terms.canPin(projectKey: "/pin0"))
+        XCTAssertTrue(terms.setPinned(true, term: "other", projectKey: "/pin0"))
+        // A 41st project, as an import brings one in.
+        var withSpare = terms
+        withSpare.projects.append(
+            LearnedTermProject(
+                key: "/spare", name: "spare",
+                terms: [LearnedTerm(term: "spare", sources: ["repository"], dictations: 1, firstSeen: start, lastSeen: start)],
+                lastSeen: start))
+        XCTAssertFalse(withSpare.canPin(projectKey: "/spare"))
+        XCTAssertFalse(withSpare.setPinned(true, term: "spare", projectKey: "/spare"))
+    }
+
     // MARK: - Remote reports (#819)
 
     /// A repository a hook named is kept with no terms until the report is
@@ -307,7 +382,7 @@ final class LearnedTermsTests: XCTestCase {
         "terms":[{"term":"Voxtral","sources":["repository"],"dictations":1,
         "firstSeen":"2026-09-20T00:00:00Z","lastSeen":"2026-09-20T00:00:00Z"}]}]}
         """
-        let terms = LearnedTermStore.terms(fromFileContents: Data(json.utf8))
+        let terms = try XCTUnwrap(LearnedTermStore.terms(fromFileContents: Data(json.utf8)).value)
         XCTAssertEqual(terms.termCount, 1)
         XCTAssertEqual(terms.projects.first?.terms.first?.isConfirmedByCorrection, false)
     }

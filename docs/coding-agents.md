@@ -41,6 +41,14 @@ for how developers talk. The toggles below sit in **Settings → Text
 Processing → Polishing**, except the two context sources, which sit in
 **Settings → Context**.
 
+- **Polish while you speak** (on by default with the bundled helper, off
+  with Mistral API or an external URL). A long dictation is polished a few
+  sentences at a time while you speak, so the stop waits about 1 s instead of
+  4 s with the bundled helper. Each piece resends the polishing instructions,
+  so a long dictation sends about 3 times the input tokens, which a paid
+  endpoint bills. With it off, the whole text is polished at the stop. About 1 word in
+  100 comes out differently because each piece is polished without the words
+  that follow it.
 - **Agent prompt profile in terminals and Claude Desktop** (on by default).
   In a terminal, or in a Claude Code session in Claude Desktop's Code tab,
   polishing switches to an agent-tuned prompt. The details follow this list.
@@ -419,10 +427,12 @@ instead of searching GitHub.
 /usr/local/bin/localvoxtral points, the microphone and Accessibility
 permissions, the speech and polish engines, the Claude Code and Codex
 plugins, the opencode plugin, the Vibe hooks, the note in each agent's file,
-each remote host, and the sessions the last five dictations joined. Each
-problem comes with the step that fixes it, and `--json` gives each check a
-stable `id`. It changes nothing. It prints no dictated text and no key, but
-it names your remote hosts. It exits with status 4 when a check failed.
+each remote host with its sessions still on an older plugin, and the
+sessions the last five dictations joined. Each problem comes with the step
+that fixes it, and `--json` gives each check a stable `id`. It changes
+nothing. It prints no dictated text and no key, but it names your remote
+hosts and their sessions' folders. It exits with status 4 when a check
+failed.
 
 `logs` reads the app's lines from the macOS unified log, and works while the
 app is not running: one line per dictation saying which session it joined

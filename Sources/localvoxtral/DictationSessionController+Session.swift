@@ -16,13 +16,13 @@ extension DictationSessionController {
     @discardableResult
     func cancelPolishingForNewSessionIfNeeded() -> Bool {
         guard polishAndCommitTask != nil else { return false }
-        debugLog("cancel in-flight polishing to start a new dictation session")
+        debugLog("cancel the pending commit: a new dictation or a cancel supersedes it")
         polishAndCommitTask?.cancel()
         polishAndCommitTask = nil
         // Before the cleanup below clears it: the dictation being polished
         // is not inserted, and History is where the user finds it again.
         if let saveInterruptedPolishCommit {
-            Log.polishing.notice("polish cancelled by a new dictation; saving the transcript as not inserted")
+            Log.polishing.notice("pending commit cancelled; saving the transcript as not inserted")
             saveInterruptedPolishCommit()
         }
 
@@ -44,6 +44,7 @@ extension DictationSessionController {
         sessionIsQuickCapture = false
         sessionDraftReview = nil
         sessionCommitGuard = nil
+        sessionPickedPane = nil
         sessionStartedAt = nil
         sessionCaptureTimeline = nil
         sessionProvider = nil
@@ -52,6 +53,8 @@ extension DictationSessionController {
         sessionRealtimeConfiguration = nil
         sessionStoresAudio = false
         sessionHasStopSecondPass = false
+        earlyPolishRun?.cancel()
+        earlyPolishRun = nil
     }
 
     /// Live Auto-Paste preflight for Secure Keyboard Entry: a live session
@@ -499,11 +502,50 @@ extension DictationSessionController {
         sessionCaptureTimeline = CaptureTimeline(
             pressedAt: dependencies.clock.now(), now: dependencies.clock.now)
         latchSessionAudio(outputMode: requestedOutputMode)
+        armEarlyPolish(outputMode: requestedOutputMode)
         sessionReplacementDictionary = StopCommitCoordinator.effectiveReplacementDictionary(
             settings: settings,
             appConfigStore: appConfigStore
         )
         setRealtimeIndicatorIdle()
+    }
+
+    /// Overlay Buffer with polishing polishes settled pieces while the user
+    /// speaks (#709), unless early polish is off: then the stop polishes the
+    /// whole text, as before #709. Not with a second pass: Mistral's realtime
+    /// stream settles nothing before the stop, and the batch text replaces
+    /// the realtime text there anyway. Not for a quick capture or a draft
+    /// review either: their stops never use the pieces. Latched after
+    /// `latchSessionAudio`, which decides the second pass.
+    func armEarlyPolish(outputMode: DictationOutputMode) {
+        earlyPolishRun?.cancel()
+        earlyPolishRun = nil
+        guard outputMode == .overlayBuffer, settings.earlyPolishEnabled, !sessionHasStopSecondPass,
+            !sessionIsQuickCapture, sessionDraftReview == nil,
+            let configuration = settings.llmPolishingConfiguration
+        else { return }
+        earlyPolishRun = EarlyPolishRun(
+            service: llmPolishingService,
+            configuration: configuration,
+            templates: { [weak self] in
+                self?.earlyPolishTemplates() ?? LLMPromptTemplates(systemContent: "", userContent: "")
+            },
+            now: dependencies.clock.now
+        )
+    }
+
+    /// The templates the stop would pick for this session's target and join
+    /// as they are now; the stop discards the pieces if its own differ.
+    private func earlyPolishTemplates() -> LLMPromptTemplates {
+        StopCommitCoordinator.promptTemplates(
+            profile: StopCommitCoordinator.polishProfile(
+                forTargetBundleID: resolveTargetAppBundleID(),
+                claudeJoin: context.claudeSessionJoin,
+                settings: settings
+            ),
+            settings: settings,
+            appConfigStore: appConfigStore
+        )
     }
 
     /// Whether this session's audio goes to the audio store, and whether it
@@ -913,7 +955,8 @@ extension DictationSessionController {
         markRecentConnectionFailureIndicator()
         presentConnectionFailureAlert(
             title: title,
-            message: resolvedMessage
+            message: resolvedMessage,
+            log: .polishing
         )
     }
 
@@ -934,7 +977,8 @@ extension DictationSessionController {
     func presentConnectionFailureAlert(
         title: String = "Realtime Connection Failed",
         message: String,
-        technicalDetails: String? = nil
+        technicalDetails: String? = nil,
+        log: ConnectionFailureLog = .realtime
     ) {
         guard !message.isEmpty else { return }
         guard !isShowingConnectionFailureAlert else { return }
@@ -944,7 +988,8 @@ extension DictationSessionController {
         dependencies.connectionFailurePresenter.present(
             title: title,
             message: message,
-            technicalDetails: technicalDetails
+            technicalDetails: technicalDetails,
+            log: log
         )
     }
 

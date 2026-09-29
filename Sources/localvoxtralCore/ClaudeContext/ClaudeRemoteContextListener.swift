@@ -602,7 +602,7 @@ public final class ClaudeRemoteContextListener: Sendable {
         // serializing body parsing behind it would stall every other host's
         // auth behind one slow payload. Only the COMMIT — the part the
         // revocation race is about — re-authenticates under the lock.
-        guard let prepared = prepareIngest(body: body, request: request, host: host) else {
+        guard var prepared = prepareIngest(body: body, request: request, host: host) else {
             // Unparseable payloads never touch the session registry, so
             // revocation has nothing to protect. The body stays identical to
             // an ingested record; only this fixed status header differs.
@@ -617,6 +617,11 @@ public final class ClaudeRemoteContextListener: Sendable {
                 sessionStatus: .unknown
             )
             return
+        }
+        prepared.shimVersion = switch prepared.record.agent {
+        case .claude: pluginVersionReport
+        case .vibe: vibeHooksVersion.map { .version($0) }
+        case .opencode, .codex: nil
         }
         guard let commitIngestStatus = hosts.withAuthenticatedHost(
             token: token,
@@ -954,6 +959,8 @@ public final class ClaudeRemoteContextListener: Sendable {
         let snippets: [ClaudeContentSnippet]
         let environment: ClaudeRemoteSessionEnvironment?
         let hostID: String
+        /// This request's shim version, per the agent the record names.
+        var shimVersion: ClaudeRemotePluginVersionReport?
     }
 
     /// The parse/scope half of ingest, safe outside any lock.
@@ -1048,7 +1055,8 @@ public final class ClaudeRemoteContextListener: Sendable {
             prepared.record,
             origin: origin,
             snippets: prepared.snippets,
-            environment: prepared.environment
+            environment: prepared.environment,
+            remoteShimVersion: prepared.shimVersion
         )
         // Shape only. A remote record carries the user's prompt and excerpts of
         // their code; a log is the wrong place for either.

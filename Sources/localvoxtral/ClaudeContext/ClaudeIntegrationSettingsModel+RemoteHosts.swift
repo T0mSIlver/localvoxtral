@@ -227,7 +227,7 @@ extension ClaudeIntegrationSettingsModel {
             }
             if let failure = attempt.failure {
                 Log.claudeContext.error(
-                    "Claude remote host removal could not rewrite ~/.ssh/config: \(failure.describedError, privacy: .public)"
+                    "Claude remote host removal could not rewrite ~/.ssh/config: \(failure.publicLogDescription, privacy: .public) \(failure.describedError, privacy: .private)"
                 )
                 manualNotes.append(
                     "This host's block is still in ~/.ssh/config.\n\n"
@@ -239,7 +239,7 @@ extension ClaudeIntegrationSettingsModel {
         if isLastHost, let shell = loginShell(), let writer = shellRCWriter(shell) {
             if let failure = await performAsync({ try writer.remove() }) {
                 Log.claudeContext.error(
-                    "Claude remote host removal could not rewrite the shell startup file: \(failure.describedError, privacy: .public)"
+                    "Claude remote host removal could not rewrite the shell startup file: \(failure.publicLogDescription, privacy: .public) \(failure.describedError, privacy: .private)"
                 )
                 manualNotes.append(
                     "The LC_LVX_TTY block is still in your shell startup file.\n\n"

@@ -347,7 +347,7 @@ final class QuickCaptureTwoStageInboxTests: XCTestCase {
         XCTAssertEqual(item.codeCheck, QuickCaptureCodeCheck(state: .checking))
         XCTAssertTrue(item.canFile, "no waiting for the check")
         XCTAssertFalse(item.canDraftAgain)
-        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).items.first?.codeCheck?.state, .failed,
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.first?.codeCheck?.state, .failed,
                        "a quit mid-check leaves the first draft, marked unchecked")
 
         runner.gate!.wakeAll()
@@ -482,7 +482,7 @@ final class QuickCaptureTwoStageInboxTests: XCTestCase {
             """
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data(old.utf8).write(to: fileURL)
-        let item = try XCTUnwrap(QuickCaptureInboxFile.load(from: fileURL).items.first)
+        let item = try XCTUnwrap(QuickCaptureInboxFile.load(from: fileURL).value?.items.first)
         XCTAssertNil(item.kind)
         XCTAssertTrue(item.isIssue)
         XCTAssertNil(item.codeCheck)

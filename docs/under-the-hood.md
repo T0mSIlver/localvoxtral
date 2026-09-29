@@ -127,6 +127,8 @@ then paste one API key from
   socket, at 0.006 USD per minute of audio.
 - Polishing uses Mistral Medium 3.5 (mistral-medium-3-5) with reasoning off,
   at 1.5 USD per million input tokens and 7.5 USD per million output tokens.
+  **Polish while you speak** is off by default here, because it sends about
+  3 times the input tokens per long dictation.
 
 In this mode your audio and transcripts reach Mistral.
 

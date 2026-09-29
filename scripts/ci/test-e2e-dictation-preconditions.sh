@@ -146,9 +146,10 @@ set -e
 [ "$STATUS" -eq 3 ] || fail "a lagging speech service exited $STATUS, want 3 (not runnable): $(cat "$WORK/out")"
 grep -q "NOT RUN: The speech service .* finished a clip [0-9.]* s after the speech ended, past the 3.5 s" "$WORK/out" \
   || fail "the NOT RUN line does not give the measured lag: $(cat "$WORK/out")"
-# Compiling the target, writing the probe's WAV and sweeping the run's own
-# target app touch nothing of the owner's.
-untouched "lagging speech service" '^(swiftc |say -o |pkill -f .*/e2e-target\.app/)'
+# Compiling the target and writing the probe's WAV touch nothing of the
+# owner's. The run ends its targets by the pids they wrote, never by a
+# command-line match (#1011), so no pkill runs at all.
+untouched "lagging speech service" '^(swiftc |say -o )'
 echo "PASS: a speech service lagging before the app starts is 'not runnable', with its lag"
 
 # The scenarios that ship must parse.
