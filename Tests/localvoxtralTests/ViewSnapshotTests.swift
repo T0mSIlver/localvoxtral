@@ -477,6 +477,15 @@ final class ViewSnapshotTests: XCTestCase {
             ("polished", DictationOverlayView(
                 phase: .finalizing, text: polishedText, errorMessage: nil, secureInputActive: false,
                 metrics: metrics, polished: true, polishedFrom: raw, motion: .frozen)),
+            // "Color for polished words" set to the system accent.
+            ("polishing-accent", DictationOverlayView(
+                phase: .finalizing, text: raw, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, polishing: true, motion: .frozen,
+                polishColor: OverlayPolishColor.systemAccent.color)),
+            ("polished-accent", DictationOverlayView(
+                phase: .finalizing, text: polishedText, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, polished: true, polishedFrom: raw, motion: .frozen,
+                polishColor: OverlayPolishColor.systemAccent.color)),
             ("commit-failed", DictationOverlayView(
                 phase: .commitFailed, text: sample,
                 errorMessage: "Couldn't insert. Copied for manual paste.",
@@ -494,7 +503,9 @@ final class ViewSnapshotTests: XCTestCase {
         }
         // The #1074 states on a dark desktop too: the marks, the band and
         // the tints must read on both.
-        let darkNames: Set = ["listening", "polishing", "polished", "destinations-3-open", "destinations-3-closed"]
+        let darkNames: Set = [
+            "listening", "polishing", "polished", "polished-accent", "destinations-3-open", "destinations-3-closed",
+        ]
         let renders: [(String, DictationOverlayView, NSAppearance.Name)] = (states + destinations).map { ($0.name, $0.view, .aqua) }
             + (states + destinations).filter { darkNames.contains($0.name) }.map { ("\($0.name)-dark", $0.view, .darkAqua) }
         for (name, overlay, appearance) in renders {

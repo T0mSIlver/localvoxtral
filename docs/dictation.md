@@ -72,10 +72,11 @@ Processing → Polishing**; see
 [Polishing](coding-agents.md#polishing) for its cost and default.
 
 While you speak, bars at the top left of the overlay move with your voice.
-When you stop with polishing on, a blue band sweeps the words until the
-polished text arrives. The words the LLM changed then show in blue for about
-a second, while the text is already going into the app. The menu bar
-popover keeps the raw transcript.
+When you stop with polishing on, a band sweeps the words until the
+polished text arrives. The words the LLM changed then show in teal for about
+a second, while the text is already going into the app. To use your system
+accent color instead, set **Color for polished words** in **Settings →
+Dictation → Overlay Buffer**. The menu bar popover keeps the raw transcript.
 
 To move the overlay, drag it by any part to a spot of your choice. It stays
 there across restarts. To anchor it to the focused window again, double-click

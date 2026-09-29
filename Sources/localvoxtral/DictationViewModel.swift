@@ -523,6 +523,7 @@ final class DictationViewModel {
                         visibleLines: settings.overlayBufferVisibleLines,
                         wordHold: settings.overlayBufferWordHold)
                 },
+                polishColorProvider: { settings.overlayBufferPolishColor },
                 storedPlacementProvider: { settings.overlayBufferPlacement },
                 placementWriter: { settings.overlayBufferPlacement = $0 }
             )

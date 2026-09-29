@@ -80,7 +80,7 @@ files and last prompt** in **Settings → Context**. When the polisher is not
 on this Mac (the Mistral API, say), it also needs **Send context to non-local
 polishing servers**. With either off, Claude Desktop gets the standard prompt.
 
-When the LLM changed your text, the overlay shows the changed words in blue
+When the LLM changed your text, the overlay shows the changed words in teal
 for about a second, and the menu bar popover keeps the raw transcript one
 click away.
 

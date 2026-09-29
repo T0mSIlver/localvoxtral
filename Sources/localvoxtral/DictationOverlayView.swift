@@ -93,6 +93,8 @@ struct DictationOverlayView: View {
     /// Drives the level bars while listening; nil draws them at rest.
     var micLevel: OverlayMicLevel? = nil
     var motion: OverlayMotion = .system
+    /// The sweep, the changed words and "Polished" (`OverlayPolishColor`).
+    var polishColor: Color = OverlayPalette.polish
     /// What this dictation's Claude Code session join resolved to. `.hidden`
     /// renders nothing — see `OverlayClaudeJoinBadge`.
     var claudeJoin: OverlayClaudeJoinBadge = .hidden
@@ -146,7 +148,7 @@ struct DictationOverlayView: View {
     }
 
     private var titleColor: Color {
-        if phase == .finalizing, polished { return OverlayPalette.polish }
+        if phase == .finalizing, polished { return polishColor }
         return isSecureInputTitle ? Self.warningColor : .secondary
     }
 
@@ -429,7 +431,7 @@ struct DictationOverlayView: View {
                 ScrollView(.vertical, showsIndicators: true) {
                     OverlayBodyScrollContent(
                         text: displayText, metrics: metrics, emphasis: bodyEmphasis,
-                        motion: reduceMotion ? .reduced : motion)
+                        motion: reduceMotion ? .reduced : motion, polishColor: polishColor)
                 }
                 .scrollDisabled(textHeight <= maxScrollableHeight)
                 .frame(
@@ -563,6 +565,7 @@ struct OverlayBodyScrollContent: View {
     let metrics: OverlayLayoutMetrics
     var emphasis: Emphasis = .none
     var motion: OverlayMotion = .system
+    var polishColor: Color = OverlayPalette.polish
 
     var body: some View {
         VStack(spacing: 0) {
@@ -590,11 +593,11 @@ struct OverlayBodyScrollContent: View {
         case .none:
             plain.foregroundStyle(.primary)
         case .sweep:
-            OverlayPolishSweep(text: plain, motion: motion)
+            OverlayPolishSweep(text: plain, motion: motion, color: polishColor)
         case .changed(let before):
             OverlayChangedWords(
                 text: text, before: before, font: .system(size: metrics.bodyFontSize),
-                fades: motion == .system)
+                color: polishColor, fades: motion == .system)
         }
     }
 }
@@ -610,6 +613,7 @@ struct OverlayPolishSweep: View {
 
     let text: Text
     let motion: OverlayMotion
+    let color: Color
 
     var body: some View {
         switch motion {
@@ -634,7 +638,7 @@ struct OverlayPolishSweep: View {
             .foregroundStyle(.secondary)
             .overlay(alignment: .topLeading) {
                 text
-                    .foregroundStyle(OverlayPalette.polish)
+                    .foregroundStyle(color)
                     .mask(
                         LinearGradient(
                             stops: [
@@ -661,15 +665,17 @@ struct OverlayChangedWords: View {
     let text: String
     let before: String
     let font: Font
+    let color: Color
     /// False under Reduce Motion, and in view snapshots.
     let fades: Bool
 
     @State private var strength = 1.0
 
-    init(text: String, before: String, font: Font, fades: Bool) {
+    init(text: String, before: String, font: Font, color: Color, fades: Bool) {
         self.text = text
         self.before = before
         self.font = font
+        self.color = color
         self.fades = fades
     }
 
@@ -678,7 +684,7 @@ struct OverlayChangedWords: View {
             .font(font)
             .foregroundStyle(.primary)
             .overlay(alignment: .topLeading) {
-                Text(Self.marked(text, before: before))
+                Text(Self.marked(text, before: before, color: color))
                     .font(font)
                     .opacity(strength)
                     .accessibilityHidden(true)
@@ -693,13 +699,13 @@ struct OverlayChangedWords: View {
 
     /// `text` with only the words `before` lacked drawn, in the polish color
     /// on its highlight; the rest is clear, so the plain text shows through.
-    static func marked(_ text: String, before: String) -> AttributedString {
+    static func marked(_ text: String, before: String, color: Color) -> AttributedString {
         var marked = AttributedString(text)
         marked.foregroundColor = .clear
         for range in TranscriptDiff.words(from: before, to: text).added {
             guard let changed = Range<AttributedString.Index>(range, in: marked) else { continue }
-            marked[changed].foregroundColor = OverlayPalette.polish
-            marked[changed].backgroundColor = OverlayPalette.polish.opacity(highlightOpacity)
+            marked[changed].foregroundColor = color
+            marked[changed].backgroundColor = color.opacity(highlightOpacity)
         }
         return marked
     }

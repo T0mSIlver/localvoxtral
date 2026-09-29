@@ -243,6 +243,17 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(makeStore().overlayBufferWordHold, .off)
     }
 
+    // MARK: - Overlay Buffer polish color (#1074)
+
+    func testOverlayBufferPolishColor_defaultsToTealAndPersists() {
+        XCTAssertEqual(makeStore().overlayBufferPolishColor, .teal)
+        let store = makeStore()
+        store.overlayBufferPolishColor = .systemAccent
+        XCTAssertEqual(makeStore().overlayBufferPolishColor, .systemAccent)
+        defaults.set("magenta", forKey: "settings.overlay_buffer_polish_color")
+        XCTAssertEqual(makeStore().overlayBufferPolishColor, .teal, "an unknown value falls back to teal")
+    }
+
     // MARK: - resolvedWebSocketURL
 
     func testResolvedURL() {

@@ -159,6 +159,7 @@ final class DictationOverlayController {
     /// `OverlaySessionMetricsLock` — the panel's locked X origin assumes a
     /// constant width), so setting changes apply to the next dictation.
     private let metricsProvider: @MainActor () -> OverlayLayoutMetrics
+    private let polishColorProvider: @MainActor () -> OverlayPolishColor
     /// The position the user dragged to in an earlier session, if any.
     private let storedPlacementProvider: @MainActor () -> OverlayManualPlacement?
     /// Persists a dragged position, or clears it on a re-anchor.
@@ -219,6 +220,7 @@ final class DictationOverlayController {
         metricsProvider: @escaping @MainActor () -> OverlayLayoutMetrics = {
             OverlayLayoutMetrics(bodyFontSize: OverlayLayoutMetrics.defaultBodyFontSize)
         },
+        polishColorProvider: @escaping @MainActor () -> OverlayPolishColor = { .teal },
         storedPlacementProvider: @escaping @MainActor () -> OverlayManualPlacement? = { nil },
         placementWriter: @escaping @MainActor (OverlayManualPlacement?) -> Void = { _ in },
         screensProvider: @escaping @MainActor () -> [OverlayScreenSnapshot] = {
@@ -226,6 +228,7 @@ final class DictationOverlayController {
         }
     ) {
         self.metricsProvider = metricsProvider
+        self.polishColorProvider = polishColorProvider
         self.storedPlacementProvider = storedPlacementProvider
         self.placementWriter = placementWriter
         self.screensProvider = screensProvider
@@ -340,6 +343,7 @@ final class DictationOverlayController {
             polishedFrom: snapshot.polishedFrom,
             polishing: snapshot.polishing,
             micLevel: micLevel,
+            polishColor: polishColorProvider().color,
             claudeJoin: snapshot.claudeJoin,
             destinations: snapshot.destinations,
             draftReview: snapshot.draftReview,
