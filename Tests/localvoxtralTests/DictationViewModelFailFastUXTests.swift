@@ -145,6 +145,21 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
     }
 
+    /// The alert's Show Log reads the categories of the failure it reports (#1072).
+    func testAPolishFailureAsksForThePolishingLinesAndARealtimeOneForTheSessionLines() {
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+        let presenter = RecordingConnectionFailurePresenter()
+        viewModel.dependencies.connectionFailurePresenter = presenter
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.session.handleLLMPolishingConnectionFailure(message: "Polishing timed out.")
+        viewModel.session.handleConnectFailure(reason: .socketError(message: "WebSocket failed: [NSURLErrorDomain:-1004]"))
+
+        XCTAssertEqual(presenter.presented.map(\.log), [.polishing, .realtime])
+        XCTAssertFalse(ConnectionFailureLog.realtime.categories.contains("Deltas"))
+        XCTAssertFalse(ConnectionFailureLog.polishing.categories.contains("Insertion"))
+    }
+
     func testWarningIsRecognizedAsAccessibilityErrorToken() {
         // Ensures the existing onAccessibilityTrustChanged callback (which clears
         // lastError when currentErrorToken == .accessibilityPermissionRequired)

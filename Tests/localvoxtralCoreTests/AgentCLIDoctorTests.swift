@@ -337,4 +337,31 @@ final class AgentCLIDoctorTests: XCTestCase {
         XCTAssertEqual(failed.exitCode, .refused)
         XCTAssertEqual(failed.stderr, "localvoxtral: could not read the log: /usr/bin/log exited with 64\n")
     }
+
+    func testFailureLogReadsTheFailuresCategoriesAtEveryDefaultLevel() {
+        let query = AgentCLIFailureLogQuery(categories: ["Polishing", "Backends"], since: now)
+        XCTAssertEqual(query.logShowArguments(timeZone: utc), [
+            "show", "--style", "ndjson", "--start", "2026-09-21 14:13:20", "--predicate",
+            #"subsystem == "com.localvoxtral" AND category IN {"Polishing", "Backends"}"#,
+        ])
+        let output = Data("""
+            {"timestamp":"2026-09-21 16:13:20.000000+0200","messageType":"Default","category":"Polishing","eventMessage":"request sent"}
+            {"timestamp":"2026-09-21 16:14:20.000000+0200","messageType":"Error","category":"Polishing","eventMessage":"timed out: <private>"}
+            """.utf8)
+        var asked: [String] = []
+        let read = AgentCLILogs.failureLog(query, timeZone: utc) { arguments in
+            asked = arguments
+            return .success(output)
+        }
+        XCTAssertEqual(asked, query.logShowArguments(timeZone: utc))
+        XCTAssertEqual(read, .success("""
+            2026-09-21 14:13:20 [Polishing] request sent
+            2026-09-21 14:14:20 [Polishing] error: timed out: <private>
+
+            """))
+        XCTAssertEqual(
+            AgentCLILogs.failureLog(query, timeZone: utc) { _ in .failure(AgentCLILogsReadFailure("/usr/bin/log exited with 64")) },
+            .failure(AgentCLILogsReadFailure("/usr/bin/log exited with 64"))
+        )
+    }
 }

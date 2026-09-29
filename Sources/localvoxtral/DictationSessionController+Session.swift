@@ -954,7 +954,8 @@ extension DictationSessionController {
         markRecentConnectionFailureIndicator()
         presentConnectionFailureAlert(
             title: title,
-            message: resolvedMessage
+            message: resolvedMessage,
+            log: .polishing
         )
     }
 
@@ -975,7 +976,8 @@ extension DictationSessionController {
     func presentConnectionFailureAlert(
         title: String = "Realtime Connection Failed",
         message: String,
-        technicalDetails: String? = nil
+        technicalDetails: String? = nil,
+        log: ConnectionFailureLog = .realtime
     ) {
         guard !message.isEmpty else { return }
         guard !isShowingConnectionFailureAlert else { return }
@@ -985,7 +987,8 @@ extension DictationSessionController {
         dependencies.connectionFailurePresenter.present(
             title: title,
             message: message,
-            technicalDetails: technicalDetails
+            technicalDetails: technicalDetails,
+            log: log
         )
     }
 
