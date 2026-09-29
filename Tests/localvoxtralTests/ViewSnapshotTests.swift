@@ -595,7 +595,7 @@ final class ViewSnapshotTests: XCTestCase {
         let directions: [(name: String, design: Design?, landing: PolishCueMockup.Style?)] = [
             ("today", nil, nil),
             ("d1", Design(listening: .dot, destination: .today, polishing: .titled), .headerTitle),
-            ("d2", Design(listening: .dot, destination: .outline, polishing: .shimmer), .wordMarks),
+            ("d2", Design(listening: .mic, destination: .outline, polishing: .shimmer), .wordMarks),
             ("d3", Design(listening: .bars, destination: .footer, polishing: .shimmer), .wordMarks),
         ]
         struct Shot {
@@ -629,6 +629,10 @@ final class ViewSnapshotTests: XCTestCase {
         for pulse in [0.0, 0.5, 1.0] {
             shots.append(Shot(name: "el-dot-\(Int(pulse * 100))", phase: .buffering, text: partial,
                               design: Design(listening: .dot, pulse: pulse)))
+        }
+        for pulse in [0.0, 1.0] {
+            shots.append(Shot(name: "el-mic-\(Int(pulse * 100))", phase: .buffering, text: partial,
+                              design: Design(listening: .mic, pulse: pulse)))
         }
         shots.append(Shot(name: "el-dot-only", phase: .buffering, text: partial,
                           design: Design(listening: .dotOnly)))

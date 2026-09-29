@@ -399,6 +399,14 @@ struct DictationOverlayView: View {
                         .opacity(design.reduceMotion ? 1 : 0.35 + 0.65 * design.pulse)
                     if design.listening == .dot { title }
                 }
+            case .mic:
+                HStack(spacing: 5) {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: metrics.titleFontSize, weight: .semibold))
+                        .foregroundStyle(Self.listeningColor)
+                        .opacity(design.reduceMotion ? 1 : 0.35 + 0.65 * design.pulse)
+                    title
+                }
             case .bars:
                 HStack(spacing: 6) {
                     HStack(alignment: .center, spacing: 2) {
@@ -772,7 +780,7 @@ struct PolishCueBody: View {
 
 /// Mockup only (#1074): one direction for the whole overlay.
 struct OverlayDesignMockup {
-    enum Listening { case today, dot, dotOnly, bars }
+    enum Listening { case today, dot, dotOnly, bars, mic }
     enum Destination { case today, outline, footer }
     enum Polishing { case today, titled, shimmer }
     var listening: Listening = .today
