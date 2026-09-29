@@ -80,8 +80,9 @@ files and last prompt** in **Settings → Context**. When the polisher is not
 on this Mac (the Mistral API, say), it also needs **Send context to non-local
 polishing servers**. With either off, Claude Desktop gets the standard prompt.
 
-The overlay shows a **Polished** badge whenever the LLM changed your text,
-and the menu bar popover keeps the raw transcript one click away.
+When the LLM changed your text, the overlay shows the changed words in teal
+for about a second, and the menu bar popover keeps the raw transcript one
+click away.
 
 By default, clipboard, terminal screen and project context go only to a
 polisher running on this Mac. To send the enabled context sources to a
