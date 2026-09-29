@@ -286,6 +286,24 @@ final class WebSocketClientLifecycleTests: XCTestCase {
         )
     }
 
+    func testRealtimeSessionCreatedAfterTheTimerOpenedTheGateStartsNoSecondReplay() {
+        let client = RealtimeAPIWebSocketClient()
+        let (session, task) = makeWebSocketTask()
+        defer { task.cancel(); session.invalidateAndCancel() }
+        let wire = Wire()
+        client.debugObserveTransmits { wire.append($0, $1) }
+        client.debugPrimeConnectedStateForTesting(task: task, modelName: "model")
+        client.debugBypassSessionCreatedGateForTesting()
+        XCTAssertEqual(wire.kinds(on: task), ["session.update", "pending-message"])
+
+        let secondReplay = Wire()
+        client.debugSetBeforeHandshakeDrain { secondReplay.append(task, "replay") }
+        client.debugHandleFrameForTesting(json: ["type": "session.created"])
+
+        XCTAssertEqual(secondReplay.kinds(on: task), [], "the late handshake must not race the timer's replay")
+        XCTAssertTrue(client.debugStateSnapshot().hasReceivedSessionCreated)
+    }
+
     func testMistralAudioSentDuringTheHandshakeReplayGoesOutBehindIt() {
         let client = MistralRealtimeWebSocketClient()
         let (session, task) = makeWebSocketTask()

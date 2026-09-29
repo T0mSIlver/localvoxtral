@@ -244,6 +244,9 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                 guard !s.hasReceivedSessionCreated else { return false }
                 s.hasReceivedSessionCreated = true
                 stopSessionReadyTimerLocked(&s)
+                // The compatibility timer opened the gate already, and its
+                // replay may still be draining: a second one would race it.
+                guard !s.hasBypassedSessionCreatedGate else { return false }
                 openSendGateLocked(&s)
                 return true
             }
@@ -480,28 +483,33 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         timer.schedule(deadline: .now() + 3)
         timer.setEventHandler { [weak self] in
-            guard let self else { return }
-            let opened: Bool = self.state.withLock { s in
-                // Cancelling a DispatchSourceTimer does not unqueue a
-                // handler already on its way: without this, a timer
-                // armed for the previous socket puts the NEW one into
-                // compatibility mode and flushes its queue early.
-                guard self.isCurrentConnectionLocked(s.base, generation) else { return false }
-                guard s.base.socketState == .connected else { return false }
-                guard !s.hasReceivedSessionCreated else { return false }
-                self.stopSessionReadyTimerLocked(&s)
-                s.hasBypassedSessionCreatedGate = true
-                self.openSendGateLocked(&s)
-                return true
-            }
-            guard opened else { return }
-            self.emit(
-                .status("Connected without session.created; using compatibility mode."),
-                from: generation)
-            self.replayHandshakeQueue(for: generation)
+            self?.bypassSessionCreatedGate(for: generation)
         }
         s.sessionReadyTimer = timer
         timer.resume()
+    }
+
+    /// No `session.created` within the timer: compatibility mode opens the
+    /// gate itself.
+    private func bypassSessionCreatedGate(for generation: RealtimeConnectionGeneration) {
+        let opened: Bool = state.withLock { s in
+            // Cancelling a DispatchSourceTimer does not unqueue a
+            // handler already on its way: without this, a timer
+            // armed for the previous socket puts the NEW one into
+            // compatibility mode and flushes its queue early.
+            guard isCurrentConnectionLocked(s.base, generation) else { return false }
+            guard s.base.socketState == .connected else { return false }
+            guard !s.hasReceivedSessionCreated else { return false }
+            stopSessionReadyTimerLocked(&s)
+            s.hasBypassedSessionCreatedGate = true
+            openSendGateLocked(&s)
+            return true
+        }
+        guard opened else { return }
+        emit(
+            .status("Connected without session.created; using compatibility mode."),
+            from: generation)
+        replayHandshakeQueue(for: generation)
     }
 
     private func stopPingTimerLocked(_ s: inout State) {
@@ -657,6 +665,11 @@ extension RealtimeAPIWebSocketClient {
     /// replay, so a test can send or swap the socket there (#1058).
     package func debugSetBeforeHandshakeDrain(_ hook: (@Sendable () -> Void)?) {
         state.withLock { $0.beforeHandshakeDrainForTesting = hook }
+    }
+
+    /// What the session-ready timer does when it fires, run now.
+    package func debugBypassSessionCreatedGateForTesting() {
+        bypassSessionCreatedGate(for: connectionGeneration)
     }
 
     /// Hears every frame as it is handed to a socket, in order.
