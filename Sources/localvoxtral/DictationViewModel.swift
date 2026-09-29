@@ -254,6 +254,8 @@ final class DictationViewModel {
     private(set) var quickCapture: QuickCaptureInboxViewModel?
     /// Voice memos from iCloud Drive (#925); nil in a view model that runs no services.
     private(set) var voiceMemos: VoiceMemoController?
+    /// Set while the voice memo ledger is refused (#989).
+    fileprivate(set) var voiceMemoLedgerProblem: StoredFileProblem?
 
     var requiredManagedBackendsReady: Bool {
         guard settings.onboardingCompleted else { return true }
@@ -1008,6 +1010,7 @@ extension DictationViewModel {
             guard let self, !self.isDictating, !self.isFinalizingStop, !self.isConnectingRealtimeSession else { return }
             self.statusText = sentence
         }
+        controller.onLedgerProblem = { [weak self] in self?.voiceMemoLedgerProblem = $0 }
         voiceMemos = controller
         controller.apply()
     }

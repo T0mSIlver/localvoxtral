@@ -25,14 +25,17 @@ final class SpeechModelSelectionSettingsTests: XCTestCase {
         XCTAssertEqual(relaunched.effectiveModelName(for: .realtimeAPI), nemotron.repoID)
     }
 
+    /// A repo this build doesn't know may be one a newer build added (#1040):
+    /// this build launches the default but leaves the stored choice alone.
     @MainActor
-    func testStoredRepoOutsideTheCatalogFallsBackToTheDefault() {
+    func testStoredRepoOutsideTheCatalogIsKeptInDefaults() {
         let defaults = makeSettingsDefaults()
-        defaults.set("someone/retired-model", forKey: "settings.managed_speech_model")
+        defaults.set("someone/newer-model", forKey: "settings.managed_speech_model")
 
         let settings = makeSettings(defaults: defaults)
 
         XCTAssertEqual(settings.resolvedManagedSpeechModel, SpeechModelCatalog.defaultOption)
         XCTAssertEqual(settings.managedSpeechModel, SpeechModelCatalog.defaultOption.repoID)
+        XCTAssertEqual(defaults.string(forKey: "settings.managed_speech_model"), "someone/newer-model")
     }
 }

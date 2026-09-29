@@ -49,13 +49,29 @@ public protocol SpeechASREngine: Sendable {
     ) -> SpeechASRStreamingSession
 }
 
-/// Which streaming engine `speechd` drives for a model. The helper infers it
-/// from the catalog repo id the app passes on the command line, or from a local
-/// directory's `config.json` when `--model-dir` is used instead. Keep in sync
-/// with the app-side `SpeechEngineKind` on `SpeechModelOption`.
+/// Which streaming engine `speechd` drives for a model. The app names it with
+/// `--engine`, from its catalog (`SpeechEngineKind` on `SpeechModelOption`,
+/// same raw values). Without the flag the helper infers it from the repo id,
+/// or from a `--model-dir` checkpoint's `config.json`.
 public enum SpeechASREngineKind: String, Sendable, CaseIterable {
     case voxtral
     case nemotron
+
+    /// The engine to load: the one `--engine` names, else the inference
+    /// below, which stays the default for a development run against a custom
+    /// repo or directory.
+    public static func resolve(
+        named engine: SpeechASREngineKind?,
+        modelID: String?,
+        modelDirectory: String?
+    ) -> SpeechASREngineKind {
+        if let engine { return engine }
+        if let modelID { return infer(fromModelID: modelID) }
+        if let modelDirectory {
+            return infer(fromModelDirectory: URL(fileURLWithPath: modelDirectory))
+        }
+        return .voxtral
+    }
 
     /// Unknown ids stay on Voxtral: it is what every install ran before a
     /// second engine existed, and a custom repo id is far more likely to be a

@@ -368,6 +368,26 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
+    // MARK: - Failure log
+
+    /// The failure alert's Show Log window after a polish timeout, and when
+    /// `log show` cannot be read (#1072).
+    func testFailureLogWindow() throws {
+        let lines = """
+            2026-09-29 14:02:11 [Polishing] LLM polishing request sent [endpoint: http://127.0.0.1:8090/v1]
+            2026-09-29 14:02:41 [Polishing] error: LLM polishing connection failure [endpoint: http://127.0.0.1:8090/v1] Polishing timed out.
+            2026-09-29 14:02:41 [Backends] error: polish request failed: <private>
+
+            """
+        let states: [(String, FailureLogModel)] = [
+            ("loaded", FailureLogModel(details: "The request timed out. (NSURLErrorDomain -1001)", lines: .loaded(lines))),
+            ("unreadable", FailureLogModel(details: nil, lines: .unreadable("Could not read the log: /usr/bin/log exited with 64."))),
+        ]
+        for (name, model) in states {
+            try record(FailureLogView(model: model), name: "failure-log-\(name)", width: 760, height: 460, growToFit: false)
+        }
+    }
+
     // MARK: - Menu bar icon
 
     /// The needs-you marks beside the idle mic, on a light and a dark menu

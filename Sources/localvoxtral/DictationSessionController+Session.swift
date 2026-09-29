@@ -16,13 +16,13 @@ extension DictationSessionController {
     @discardableResult
     func cancelPolishingForNewSessionIfNeeded() -> Bool {
         guard polishAndCommitTask != nil else { return false }
-        debugLog("cancel in-flight polishing to start a new dictation session")
+        debugLog("cancel the pending commit: a new dictation or a cancel supersedes it")
         polishAndCommitTask?.cancel()
         polishAndCommitTask = nil
         // Before the cleanup below clears it: the dictation being polished
         // is not inserted, and History is where the user finds it again.
         if let saveInterruptedPolishCommit {
-            Log.polishing.notice("polish cancelled by a new dictation; saving the transcript as not inserted")
+            Log.polishing.notice("pending commit cancelled; saving the transcript as not inserted")
             saveInterruptedPolishCommit()
         }
 
@@ -44,6 +44,7 @@ extension DictationSessionController {
         sessionIsQuickCapture = false
         sessionDraftReview = nil
         sessionCommitGuard = nil
+        sessionPickedPane = nil
         sessionStartedAt = nil
         sessionCaptureTimeline = nil
         sessionProvider = nil
@@ -971,7 +972,8 @@ extension DictationSessionController {
         markRecentConnectionFailureIndicator()
         presentConnectionFailureAlert(
             title: title,
-            message: resolvedMessage
+            message: resolvedMessage,
+            log: .polishing
         )
     }
 
@@ -992,7 +994,8 @@ extension DictationSessionController {
     func presentConnectionFailureAlert(
         title: String = "Realtime Connection Failed",
         message: String,
-        technicalDetails: String? = nil
+        technicalDetails: String? = nil,
+        log: ConnectionFailureLog = .realtime
     ) {
         guard !message.isEmpty else { return }
         guard !isShowingConnectionFailureAlert else { return }
@@ -1002,7 +1005,8 @@ extension DictationSessionController {
         dependencies.connectionFailurePresenter.present(
             title: title,
             message: message,
-            technicalDetails: technicalDetails
+            technicalDetails: technicalDetails,
+            log: log
         )
     }
 

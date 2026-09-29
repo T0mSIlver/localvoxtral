@@ -107,6 +107,62 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.first?.polishedText, "<\(Self.settledPiece)> <\(Self.tail)>")
     }
 
+    /// A new microphone restarts the dictation while the stopped text still
+    /// waits on its polish: that text is saved as not inserted, and the next
+    /// dictation's stop commits (#1055).
+    func testAMicrophoneChangeSavesTheTextStillPolishingAndLaterStopsCommit() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish, earlyPolish: false)
+        let builtIn = MicrophoneInputDevice(id: "BuiltInMicrophoneDevice", name: "MacBook Pro Microphone", channelCount: 1)
+        let usb = MicrophoneInputDevice(id: "AppleUSBAudioEngine:Rode:NT-USB:1", name: "NT-USB", channelCount: 1)
+        pipeline.microphone.configureDevices([builtIn, usb], defaultInputDeviceID: builtIn.id)
+        let shown = BoundedWait()
+        pipeline.overlay.onRefresh = { call in
+            if call.displayText == Self.phrase { shown.resolve() }
+        }
+
+        await startAndSpeak(pipeline)
+        sendPartials(pipeline)
+        let shownWhileDictating = await shown.value(failAfter: 10)
+        XCTAssertTrue(shownWhileDictating)
+        pipeline.overlay.onRefresh = nil
+        pipeline.server.forgetFrames()
+        await startAndSpeak(pipeline, start: { $0.selectMicrophoneInput(id: usb.id) })
+
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase], "the old text is in History")
+        XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
+        XCTAssertEqual(pipeline.overlay.committedTexts, [])
+
+        await stopAndFinalize(pipeline)
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(Self.phrase)>"], "the new dictation commits")
+    }
+
+    /// A cancel while the stopped text waits on its polish: nothing is
+    /// inserted when the reply comes, and History keeps the text (#1059).
+    func testACancelDuringThePolishInsertsNothing() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish, earlyPolish: false)
+        await polish.holdNextRequest()
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
+        let polishing = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(polishing, "the polish never started")
+
+        pipeline.viewModel.cancelDictation()
+        await polish.releaseHeldRequest()
+        let recorded = await pipeline.records.waitForCount(1)
+        XCTAssertTrue(recorded)
+        await pipeline.viewModel.session.polishAndCommitTask?.value
+
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing is inserted after a cancel")
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
+        XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
+        XCTAssertFalse(pipeline.viewModel.isFinalizingStop)
+    }
+
     /// With Polish while you speak off, nothing is polished while the user
     /// speaks: the stop sends the whole text in one request, as before #709.
     func testOverlayBufferWithEarlyPolishOffPolishesOnlyTheWholeTextAtStop() async throws {
@@ -403,6 +459,44 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(waiting.focuser.readBackSessionIDs, ["pay"])
         XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "the other tab's session never gets the words")
         XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
+    }
+
+    /// The picked pane read back at the stop, and the user switched tabs of
+    /// the same terminal while the polish ran: the pane is read back again
+    /// before the insertion, and the words stay in History (#1056).
+    func testATabSwitchWhileThePolishRunsKeepsTheWordsInHistory() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish, earlyPolish: false)
+        let waiting = installWaitingSessions(pipeline, ["pay": "/r/payments"])
+        let terminalPID: pid_t = 5151
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == terminalPID ? TerminalScreenAllowlist.ghosttyBundleID : nil
+        }
+        await polish.holdNextRequest()
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.session.moveDestination(forward: false)
+        await pipeline.viewModel.session.destinationFocusTask?.value
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
+        pipeline.overlay.commitTargetAppPID = terminalPID
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
+        let polishing = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(polishing, "the polish never started")
+        XCTAssertEqual(waiting.focuser.readBackSessionIDs, ["pay"], "read back before the polish")
+
+        // Same Ghostty, another tab, while the polish runs.
+        waiting.focuser.paneStillShowsSession = false
+        await polish.releaseHeldRequest()
+        let recorded = await pipeline.records.waitForCount(1)
+        XCTAssertTrue(recorded)
+
+        XCTAssertEqual(waiting.focuser.readBackSessionIDs, ["pay", "pay"], "and again before the insertion")
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "the other tab's session never gets the words")
+        XCTAssertEqual(pipeline.records.all.first?.rawText, Self.phrase)
+        XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
+        XCTAssertEqual(pipeline.viewModel.statusText, DictationSessionController.DestinationStatus.paneLeftFront)
     }
 
     /// Focus moved to another app between the pick and the stop: the words

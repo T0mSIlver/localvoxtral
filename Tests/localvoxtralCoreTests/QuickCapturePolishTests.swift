@@ -63,7 +63,7 @@ final class QuickCapturePolishTests: XCTestCase {
         XCTAssertTrue(prompts(runner).contains(polished))
         XCTAssertFalse(prompts(runner).contains("Voxroll"), "the drafter never reads the raw words")
         XCTAssertEqual(model.items.first?.text, polished)
-        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).items.first?.text, polished)
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.first?.text, polished)
         XCTAssertEqual(polishedRecords.map(\.id), [recordID])
         XCTAssertEqual(polishedRecords.first?.text, polished)
         XCTAssertEqual(polishedRecords.first?.seconds, 1.5)
@@ -95,13 +95,13 @@ final class QuickCapturePolishTests: XCTestCase {
         let task = model.capture(text: raw, historyRecordID: UUID())
         await polisher.gate?.waitForSleepers(1)
 
-        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).items.first?.text, raw)
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.first?.text, raw)
         XCTAssertEqual(model.items.first?.state, .routing)
         XCTAssertTrue(classifier.captures.withLock { $0 }.isEmpty)
 
         polisher.gate?.wakeAll()
         await task.value
-        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).items.first?.text, polished)
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.first?.text, polished)
     }
 
     func testACaptureDiscardedDuringThePolishIsNotRouted() async throws {

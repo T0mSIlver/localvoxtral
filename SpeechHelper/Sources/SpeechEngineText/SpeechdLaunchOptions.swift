@@ -6,6 +6,9 @@ public struct SpeechdLaunchOptions: Equatable {
     /// development against a custom repo that intentionally follows main.
     public var modelRevision: String?
     public var modelDirectory: String?
+    /// `--engine voxtral|nemotron`, from the app's catalog. Nil infers the
+    /// engine from the model (`SpeechASREngineKind.resolve`).
+    public var engine: SpeechASREngineKind?
     public var port: UInt16 = 8471
     public var parentPID: pid_t?
     public var transcriptionDelayMs: Int?
@@ -74,6 +77,11 @@ public enum SpeechdOptionParser {
                 options.modelRevision = try value(flag)
             case "--model-dir":
                 options.modelDirectory = try value(flag)
+            case "--engine":
+                guard let engine = SpeechASREngineKind(rawValue: try value(flag)) else {
+                    throw SpeechdOptionError.invalidValue(flag)
+                }
+                options.engine = engine
             case "--port":
                 guard let port = UInt16(try value(flag)) else {
                     throw SpeechdOptionError.invalidValue(flag)

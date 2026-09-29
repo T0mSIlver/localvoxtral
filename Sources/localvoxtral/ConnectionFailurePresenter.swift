@@ -6,16 +6,19 @@ import Foundation
 /// before asking this; the presenter owns only the surface.
 @MainActor
 protocol ConnectionFailurePresenting {
-    func present(title: String, message: String, technicalDetails: String?)
+    func present(title: String, message: String, technicalDetails: String?, log: ConnectionFailureLog)
 }
 
-/// The app's modal `NSAlert` with an "Open Console" button. A no-op where no
+/// The app's modal `NSAlert` with a "Show Log" button that opens the
+/// failure's log lines in a window. A no-op where no
 /// alert can run: a process without `NSApplication`, and any XCTest process,
 /// where `runModal()` would park the whole suite on a click that never comes
 /// (xctest sample 2026-07-19).
 @MainActor
 struct ModalConnectionFailurePresenter: ConnectionFailurePresenting {
-    func present(title: String, message: String, technicalDetails: String?) {
+    let logWindow = FailureLogWindowController()
+
+    func present(title: String, message: String, technicalDetails: String?, log: ConnectionFailureLog) {
         // NSApp is nil in processes without an NSApplication (unit tests,
         // headless tools); an alert cannot be presented there and force-
         // unwrapping aborts the process (field flake: a leaked connect-timeout
@@ -36,32 +39,25 @@ struct ModalConnectionFailurePresenter: ConnectionFailurePresenting {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = title
-        // Show the actionable message first; append the raw system error on a new
-        // line when present so a wrong port or NSError code is visible at a glance.
-        if let technicalDetails, !technicalDetails.trimmed.isEmpty,
-           technicalDetails.trimmed != message.trimmed
-        {
-            alert.informativeText = "\(message)\n\n\(technicalDetails)"
-        } else {
-            alert.informativeText = message
-        }
+        // The alert keeps the one actionable sentence; the raw system error
+        // (an NSError, a helper's stderr) goes to the Show Log window.
+        alert.informativeText = message
         if let appIcon = NSApplication.shared.applicationIconImage.copy() as? NSImage {
             appIcon.size = NSSize(width: 20, height: 20)
             alert.icon = appIcon
         }
 
         alert.addButton(withTitle: "OK")
-        alert.addButton(withTitle: "Open Console")
-        let response = alert.runModal()
-        if response == .alertSecondButtonReturn {
-            openSystemConsole()
+        alert.addButton(withTitle: "Show Log")
+        if alert.runModal() == .alertSecondButtonReturn {
+            logWindow.show(log, details: Self.windowDetails(message: message, technicalDetails: technicalDetails))
         }
     }
 
-    private func openSystemConsole() {
-        guard let consoleURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Console") else {
-            return
-        }
-        _ = NSWorkspace.shared.open(consoleURL)
+    /// The technical details worth a place above the log lines: none when
+    /// empty or a repeat of the alert's sentence.
+    static func windowDetails(message: String, technicalDetails: String?) -> String? {
+        guard let details = technicalDetails?.trimmed, !details.isEmpty, details != message.trimmed else { return nil }
+        return details
     }
 }

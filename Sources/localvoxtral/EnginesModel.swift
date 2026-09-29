@@ -290,10 +290,13 @@ final class EnginesModel {
     /// downloads as part of that restart. Outside Managed local mode only the
     /// stored value changes; the next managed start reads current settings.
     func applyManagedSpeechModelChange(_ repoID: String) {
-        guard let option = SpeechModelCatalog.option(forRepoID: repoID),
-              settings.managedSpeechModel != option.repoID
-        else { return }
+        guard let option = SpeechModelCatalog.option(forRepoID: repoID) else { return }
+        let changed = settings.managedSpeechModel != option.repoID
+        // Saved even when unchanged: the running model may be the fallback
+        // for a stored repo this build doesn't know, and an explicit pick
+        // must replace that repo (#1040).
         settings.managedSpeechModel = option.repoID
+        guard changed else { return }
         restartManagedDictationEngineForSettingChange(reason: "dictation model changed")
     }
 
