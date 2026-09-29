@@ -35,11 +35,35 @@ public struct AgentCLILogsQuery: Equatable, Sendable {
 
     /// The arguments for `/usr/bin/log`. `--start` takes local time.
     public func logShowArguments(timeZone: TimeZone) -> [String] {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = timeZone
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        return ["show", "--style", "ndjson", "--start", formatter.string(from: since), "--predicate", predicate]
+        ["show", "--style", "ndjson", "--start", AgentCLILogs.startStamp(since, timeZone: timeZone),
+         "--predicate", predicate]
+    }
+}
+
+/// The app's lines in a few categories, every level `log show` prints by
+/// default (notice, error, fault): what the failure alert's Show Log window
+/// reads. Categories that hold dictated text (Deltas, Insertion) are never
+/// asked for.
+public struct AgentCLIFailureLogQuery: Equatable, Sendable {
+    public var categories: [String]
+    public var since: Date
+
+    public init(categories: [String], since: Date) {
+        self.categories = categories
+        self.since = since
+    }
+
+    /// Before the failure: a connect timeout plus a retry fits in it.
+    public static let defaultWindow: TimeInterval = 900
+
+    public var predicate: String {
+        let names = categories.map { "\"\($0)\"" }.joined(separator: ", ")
+        return "subsystem == \"\(AgentCLILogsQuery.subsystem)\" AND category IN {\(names)}"
+    }
+
+    public func logShowArguments(timeZone: TimeZone) -> [String] {
+        ["show", "--style", "ndjson", "--start", AgentCLILogs.startStamp(since, timeZone: timeZone),
+         "--predicate", predicate]
     }
 }
 
@@ -68,6 +92,47 @@ public struct AgentCLILogsReadFailure: Error, Equatable, Sendable {
 }
 
 public enum AgentCLILogs {
+    /// `log show --start` takes local time.
+    static func startStamp(_ date: Date, timeZone: TimeZone) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter.string(from: date)
+    }
+
+    /// Runs `/usr/bin/log` with `arguments` and returns its stdout. The
+    /// output goes to a private temporary file, not a pipe: a pipe needs a
+    /// reader running while the child writes (#60 bans the FileHandle ones).
+    /// Blocks until `log` exits; call it off the main actor.
+    public static func readWithLogShow(_ arguments: [String]) -> Result<Data, AgentCLILogsReadFailure> {
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("localvoxtral-logs-\(UUID().uuidString).ndjson")
+        guard FileManager.default.createFile(atPath: output.path, contents: nil, attributes: [.posixPermissions: 0o600]),
+              let handle = try? FileHandle(forWritingTo: output)
+        else { return .failure(AgentCLILogsReadFailure("could not create a temporary file")) }
+        defer { try? FileManager.default.removeItem(at: output) }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/log")
+        process.arguments = arguments
+        process.standardOutput = handle
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return .failure(AgentCLILogsReadFailure("/usr/bin/log did not start (\(error.localizedDescription))"))
+        }
+        process.waitUntilExit()
+        try? handle.close()
+        guard process.terminationStatus == 0 else {
+            return .failure(AgentCLILogsReadFailure("/usr/bin/log exited with \(process.terminationStatus)"))
+        }
+        guard let data = try? Data(contentsOf: output) else {
+            return .failure(AgentCLILogsReadFailure("could not read log show's output"))
+        }
+        return .success(data)
+    }
+
     /// `log show --style ndjson` output, oldest first. Lines that are not a
     /// log entry (the closing summary, a warning) are skipped.
     public static func parse(_ output: Data) -> [AgentCLILogLine] {
@@ -116,6 +181,18 @@ public enum AgentCLILogs {
             return AgentCLIRunner.Outcome(
                 stdout: render(parse(output), json: query.json, timeZone: timeZone), stderr: "", exitCode: .answered
             )
+        }
+    }
+
+    /// The failure alert's Show Log text: the query's lines rendered as
+    /// `logs` prints them, or why the log could not be read.
+    public static func failureLog(
+        _ query: AgentCLIFailureLogQuery,
+        timeZone: TimeZone,
+        readLog: ([String]) -> Result<Data, AgentCLILogsReadFailure>
+    ) -> Result<String, AgentCLILogsReadFailure> {
+        readLog(query.logShowArguments(timeZone: timeZone)).map {
+            render(parse($0), json: false, timeZone: timeZone)
         }
     }
 
