@@ -10,8 +10,9 @@ import Glibc
 
 /// The opencode plugin's prompt relay as the app sees it (#719): an HTTP
 /// listener on 127.0.0.1, port 0, that records every call and answers each
-/// with the status `status` picks (200 by default). One connection at a
-/// time, as the app's client makes them.
+/// with the status `status` picks (200 by default; 0 reads the call and
+/// closes the connection without answering). One connection at a time, as
+/// the app's client makes them.
 package final class FakeOpencodePromptRelay: @unchecked Sendable {
     package struct Call: Sendable, Equatable {
         package var method: String
@@ -165,9 +166,11 @@ package final class FakeOpencodePromptRelay: @unchecked Sendable {
             text: json?["text"] as? String
         )
         let code = status(call)
-        let reply = "HTTP/1.1 \(code) Fake\r\nContent-Type: application/json\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntrue"
-        _ = reply.utf8CString.withUnsafeBufferPointer { pointer in
-            send(connection, pointer.baseAddress, pointer.count - 1, POSIXSocket.sendFlags)
+        if code != 0 {
+            let reply = "HTTP/1.1 \(code) Fake\r\nContent-Type: application/json\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntrue"
+            _ = reply.utf8CString.withUnsafeBufferPointer { pointer in
+                send(connection, pointer.baseAddress, pointer.count - 1, POSIXSocket.sendFlags)
+            }
         }
         let ready = state.withLock { state -> [BoundedWait] in
             state.calls.append(call)

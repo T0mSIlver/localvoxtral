@@ -1292,6 +1292,43 @@ extension ClaudeRemoteContextListenerTests {
         XCTAssertEqual(hosts.host(id: hostID)?.reportedVibeHooksVersion, "1.0.0")
     }
 
+    /// Each session keeps the version its LAST hook sent, which can trail
+    /// the host's: a session started before Update Host… sends the old one
+    /// until `/reload-plugins`. The doctor names it from that record (#969).
+    func testEachSessionKeepsTheShimVersionItsLastHookSent() throws {
+        try startListener()
+        func hook(_ id: String, _ cwd: String, _ headers: [String]) throws {
+            let response = try send(hookRequest(
+                event: "UserPromptSubmit", token: token, payload: ["session_id": id, "cwd": cwd], extraHeaders: headers
+            ))
+            XCTAssertEqual(response?.status, 200)
+        }
+        try hook("new", "/srv/web", ["X-Lvx-Plugin-Version: 1.25.0"])
+        try hook("old", "/srv/api", ["X-Lvx-Plugin-Version: 1.24.0"])
+        try hook("vibe", "/srv/notes", ["X-Lvx-Agent: vibe", "X-Lvx-Vibe-Hooks-Version: 1.3.0"])
+        try hook("vibe2", "/srv/cli", ["X-Lvx-Agent: vibe", "X-Lvx-Vibe-Hooks-Version: 1.4.0"])
+
+        func doctorLines() throws -> [String]? {
+            let host = try XCTUnwrap(hosts.host(id: hostID))
+            let facts = AgentCLIDoctorFacts.RemoteHost(
+                label: "devbox", lastSeenAt: nil, pluginNeedsUpdate: false,
+                installedPluginVersion: host.reportedPluginVersion,
+                installedVibeHooksVersion: host.reportedVibeHooksVersion,
+                sessions: sessions.liveRemoteSessions(hostID: hostID).map(AgentCLIDoctorFacts.RemoteHost.Session.init)
+            )
+            return AgentCLIDoctorChecks.staleSessions(facts, id: "remote-sessions.1")?.lines
+        }
+        XCTAssertEqual(try doctorLines()?.sorted(), [
+            "api, Claude Code: plugin 1.24.0; the host has 1.25.0.",
+            "notes, Mistral Vibe: hooks 1.3.0; the host has 1.4.0.",
+        ])
+
+        // `/reload-plugins` in "old", a restart of the Vibe session.
+        try hook("old", "/srv/api", ["X-Lvx-Plugin-Version: 1.25.0"])
+        try hook("vibe", "/srv/notes", ["X-Lvx-Agent: vibe", "X-Lvx-Vibe-Hooks-Version: 1.4.0"])
+        XCTAssertNil(try doctorLines())
+    }
+
     func testAClaudeRequestKeepsItsSessionHandles() throws {
         try startListener()
         _ = try send(hookRequest(token: token, extraHeaders: [

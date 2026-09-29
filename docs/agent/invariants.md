@@ -292,6 +292,29 @@ there is not.
   goes last against the 100-term cap: a listed term nobody says is
   sometimes written anyway. A new dictation that cancels
   the pass saves the realtime text as not inserted, as it does for a polish.
+- **Early polish reuses a piece only when the stop would have sent it the
+  same way** (#709). In Overlay Buffer with polishing, `EarlyPolishRun`
+  polishes each settled piece (whole sentences past 30 words of backend
+  finals, `EarlyPolishPlan`) while the user speaks, alone and one at a
+  time. A piece request carries only the templates, the reference guide and
+  About you. The stop still gathers and assembles the request for the whole
+  text, and polishes only the tail when that request equals the bare one
+  (`PolishRequestAssembler.bareRequest`), the templates and endpoint are the
+  pieces', and the prepared text starts with the pieces' exact prefix.
+  Otherwise the pieces are dropped and the whole text is polished: context,
+  vocabulary or a pre-applied spelling from the stop sample, a changed
+  profile, the dictionary, the payload macro and the spoken send cut all
+  land here, so learned terms, the macro and the trigger keep working on
+  the whole text. A piece is never given the text polished before it, and
+  the stop never re-polishes a piece's last sentence: both changed more
+  words than polishing it alone on the #709 replay. The stop waits for the
+  piece in flight and keeps it rather than cancelling it, because polishd
+  keeps generating a dropped request on its one slot. Sessions with a
+  second pass never start early polish: Mistral's realtime stream settles
+  nothing before the stop, and the batch text replaces the realtime text.
+  With **Polish while you speak** off (`SettingsStore.earlyPolishEnabled`,
+  default on for the bundled helper only) no run starts, and the stop takes
+  the pre-#709 path unchanged.
 - **Claude Desktop is a text field whose Return sends, and gets its
   newlines as Shift+Return** (#660). Three lists name it, each for one
   capability: `TerminalTargetDetector`'s text-field list fixes its verdict
@@ -582,8 +605,11 @@ there is not.
   and each adds its own below:
   (1) *One route, resolved at start.* `SessionContextResolver.resolveAgentPromptRoute()`
   picks at most one route per dictation, next to the join, for the session
-  the join resolved and nothing else. It is dropped with the join. The one
-  exception is a dictation addressed by name ("Send that to <name>" above):
+  the join resolved and nothing else. It is dropped with the join, and
+  both are dropped before an Overlay Buffer commit into a session Tab
+  picked (#1054): that pane gets the words by keyboard after its read-back,
+  and the start session's route would write them into the start session's
+  prompt. The one exception is a dictation addressed by name ("Send that to <name>" above):
   its route is resolved at commit, for the named session, by
   `ClaudeSessionJoinResolver.addressedRoute(for:)`, and never falls back
   to keys.
@@ -619,6 +645,13 @@ there is not.
     token, a `Host` other than its own address, and any call for a session
     the pane no longer displays. It forwards through the TUI's in-process
     client, so the app never needs or sees opencode's server password.
+    *Typed only into the same prompt* (#1057): a call the relay refused
+    with a status other than 409, or one that never reached it (connection
+    refused, text too long), is typed only while the terminal the dictation
+    started in is frontmost and its focused pane still resolves to this
+    relay. A 409 (the pane shows another session now) and a request with no
+    answer read back (timeout, dropped connection: it may have landed) stay
+    in History (`keepInHistory`).
     *Resolution:* it reuses the join's session when the join resolved, and
     otherwise asks only local questions
     (`ClaudeSessionJoinResolver.opencodePromptRelay(target:)`): the focused

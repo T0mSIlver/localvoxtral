@@ -145,6 +145,21 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
     }
 
+    /// The alert's Show Log reads the categories of the failure it reports (#1072).
+    func testAPolishFailureAsksForThePolishingLinesAndARealtimeOneForTheSessionLines() {
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+        let presenter = RecordingConnectionFailurePresenter()
+        viewModel.dependencies.connectionFailurePresenter = presenter
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.session.handleLLMPolishingConnectionFailure(message: "Polishing timed out.")
+        viewModel.session.handleConnectFailure(reason: .socketError(message: "WebSocket failed: [NSURLErrorDomain:-1004]"))
+
+        XCTAssertEqual(presenter.presented.map(\.log), [.polishing, .realtime])
+        XCTAssertFalse(ConnectionFailureLog.realtime.categories.contains("Deltas"))
+        XCTAssertFalse(ConnectionFailureLog.polishing.categories.contains("Insertion"))
+    }
+
     func testWarningIsRecognizedAsAccessibilityErrorToken() {
         // Ensures the existing onAccessibilityTrustChanged callback (which clears
         // lastError when currentErrorToken == .accessibilityPermissionRequired)
@@ -867,6 +882,37 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertNil(viewModel.engines.dictationShutdownTask)
         XCTAssertEqual(backendManager.stopDictationCallCount, 0)
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
+    }
+
+    /// A stored repo this build doesn't know runs as the default but stays
+    /// in defaults (#1040). Picking the default in Settings must replace it,
+    /// or a newer build would bring the unknown repo back.
+    func testPickingTheFallbackModelReplacesAnUnknownStoredRepo() async {
+        let defaults = makeSettingsDefaults()
+        defaults.set("someone/newer-model", forKey: "settings.managed_speech_model")
+        let settings = makeSettings(defaults: defaults)
+        settings.dictationBackendMode = .managedLocal
+        settings.onboardingCompleted = true
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            backendManager: backendManager,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false,
+            dependencies: .init(microphone: { FakeMicrophoneCaptureService() })
+        )
+        viewModel.appConfigStore = MockAppConfigStore()
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.engines.applyManagedSpeechModelChange(SpeechModelCatalog.defaultOption.repoID)
+
+        XCTAssertEqual(
+            defaults.string(forKey: "settings.managed_speech_model"),
+            SpeechModelCatalog.defaultOption.repoID
+        )
+        // The running model is already the default: no restart.
+        XCTAssertNil(viewModel.engines.dictationShutdownTask)
+        XCTAssertEqual(backendManager.stopDictationCallCount, 0)
     }
 
     private static let nemotronRepoID = "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"

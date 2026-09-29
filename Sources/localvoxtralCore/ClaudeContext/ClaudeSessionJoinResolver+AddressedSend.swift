@@ -24,7 +24,9 @@ extension ClaudeSessionJoinResolver {
         guard session.origin.isLocalAuthenticated else { return .unsupported(.remote) }
         if session.agent == .opencode, let relay = registry.opencodePromptRelay(sessionID: session.sessionID) {
             Log.claudeContext.notice("send to session: opencode prompt relay")
-            return .prompt(AddressedPromptRoute(OpencodePromptRoute(relay: relay)))
+            // An addressed dictation never types: the focused app is not the
+            // named session.
+            return .prompt(AddressedPromptRoute(OpencodePromptRoute(relay: relay, keysReachThePrompt: { false })))
         }
         if session.process?.herdrPaneID != nil {
             guard let route = await addressedHerdrRoute(for: session) else { return .unsupported(.herdr) }

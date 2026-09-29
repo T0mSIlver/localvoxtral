@@ -75,20 +75,11 @@ it only where nothing else can do the job:
    Stopping before the merge? Leave a handoff comment: state, what's left,
    decisions made.
 
-The board's Needs human review status holds PRs, not issues, that wait on
-the owner. The scheduler adds an open PR when it asks for the owner's OK to
-merge; whoever merges a `needs-human-review` PR adds it right after the
-merge. Add with `gh project item-add 1 --owner T0mSIlver --url <pr-url>`,
-then `gh project item-edit --project-id PVT_kwHOAhDp9c4BkXCa --id <item>
---field-id PVTSSF_lAHOAhDp9c4BkXCazhjH4TM --single-select-option-id
-404d76ac`. On a merged PR, the board's own workflow sets Done a few seconds
-after the add and overwrites an edit made sooner. Wait a minute, edit, then
-read the status back with `gh project item-list`. `gh issue create
---project` fails here. Only the owner moves a
-PR's card to Done; every session holds the owner's token, so only this rule stops
-you. On an open PR that move is the OK to merge: the scheduler's
-`scripts/board/merge-approved.sh` pass merges it, or moves it back with the
-failing output. On a merged PR it means checked. A failed check becomes a
+The `needs-human-review` label marks a PR that owes the owner a hand check,
+open or merged; the owner's view is the search `is:pr
+label:needs-human-review`. The owner gives the OK to merge in chat or
+through the merge classes, never through the board. Once the owner reports a
+merged PR checked, the session removes the label. A failed check becomes a
 `bug` issue that links the PR.
 
 New issues get one area label (`asr`, `polish`, `ci`, `claude-join`,
@@ -191,8 +182,9 @@ from your issue and say so in your report. Don't ask whether to file it.
 - Never read a child process pipe with `FileHandle.availableData`. It raises an
   uncatchable ObjC exception on a descriptor error and aborts the app (#60).
   Use `POSIXPipeRead.nextChunk(fromDescriptor:)`.
-- Act on exit codes, typed errors or `--json` output, never on matching
-  another tool's or our own prose (#1011).
+- Prefer exit codes, typed errors and `--json` output to matching prose,
+  ours or another tool's; match text only where the tool offers nothing
+  structured (#1011).
 - GLM (`zai-glm-*`) on the Mistral API bills the Vibe plan key
   (`VIBE_MISTRAL_API_KEY`, else `MISTRAL_API_KEY=` in `~/.vibe/.env`), never
   `MISTRAL_API_KEY` or `~/.config/localvoxtral/mistral_api_key`: that is the

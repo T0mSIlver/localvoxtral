@@ -8,11 +8,12 @@ final class RecordingConnectionFailurePresenter: ConnectionFailurePresenting {
         let title: String
         let message: String
         let technicalDetails: String?
+        let log: ConnectionFailureLog
     }
 
     private(set) var presented: [Failure] = []
 
-    func present(title: String, message: String, technicalDetails: String?) {
-        presented.append(Failure(title: title, message: message, technicalDetails: technicalDetails))
+    func present(title: String, message: String, technicalDetails: String?, log: ConnectionFailureLog) {
+        presented.append(Failure(title: title, message: message, technicalDetails: technicalDetails, log: log))
     }
 }
