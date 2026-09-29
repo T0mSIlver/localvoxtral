@@ -98,8 +98,9 @@ struct FailureLogView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(8)
                     }
-                    // Newest lines last, so the failure is in view on open.
-                    .defaultScrollAnchor(.bottom)
+                    // Opens on the newest lines, where the failure is; a short
+                    // log still starts at the top.
+                    .defaultScrollAnchor(.bottom, for: .initialOffset)
                 case .unreadable(let sentence):
                     Text(sentence)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -107,6 +108,7 @@ struct FailureLogView: View {
             }
             .background(Color(nsColor: .textBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color(nsColor: .separatorColor)))
             HStack {
                 Spacer()
                 Button("Copy") {
