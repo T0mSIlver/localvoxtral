@@ -419,10 +419,12 @@ instead of searching GitHub.
 /usr/local/bin/localvoxtral points, the microphone and Accessibility
 permissions, the speech and polish engines, the Claude Code and Codex
 plugins, the opencode plugin, the Vibe hooks, the note in each agent's file,
-each remote host, and the sessions the last five dictations joined. Each
-problem comes with the step that fixes it, and `--json` gives each check a
-stable `id`. It changes nothing. It prints no dictated text and no key, but
-it names your remote hosts. It exits with status 4 when a check failed.
+each remote host with its sessions still on an older plugin, and the
+sessions the last five dictations joined. Each problem comes with the step
+that fixes it, and `--json` gives each check a stable `id`. It changes
+nothing. It prints no dictated text and no key, but it names your remote
+hosts and their sessions' folders. It exits with status 4 when a check
+failed.
 
 `logs` reads the app's lines from the macOS unified log, and works while the
 app is not running: one line per dictation saying which session it joined
