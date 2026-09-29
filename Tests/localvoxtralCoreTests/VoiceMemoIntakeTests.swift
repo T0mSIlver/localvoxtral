@@ -256,6 +256,42 @@ final class VoiceMemoIntakeTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: ledgerURL), data)
     }
 
+    /// A memo that arrives while the Inbox refuses captures stays in the
+    /// folder, unmarked, and becomes a capture once the Inbox starts over
+    /// (#989, review of #997). Wired as the app wires it.
+    func testAMemoWaitsInTheFolderWhileTheInboxIsRefused() async throws {
+        try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
+        let inboxURL = workDirectory.appendingPathComponent("quick-captures.json")
+        try Data("{ not json".utf8).write(to: inboxURL)
+        let inbox = QuickCaptureFixture.model(
+            fileURL: inboxURL, answer: ["reach": 0.9], github: FakeQuickCaptureGitHub(),
+            runner: FakeQuickCaptureDraftRunner())
+        var statuses: [String] = []
+        let intake = VoiceMemoIntake(
+            directory: directory, ledgerURL: ledgerURL, transcriber: transcriber,
+            list: { [unowned self] _ in files },
+            removeTranscribed: { [unowned self] url in trashed.append(url.lastPathComponent) },
+            inboxHas: { id in inbox.items.contains { $0.id == id } },
+            capture: { id, text, recordedAt, _ in
+                _ = inbox.capture(text: text, historyRecordID: nil, id: id, capturedAt: recordedAt)
+            })
+        intake.inboxProblem = { inbox.storeProblem }
+        intake.onStatus = { statuses.append($0) }
+        files = [memo("walk.m4a")]
+        _ = await intake.scan()
+        _ = await intake.scan()
+
+        XCTAssertTrue(trashed.isEmpty, "the memo stays in the folder")
+        XCTAssertNil(VoiceMemoLedger.load(from: ledgerURL).value?.entries["walk.m4a"])
+        XCTAssertEqual(statuses, [VoiceMemoIntake.inboxRefusedStatus])
+
+        try inbox.moveAsideAndStartOver()
+        _ = await intake.scan()
+        _ = await intake.scan()
+        XCTAssertEqual(inbox.items.map(\.text), ["words of walk.m4a"])
+        XCTAssertEqual(trashed, ["walk.m4a"])
+    }
+
     /// The real listing: audio files only, no hidden iCloud or Finder files,
     /// no folders.
     func testTheFolderListingKeepsOnlyVisibleAudioFiles() throws {

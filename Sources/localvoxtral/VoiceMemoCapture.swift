@@ -239,6 +239,7 @@ final class VoiceMemoController {
             }
         )
         intake.canTranscribe = { [isDictationActive] in !isDictationActive() }
+        intake.inboxProblem = { inbox.model.storeProblem }
         intake.onStatus = { [weak self] in self?.onStatus?($0) }
         intake.onListFailure = { [weak self] error in
             guard let self, Self.isPermissionError(error) else { return }
