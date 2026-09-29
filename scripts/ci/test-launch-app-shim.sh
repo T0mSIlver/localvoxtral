@@ -72,6 +72,13 @@ unset LOCALVOXTRAL_DATA_HOME
 if lv_isolate_data lv-test; then fail "lv_isolate_data succeeded without a folder"; fi
 [ -z "${LOCALVOXTRAL_DATA_HOME+set}" ] || fail "a failed lv_isolate_data left LOCALVOXTRAL_DATA_HOME set"
 rm "$WORK/mktemp"
+
+# The app ignores a relative override and opens the owner's data, so a lane
+# must not take one for isolation.
+LOCALVOXTRAL_DATA_HOME=lane-data
+if lv_isolate_data lv-test; then fail "lv_isolate_data accepted a relative folder"; fi
+unset LOCALVOXTRAL_DATA_HOME
+
 lv_isolate_data lv-test || fail "lv_isolate_data failed with a working mktemp"
 [ -d "$LOCALVOXTRAL_DATA_HOME" ] || fail "lv_isolate_data exported no folder"
 rm -rf "$LOCALVOXTRAL_DATA_HOME"

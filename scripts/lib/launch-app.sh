@@ -13,7 +13,7 @@
 #
 # Written for the runner's bash 3.2: no arrays, no `${x[@]}` under `set -u`.
 # Points LOCALVOXTRAL_DATA_HOME at a new temporary folder named after $1,
-# unless the caller already set one, and exports it. Fails, exporting nothing,
+# unless the caller already set an absolute one, and exports it. Fails, exporting nothing,
 # when the folder cannot be made: an empty override would put the app back on
 # the owner's stores (#985). Callers abort on failure.
 lv_isolate_data() {
@@ -22,6 +22,12 @@ lv_isolate_data() {
     [ -n "$lv_data_dir" ] && [ -d "$lv_data_dir" ] || return 1
     LOCALVOXTRAL_DATA_HOME="$lv_data_dir"
   fi
+  # The app takes only an absolute path; it ignores any other and opens the
+  # owner's data.
+  case "$LOCALVOXTRAL_DATA_HOME" in
+    /*) ;;
+    *) return 1 ;;
+  esac
   mkdir -p "$LOCALVOXTRAL_DATA_HOME" || return 1
   export LOCALVOXTRAL_DATA_HOME
 }
