@@ -102,7 +102,7 @@ public enum VibeTranscriptPrompt {
     /// The file's last `tailBytes`, or nil for anything that is not a regular
     /// file of ours. `O_NOFOLLOW` and the `fstat` on the OPEN descriptor keep
     /// the checks and the read on the same file.
-    static func readTail(path: String) -> Data? {
+    static func readTail(path: String, tailBytes: Int = tailBytes) -> Data? {
         let fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else { return nil }
         defer { close(fd) }

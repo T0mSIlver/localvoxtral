@@ -159,8 +159,9 @@ final class OpencodePluginManifestTests: XCTestCase {
             ("const MAX_PROMPT_BYTES = 8 * 1024;", ClaudeHookLimits.default.maxPromptBytes),
             ("const MAX_PATH_BYTES = 4 * 1024;", ClaudeHookLimits.default.maxPathBytes),
             ("const MAX_FILES_PER_RECORD = 16;", ClaudeHookLimits.default.maxFilePathsPerRecord),
+            ("const MAX_TITLE_BYTES = 320;", ClaudeHookLimits.default.maxTitleBytes),
         ]
-        let values = [64 * 1024, 8 * 1024, 4 * 1024, 16]
+        let values = [64 * 1024, 8 * 1024, 4 * 1024, 16, 320]
         for (index, (line, swiftValue)) in pins.enumerated() {
             XCTAssertTrue(text.contains(line), "missing bound pin: \(line)")
             XCTAssertEqual(swiftValue, values[index], "Swift limit drifted from the plugin's pin")

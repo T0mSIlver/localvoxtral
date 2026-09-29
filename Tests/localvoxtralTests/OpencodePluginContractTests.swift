@@ -558,6 +558,36 @@ final class OpencodePluginContractTests: XCTestCase {
         }
     }
 
+    /// #1020: opencode's title rides on the session's records once its
+    /// model named it. The placeholder it starts with names nothing, and a
+    /// child session's title never crosses.
+    func testTheSessionsTitleRidesOnItsRecordsOnceTheModelNamedIt() throws {
+        try startServer()
+        createSession(id: "parent", directory: "/repo/p")
+        createSession(id: "child", parentID: "parent")
+        func updated(_ id: String, _ title: String) {
+            run(#"""
+            __hooks.event({ event: { type: "session.updated", properties: {
+              info: { id: "\#(id)", title: "\#(title)", directory: "/repo/p" } } } });
+            """#)
+        }
+        updated("parent", "New session - 2026-09-29T08:12:44.120Z")
+        sendChatMessage(sessionID: "parent", text: "first")
+        updated("parent", "Carry harness titles on the wire")
+        updated("child", "A child's title")
+        run(#"__hooks.event({ event: { type: "session.idle", properties: { sessionID: "parent" } } });"#)
+
+        let prompt = try XCTUnwrap(try records(event: "UserPromptSubmit", session: "parent").first)
+        XCTAssertNil(prompt["session_title"], "the placeholder is not a title")
+        let stop = try XCTUnwrap(try records(event: "Stop", session: "parent").first)
+        XCTAssertEqual(stop["session_title"] as? String, "Carry harness titles on the wire")
+        XCTAssertEqual(stop["cwd"] as? String, "/repo/p")
+        let decoded = try ClaudeHookWireCodec.decodeLine(try JSONSerialization.data(withJSONObject: stop))
+        XCTAssertEqual(decoded.sessionTitle, "Carry harness titles on the wire")
+        let written = try writtenRecords().map { String(describing: $0) }.joined()
+        XCTAssertFalse(written.contains("A child's title"))
+    }
+
     func testChildSessionLifecycleIsNeverPublished() throws {
         try startServer()
         createSession(id: "parent", directory: "/repo/p")

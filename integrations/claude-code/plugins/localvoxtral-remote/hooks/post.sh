@@ -271,7 +271,7 @@ fi
 # the app validates the shape and trusts nothing else about it.
 cat 2>/dev/null >"$WORK/header" <<EOF || fail_open
 Authorization: Bearer $TOKEN
-X-Lvx-Plugin-Version: 1.27.0
+X-Lvx-Plugin-Version: 1.29.0
 EOF
 
 # --- Allowlisted environment enrichment --------------------------------------
@@ -385,6 +385,23 @@ LVX_PROJECT="$(lvx_project 2>/dev/null)" || LVX_PROJECT=""
 LVX_REPOSITORY=""
 if [ -n "$LVX_PROJECT" ] && [ -r "${0%/*}/capture.sh" ]; then
   LVX_REPOSITORY="$(sh "${0%/*}/capture.sh" repository </dev/null 2>/dev/null)" || LVX_REPOSITORY=""
+fi
+
+# --- Branch (#1020) -----------------------------------------------------------
+# The branch checked out in the session's cwd. The Mac names a session in a
+# linked worktree by it when a person named it (`fix/overlay-names` reads
+# "overlay-names"), as it does for a local session. A label, never a ref the
+# Mac hands to git: it leaves only under the header charset and length cap
+# above. A detached HEAD, no git or no repository sends no header.
+lvx_branch() {
+  LC_ALL=C
+  export LC_ALL
+  command -v git >/dev/null 2>&1 || return 0
+  git symbolic-ref --quiet --short HEAD 2>/dev/null
+}
+LVX_BRANCH=""
+if [ -n "$LVX_PROJECT" ]; then
+  LVX_BRANCH="$(lvx_branch 2>/dev/null)" || LVX_BRANCH=""
 fi
 
 # --- Claude Desktop session id ------------------------------------------------
@@ -504,6 +521,7 @@ lvx_claude_is_desktop_session() {
   lvx_env_header 'X-Lvx-Env-Hook-Parent-Pid' "${PPID:-}"
   lvx_env_header 'X-Lvx-Env-Project' "${LVX_PROJECT:-}"
   lvx_env_header 'X-Lvx-Env-Repository' "${LVX_REPOSITORY:-}"
+  lvx_env_header 'X-Lvx-Env-Branch' "${LVX_BRANCH:-}"
 ) 2>/dev/null || :
 
 # --- Project terms (#641) ----------------------------------------------------

@@ -193,6 +193,45 @@ final class SessionShownNamesTests: XCTestCase {
         )
     }
 
+    // MARK: - Remote CLI sessions (#1020)
+
+    /// Three Claude Code CLI sessions on the dev box, fed through the remote
+    /// listener's parsers: the hook body as the shim posts it, the env labels
+    /// off its headers. The titled one is named by its title, a person-named
+    /// branch names its worktree, and the main checkout keeps its folder.
+    func testRemoteCLISessionsAreNamedByTheirTitleOrTheirHostsBranch() throws {
+        let titled = try remoteCLISession(
+            "titled", cwd: "/home/dev/work/localvoxtral/.claude/worktrees/bold-bose-1a2b3c",
+            branch: "t/bold-bose-1a2b3c", title: "Carry harness titles on the wire", seen: 0
+        )
+        let branched = try remoteCLISession(
+            "branched", cwd: "/home/dev/work/localvoxtral/.claude/worktrees/ci-speed-optimizations-7ffef0",
+            branch: "fix/overlay-names", seen: 1
+        )
+        let checkout = try remoteCLISession("checkout", cwd: "/home/dev/work/localvoxtral", branch: "main", seen: 2)
+        let candidates = [titled, branched, checkout].map { candidate($0) }
+
+        XCTAssertEqual(SessionShownNames.of(candidates), [
+            "titled": "Carry harness titles on the wire",
+            "branched": "overlay-names",
+            "checkout": "localvoxtral",
+        ])
+        XCTAssertEqual(resolvedID("carry harness titles", candidates), "titled")
+        XCTAssertEqual(resolvedID("overlay names", candidates), "branched")
+        XCTAssertEqual(resolvedID("bold bose", candidates), "titled", "the folder still answers")
+        XCTAssertEqual(
+            AgentAttentionText.name(of: branched, among: [titled, branched, checkout]), "overlay-names"
+        )
+    }
+
+    func testDesktopsTitleBeatsTheHooksTitle() throws {
+        let session = try remoteCLISession(
+            "desktop", cwd: "/home/dev/work/localvoxtral", branch: "main", title: "From the hook", seen: 0
+        )
+        XCTAssertEqual(candidate(session, title: "From Desktop").names.title, "From Desktop")
+        XCTAssertEqual(candidate(session).names.title, "From the hook")
+    }
+
     // MARK: - Claude Desktop's titles
 
     func testDesktopTitlesAreReadFromDesktopsSessionFile() throws {
@@ -242,6 +281,30 @@ final class SessionShownNamesTests: XCTestCase {
         snapshot.workspace = ClaudeWorkspaceReference.make(rawCwd: cwd, origin: devBox)
         snapshot.remoteEnvironment = ClaudeRemoteSessionEnvironment(desktopSessionID: desktopID, project: project)
         snapshot.lastActivity = snapshot.firstSeen
+        return snapshot
+    }
+
+    /// A remote session built the way the listener builds one: `SessionStart`
+    /// with the hook body the shim posts and the env headers it sends, then a
+    /// `Stop` that carries no title.
+    private func remoteCLISession(
+        _ id: String, cwd: String, branch: String, title: String? = nil, seen: TimeInterval
+    ) throws -> ClaudeSessionSnapshot {
+        var headers = ["x-lvx-env-project": "localvoxtral", "x-lvx-env-branch": branch]
+        headers["x-lvx-env-ssh-tty"] = "/dev/pts/\(Int(seen))"
+        let environment = ClaudeRemoteEnvironmentCodec.environment(in: headers)
+        var snapshot = ClaudeSessionSnapshot(sessionID: id, origin: devBox, firstSeen: epoch.addingTimeInterval(seen))
+        var start: [String: Any] = ["session_id": id, "cwd": cwd]
+        start["session_title"] = title
+        for (event, body) in [("SessionStart", start), ("Stop", ["session_id": id, "cwd": cwd])] {
+            let data = try JSONSerialization.data(withJSONObject: body)
+            let payload = try XCTUnwrap(
+                ClaudeRemoteHookPayloadParser.parse(data: data, fallbackEvent: event, timestamp: 0)
+            )
+            ClaudeSessionReducer.reduce(
+                &snapshot, record: payload.record, origin: devBox, environment: environment, now: snapshot.firstSeen
+            )
+        }
         return snapshot
     }
 
