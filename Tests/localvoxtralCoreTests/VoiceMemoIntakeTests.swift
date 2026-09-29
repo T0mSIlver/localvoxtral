@@ -38,6 +38,8 @@ final class VoiceMemoIntakeTests: XCTestCase {
     private var trashed: [String] = []
     private var downloadRequests: [String] = []
     private var trashFails = false
+    /// The Inbox turned the capture down, as a refused Inbox does.
+    private var captureRefused = false
 
     override func setUp() async throws {
         workDirectory = FileManager.default.temporaryDirectory
@@ -69,6 +71,7 @@ final class VoiceMemoIntakeTests: XCTestCase {
             },
             inboxHas: { [unowned self] id in captured.contains { $0.id == id } },
             capture: { [unowned self] id, text, recordedAt, pcm in
+                if captureRefused { return }
                 captured.append(Captured(id: id, text: text, recordedAt: recordedAt, pcm16: pcm))
             }
         )
@@ -111,6 +114,37 @@ final class VoiceMemoIntakeTests: XCTestCase {
         for _ in 0..<2 { _ = await tryBuild.scan() }
         XCTAssertEqual(captured.map(\.text), ["words of walk.m4a"])
         XCTAssertEqual(transcriber.calls.withLock { $0 }.count, 1)
+    }
+
+    /// The Inbox refused the capture while the memo was being transcribed
+    /// (#990 review): the memo stays in the folder and is not marked taken.
+    func testAMemoTheInboxTurnsDownStaysInTheFolder() async {
+        files = [memo("walk.m4a")]
+        captureRefused = true
+        let intake = intake()
+        _ = await intake.scan()
+        _ = await intake.scan()
+        XCTAssertEqual(trashed, [])
+        XCTAssertNil(VoiceMemoLedger.load(from: ledgerURL).value?.entries["walk.m4a"])
+
+        captureRefused = false
+        _ = await intake.scan()
+        XCTAssertEqual(captured.map(\.text), ["words of walk.m4a"])
+        XCTAssertEqual(trashed, ["walk.m4a"])
+    }
+
+    /// A copy whose Inbox is refused does not keep the folder from the copy
+    /// that can take memos (#990 review).
+    func testACopyThatCannotScanLeavesTheFolderToTheOther() async {
+        files = [memo("walk.m4a")]
+        let refused = intake()
+        refused.inboxProblem = { .unreadable }
+        let healthy = intake()
+        for _ in 0..<2 {
+            _ = await refused.scan()
+            _ = await healthy.scan()
+        }
+        XCTAssertEqual(captured.map(\.text), ["words of walk.m4a"])
     }
 
     func testAMemoStillGrowingOrStillInICloudWaits() async {
