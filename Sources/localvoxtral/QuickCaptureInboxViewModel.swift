@@ -156,9 +156,7 @@ final class QuickCaptureInboxViewModel {
     }
 
     static func defaultFileURL() -> URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("localvoxtral", isDirectory: true)
-            .appendingPathComponent("quick-captures.json")
+        LocalvoxtralDataDirectory.url().appendingPathComponent("quick-captures.json")
     }
 
     var waitingCount: Int { items.filter { $0.state != .filed }.count }

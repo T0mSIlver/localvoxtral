@@ -347,7 +347,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewModel.engines.preflightConfiguredLocalNetworkEndpoints()
         switch LaunchWindowPolicy.decide(
             onboardingCompleted: settingsStore.onboardingCompleted,
-            opensWindowAtLaunch: settingsStore.opensWindowAtLaunch
+            opensWindowAtLaunch: settingsStore.opensWindowAtLaunch,
+            isLaunchSmoke: StartupPermissionSuppression.isActive()
         ) {
         case .onboarding:
             presentOnboarding()

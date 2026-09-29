@@ -125,8 +125,10 @@ relaunch_owner_app() {
     printf 'WARNING: the owner app at %s is gone; not relaunching it.\n' "$OWNER_APP_BUNDLE" >&2
     return 0
   fi
+  # LOCALVOXTRAL_DATA_HOME too: the owner's app must reopen on the owner's
+  # History, not on the lane's folder that is deleted after the run (#985).
   if env -u RUNNER_TRACKING_ID -u LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN -u LOCALVOXTRAL_DOGFOOD_AUDIO_FILE \
-    open "$OWNER_APP_BUNDLE"; then
+    -u LOCALVOXTRAL_DATA_HOME open "$OWNER_APP_BUNDLE"; then
     printf "Relaunched the owner's app at %s.\n" "$OWNER_APP_BUNDLE"
   else
     printf 'WARNING: failed to relaunch the owner app at %s.\n' "$OWNER_APP_BUNDLE" >&2
