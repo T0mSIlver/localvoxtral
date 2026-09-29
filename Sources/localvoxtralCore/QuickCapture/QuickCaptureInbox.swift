@@ -64,8 +64,10 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
 
     package let id: UUID
     package let capturedAt: Date
-    /// The words as dictated. Never edited, so a bad draft can be redone.
-    package let text: String
+    /// The words as dictated, then as polished once before routing (#970).
+    /// Never edited after that, so a bad draft can be redone. History keeps
+    /// the raw transcript.
+    package var text: String
     /// The History record this capture was saved as, when History is on.
     package var historyRecordID: UUID?
     package var state: State
@@ -570,18 +572,15 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
 }
 
 package enum QuickCaptureInboxFile {
-    /// An unreadable or future file reads as empty and is left in place.
-    package static func load(from url: URL) -> QuickCaptureInbox {
-        guard let data = try? Data(contentsOf: url) else { return QuickCaptureInbox() }
+    /// An unreadable or future file is refused and left in place (#989):
+    /// the model then refuses every write, since the next one would replace
+    /// the user's captures.
+    package static func load(from url: URL) -> StoredFileLoad<QuickCaptureInbox> {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        guard let inbox = try? decoder.decode(QuickCaptureInbox.self, from: data),
-              inbox.version <= QuickCaptureInbox.currentVersion
-        else {
-            Log.persistence.error("Quick capture inbox: unreadable file kept aside")
-            try? FileManager.default.moveItem(at: url, to: url.appendingPathExtension("unreadable"))
-            return QuickCaptureInbox()
-        }
+        let load = StoredFile.load(
+            QuickCaptureInbox.self, from: url, currentVersion: QuickCaptureInbox.currentVersion, decoder: decoder)
+        guard let inbox = load.value else { return load }
         // A capture interrupted mid-route or mid-draft by a quit waits for
         // the user with its words.
         var result = inbox
@@ -597,7 +596,7 @@ package enum QuickCaptureInboxFile {
                 result.items[index].note = "Interrupted before a draft."
             }
         }
-        return result
+        return .loaded(result)
     }
 
     package static func save(_ inbox: QuickCaptureInbox, to url: URL) throws {

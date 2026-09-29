@@ -11,7 +11,8 @@ import Synchronization
 ///
 /// The body is the numbered text a person reads, or with
 /// `Accept: application/json`, the `AgentCLIResponse` the Mac's own
-/// `doctor --json` prints.
+/// `doctor --json` prints. Either way the count of failed checks rides in
+/// `X-Lvx-Doctor-Failed`, so the host decides its exit status on a number.
 public final class RemoteDoctorRoute: Sendable {
     public static let path = "/v1/doctor"
 
@@ -31,7 +32,7 @@ public final class RemoteDoctorRoute: Sendable {
     }
 
     public enum Answer: Equatable, Sendable {
-        case body(Data, contentType: String)
+        case body(Data, contentType: String, failed: Int)
         case timedOut
     }
 
@@ -50,11 +51,12 @@ public final class RemoteDoctorRoute: Sendable {
             return .timedOut
         }
         let doctor = AgentCLIDoctor(checks: found)
+        let failed = found.filter { $0.state == .failed }.count
         if json {
             let line = AgentCLIWire.encodeLine(AgentCLIResponse(doctor: doctor)) ?? Data()
-            return .body(line, contentType: "application/json")
+            return .body(line, contentType: "application/json", failed: failed)
         }
         let text = (doctor.textLines() + ["", doctor.summaryLine]).map { $0 + "\n" }.joined()
-        return .body(Data(text.utf8), contentType: "text/plain; charset=utf-8")
+        return .body(Data(text.utf8), contentType: "text/plain; charset=utf-8", failed: failed)
     }
 }

@@ -28,6 +28,15 @@ import XCTest
 ///   "also" joins the latest, and the rest go to the router with the open
 ///   ones as options. A capture's optional `join` names the earlier capture
 ///   it continues; without it, joining anything is wrong.
+/// - `QC_POLISH_URL` + `QC_POLISH_MODEL` (+ `QC_POLISH_KEY_FILE`,
+///   `QC_POLISH_EXTRA`) (#970): each capture is first polished through the
+///   core builder at that endpoint, as the app polishes it, and routed and
+///   joined from the polished words. The vocabulary is every project's name
+///   and its `terms`, which in an exported project file may hold proposals.
+///   `QC POLISH` counts the captures where a project's name appears in the
+///   raw and in the polished words.
+/// - `QC_DRY_RUN=1`: builds each capture's polish request and prints counts,
+///   then stops before any request.
 final class QuickCaptureReplayLiveTests: XCTestCase {
     private struct Capture: Decodable {
         let id: String
@@ -69,6 +78,7 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
         }
     }
 
+    @MainActor
     func testReplay() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard environment["LV_QUICK_CAPTURE_REPLAY"] == "1" else {
@@ -102,6 +112,22 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
             else { return "" }
             return text.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        let listedNames = entries.map(\.name)
+        let vocabulary = QuickCapturePolishVocabulary.terms(names: entries.map { [$0.name] }, confirmed: entries.map(\.terms))
+        if environment["QC_DRY_RUN"] == "1" {
+            let inputs = try QuickCaptureReplayPolish.inputs()
+            var built = 0, characters = 0, named = 0
+            for capture in captures {
+                let request = QuickCapturePolishPrompt.request(transcript: capture.text, vocabulary: vocabulary, inputs: inputs)
+                built += 1
+                characters += request.messages.map { $0["content"]?.count ?? 0 }.reduce(0, +)
+                if QuickCaptureReplayPolish.namesAProject(capture.text, names: listedNames) { named += 1 }
+            }
+            print("QC DRY captures=\(captures.count) projects=\(entries.count) vocabulary=\(vocabulary.count) requests-built=\(built) mean-request-chars=\(built == 0 ? 0 : characters / built) name-in-raw=\(named) requests-sent=0")
+            return
+        }
+        let polisher = try QuickCaptureReplayPolish.polisher(environment: environment, key: key)
+        var polishTally = QuickCaptureReplayPolish.Tally()
         var classifiers: [any QuickCaptureClassifying] = []
         if let host = environment["QC_JEV_HOST"].flatMap(Jev.Host.init(rawValue:)) {
             let key = key("QC_JEV_KEY_FILE")
@@ -135,15 +161,25 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
         var suggested = 0, suggestedRight = 0
         for capture in captures {
             let expected = projectNames.contains(capture.expected) ? capture.expected : "inbox"
+            var text = capture.text
+            if let polisher {
+                let polished = await polisher.polish(capture.text, vocabulary: vocabulary)
+                if polished == nil { print("QC polish error: \(polisher.lastError.map { "\($0)" } ?? "empty reply")") }
+                let named = polishTally.add(raw: capture.text, polished: polished?.text, names: listedNames)
+                print("QC PNAME \(capture.id) raw=\(named.raw ? 1 : 0) polished=\(named.polished ? 1 : 0)")
+                text = polished?.text ?? capture.text
+            }
             var joined: String?
             var answer: QuickCaptureRouteAnswer = .route(QuickCaptureRoute(
                 destination: .catchAll, classifier: .none, reason: .noProjects, topProbability: nil))
-            if followUps, QuickCaptureInbox.saysFollowUp(capture.text), let latest = open.first {
+            if followUps, QuickCaptureInbox.saysFollowUp(text) || QuickCaptureInbox.saysFollowUp(capture.text),
+               let latest = open.first
+            {
                 joined = latest.id
                 joinedByWords += 1
             } else {
                 let offered = followUps ? Array(open.prefix(QuickCaptureRouting.maxOpenCaptures).map(\.capture)) : []
-                answer = await router.answer(capture: capture.text, projects: projects, openCaptures: offered)
+                answer = await router.answer(capture: text, projects: projects, openCaptures: offered)
                 if case .join(let target, _, _) = answer {
                     joined = open.first { $0.capture.id == target }?.id
                 }
@@ -166,7 +202,7 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
             if followUps {
                 open.insert((capture.id, QuickCaptureOpenCapture(
                     id: UUID(), projectKey: route.destination.projectKey,
-                    summary: QuickCaptureDraft.oneLine(capture.text, limit: 160)
+                    summary: QuickCaptureDraft.oneLine(text, limit: 160)
                 )), at: 0)
             }
             let got: String
@@ -194,6 +230,7 @@ final class QuickCaptureReplayLiveTests: XCTestCase {
             let probability = route.topProbability.map { String(format: "%.2f", $0) } ?? "-"
             print("QC \(mark) \(capture.id) expected=\(expected) got=\(picked) by=\(route.classifier.rawValue) \(route.reason.rawValue) p=\(probability)")
         }
+        if polisher != nil { print(polishTally.line) }
         if followUps {
             print("QC JOINS expected=\(joinsExpected) right=\(joinedRight) wrong=\(joinedWrong) missed=\(joinsMissed) by-words=\(joinedByWords)")
         }

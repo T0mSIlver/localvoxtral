@@ -113,6 +113,11 @@ final class AgentCLIDoctorTests: XCTestCase {
         XCTAssertFalse(checks.contains { $0.detail.contains("stderr") })
         let fixes = Dictionary(uniqueKeysWithValues: checks.map { ($0.id, $0.fix) })
         XCTAssertEqual(fixes["remote-host.3"], "Run `ssh old true` in a terminal to see ssh's own error.")
+        XCTAssertEqual(
+            fixes["remote-host.2"],
+            "Settings > Remote hosts > Update Host…, then run `/reload-plugins` in its Claude Code sessions "
+                + "and restart its Vibe sessions."
+        )
         XCTAssertEqual(fixes["opencode-plugin"], "Settings > opencode > Set up…")
         XCTAssertEqual(
             fixes["dictation-note.claudeCode"],
@@ -124,6 +129,68 @@ final class AgentCLIDoctorTests: XCTestCase {
             checks.first { $0.id == "command-link" }?.detail,
             "/usr/local/bin/localvoxtral points to /Users/me/Downloads/localvoxtral.app/Contents/MacOS/localvoxtral-cli, "
                 + "but the app running is /Applications/localvoxtral.app."
+        )
+    }
+
+    /// A session whose hooks still send an older shim than its host has is
+    /// named, with `/reload-plugins` for Claude Code and a restart for Vibe
+    /// (#969). One behind and one current per agent.
+    func testSessionsOnAnOlderShimThanTheirHostAreNamedWithTheirFix() {
+        func host(_ sessions: [AgentCLIDoctorFacts.RemoteHost.Session]) -> AgentCLIDoctorFacts.RemoteHost {
+            .init(label: "devbox", lastSeenAt: now, pluginNeedsUpdate: false, reportedPluginVersion: "1.25.0",
+                  installedPluginVersion: .version("1.25.0"), installedVibeHooksVersion: "1.4.0", sessions: sessions)
+        }
+        let claudeBehind = AgentCLIDoctorFacts.RemoteHost.Session(label: "api", agent: .claude, shimVersion: .version("1.24.0"))
+        let claudeCurrent = AgentCLIDoctorFacts.RemoteHost.Session(label: "web", agent: .claude, shimVersion: .version("1.25.0"))
+        let vibeBehind = AgentCLIDoctorFacts.RemoteHost.Session(label: "notes", agent: .vibe, shimVersion: .version("1.3.0"))
+        let vibeCurrent = AgentCLIDoctorFacts.RemoteHost.Session(label: "cli", agent: .vibe, shimVersion: .version("1.4.0"))
+
+        let both = AgentCLIDoctorChecks.checks(facts(remoteHosts: [
+            host([claudeBehind, claudeCurrent, vibeBehind, vibeCurrent]),
+        ]))
+        XCTAssertEqual(both.map(\.id).suffix(3), ["remote-host.1", "remote-sessions.1", "last-join"])
+        XCTAssertEqual(
+            AgentCLIDoctor(checks: both.filter { $0.id == "remote-sessions.1" }).textLines(),
+            [
+                "1. [warn] Sessions on devbox: 2 sessions run an older plugin than the host has.",
+                "   api, Claude Code: plugin 1.24.0; the host has 1.25.0.",
+                "   notes, Mistral Vibe: hooks 1.3.0; the host has 1.4.0.",
+                "   fix: Run `/reload-plugins` in each Claude Code session listed, and restart each Vibe one.",
+            ]
+        )
+
+        let claudeOnly = AgentCLIDoctorChecks.checks(facts(remoteHosts: [host([claudeBehind, claudeCurrent, vibeCurrent])]))
+        let claudeCheck = claudeOnly.first { $0.id == "remote-sessions.1" }
+        XCTAssertEqual(claudeCheck?.detail, "1 session runs an older plugin than the host has.")
+        XCTAssertEqual(claudeCheck?.fix, "Run `/reload-plugins` in each session listed.")
+
+        let vibeOnly = AgentCLIDoctorChecks.checks(facts(remoteHosts: [host([claudeCurrent, vibeBehind])]))
+        XCTAssertEqual(vibeOnly.first { $0.id == "remote-sessions.1" }?.lines, [
+            "notes, Mistral Vibe: hooks 1.3.0; the host has 1.4.0.",
+        ])
+        XCTAssertEqual(
+            vibeOnly.first { $0.id == "remote-sessions.1" }?.fix,
+            "Restart each session listed: Vibe has no `/reload-plugins`."
+        )
+
+        // Current sessions, or one whose hook sent nothing yet: no check.
+        let current = AgentCLIDoctorChecks.checks(facts(remoteHosts: [
+            host([claudeCurrent, vibeCurrent, .init(label: "quiet", agent: .claude, shimVersion: nil)]),
+        ]))
+        XCTAssertFalse(current.contains { $0.id == "remote-sessions.1" })
+
+        // A pre-1.10.0 shim sends no header at all.
+        let headerless = AgentCLIDoctorChecks.checks(facts(remoteHosts: [
+            host([.init(label: "ancient", agent: .claude, shimVersion: .headerAbsent)]),
+        ]))
+        XCTAssertEqual(headerless.first { $0.id == "remote-sessions.1" }?.lines, [
+            "ancient, Claude Code: plugin 1.9.0 or older; the host has 1.25.0.",
+        ])
+
+        // The host's own doctor gets its sessions too.
+        XCTAssertEqual(
+            AgentCLIDoctorChecks.hostChecks(facts(remoteHosts: [host([claudeBehind])]), hostIndex: 0).map(\.id).suffix(3),
+            ["remote-host", "remote-sessions", "last-join"]
         )
     }
 
@@ -269,5 +336,32 @@ final class AgentCLIDoctorTests: XCTestCase {
         )
         XCTAssertEqual(failed.exitCode, .refused)
         XCTAssertEqual(failed.stderr, "localvoxtral: could not read the log: /usr/bin/log exited with 64\n")
+    }
+
+    func testFailureLogReadsTheFailuresCategoriesAtEveryDefaultLevel() {
+        let query = AgentCLIFailureLogQuery(categories: ["Polishing", "Backends"], since: now)
+        XCTAssertEqual(query.logShowArguments(timeZone: utc), [
+            "show", "--style", "ndjson", "--start", "2026-09-21 14:13:20", "--predicate",
+            #"subsystem == "com.localvoxtral" AND category IN {"Polishing", "Backends"}"#,
+        ])
+        let output = Data("""
+            {"timestamp":"2026-09-21 16:13:20.000000+0200","messageType":"Default","category":"Polishing","eventMessage":"request sent"}
+            {"timestamp":"2026-09-21 16:14:20.000000+0200","messageType":"Error","category":"Polishing","eventMessage":"timed out: <private>"}
+            """.utf8)
+        var asked: [String] = []
+        let read = AgentCLILogs.failureLog(query, timeZone: utc) { arguments in
+            asked = arguments
+            return .success(output)
+        }
+        XCTAssertEqual(asked, query.logShowArguments(timeZone: utc))
+        XCTAssertEqual(read, .success("""
+            2026-09-21 14:13:20 [Polishing] request sent
+            2026-09-21 14:14:20 [Polishing] error: timed out: <private>
+
+            """))
+        XCTAssertEqual(
+            AgentCLILogs.failureLog(query, timeZone: utc) { _ in .failure(AgentCLILogsReadFailure("/usr/bin/log exited with 64")) },
+            .failure(AgentCLILogsReadFailure("/usr/bin/log exited with 64"))
+        )
     }
 }

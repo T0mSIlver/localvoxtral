@@ -34,6 +34,7 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         modelID: String?,
         modelRevision: String?,
         modelDirectory: String?,
+        engine: SpeechASREngineKind? = nil,
         port: UInt16,
         transcriptionDelayMs: Int?,
         cacheLimitMB: Int,
@@ -44,7 +45,8 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         let engine = try await SpeechModelLoader.load(
             modelID: modelID,
             modelRevision: modelRevision,
-            modelDirectory: modelDirectory
+            modelDirectory: modelDirectory,
+            engine: engine
         )
         return try RealtimeSpeechServer(
             engine: engine,
@@ -362,17 +364,19 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
     }
 }
 
-/// Resolves the checkpoint the app pinned into a loaded engine. The engine kind comes
-/// from the repo id, or from a `--model-dir` checkpoint's own `config.json`
-/// (`SpeechASREngineKind.infer`), so adding a model to the app's catalog never needs a
-/// new helper flag.
+/// Resolves the checkpoint the app pinned into a loaded engine. The engine is the one
+/// the app's catalog names with `--engine`, else inferred from the model
+/// (`SpeechASREngineKind.resolve`).
 enum SpeechModelLoader {
     static func load(
         modelID: String?,
         modelRevision: String?,
-        modelDirectory: String?
+        modelDirectory: String?,
+        engine: SpeechASREngineKind?
     ) async throws -> SpeechASREngine {
-        switch engineKind(modelID: modelID, modelDirectory: modelDirectory) {
+        switch SpeechASREngineKind.resolve(
+            named: engine, modelID: modelID, modelDirectory: modelDirectory
+        ) {
         case .voxtral:
             return VoxtralASREngine(model: try await loadModel(
                 modelID: modelID,
@@ -390,17 +394,6 @@ enum SpeechModelLoader {
                 fromPretrained: { try await NemotronASRModel.fromPretrained($0) }
             ))
         }
-    }
-
-    private static func engineKind(
-        modelID: String?,
-        modelDirectory: String?
-    ) -> SpeechASREngineKind {
-        if let modelID { return .infer(fromModelID: modelID) }
-        if let modelDirectory {
-            return .infer(fromModelDirectory: URL(fileURLWithPath: modelDirectory))
-        }
-        return .voxtral
     }
 
     /// The same three-way resolution for every engine: an explicit directory, the

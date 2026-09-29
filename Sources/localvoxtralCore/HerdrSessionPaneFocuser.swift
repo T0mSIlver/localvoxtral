@@ -32,8 +32,8 @@ package struct HerdrFocusSocket: Sendable {
 
 /// Brings a herdr-hosted session forward (#1012). Its one write is
 /// `pane.focus` for the session's own pane (docs/agent/invariants.md, "herdr
-/// focus for navigation"); the window is raised with the terminal focuser's
-/// tty path. `.focused` only when both read-backs agree: herdr's focused pane
+/// focus for navigation"), sent only after the window is raised with the
+/// terminal focuser's tty path and read back. `.focused` only when both read-backs agree: herdr's focused pane
 /// is the session's, and the terminal's focused tty is the window raised.
 /// Nothing is typed and no key is posted.
 @MainActor
@@ -83,15 +83,18 @@ package final class HerdrSessionPaneFocuser: SessionPaneFocusing {
         }
         defer { socket.release() }
         guard !Task.isCancelled else { return .paneNotFound }
-        // The pane first, so the window already shows it when it comes up.
+        // The window first: herdr's focus is written only once the window
+        // that shows it is confirmed in front, so a raise that fails leaves
+        // herdr untouched (#1033). Anything that fails after the raise is
+        // `.unverified`, whose window callers know is in front.
+        let raised = await raiseTTY(tty, session.process?.termProgram)
+        guard case .focused(let bundleID) = raised else { return raised }
+        guard !Task.isCancelled else { return .unverified(bundleID: bundleID) }
         let focus = await focuser.focusPane(socketPath: socket.path, paneID: target.paneID)
         guard focus != .refused else {
             Log.claudeContext.info("go to session: herdr refused the focus")
-            return .paneNotFound
+            return .unverified(bundleID: bundleID)
         }
-        guard !Task.isCancelled else { return .paneNotFound }
-        let raised = await raiseTTY(tty, session.process?.termProgram)
-        guard case .focused(let bundleID) = raised else { return raised }
         let paneFocused = await panes.focusedPane(socketPath: socket.path)?.paneID == target.paneID
         Log.claudeContext.info(
             "go to session: herdr focus answered \(String(describing: focus), privacy: .public); verified=\(paneFocused, privacy: .public)"

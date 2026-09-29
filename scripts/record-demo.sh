@@ -211,42 +211,13 @@ OUT_DIR="dist/demo"
 RAW_MOV="$OUT_DIR/demo-raw.mov"
 OUT_MP4="$OUT_DIR/demo.mp4"
 
-DEFAULTS_BACKUP="${HOME}/.localvoxtral-record-demo.pre.plist"
-DEFAULTS_BACKUP_HAD_DOMAIN="${DEFAULTS_BACKUP}.had-domain"
+# The lanes' defaults snapshot and restore, on a backup path of this script's own.
+# shellcheck source=scripts/lib/owner-app-session.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/owner-app-session.sh"
+PERSISTENT_DEFAULTS_BACKUP="${HOME}/.localvoxtral-record-demo.defaults-backup"
+LEGACY_DEFAULTS_BACKUP="${HOME}/.localvoxtral-record-demo.pre.plist"
 
 [[ -d "$APP_PATH" ]] || { echo "App bundle not found: $APP_PATH (build with ./scripts/package_app.sh)" >&2; exit 1; }
-
-# --- defaults snapshot/restore (same pattern as capture-readme-assets.sh) ----
-write_empty_plist() {
-  cat >"$1" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict/>
-</plist>
-PLIST
-}
-
-snapshot_domain() { # <domain> <backup> <had-domain-marker>
-  rm -f "$2" "$3"
-  if defaults export "$1" "$2" >/dev/null 2>&1; then
-    : >"$3" || return 1
-  elif defaults read "$1" >/dev/null 2>&1; then
-    return 1
-  else
-    write_empty_plist "$2" || return 1
-  fi
-  [[ -f "$2" ]] || return 1
-}
-
-restore_domain() { # <domain> <backup> <had-domain-marker>
-  [[ -f "$2" ]] || return 0
-  defaults delete "$1" >/dev/null 2>&1 || true
-  if [[ -f "$3" ]]; then
-    defaults import "$1" "$2" >/dev/null 2>&1 || return 1
-  fi
-  rm -f "$2" "$3"
-}
 
 # --- permission + secure-input preflight ------------------------------------------
 PREFLIGHT="$(mktemp -t lv-demo-preflight).swift"
@@ -453,8 +424,8 @@ cleanup() {
     # killed its tty) — one rm can race that write (take 3 died here); retry.
     rm -rf "$DEMO_STAGE" 2>/dev/null || { sleep 1; rm -rf "$DEMO_STAGE" 2>/dev/null || true; }
   fi
-  if ! restore_domain "$BUNDLE_ID" "$DEFAULTS_BACKUP" "$DEFAULTS_BACKUP_HAD_DOMAIN"; then
-    echo "WARNING: failed to restore $BUNDLE_ID defaults; backup left at $DEFAULTS_BACKUP" >&2
+  if ! restore_defaults; then
+    echo "WARNING: failed to restore $BUNDLE_ID defaults; backup left at $PERSISTENT_DEFAULTS_BACKUP" >&2
   fi
   if [[ -n "$ORIGINAL_DARK_MODE" ]]; then
     osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to ${ORIGINAL_DARK_MODE}" >/dev/null 2>&1 || true
@@ -624,7 +595,10 @@ if pgrep -xq "$APP_PROCESS"; then
 fi
 pgrep -xq "$APP_PROCESS" && { echo "$APP_PROCESS refuses to quit; aborting." >&2; exit 1; }
 
-snapshot_domain "$BUNDLE_ID" "$DEFAULTS_BACKUP" "$DEFAULTS_BACKUP_HAD_DOMAIN" \
+remove_defaults_backup_scratch
+restore_defaults \
+  || { echo "Could not restore the defaults backup an interrupted run left at $PERSISTENT_DEFAULTS_BACKUP; refusing to mutate them." >&2; exit 1; }
+snapshot_defaults \
   || { echo "Could not snapshot $BUNDLE_ID defaults; refusing to mutate them." >&2; exit 1; }
 
 # The demo always shows the Right Command tap/hold gesture. Backend MODES are

@@ -128,7 +128,7 @@ final class LearnedTermsViewTests: XCTestCase {
         "terms":[{"term":"Voxtral","sources":["repository"],"dictations":3,
         "firstSeen":"2026-09-20T00:00:00Z","lastSeen":"2026-09-20T00:00:00Z"}]}]}
         """
-        let term = LearnedTermStore.terms(fromFileContents: Data(json.utf8)).projects.first?.terms.first
+        let term = LearnedTermStore.terms(fromFileContents: Data(json.utf8)).value?.projects.first?.terms.first
         XCTAssertEqual(term?.appliedCount, 0)
         XCTAssertNil(term?.lastApplied)
         XCTAssertEqual(term?.isPinned, false)

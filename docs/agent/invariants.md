@@ -292,6 +292,29 @@ there is not.
   goes last against the 100-term cap: a listed term nobody says is
   sometimes written anyway. A new dictation that cancels
   the pass saves the realtime text as not inserted, as it does for a polish.
+- **Early polish reuses a piece only when the stop would have sent it the
+  same way** (#709). In Overlay Buffer with polishing, `EarlyPolishRun`
+  polishes each settled piece (whole sentences past 30 words of backend
+  finals, `EarlyPolishPlan`) while the user speaks, alone and one at a
+  time. A piece request carries only the templates, the reference guide and
+  About you. The stop still gathers and assembles the request for the whole
+  text, and polishes only the tail when that request equals the bare one
+  (`PolishRequestAssembler.bareRequest`), the templates and endpoint are the
+  pieces', and the prepared text starts with the pieces' exact prefix.
+  Otherwise the pieces are dropped and the whole text is polished: context,
+  vocabulary or a pre-applied spelling from the stop sample, a changed
+  profile, the dictionary, the payload macro and the spoken send cut all
+  land here, so learned terms, the macro and the trigger keep working on
+  the whole text. A piece is never given the text polished before it, and
+  the stop never re-polishes a piece's last sentence: both changed more
+  words than polishing it alone on the #709 replay. The stop waits for the
+  piece in flight and keeps it rather than cancelling it, because polishd
+  keeps generating a dropped request on its one slot. Sessions with a
+  second pass never start early polish: Mistral's realtime stream settles
+  nothing before the stop, and the batch text replaces the realtime text.
+  With **Polish while you speak** off (`SettingsStore.earlyPolishEnabled`,
+  default on for the bundled helper only) no run starts, and the stop takes
+  the pre-#709 path unchanged.
 - **Claude Desktop is a text field whose Return sends, and gets its
   newlines as Shift+Return** (#660). Three lists name it, each for one
   capability: `TerminalTargetDetector`'s text-field list fixes its verdict
@@ -404,7 +427,9 @@ there is not.
   enforced by a gate: each term keeps the sources that proposed it, so a
   later setting can drop what one source taught; nothing below the
   three-dictation bar is ever sent unless the user pinned it or fixed it by
-  hand, and an import (`LearnedTerms.merge`, #523) confirms nothing the
+  hand (a quick capture's polish, #970, matches every routable project's
+  confirmed terms, which the router already sends with each project), and
+  an import (`LearnedTerms.merge`, #523) confirms nothing the
   file does not record as earned, taking the max of the counts, never the
   sum; a remembered term never outranks a live
   source (`.learned` is LAST in `PolishContextSource`, so a contested span
@@ -580,8 +605,11 @@ there is not.
   and each adds its own below:
   (1) *One route, resolved at start.* `SessionContextResolver.resolveAgentPromptRoute()`
   picks at most one route per dictation, next to the join, for the session
-  the join resolved and nothing else. It is dropped with the join. The one
-  exception is a dictation addressed by name ("Send that to <name>" above):
+  the join resolved and nothing else. It is dropped with the join, and
+  both are dropped before an Overlay Buffer commit into a session Tab
+  picked (#1054): that pane gets the words by keyboard after its read-back,
+  and the start session's route would write them into the start session's
+  prompt. The one exception is a dictation addressed by name ("Send that to <name>" above):
   its route is resolved at commit, for the named session, by
   `ClaudeSessionJoinResolver.addressedRoute(for:)`, and never falls back
   to keys.
@@ -617,6 +645,13 @@ there is not.
     token, a `Host` other than its own address, and any call for a session
     the pane no longer displays. It forwards through the TUI's in-process
     client, so the app never needs or sees opencode's server password.
+    *Typed only into the same prompt* (#1057): a call the relay refused
+    with a status other than 409, or one that never reached it (connection
+    refused, text too long), is typed only while the terminal the dictation
+    started in is frontmost and its focused pane still resolves to this
+    relay. A 409 (the pane shows another session now) and a request with no
+    answer read back (timeout, dropped connection: it may have landed) stay
+    in History (`keepInHistory`).
     *Resolution:* it reuses the join's session when the join resolved, and
     otherwise asks only local questions
     (`ClaudeSessionJoinResolver.opencodePromptRelay(target:)`): the focused
@@ -676,7 +711,11 @@ there is not.
     *Confirmed by reading back:* `.focused`, the only outcome that starts a
     dictation, needs herdr's `pane.current` to name that pane AND the
     terminal's focused tty to be the window raised; the answer to
-    `pane.focus` alone never is.
+    `pane.focus` alone never is. *Window first* (#1033): `pane.focus` is sent
+    only after the window reads back in front, so a window that does not
+    come up leaves herdr's pane as it was, and a failure after the raise is
+    `.unverified`, never an outcome that reads as nothing moved. The
+    previous pane is not restored: that would be a second `pane.focus`.
     *The window, never by title:* herdr has no client introspection, so
     `HerdrWindowLocator` takes the join's process-table evidence and wants
     exactly one tty. For a local pane: the one live local herdr socket is the
@@ -2535,8 +2574,20 @@ there is not.
   its stop takes `commitQuickCapture` before any polish, second pass, screen
   or clipboard sample, or insertion: the History record is written first,
   the overlay closes as a cancelled one does, and the words go to
-  `QuickCaptureInboxModel`, which writes them to its 0600 file before
-  routing. The router sends a low or tied answer to the catch-all, never a
+  `QuickCaptureInboxModel`, which writes them to its 0600 file before it
+  polishes them. The capture is polished once there (#970), before the
+  follow-up check and routing: one request to the polishing endpoint with
+  the standard profile's prompt and the user's terms, and no screen,
+  clipboard or session context. Its vocabulary is every routable project's
+  name, repository name and confirmed learned terms
+  (`QuickCapturePolishVocabulary`, capped per project and in total; no
+  proposals), matched against the words as a dictation's learned terms are.
+  The router, drafter and follow-ups read the polished words; History keeps
+  the raw ones and gets the polished text on the same record, which
+  Insights leaves out of its polish waits. A failed
+  polish, or none configured, routes the raw words. Polishes run side by
+  side, but captures join or route in the order they were made: an "also"
+  whose polish answers first waits for the capture before it. The router sends a low or tied answer to the catch-all, never a
   guessed project: the guess is kept as the route's `suggestion`, and
   nothing drafts until the user accepts it (#938). Jev and the chat model both need 0.9: on the replay
   (#741, #744) every right project came at 0.95 or more, and nearly every

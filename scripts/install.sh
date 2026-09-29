@@ -46,43 +46,59 @@ resolve_release_api_url() {
   fi
 }
 
-# Newest nightly or stable tag in a releases-list response, or nothing.
-#
-# No jq (the installer runs on a bare macOS), so the JSON is reduced to the
-# three fields that matter, in document order, and walked as a stream: a
-# release object lists tag_name, then draft, then prerelease, then its
-# assets. The first published release that is either a prerelease with the
-# nightly tag shape or a non-prerelease with the plain vX.Y.Z shape wins,
-# which is the newest one because the API orders the list by creation date.
-# An X.Y.Z-rc.N prerelease (a branch build) and a draft are skipped.
-select_newest_nightly_tag() {
-  printf '%s\n' "$1" |
-    grep -oE '"(tag_name|draft|prerelease)"[[:space:]]*:[[:space:]]*("[^"]*"|true|false)' |
-    sed -e 's/^"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)"$/TAG \1/' \
-        -e 's/^"draft"[[:space:]]*:[[:space:]]*\(.*\)$/DRAFT \1/' \
-        -e 's/^"prerelease"[[:space:]]*:[[:space:]]*\(.*\)$/PRE \1/' |
-    awk '
-      $1 == "TAG" { tag = $2; draft = ""; next }
-      $1 == "DRAFT" { draft = $2; next }
-      $1 == "PRE" {
-        if (tag != "" && draft != "true" &&
-            (($2 == "true" && tag ~ /^v[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9](\.[0-9]+)?$/) ||
-             ($2 == "false" && tag ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/))) {
-          print tag
-          exit
-        }
-        tag = ""
-        next
-      }
-    ' || true
-  # `|| true`: a response with none of these fields makes grep exit 1, and
-  # under `set -o pipefail` that would abort the installer with no message at
-  # all. Printing nothing is the right answer — the caller turns it into a
-  # clear "no nightly release found" error.
+# json_value KEYPATH: the string, number or bool at KEYPATH ("0.tag_name",
+# "assets.2.browser_download_url") in the JSON on stdin; non-zero exit when
+# there is none. The installer runs on a bare macOS, which has no jq but has
+# plutil. python3 stands in where plutil is missing, so the Linux CI runs
+# the same code; scripts/lib/json-value.sh is the same function for the
+# scripts that can source it.
+json_value() {
+  if command -v plutil >/dev/null 2>&1; then
+    plutil -extract "$1" raw -o - - 2>/dev/null
+  else
+    python3 -c '
+import json, sys
+try:
+    value = json.load(sys.stdin)
+    for key in sys.argv[1].split("."):
+        value = value[int(key)] if isinstance(value, list) else value[key]
+except (ValueError, KeyError, IndexError, TypeError):
+    sys.exit(1)
+if isinstance(value, bool):
+    print("true" if value else "false")
+elif isinstance(value, (str, int, float)):
+    print(value)
+else:
+    sys.exit(1)
+' "$1"
+  fi
+}
+
+# Index and tag ("<index> <tag>") of the newest nightly or stable release in a
+# releases-list response, or nothing. The first published release that is
+# either a prerelease with the nightly tag shape or a non-prerelease with the
+# plain vX.Y.Z shape wins, which is the newest one because the API orders the
+# list by creation date. An X.Y.Z-rc.N prerelease (a branch build) and a draft
+# are skipped.
+select_newest_nightly_release() {
+  local index tag draft prerelease
+  for ((index = 0; ; index++)); do
+    tag="$(json_value "$index.tag_name" <<<"$1")" || return 0
+    draft="$(json_value "$index.draft" <<<"$1")" || draft=""
+    prerelease="$(json_value "$index.prerelease" <<<"$1")" || prerelease=""
+    [ "$draft" != "true" ] || continue
+    if { [ "$prerelease" = "true" ] &&
+      [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}(\.[0-9]+)?$ ]]; } ||
+      { [ "$prerelease" = "false" ] && [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; }; then
+      printf '%s %s\n' "$index" "$tag"
+      return 0
+    fi
+  done
 }
 
 resolve_zip_url() {
-  local api_url http_code release_json release_json_file tag zip_url zip_urls
+  local api_url http_code release_json release_json_file selected tag zip_url
+  local release="" index url
 
   api_url="$(resolve_release_api_url)"
   release_json_file="$(mktemp "${TMPDIR:-/tmp}/localvoxtral-release.XXXXXX")"
@@ -109,27 +125,26 @@ resolve_zip_url() {
   # appearing in any order. The tag comes from the metadata itself so
   # VERSION=latest resolves correctly too.
   if [ "$VERSION" = "latest" ] && [ "$CHANNEL" = "nightly" ]; then
-    tag="$(select_newest_nightly_tag "$release_json")"
-    [ -n "$tag" ] || die "No nightly or stable release found among the 30 most recent releases of ${REPO}; see https://github.com/${REPO}/releases"
+    selected="$(select_newest_nightly_release "$release_json")"
+    [ -n "$selected" ] || die "No nightly or stable release found among the 30 most recent releases of ${REPO}; see https://github.com/${REPO}/releases"
+    release="${selected%% *}."
+    tag="${selected#* }"
   else
-    tag="$(printf '%s\n' "$release_json" |
-      sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
-      sed -n '1p')"
+    tag="$(json_value tag_name <<<"$release_json")" || tag=""
     [ -n "$tag" ] || die "Could not read tag_name from GitHub release metadata for '${VERSION}'"
   fi
 
-  zip_urls="$(printf '%s\n' "$release_json" |
-    grep '"browser_download_url"[[:space:]]*:' |
-    sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\.zip\)".*/\1/p' || true)"
   # The download URL of a release asset is always
-  # https://github.com/<repo>/releases/download/<tag>/<name>, so requiring
-  # that prefix keeps the exact-name rule above attached to the RIGHT release
-  # when the metadata holds several of them (the nightly channel reads a
-  # list), and keeps a URL that merely appears in a release body out of it.
-  zip_url="$(printf '%s\n' "$zip_urls" |
-    awk -v want="localvoxtral-${tag}.zip" \
-        -v prefix="https://github.com/${REPO}/releases/download/${tag}/" \
-        -F/ 'index($0, prefix) == 1 && $NF == want { print; exit }')"
+  # https://github.com/<repo>/releases/download/<tag>/<name>; requiring that
+  # prefix as well as the name keeps a mislabelled asset out.
+  zip_url=""
+  for ((index = 0; ; index++)); do
+    url="$(json_value "${release}assets.$index.browser_download_url" <<<"$release_json")" || break
+    if [ "$url" = "https://github.com/${REPO}/releases/download/${tag}/localvoxtral-${tag}.zip" ]; then
+      zip_url="$url"
+      break
+    fi
+  done
 
   [ -n "$zip_url" ] || die "Release '${tag}' has no asset named localvoxtral-${tag}.zip. Check https://github.com/${REPO}/releases"
   printf '%s\n' "$zip_url"

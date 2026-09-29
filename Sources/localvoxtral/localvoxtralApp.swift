@@ -701,7 +701,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // The `localvoxtral` command's requests arrive on the same socket
         // (#721) and are answered from the app's own stores.
-        let agentCLI = AgentCLIService(source: AgentCLIAppDataSource(viewModel: viewModel))
+        let agentCLI = AgentCLIService(
+            source: AgentCLIAppDataSource(viewModel: viewModel, sessions: claudeSessionRegistry)
+        )
         let broker = ClaudeContextBroker(
             socketPath: socketPath,
             registry: claudeSessionRegistry,
@@ -1090,9 +1092,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 },
                 projectTerms: projectTerms,
                 quickCapture: quickCapture,
-                doctor: RemoteDoctorRoute { @MainActor [weak viewModel] hostID in
+                doctor: RemoteDoctorRoute { @MainActor [weak viewModel, claudeSessionRegistry] hostID in
                     guard let viewModel else { return [] }
-                    return await AgentCLIAppDataSource(viewModel: viewModel).hostDoctorChecks(hostID: hostID)
+                    return await AgentCLIAppDataSource(viewModel: viewModel, sessions: claudeSessionRegistry)
+                        .hostDoctorChecks(hostID: hostID)
                 }
             )
         }

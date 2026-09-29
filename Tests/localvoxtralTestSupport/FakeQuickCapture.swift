@@ -46,14 +46,16 @@ package final class FixedQuickCaptureClassifier: QuickCaptureClassifying, @unche
 }
 
 /// A router's classifier that gives `answers` in turn (the last one
-/// repeats), and records the options of each call.
+/// repeats), and records the capture and options of each call.
 package final class ScriptedQuickCaptureClassifier: QuickCaptureClassifying, @unchecked Sendable {
     private let answers: Mutex<[[String: Double]]>
     package let calls = Mutex<[[QuickCaptureOption]]>([])
+    package let captures = Mutex<[String]>([])
     package init(_ answers: [[String: Double]]) { self.answers = Mutex(answers) }
     package var kind: QuickCaptureRoute.Classifier { .chatModel }
     package func classify(capture: String, options: [QuickCaptureOption]) async throws -> [String: Double] {
         calls.withLock { $0.append(options) }
+        captures.withLock { $0.append(capture) }
         return answers.withLock { $0.count > 1 ? $0.removeFirst() : $0[0] }
     }
 }
@@ -116,6 +118,32 @@ package final class FakeQuickCaptureFirstDrafter: QuickCaptureFirstDrafting, @un
     }
 }
 
+/// The capture's polish (#970): `answer` maps the words it gets to the
+/// words it returns, else nil, as a failed request does. Records each call;
+/// when `gate` is set, every call waits on it before answering, and a call
+/// whose index is in `callGates` waits on its own gate.
+@MainActor
+package final class FakeQuickCapturePolisher: QuickCapturePolishing {
+    package let answer: (String) -> String?
+    package let gate: ManualSleeper?
+    package let callGates: [Int: ManualSleeper]
+    package private(set) var calls: [(text: String, vocabulary: [String])] = []
+
+    package init(gated: Bool = false, gatedCalls: [Int] = [], answer: @escaping (String) -> String?) {
+        self.answer = answer
+        gate = gated ? ManualSleeper() : nil
+        callGates = Dictionary(uniqueKeysWithValues: gatedCalls.map { ($0, ManualSleeper()) })
+    }
+
+    package func polish(_ text: String, vocabulary: [String]) async -> QuickCapturePolish? {
+        let index = calls.count
+        calls.append((text, vocabulary))
+        if let gate { await gate.sleep(0) }
+        if let callGate = callGates[index] { await callGate.sleep(0) }
+        return answer(text).map { QuickCapturePolish(text: $0, durationSeconds: 1.5) }
+    }
+}
+
 package enum QuickCaptureFixture {
     package static let projects = [
         QuickCaptureProject(key: "/w/reach", name: "reach", summary: nil, terms: [], userLine: nil),
@@ -133,6 +161,8 @@ package enum QuickCaptureFixture {
         projects: [QuickCaptureProject] = projects,
         remote: QuickCaptureDrafter.Remote? = nil,
         classifier: (any QuickCaptureClassifying)? = nil,
+        polisher: (any QuickCapturePolishing)? = nil,
+        polishVocabulary: @escaping @MainActor ([QuickCaptureProject]) -> [String] = { _ in [] },
         now: @escaping @MainActor () -> Date = { Date(timeIntervalSince1970: 1_000_000) }
     ) -> QuickCaptureInboxModel {
         let classifier = classifier ?? FixedQuickCaptureClassifier(answer)
@@ -151,6 +181,8 @@ package enum QuickCaptureFixture {
                 )
             },
             github: github,
+            polisher: { polisher },
+            polishVocabulary: polishVocabulary,
             now: now
         )
     }

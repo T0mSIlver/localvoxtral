@@ -10,7 +10,7 @@
 # dry-run mode against a stubbed curl serving hostile fixtures and asserts
 # the app zip always wins — or that resolution fails loudly.
 #
-# Pure bash, no network, runs anywhere: ./scripts/ci/test-install-resolve.sh
+# No network; needs plutil (macOS) or python3: ./scripts/ci/test-install-resolve.sh
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -64,11 +64,14 @@ expected="https://github.com/T0mSIlver/localvoxtral/releases/download/v0.7.4/loc
 # zip listed before the app zip, which triggered #131), plus the polishd dSYM
 # zip release.yml attaches to newer releases, plus a hypothetical future
 # non-dSYM zip listed first — the case a dSYM-only blocklist would get wrong.
+# The nulls are real API fields (an asset with no label, a release with no
+# notes); the JSON reader must get past them.
 cat > "$TMP_DIR/release.json" <<'JSON'
 {
   "tag_name": "v0.7.4",
+  "body": null,
   "assets": [
-    {"browser_download_url": "https://github.com/T0mSIlver/localvoxtral/releases/download/v0.7.4/localvoxtral-v0.7.4-update.zip"},
+    {"label": null, "browser_download_url": "https://github.com/T0mSIlver/localvoxtral/releases/download/v0.7.4/localvoxtral-v0.7.4-update.zip"},
     {"browser_download_url": "https://github.com/T0mSIlver/localvoxtral/releases/download/v0.7.4/localvoxtral-v0.7.4.dmg"},
     {"browser_download_url": "https://github.com/T0mSIlver/localvoxtral/releases/download/v0.7.4/localvoxtral-v0.7.4.dmg.sha256"},
     {"browser_download_url": "https://github.com/T0mSIlver/localvoxtral/releases/download/v0.7.4/localvoxtral-v0.7.4.dSYM.zip"},
@@ -150,9 +153,9 @@ cat > "$TMP_DIR/releases-list.json" <<'JSON'
     "draft": false,
     "prerelease": true,
     "assets": [
-      {"browser_download_url": "https://github.com/T0mSIlver/localvoxtral/releases/download/v0.9.0-rc.1/localvoxtral-v0.9.0-rc.1.zip"}
+      {"browser_download_url": "https://github.com/T0mSIlver/localvoxtral/releases/download/v0.9.0-rc.1/localvoxtral-v0.9.0-rc.1.zip", "label": null}
     ],
-    "body": "release candidate"
+    "body": null
   },
   {
     "tag_name": "v0.8.5-nightly.20260917.2",

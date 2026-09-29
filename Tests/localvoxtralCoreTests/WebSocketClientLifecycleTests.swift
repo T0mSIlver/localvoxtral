@@ -222,6 +222,124 @@ final class WebSocketClientLifecycleTests: XCTestCase {
         )
     }
 
+    /// Every frame handed to a socket, in order, by the socket it went to.
+    private final class Wire: @unchecked Sendable {
+        private var frames: [(task: URLSessionWebSocketTask, text: String)] = []
+        private let lock = NSLock()
+
+        func append(_ task: URLSessionWebSocketTask, _ text: String) {
+            lock.lock()
+            frames.append((task, text))
+            lock.unlock()
+        }
+
+        /// Each frame's JSON `type`, or its text when it is not JSON.
+        func kinds(on task: URLSessionWebSocketTask) -> [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return frames.filter { $0.task === task }.map { frame in
+                let json = (try? JSONSerialization.jsonObject(with: Data(frame.text.utf8))) as? [String: Any]
+                return json?["type"] as? String ?? frame.text
+            }
+        }
+    }
+
+    // The handshake opens the send gate and replays what queued before it
+    // (#1058). Audio the send loop hands over during the replay goes out
+    // behind it, never ahead of session.update or older audio; and a socket
+    // that replaced this one mid-replay gets none of it.
+
+    func testRealtimeAudioSentDuringTheHandshakeReplayGoesOutBehindIt() {
+        let client = RealtimeAPIWebSocketClient()
+        let (session, task) = makeWebSocketTask()
+        defer { task.cancel(); session.invalidateAndCancel() }
+        let wire = Wire()
+        client.debugObserveTransmits { wire.append($0, $1) }
+        client.debugPrimeConnectedStateForTesting(task: task, modelName: "model")
+        client.debugSetBeforeHandshakeDrain { client.sendAudioChunk(Data([1, 2, 3, 4])) }
+
+        client.debugHandleFrameForTesting(json: ["type": "session.created"])
+
+        XCTAssertEqual(
+            wire.kinds(on: task), ["session.update", "pending-message", "input_audio_buffer.append"])
+    }
+
+    func testRealtimeSocketSwappedDuringTheHandshakeReplayGetsNoneOfIt() {
+        let client = RealtimeAPIWebSocketClient()
+        let (session1, task1) = makeWebSocketTask()
+        let (session2, task2) = makeWebSocketTask()
+        defer {
+            task1.cancel(); session1.invalidateAndCancel()
+            task2.cancel(); session2.invalidateAndCancel()
+        }
+        let wire = Wire()
+        client.debugObserveTransmits { wire.append($0, $1) }
+        client.debugPrimeConnectedStateForTesting(task: task1, modelName: "model")
+        client.debugSetBeforeHandshakeDrain { client.debugPrimeConnectedStateForTesting(task: task2) }
+
+        client.debugHandleFrameForTesting(json: ["type": "session.created"])
+
+        XCTAssertEqual(wire.kinds(on: task2), [])
+        XCTAssertEqual(
+            client.debugStateSnapshot().pendingMessageCount, 1,
+            "the new socket's queue holds its own frame and nothing of the old one's"
+        )
+    }
+
+    func testRealtimeSessionCreatedAfterTheTimerOpenedTheGateStartsNoSecondReplay() {
+        let client = RealtimeAPIWebSocketClient()
+        let (session, task) = makeWebSocketTask()
+        defer { task.cancel(); session.invalidateAndCancel() }
+        let wire = Wire()
+        client.debugObserveTransmits { wire.append($0, $1) }
+        client.debugPrimeConnectedStateForTesting(task: task, modelName: "model")
+        client.debugBypassSessionCreatedGateForTesting()
+        XCTAssertEqual(wire.kinds(on: task), ["session.update", "pending-message"])
+
+        let secondReplay = Wire()
+        client.debugSetBeforeHandshakeDrain { secondReplay.append(task, "replay") }
+        client.debugHandleFrameForTesting(json: ["type": "session.created"])
+
+        XCTAssertEqual(secondReplay.kinds(on: task), [], "the late handshake must not race the timer's replay")
+        XCTAssertTrue(client.debugStateSnapshot().hasReceivedSessionCreated)
+    }
+
+    func testMistralAudioSentDuringTheHandshakeReplayGoesOutBehindIt() {
+        let client = MistralRealtimeWebSocketClient()
+        let (session, task) = makeWebSocketTask()
+        defer { task.cancel(); session.invalidateAndCancel() }
+        let wire = Wire()
+        client.debugObserveTransmits { wire.append($0, $1) }
+        client.debugPrimeConnectedStateForTesting(task: task)
+        client.debugSetBeforeHandshakeDrain { client.sendAudioChunk(Data([1, 2, 3, 4])) }
+
+        client.debugHandleFrameForTesting(json: ["type": "session.created"])
+
+        XCTAssertEqual(wire.kinds(on: task), ["session.update", "pending-message", "input_audio.append"])
+    }
+
+    func testMistralSocketSwappedDuringTheHandshakeReplayGetsNoneOfIt() {
+        let client = MistralRealtimeWebSocketClient()
+        let (session1, task1) = makeWebSocketTask()
+        let (session2, task2) = makeWebSocketTask()
+        defer {
+            task1.cancel(); session1.invalidateAndCancel()
+            task2.cancel(); session2.invalidateAndCancel()
+        }
+        let wire = Wire()
+        client.debugObserveTransmits { wire.append($0, $1) }
+        client.debugPrimeConnectedStateForTesting(task: task1)
+        client.debugSetBeforeHandshakeDrain { client.debugPrimeConnectedStateForTesting(task: task2) }
+
+        client.debugHandleFrameForTesting(json: ["type": "session.created"])
+
+        XCTAssertEqual(wire.kinds(on: task2), [])
+        XCTAssertEqual(
+            client.debugStateSnapshot().pendingMessageCount, 1,
+            "the new socket's queue holds its own frame and nothing of the old one's"
+        )
+    }
+
     func testAStaleTranscriptionDoneDoesNotClearTheNewSocketsCommitGate() {
         // The stop path waits for `transcriptionFinalized` before it
         // disconnects. A `done` read off the retiring socket, applied here,

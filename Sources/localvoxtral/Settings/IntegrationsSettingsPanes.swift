@@ -113,6 +113,14 @@ struct IntegrationsContextSettingsPane: View {
                         .accessibilityIdentifier("settings.voiceMemos.toggle")
                 }
                 .onChange(of: settings.voiceMemosEnabled) { viewModel.voiceMemos?.apply() }
+                if let problem = viewModel.voiceMemoLedgerProblem {
+                    StoredFileProblemRow(
+                        problem: problem, fileName: "voice-memos.json",
+                        consequence: "Memos still in the folder are transcribed again."
+                    ) {
+                        try viewModel.voiceMemos?.startOverLedger()
+                    }
+                }
             }
             .onAppear {
                 // Read from the Keychain only for someone who turned routing

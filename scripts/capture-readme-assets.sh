@@ -47,8 +47,6 @@ fi
 APP_PATH="${1:-dist/localvoxtral.app}"
 APP_PROCESS="localvoxtral"
 BUNDLE_ID="com.localvoxtral.app"
-PERSISTENT_DEFAULTS_BACKUP="${HOME}/.localvoxtral-capture-assets.pre.plist"
-PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN="${PERSISTENT_DEFAULTS_BACKUP}.had-domain"
 ASSETS_DIR="assets"
 # Display names, one per captured pane, in sidebar order. The Integrations
 # section (Claude Code, opencode, Mistral Vibe, herdr, Remote hosts) and the Terminals
@@ -80,39 +78,11 @@ SETTINGS_WINDOW_TITLE="localvoxtral"
 # localvoxtral uses UserDefaults.standard under bundle id com.localvoxtral.app.
 # This script snapshots that domain, writes only settings.onboarding_completed
 # so the first-launch wizard does not cover Settings, and restores on exit.
-restore_defaults() {
-  if [[ ! -f "$PERSISTENT_DEFAULTS_BACKUP" ]]; then
-    return
-  fi
-
-  defaults delete "$BUNDLE_ID" >/dev/null 2>&1 || true
-  if [[ -f "$PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN" ]]; then
-    defaults import "$BUNDLE_ID" "$PERSISTENT_DEFAULTS_BACKUP" >/dev/null 2>&1 || return 1
-  fi
-  rm -f "$PERSISTENT_DEFAULTS_BACKUP" "$PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN"
-}
-
-write_empty_defaults_backup() {
-  cat >"$PERSISTENT_DEFAULTS_BACKUP" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict/>
-</plist>
-PLIST
-}
-
-snapshot_defaults() {
-  rm -f "$PERSISTENT_DEFAULTS_BACKUP" "$PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN"
-  if defaults export "$BUNDLE_ID" "$PERSISTENT_DEFAULTS_BACKUP" >/dev/null 2>&1; then
-    : >"$PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN" || return 1
-  elif defaults read "$BUNDLE_ID" >/dev/null 2>&1; then
-    return 1
-  else
-    write_empty_defaults_backup || return 1
-  fi
-  [[ -f "$PERSISTENT_DEFAULTS_BACKUP" ]] || return 1
-}
+# The lanes' snapshot and restore, on a backup path of this script's own.
+# shellcheck source=scripts/lib/owner-app-session.sh
+source "${SCRIPT_DIR}/lib/owner-app-session.sh"
+PERSISTENT_DEFAULTS_BACKUP="${HOME}/.localvoxtral-capture-assets.defaults-backup"
+LEGACY_DEFAULTS_BACKUP="${HOME}/.localvoxtral-capture-assets.pre.plist"
 
 # --- permission preflight ----------------------------------------------------
 # System Events needs Accessibility; screencapture -l needs Screen Recording.
@@ -243,6 +213,8 @@ if pgrep -xq "$APP_PROCESS"; then
   echo "A previous $APP_PROCESS instance refuses to quit; captures would show stale state. Aborting." >&2
   exit 1
 fi
+remove_defaults_backup_scratch
+restore_defaults || { echo "Could not restore the defaults backup an interrupted run left at $PERSISTENT_DEFAULTS_BACKUP; refusing to mutate owner defaults." >&2; exit 1; }
 snapshot_defaults || { echo "Could not snapshot $BUNDLE_ID defaults; refusing to mutate owner defaults." >&2; exit 1; }
 # Capture the app as a NEW USER sees it, not as this Mac happens to be set up:
 # clearing the domain drops personal and demo-staged values (record-demo leaves

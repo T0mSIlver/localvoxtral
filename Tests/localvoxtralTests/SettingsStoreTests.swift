@@ -365,6 +365,20 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(defaults.string(forKey: "settings.polishing_backend_mode"), "managed_local")
     }
 
+    /// A mode this build doesn't know may be one a newer build added (#1040):
+    /// this build runs the migrated mode but leaves the stored one alone.
+    func testBackendModes_unknownStoredModeIsKept() {
+        defaults.set("some_future_mode", forKey: "settings.dictation_backend_mode")
+        defaults.set("external_url", forKey: "settings.polishing_backend_mode")
+
+        let store = makeStore()
+
+        XCTAssertEqual(store.dictationBackendMode, .managedLocal)
+        XCTAssertEqual(store.polishingBackendMode, .externalURL)
+        XCTAssertEqual(defaults.string(forKey: "settings.dictation_backend_mode"), "some_future_mode")
+        XCTAssertEqual(defaults.string(forKey: "settings.polishing_backend_mode"), "external_url")
+    }
+
     func testBackendModes_roundTripIndependentlyAcrossReload() {
         let store = makeStore()
         store.dictationBackendMode = .externalURL
@@ -603,6 +617,30 @@ final class SettingsStoreTests: XCTestCase {
 
         let reloadedStore = makeStore()
         XCTAssertFalse(reloadedStore.agentPolishProfileEnabled)
+    }
+
+    // MARK: - earlyPolishEnabled (#709)
+
+    func testEarlyPolishEnabled_defaultsOnForTheBundledHelperOnly() {
+        let store = makeStore()
+        store.polishingBackendMode = .managedLocal
+        XCTAssertTrue(store.earlyPolishEnabled)
+        store.polishingBackendMode = .mistralAPI
+        XCTAssertFalse(store.earlyPolishEnabled)
+        store.polishingBackendMode = .externalURL
+        XCTAssertFalse(store.earlyPolishEnabled)
+    }
+
+    func testEarlyPolishEnabled_userChoicePersistsAndOutranksTheBackendDefault() {
+        let store = makeStore()
+        store.polishingBackendMode = .managedLocal
+        store.earlyPolishEnabled = false
+
+        let reloadedStore = makeStore()
+        XCTAssertFalse(reloadedStore.earlyPolishEnabled)
+        reloadedStore.polishingBackendMode = .mistralAPI
+        reloadedStore.earlyPolishEnabled = true
+        XCTAssertTrue(makeStore().earlyPolishEnabled)
     }
 
     // MARK: - clipboardPayloadMacroEnabled

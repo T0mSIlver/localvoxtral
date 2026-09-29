@@ -207,13 +207,16 @@ public final class ClaudeSessionRegistry: Sendable {
     ///     labels about another machine: the reducer stores them only for a
     ///     `.remote` origin and NEVER in `process`, which is what the
     ///     local-only arms below read.
+    ///   - remoteShimVersion: the shim version the remote listener read off
+    ///     the request; ignored for a local origin.
     /// - Returns: the resulting snapshot, or nil if the record was dropped.
     @discardableResult
     public func ingest(
         _ record: ClaudeHookRecord,
         origin: ClaudeTransportOrigin,
         snippets: [ClaudeContentSnippet] = [],
-        environment: ClaudeRemoteSessionEnvironment? = nil
+        environment: ClaudeRemoteSessionEnvironment? = nil,
+        remoteShimVersion: ClaudeRemotePluginVersionReport? = nil
     ) -> ClaudeSessionSnapshot? {
         let timestamp = now()
         // A status probe is read-only by contract and is answered by the
@@ -320,6 +323,11 @@ public final class ClaudeSessionRegistry: Sendable {
                 environment: environment,
                 now: timestamp
             )
+            // The last report wins: `/reload-plugins` moves a session to the
+            // new shim, and its next hook says so.
+            if case .remote = snapshot.origin, let remoteShimVersion {
+                snapshot.remoteShimVersion = remoteShimVersion
+            }
 
             state.acceptedCount += 1
             sequence = state.acceptedCount

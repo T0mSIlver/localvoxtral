@@ -99,6 +99,14 @@ final class SessionShownNamesTests: XCTestCase {
         XCTAssertEqual(resolvedID("payments", [titled]), "titled")
     }
 
+    /// A name ending in a negative number is ordinary text, not a suffix to
+    /// say as a word (#1034).
+    func testANameEndingInANegativeNumberHasNoNumberWord() {
+        XCTAssertEqual(SessionShownNames.spokenForms("rollback · -1"), ["rollback · -1"])
+        let titled = candidate(localSession("titled", cwd: "/r/other", tty: "/dev/ttys001", seen: 0), title: "Rollback · -1")
+        XCTAssertEqual(resolvedID("rollback 1", [titled]), "titled")
+    }
+
     /// The name the user reads is the one that answers, suffix included.
     func testATitledPaneLeavesTheShownSuffixesToTheOthers() {
         let titled = candidate(localSession("titled", cwd: "/r/payments", tty: "/dev/ttys001", seen: 0), title: "Fix refunds")

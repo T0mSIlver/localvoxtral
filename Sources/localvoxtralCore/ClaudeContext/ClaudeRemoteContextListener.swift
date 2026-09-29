@@ -598,7 +598,7 @@ public final class ClaudeRemoteContextListener: Sendable {
         // serializing body parsing behind it would stall every other host's
         // auth behind one slow payload. Only the COMMIT — the part the
         // revocation race is about — re-authenticates under the lock.
-        guard let prepared = prepareIngest(body: body, request: request, host: host) else {
+        guard var prepared = prepareIngest(body: body, request: request, host: host) else {
             // Unparseable payloads never touch the session registry, so
             // revocation has nothing to protect. The body stays identical to
             // an ingested record; only this fixed status header differs.
@@ -613,6 +613,11 @@ public final class ClaudeRemoteContextListener: Sendable {
                 sessionStatus: .unknown
             )
             return
+        }
+        prepared.shimVersion = switch prepared.record.agent {
+        case .claude: pluginVersionReport
+        case .vibe: vibeHooksVersion.map { .version($0) }
+        case .opencode, .codex: nil
         }
         guard let commitIngestStatus = hosts.withAuthenticatedHost(
             token: token,
@@ -913,9 +918,11 @@ public final class ClaudeRemoteContextListener: Sendable {
         case .timedOut:
             Log.backends.error("Remote doctor: the app did not answer in time")
             respond(fd: fd, status: 503)
-        case .body(let body, let contentType):
-            Log.backends.info("Remote doctor: answered a host, \(body.count, privacy: .public) bytes")
-            respond(fd: fd, status: 200, body: body, contentType: contentType)
+        case .body(let body, let contentType, let failed):
+            Log.backends.info(
+                "Remote doctor: answered a host, \(body.count, privacy: .public) bytes, \(failed, privacy: .public) failed"
+            )
+            respond(fd: fd, status: 200, body: body, doctorFailed: failed, contentType: contentType)
         }
     }
 
@@ -943,6 +950,8 @@ public final class ClaudeRemoteContextListener: Sendable {
         let snippets: [ClaudeContentSnippet]
         let environment: ClaudeRemoteSessionEnvironment?
         let hostID: String
+        /// This request's shim version, per the agent the record names.
+        var shimVersion: ClaudeRemotePluginVersionReport?
     }
 
     /// The parse/scope half of ingest, safe outside any lock.
@@ -1037,7 +1046,8 @@ public final class ClaudeRemoteContextListener: Sendable {
             prepared.record,
             origin: origin,
             snippets: prepared.snippets,
-            environment: prepared.environment
+            environment: prepared.environment,
+            remoteShimVersion: prepared.shimVersion
         )
         // Shape only. A remote record carries the user's prompt and excerpts of
         // their code; a log is the wrong place for either.
@@ -1066,6 +1076,7 @@ public final class ClaudeRemoteContextListener: Sendable {
         readmeWanted: Bool = false,
         draftID: String? = nil,
         termsWanted: Bool = false,
+        doctorFailed: Int? = nil,
         contentType: String = "application/json"
     ) {
         let data = ClaudeRemoteHTTPCodec.response(
@@ -1075,6 +1086,7 @@ public final class ClaudeRemoteContextListener: Sendable {
             termsWanted: termsWanted,
             readmeWanted: readmeWanted,
             draftID: draftID,
+            doctorFailed: doctorFailed,
             contentType: contentType
         )
         _ = data.withUnsafeBytes { raw -> Int in

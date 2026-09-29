@@ -427,6 +427,11 @@ final class DictationSessionController {
     var onQuickCapture: (@MainActor (_ text: String, _ historyRecordID: UUID?) -> Void)?
     @ObservationIgnored
     var polishAndCommitTask: Task<Void, Never>?
+    /// This Overlay Buffer dictation's pieces polished while the user speaks
+    /// (#709). Handed to the stop's polish task, and cancelled on every
+    /// other session exit.
+    @ObservationIgnored
+    var earlyPolishRun: EarlyPolishRun?
     /// Saves the dictation `polishAndCommitTask` is polishing, as not
     /// inserted, if the task never gets to. A new dictation started over the
     /// polish cancels it, and that dictation used to reach neither the
@@ -459,6 +464,10 @@ final class DictationSessionController {
     /// focus, kept from the stop to the commit.
     @ObservationIgnored
     var sessionCommitGuard: DestinationCommitGuard?
+    /// The picked pane that read back before the polish, read back again
+    /// right before the insertion (#1056).
+    @ObservationIgnored
+    var sessionPickedPane: (sessionID: String, bundleID: String)?
     @ObservationIgnored
     var sessionStartedAt: Date?
     /// This start's press → socket → microphone → first buffer line (#527).
@@ -640,6 +649,9 @@ final class DictationSessionController {
             statusText = StatusStrings.ready
         } else if isFinalizingStop {
             activeRealtimeClient.disconnect()
+            // A commit already polishing is cancelled and saved as not
+            // inserted, as a new dictation does to it (#1059).
+            guard !cancelPolishingForNewSessionIfNeeded() else { return }
             finishStoppedSession(promotePendingSegment: false)
         }
     }
@@ -859,6 +871,7 @@ final class DictationSessionController {
 
         guard finalizeRemainingAudio else {
             activeRealtimeClient.disconnect()
+            ownStopWithoutFinalization()
             finishStoppedSession(promotePendingSegment: true)
             return
         }
@@ -871,6 +884,16 @@ final class DictationSessionController {
         }
         scheduleStopFinalization()
         startStopFinalizationWatchdog()
+    }
+
+    /// A stop that skips finalization owns its commit until it completes,
+    /// as a finalizing stop does: a start meanwhile (a new microphone,
+    /// #1055) must go through `cancelPolishingForNewSessionIfNeeded`, which
+    /// saves the text. The socket is gone, so nothing it still emits may
+    /// reach the transcript the commit is using.
+    func ownStopWithoutFinalization() {
+        sessionConnectionGeneration = .none
+        isFinalizingStop = true
     }
 
     func clearTranscript() {

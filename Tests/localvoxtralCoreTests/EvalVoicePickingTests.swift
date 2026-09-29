@@ -36,6 +36,27 @@ final class EvalVoicePickingTests: XCTestCase {
         )
     }
 
+    /// The eval on the Actions runner listed 187 voices, yet picked none of
+    /// Samantha, Alex or Daniel, while the English names it did parse were
+    /// all short (run 36508524473, #960): a long name need not leave two
+    /// spaces before its locale, and the gap may be a tab or a no-break space.
+    func testParsesLongNamesWithANarrowGapBeforeTheLocale() {
+        let listing = [
+            "Albert              en_US    # Hello! My name is Albert.",
+            "Samantha (English (US)) en_US    # Hello! My name is Samantha.",
+            "Daniel (English (UK))\ten_GB    # Hello! My name is Daniel.",
+            "Thomas (French (France))\u{00A0}fr_FR    # Bonjour! Je m'appelle Thomas.",
+        ].joined(separator: "\n")
+        XCTAssertEqual(pick(listing, "en"), "Samantha (English (US))")
+        XCTAssertEqual(pick(listing, "fr"), "Thomas (French (France))")
+        XCTAssertEqual(
+            EvalSpeechStage.pickVoice(
+                fromSayVoicesOutput: listing, languagePrefix: "en", preferred: ["Daniel"]
+            ),
+            "Daniel (English (UK))"
+        )
+    }
+
     func testPicksPreferredVoicesFromMacOS15Listing() {
         XCTAssertEqual(pick(macOS15Voices, "en"), "Samantha")
         XCTAssertEqual(pick(macOS15Voices, "fr"), "Thomas")
