@@ -136,16 +136,34 @@ final class HerdrSessionPaneFocuserTests: XCTestCase {
         XCTAssertEqual(outcome, .unverified(bundleID: ghostty))
     }
 
-    func testARefusedFocusRaisesNoWindow() async throws {
+    /// The window came forward but herdr refused: the window is in front
+    /// showing another pane, so callers must treat it as moved and not
+    /// confirmed.
+    func testARefusedFocusAfterTheRaiseIsUnverified() async throws {
         let herdr = try herdr(focusAnswer: { _ in .error("pane_not_found") })
         defer { herdr.stop() }
         let raises = Raises()
 
         let outcome = await focuser(herdr: herdr, raises: raises).focusPane(of: localSession(socket: herdr.socketPath))
 
-        XCTAssertEqual(outcome, .paneNotFound)
-        XCTAssertEqual(raises.ttys.withLock { $0 }, [])
+        XCTAssertEqual(outcome, .unverified(bundleID: ghostty))
+        XCTAssertEqual(raises.ttys.withLock { $0 }, ["/dev/ttys007"])
         XCTAssertEqual(raises.releases.withLock { $0 }, 1, "the socket lease is released")
+    }
+
+    /// A window the terminal cannot raise (#1033): herdr must not have moved,
+    /// or the stop types into the pane it switched to while the caller
+    /// believes nothing changed.
+    func testAWindowThatDoesNotComeUpLeavesHerdrsPaneAlone() async throws {
+        for failed: SessionPaneFocusOutcome in [.paneNotFound, .unsupported(.herdr)] {
+            let herdr = try herdr(focused: "w1:p1")
+            defer { herdr.stop() }
+
+            let outcome = await focuser(herdr: herdr, raised: failed).focusPane(of: localSession(socket: herdr.socketPath))
+
+            XCTAssertEqual(outcome, failed)
+            XCTAssertEqual(herdr.requests.map(\.method), [], "herdr gets no pane.focus")
+        }
     }
 
     /// No single window shows that herdr: herdr is not asked at all, and the

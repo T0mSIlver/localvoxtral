@@ -678,7 +678,11 @@ there is not.
     *Confirmed by reading back:* `.focused`, the only outcome that starts a
     dictation, needs herdr's `pane.current` to name that pane AND the
     terminal's focused tty to be the window raised; the answer to
-    `pane.focus` alone never is.
+    `pane.focus` alone never is. *Window first* (#1033): `pane.focus` is sent
+    only after the window reads back in front, so a window that does not
+    come up leaves herdr's pane as it was, and a failure after the raise is
+    `.unverified`, never an outcome that reads as nothing moved. The
+    previous pane is not restored: that would be a second `pane.focus`.
     *The window, never by title:* herdr has no client introspection, so
     `HerdrWindowLocator` takes the join's process-table evidence and wants
     exactly one tty. For a local pane: the one live local herdr socket is the

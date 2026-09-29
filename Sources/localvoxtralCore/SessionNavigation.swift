@@ -492,7 +492,7 @@ package enum SessionShownNames {
         guard let name else { return [] }
         guard let range = name.range(of: separator, options: .backwards),
               let number = Int(name[range.upperBound...]),
-              number < numberWords.count
+              numberWords.indices.contains(number)
         else { return [name] }
         return [name, name[..<range.lowerBound] + " " + numberWords[number]]
     }
