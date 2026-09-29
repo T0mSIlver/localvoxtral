@@ -127,12 +127,16 @@ announce() {
 stop_target() {
   # Each target writes its pid at launch (`open` does not hand one back). It
   # is killed only while that pid still runs the target's executable, so a
-  # pid reused since is left alone.
-  local out pid executable="$WORK_DIR/e2e-target.app/Contents/MacOS/e2e-target"
+  # pid reused since is left alone. WORK_DIR is under $TMPDIR, a symlink on
+  # macOS (/var -> /private/var), and ps may name either form.
+  local out pid comm resolved
+  local executable="$WORK_DIR/e2e-target.app/Contents/MacOS/e2e-target"
+  resolved="$(cd "$WORK_DIR" 2>/dev/null && pwd -P)/e2e-target.app/Contents/MacOS/e2e-target"
   for out in ${TARGET_OUTPUT_DIRS[@]+"${TARGET_OUTPUT_DIRS[@]}"}; do
     pid="$(cat "$out/pid" 2>/dev/null)"
     [[ "$pid" =~ ^[0-9]+$ ]] || continue
-    [[ "$(ps -p "$pid" -o comm= 2>/dev/null)" == "$executable" ]] || continue
+    comm="$(ps -p "$pid" -o comm= 2>/dev/null)"
+    [[ "$comm" == "$executable" || "$comm" == "$resolved" ]] || continue
     kill "$pid" >/dev/null 2>&1 || true
   done
   TARGET_OUTPUT_DIRS=()
