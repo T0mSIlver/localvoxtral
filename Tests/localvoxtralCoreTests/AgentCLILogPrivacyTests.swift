@@ -112,6 +112,26 @@ final class AgentCLILogPrivacyTests: XCTestCase {
         XCTAssertTrue(other.publicLogDescription.contains("Refused"), other.publicLogDescription)
     }
 
+    /// An enrollment step's command and output can hold ssh and file-system
+    /// text, so the six enrollment failure lines log the case public and not them.
+    func testAnEnrollmentFailureLogsWhatFailedPublicAndTheCommandAndOutputNot() {
+        let failed = ClaudeEnrollmentActionFailure(ClaudeRemoteEnrollmentService.ServiceError.commandFailed(
+            step: 3, command: "ssh devbox cat /home/tom/secret", exitCode: 255, message: "Permission denied (publickey)"
+        ))
+        XCTAssertEqual(failed.publicLogDescription, "step 3 exited 255 with 29 characters of output")
+        XCTAssertTrue(failed.describedError.contains("/home/tom/secret"))
+
+        let timedOut = ClaudeEnrollmentActionFailure(ClaudeRemoteEnrollmentService.ServiceError.commandTimedOut(
+            step: 2, command: "ssh devbox", seconds: 30, message: "devbox: no route"
+        ))
+        XCTAssertEqual(timedOut.publicLogDescription, "step 2 timed out after 30 s")
+
+        struct Refused: Error { var detail = "/home/tom/secret" }
+        let other = ClaudeEnrollmentActionFailure(Refused())
+        XCTAssertFalse(other.publicLogDescription.contains("secret"), other.publicLogDescription)
+        XCTAssertTrue(other.publicLogDescription.contains("Refused"), other.publicLogDescription)
+    }
+
     /// A Mistral realtime error message can quote what the server was sent,
     /// so the client logs its code and type public and the message not.
     func testAMistralRealtimeErrorLogsItsCodePublicAndItsMessageNot() {
