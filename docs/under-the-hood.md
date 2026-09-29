@@ -85,6 +85,17 @@ less accurate of the two models. NVIDIA publishes it under OpenMDW 1.1.
 Changing the model picker restarts the helper and downloads the new
 checkpoint.
 
+Nemotron also favors your own terms while it decodes. At the start of each
+dictation, the app sends the helper your custom terms and the learned terms
+polish has confirmed across several dictations, at most 100. When the model
+hesitates between spellings, a listed spelling wins. On a 260-sentence test
+set read by the system voice, it spelled 61.0% of listed terms right instead
+of 54.3%, with no rise in errors on the other words. The list goes only to
+the bundled helper, never to an external server or Mistral, and the helper's
+log records how many tokens it changed, never the terms. Voxtral receives the
+list too but cannot use it yet. The change lives on a fork of mlx-audio-swift
+until it merges upstream.
+
 ### Polishing engine
 
 Polishing runs in localvoxtral-polishd, a bundled Swift helper built on

@@ -235,6 +235,24 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         )
     }
 
+    /// The user's terms reach the bundled speech helper only (#521): an
+    /// external server gets the frame it always did.
+    func testOnlyTheManagedHelperIsSentTheSpeakerVocabulary() async {
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+        viewModel.settings.polishSpeakerTerms = ["herdr", "mlx-lm"]
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.settings.dictationBackendMode = .managedLocal
+        let managed = await viewModel.session.prepareDictationSession()
+        XCTAssertEqual(managed?.vocabulary, ["herdr", "mlx-lm"])
+
+        viewModel.settings.dictationBackendMode = .externalURL
+        viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:9/v1/realtime"
+        let external = await viewModel.session.prepareDictationSession()
+        XCTAssertNotNil(external)
+        XCTAssertEqual(external?.vocabulary, [])
+    }
+
     /// A dictation start suspends between reading Settings and opening the
     /// socket (screen-context capture: AppleScript, ssh). If the user flips
     /// the dictation mode in that window, the session must still dial the
@@ -343,6 +361,49 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
             viewModel.session.mistralRealtimeClient.debugLastConnectConfigurationForTesting(),
             "the Mistral transport was never dialled by a session started in External URL mode"
         )
+    }
+
+    /// The user's terms follow the same snapshot (#521): a start in External
+    /// URL mode sends no list, even when Settings switches to Managed local
+    /// while the start waits on the screen-context capture.
+    func testModeFlipToManagedDuringTheStartCaptureSendsTheExternalServerNoVocabulary() async {
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+        viewModel.settings.dictationBackendMode = .externalURL
+        viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:9/v1/realtime"
+        viewModel.settings.polishSpeakerTerms = ["herdr", "mlx-lm"]
+        viewModel.session.realtimeAPIClient.debugSkipSocketCreationForTesting()
+        viewModel.dependencies.clock = ManualSessionClock().clock
+        retainForTestProcessLifetime(viewModel)
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.settings.llmPolishingEndpointURL = "http://127.0.0.1:9/v1/chat/completions"
+        viewModel.settings.terminalScreenContextEnabled = true
+        viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        TerminalScreenContextSource.debugFrontmostTargetOverride = {
+            TerminalScreenTarget(pid: 4242, bundleID: TerminalScreenAllowlist.ghosttyBundleID)
+        }
+        defer { TerminalScreenContextSource.debugFrontmostTargetOverride = nil }
+        let flips = FlipCounter()
+        viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
+            registry: ClaudeSessionRegistry(
+                now: { Date(timeIntervalSince1970: 1_000) },
+                isProcessAlive: { _ in true }
+            ),
+            focusedTerminalTTY: { [weak viewModel] _ in
+                viewModel?.settings.dictationBackendMode = .managedLocal
+                flips.count += 1
+                return nil
+            }
+        )
+
+        await viewModel.session.beginDictationSession()
+
+        XCTAssertEqual(flips.count, 1, "positive control: the mode flipped inside the capture")
+        let dialled = viewModel.session.realtimeAPIClient.debugLastConnectConfigurationForTesting()
+        XCTAssertEqual(
+            dialled?.endpoint.absoluteString, "ws://127.0.0.1:9/v1/realtime",
+            "the session dials the endpoint it was started for"
+        )
+        XCTAssertEqual(dialled?.vocabulary, [], "the external server must never receive the user's terms")
     }
 
     func testStartupPermissionPromptsAreSkippedUntilOnboardingCompletes() {
