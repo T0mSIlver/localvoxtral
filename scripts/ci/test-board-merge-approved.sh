@@ -124,6 +124,9 @@ pr 4 "$A" "sed -i.bak '1s/.*/uno/' Sources/c.txt && rm Sources/c.txt.bak"
 pr 5 "$B" "sed -i.bak 's#Kentzo/ShortcutRecorder#someone/ShortcutRecorder#' Package.swift && rm Package.swift.bak"
 pr 6 "$B" 'echo new >b.txt'
 pr 7 "$B" 'echo new >b.txt'
+pr 9 "$B" "sed -i.bak 's#https://github.com/Kentzo/ShortcutRecorder#git@github.com:someone/ShortcutRecorder#' Package.swift && rm Package.swift.bak"
+pr 11 "$B" "printf '%s\\n' '{\"pins\":[{\"identity\":\"shortcutrecorder\",\"location\":\"https://github.com/someone/ShortcutRecorder.git/\"}],\"version\":3}' >Package.resolved"
+pr 10 "$B" "printf '%s\\n' '{\"pins\":[{\"identity\":\"shortcutrecorder\",\"location\":\"ssh://git@github.com/someone/ShortcutRecorder.git\"}],\"version\":3}' >Package.resolved"
 
 head_of() {
   if [[ "$1" == 6 ]]; then
@@ -133,10 +136,12 @@ head_of() {
   fi
 }
 
-# Seven copies of #795 (green, mergeable), renumbered onto the remote's PRs.
-# #1 has a hand check; #7 has a failed check with a log.
+# Copies of #795 (green, mergeable), renumbered onto the remote's PRs.
+# #1 has a hand check; #7 has a failed check with a log. #9 and #10 pin the
+# fork in ssh form, in Package.swift and in Package.resolved; #11 with a
+# trailing ".git/".
 jq -c '.data.user.projectV2.items.nodes[] | select(.content.number == 795)' "$REPLY" >"$TMP_DIR/795.json"
-for n in 1 2 3 4 5 6 7; do
+for n in 1 2 3 4 5 6 7 9 10 11; do
   jq --argjson n "$n" --arg head "$(head_of "$n")" '
     .id = "ITEM\($n)" | .content.number = $n | .content.headRefOid = $head
     | .content.headRefName = "t/pr\($n)" | .content.title = "PR \($n)"
@@ -189,12 +194,18 @@ expected="#1 merge: checks green
 #5 moved back to Needs human review
 #6 wait: head moved to ${B:0:9} after the query
 #7 back: linux failed
-#7 moved back to Needs human review"
+#7 moved back to Needs human review
+#9 back: pins a dependency to a fork: https://github.com/someone/shortcutrecorder
+#9 moved back to Needs human review
+#10 back: pins a dependency to a fork: https://github.com/someone/shortcutrecorder
+#10 moved back to Needs human review
+#11 back: pins a dependency to a fork: https://github.com/someone/shortcutrecorder
+#11 moved back to Needs human review"
 # #6's ref holds its own commit, not B; fix the expectation to that.
 expected="${expected/${B:0:9}/$(g rev-parse refs/pull/6/head | cut -c1-9)}"
 [[ "$got" == "$expected" ]] || fail "pass output: got
 $got"
-pass "pre-merge check: current, and behind with nothing shared since the CI run, merge; shared code waits; conflict and fork pin go back; a moved head waits"
+pass "pre-merge check: current, and behind with nothing shared since the CI run, merge; shared code waits; conflict and fork pins (https and ssh, Package.swift and Package.resolved) go back; a moved head waits"
 
 calls="$(cat "$TMP_DIR/calls")"
 grep -q "api -X PUT repos/T0mSIlver/localvoxtral/pulls/1/merge -f merge_method=squash -f sha=$(g rev-parse refs/pull/1/head) -f commit_title=PR 1 (#1)" <<<"$calls" \

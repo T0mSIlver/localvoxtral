@@ -69,7 +69,7 @@ projection from ~30 ms to ~3 ms per token and saves ~530 MB of memory, with
 no loss in transcription quality.
 
 One dictation can run for up to an hour. The limit guards against a session
-left running and is not a speed limit. The helper holds a steady 4.2 GB and
+left running and is not a speed limit. The helper holds a steady 3.5 GB and
 stays ahead of live speech for at least three hours. When a dictation reaches
 the limit, the helper stops and the menu bar says so.
 

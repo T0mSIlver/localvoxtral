@@ -1,7 +1,8 @@
 import Foundation
 import Synchronization
 
-/// The Inbox page's model (#732): takes a stopped quick capture, routes it,
+/// The Inbox page's model (#732): takes a stopped quick capture, polishes
+/// it once (#970), routes it,
 /// drafts it in two stages (#918: the polishing model's first draft, then
 /// the agent's check against the code for an issue), and files it only when
 /// the user presses File. Every change is written to the inbox file at once, so a
@@ -29,6 +30,9 @@ package final class QuickCaptureInboxModel {
     private let agents: @MainActor () -> [ProjectTermProposal.Agent]
     private let drafter: @MainActor () -> QuickCaptureDrafter
     private let github: any QuickCaptureGitHub
+    /// Nil when polishing is off: the capture routes its raw words at once.
+    private let polisher: @MainActor () -> (any QuickCapturePolishing)?
+    private let polishVocabulary: @MainActor ([QuickCaptureProject]) -> [String]
     private let now: @MainActor () -> Date
     /// The latest draft run per capture: an older run's answer is dropped.
     private var draftRuns: [UUID: Int] = [:]
@@ -39,6 +43,9 @@ package final class QuickCaptureInboxModel {
     /// check, to a ready draft (#927, #918).
     /// Called before `onChange`.
     package var onDraftReady: (@MainActor (QuickCaptureItem) -> Void)?
+    /// The capture's polished words and how long the polish took, for its
+    /// History record (#970).
+    package var onPolished: (@MainActor (_ historyRecordID: UUID, _ polishedText: String, _ seconds: Double) -> Void)?
     /// Where the capture went, for its History record.
     package var onRouted: (@MainActor (_ historyRecordID: UUID, _ destination: String) -> Void)?
     /// A capture was filed or discarded, so audio kept for it can go.
@@ -54,6 +61,8 @@ package final class QuickCaptureInboxModel {
         agents: @escaping @MainActor () -> [ProjectTermProposal.Agent],
         drafter: @escaping @MainActor () -> QuickCaptureDrafter,
         github: any QuickCaptureGitHub,
+        polisher: @escaping @MainActor () -> (any QuickCapturePolishing)? = { nil },
+        polishVocabulary: @escaping @MainActor ([QuickCaptureProject]) -> [String] = { _ in [] },
         now: @escaping @MainActor () -> Date = { Date() }
     ) {
         self.fileURL = fileURL
@@ -62,6 +71,8 @@ package final class QuickCaptureInboxModel {
         self.agents = agents
         self.drafter = drafter
         self.github = github
+        self.polisher = polisher
+        self.polishVocabulary = polishVocabulary
         self.now = now
         let load = fileURL.map(QuickCaptureInboxFile.load(from:)) ?? .absent
         storeProblem = load.problem
@@ -86,9 +97,16 @@ package final class QuickCaptureInboxModel {
 
     // MARK: Capture
 
-    /// Adds the capture and starts routing it. Returns the task that routes
-    /// and drafts; the app drops it, tests await it. A voice memo passes the
-    /// id its audio is kept under, and when it was recorded.
+    /// Adds the capture, polishes it, and starts routing it. Returns the task
+    /// that polishes, routes and drafts; the app drops it, tests await it. A
+    /// voice memo passes the id its audio is kept under, and when it was
+    /// recorded.
+    ///
+    /// The file holds the raw words before the polish starts. The polish
+    /// (#970) runs once, with every project's names and confirmed terms; its
+    /// words replace the raw ones in the Inbox, and the router and drafter
+    /// read them. A failed polish, or no polishing configuration, routes the
+    /// raw words.
     ///
     /// A follow-up (#965) joins an open capture instead: one that begins
     /// "also" or "for that idea" joins the latest, and the router may match
@@ -106,13 +124,84 @@ package final class QuickCaptureInboxModel {
         let item = QuickCaptureItem(
             id: id, capturedAt: capturedAt ?? now(), text: text, historyRecordID: historyRecordID)
         mutate { $0.add(item) }
+        let polisher = polisher()
+        guard polisher != nil || pendingPlacements > 0 else {
+            return track(place(item, rawText: text))
+        }
+        // Captures are placed in the order they were made (#970 review):
+        // polishes run side by side, but a capture joins or routes only once
+        // the one before it has, so an "also" whose polish ends first still
+        // finds the capture it follows.
+        let previous = lastPlaced
+        let vocabulary = polisher == nil ? [] : polishVocabulary(projects())
+        if polisher != nil {
+            Log.backends.notice("Quick capture: saved, polishing with \(vocabulary.count, privacy: .public) terms")
+        }
+        let placement = Task { @MainActor [weak self] () -> Placement? in
+            let polished = await polisher?.polish(text, vocabulary: vocabulary)
+            let words = polished?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if let polished, !words.isEmpty, let self,
+               self.inbox.items.contains(where: { $0.id == item.id && $0.state == .routing })
+            {
+                self.mutate { inbox in inbox.update(item.id) { $0.text = words } }
+                Log.backends.notice(
+                    "Quick capture: polished in \(String(format: "%.2f", polished.durationSeconds), privacy: .public) s"
+                )
+                if let recordID = historyRecordID {
+                    self.onPolished?(recordID, words, polished.durationSeconds)
+                }
+            } else if polisher != nil {
+                Log.backends.notice("Quick capture: not polished, routing the raw words")
+            }
+            await previous?.value
+            guard let self else { return nil }
+            guard let current = self.inbox.items.first(where: { $0.id == item.id }), current.state == .routing else {
+                Log.backends.notice("Quick capture: discarded before it was placed")
+                return nil
+            }
+            return self.place(current, rawText: text)
+        }
+        return track(Placement(
+            placed: Task { await placement.value?.placed.value },
+            done: Task { await placement.value?.done.value }
+        ))
+    }
+
+    /// A capture's way into the Inbox: `placed` ends once it has joined an
+    /// open capture or has its route, `done` once its draft is written too.
+    private struct Placement {
+        let placed: Task<Void, Never>
+        let done: Task<Void, Never>
+    }
+
+    /// Captures not placed yet, and the latest one's `placed`: the next
+    /// capture waits on it.
+    private var pendingPlacements = 0
+    private var lastPlaced: Task<Void, Never>?
+
+    private func track(_ placement: Placement) -> Task<Void, Never> {
+        pendingPlacements += 1
+        lastPlaced = placement.placed
+        Task { @MainActor [weak self] in
+            await placement.placed.value
+            self?.pendingPlacements -= 1
+        }
+        return placement.done
+    }
+
+    /// Joins the capture to the open capture it follows up, else routes it.
+    /// Either the polished or the raw words beginning "also" make a
+    /// follow-up, so a polish that rewords the start cannot undo one.
+    private func place(_ item: QuickCaptureItem, rawText: String) -> Placement {
         let open = inbox.items
             .filter { $0.id != item.id && $0.acceptsFollowUp(at: item.capturedAt) }
             .sorted { $0.lastCapturedAt > $1.lastCapturedAt }
-        if QuickCaptureInbox.saysFollowUp(text), let latest = open.first {
+        if QuickCaptureInbox.saysFollowUp(item.text) || QuickCaptureInbox.saysFollowUp(rawText),
+           let latest = open.first
+        {
             Log.backends.notice("Quick capture: saved, a follow-up by its first words")
             let task = join(item.id, into: latest.id)
-            return Task { await task?.value }
+            return Placement(placed: Task {}, done: Task { await task?.value })
         }
         Log.backends.notice("Quick capture: saved, routing")
         let openCaptures = open.prefix(QuickCaptureRouting.maxOpenCaptures).map {
@@ -123,23 +212,22 @@ package final class QuickCaptureInboxModel {
 
     /// Routes `item` and drafts it where it lands, or joins it to the open
     /// capture the router matched.
-    private func route(_ item: QuickCaptureItem, openCaptures: [QuickCaptureOpenCapture]) -> Task<Void, Never> {
+    private func route(_ item: QuickCaptureItem, openCaptures: [QuickCaptureOpenCapture]) -> Placement {
         let router = makeRouter()
         let projects = projects()
         let text = item.text
         let historyRecordID = item.historyRecordID
-        return Task { @MainActor [weak self] in
+        // What is left once the capture has its place: the joined capture's
+        // redraft, or this one's draft.
+        let placed = Task { @MainActor [weak self] () -> Task<Void, Never>? in
             let answer = await router.answer(capture: text, projects: projects, openCaptures: openCaptures)
-            guard let self else { return }
+            guard let self else { return nil }
             let route: QuickCaptureRoute
             switch answer {
             case .route(let answered):
                 route = answered
             case .join(let target, let classifier, let probability):
-                if let task = self.join(item.id, into: target) {
-                    await task.value
-                    return
-                }
+                if let task = self.join(item.id, into: target) { return task }
                 // The capture it continues was filed or discarded meanwhile.
                 route = QuickCaptureRoute(
                     destination: .catchAll, classifier: classifier, reason: .lowConfidence, topProbability: probability,
@@ -152,8 +240,14 @@ package final class QuickCaptureInboxModel {
             if let recordID = historyRecordID {
                 self.onRouted?(recordID, name ?? "Inbox")
             }
-            await self.draft(item.id, text: text, destination: route.destination, projects: projects)
+            return Task { @MainActor [weak self] in
+                await self?.draft(item.id, text: text, destination: route.destination, projects: projects)
+            }
         }
+        return Placement(
+            placed: Task { _ = await placed.value },
+            done: Task { await placed.value?.value }
+        )
     }
 
     // MARK: Follow-ups (#965)
@@ -203,7 +297,7 @@ package final class QuickCaptureInboxModel {
         // A draft running now holds the split words.
         draftRuns[id] = nil
         Log.backends.notice("Quick capture: split a follow-up, \(result.restored ? "earlier draft restored" : "redrafting", privacy: .public)")
-        let routing = route(result.capture, openCaptures: [])
+        let routing = route(result.capture, openCaptures: []).done
         guard !result.restored, let key = item.projectKey,
               let after = inbox.items.first(where: { $0.id == id })
         else {

@@ -26,6 +26,8 @@ package struct UsageEntry: Codable, Equatable, Sendable {
         case quickCaptureRouting
         /// An agent's run drafting a quick capture as an issue (#731, #745).
         case quickCaptureDrafting
+        /// The one polish a quick capture gets before routing (#970).
+        case quickCapturePolish
     }
 
     /// What answered, which says who pays: the Mistral key, the Jev key, the
@@ -160,7 +162,7 @@ package struct UsageEntry: Codable, Equatable, Sendable {
         switch feature {
         case .dictation: return .dictation
         case .secondPass: return .retranscription
-        case .polish, .termSuggestions, .quickCaptureRouting: return .polish
+        case .polish, .termSuggestions, .quickCaptureRouting, .quickCapturePolish: return .polish
         case .projectTerms, .quickCaptureDrafting: return nil
         }
     }
@@ -532,7 +534,7 @@ package struct MistralUsageSummary: Equatable, Sendable {
                 polishCount += 1
             case .secondPass:
                 retranscriptionCount += 1
-            case .termSuggestions, .projectTerms, .quickCaptureRouting, .quickCaptureDrafting:
+            case .termSuggestions, .projectTerms, .quickCaptureRouting, .quickCaptureDrafting, .quickCapturePolish:
                 otherCount += 1
             }
             if let cost = entry.costEUR {
@@ -716,6 +718,7 @@ extension UsageEntry.Feature {
         case .projectTerms: return "Project terms"
         case .quickCaptureRouting: return "Quick-capture routing"
         case .quickCaptureDrafting: return "Quick-capture drafting"
+        case .quickCapturePolish: return "Quick-capture polishing"
         }
     }
 }

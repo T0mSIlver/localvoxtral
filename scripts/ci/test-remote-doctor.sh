@@ -45,7 +45,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         json = "application/json" in (self.headers.get("Accept") or "")
         with open(body_file + (".json" if json else ".txt"), "rb") as f:
             body = f.read()
-        self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers()
+        self.send_response(200); self.send_header("Content-Length", str(len(body)))
+        if os.path.exists(body_file + ".failed"):
+            with open(body_file + ".failed") as f:
+                self.send_header("X-Lvx-Doctor-Failed", f.read().strip())
+        self.end_headers()
         self.wfile.write(body)
     def log_message(self, *args): pass
 http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
@@ -55,6 +59,14 @@ printf '1. [ok  ] App: localvoxtral 1.4.0.\n2. [FAIL] Accessibility: Not allowed
 printf '{"cli":1,"ok":true,"doctor":{"checks":[{"id":"app","state":"ok","title":"App","detail":"localvoxtral 1.4.0."}]}}\n' \
   >"$TMP_DIR/mac-ok.json"
 printf '1. [ok  ] App: localvoxtral 1.4.0.\n\nNo problems found.\n' >"$TMP_DIR/mac-ok.txt"
+echo 0 >"$TMP_DIR/mac-ok.failed"
+echo 1 >"$TMP_DIR/mac-fail.failed"
+# A report whose wording the host does not know, and a Mac older than the
+# X-Lvx-Doctor-Failed header (no .failed file): the exit status comes from
+# the header, and only without it from the report.
+printf '1. [ok  ] App: localvoxtral 1.4.0.\n2. [broken] Accessibility: Not allowed.\n' >"$TMP_DIR/mac-reworded.txt"
+echo 1 >"$TMP_DIR/mac-reworded.failed"
+cp "$TMP_DIR/mac-fail.txt" "$TMP_DIR/mac-old.txt"
 
 start_server() {
   python3 "$TMP_DIR/server.py" "$PORT" "$TOKEN" "$TMP_DIR/$1" &
@@ -171,6 +183,20 @@ $OUT"
   expect_line "2. [FAIL] Accessibility: Not allowed." "Mac fails"
   [ "$STATUS" = 4 ] || fail "$SH_NAME, Mac fails: exit $STATUS, want 4"
   pass "$SH_NAME: a Mac check that fails exits 4"
+  stop_server
+
+  start_server mac-reworded
+  run_doctor
+  [ "$STATUS" = 4 ] || fail "$SH_NAME, Mac fails, report reworded: exit $STATUS, want 4"
+  pass "$SH_NAME: the Mac's failed count sets the exit status, whatever the report says"
+  stop_server
+
+  start_server mac-old
+  run_doctor
+  [ "$STATUS" = 4 ] || fail "$SH_NAME, Mac without the header fails: exit $STATUS, want 4"
+  pass "$SH_NAME: a Mac without the failed-count header still fails the run on its report"
+  stop_server
+  start_server mac-fail
 
   # A token the Mac does not know.
   write_token "rotated-token"

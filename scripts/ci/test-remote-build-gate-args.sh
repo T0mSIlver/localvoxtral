@@ -156,7 +156,7 @@ for args in 'test' 'test --skip AlphaTests'; do
 done
 for command in integration integration-keychain integration-mistral \
   integration-polishd integration-speechd integration-herdr eval-llm eval-e2e \
-  eval-term-recall speechd-bench polishd-bench; do
+  eval-term-recall eval-capture-polish-latency speechd-bench polishd-bench; do
   without_opt_in "$command" 2 "$command"
   assert_stderr_has "$command runs live inference"
   assert_stderr_has 'AGENTS.md'

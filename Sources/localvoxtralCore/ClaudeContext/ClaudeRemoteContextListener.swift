@@ -913,9 +913,11 @@ public final class ClaudeRemoteContextListener: Sendable {
         case .timedOut:
             Log.backends.error("Remote doctor: the app did not answer in time")
             respond(fd: fd, status: 503)
-        case .body(let body, let contentType):
-            Log.backends.info("Remote doctor: answered a host, \(body.count, privacy: .public) bytes")
-            respond(fd: fd, status: 200, body: body, contentType: contentType)
+        case .body(let body, let contentType, let failed):
+            Log.backends.info(
+                "Remote doctor: answered a host, \(body.count, privacy: .public) bytes, \(failed, privacy: .public) failed"
+            )
+            respond(fd: fd, status: 200, body: body, doctorFailed: failed, contentType: contentType)
         }
     }
 
@@ -1066,6 +1068,7 @@ public final class ClaudeRemoteContextListener: Sendable {
         readmeWanted: Bool = false,
         draftID: String? = nil,
         termsWanted: Bool = false,
+        doctorFailed: Int? = nil,
         contentType: String = "application/json"
     ) {
         let data = ClaudeRemoteHTTPCodec.response(
@@ -1075,6 +1078,7 @@ public final class ClaudeRemoteContextListener: Sendable {
             termsWanted: termsWanted,
             readmeWanted: readmeWanted,
             draftID: draftID,
+            doctorFailed: doctorFailed,
             contentType: contentType
         )
         _ = data.withUnsafeBytes { raw -> Int in

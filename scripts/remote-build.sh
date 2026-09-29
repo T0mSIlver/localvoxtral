@@ -6,7 +6,7 @@ set -euo pipefail
 # tree (no commit needed) and runs the toolchain remotely over SSH.
 #
 # Usage:
-#   ./scripts/remote-build.sh [build|test|test-cost-budgets|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-e2e|eval-term-recall|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
+#   ./scripts/remote-build.sh [build|test|test-cost-budgets|integration|integration-keychain|integration-mistral|integration-polishd|integration-speechd|integration-herdr|speechd-bench|polishd-bench|eval-llm|eval-capture-polish-latency|eval-e2e|eval-term-recall|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
 #     build        swift build
 #     test         swift build + unit tests (default; needs --filter, or
 #                  LV_ALLOW_HEAVY_MAC_RUN=1 for the full suite; skips live-backend suites
@@ -71,6 +71,13 @@ set -euo pipefail
 #                  absolute path on the build host to a baseline helper binary
 #                  (e.g. another LV_BUILD_DIR's packaged one), added as a
 #                  fourth arm at temperature 0.3; requires a prior `package`
+#     eval-capture-polish-latency
+#                  time a quick capture's polish request (#970) on the
+#                  packaged polishing helper; prints model, n, median and
+#                  p90 (QuickCapturePolishLatencyTests). Optional args =
+#                  rounds (default 3) and an absolute path on the build host
+#                  to a JSON-lines file of {"text": ...} captures (default: a
+#                  synthetic set); requires a prior `package`
 #     eval-llm     default-polish-prompt eval against a live chat/completions
 #                  server (the bundled polishd test service by default);
 #                  optional args = chat/completions endpoint and external
@@ -743,6 +750,35 @@ case "$CMD" in
       printf '{}\n' >"$HERDR_MARKER"
     fi
     REMOTE_CMD=(swift test --build-system native --filter HerdrIntegrationTests)
+    ;;
+  eval-capture-polish-latency)
+    # Marker-gated XCTest, like polishd-bench: the gate cannot run the
+    # packaged helper directly or pass env vars.
+    if [[ $# -gt 2 ]]; then
+      echo "eval-capture-polish-latency accepts optional rounds and captures-path arguments" >&2
+      exit 1
+    fi
+    CAPTURE_LATENCY_ROUNDS="${1:-3}"
+    CAPTURE_LATENCY_CAPTURES="${2:-}"
+    if [[ ! "$CAPTURE_LATENCY_ROUNDS" =~ ^[1-9][0-9]*$ ]]; then
+      echo "eval-capture-polish-latency rounds must be a positive integer" >&2
+      exit 1
+    fi
+    if [[ -n "$CAPTURE_LATENCY_CAPTURES" && ! "$CAPTURE_LATENCY_CAPTURES" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+      echo "eval-capture-polish-latency captures-path must be an absolute path on the build host" >&2
+      exit 1
+    fi
+    CAPTURE_LATENCY_MARKER="$ROOT_DIR/.quick-capture-polish-latency-enable.json"
+    trap 'cleanup_transient_marker "$CAPTURE_LATENCY_MARKER"' EXIT
+    CAPTURE_LATENCY_HELPER="PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd"
+    if [[ -n "$CAPTURE_LATENCY_CAPTURES" ]]; then
+      printf '{"helperPath": "%s", "rounds": %s, "capturesPath": "%s"}\n' \
+        "$CAPTURE_LATENCY_HELPER" "$CAPTURE_LATENCY_ROUNDS" "$CAPTURE_LATENCY_CAPTURES" >"$CAPTURE_LATENCY_MARKER"
+    else
+      printf '{"helperPath": "%s", "rounds": %s}\n' \
+        "$CAPTURE_LATENCY_HELPER" "$CAPTURE_LATENCY_ROUNDS" >"$CAPTURE_LATENCY_MARKER"
+    fi
+    REMOTE_CMD=(swift test --build-system native --filter QuickCapturePolishLatencyTests)
     ;;
   polishd-bench)
     # Marker-gated XCTest, like speechd-bench: the gate cannot run the
