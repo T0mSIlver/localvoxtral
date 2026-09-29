@@ -684,6 +684,7 @@ final class DictationViewModel {
                     }
                 }
             )
+            session.agentSkillStore = AgentSkillStore(fileURL: AgentSkillStore.defaultFileURL())
             if let learnedTermStore {
                 let correctionLearning = CorrectionLearning(
                     store: learnedTermStore,
@@ -745,7 +746,9 @@ final class DictationViewModel {
                     guard let self else { return nil }
                     return PolishPromptWarmup.plan(
                         settings: self.settings,
-                        appConfigStore: self.appConfigStore
+                        appConfigStore: self.appConfigStore,
+                        projectNames: self.session.polishProjectNames(),
+                        skillNames: self.session.polishSkillNames()
                     )
                 },
                 clock: dependencies.clock

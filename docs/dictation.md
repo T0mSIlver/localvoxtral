@@ -404,6 +404,13 @@ works that out.
 The app fixes the casing of a multi-word or mixed-case term even in Live
 Auto-Paste with no polishing.
 
+Your project names go with every dictation too: each project in
+**Settings → Projects** and its repository's name, whichever session the
+dictation joins. So do the names of your coding agents' skills and commands,
+on this Mac and on your ssh hosts; a host sends them when a session starts
+there. Neither belongs in Global terms. When a Global term only repeats one,
+**About you** offers to remove it, and suggestions never propose one.
+
 ### Get term suggestions
 
 **Suggest terms** sends your recent dictations to the polishing model you
@@ -612,8 +619,8 @@ tokens:
 - **Text Processing → Advanced → Polishing instructions**: the prompt files
   and the reference guide, sent with every polish. With the agent prompt
   profile on, both profiles are shown.
-- **Text Processing → About you → Global terms**: what your terms add to
-  every polish.
+- **Text Processing → About you → Global terms**: what your terms, your
+  project names and your agents' skill names add to every polish.
 - **Projects**, in a project's Terms: the most that project's terms add. A
   learned term is sent only when you say something that sounds like it, so
   most dictations carry a few of them or none.

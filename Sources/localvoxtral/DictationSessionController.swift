@@ -230,6 +230,10 @@ final class DictationSessionController {
     var learnedTermStore: LearnedTermStore?
     /// Learns a spelling from the fix the user makes before sending a
     /// dictation to the joined session. Nil without runtime services.
+    /// The skill names every polish carries (#1024). Nil without runtime
+    /// services, so a unit test never reads the user's folders.
+    @ObservationIgnored
+    var agentSkillStore: AgentSkillStore?
     @ObservationIgnored
     var correctionLearning: CorrectionLearning?
     /// Where the last Overlay Buffer commit landed while its prompt may
@@ -261,6 +265,10 @@ final class DictationSessionController {
             },
             learnedTerms: { [weak self] in
                 self?.learnedTermStore?.snapshot().confirmedEverywhere().map(\.term) ?? []
+            },
+            sentNames: { [weak self] in
+                guard let self else { return [] }
+                return self.polishProjectNames() + self.polishSkillNames()
             },
             service: { [weak self] in self?.llmPolishingService ?? LLMPolishingService() },
             unavailableReason: { [weak self] in

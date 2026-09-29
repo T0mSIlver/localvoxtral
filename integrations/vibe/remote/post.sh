@@ -182,7 +182,7 @@ write_header() {
   cat 2>/dev/null >"$1" <<HEADERS
 Authorization: Bearer $2
 X-Lvx-Agent: vibe
-X-Lvx-Vibe-Hooks-Version: 1.11.0
+X-Lvx-Vibe-Hooks-Version: 1.12.0
 HEADERS
 }
 write_header "$WORK/header" "$TOKEN" || exit 0
@@ -301,6 +301,59 @@ fi
   lvx_env_header 'X-Lvx-Env-Project' "${LVX_PROJECT:-}"
   lvx_env_header 'X-Lvx-Env-Repository' "${LVX_REPOSITORY:-}"
 ) 2>/dev/null || :
+
+# --- Skill names (#1024) -------------------------------------------------------
+# The names of the skills and commands this host's coding agents can run, so
+# the Mac's polishing can spell them when the user says one. Folder and file
+# NAMES only, never their contents: a skill is a folder holding SKILL.md, a
+# command a Markdown file. The same places as the Mac's own list
+# (AgentSkillDirectories), plus the session's project folder. Each name keeps
+# the Mac's shape (AgentSkillNamesCodec): an enumerated charset, 64 bytes, no
+# leading dot or dash; at most 80 names and 2000 bytes, the Mac's cap being
+# 2048. Run in a subshell under LC_ALL=C, like the env headers above.
+lvx_skills_header() {
+  set +f
+  _lvx_list=""
+  _lvx_count=0
+  for _lvx_file in \
+    "$HOME"/.claude/skills/*/SKILL.md "$HOME"/.codex/skills/*/SKILL.md \
+    "$HOME"/.config/opencode/skills/*/SKILL.md "$HOME"/.config/opencode/skill/*/SKILL.md \
+    "$HOME"/.vibe/skills/*/SKILL.md "$HOME"/.agents/skills/*/SKILL.md \
+    "$HOME"/.claude/plugins/cache/*/*/*/skills/*/SKILL.md \
+    "$HOME"/.claude/commands/*.md "$HOME"/.codex/prompts/*.md \
+    "$HOME"/.config/opencode/commands/*.md "$HOME"/.config/opencode/command/*.md \
+    ./.claude/skills/*/SKILL.md ./.claude/commands/*.md; do
+    [ -f "$_lvx_file" ] || continue
+    case "$_lvx_file" in
+    */SKILL.md) _lvx_skill="${_lvx_file%/SKILL.md}" ;;
+    */README.md | */readme.md) continue ;;
+    *) _lvx_skill="${_lvx_file%.md}" ;;
+    esac
+    _lvx_skill="${_lvx_skill##*/}"
+    case "$_lvx_skill" in
+    "" | .* | -* | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*) continue ;;
+    esac
+    [ "${#_lvx_skill}" -le 64 ] || continue
+    case ",$_lvx_list," in *",$_lvx_skill,"*) continue ;; esac
+    [ $((${#_lvx_list} + ${#_lvx_skill} + 1)) -le 2000 ] || break
+    _lvx_list="${_lvx_list:+$_lvx_list,}$_lvx_skill"
+    _lvx_count=$((_lvx_count + 1))
+    [ "$_lvx_count" -lt 80 ] || break
+  done
+  [ -n "$_lvx_list" ] || return 0
+  cat 2>/dev/null >>"$WORK/header" <<EOF || return 0
+X-Lvx-Skills: $_lvx_list
+EOF
+}
+# Vibe has no session-start hook: listed at each turn's end, which the Mac
+# records at most once a day while the list stays the same.
+if [ "$HOOK_EVENT" = post_agent ]; then
+  (
+    LC_ALL=C
+    export LC_ALL
+    lvx_skills_header
+  ) 2>/dev/null || :
+fi
 
 # --- Project terms (#641) ----------------------------------------------------
 # `X-Lvx-Terms: wanted` on a 200 reply is the Mac asking for this session's
