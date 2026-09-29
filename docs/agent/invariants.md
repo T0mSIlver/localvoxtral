@@ -605,8 +605,11 @@ there is not.
   and each adds its own below:
   (1) *One route, resolved at start.* `SessionContextResolver.resolveAgentPromptRoute()`
   picks at most one route per dictation, next to the join, for the session
-  the join resolved and nothing else. It is dropped with the join. The one
-  exception is a dictation addressed by name ("Send that to <name>" above):
+  the join resolved and nothing else. It is dropped with the join, and
+  both are dropped before an Overlay Buffer commit into a session Tab
+  picked (#1054): that pane gets the words by keyboard after its read-back,
+  and the start session's route would write them into the start session's
+  prompt. The one exception is a dictation addressed by name ("Send that to <name>" above):
   its route is resolved at commit, for the named session, by
   `ClaudeSessionJoinResolver.addressedRoute(for:)`, and never falls back
   to keys.

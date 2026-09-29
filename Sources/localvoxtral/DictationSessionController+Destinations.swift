@@ -364,6 +364,8 @@ extension DictationSessionController {
                 keepOverlayInHistory(sessionMode: sessionMode, status: DestinationStatus.paneLeftFront, record: nil)
                 return .kept
             }
+            // Before the commit samples the stop, which takes the join.
+            leaveStartSessionForPickedSession()
             return .readBack(sessionID: sessionID, bundleID: bundleID)
         case .focusedApp(let originPID, let paneBundleID):
             guard targetPID == nil || targetPID != originPID || targetBundleID == paneBundleID else { return .commit }
@@ -373,6 +375,17 @@ extension DictationSessionController {
             keepOverlayInHistory(sessionMode: sessionMode, status: DestinationStatus.stoppedWhileSwitching, record: nil)
             return .kept
         }
+    }
+
+    /// The words go to a session Tab picked, not to the one the dictation
+    /// started in. The route armed for that session's prompt would write
+    /// them there (#1054), and its join would ground the polish, the leading
+    /// space and correction learning in the wrong session. The picked pane
+    /// gets them by keyboard, once it reads back.
+    private func leaveStartSessionForPickedSession() {
+        Log.dictation.notice("destination: a picked session; the start session's route and join are dropped")
+        textInsertion.endPromptRelay()
+        context.discardTerminalScreenCapture()
     }
 
     /// Runs `proceed`, the rest of the commit, once the focused pane reads
