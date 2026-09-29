@@ -158,46 +158,6 @@ package enum EvalSpeechStage {
         }
     }()
 
-    /// What xctest hands its children, printed once to compare with eval-e2e's
-    /// "Voices the runner's shell lists" step (#960).
-    private static let reportEnvironmentOnce: Void = {
-        for line in EvalChildProcess.currentEnvironmentReport() {
-            print("eval TTS env: \(line)")
-        }
-    }()
-
-    /// Lists voices every 5 s, up to 60 s, until one of `preferred` shows,
-    /// printing each count. Under the Actions runner the eval's listing held
-    /// only the built-in voices while the runner's shell and a probe test's
-    /// xctest saw them all (#960); this tells a transient drop from a
-    /// lasting one.
-    package static func waitForVoice(named preferred: [String], languagePrefix: String) {
-        let clock = ContinuousClock()
-        let start = clock.now
-        for attempt in 0..<13 {
-            if attempt > 0 { Thread.sleep(forTimeInterval: 5) }
-            let outputURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("lv-eval-voices-\(UUID().uuidString).txt")
-            defer { try? FileManager.default.removeItem(at: outputURL) }
-            guard
-                (try? EvalChildProcess.run(
-                    "/usr/bin/say", arguments: ["-v", "?"],
-                    standardOutput: outputURL.path, discardStandardError: true
-                )) == 0,
-                let listing = try? String(contentsOf: outputURL, encoding: .utf8)
-            else { continue }
-            let found = pickVoice(
-                fromSayVoicesOutput: listing, languagePrefix: languagePrefix, preferred: preferred
-            )
-            print(
-                "eval TTS: `say -v ?` lists \(listing.split(separator: "\n").count) voices "
-                    + "after \(clock.now - start), preferred \(languagePrefix) voice: \(found ?? "none")"
-            )
-            fflush(nil)
-            if found != nil { return }
-        }
-    }
-
     /// `say -v ?` through a temp file (no pipes — descriptor-safe by
     /// construction), parsed by the unit-tested picker. Throws when `say`
     /// fails or lists none of `preferred`.
