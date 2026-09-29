@@ -137,6 +137,7 @@ jobs:
         run: |
           echo "say -v ? lines: $(say -v '?' | wc -l)"
           echo "Samantha/Daniel/Thomas lines: $(say -v '?' | grep -c -E '^(Samantha|Daniel|Thomas)')"
+          echo "launchd session: $(launchctl managername)"
           # The same report as the eval's "eval TTS env:" lines, home and
           # user masked: the difference is what hides the voices from xctest.
           home=$(perl -e 'print((getpwuid($<))[7])')
@@ -184,6 +185,15 @@ jobs:
           # unit step rebuilt it back — the same flag-flip PR #157 fixed
           # inside ci.yml (PR #157 review finding).
           swift test --build-system native --filter AgentDictationE2EEvalTests --enable-code-coverage 2>&1 | tee logs/eval-e2e.log
+
+      - name: Voices the runner's shell lists after the eval
+        # Still 187 here while the eval saw 27 means something tied to the
+        # xctest run hides them; 27 here means the listing changed over time (#960).
+        if: always() && (github.event_name != 'schedule' || steps.guard.outputs.run != 'false')
+        continue-on-error: true
+        run: |
+          echo "say -v ? lines: $(say -v '?' | wc -l)"
+          echo "Samantha/Daniel/Thomas lines: $(say -v '?' | grep -c -E '^(Samantha|Daniel|Thomas)')"
 
       - name: Name the STT service's state
         # A stalled eval reads the same whether the reaper stopped the server
