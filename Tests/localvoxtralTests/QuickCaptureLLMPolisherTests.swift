@@ -42,7 +42,7 @@ final class QuickCaptureLLMPolisherTests: XCTestCase {
         let request = try XCTUnwrap(last)
         XCTAssertEqual(
             request.systemPrompt,
-            StopCommitCoordinator.promptTemplates(profile: .standard, settings: settings, appConfigStore: config).systemContent
+            StopCommitCoordinator.promptTemplates(profile: .standard, settings: settings, appConfigStore: config, projectNames: []).systemContent
         )
         XCTAssertTrue(request.systemPrompt.contains("Names and terms they use: Qwen"))
         XCTAssertEqual(request.inputText, "put /reload-plugins in the local Voxroll docs", "the replacement rules ran first")
@@ -77,7 +77,7 @@ final class QuickCaptureLLMPolisherTests: XCTestCase {
         XCTAssertEqual(sent.systemPrompt, core.systemPrompt)
         XCTAssertEqual(sent.userPrompts, core.userPrompts)
 
-        let templates = StopCommitCoordinator.promptTemplates(profile: .standard, settings: settings, appConfigStore: config)
+        let templates = StopCommitCoordinator.promptTemplates(profile: .standard, settings: settings, appConfigStore: config, projectNames: [])
         let replaced = StopCommitCoordinator.effectiveReplacementDictionary(settings: settings, appConfigStore: config)?
             .apply(to: raw) ?? raw
         let prepared = QuickCapturePolishPrompt.prepare(

@@ -544,7 +544,9 @@ extension DictationSessionController {
                 settings: settings
             ),
             settings: settings,
-            appConfigStore: appConfigStore
+            appConfigStore: appConfigStore,
+            projectNames: polishProjectNames(),
+            skillNames: polishSkillNames()
         )
     }
 

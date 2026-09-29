@@ -117,6 +117,8 @@ public final class ClaudeRemoteContextListener: Sendable {
     /// Authenticated host activity can pre-start a slow herdr `-L` away from
     /// dictation latency. The path remains an opaque remote label.
     private let onRemoteHerdrActivity: @Sendable (String, String) -> Void
+    /// A host's shim listed its agents' skill names (#1024): host id, names.
+    private let onRemoteSkills: @Sendable (String, [String]) -> Void
     /// The Mac's asks for a remote project's terms (#641): which sessions'
     /// next reply carries `X-Lvx-Terms`, and which may answer on
     /// `/v1/terms`. Nil without a learned-term store; the route then 404s.
@@ -176,6 +178,7 @@ public final class ClaudeRemoteContextListener: Sendable {
         now: @escaping @Sendable () -> Date = { Date() },
         uptimeNanos: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
         onRemoteHerdrActivity: @escaping @Sendable (String, String) -> Void = { _, _ in },
+        onRemoteSkills: @escaping @Sendable (String, [String]) -> Void = { _, _ in },
         projectTerms: RemoteProjectTermRequests? = nil,
         quickCapture: RemoteQuickCaptureRequests? = nil,
         doctor: RemoteDoctorRoute? = nil
@@ -191,6 +194,7 @@ public final class ClaudeRemoteContextListener: Sendable {
         self.now = now
         self.uptimeNanos = uptimeNanos
         self.onRemoteHerdrActivity = onRemoteHerdrActivity
+        self.onRemoteSkills = onRemoteSkills
     }
 
     public var isRunning: Bool { state.withLock { $0.isRunning } }
@@ -644,6 +648,11 @@ public final class ClaudeRemoteContextListener: Sendable {
         noteVersions(hostID: host.id, agent: requestAgent, plugin: pluginVersionReport, vibe: vibeHooksVersion)
         if let socketPath = prepared.environment?.herdrSocketPath {
             onRemoteHerdrActivity(host.id, socketPath)
+        }
+        // Only here, after the re-authentication: a revoked host's list is
+        // never kept.
+        if let skills = AgentSkillNamesCodec.names(in: request.headers) {
+            onRemoteSkills(host.id, skills)
         }
         let scopedSessionID = ClaudeAgentSessionScope.scopedSessionID(
             agent: prepared.record.agent, sessionID: prepared.record.sessionID
