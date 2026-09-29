@@ -471,6 +471,34 @@ enum LLMPolishEvalSupport {
             mustContain: ["the schema changed"],
             mustNotContain: ["\u{2014}", "\u{2013}"]
         ),
+        // A spoken issue or PR number becomes a GitHub reference (#718): the
+        // word stays, `#` is added, the number is what was said.
+        LLMPolishEvalCase(
+            id: "agent-pr-reference-glued",
+            input: "rebase this branch on PR349 before you push",
+            mustContain: ["PR #349"],
+            mustNotContain: ["PR349"],
+            caseSensitive: true
+        ),
+        LLMPolishEvalCase(
+            id: "agent-issue-reference-words",
+            input: "look at issue five sixty three it has the repro steps for the crash",
+            mustContain: ["issue #563"],
+            caseSensitive: true
+        ),
+        LLMPolishEvalCase(
+            id: "agent-fr-pull-request-reference",
+            input: "regarde la pull request 712 et dis-moi pourquoi le job linux a échoué",
+            mustContain: ["pull request #712"],
+            caseSensitive: true
+        ),
+        // A position in a stack is not a reference.
+        LLMPolishEvalCase(
+            id: "agent-pr-position-not-reference",
+            input: "this is PR 2 of 3 in the stack so keep main as the base branch",
+            mustContain: ["PR 2 of 3"],
+            mustNotContain: ["#"]
+        ),
     ]
 
     /// The bundled default templates, loaded through the production config

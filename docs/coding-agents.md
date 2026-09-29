@@ -59,7 +59,8 @@ Processing → Polishing**, except the two context sources, which sit in
 
 The agent-tuned prompt turns spoken symbol forms into written ones. "Dash
 dash force" becomes "--force", "src slash auth" becomes "src/auth", and "the
-dot env file" becomes ".env".
+dot env file" becomes ".env". An issue or PR number becomes a GitHub
+reference the agent can look up: "PR seven twelve" becomes "PR #712".
 
 It puts backticks around code-like tokens, and only those. Filler words go,
 self-corrections resolve to the final intent, and explicit enumerations
