@@ -58,21 +58,15 @@ jobs:
         #  * AC power (ac-power-guard.sh, owner request 2026-07-24): never
         #    drain the battery. It fails OPEN on probe errors so a broken
         #    probe can never silently disable the lane.
-        # All three scripts are tested in ci.yml's shell-test step.
+        # scheduled-run-guard.sh chains the three, as release.yml does; it and
+        # each guard are tested in ci.yml's shell-test step.
         id: guard
         if: github.event_name == 'schedule'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          proceeds() { [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" == "true" ]]; }
-          DECISION="$(./scripts/ci/night-window-guard.sh 30)"
-          if proceeds; then
-            DECISION="$(./scripts/ci/recent-run-guard.sh eval-e2e.yml 20)"
-          fi
-          if proceeds; then
-            DECISION="$(./scripts/ci/ac-power-guard.sh)"
-          fi
+          DECISION="$(./scripts/ci/scheduled-run-guard.sh eval-e2e.yml 30 20)"
           echo "$DECISION" >> "$GITHUB_OUTPUT"
           REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
           if [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" == "true" ]]; then
@@ -163,18 +157,6 @@ jobs:
         run: |
           mkdir -p logs
           set -o pipefail
-          # An older reaper stops the on-demand server 20 min after the last
-          # `ensure` even while a client uses it, so an eval longer than that
-          # lost its server mid-run (#821). The reaper counts clients since
-          # #829, but runs a copy of the script on the Mac: keep ours fresh
-          # until that copy is refreshed (scripts/mac/README.md).
-          if [ -d /Users/Shared/localvoxtral/run ]; then
-            while sleep 300; do
-              ./scripts/mac/lv-test-servers.sh ensure speechd >/dev/null 2>&1 || true
-            done &
-            keepalive=$!
-            trap 'kill "$keepalive" 2>/dev/null || true' EXIT
-          fi
           # --enable-code-coverage matches ci.yml's build flags in the SHARED
           # .build (clean: false): without it this nightly rebuilt the whole
           # app+test module uninstrumented, and the next morning's ci.yml
