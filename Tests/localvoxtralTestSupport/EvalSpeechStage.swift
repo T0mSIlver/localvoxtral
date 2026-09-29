@@ -140,14 +140,10 @@ package enum EvalSpeechStage {
         }
         arguments.append(text)
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
-        process.arguments = arguments
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
+        let status = try DisclaimedSpawn.run("/usr/bin/say", arguments: arguments).status
+        guard status == 0 else {
             throw Failure(
-                "say failed (status \(process.terminationStatus)) for voice \(voice ?? "default")"
+                "say failed (status \(status)) for voice \(voice ?? "default")"
             )
         }
         try FileManager.default.moveItem(at: temporary, to: wavURL)
@@ -155,25 +151,22 @@ package enum EvalSpeechStage {
     }
 
     /// `say -v ?` through a temp file (no pipes — descriptor-safe by
-    /// construction), parsed by the unit-tested picker. Throws when `say`
+    /// construction), spawned as its own responsible process (#960), parsed
+    /// by the unit-tested picker. Throws when `say`
     /// fails or lists none of `preferred`.
     package static func resolveVoice(languagePrefix: String, preferred: [String]) throws -> String {
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("lv-eval-voices-\(UUID().uuidString).txt")
         defer { try? FileManager.default.removeItem(at: outputURL) }
-        _ = FileManager.default.createFile(atPath: outputURL.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: outputURL)
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
-        process.arguments = ["-v", "?"]
-        process.standardOutput = handle
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
-        try? handle.close()
-        guard process.terminationStatus == 0 else {
-            throw Failure("`say -v ?` failed (status \(process.terminationStatus))")
+        let listed = try DisclaimedSpawn.run(
+            "/usr/bin/say", arguments: ["-v", "?"],
+            standardOutput: outputURL.path, discardStandardError: true
+        )
+        if !listed.disclaimed {
+            print("eval TTS: `say` ran without responsibility disclaimed")
+        }
+        guard listed.status == 0 else {
+            throw Failure("`say -v ?` failed (status \(listed.status))")
         }
         let voice = try requireVoice(
             fromSayVoicesOutput: String(contentsOf: outputURL, encoding: .utf8),

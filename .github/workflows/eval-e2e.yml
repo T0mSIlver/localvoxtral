@@ -130,6 +130,14 @@ jobs:
                  "resident STT service; see scripts/mac/README.md to enable on-demand."
           fi
 
+      - name: Voices the runner's shell lists
+        # What `say` offers outside xctest, next to the eval's voices line (#960).
+        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
+        continue-on-error: true
+        run: |
+          echo "say -v ? lines: $(say -v '?' | wc -l)"
+          echo "Samantha/Daniel/Thomas lines: $(say -v '?' | grep -c -E '^(Samantha|Daniel|Thomas)')"
+
       - name: Run agent-dictation E2E eval
         id: eval
         if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
