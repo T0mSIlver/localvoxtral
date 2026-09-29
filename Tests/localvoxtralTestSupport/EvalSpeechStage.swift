@@ -158,6 +158,14 @@ package enum EvalSpeechStage {
         }
     }()
 
+    /// What xctest hands its children, printed once to compare with eval-e2e's
+    /// "Voices the runner's shell lists" step (#960).
+    private static let reportEnvironmentOnce: Void = {
+        for line in EvalChildProcess.currentEnvironmentReport() {
+            print("eval TTS env: \(line)")
+        }
+    }()
+
     /// Lists voices every 5 s, up to 60 s, until one of `preferred` shows,
     /// printing each count. Under the Actions runner the eval's listing held
     /// only the built-in voices while the runner's shell and a probe test's
@@ -283,16 +291,21 @@ package enum EvalSpeechStage {
     }
 
     private static func parseVoiceLine(_ line: String) -> (name: String, locale: String)? {
-        // "Thomas              fr_FR    # Bonjour! ..." — name up to the first
-        // run of 2+ spaces, locale is the next token.
-        guard let separator = line.range(of: "  ") else { return nil }
-        let name = String(line[..<separator.lowerBound]).trimmingCharacters(in: .whitespaces)
+        // "Thomas              fr_FR    # Bonjour! ..." — the locale is the
+        // last token before the "#", the name everything before it. A long
+        // name can leave a single space, a tab or a no-break space before
+        // the locale (#960).
+        let entry = line.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+            .first ?? Substring(line)
+        guard let localeToken = entry.split(whereSeparator: \.isWhitespace).last,
+            let localeRange = entry.range(of: localeToken, options: .backwards)
+        else { return nil }
+        let name = entry[..<localeRange.lowerBound].trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { return nil }
-        let rest = line[separator.upperBound...].trimmingCharacters(in: .whitespaces)
-        guard let locale = rest.split(whereSeparator: \.isWhitespace).first else { return nil }
         // Locale tokens look like en_US / fr-FR / fr_CA.
+        let locale = String(localeToken)
         guard locale.contains("_") || locale.contains("-") else { return nil }
-        return (name, String(locale))
+        return (name, locale)
     }
 
     // MARK: - ASR

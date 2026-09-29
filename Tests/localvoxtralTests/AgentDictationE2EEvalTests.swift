@@ -134,15 +134,9 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             isSubset: recordedAudio?.isSubset == true
         )
 
-        // Voices and every case's TTS audio before anything loads a model:
-        // while the polish helper and speechd were loaded, `say` listed only
-        // the built-in voices, system-wide (#960). Synthesis lands in the wav
-        // cache, which the cases then read.
-        if recordedAudio == nil {
-            EvalSpeechStage.waitForVoice(
-                named: EvalSpeechStage.englishVoicePreference, languagePrefix: "en"
-            )
-        }
+        // Voices and every case's TTS audio before anything loads a model, so
+        // no `say` runs beside the polish helper (#960). Synthesis lands in
+        // the wav cache, which the cases then read.
         let enVoice = try recordedAudio == nil
             ? Self.resolveVoice(
                 languagePrefix: "en", preferred: EvalSpeechStage.englishVoicePreference
