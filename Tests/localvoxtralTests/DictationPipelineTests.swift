@@ -405,6 +405,44 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
     }
 
+    /// The picked pane read back at the stop, and the user switched tabs of
+    /// the same terminal while the polish ran: the pane is read back again
+    /// before the insertion, and the words stay in History (#1056).
+    func testATabSwitchWhileThePolishRunsKeepsTheWordsInHistory() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish, earlyPolish: false)
+        let waiting = installWaitingSessions(pipeline, ["pay": "/r/payments"])
+        let terminalPID: pid_t = 5151
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == terminalPID ? TerminalScreenAllowlist.ghosttyBundleID : nil
+        }
+        await polish.holdNextRequest()
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.session.moveDestination(forward: false)
+        await pipeline.viewModel.session.destinationFocusTask?.value
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
+        pipeline.overlay.commitTargetAppPID = terminalPID
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
+        let polishing = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(polishing, "the polish never started")
+        XCTAssertEqual(waiting.focuser.readBackSessionIDs, ["pay"], "read back before the polish")
+
+        // Same Ghostty, another tab, while the polish runs.
+        waiting.focuser.paneStillShowsSession = false
+        await polish.releaseHeldRequest()
+        let recorded = await pipeline.records.waitForCount(1)
+        XCTAssertTrue(recorded)
+
+        XCTAssertEqual(waiting.focuser.readBackSessionIDs, ["pay", "pay"], "and again before the insertion")
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "the other tab's session never gets the words")
+        XCTAssertEqual(pipeline.records.all.first?.rawText, Self.phrase)
+        XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
+        XCTAssertEqual(pipeline.viewModel.statusText, DictationSessionController.DestinationStatus.paneLeftFront)
+    }
+
     /// Focus moved to another app between the pick and the stop: the words
     /// must not follow it. They stay in History as not inserted, and the
     /// popover says why.
