@@ -11,12 +11,10 @@ only network traffic is the one-time download of the engines and models.
 
 There is no telemetry, no account and no cloud fallback.
 
-The context-aware polishing features are opt-in: Claude Code session context,
-repo vocabulary and clipboard context. They send context only to a polishing
-endpoint on loopback.
-
-A non-local endpoint receives that context only if you also turn on **Send
-context to non-local polishing servers**, which is off by default.
+The context-aware polishing features (session context, repo vocabulary,
+clipboard, the agent's screen) are opt-in, and by default send context only
+to a polisher on this Mac
+([Polish context: what each toggle sends](coding-agents.md#polish-context-what-each-toggle-sends)).
 
 [Quick capture](coding-agents.md#quick-capture) is the exception you trigger
 yourself: a capture goes to your polishing model with its project's context
@@ -29,8 +27,6 @@ diagnostic records of how each was polished) is described under
 
 If you point localvoxtral at your own **External URL** server or at the
 **Mistral API** instead, your audio and transcripts go where you send them.
-Neither is a local endpoint, so the context features still need that setting
-there.
 
 ### Where API keys are stored
 
@@ -127,8 +123,8 @@ then paste one API key from
   socket, at 0.006 USD per minute of audio.
 - Polishing uses Mistral Medium 3.5 (mistral-medium-3-5) with reasoning off,
   at 1.5 USD per million input tokens and 7.5 USD per million output tokens.
-  **Polish while you speak** is off by default here, because it sends about
-  3 times the input tokens per long dictation.
+  [Polish while you speak](coding-agents.md#polishing) is off by default
+  here, since it multiplies the input tokens.
 
 In this mode your audio and transcripts reach Mistral.
 
@@ -210,15 +206,10 @@ console.
 
 ## Terms from your coding agent
 
-The opt-in project-terms run
-([Terms from your coding agent](dictation.md#terms-from-your-coding-agent))
-uses these models and limits:
-
-- Claude Code: the pinned sonnet model alias, with the Read, Glob and Grep
-  tools, under a $0.50 cap.
-- Vibe: its own configured model, under a $0.30 cap.
-- opencode: its own configured model, under 12 steps of at most 4,096 output
-  tokens.
+The opt-in project-terms run runs Claude Code on the pinned sonnet model
+alias, and Vibe and opencode on their own configured model. Its tools, caps
+and measured costs are in
+[Terms from your coding agent](dictation.md#terms-from-your-coding-agent).
 
 Haiku 4.5 was measured and rejected for Claude Code. It cost the same, took
 ten times as long and padded the list with generic names.
@@ -226,8 +217,12 @@ ten times as long and padded the list with generic names.
 ## Bring your own server
 
 To run the models on your own hardware, switch Dictation or Polishing to
-**External URL** in **Settings → Engines**. Dictation works with any OpenAI
+**External URL** in **Settings → Engines**, and fill in the server URL, the
+model name and an API key. Dictation works with any OpenAI
 Realtime-compatible server, and polishing with any chat-completions server.
+For polishing, enter either a base URL such as `http://127.0.0.1:8080` or
+the full chat completions URL; the app appends `/v1/chat/completions` to a
+base URL.
 
 For example, to serve Voxtral Realtime with vLLM on an NVIDIA GPU:
 

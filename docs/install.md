@@ -69,9 +69,8 @@ Update the same way you installed:
 
 - Or download the newest DMG and replace the app in your Applications folder.
 
-Updates keep your settings and downloaded models. When an update ships new
-config defaults, it refreshes the config files you haven't edited. It asks
-before it touches the ones you have edited (see [Settings](dictation.md#settings)).
+Updates keep your settings, your downloaded models and the config files you
+edited ([how new defaults arrive](dictation.md#edit-the-polishing-prompts-and-dictionary)).
 
 > [!NOTE]
 > Because releases are ad-hoc signed, macOS may silently drop the

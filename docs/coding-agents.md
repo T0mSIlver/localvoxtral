@@ -10,19 +10,17 @@ SSH sessions work too, since the text is typed into your local terminal.
 
 localvoxtral detects terminal apps on its own: Terminal, iTerm2, Ghostty,
 Warp, WezTerm, kitty, Alacritty, Hyper, Tabby, Rio, and more. To add an app
-that embeds a terminal, open **Settings → Terminals → Add app…**.
+that embeds a terminal, open **Settings → Terminals → Add app…**; the app's
+own pane there removes it again.
 
 The list lives in the app. A terminal list file from an older version is
 imported once at launch.
 
-In a terminal, live dictation changes in three ways:
+In a terminal, live dictation changes in two ways:
 
 - **Prompt-safe output.** Newlines and tabs are typed as spaces. A stray line
   break never submits a half-finished prompt, and a tab never triggers shell
   completion.
-- **Replacements without rewriting.** Dictionary replacements apply before
-  the text is typed. localvoxtral never backspaces over what the terminal has
-  already drawn.
 - **Secure input handling.** Secure Keyboard Entry turns on at a sudo password
   prompt, for example. While it is active, a live session refuses to start
   instead of typing into the void, and an overlay commit copies the text to
@@ -38,8 +36,8 @@ reach and send to sessions are in
 
 When an Overlay Buffer dictation commits, optional LLM polishing cleans it up
 for how developers talk. The toggles below sit in **Settings → Text
-Processing → Polishing**, except the two context sources, which sit in
-**Settings → Context**.
+Processing → Polishing**, except context, which sits in **Settings →
+Context**.
 
 - **Polish while you speak** (on by default with the bundled helper, off
   with Mistral API or an external URL). A long dictation is polished a few
@@ -51,16 +49,14 @@ Processing → Polishing**, except the two context sources, which sit in
   that follow it.
 - **Agent prompt profile in terminals and Claude Desktop** (on by default).
   In a terminal, or in a Claude Code session in Claude Desktop's Code tab,
-  polishing switches to an agent-tuned prompt. The details follow this list.
+  polishing switches to an agent-tuned prompt, described below.
 - **Model-first polishing.** Polishing keeps the model's final wording and
   technical formatting, so useful Markdown and reconstructed identifiers
   survive.
-- **Repo vocabulary** (opt-in, **Send repo file names**). Up to 12 terms from
-  the focused repository reach the polisher, so "use auth dot t s" comes out
-  as "useAuth.ts". See [Repo vocabulary](#repo-vocabulary).
-- **Clipboard as context** (opt-in, **Send clipboard excerpt**). The polisher
-  sees a sanitized excerpt of your clipboard to get technical spellings
-  right.
+- **Context** (opt-in). File names from your repository, your clipboard,
+  the agent's screen and its session can reach the polisher to get
+  technical spellings right. See
+  [Polish context: what each toggle sends](#polish-context-what-each-toggle-sends).
 - **"Paste clipboard" macro** (on by default). Say "paste clipboard"
   mid-dictation, and the clipboard content goes in as a code block when the
   text commits.
@@ -80,28 +76,28 @@ files and last prompt** in **Settings → Context**. When the polisher is not
 on this Mac (the Mistral API, say), it also needs **Send context to non-local
 polishing servers**. With either off, Claude Desktop gets the standard prompt.
 
-The overlay shows a **Polished** badge whenever the LLM changed your text,
-and the menu bar popover keeps the raw transcript one click away.
-
-By default, clipboard, terminal screen and project context go only to a
-polisher running on this Mac. To send the enabled context sources to a
-non-local polishing endpoint you configured, turn on **Send context to
-non-local polishing servers** in **Settings → Context**. Use it only with an
-endpoint you trust.
-
 ### Repo vocabulary
 
-localvoxtral indexes the focused repository with a single sandboxed git file
-listing. The terms in the repository's dictation file join the index (see
-[Add project terms](#add-project-terms)).
+Turn on **Send repo file names** in **Settings → Context**. localvoxtral
+then indexes the focused repository with a single sandboxed git file
+listing, and up to 12 of its terms reach the polisher, so "use auth dot t s"
+comes out as "useAuth.ts". The terms in the repository's dictation file join
+the index (see [Add project terms](#add-project-terms)).
 
 The repository is the working directory of the Claude Code session the
-dictation joined, when that session runs on this Mac. Otherwise localvoxtral
-finds it from the terminal tab's title or the programs running in it. An
-ambiguous repository sends no hints.
+dictation joined, when that session runs on this Mac, Claude Desktop
+included. Otherwise localvoxtral finds it from the terminal tab's title or
+the programs running in it. An ambiguous repository sends no hints.
 
-Only high-confidence, boundary-checked matches are corrected in the working
-text. Everything else stays a hint and never rewrites the model's output.
+If a phrase you said matches a name exactly once, ignoring case and
+separators, localvoxtral corrects it before the polisher runs. A single
+spoken word is corrected only when it differs from the name by letter case
+alone.
+
+A name that only sounds like what you said goes to the polisher as a
+candidate, and the polisher decides from the sentence. It gets a handful of
+candidates, more for a long dictation. It never gets one with a file
+extension you didn't say, and a candidate never rewrites the model's output.
 
 ## Add project terms
 
@@ -127,18 +123,15 @@ that repository uses it.
 
 ## Polish context: what each toggle sends
 
-Each **Settings → Context** toggle is named for what it sends. Here is what
-each name covers.
+Each **Settings → Context** toggle is named for what it sends.
 
 By default, the first four sources run only while the polisher runs on this
 Mac (the bundled helper). **Send context to non-local polishing
 servers** is the only toggle that lifts that limit.
 
 - **Send repo file names** reads file names from the git repository you are
-  working in, with one sandboxed git file listing, and the terms in its
-  dictation file. Near-miss spellings then resolve to real names. The
-  repository is that of a joined Claude Code session on this Mac, Claude
-  Desktop included, or else your terminal's.
+  working in, and the terms in its dictation file
+  ([Repo vocabulary](#repo-vocabulary)).
 - **Send clipboard excerpt** sends an excerpt of your clipboard text to the
   polisher, sanitized and length-capped, used only as a spelling reference.
 - **Send agent's terminal screen** reads file and identifier names from your
@@ -158,18 +151,6 @@ servers** is the only toggle that lifts that limit.
   context enabled above to the polishing endpoint you configured. Enable it
   only for an endpoint you trust, such as a server on your own network.
 
-### How names correct your words
-
-If a phrase you said matches a name exactly once, ignoring case and
-separators, localvoxtral corrects it before the polisher runs. "Use auth dot
-ts" becomes "useAuth.ts". A single spoken word is corrected only when it
-differs from the name by letter case alone.
-
-A name that only sounds like what you said goes to the polisher as a
-candidate, and the polisher decides from the sentence. It gets a handful of
-candidates, more for a long dictation. It never gets one with a file
-extension you didn't say.
-
 ### Join sessions in cmux
 
 The **Join sessions in cmux** toggle and its **Socket password** row sit in
@@ -177,9 +158,15 @@ The **Join sessions in cmux** toggle and its **Socket password** row sit in
 [plugin README](../integrations/claude-code/README.md#which-terminal-am-i-dictating-into)
 covers their setup.
 
-The join uses cmux's automation socket to tell which session you are
-dictating into, and reads that surface as context. It works for local
-surfaces and for sessions opened with cmux ssh.
+The join uses cmux's automation socket, which you must first switch to
+**Password** mode, to read the surface id cmux gives the session. It reads
+that surface as context, and works for local surfaces and for sessions
+opened with cmux ssh.
+
+Once joined, the dictation goes into that surface through the same socket,
+so it lands there even if you switch windows while you speak. If cmux does
+not confirm the text arrived, it is not typed anywhere else and stays in
+History.
 
 Your Keychain stores the socket password, and localvoxtral sends it only to
 cmux's local socket. Saving an empty field removes it.
@@ -229,17 +216,8 @@ settings file, and never over your own script.
 
 A second plugin, localvoxtral-remote, covers Claude Code sessions on other
 machines. Its hooks report through an SSH port forward back to your Mac.
-[Remote Claude Code context over SSH](remote-claude-context.md) walks through
-the setup.
-
-The host needs nothing beyond the plugin itself, which is two JSON files and
-a small POSIX shell script. The script needs only sh and curl, which every
-host already has. A per-host
-token authenticates the hooks, and you can rotate or revoke it in Settings at
-any time.
-
-Remote context is limited to labels and short sanitized excerpts, and the app
-never reaches into the remote filesystem.
+[Remote Claude Code context over SSH](remote-claude-context.md) covers the
+setup, what a host can and cannot send, and its token.
 
 ### What the plugin shares
 
@@ -252,49 +230,27 @@ fields and the threat model.
 
 localvoxtral joins a dictation to a session only on an exact match. Any
 ambiguity attaches no context at all, and no join ever reads a window title.
+What each join matches is in [the integration matrix](integration-matrix.md),
+with the reasons some combinations don't join.
 
-| Where the session runs | What the join matches |
-|---|---|
-| Ghostty 1.4 or newer (today the [tip channel](https://ghostty.org/docs/install/pre)), iTerm2, Terminal.app | localvoxtral asks the terminal for the focused pane's TTY and matches it exactly against the session's. There is no title fallback, so older Ghostty versions don't join. |
-| A [herdr](../integrations/herdr/README.md) pane | The join binds to the precise pane and reads its screen from herdr directly, so neighboring panes never leak into your prompt. |
-| [cmux](https://github.com/manaflow-ai/cmux) (opt-in) | The surface id that cmux itself injects into the session, including shells opened with cmux ssh. |
-| A plain ssh shell on an enrolled host | The same TTY, which your shell publishes into the session. |
-| Claude Code Remote Control in a browser | The session id in the focused tab's URL. |
-| Claude Desktop's Code tab | The session you have focused there. |
+What you set up depends on where the session runs:
 
-First use asks for one Automation permission per terminal or browser.
-
-**cmux.** localvoxtral reads the surface id over cmux's own automation
-socket, which you must first switch to **Password** mode. The
-[plugin README](../integrations/claude-code/README.md#which-terminal-am-i-dictating-into)
-covers the two-step setup.
-
-Once joined, the dictation goes into that surface through the same socket,
-so it lands there even if you switch windows while you speak. If cmux does
-not confirm the text arrived, it is not typed anywhere else and stays in
-History.
-
-**Plain ssh.** Settings offers to add the one shell block that publishes the
-TTY. Unlike a network-level match, it works through jump hosts and shared
-connections. Details are in
-[A plain ssh host session](../integrations/claude-code/README.md#a-plain-ssh-host-session).
-
-**Remote Control.** In a Remote Control session, the agent runs on a machine
-of yours and [claude.ai/code](https://claude.ai/code) in a browser is the UI.
-localvoxtral matches the session id in the focused tab's URL exactly against
-the id the session's own hooks report. This works in Chrome, Brave and
-Safari, and a browser join never reads anything on screen.
-
-**Claude Desktop.** The Code tab join works whether the desktop app runs the
-session on your Mac or on an ssh host. It needs no extra permission and reads
-nothing on screen.
-
-An ssh host needs the remote plugin 1.11.0 or newer and **Keep the tunnel
-open**, since Claude Desktop's ssh carries no tunnel. Host setup turns it on
-when it finds Desktop there.
-
-For each agent and terminal, [the integration matrix](integration-matrix.md)
-lists what a join adds and why some combinations don't join.
+- **Ghostty, iTerm2 or Terminal.app**: allow the Automation permission the
+  first dictation asks for. Ghostty needs 1.4 or newer (today the
+  [tip channel](https://ghostty.org/docs/install/pre)).
+- **A [herdr](../integrations/herdr/README.md) pane**: nothing.
+- **[cmux](https://github.com/manaflow-ai/cmux)**: turn on
+  [Join sessions in cmux](#join-sessions-in-cmux).
+- **A plain ssh shell on an enrolled host**: add the shell block Settings
+  offers, which publishes your terminal's TTY into the session. It works
+  through jump hosts and shared connections
+  ([A plain ssh host session](../integrations/claude-code/README.md#a-plain-ssh-host-session)).
+- **Claude Code Remote Control** (the agent runs on a machine of yours and
+  [claude.ai/code](https://claude.ai/code) in Chrome, Brave or Safari is the
+  UI): allow the Automation permission for the browser.
+- **Claude Desktop's Code tab**, with the session on your Mac or on an ssh
+  host: nothing on this Mac. An ssh host needs
+  [Keep the tunnel open](remote-claude-context.md#keep-the-tunnel-open-for-sessions-with-no-terminal).
 
 ## Connect opencode, Mistral Vibe and Codex
 
@@ -443,56 +399,38 @@ dictated text in the clear.
 
 ### On a remote host
 
-The remote Claude Code plugin puts a `localvoxtral` command on the PATH of
-Claude Code sessions on the host, and only `localvoxtral doctor` runs there.
-It checks the host's end of the tunnel: the port the Mac's forward should
-bind, that the Mac refuses a request without the host's token and takes one
-with it, the plugin version each running session loaded, the Vibe hooks, and
-the last hook's outcome. Then it prints the Mac's own checks, fetched through
-the tunnel with the host's token, without local paths and without your other
-hosts. It never prints the token.
-
-With the Vibe hooks only, the same check is
-`sh ~/.vibe/localvoxtral/remote/doctor.sh`.
+On an enrolled host, only `localvoxtral doctor` runs. What it checks there
+is in [Checking the setup](remote-claude-context.md#checking-the-setup).
 
 ### Proposed terms
 
-A proposed term joins the project's terms the way the agent's own proposals
-do (see [Dictation](dictation.md)). It applies only where repo vocabulary
-may, and three dictations or a **Pin** make it yours. A name written like
-code (a type or function name, a file name, a path, a flag or an environment
-variable) is refused as not a term.
+A proposed term joins the project's terms like the agent's own proposals,
+under the same rules
+([Terms from your coding agent](dictation.md#terms-from-your-coding-agent)).
+The note from [Telling the agent you dictate](#telling-the-agent-you-dictate)
+tells your agents to propose what they create or rename.
 
 The project's terms in **Settings → Projects** list it as "Proposed by" the
-agent that ran the command. Claude Code, Codex and
-opencode are detected; Vibe passes `--agent vibe`.
+agent that ran the command. Claude Code, Codex and opencode are detected.
+Vibe is not, so its proposals read "Proposed by a coding agent". To have
+them name Vibe, ask it to add `--agent vibe` in a line of
+`~/.vibe/AGENTS.md` outside the note. An edit inside the note makes the row
+offer **Update**, which undoes it.
 
 A proposal from the command does not use up the project's one ask. With
 **Ask the coding agent for each new project's terms** on, the app still asks
 the agent once.
 
-### Let your agents find the command
-
-Add the note from the **Tell … you dictate** row (see
-[Telling the agent you dictate](#telling-the-agent-you-dictate)). It tells
-your agents to propose what they create or rename, and to run
-`localvoxtral doctor` when dictation misbehaves.
-
-Vibe is not detected, so its proposals read "Proposed by a coding agent". To
-have them name Vibe, ask it to add `--agent vibe` in a line of
-`~/.vibe/AGENTS.md` outside the note. An edit inside the note makes the row
-offer **Update**, which undoes it.
-
 ## Quick capture
 
-Quick capture saves an idea that has no place in the app you are in, and
-drafts it for one of your projects. Your words never reach the focused app.
-They are saved in History, then shown on the **Inbox** page of the
-localvoxtral window.
+To capture an idea that has no place in the app you are in, press Tab once
+during a dictation, and the overlay shows **Inbox**. The **Quick capture to
+Inbox** shortcut starts a dictation with the Inbox already picked
+([Where the words go](dictation.md#where-the-words-go)).
 
-To capture, press Tab once during a dictation: the overlay shows **Inbox**
-([Where the words go](dictation.md#where-the-words-go)). You can also set the
-optional **Quick capture to Inbox** shortcut in **Settings → Dictation**.
+Your words never reach the focused app. They are saved in History, then
+shown on the **Inbox** page of the localvoxtral window, drafted for one of
+your projects.
 
 A capture then goes through five steps.
 
@@ -543,15 +481,8 @@ it had before.
 
 ### Review a draft by voice
 
-With [Tell me when an agent needs you](agents.md#when-an-agent-needs-you)
-on, a finished draft (for an issue,
-once it is checked against the code) lights the
-menu bar mark and the popover says "Draft ready: Inbox for localvoxtral".
-There is no banner and no sound, and the cue waits for your next break: the
-end of a dictation, or the end of a turn in the agent pane you are looking
-at. An agent that needs you keeps the popover line; drafts add to its count.
-
-When no agent waits, the **Answer the agent that needs you** shortcut opens
+When no agent waits, press the
+[Answer the agent that needs you](agents.md#jump-to-it) shortcut. It opens
 the oldest ready draft in the overlay and starts a dictation. The overlay
 shows that one draft. When you stop, what you said decides:
 
@@ -565,7 +496,15 @@ shows that one draft. When you stop, what you said decides:
 
 With [Press Return with "send it"](dictation.md#press-return-with-send-it)
 on, "file it" or "drop it" alone, or a change followed by "send it", stops
-the dictation after 3 seconds of silence.
+the dictation after **Wait before pressing Return**.
+
+With [Tell me when an agent needs you](agents.md#when-an-agent-needs-you)
+on, a finished draft (for an issue, once it is checked against the code)
+lights the menu bar mark and the popover says "Draft ready: Inbox for
+localvoxtral". There is no banner and no sound, and the cue waits for your
+next break: the end of a dictation, or the end of a turn in the agent pane
+you are looking at. An agent that needs you keeps the popover line; drafts
+add to its count.
 
 ### Which projects a capture can go to
 
@@ -573,19 +512,15 @@ The classifier picks from the projects **Settings → Projects** lists:
 
 - a checkout on this Mac that a dictation joined;
 - a repository on an ssh host where a session has run, when the host runs
-  the remote plugin 1.13.0 or later;
+  the remote plugin 1.13.0 or later. A repository no hook names for 90 days
+  is dropped;
 - with an older plugin, the folder a session ran in, which is a worktree's
   name when the session ran in one. It stays on the list for 7 days after
   that session's last hook.
 
-Per-worktree projects that an older plugin left in your learned terms are
-not offered
-([One project per repository](dictation.md#one-project-per-repository)).
-
 A repository checked out both on this Mac and on a host is one project,
-drafted on this Mac. Its sheet lists its learned terms once, whichever
-checkout learned them
-([One project per repository](dictation.md#one-project-per-repository)).
+drafted on this Mac. How checkouts and worktrees make one project is in
+[One project per repository](dictation.md#one-project-per-repository).
 
 ### Projects
 
@@ -596,12 +531,10 @@ and the drafts waiting on it. A warning replaces the repository for a fork
 you have not picked a repository for, and for a project with no GitHub
 repository.
 
-Click a project to see its repository and checkouts, its description, every
-learned term with a pin and a forget button, and its joined sessions,
-captures and dictations this week. **Open Inbox** goes to its drafts.
-**No project**, last in the list, holds the terms learned outside any
-project. **Import…** and **Export…**, under the list, move every project's
-terms to another Mac.
+Click a project to see its repository and checkouts, its description, its
+learned terms ([Terms learned from polishing](dictation.md#terms-learned-from-polishing)),
+and its joined sessions, captures and dictations this week. **Open Inbox**
+goes to its drafts.
 
 ### Each project's repository
 
@@ -688,7 +621,7 @@ in its own checkout, the next time a session there sends a hook
 A Shortcut on the phone records a voice memo into iCloud Drive, and the Mac
 turns it into a capture. The engine you dictate with, the bundled one by
 default, transcribes the memo in less time than it lasts. The capture then
-goes through the same three steps as any other.
+goes through the same steps as any other.
 
 Set up the Mac first:
 

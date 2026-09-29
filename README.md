@@ -62,13 +62,7 @@ On first launch, a setup wizard asks for permissions and downloads the engine. I
 
 ## Documentation
 
-- [Install](docs/install.md): install, update, Gatekeeper fixes, nightly builds
-- [Dictating](docs/dictation.md): shortcuts, output modes, settings, screenshots
-- [Terminals & coding agents](docs/coding-agents.md): Claude Code session joins, the SSH remote plugin, repo vocabulary
-- [Work with several agents](docs/agents.md): being told an agent needs you, jumping to it, reaching sessions by name
-- [Integration matrix](docs/integration-matrix.md): what each coding agent and terminal gets, and why the gaps exist
-- [Under the hood](docs/under-the-hood.md): privacy, the bundled engines and their pinned models, hosted and self-hosted alternatives
-- [Building from source](docs/building.md) · [Roadmap](docs/roadmap.md)
+Every guide is listed in the [documentation index](docs/README.md).
 
 ## License
 
