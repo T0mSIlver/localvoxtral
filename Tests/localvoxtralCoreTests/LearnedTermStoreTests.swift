@@ -194,6 +194,45 @@ final class LearnedTermStoreTests: XCTestCase {
         try await assertKeepsItsBytes(Data(#"{"version":1,"projects":[{"key":"/r""#.utf8), problem: .unreadable)
     }
 
+    /// A try-pr build beside the installed app (#990): each loaded the file
+    /// before the other wrote, and each keeps the other's spelling.
+    func testTwoRunningCopiesKeepEachOthersTerms() throws {
+        let fileURL = try makeFileURL()
+        let installed = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        let tryBuild = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        installed.waitForPendingWrites()
+        tryBuild.waitForPendingWrites()
+
+        installed.recordCorrection("Voxtral", project: project)
+        installed.waitForPendingWrites()
+        tryBuild.recordCorrection("Mistral", project: project)
+        tryBuild.waitForPendingWrites()
+        installed.recordCorrection("Tekken", project: project)
+        installed.waitForPendingWrites()
+
+        let reopened = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        reopened.waitForPendingWrites()
+        XCTAssertEqual(
+            Set(reopened.confirmedTerms(projectKey: project.key)), ["Voxtral", "Mistral", "Tekken"])
+    }
+
+    /// A newer build running beside this one rewrote the file in its format:
+    /// this copy's next change is refused and the file keeps its bytes (#990).
+    func testACopyThatFindsANewerFileSinceItLoadedRefusesToWrite() throws {
+        let fileURL = try makeFileURL()
+        let store = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        store.recordCorrection("Voxtral", project: project)
+        store.waitForPendingWrites()
+        let newer = Data(#"{"version":\#(LearnedTerms.currentVersion + 1),"projects":[]}"#.utf8)
+        try newer.write(to: fileURL)
+
+        store.recordCorrection("Mistral", project: project)
+        store.waitForPendingWrites()
+
+        XCTAssertEqual(try Data(contentsOf: fileURL), newer)
+        XCTAssertEqual(store.problem, .newerVersion(LearnedTerms.currentVersion + 1))
+    }
+
     /// Start Over moves the refused file beside itself, next to an earlier
     /// one, and the store writes again.
     func testStartOverMovesTheFileAsideAndWritesAgain() async throws {

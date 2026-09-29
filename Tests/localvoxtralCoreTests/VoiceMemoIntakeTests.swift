@@ -92,6 +92,27 @@ final class VoiceMemoIntakeTests: XCTestCase {
         XCTAssertEqual(captured.count, 1)
     }
 
+    /// A try-pr build beside the installed app (#990): one copy takes the
+    /// memo, the other leaves the folder alone, and takes over once the
+    /// first quits without taking the memo a second time.
+    func testTwoRunningCopiesTakeAMemoOnce() async {
+        files = [memo("walk.m4a")]
+        trashFails = true
+        let tryBuild = intake()
+        do {
+            let installed = intake()
+            for _ in 0..<2 {
+                _ = await installed.scan()
+                _ = await tryBuild.scan()
+            }
+        }
+        XCTAssertEqual(captured.map(\.text), ["words of walk.m4a"])
+
+        for _ in 0..<2 { _ = await tryBuild.scan() }
+        XCTAssertEqual(captured.map(\.text), ["words of walk.m4a"])
+        XCTAssertEqual(transcriber.calls.withLock { $0 }.count, 1)
+    }
+
     func testAMemoStillGrowingOrStillInICloudWaits() async {
         let intake = intake()
         files = [memo("growing.m4a", size: 1_000), memo("cloud.m4a", downloaded: false)]
@@ -200,9 +221,12 @@ final class VoiceMemoIntakeTests: XCTestCase {
     func testAnUnreadableFolderIsReportedAndForgetsNothing() async throws {
         files = [memo("walk.m4a")]
         trashFails = true
-        let intake = intake()
-        _ = await intake.scan()
-        _ = await intake.scan()
+        do {
+            // The first launch, which quits and so lets go of the folder.
+            let intake = intake()
+            _ = await intake.scan()
+            _ = await intake.scan()
+        }
         XCTAssertEqual(captured.count, 1)
 
         var failures = 0

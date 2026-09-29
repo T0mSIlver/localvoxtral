@@ -55,6 +55,23 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.first?.title, "Dark mode")
     }
 
+    /// A try-pr build beside the installed app (#990): both opened the
+    /// Inbox before either captured, and neither loses the other's capture.
+    func testTwoRunningCopiesKeepEachOthersCaptures() async throws {
+        let installed = model(answer: ["reach": 0.9])
+        let tryBuild = model(answer: ["reach": 0.9])
+
+        await installed.capture(text: "Add a dark mode", historyRecordID: nil).value
+        await tryBuild.capture(text: "Fix the login", historyRecordID: nil).value
+        let first = try XCTUnwrap(installed.items.first { $0.text == "Add a dark mode" })
+        installed.setTitle("Dark mode, finally", for: first.id)
+
+        let onDisk = try XCTUnwrap(QuickCaptureInboxFile.load(from: fileURL).value)
+        XCTAssertEqual(Set(onDisk.items.map(\.text)), ["Add a dark mode", "Fix the login"])
+        XCTAssertEqual(onDisk.items.first { $0.id == first.id }?.title, "Dark mode, finally")
+        XCTAssertEqual(Set(installed.items.map(\.text)), ["Add a dark mode", "Fix the login"])
+    }
+
     func testTheCatchAllRunsNoAgentAndMovingItDraftsIt() async throws {
         let model = model(answer: ["inbox": 0.9])
         await model.capture(text: "An idea", historyRecordID: nil).value

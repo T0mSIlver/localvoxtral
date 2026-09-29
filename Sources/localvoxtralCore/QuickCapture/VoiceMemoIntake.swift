@@ -63,6 +63,9 @@ package final class VoiceMemoIntake {
     private var lastSeen: [String: VoiceMemoFile] = [:]
     private var isScanning = false
     private var lastListFailure: String?
+    /// Held while this copy of the app is the one that scans (#990).
+    private var folderLock: StoredFileLock?
+    private var reportedAnotherScanner = false
 
     package init(
         directory: URL,
@@ -122,7 +125,7 @@ package final class VoiceMemoIntake {
     /// One pass over the folder. Returns how many memos became captures.
     @discardableResult
     package func scan() async -> Int {
-        guard !isScanning else { return 0 }
+        guard !isScanning, holdsTheFolder() else { return 0 }
         guard ledgerProblem == nil else {
             // Once, not every 30 s.
             if !reportedLedgerProblem {
@@ -182,6 +185,29 @@ package final class VoiceMemoIntake {
             }
         }
         return captured
+    }
+
+    /// One running copy of the app scans the folder (#990): two would each
+    /// transcribe the same memo, and each would write a ledger the other
+    /// never read. The other copy waits, and takes over on a later scan once
+    /// this one quits.
+    private func holdsTheFolder() -> Bool {
+        guard let ledgerURL, folderLock == nil else { return true }
+        guard let lock = StoredFileLock.tryHolding(beside: ledgerURL) else {
+            if !reportedAnotherScanner {
+                reportedAnotherScanner = true
+                Log.backends.notice("Voice memos: another running copy of the app takes them")
+            }
+            return false
+        }
+        folderLock = lock
+        reportedAnotherScanner = false
+        // The copy that held the folder may have taken memos since this one
+        // loaded the ledger.
+        let load = VoiceMemoLedger.load(from: ledgerURL)
+        ledger = load.value ?? VoiceMemoLedger()
+        ledgerProblem = load.problem
+        return true
     }
 
     /// True when the memo became a capture.
