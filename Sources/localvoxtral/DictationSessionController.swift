@@ -645,6 +645,9 @@ final class DictationSessionController {
             statusText = StatusStrings.ready
         } else if isFinalizingStop {
             activeRealtimeClient.disconnect()
+            // A commit already polishing is cancelled and saved as not
+            // inserted, as a new dictation does to it (#1059).
+            guard !cancelPolishingForNewSessionIfNeeded() else { return }
             finishStoppedSession(promotePendingSegment: false)
         }
     }
@@ -864,6 +867,10 @@ final class DictationSessionController {
 
         guard finalizeRemainingAudio else {
             activeRealtimeClient.disconnect()
+            // Held until the commit completes, as after a finalizing stop: a
+            // start meanwhile (a new microphone, #1055) must go through
+            // `cancelPolishingForNewSessionIfNeeded`, which saves the text.
+            isFinalizingStop = true
             finishStoppedSession(promotePendingSegment: true)
             return
         }
