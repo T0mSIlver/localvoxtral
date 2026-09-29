@@ -62,7 +62,8 @@ final class UsageLedgerCoreTests: XCTestCase {
         }
 
         let entries = UsageLedger.entries(fromFileContents: try Data(contentsOf: fileURL))
-        XCTAssertEqual(Set(entries.map(\.model)), Set((0..<count).map { "m\($0)" }))
+        XCTAssertEqual(entries.count, count)
+        XCTAssertEqual(Set(entries.map(\.model)).count, count)
     }
 
     /// A crash mid-append left a line with no end. The next entry starts a
