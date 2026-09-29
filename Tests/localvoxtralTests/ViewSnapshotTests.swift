@@ -584,6 +584,95 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
+    /// Mockups for #1074's wider scope: whole-overlay directions, each as a
+    /// flow from listening through the Tab list and polishing to the landing.
+    func testOverlayDesignMockups() throws {
+        let metrics = OverlayLayoutMetrics(bodyFontSize: OverlayLayoutMetrics.defaultBodyFontSize)
+        let partial = "so um rename the retry helper to retry with back off and"
+        let raw = "so um rename the retry helper to retry with back off and run the unit test again"
+        let polished = "Rename the retry helper to retryWithBackoff and run the unit tests again."
+        typealias Design = OverlayDesignMockup
+        let directions: [(name: String, design: Design?, landing: PolishCueMockup.Style?)] = [
+            ("today", nil, nil),
+            ("d1", Design(listening: .dot, destination: .today, polishing: .titled), .headerTitle),
+            ("d2", Design(listening: .dot, destination: .outline, polishing: .shimmer), .wordMarks),
+            ("d3", Design(listening: .bars, destination: .footer, polishing: .shimmer), .wordMarks),
+        ]
+        struct Shot {
+            var name: String
+            var phase: OverlayBufferPhase
+            var text: String
+            var strip: OverlayDestinationStrip?
+            var design: OverlayDesignMockup?
+            var cue: PolishCueMockup?
+            var chip = false
+            var dark = false
+        }
+        var shots: [Shot] = []
+        for direction in directions {
+            for dark in [false, true] {
+                let suffix = dark ? "-dark" : ""
+                let prefix = "flow-\(direction.name)"
+                shots.append(Shot(name: "\(prefix)-1-listening\(suffix)", phase: .buffering, text: partial,
+                                  strip: Self.strip(waiting: 3, open: false), design: direction.design, dark: dark))
+                shots.append(Shot(name: "\(prefix)-2-tab\(suffix)", phase: .buffering, text: partial,
+                                  strip: Self.strip(waiting: 3, open: true), design: direction.design, dark: dark))
+                shots.append(Shot(name: "\(prefix)-3-polishing\(suffix)", phase: .finalizing, text: raw,
+                                  design: direction.design, dark: dark))
+                shots.append(Shot(name: "\(prefix)-4-landed\(suffix)", phase: .finalizing, text: polished,
+                                  design: direction.design,
+                                  cue: direction.landing.map { PolishCueMockup(style: $0, progress: 0, raw: raw) },
+                                  chip: direction.design == nil, dark: dark))
+            }
+        }
+        // Frames of the animated elements, and their Reduce Motion stills.
+        for pulse in [0.0, 0.5, 1.0] {
+            shots.append(Shot(name: "el-dot-\(Int(pulse * 100))", phase: .buffering, text: partial,
+                              design: Design(listening: .dot, pulse: pulse)))
+        }
+        shots.append(Shot(name: "el-dot-only", phase: .buffering, text: partial,
+                          design: Design(listening: .dotOnly)))
+        for (index, levels) in [[0.1, 0.2, 0.15, 0.1, 0.05], [0.35, 0.8, 0.55, 0.95, 0.4], [0.6, 0.4, 0.9, 0.5, 0.7]].enumerated() {
+            shots.append(Shot(name: "el-bars-\(index)", phase: .buffering, text: partial,
+                              design: Design(listening: .bars, levels: levels)))
+        }
+        for sweep in [0.15, 0.5, 0.85] {
+            shots.append(Shot(name: "el-shimmer-\(Int(sweep * 100))", phase: .finalizing, text: raw,
+                              design: Design(polishing: .shimmer, sweep: sweep)))
+        }
+        shots.append(Shot(name: "el-shimmer-reduce", phase: .finalizing, text: raw,
+                          design: Design(polishing: .shimmer, reduceMotion: true)))
+        shots.append(Shot(name: "el-shimmer-dark", phase: .finalizing, text: raw,
+                          design: Design(polishing: .shimmer, sweep: 0.5), dark: true))
+        for (name, design) in [("el-tab-soft-closed", Design(destination: .outline)), ("el-tab-footer-closed", Design(destination: .footer))] {
+            shots.append(Shot(name: name, phase: .buffering, text: partial,
+                              strip: Self.strip(waiting: 10, open: false), design: design))
+        }
+        shots.append(Shot(name: "el-tab-soft-open-10", phase: .buffering, text: partial,
+                          strip: Self.strip(waiting: 10, open: true), design: Design(destination: .outline)))
+
+        for shot in shots {
+            let view = DictationOverlayView(
+                phase: shot.phase, text: shot.text, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, polished: shot.chip, destinations: shot.strip,
+                polishCue: shot.cue, design: shot.design)
+            var height = metrics.contentHeight(
+                text: raw, errorMessage: nil, draftReview: nil, destinations: shot.strip)
+            if shot.strip != nil, shot.design?.destination == .footer {
+                height += metrics.headerHeight + OverlayLayoutMetrics.stackSpacing
+            }
+            let inset: CGFloat = 16
+            let framed = view
+                .frame(width: metrics.panelWidth, height: height)
+                .padding(inset)
+                .background(Color(white: shot.dark ? 0.22 : 0.55))
+            try record(
+                framed, name: "mock-\(shot.name)",
+                width: metrics.panelWidth + 2 * inset, height: height + 2 * inset, growToFit: false,
+                appearance: shot.dark ? .darkAqua : .aqua)
+        }
+    }
+
     /// A ready draft under spoken review (#927).
     private static let draft = QuickCaptureDraftSnapshot(
         id: UUID(uuidString: "00000000-0000-0000-0000-000000000927")!,

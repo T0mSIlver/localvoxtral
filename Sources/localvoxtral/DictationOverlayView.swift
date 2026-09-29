@@ -100,6 +100,8 @@ struct DictationOverlayView: View {
     var onDestinationFrame: ((OverlayDestinationTarget, CGRect?) -> Void)? = nil
     /// Mockup only (#1074): how the panel shows that polish changed the text.
     var polishCue: PolishCueMockup? = nil
+    /// Mockup only (#1074): the whole-overlay design directions.
+    var design: OverlayDesignMockup? = nil
     private let cornerRadius: CGFloat = 12
 
     /// Warning text needs explicit light/dark variants: system `.red` over
@@ -278,7 +280,7 @@ struct DictationOverlayView: View {
                 .frame(width: metrics.badgeFontSize * 1.2)
             Text(item.label)
                 .font(.system(size: metrics.badgeFontSize, weight: .semibold))
-                .foregroundStyle(item.isSelected ? Color.white : Color.secondary)
+                .foregroundStyle(item.isSelected ? (softRows ? Color.primary : Color.white) : Color.secondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer(minLength: 0)
@@ -287,7 +289,7 @@ struct DictationOverlayView: View {
         .frame(height: metrics.destinationRowHeight)
         .background(
             RoundedRectangle(cornerRadius: metrics.destinationRowHeight / 3, style: .continuous)
-                .fill(item.isSelected ? style.tint : Color.clear)
+                .fill(item.isSelected ? (softRows ? style.tint.opacity(0.18) : style.tint) : Color.clear)
         )
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
@@ -300,7 +302,7 @@ struct DictationOverlayView: View {
         if let systemImage = style.systemImage {
             Image(systemName: systemImage)
                 .font(.system(size: metrics.badgeFontSize * (item.kind == .session ? 0.6 : 0.9)))
-                .foregroundStyle(item.isSelected ? Color.white : (item.kind == .session ? style.tint : Color.secondary))
+                .foregroundStyle(item.isSelected && !softRows ? Color.white : (item.kind == .session || softRows ? style.tint : Color.secondary))
         }
     }
 
@@ -372,26 +374,157 @@ struct DictationOverlayView: View {
             .accessibilityLabel(accessibilityLabel)
     }
 
+    private var softRows: Bool {
+        design?.destination == .outline || design?.destination == .footer
+    }
+
+    /// The menu bar's session-active orange: the overlay's listening mark
+    /// matches the mic the user already watches.
+    private static let listeningColor = Color(nsColor: MenuBarStatusIcon.accentColor)
+
+    @ViewBuilder
+    private func designStatus(_ design: OverlayDesignMockup) -> some View {
+        let title = Text(phase == .finalizing ? (design.polishing == .today ? "Finalizing" : "Polishing") : phaseTitle)
+            .font(.system(size: metrics.titleFontSize, weight: .semibold))
+            .foregroundStyle(Color.secondary)
+        if phase == .buffering {
+            switch design.listening {
+            case .today:
+                title
+            case .dot, .dotOnly:
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Self.listeningColor)
+                        .frame(width: 8, height: 8)
+                        .opacity(design.reduceMotion ? 1 : 0.35 + 0.65 * design.pulse)
+                    if design.listening == .dot { title }
+                }
+            case .bars:
+                HStack(spacing: 6) {
+                    HStack(alignment: .center, spacing: 2) {
+                        ForEach(design.levels.indices, id: \.self) { index in
+                            Capsule()
+                                .fill(Self.listeningColor)
+                                .frame(width: 3, height: 3 + 11 * design.levels[index])
+                        }
+                    }
+                    .frame(height: 14)
+                    title
+                }
+            }
+        } else {
+            switch design.polishing {
+            case .today, .titled:
+                title
+                ProgressView().controlSize(.small)
+            case .shimmer:
+                Label {
+                    title
+                } icon: {
+                    Image(systemName: "wand.and.stars")
+                        .font(.system(size: metrics.titleFontSize))
+                        .foregroundStyle(Color.secondary)
+                }
+            }
+        }
+    }
+
+    private func tabHint(_ strip: OverlayDestinationStrip) -> some View {
+        HStack(spacing: 4) {
+            Text("Tab")
+                .font(.system(size: metrics.badgeFontSize * 0.85, weight: .semibold))
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.25), lineWidth: 0.5)
+                )
+            Text(strip.position)
+                .font(.system(size: metrics.badgeFontSize, weight: .semibold).monospacedDigit())
+        }
+        .foregroundStyle(.tertiary)
+        .fixedSize()
+    }
+
+    private func softPill(_ item: OverlayDestinationStrip.Item) -> some View {
+        let style = DestinationStyle(item.kind)
+        return HStack(spacing: 3) {
+            if let systemImage = style.systemImage {
+                Image(systemName: systemImage)
+                    .font(.system(size: metrics.badgeFontSize * (item.kind == .session ? 0.6 : 0.9)))
+            }
+            Text(item.label)
+                .font(.system(size: metrics.badgeFontSize, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .foregroundStyle(style.tint)
+        .padding(.horizontal, metrics.badgeHorizontalPadding)
+        .padding(.vertical, metrics.badgeVerticalPadding)
+        .background(Capsule(style: .continuous).fill(style.tint.opacity(0.14)))
+        .overlay(Capsule(style: .continuous).strokeBorder(style.tint.opacity(0.45), lineWidth: 0.5))
+    }
+
+    private func outlineHeader(_ strip: OverlayDestinationStrip) -> some View {
+        HStack(spacing: 6) {
+            if !strip.isOpen, let item = strip.selectedItem {
+                softPill(item).layoutPriority(-1)
+            }
+            if strip.items.count > 1 { tabHint(strip) }
+        }
+        .layoutPriority(-1)
+    }
+
+    private func footerRow(_ strip: OverlayDestinationStrip) -> some View {
+        HStack(spacing: 5) {
+            if let item = strip.selectedItem {
+                let style = DestinationStyle(item.kind)
+                Image(systemName: "arrow.turn.down.right")
+                    .font(.system(size: metrics.badgeFontSize * 0.9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                if let systemImage = style.systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: metrics.badgeFontSize * (item.kind == .session ? 0.6 : 0.9)))
+                        .foregroundStyle(style.tint)
+                }
+                Text(item.label)
+                    .font(.system(size: metrics.badgeFontSize, weight: .semibold))
+                    .foregroundStyle(style.tint)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            Spacer(minLength: 4)
+            if strip.items.count > 1 { tabHint(strip) }
+        }
+        .frame(height: metrics.headerHeight)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: OverlayLayoutMetrics.stackSpacing) {
             HStack(alignment: .center, spacing: 6) {
-                if let polishCue, polishCue.style == .headerTitle {
+                if let polishCue, polishCue.style == .headerTitle || design != nil {
                     Label(polishCue.headerTitle, systemImage: "wand.and.stars")
                         .labelStyle(.titleAndIcon)
                         .font(.system(size: metrics.titleFontSize, weight: .semibold))
                         .foregroundStyle(Color.accentColor)
+                } else if let design {
+                    designStatus(design)
                 } else {
                     Text(phaseTitle)
                         .font(.system(size: metrics.titleFontSize, weight: .semibold))
                         .foregroundStyle(isSecureInputTitle ? Self.warningColor : Color.secondary)
-                }
-                if phase == .finalizing, polishCue?.style != .headerTitle {
-                    ProgressView()
-                        .controlSize(.small)
+                    if phase == .finalizing, polishCue == nil {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
                 }
                 Spacer(minLength: 0)
                 if let draftReview {
                     draftReviewPill(draftReview)
+                } else if destinations != nil, design?.destination == .footer {
+                    EmptyView()
+                } else if let destinations, design?.destination == .outline {
+                    outlineHeader(destinations)
                 } else if let destinations {
                     destinationHeader(destinations)
                 } else {
@@ -405,7 +538,7 @@ struct DictationOverlayView: View {
 
             if let draftReview {
                 draftReviewBlock(draftReview)
-            } else if let destinations, destinations.isOpen {
+            } else if let destinations, destinations.isOpen, design?.destination != .footer {
                 destinationList(destinations)
             }
 
@@ -413,6 +546,9 @@ struct DictationOverlayView: View {
                 ScrollView(.vertical, showsIndicators: true) {
                     if let polishCue {
                         PolishCueBody(cue: polishCue, polished: displayText, metrics: metrics)
+                    } else if let design, design.polishing == .shimmer, phase == .finalizing {
+                        ShimmerBody(text: displayText, sweep: design.sweep,
+                                    reduceMotion: design.reduceMotion, metrics: metrics)
                     } else {
                         OverlayBodyScrollContent(text: displayText, metrics: metrics)
                     }
@@ -431,6 +567,13 @@ struct DictationOverlayView: View {
                         }
                     }
                 }
+            }
+
+            if let destinations, design?.destination == .footer {
+                if destinations.isOpen {
+                    destinationList(destinations)
+                }
+                footerRow(destinations)
             }
 
             if let errorMessage, !errorMessage.trimmed.isEmpty {
@@ -624,5 +767,56 @@ struct PolishCueBody: View {
                 .opacity(cue.polishedOpacity)
         }
         .frame(maxWidth: .infinity, minHeight: metrics.bodyLineHeight, alignment: .topLeading)
+    }
+}
+
+/// Mockup only (#1074): one direction for the whole overlay.
+struct OverlayDesignMockup {
+    enum Listening { case today, dot, dotOnly, bars }
+    enum Destination { case today, outline, footer }
+    enum Polishing { case today, titled, shimmer }
+    var listening: Listening = .today
+    var destination: Destination = .today
+    var polishing: Polishing = .today
+    /// The listening dot's breath, 0 dim to 1 full.
+    var pulse: Double = 1
+    /// Mic level per bar, 0...1.
+    var levels: [Double] = [0.35, 0.8, 0.55, 0.95, 0.4]
+    /// Where the polishing sweep is across the text, 0...1.
+    var sweep: Double = 0.45
+    var reduceMotion = false
+}
+
+struct ShimmerBody: View {
+    let text: String
+    let sweep: Double
+    let reduceMotion: Bool
+    let metrics: OverlayLayoutMetrics
+
+    private var base: some View {
+        Text(text)
+            .font(.system(size: metrics.bodyFontSize))
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, minHeight: metrics.bodyLineHeight, alignment: .topLeading)
+    }
+
+    var body: some View {
+        base
+            .foregroundStyle(.secondary)
+            .overlay {
+                if !reduceMotion {
+                    base
+                        .foregroundStyle(.primary)
+                        .mask(
+                            LinearGradient(
+                                stops: [
+                                    .init(color: .clear, location: max(0, sweep - 0.22)),
+                                    .init(color: .black, location: sweep),
+                                    .init(color: .clear, location: min(1, sweep + 0.22)),
+                                ],
+                                startPoint: .leading, endPoint: .trailing)
+                        )
+                }
+            }
     }
 }
