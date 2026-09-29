@@ -117,7 +117,10 @@ package enum EvalChildProcess {
         )
         guard submitted == 0 else {
             let errors = (try? String(contentsOf: files.standardError, encoding: .utf8)) ?? ""
-            throw Failure(description: "launchctl submit failed (status \(submitted)): \(errors)")
+            throw Failure(
+                description: "launchctl submit failed (status \(submitted)); it needs the account's "
+                    + "GUI login session: \(errors)"
+            )
         }
         defer {
             _ = try? runDirectly(

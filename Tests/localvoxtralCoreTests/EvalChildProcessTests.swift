@@ -3,7 +3,9 @@ import XCTest
 import localvoxtralTestSupport
 
 /// The eval runs `say` through this wrapper, as a launchd job when
-/// `LV_EVAL_SAY_VIA_LAUNCHD=1` (#960).
+/// `LV_EVAL_SAY_VIA_LAUNCHD=1` (#960). The launchd path itself needs a GUI
+/// login session, which the Mac build gate's account lacks by design
+/// (`launchctl submit` aborts there), so eval-e2e is what runs it.
 final class EvalChildProcessTests: XCTestCase {
     private func temporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
@@ -74,23 +76,4 @@ final class EvalChildProcessTests: XCTestCase {
         XCTAssertEqual(status, 3)
         XCTAssertEqual(try String(contentsOf: output, encoding: .utf8), "hello\n")
     }
-
-    #if os(macOS)
-    func testLaunchdRunWritesStandardOutputAndReportsStatus() throws {
-        let output = try temporaryDirectory().appendingPathComponent("out.txt")
-        XCTAssertEqual(
-            try EvalChildProcess.run(
-                "/bin/echo", arguments: ["hello", "l'heure"],
-                standardOutput: output.path, discardStandardError: true, viaLaunchd: true
-            ),
-            0
-        )
-        XCTAssertEqual(try String(contentsOf: output, encoding: .utf8), "hello l'heure\n")
-
-        XCTAssertEqual(
-            try EvalChildProcess.run("/bin/sh", arguments: ["-c", "exit 3"], viaLaunchd: true),
-            3
-        )
-    }
-    #endif
 }
