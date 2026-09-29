@@ -362,6 +362,69 @@ release_account_files 2>/dev/null
 assert_account_is_pristine "after a run on a symlinked config"
 pass "a symlinked ssh config stays a symlink and comes back byte-identical"
 
+# --- 6i. A strip that cannot run leaves the config and the hold ------------
+# The fixture created the config, and the account added a host to it during
+# the run. With no temporary file to strip into, or a failed transformation,
+# an empty result used to read as "nothing but the fixture's blocks" and the
+# config went, hosts and all (#991).
+
+strip_failure_keeps_config() {
+  local what="$1"
+  shift
+  export HOME="$TMP_DIR/home-stripfail"
+  rm -rf "$HOME"
+  mkdir -p "$HOME"
+  # shellcheck source=/dev/null
+  LOCALVOXTRAL_HERDR_FIXTURE_SOURCE_ONLY=1 source "$FIXTURE"
+  mkdir -p "$TMP_DIR/lvx-herdr-fixture-stripfail"
+  hold_account_files "$TMP_DIR/lvx-herdr-fixture-stripfail" 2>/dev/null
+  printf '%s\nHost lvx-herdr-fixture\n%s\n' "$SSH_CONFIG_BEGIN" "$SSH_CONFIG_END" | append_ssh_config_block
+  printf 'Host added-during-the-run\n  HostName later.example\n' >> "$SSH_CONFIG_FILE"
+  cp "$SSH_CONFIG_FILE" "$TMP_DIR/stripfail-before"
+  sed -e 's/^pid=.*/pid=999999/' "$HOLD_MANIFEST" > "$HOLD_MANIFEST.tmp"
+  mv "$HOLD_MANIFEST.tmp" "$HOLD_MANIFEST"
+  ( "$@" ) 2>/dev/null && fail "$what: recover reported success"
+  [[ -f "$SSH_CONFIG_FILE" ]] || fail "$what: recover deleted the ssh config, the account's host with it"
+  cmp -s "$TMP_DIR/stripfail-before" "$SSH_CONFIG_FILE" \
+    || fail "$what: the ssh config changed:
+$(cat "$SSH_CONFIG_FILE")"
+  hold_is_present || fail "$what: a failed restore dropped the hold it would retry from"
+}
+
+recover_without_tmpdir() { TMPDIR="$TMP_DIR/no-such-dir" command_recover; }
+recover_with_failing_strip() {
+  # Only the strip's awk (the one given newline_added) fails.
+  awk() { case "$*" in *newline_added=*) return 2 ;; esac; command awk "$@"; }
+  command_recover
+}
+strip_failure_keeps_config "no TMPDIR" recover_without_tmpdir
+strip_failure_keeps_config "a failed strip" recover_with_failing_strip
+pass "a strip that cannot run keeps the ssh config and the hold"
+
+# --- 6j. A pre-#323 hold restores through symlinked herdr files ------------
+# A dotfile manager's herdr config and session are symlinks; the restore must
+# write their targets and leave the links in place.
+
+setup_home
+mkdir -p "$HOME/dotfiles"
+/bin/mv "$HOME/.config/herdr/config.toml" "$HOME/dotfiles/herdr-config.toml"
+/bin/mv "$HOME/.config/herdr/session.json" "$HOME/dotfiles/herdr-session.json"
+ln -s ../../dotfiles/herdr-config.toml "$HOME/.config/herdr/config.toml"
+ln -s "$HOME/dotfiles/herdr-session.json" "$HOME/.config/herdr/session.json"
+mkdir -p "$TMP_DIR/lvx-herdr-fixture-legacy-link"
+hold_account_files "$TMP_DIR/lvx-herdr-fixture-legacy-link" 2>/dev/null
+cp "$GOLDEN/config.toml" "$HOLD_DIR/herdr-config.pristine"
+cp "$GOLDEN/session.json" "$HOLD_DIR/herdr-session.pristine"
+printf 'onboarding = false\n' > "$HOME/dotfiles/herdr-config.toml"
+printf '{"workspaces":["the fixture layout"]}' > "$HOME/dotfiles/herdr-session.json"
+sed -e 's/^pid=.*/pid=999999/' "$HOLD_MANIFEST" > "$HOLD_MANIFEST.tmp"
+mv "$HOLD_MANIFEST.tmp" "$HOLD_MANIFEST"
+command_recover 2>/dev/null
+[[ -L "$HOME/.config/herdr/config.toml" ]] || fail "the restore replaced the symlinked herdr config with a file"
+[[ -L "$HOME/.config/herdr/session.json" ]] || fail "the restore replaced the symlinked herdr session with a file"
+assert_account_is_pristine "after recovering a pre-#323 hold through symlinks"
+pass "a pre-#323 hold restores symlinked herdr files through their links"
+
 # --- 7. A SIGKILL between `machine add` and federation.json still stops the
 # daemon-started remote server ---------------------------------------------
 # `command_federation` commits the remote socket to the HOLD MANIFEST before

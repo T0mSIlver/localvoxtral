@@ -305,13 +305,19 @@ hold_account_files() {
 # over it, and only if the config has not changed since it was read. A run
 # killed mid-write leaves the old file or the new one, never a truncated one
 # (#991).
+#
+# These functions run under `||` and `!`, where bash ignores `set -e`, so
+# each checks its own steps and returns 1 on the first failure.
 
-# The file a rename must replace: the config itself, or what a symlinked
-# config (a dotfile manager's) points at, so the link survives.
-ssh_config_target() {
-  local path="$SSH_CONFIG_FILE" link
+# link_target <path>: the file a rename must replace, which is <path> itself
+# or, for a symlink (a dotfile manager's), the end of its chain, so the link
+# survives. Fails on an unreadable link or a loop.
+link_target() {
+  local path="$1" link hops=0
   while [[ -L "$path" ]]; do
-    link="$(readlink "$path")"
+    (( hops++ < 40 )) || return 1
+    link="$(readlink "$path")" || return 1
+    [[ -n "$link" ]] || return 1
     case "$link" in
       /*) path="$link" ;;
       *) path="$(dirname "$path")/$link" ;;
@@ -320,12 +326,25 @@ ssh_config_target() {
   printf '%s\n' "$path"
 }
 
+ssh_config_target() {
+  link_target "$SSH_CONFIG_FILE"
+}
+
 ssh_config_fingerprint() {
+  local sum
   if [[ -e "$SSH_CONFIG_FILE" ]]; then
-    cksum < "$SSH_CONFIG_FILE" | awk '{ print $1 " " $2 }'
+    sum="$(cksum < "$SSH_CONFIG_FILE")" || return 1
+    printf '%s\n' "$sum"
   else
     printf 'absent\n'
   fi
+}
+
+# ssh_config_unchanged_since <fingerprint>; fails when the config cannot be read.
+ssh_config_unchanged_since() {
+  local now
+  now="$(ssh_config_fingerprint)" || return 1
+  [[ "$now" == "$1" ]]
 }
 
 # Every fixture begin marker is closed by its own end marker before the next
@@ -351,14 +370,20 @@ ssh_config_blocks_balanced() {
 # replace_ssh_config <new-content> <fingerprint the config had when read>
 replace_ssh_config() {
   local content="$1" read_fingerprint="$2" target staged
-  target="$(ssh_config_target)"
-  staged="$(mktemp "$(dirname "$target")/.config.lvx-fixture.XXXXXX")"
+  if ! target="$(ssh_config_target)"; then
+    log "ERROR: could not resolve the symlink $SSH_CONFIG_FILE; left it as it was"
+    return 1
+  fi
+  if ! staged="$(mktemp "$(dirname "$target")/.config.lvx-fixture.XXXXXX")"; then
+    log "ERROR: could not stage the new $SSH_CONFIG_FILE; left it as it was"
+    return 1
+  fi
   if ! cat "$content" > "$staged" || ! chmod 600 "$staged" || ! cmp -s "$content" "$staged"; then
     rm -f "$staged"
     log "ERROR: could not stage the new $SSH_CONFIG_FILE; left it as it was"
     return 1
   fi
-  if [[ "$(ssh_config_fingerprint)" != "$read_fingerprint" ]]; then
+  if ! ssh_config_unchanged_since "$read_fingerprint"; then
     rm -f "$staged"
     log "ERROR: $SSH_CONFIG_FILE changed while the fixture was rewriting it; left it as it was"
     return 1
@@ -368,28 +393,31 @@ replace_ssh_config() {
 
 # Append the block on stdin to the ssh config.
 append_ssh_config_block() {
-  local block combined read_fingerprint status=0
-  block="$(mktemp "${TMPDIR:-/tmp}/lvx-sshblock.XXXXXX")"
-  combined="$(mktemp "${TMPDIR:-/tmp}/lvx-sshcfg.XXXXXX")"
-  cat > "$block"
-  read_fingerprint="$(ssh_config_fingerprint)"
-  if [[ -f "$SSH_CONFIG_FILE" ]]; then
-    cat "$SSH_CONFIG_FILE" > "$combined"
+  local block="" combined="" read_fingerprint last status=0
+  if ! block="$(mktemp "${TMPDIR:-/tmp}/lvx-sshblock.XXXXXX")" \
+    || ! combined="$(mktemp "${TMPDIR:-/tmp}/lvx-sshcfg.XXXXXX")" \
+    || ! cat > "$block" \
+    || ! read_fingerprint="$(ssh_config_fingerprint)"; then
+    log "ERROR: could not prepare the fixture's block for $SSH_CONFIG_FILE; left it as it was"
+    status=1
+  elif [[ -f "$SSH_CONFIG_FILE" ]] && ! cat "$SSH_CONFIG_FILE" > "$combined"; then
+    log "ERROR: could not read $SSH_CONFIG_FILE; left it as it was"
+    status=1
+  elif ! last="$(tail -c 1 "$combined")"; then
+    status=1
+  elif [[ -n "$last" ]] && ! { printf '\n' >> "$combined" && : > "$HOLD_DIR/ssh-config.newline-added"; }; then
     # A config whose last line has no newline would glue the begin marker
     # onto it. The newline goes in, and strip takes it back out.
-    if [[ -s "$combined" && -n "$(tail -c 1 "$combined")" ]]; then
-      printf '\n' >> "$combined"
-      : > "$HOLD_DIR/ssh-config.newline-added"
-    fi
-  fi
-  cat "$block" >> "$combined"
-  if ! ssh_config_blocks_balanced "$combined"; then
+    status=1
+  elif ! cat "$block" >> "$combined"; then
+    status=1
+  elif ! ssh_config_blocks_balanced "$combined"; then
     log "ERROR: $SSH_CONFIG_FILE would have unbalanced fixture markers; left it as it was"
     status=1
   elif ! replace_ssh_config "$combined" "$read_fingerprint"; then
     status=1
   fi
-  rm -f "$block" "$combined"
+  rm -f ${block:+"$block"} ${combined:+"$combined"}
   (( status == 0 )) || die "could not add the fixture's block to $SSH_CONFIG_FILE"
 }
 
@@ -398,11 +426,18 @@ append_ssh_config_block() {
 # final newline. Refuses, leaving the config and the hold as they are, when
 # the markers do not balance.
 strip_ssh_config_blocks() {
+  local target read_fingerprint stripped last unterminated=0 newline_added=0
+  if ! target="$(ssh_config_target)"; then
+    log "ERROR: could not resolve the symlink $SSH_CONFIG_FILE; left it as it was"
+    return 1
+  fi
   # A run killed between staging and renaming left its staged copy.
-  rm -f "$(dirname "$(ssh_config_target)")"/.config.lvx-fixture.* 2>/dev/null || true
+  rm -f "$(dirname "$target")"/.config.lvx-fixture.* 2>/dev/null || true
   [[ -f "$SSH_CONFIG_FILE" ]] || return 0
-  local read_fingerprint stripped unterminated=0 newline_added=0
-  read_fingerprint="$(ssh_config_fingerprint)"
+  if ! read_fingerprint="$(ssh_config_fingerprint)"; then
+    log "ERROR: could not read $SSH_CONFIG_FILE; left it as it was"
+    return 1
+  fi
   if ! ssh_config_blocks_balanced "$SSH_CONFIG_FILE"; then
     log "ERROR: the fixture's markers in $SSH_CONFIG_FILE do not balance; left it as it was.
   Remove the fixture's blocks by hand (a copy from before the run is in
@@ -414,14 +449,23 @@ strip_ssh_config_blocks() {
     log "ERROR: could not back up $SSH_CONFIG_FILE before stripping it; left it as it was"
     return 1
   fi
-  [[ -n "$(tail -c 1 "$SSH_CONFIG_FILE")" ]] && unterminated=1
+  if ! last="$(tail -c 1 "$SSH_CONFIG_FILE")"; then
+    log "ERROR: could not read $SSH_CONFIG_FILE; left it as it was"
+    return 1
+  fi
+  [[ -n "$last" ]] && unterminated=1
   [[ -f "$HOLD_DIR/ssh-config.newline-added" ]] && newline_added=1
-  stripped="$(mktemp "${TMPDIR:-/tmp}/lvx-sshcfg.XXXXXX")"
+  # An empty result deletes a config the fixture created, so a strip that did
+  # not run must never look like one that left nothing.
+  if ! stripped="$(mktemp "${TMPDIR:-/tmp}/lvx-sshcfg.XXXXXX")"; then
+    log "ERROR: could not create a temporary file to strip $SSH_CONFIG_FILE into; left it as it was"
+    return 1
+  fi
   # A line is written only once the next kept line (or the end) shows whether
   # its newline belongs to the account: the input's own unterminated last
   # line gets none, and neither does the line append_ssh_config_block
   # terminated when nothing the account wrote follows the fixture's blocks.
-  awk -v b1="$SSH_CONFIG_BEGIN" -v e1="$SSH_CONFIG_END" \
+  if ! awk -v b1="$SSH_CONFIG_BEGIN" -v e1="$SSH_CONFIG_END" \
       -v b2="$SSH_CONFIG_ALT_BEGIN" -v e2="$SSH_CONFIG_ALT_END" \
       -v b3="$SSH_CONFIG_FED_BEGIN" -v e3="$SSH_CONFIG_FED_END" \
       -v unterminated="$unterminated" -v newline_added="$newline_added" '
@@ -440,7 +484,11 @@ strip_ssh_config_blocks() {
       else
         printf "%s\n", held
     }
-  ' "$SSH_CONFIG_FILE" > "$stripped"
+  ' "$SSH_CONFIG_FILE" > "$stripped"; then
+    rm -f "$stripped"
+    log "ERROR: could not strip the fixture's blocks from $SSH_CONFIG_FILE; left it as it was"
+    return 1
+  fi
   if cmp -s "$stripped" "$SSH_CONFIG_FILE"; then
     rm -f "$stripped"
     return 0
@@ -448,11 +496,11 @@ strip_ssh_config_blocks() {
   # Only remove the file if the fixture is the reason it exists at all.
   if [[ ! -s "$stripped" && -f "$HOLD_DIR/ssh-config.created" ]]; then
     rm -f "$stripped"
-    if [[ "$(ssh_config_fingerprint)" != "$read_fingerprint" ]]; then
+    if ! ssh_config_unchanged_since "$read_fingerprint"; then
       log "ERROR: $SSH_CONFIG_FILE changed while the fixture was removing it; left it as it was"
       return 1
     fi
-    rm -f "$SSH_CONFIG_FILE"
+    rm -f "$SSH_CONFIG_FILE" || return 1
     return 0
   fi
   if ! replace_ssh_config "$stripped" "$read_fingerprint"; then
@@ -462,16 +510,22 @@ strip_ssh_config_blocks() {
   rm -f "$stripped"
 }
 
-# restore_held_file <pristine copy> <account path>: staged beside the
-# account path and renamed over it.
+# restore_held_file <pristine copy> <account path>: staged beside the file
+# the account path resolves to and renamed over it, so a symlinked path keeps
+# its link.
 restore_held_file() {
-  local held="$1" path="$2" staged
-  mkdir -p "$(dirname "$path")"
-  staged="$(mktemp "$(dirname "$path")/.$(basename "$path").lvx-fixture.XXXXXX")"
+  local held="$1" path="$2" target staged
+  if ! target="$(link_target "$path")" \
+    || ! mkdir -p "$(dirname "$target")" \
+    || ! staged="$(mktemp "$(dirname "$target")/.$(basename "$target").lvx-fixture.XXXXXX")"; then
+    log "ERROR: could not stage the restore of $path; left it as it was"
+    return 1
+  fi
   if cp "$held" "$staged" && cmp -s "$held" "$staged"; then
-    mv -f "$staged" "$path"
+    mv -f "$staged" "$target"
   else
     rm -f "$staged"
+    log "ERROR: could not stage the restore of $path; left it as it was"
     return 1
   fi
 }
