@@ -16,13 +16,13 @@ extension DictationSessionController {
     @discardableResult
     func cancelPolishingForNewSessionIfNeeded() -> Bool {
         guard polishAndCommitTask != nil else { return false }
-        debugLog("cancel in-flight polishing to start a new dictation session")
+        debugLog("cancel the pending commit: a new dictation or a cancel supersedes it")
         polishAndCommitTask?.cancel()
         polishAndCommitTask = nil
         // Before the cleanup below clears it: the dictation being polished
         // is not inserted, and History is where the user finds it again.
         if let saveInterruptedPolishCommit {
-            Log.polishing.notice("polish cancelled by a new dictation; saving the transcript as not inserted")
+            Log.polishing.notice("pending commit cancelled; saving the transcript as not inserted")
             saveInterruptedPolishCommit()
         }
 
