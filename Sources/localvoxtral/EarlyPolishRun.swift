@@ -36,6 +36,7 @@ final class EarlyPolishRun {
     private let configuration: LLMPolishingConfiguration
     private let templates: @MainActor () -> LLMPromptTemplates
     private let now: @Sendable () -> Date
+    private let logFailure: LogFailure
     private var resolvedTemplates: LLMPromptTemplates?
     private var pieces: [Piece] = []
     private var consumedPrefix = ""
@@ -45,18 +46,30 @@ final class EarlyPolishRun {
     /// ended.
     private var closed = false
 
+    /// Logs a failed piece: its index, the part of the error safe to log
+    /// public, and the whole error, logged private.
+    typealias LogFailure = @MainActor (_ piece: Int, _ publicDetail: String, _ privateDetail: String) -> Void
+
     /// `templates` is read when the first piece is sent, once the session's
     /// target and join are known; the stop compares it with its own.
     init(
         service: any LLMPolishingServicing,
         configuration: LLMPolishingConfiguration,
         templates: @escaping @MainActor () -> LLMPromptTemplates,
-        now: @escaping @Sendable () -> Date
+        now: @escaping @Sendable () -> Date,
+        logFailure: @escaping LogFailure = EarlyPolishRun.logFailure
     ) {
         self.service = service
         self.configuration = configuration
         self.templates = templates
         self.now = now
+        self.logFailure = logFailure
+    }
+
+    static func logFailure(piece: Int, publicDetail: String, privateDetail: String) {
+        Log.polishing.error(
+            "early polish: piece \(piece, privacy: .public) failed, the stop polishes the rest: \(publicDetail, privacy: .public) \(privateDetail, privacy: .private)"
+        )
     }
 
     /// The dictation's settled text changed (a backend final landed).
@@ -88,8 +101,10 @@ final class EarlyPolishRun {
                 )
                 self?.pieceFinished(input: next.piece, output: result.polishedText, consumedPrefix: next.consumedPrefix)
             } catch {
-                Log.polishing.error(
-                    "early polish: piece \(index, privacy: .public) failed, the stop polishes the rest: \(error.localizedDescription, privacy: .public)"
+                // A rejection's body can quote the request, so the dictated
+                // text (#1110): only the status is public.
+                self?.logFailure(
+                    index, LLMPolishingError.publicLogDescription(of: error), error.localizedDescription
                 )
                 self?.pieceFailed()
             }
