@@ -58,6 +58,8 @@ printf '1. [ok  ] App: localvoxtral 1.4.0.\n2. [FAIL] Accessibility: Not allowed
   >"$TMP_DIR/mac-fail.txt"
 printf '{"cli":1,"ok":true,"doctor":{"checks":[{"id":"app","state":"ok","title":"App","detail":"localvoxtral 1.4.0."}]}}\n' \
   >"$TMP_DIR/mac-ok.json"
+printf '{"cli":1,"ok":true,"doctor":{"checks":[{"id":"app","state":"ok","title":"App","detail":"localvoxtral 1.4.0."},{"id":"accessibility","state":"failed","title":"Accessibility","detail":"Not allowed."}]}}\n' \
+  >"$TMP_DIR/mac-fail.json"
 printf '1. [ok  ] App: localvoxtral 1.4.0.\n\nNo problems found.\n' >"$TMP_DIR/mac-ok.txt"
 echo 0 >"$TMP_DIR/mac-ok.failed"
 echo 1 >"$TMP_DIR/mac-fail.failed"
@@ -140,6 +142,25 @@ expect_line() {
 $OUT"
 }
 
+# expect_state SECTION ID STATE CASE: `doctor --json` reports check ID in
+# SECTION (host, or mac for the Mac's own checks) as STATE. The prose
+# assertions pin what a person reads; this pins the same verdict in the form
+# a program reads, so a reword breaks only the prose half.
+expect_state() {
+  local line_out="$OUT"
+  run_doctor --json
+  python3 -c '
+import json, sys
+section, want_id, want_state = sys.argv[1:4]
+doc = json.load(sys.stdin)
+checks = doc["host"]["checks"] if section == "host" else doc["mac"]["doctor"]["checks"]
+states = {c["id"]: c["state"] for c in checks}
+sys.exit(0 if states.get(want_id) == want_state else "%s.%s is %r, want %r" % (section, want_id, states.get(want_id), want_state))
+' "$1" "$2" "$3" <<<"$OUT" || fail "$SH_NAME, $4, --json:
+$OUT"
+  OUT="$line_out"
+}
+
 for SH in "${SHELLS[@]}"; do
   case "$SH" in */bash-as-sh/sh) SH_NAME=bash ;; *) SH_NAME=/bin/sh ;; esac
   rm -f "$TMP_DIR/argv.log"
@@ -151,6 +172,7 @@ for SH in "${SHELLS[@]}"; do
   expect_line "[FAIL] Tunnel: Nothing listens on 127.0.0.1:$PORT" "no listener"
   expect_line "Keep the tunnel open" "no listener"
   [ "$STATUS" = 4 ] || fail "$SH_NAME, no listener: exit $STATUS, want 4"
+  expect_state host tunnel failed "no listener"
   pass "$SH_NAME: nothing listening fails the tunnel check, exit 4"
 
   # The Mac answers, and its own checks come through.
@@ -163,6 +185,9 @@ for SH in "${SHELLS[@]}"; do
   expect_line "No problems found." "healthy"
   [ "$STATUS" = 0 ] || fail "$SH_NAME, healthy: exit $STATUS, want 0:
 $OUT"
+  expect_state host tunnel ok "healthy"
+  expect_state host token ok "healthy"
+  expect_state mac app ok "healthy"
   pass "$SH_NAME: a healthy host prints both halves, exit 0"
 
   run_doctor --json
@@ -182,6 +207,8 @@ $OUT"
   run_doctor
   expect_line "2. [FAIL] Accessibility: Not allowed." "Mac fails"
   [ "$STATUS" = 4 ] || fail "$SH_NAME, Mac fails: exit $STATUS, want 4"
+  expect_state mac accessibility failed "Mac fails"
+  expect_state host token ok "Mac fails"
   pass "$SH_NAME: a Mac check that fails exits 4"
   stop_server
 
@@ -203,6 +230,7 @@ $OUT"
   run_doctor
   expect_line "[FAIL] Token: Refused" "wrong token"
   expect_line "Update Host…" "wrong token"
+  expect_state host token failed "wrong token"
   pass "$SH_NAME: a refused token names Update Host…"
   write_token "$TOKEN"
 
@@ -212,6 +240,7 @@ $OUT"
   : >"$CLAUDE_DIR/plugins/cache/localvoxtral/localvoxtral-remote/1.21.0/.in_use/$SLEEPER_PID"
   run_doctor
   expect_line "running sessions still on older versions (version:pid): 1.21.0:$SLEEPER_PID" "old session"
+  expect_state host claude-plugin warning "old session"
   pass "$SH_NAME: a live session on an older plugin is named"
   kill "$SLEEPER_PID" 2>/dev/null || true
   wait "$SLEEPER_PID" 2>/dev/null || true
@@ -220,6 +249,7 @@ $OUT"
   write_settings false
   run_doctor
   expect_line "[FAIL] Claude Code plugin: 1.22.0 is installed but turned off" "disabled"
+  expect_state host claude-plugin failed "disabled"
   pass "$SH_NAME: a disabled plugin fails its check"
   stop_server
 

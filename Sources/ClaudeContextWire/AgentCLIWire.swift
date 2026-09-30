@@ -8,7 +8,7 @@ import Foundation
 /// broker tells the two apart before it decodes anything else. The socket's
 /// trust is unchanged: a private directory, a 0600 socket, and the peer's uid
 /// checked before the first byte is read, so only the user's own processes
-/// can ask, and they could already read `default.store` themselves.
+/// can ask, and they could already read `history.store` themselves.
 public enum AgentCLIWire {
     public static let version = 1
 

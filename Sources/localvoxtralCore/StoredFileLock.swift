@@ -160,6 +160,10 @@ extension StoredFile {
                         "\(url.lastPathComponent, privacy: .public): another running copy wrote it, this change applies on top"
                     )
                     value = onDisk
+                    // Memory now holds these bytes plus the change: should the
+                    // write fail, the next update applies to memory, not to
+                    // these bytes again, and keeps the change.
+                    lastSeen = data
                 case .refused(let problem):
                     return .refused(problem)
                 case .absent:

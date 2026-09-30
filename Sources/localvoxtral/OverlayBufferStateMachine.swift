@@ -32,10 +32,17 @@ struct OverlayBufferStateMachine {
         let errorMessage: String?
         let secureInputActive: Bool
         /// True once LLM polishing has changed the displayed text vs the raw
-        /// transcript for this session. Drives the subtle "Polished" badge shown
-        /// while the polished text is held before dismissal. Set only by the
-        /// stop-commit polish path; cleared on every new session.
+        /// transcript for this session. The header then says "Polished" and
+        /// the words polish wrote are marked while the panel is held before
+        /// dismissal (#1074). Set only by the stop-commit polish path; cleared
+        /// on every new session.
         let polished: Bool
+        /// The text on screen just before the polished text replaced it,
+        /// while `polished`: the view marks the words that differ.
+        var polishedFrom: String? = nil
+        /// The polish request is out: the header says "Polishing" and a band
+        /// sweeps the words until the reply lands (#1074).
+        var polishing = false
         /// What to say about this dictation's Claude Code session join. Set
         /// once, from the join resolved at session start; cleared on every new
         /// session. `.hidden` renders nothing at all.
@@ -53,6 +60,8 @@ struct OverlayBufferStateMachine {
     private(set) var errorMessage: String?
     private(set) var secureInputActive = false
     private(set) var polished = false
+    private(set) var polishedFrom: String?
+    private(set) var polishing = false
     private(set) var claudeJoin: OverlayClaudeJoinBadge = .hidden
     private(set) var destinations: OverlayDestinationStrip?
     private(set) var draftReview: QuickCaptureDraftSnapshot?
@@ -66,6 +75,8 @@ struct OverlayBufferStateMachine {
             errorMessage: errorMessage,
             secureInputActive: secureInputActive,
             polished: polished,
+            polishedFrom: polishedFrom,
+            polishing: polishing,
             claudeJoin: claudeJoin,
             destinations: destinations,
             draftReview: draftReview,
@@ -93,6 +104,8 @@ struct OverlayBufferStateMachine {
         errorMessage = nil
         secureInputActive = false
         polished = false
+        polishedFrom = nil
+        polishing = false
         // Assigned, never merely cleared: the previous dictation's join
         // describes the previous dictation's session, and a badge that survived
         // into this one would vouch for a grounding this session was not given.
@@ -117,12 +130,23 @@ struct OverlayBufferStateMachine {
     }
 
     /// Marks that LLM polishing changed the displayed text vs the raw
-    /// transcript. Set from the stop-commit polish path once the polished text
-    /// is on screen; the badge then rides the finalizing/hold snapshot. Ignored
-    /// when idle (no session to annotate); a new session clears it.
+    /// transcript. Set from the stop-commit polish path just before the
+    /// polished text reaches the buffer, so the buffer still holds what the
+    /// user saw: that is what the marks compare against. The flag then rides
+    /// the finalizing/hold snapshot. Ignored when idle (no session to
+    /// annotate); a new session clears it.
     mutating func setPolished(_ value: Bool) {
         guard phase != .idle else { return }
         polished = value
+        polishedFrom = value ? bufferText : nil
+        polishing = false
+    }
+
+    /// The polish request is out. Only while finalizing: a reply, a failure
+    /// or a new session ends it.
+    mutating func setPolishing(_ value: Bool) {
+        guard phase == .finalizing else { return }
+        polishing = value
     }
 
     /// Marks the buffering session as running under Secure Keyboard Entry.
@@ -155,6 +179,7 @@ struct OverlayBufferStateMachine {
     mutating func commitFailed(error: String, anchor: OverlayAnchor?) {
         guard phase != .idle else { return }
         phase = .commitFailed
+        polishing = false
         errorMessage = error
         if let anchor {
             self.anchor = anchor
@@ -167,6 +192,8 @@ struct OverlayBufferStateMachine {
         errorMessage = nil
         secureInputActive = false
         polished = false
+        polishedFrom = nil
+        polishing = false
         claudeJoin = .hidden
         destinations = nil
         anchor = nil

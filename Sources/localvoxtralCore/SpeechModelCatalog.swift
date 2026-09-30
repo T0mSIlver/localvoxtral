@@ -1,9 +1,8 @@
 import Foundation
 
 /// Which streaming engine the bundled `localvoxtral-speechd` drives for a model.
-/// The helper infers the same mapping from the repo id it is launched with
-/// (`SpeechASREngineKind`); this is the app-side declaration, used by the picker
-/// and pinned by a test on both sides.
+/// The app passes it to the helper as `--engine <rawValue>`, which
+/// `SpeechASREngineKind` parses; the picker reads it too.
 package enum SpeechEngineKind: String, Equatable, Sendable {
     case voxtral
     case nemotron

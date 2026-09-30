@@ -37,19 +37,53 @@ extension AgentPromptCall {
 package struct OpencodePromptRoute: AgentPromptRoute {
     package let relay: OpencodePromptRelay
     private let client: OpencodePromptRelayClient
+    /// Whether a key typed now would land in this session's prompt: the
+    /// terminal the dictation started in is frontmost and its focused pane
+    /// shows the session. Asked only after a call that surely did not land.
+    private let keysReachThePrompt: @Sendable () async -> Bool
 
-    package init(relay: OpencodePromptRelay, client: OpencodePromptRelayClient = .shared) {
+    package init(
+        relay: OpencodePromptRelay,
+        client: OpencodePromptRelayClient = .shared,
+        keysReachThePrompt: @escaping @Sendable () async -> Bool
+    ) {
         self.relay = relay
         self.client = client
+        self.keysReachThePrompt = keysReachThePrompt
     }
 
     package var name: String { "opencode prompt relay" }
 
-    /// Every failure types instead, as #719 shipped it. An append that
-    /// timed out after it was sent may still have landed.
+    /// Keys only for a call that surely did not land, and only into the same
+    /// prompt (#1057). A call that may have landed, or one the relay refused
+    /// because its pane shows another session now, stays in History.
     package func deliver(_ call: AgentPromptCall) async -> AgentPromptDelivery {
-        await client.post(call, to: relay) ? .delivered : .typeInstead
+        switch await client.post(call, to: relay) {
+        case .delivered:
+            return .delivered
+        case .refused(status: 409):
+            return .keepInHistory
+        case .refused, .notSent:
+            return await keysReachThePrompt() ? .typeInstead : .keepInHistory
+        case .unknown:
+            return .keepInHistory
+        }
     }
+}
+
+/// What became of one request to the relay.
+package enum OpencodeRelayAnswer: Sendable, Equatable {
+    /// HTTP 200: the relay took the call.
+    case delivered
+    /// The relay answered with another status: nothing landed. 409 means the
+    /// pane no longer displays the session.
+    case refused(status: Int)
+    /// The request never reached the relay: a malformed address, a text too
+    /// long for it, or a connection refused.
+    case notSent
+    /// The request may have reached the relay, with no answer read back: a
+    /// timeout, a dropped connection. It may have landed.
+    case unknown
 }
 
 /// HTTP to `127.0.0.1:<port>`, the host fixed here: the wire carries a port
@@ -77,15 +111,15 @@ package struct OpencodePromptRelayClient: Sendable {
         session = URLSession(configuration: configuration)
     }
 
-    package func post(_ call: AgentPromptCall, to relay: OpencodePromptRelay) async -> Bool {
+    package func post(_ call: AgentPromptCall, to relay: OpencodePromptRelay) async -> OpencodeRelayAnswer {
         guard relay.address.isWellFormed,
               let url = URL(string: "http://127.0.0.1:\(relay.address.port)\(call.opencodeRelayPath)")
-        else { return false }
+        else { return .notSent }
         var body: [String: String] = ["session_id": relay.opencodeSessionID]
         if case .append(let text) = call {
             guard text.utf8.count <= Self.maxAppendBytes else {
-                Log.backends.notice("opencode prompt relay: append too long for the relay; keystrokes instead")
-                return false
+                Log.backends.notice("opencode prompt relay: append too long for the relay; not sent")
+                return .notSent
             }
             body["text"] = text
         }
@@ -103,15 +137,28 @@ package struct OpencodePromptRelayClient: Sendable {
                 Log.backends.error(
                     "opencode prompt relay: \(kind, privacy: .public) refused, HTTP \(status, privacy: .public)"
                 )
-                return false
+                return .refused(status: status)
             }
             Log.backends.info("opencode prompt relay: \(kind, privacy: .public) delivered")
-            return true
+            return .delivered
         } catch {
+            let answer = Self.answer(for: error)
+            let landing = answer == .notSent ? "not sent" : "may have landed"
             Log.backends.error(
-                "opencode prompt relay: \(kind, privacy: .public) failed: \(error.localizedDescription, privacy: .public)"
+                "opencode prompt relay: \(kind, privacy: .public) failed (\(landing, privacy: .public)): \(error.localizedDescription, privacy: .public)"
             )
-            return false
+            return answer
+        }
+    }
+
+    /// A connection that never opened sent nothing; any other failure may
+    /// come after the relay read the request.
+    static func answer(for error: any Error) -> OpencodeRelayAnswer {
+        switch (error as? URLError)?.code {
+        case .cannotConnectToHost?, .cannotFindHost?, .notConnectedToInternet?:
+            return .notSent
+        default:
+            return .unknown
         }
     }
 }

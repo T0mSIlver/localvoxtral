@@ -69,9 +69,8 @@ Update the same way you installed:
 
 - Or download the newest DMG and replace the app in your Applications folder.
 
-Updates keep your settings and downloaded models. When an update ships new
-config defaults, it refreshes the config files you haven't edited. It asks
-before it touches the ones you have edited (see [Settings](dictation.md#settings)).
+Updates keep your settings, your downloaded models and the config files you
+edited ([how new defaults arrive](dictation.md#edit-the-polishing-prompts-and-dictionary)).
 
 > [!NOTE]
 > Because releases are ad-hoc signed, macOS may silently drop the
@@ -87,9 +86,10 @@ This command also removes settings, downloaded engines and caches:
 brew uninstall --cask --zap localvoxtral
 ```
 
-It leaves two things that other apps can share. Dictation history stays in
-`~/Library/Application Support/default.store`, and models stay in
-`~/.cache/huggingface`. Stored API keys stay in your login keychain.
+It leaves two things that other apps can share. Models stay in
+`~/.cache/huggingface`, and so does `~/Library/Application Support/default.store`,
+where older versions kept the dictation history. Stored API keys stay in
+your login keychain.
 
 ## The Homebrew cask
 

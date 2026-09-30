@@ -75,7 +75,7 @@ extension ClaudeIntegrationSettingsModel {
                 detail: Self.verificationFailureDetail(failure)
             )
             Log.claudeContext.error(
-                "Claude remote verification failed: \(failure.describedError, privacy: .public)"
+                "Claude remote verification failed: \(failure.publicLogDescription, privacy: .public) \(failure.describedError, privacy: .private)"
             )
             return
         }

@@ -6,6 +6,12 @@ import os
 protocol OverlayBufferRendering: AnyObject {
     func render(snapshot: OverlayBufferStateMachine.Snapshot?)
     func hide()
+    /// Moves the level bars without re-rendering the panel (#1074).
+    func updateMicLevel(_ level: Double)
+}
+
+extension OverlayBufferRendering {
+    func updateMicLevel(_ level: Double) {}
 }
 
 extension DictationOverlayController: OverlayBufferRendering {}
@@ -69,9 +75,19 @@ protocol OverlayBufferSessionCoordinating: AnyObject {
     /// while buffering. Defaulted so test doubles stay unchanged.
     func showSecureInputWarning()
     /// Flags that LLM polishing changed the committed text vs the raw
-    /// transcript, so the overlay shows the "Polished" badge while the polished
-    /// text is held before dismissal. Defaulted so test doubles stay unchanged.
+    /// transcript, so the overlay marks the changed words while the polished
+    /// text is held before dismissal. Call it BEFORE the polished text reaches
+    /// the buffer. Defaulted so test doubles stay unchanged.
     func markPolished(_ polished: Bool)
+    /// The polish request is out, or ended without a polished text (#1074).
+    /// Defaulted so test doubles stay unchanged.
+    func markPolishing(_ polishing: Bool)
+    /// The panel shows words polish changed: its hold is
+    /// `TimingConstants.overlayPolishedVisibility`, long enough to see them.
+    var showsPolishChange: Bool { get }
+    /// The mic's level, 0...1, for the bars while the dictation runs.
+    /// Defaulted so test doubles stay unchanged.
+    func updateMicLevel(_ level: Double)
     /// Shows the overlay's destinations (#840). Defaulted so test doubles
     /// stay unchanged.
     func showDestinations(_ strip: OverlayDestinationStrip?)
@@ -83,6 +99,9 @@ protocol OverlayBufferSessionCoordinating: AnyObject {
 extension OverlayBufferSessionCoordinating {
     func showSecureInputWarning() {}
     func markPolished(_ polished: Bool) {}
+    func markPolishing(_ polishing: Bool) {}
+    var showsPolishChange: Bool { false }
+    func updateMicLevel(_ level: Double) {}
     func showDestinations(_ strip: OverlayDestinationStrip?) {}
     func showDraftReview(_ draft: QuickCaptureDraftSnapshot?) {}
 }
@@ -288,6 +307,20 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
     func markPolished(_ polished: Bool) {
         stateMachine.setPolished(polished)
         renderCurrentSnapshot()
+    }
+
+    func markPolishing(_ polishing: Bool) {
+        stateMachine.setPolishing(polishing)
+        renderCurrentSnapshot()
+    }
+
+    var showsPolishChange: Bool {
+        stateMachine.polished
+    }
+
+    func updateMicLevel(_ level: Double) {
+        guard stateMachine.phase == .buffering else { return }
+        renderer.updateMicLevel(level)
     }
 
     func showDestinations(_ strip: OverlayDestinationStrip?) {

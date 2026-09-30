@@ -8,7 +8,7 @@ final class DictationSessionStoreTests: XCTestCase {
     private let origin = Date(timeIntervalSince1970: 1_800_000_000)
 
     private func makeStore() throws -> DictationSessionStore {
-        try XCTUnwrap(DictationSessionStore(inMemory: true))
+        try XCTUnwrap(DictationSessionStore.inMemory())
     }
 
     /// `daysAgo` orders the records; the store sorts on `startedAt`.

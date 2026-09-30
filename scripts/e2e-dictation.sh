@@ -55,7 +55,7 @@ NOT_RUNNABLE=0
 CLEANED_UP=0
 ANNOUNCED=0
 WORK_DIR=""
-TARGET_PID=""
+TARGET_OUTPUT_DIRS=()
 SUMMARY=()
 OSASCRIPT_TIMEOUT_SECONDS="${OSASCRIPT_TIMEOUT_SECONDS:-8}"
 OSASCRIPT_TIMEOUT_BIN=""
@@ -125,14 +125,21 @@ announce() {
 }
 
 stop_target() {
-  if [[ -n "$TARGET_PID" ]]; then
-    kill "$TARGET_PID" >/dev/null 2>&1 || true
-    TARGET_PID=""
-  fi
-  # `open` does not hand back the pid it started, so sweep by executable path.
-  if [[ -n "$WORK_DIR" ]]; then
-    pkill -f "$WORK_DIR/e2e-target.app/Contents/MacOS/e2e-target" >/dev/null 2>&1 || true
-  fi
+  # Each target writes its pid at launch (`open` does not hand one back). It
+  # is killed only while that pid still runs the target's executable, so a
+  # pid reused since is left alone. WORK_DIR is under $TMPDIR, a symlink on
+  # macOS (/var -> /private/var), and ps may name either form.
+  local out pid comm resolved
+  local executable="$WORK_DIR/e2e-target.app/Contents/MacOS/e2e-target"
+  resolved="$(cd "$WORK_DIR" 2>/dev/null && pwd -P)/e2e-target.app/Contents/MacOS/e2e-target"
+  for out in ${TARGET_OUTPUT_DIRS[@]+"${TARGET_OUTPUT_DIRS[@]}"}; do
+    pid="$(cat "$out/pid" 2>/dev/null)"
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    comm="$(ps -p "$pid" -o comm= 2>/dev/null)"
+    [[ "$comm" == "$executable" || "$comm" == "$resolved" ]] || continue
+    kill "$pid" >/dev/null 2>&1 || true
+  done
+  TARGET_OUTPUT_DIRS=()
 }
 
 cleanup() {
@@ -283,11 +290,11 @@ start_target() {
   # start_target <output-dir>: a focused, empty text view, or failure.
   local out="$1" deadline
   mkdir -p "$out" || return 1
-  rm -f "$out/text" "$out/state"
+  rm -f "$out/text" "$out/state" "$out/pid"
+  TARGET_OUTPUT_DIRS+=("$out")
   open -n "$WORK_DIR/e2e-target.app" --args "$out" || return 1
   deadline=$((SECONDS + 15))
   while ((SECONDS < deadline)); do
-    TARGET_PID="$(pgrep -f "$WORK_DIR/e2e-target.app/Contents/MacOS/e2e-target" 2>/dev/null | head -n 1)"
     if [[ -f "$out/state" ]] && [[ "$(cat "$out/state")" == "active=1 key=1 focused=1" ]]; then
       return 0
     fi
@@ -485,6 +492,13 @@ if ! nc -z -w 3 "$endpoint_host" "$endpoint_port" >/dev/null 2>&1; then
 fi
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lv-e2e-dictation.XXXXXX")"
+# The app under test runs as the owner, with the owner's preferences; its
+# History, recordings and other stores go here instead of the owner's (#985).
+# lv_open hands this to the app.
+if ! lv_isolate_data lv-e2e-data; then
+  record_not_runnable "Could not make a data folder for the app under test; not launching it on the owner's data."
+  finish
+fi
 if ! build_target_app; then
   record_not_runnable "Could not compile the target app (scripts/e2e/target-app.swift)."
   finish

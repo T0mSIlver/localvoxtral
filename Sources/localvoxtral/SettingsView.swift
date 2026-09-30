@@ -60,7 +60,7 @@ struct SettingsView: View {
         self.loginItem = loginItem
         _historyModel = State(
             initialValue: historyModel
-                ?? DictationHistoryModel(store: { [weak viewModel] in viewModel?.sessionStore }))
+                ?? DictationHistoryModel(viewModel: viewModel))
         _insightsModel = State(
             initialValue: insightsModel ?? DictationInsightsModel(viewModel: viewModel))
         _terminalAppsModel = State(

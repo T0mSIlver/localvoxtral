@@ -57,7 +57,10 @@ final class VoiceMemoIntakeTests: XCTestCase {
     }
 
     /// A fresh intake over the same ledger file: what a relaunch sees.
-    private func intake() -> VoiceMemoIntake {
+    private func intake(
+        inboxHas: (@MainActor (UUID) -> Bool)? = nil,
+        capture: (@MainActor (UUID, String, Date, Data) -> Void)? = nil
+    ) -> VoiceMemoIntake {
         VoiceMemoIntake(
             directory: directory,
             ledgerURL: ledgerURL,
@@ -69,8 +72,8 @@ final class VoiceMemoIntakeTests: XCTestCase {
                 trashed.append(url.lastPathComponent)
                 files.removeAll { $0.name == url.lastPathComponent }
             },
-            inboxHas: { [unowned self] id in captured.contains { $0.id == id } },
-            capture: { [unowned self] id, text, recordedAt, pcm in
+            inboxHas: inboxHas ?? { [unowned self] id in captured.contains { $0.id == id } },
+            capture: capture ?? { [unowned self] id, text, recordedAt, pcm in
                 if captureRefused { return }
                 captured.append(Captured(id: id, text: text, recordedAt: recordedAt, pcm16: pcm))
             }
@@ -131,6 +134,28 @@ final class VoiceMemoIntakeTests: XCTestCase {
         _ = await intake.scan()
         XCTAssertEqual(captured.map(\.text), ["words of walk.m4a"])
         XCTAssertEqual(trashed, ["walk.m4a"])
+    }
+
+    /// A memo that begins "also" joins the capture before it (#990 review):
+    /// the Inbox took it, so it goes to the Trash and is transcribed once.
+    func testAMemoThatJoinsTheCaptureBeforeItIsTakenOnce() async throws {
+        let inbox = QuickCaptureFixture.model(
+            fileURL: workDirectory.appendingPathComponent("quick-captures.json"), answer: ["reach": 0.9],
+            github: FakeQuickCaptureGitHub(), runner: FakeQuickCaptureDraftRunner())
+        await inbox.capture(text: "Add a dark mode", historyRecordID: nil).value
+        transcriber.results.withLock { $0["walk.m4a"] = .success("Also make it the default") }
+        files = [memo("walk.m4a")]
+        let intake = intake(
+            inboxHas: { inbox.holds($0) },
+            capture: { id, text, recordedAt, _ in
+                _ = inbox.capture(text: text, historyRecordID: nil, id: id, capturedAt: recordedAt)
+            })
+        for _ in 0..<3 { _ = await intake.scan() }
+
+        XCTAssertEqual(inbox.items.map(\.text), ["Add a dark mode"])
+        XCTAssertEqual(inbox.items.first?.followUps?.map(\.text), ["Also make it the default"])
+        XCTAssertEqual(trashed, ["walk.m4a"])
+        XCTAssertEqual(transcriber.calls.withLock { $0 }.count, 1)
     }
 
     /// A copy whose Inbox is refused does not keep the folder from the copy

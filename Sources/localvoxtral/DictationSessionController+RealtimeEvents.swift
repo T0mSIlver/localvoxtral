@@ -192,6 +192,10 @@ extension DictationSessionController {
         }
         noteFinalTextForSilenceAutoStop(overlayTextBefore: overlayTextBeforeFinal)
         statusText = activeStatusText
+        // Finals after the stop are the tail, which the stop polishes itself.
+        if !isFinalizingStop {
+            earlyPolishRun?.settledTextChanged(transcript.currentDictationEventText)
+        }
 
         if isLiveAutoPasteModeEnabled,
            liveGoToHandlesFinal(

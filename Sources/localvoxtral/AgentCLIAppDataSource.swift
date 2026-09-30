@@ -8,9 +8,11 @@ import Foundation
 @MainActor
 final class AgentCLIAppDataSource: AgentCLIDataSource {
     private weak var viewModel: DictationViewModel?
+    private weak var sessions: ClaudeSessionRegistry?
 
-    init(viewModel: DictationViewModel) {
+    init(viewModel: DictationViewModel, sessions: ClaudeSessionRegistry? = nil) {
         self.viewModel = viewModel
+        self.sessions = sessions
     }
 
     func historyKept() async -> Bool {
@@ -146,23 +148,21 @@ final class AgentCLIAppDataSource: AgentCLIDataSource {
             facts.opencodePlugin = integration.opencodeStatus
             facts.vibeHooks = integration.vibeStatus
             facts.dictationNotes = integration.dictationNoteStatuses
-            facts.remoteHosts = Self.remoteHosts(integration)
+            facts.remoteHosts = Self.remoteHosts(integration, sessions: sessions)
         }
         return facts
     }
 
     /// Enrolled hosts in the Remote hosts pane's order, revoked ones left out.
-    static func remoteHosts(_ integration: ClaudeIntegrationSettingsModel) -> [AgentCLIDoctorFacts.RemoteHost] {
-        let reported = Dictionary(
-            (integration.registry?.hosts() ?? []).map { ($0.id, $0.reportedPluginVersion) },
+    static func remoteHosts(
+        _ integration: ClaudeIntegrationSettingsModel, sessions: ClaudeSessionRegistry?
+    ) -> [AgentCLIDoctorFacts.RemoteHost] {
+        let registered = Dictionary(
+            (integration.registry?.hosts() ?? []).map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
         return integration.hosts.filter { !$0.isRevoked }.map { row in
-            let plugin: String? = switch reported[row.id] ?? nil {
-            case nil: nil
-            case .headerAbsent: "1.9.0 or older"
-            case .version(let version): version
-            }
+            let host = registered[row.id]
             return AgentCLIDoctorFacts.RemoteHost(
                 label: row.label,
                 sshHostAlias: row.sshHostAlias,
@@ -170,7 +170,10 @@ final class AgentCLIAppDataSource: AgentCLIDataSource {
                 pluginNeedsUpdate: row.pluginNeedsUpdate,
                 forwardFailure: row.forwardIsFailure ? row.forwardStatusText : nil,
                 keepsTunnelOpen: row.persistentForwardEnabled,
-                reportedPluginVersion: plugin
+                reportedPluginVersion: host?.reportedPluginVersion.map(AgentCLIDoctorChecks.versionText),
+                installedPluginVersion: host?.reportedPluginVersion,
+                installedVibeHooksVersion: host?.reportedVibeHooksVersion,
+                sessions: (sessions?.liveRemoteSessions(hostID: row.id) ?? []).map(AgentCLIDoctorFacts.RemoteHost.Session.init)
             )
         }
     }

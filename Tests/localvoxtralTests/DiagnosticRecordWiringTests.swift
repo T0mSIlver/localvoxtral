@@ -114,7 +114,7 @@ final class DiagnosticRecordWiringTests: XCTestCase {
     /// A record whose dictation was deleted before its write ran is not
     /// written: the write waits behind the History queue and checks the entry.
     func testARecordWaitingOnADeletedDictationIsNotWritten() async throws {
-        let history = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let history = try XCTUnwrap(DictationSessionStore.inMemory())
         let wrote = WriteFlag()
 
         let url = await history.writeDiagnosticRecord(forDictation: UUID()) {
@@ -828,7 +828,7 @@ final class DiagnosticRecordWiringTests: XCTestCase {
         viewModel.session.diagnosticRecordStore = recordStore
         var history: DictationSessionStore?
         if withHistory {
-            history = try XCTUnwrap(DictationSessionStore(inMemory: true))
+            history = try XCTUnwrap(DictationSessionStore.inMemory())
             history?.diagnosticRecordStore = recordStore
             viewModel.sessionStore = history
         }

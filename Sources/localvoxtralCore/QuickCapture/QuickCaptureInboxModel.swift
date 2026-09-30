@@ -646,14 +646,21 @@ package final class QuickCaptureInboxModel {
         }
     }
 
+    /// True when capture `id` is in the Inbox, on its own or joined to
+    /// another as a follow-up.
+    package func holds(_ id: UUID) -> Bool {
+        inbox.items.contains { $0.id == id || ($0.followUps ?? []).contains { $0.id == id } }
+    }
+
     /// A coding agent filed the capture itself (#923). Its History record
-    /// says so, as after File.
+    /// says so, as after File. The check runs against the file, which
+    /// another running copy may have changed (#990).
     package func markFiled(_ id: UUID, url: String) -> Result<QuickCaptureItem, QuickCaptureInbox.MarkFiledRefusal> {
-        var changed = inbox
         let moment = now()
-        let result = changed.markFiled(id, url: url, now: moment)
+        // Stays notFound when the Inbox is refused and the change never runs.
+        var result: Result<QuickCaptureItem, QuickCaptureInbox.MarkFiledRefusal> = .failure(.notFound)
+        mutate { result = $0.markFiled(id, url: url, now: moment) }
         if case .success(let item) = result {
-            mutate { _ = $0.markFiled(id, url: url, now: moment) }
             Log.backends.info("Quick capture: a coding agent filed \(url, privacy: .public)")
             if let recordID = item.historyRecordID, let repository = item.repository {
                 onRouted?(recordID, "Filed in \(repository)")
