@@ -163,6 +163,47 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertFalse(pipeline.viewModel.isFinalizingStop)
     }
 
+    /// A 200 reply with no usable text, through the real client: the raw
+    /// transcript is committed once and the failure is shown (#1111).
+    func testAMalformedPolishReplyCommitsTheTranscriptOnceAndSaysSo() async throws {
+        try await assertUnusablePolishReply(#"{"choices":[{"message":"#)
+    }
+
+    func testAPolishReplyWithoutContentCommitsTheTranscriptOnceAndSaysSo() async throws {
+        try await assertUnusablePolishReply(#"{"choices":[{"message":{"role":"assistant"}}]}"#)
+    }
+
+    func testAWhitespacePolishReplyCommitsTheTranscriptOnceAndSaysSo() async throws {
+        try await assertUnusablePolishReply(#"{"choices":[{"message":{"role":"assistant","content":" \n\t "}}]}"#)
+    }
+
+    private func assertUnusablePolishReply(
+        _ body: String, file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        StubHTTPProtocol.reply.withLock { $0 = .http(200, body) }
+        URLProtocol.registerClass(StubHTTPProtocol.self)
+        defer { URLProtocol.unregisterClass(StubHTTPProtocol.self) }
+        let pipeline = try await makePipeline(
+            outputMode: .overlayBuffer,
+            polish: LLMPolishingService(),
+            polishEndpoint: "http://\(StubHTTPProtocol.host)/v1/chat/completions",
+            earlyPolish: false
+        )
+
+        await startAndSpeak(pipeline, file: file, line: line)
+        await stopAndFinalize(
+            pipeline,
+            expectedError: "The LLM polishing endpoint answered with no usable text, so the transcript was not polished."
+                + " [endpoint: http://\(StubHTTPProtocol.host)/v1/chat/completions]",
+            finalStatus: "LLM polishing failed.",
+            expectedAlertTitles: ["LLM Polishing Returned No Text"],
+            file: file, line: line
+        )
+
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase], file: file, line: line)
+        XCTAssertEqual(pipeline.records.all.map(\.status), [DictationSessionStatus.llmFailed.rawValue], file: file, line: line)
+    }
+
     /// With Polish while you speak off, nothing is polished while the user
     /// speaks: the stop sends the whole text in one request, as before #709.
     func testOverlayBufferWithEarlyPolishOffPolishesOnlyTheWholeTextAtStop() async throws {
@@ -2042,6 +2083,7 @@ final class DictationPipelineTests: XCTestCase {
         _ pipeline: Pipeline, finalText: String = DictationPipelineTests.phrase,
         expectedError: String? = nil,
         finalStatus: String = DictationViewModel.StatusStrings.ready,
+        expectedAlertTitles: [String] = [],
         file: StaticString = #filePath, line: UInt = #line
     ) async {
         let viewModel = pipeline.viewModel
@@ -2076,7 +2118,7 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertFalse(viewModel.isDictating, file: file, line: line)
         XCTAssertEqual(viewModel.statusText, finalStatus, file: file, line: line)
         XCTAssertEqual(viewModel.lastError, expectedError, file: file, line: line)
-        XCTAssertTrue(pipeline.presenter.presented.isEmpty, file: file, line: line)
+        XCTAssertEqual(pipeline.presenter.presented.map(\.title), expectedAlertTitles, file: file, line: line)
     }
 
     // MARK: - Harness
@@ -2103,7 +2145,8 @@ final class DictationPipelineTests: XCTestCase {
 
     private func makePipeline(
         outputMode: DictationOutputMode,
-        polish: FakePolishingService? = nil,
+        polish: (any LLMPolishingServicing)? = nil,
+        polishEndpoint: String = "http://127.0.0.1:8080/v1/chat/completions",
         earlyPolish: Bool = true
     ) async throws -> Pipeline {
         let server = try FakeRealtimeServer()
@@ -2140,7 +2183,7 @@ final class DictationPipelineTests: XCTestCase {
         viewModel.appConfigStore = MockAppConfigStore()
         if let polish {
             settings.llmPolishingEnabled = true
-            settings.llmPolishingEndpointURL = "http://127.0.0.1:8080/v1/chat/completions"
+            settings.llmPolishingEndpointURL = polishEndpoint
             settings.earlyPolishEnabled = earlyPolish
             settings.polishClipboardContextEnabled = false
             settings.terminalScreenContextEnabled = false
