@@ -77,7 +77,8 @@ runs on every string before the write:
 - The prompt the user last sent to the joined agent
   (`latestPriorUserPrompt`). The session context carries it into the rendered
   prompts, the agent source's excerpt and often the screen; the builder
-  replaces its lines there before the record exists, because
+  replaces its lines there before the record exists, both as sent and as a
+  selected excerpt renders them (tabs as spaces, #1106), because
   `docs/dictation.md` promises the app never saves that prompt. Earlier
   prompts can still be on the screen text, which the owner accepted in #792.
 - Never add a field that holds the prompt correction learning compares

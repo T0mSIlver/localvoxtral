@@ -119,37 +119,67 @@ enum DiagnosticRecordRedaction {
     /// promises it never saves that prompt (docs/dictation.md), and a record
     /// is a save.
     ///
-    /// First the whole prompt behind its label, whatever its length. Then line
-    /// by line, because the excerpt selector keeps whole lines and the screen
-    /// shows the prompt without the label. Lines shorter than
-    /// `minimumLineLength` are left to the first pass: "ok" would mask every
-    /// "ok" in the record. A line the excerpt cut short is caught by its first
-    /// `truncatedPrefixLength` characters, masked to the end of that line.
-    /// The transcript fields are left alone: the user may dictate the same
-    /// words again, and those are this dictation's.
+    /// First the whole prompt behind its label, whatever its length, and the
+    /// rest of the label's line, which holds the prompt's first line however
+    /// short. Then line by line, because the excerpt selector keeps whole
+    /// lines and the screen shows the prompt without the label. Lines shorter
+    /// than `minimumLineLength` are left to the label passes: "ok" would mask
+    /// every "ok" in the record. A line the excerpt cut short is caught by its
+    /// first `truncatedPrefixLength` characters, masked to the end of that
+    /// line. The transcript fields are left alone: the user may dictate the
+    /// same words again, and those are this dictation's.
+    ///
+    /// Every pass looks for each line both as sent and as a selected excerpt
+    /// renders it (`PolishContextExcerptSelector.renderedLine`: tabs as
+    /// spaces, control characters dropped), because a context over its grant
+    /// renders the second form (#1106).
     static func withholdPrompt(_ prompt: String?, from record: inout DiagnosticRecord) {
         guard let prompt, !prompt.isEmpty else { return }
-        let labelled = ClaudeSessionContextText.priorPromptLabel + prompt
-        let lines = prompt
-            .split(whereSeparator: \.isNewline)
+        let label = ClaudeSessionContextText.priorPromptLabel
+        let renderedPrompt = prompt.components(separatedBy: "\n")
+            .map(PolishContextExcerptSelector.renderedLine)
+            .joined(separator: "\n")
+        let labelled = Set([prompt, renderedPrompt].map { label + $0 })
+            .sorted { $0.count > $1.count }
+        let lines = Set(
+            prompt.split(whereSeparator: \.isNewline).flatMap { line in
+                [String(line), PolishContextExcerptSelector.renderedLine(String(line))]
+            }
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { $0.count >= minimumLineLength }
-            .sorted { $0.count > $1.count }
+        )
+        .sorted { $0.count > $1.count }
+
+        /// Replaces each `head` and the rest of its line with `kept` and the
+        /// placeholder, searching on after each replacement, which may hold
+        /// `head` itself.
+        func maskingToLineEnd(_ head: String, in text: String, keeping kept: String = "") -> String {
+            let replacement = kept + withheldPromptPlaceholder
+            var output = text
+            var searchFrom = 0
+            while let found = output.range(
+                of: head, range: output.index(output.startIndex, offsetBy: searchFrom)..<output.endIndex
+            ) {
+                let end = output[found.lowerBound...].firstIndex(where: \.isNewline)
+                    ?? output.endIndex
+                searchFrom = output.distance(from: output.startIndex, to: found.lowerBound)
+                    + replacement.count
+                output.replaceSubrange(found.lowerBound..<end, with: replacement)
+            }
+            return output
+        }
 
         func withhold(_ text: String) -> String {
-            var output = text.replacingOccurrences(
-                of: labelled,
-                with: ClaudeSessionContextText.priorPromptLabel + withheldPromptPlaceholder)
+            var output = text
+            for whole in labelled {
+                output = output.replacingOccurrences(of: whole, with: label + withheldPromptPlaceholder)
+            }
+            output = maskingToLineEnd(label, in: output, keeping: label)
             for line in lines {
                 output = output.replacingOccurrences(of: line, with: withheldPromptPlaceholder)
             }
             for line in lines where line.count >= truncatedPrefixLength {
-                let head = String(line.prefix(truncatedPrefixLength))
-                while let start = output.range(of: head) {
-                    let end = output[start.lowerBound...].firstIndex(where: \.isNewline)
-                        ?? output.endIndex
-                    output.replaceSubrange(start.lowerBound..<end, with: withheldPromptPlaceholder)
-                }
+                output = maskingToLineEnd(String(line.prefix(truncatedPrefixLength)), in: output)
             }
             return output
         }
