@@ -38,6 +38,7 @@ final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
     private let pidLedger: ClaudeRemoteForwardPidLedger?
     private let processIdentity: @Sendable (pid_t) -> ClaudeRemoteForwardPidRecord?
     private let hostIDForAlias: @MainActor (String) -> String?
+    private let supervisorSleep: ClaudeRemoteForwardSupervisor.SleepClosure
 
     private final class Entry {
         let id = UUID()
@@ -94,6 +95,9 @@ final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
         pidLedger: ClaudeRemoteForwardPidLedger? = nil,
         orphanReapInitiallyComplete: Bool = true,
         hostIDForAlias: @escaping @MainActor (String) -> String? = { $0 },
+        supervisorSleep: @escaping ClaudeRemoteForwardSupervisor.SleepClosure = {
+            try await Task.sleep(for: $0)
+        },
         processIdentity: @escaping @Sendable (pid_t) -> ClaudeRemoteForwardPidRecord? = {
             ClaudeRemoteForwardProcessIdentity.snapshot(pid: $0)
         }
@@ -109,6 +113,7 @@ final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
         self.pidLedger = pidLedger
         self.orphanReapComplete = orphanReapInitiallyComplete
         self.hostIDForAlias = hostIDForAlias
+        self.supervisorSleep = supervisorSleep
         self.processIdentity = processIdentity
     }
 
@@ -310,7 +315,8 @@ final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
                     pidLedger.remember(hostID: ledgerKey, record: record)
                 }
                 return process
-            }
+            },
+            sleepFor: supervisorSleep
         )
         return Entry(
             hostID: hostID,
