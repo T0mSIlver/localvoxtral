@@ -94,12 +94,7 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     }
 
     package static func defaultFileURL() -> URL {
-        let applicationSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        return applicationSupport
-            .appendingPathComponent("localvoxtral", isDirectory: true)
+        return LocalvoxtralDataDirectory.url()
             .appendingPathComponent("learned-terms.json")
     }
 

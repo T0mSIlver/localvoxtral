@@ -152,6 +152,15 @@ struct StatusPopoverView: View {
                     .frame(width: Self.contentWidth, alignment: .leading)
             }
 
+            // History stopped saving: said while it lasts, not only in a
+            // pane the user may not open for days (#985).
+            if let historyWarning = viewModel.historyPopoverWarning {
+                Text(historyWarning)
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+                    .frame(width: Self.contentWidth, alignment: .leading)
+            }
+
             // One sentence naming the session that needs you (#717).
             if let agentAttentionLine = viewModel.agentAttentionLine {
                 Text(agentAttentionLine)

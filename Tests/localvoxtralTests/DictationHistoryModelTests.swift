@@ -8,7 +8,7 @@ final class DictationHistoryModelTests: XCTestCase {
     private var copied: [String] = []
 
     private func makeStore(dictations count: Int = 0) throws -> DictationSessionStore {
-        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
         for index in 0..<count { store.save(record("dictation \(index)", minutesAgo: index)) }
         return store
     }

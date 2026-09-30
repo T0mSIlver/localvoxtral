@@ -8,6 +8,8 @@
 //
 //   e2e-target <output-dir>
 //
+// At launch it writes <output-dir>/pid, its process id: `open` does not hand
+// one back, and the runner ends the run by killing that pid.
 // Every 200 ms it writes, when changed:
 //   <output-dir>/text    the text view's contents
 //   <output-dir>/state   "active=<0|1> key=<0|1> focused=<0|1>"
@@ -90,8 +92,10 @@ guard CommandLine.arguments.count == 2 else {
     exit(2)
 }
 
-let delegate = AppDelegate(
-    outputDirectory: URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true))
+let outputDirectory = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
+try? "\(getpid())\n".write(
+    to: outputDirectory.appendingPathComponent("pid"), atomically: true, encoding: .utf8)
+let delegate = AppDelegate(outputDirectory: outputDirectory)
 let app = NSApplication.shared
 app.delegate = delegate
 app.run()

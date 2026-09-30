@@ -185,8 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let settingsNavigator = SettingsNavigator()
     /// What the History and Insights panes show, kept while the app runs so
     /// that neither starts from nothing each time it opens.
-    lazy var historyModel = DictationHistoryModel(
-        store: { [weak viewModel] in viewModel?.sessionStore })
+    lazy var historyModel = DictationHistoryModel(viewModel: viewModel)
     lazy var insightsModel = DictationInsightsModel(viewModel: viewModel)
     private var widgetSnapshotWriter: WidgetSnapshotWriter?
     /// "Open localvoxtral at login". Built here so the pane reads the login
@@ -348,7 +347,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewModel.engines.preflightConfiguredLocalNetworkEndpoints()
         switch LaunchWindowPolicy.decide(
             onboardingCompleted: settingsStore.onboardingCompleted,
-            opensWindowAtLaunch: settingsStore.opensWindowAtLaunch
+            opensWindowAtLaunch: settingsStore.opensWindowAtLaunch,
+            isLaunchSmoke: StartupPermissionSuppression.isActive()
         ) {
         case .onboarding:
             presentOnboarding()
@@ -408,6 +408,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // persistent `ssh -L` children. During polish the join has already been
         // consumed, so the explicit service owner is what makes quit complete.
         viewModel.context.closeRemoteHerdrForwards()
+        drainHistoryWrites(within: 3.0)
+    }
+
+    /// Waits for the dictations already queued for History to reach the
+    /// disk. The queue is serial and each write is one SQLite transaction; a
+    /// quit that returned first dropped the last dictation (#985).
+    private func drainHistoryWrites(within seconds: TimeInterval) {
+        guard let pending = viewModel.sessionStore?.pendingWrites else { return }
+        let deadline = Date().addingTimeInterval(seconds)
+        let finished = Mutex(false)
+        Task { @MainActor in
+            await pending.value
+            finished.withLock { $0 = true }
+        }
+        while !finished.withLock({ $0 }), Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+        }
+        if !finished.withLock({ $0 }) {
+            Log.persistence.error("History writes did not finish before quit; the last dictation may be lost")
+        }
     }
 
     /// Spin the run loop until every forward teardown has finished, or the
@@ -681,7 +701,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // The `localvoxtral` command's requests arrive on the same socket
         // (#721) and are answered from the app's own stores.
-        let agentCLI = AgentCLIService(source: AgentCLIAppDataSource(viewModel: viewModel))
+        let agentCLI = AgentCLIService(
+            source: AgentCLIAppDataSource(viewModel: viewModel, sessions: claudeSessionRegistry)
+        )
         let broker = ClaudeContextBroker(
             socketPath: socketPath,
             registry: claudeSessionRegistry,
@@ -1068,11 +1090,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         )
                     }
                 },
+                onRemoteSkills: { [store = viewModel.session.agentSkillStore] hostID, names in
+                    store?.record(hostID: hostID, names: names)
+                },
                 projectTerms: projectTerms,
                 quickCapture: quickCapture,
-                doctor: RemoteDoctorRoute { @MainActor [weak viewModel] hostID in
+                doctor: RemoteDoctorRoute { @MainActor [weak viewModel, claudeSessionRegistry] hostID in
                     guard let viewModel else { return [] }
-                    return await AgentCLIAppDataSource(viewModel: viewModel).hostDoctorChecks(hostID: hostID)
+                    return await AgentCLIAppDataSource(viewModel: viewModel, sessions: claudeSessionRegistry)
+                        .hostDoctorChecks(hostID: hostID)
                 }
             )
         }

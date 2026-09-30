@@ -153,6 +153,19 @@ final class SpeechdLaunchOptionsTests: XCTestCase {
         )
     }
 
+    func testEngineFlagNamesTheEngine() throws {
+        XCTAssertNil(try SpeechdOptionParser.parse(["--model", "example/model"]).engine)
+        XCTAssertEqual(
+            try SpeechdOptionParser.parse(["--model", "example/model", "--engine", "nemotron"]).engine,
+            .nemotron
+        )
+        XCTAssertThrowsError(
+            try SpeechdOptionParser.parse(["--model", "example/model", "--engine", "whisper"])
+        ) { error in
+            XCTAssertEqual(error as? SpeechdOptionError, .invalidValue("--engine"))
+        }
+    }
+
     func testModelAndModelDirectoryAreMutuallyExclusive() throws {
         XCTAssertThrowsError(
             try SpeechdOptionParser.parse([

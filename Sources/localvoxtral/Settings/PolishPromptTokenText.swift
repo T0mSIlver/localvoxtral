@@ -81,8 +81,12 @@ enum PolishPromptTokenText {
     }
 
     /// "12 terms · ≈ 90 tokens".
-    static func globalTerms(count: Int, tokens: PolishPromptTokenCounter.Count) -> String {
-        "\(count) term\(count == 1 ? "" : "s") · \(format(tokens)) tokens"
+    /// "31 terms · ≈ 250 tokens"; with project and skill names (#1024),
+    /// "31 terms + 26 names · ≈ 420 tokens".
+    static func globalTerms(count: Int, names: Int = 0, tokens: PolishPromptTokenCounter.Count) -> String {
+        let terms = "\(count) term\(count == 1 ? "" : "s")"
+        guard names > 0 else { return "\(terms) · \(format(tokens)) tokens" }
+        return "\(terms) + \(names) name\(names == 1 ? "" : "s") · \(format(tokens)) tokens"
     }
 
     /// "up to ≈ 120 tokens".

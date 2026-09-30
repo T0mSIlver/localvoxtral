@@ -206,6 +206,7 @@ final class BackendManagerTests: XCTestCase {
             [
                 "--model", option.repoID,
                 "--model-revision", option.revision,
+                "--engine", option.engine.rawValue,
                 "--port", "8471",
                 "--parent-pid", "\(Darwin.getpid())",
                 "--cache-limit-mb", "\(BackendManager.speechdCacheLimitMB)",

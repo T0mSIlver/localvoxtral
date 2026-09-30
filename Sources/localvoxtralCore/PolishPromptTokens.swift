@@ -94,10 +94,14 @@ package enum PolishPromptParts {
     /// What the global terms add to the system prompt, given the About-you
     /// text sent with them: their line, and the header when the profile is
     /// empty and the terms alone bring it.
+    /// The project and skill names (#1024) ride the same block and count
+    /// with the terms.
     package static func globalTermText(
-        _ templates: LLMPromptTemplates, profile: String, terms: [String]
+        _ templates: LLMPromptTemplates, profile: String, terms: [String],
+        projects: [String] = [], skills: [String] = []
     ) -> String {
-        let with = templates.withSpeakerProfile(profile, terms: terms).systemContent
+        let with = templates.withSpeakerProfile(profile, terms: terms, projects: projects, skills: skills)
+            .systemContent
         let without = templates.withSpeakerProfile(profile).systemContent
         guard with.hasPrefix(without) else { return "" }
         return String(with.dropFirst(without.count))

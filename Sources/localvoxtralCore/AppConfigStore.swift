@@ -253,21 +253,40 @@ package struct LLMPromptTemplates: Equatable, Sendable {
         + "and makes less sense than it would in that sentence, write the term as spelled "
         + "here. Never insert any of this where nothing similar was said:"
 
+    /// The wording the #1024 eval measured.
+    package static let projectNamesLabel = "Their projects (repository names): "
+    package static let skillNamesLabel = "Skills they invoke in their coding agents: "
+
     /// These templates with the user's own description of themselves appended
     /// to the system prompt. It rides the SYSTEM message because it is stable
     /// across dictations, so it stays inside the prefix polishd checkpoints;
     /// the warmup applies the same call so both prefixes match.
-    package func withSpeakerProfile(_ profile: String, terms: [String] = []) -> LLMPromptTemplates {
+    ///
+    /// `projects` are the names of the user's projects (`PolishProjectNames`)
+    /// and `skills` their agents' skills (`AgentSkillStore`); a name already
+    /// listed before is listed there only.
+    package func withSpeakerProfile(
+        _ profile: String, terms: [String] = [], projects: [String] = [], skills: [String] = []
+    ) -> LLMPromptTemplates {
         let trimmed = String(
             PolishContextClipboardReader.sanitizeControlCharacters(profile)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .prefix(Self.speakerProfileMaxCharacters)
         )
         let sanitizedTerms = SpeakerTerms.sanitized(terms)
+        let projectNames = PolishProjectNames.names(SpeakerTerms.sanitized(projects), notIn: sanitizedTerms)
+        let skillNames = PolishProjectNames.names(
+            SpeakerTerms.sanitized(skills), notIn: sanitizedTerms + projectNames)
         var lines: [String] = []
         if !trimmed.isEmpty { lines.append(trimmed) }
         if !sanitizedTerms.isEmpty {
             lines.append("Names and terms they use: " + sanitizedTerms.joined(separator: ", "))
+        }
+        if !projectNames.isEmpty {
+            lines.append(Self.projectNamesLabel + projectNames.joined(separator: ", "))
+        }
+        if !skillNames.isEmpty {
+            lines.append(Self.skillNamesLabel + skillNames.joined(separator: ", "))
         }
         guard !lines.isEmpty else { return self }
         return LLMPromptTemplates(
@@ -672,6 +691,9 @@ package struct AppConfigStore: AppConfigServing {
             return configDirectoryOverride
         }
 
+        if LocalvoxtralDataDirectory.isOverridden() {
+            return LocalvoxtralDataDirectory.url().appendingPathComponent("config", isDirectory: true)
+        }
         do {
             let appSupport = try fileManager.url(
                 for: .applicationSupportDirectory,
@@ -1040,11 +1062,33 @@ extension AppConfigStore {
 
             if knownDefaultHashes[file.fileName, default: []].contains(userHash) {
                 do {
-                    try bundled.data.write(to: userURL, options: .atomic)
+                    // The file may be an old default the user restored on
+                    // purpose, so its bytes are kept (#1040). The refresh goes
+                    // ahead only if what was copied is still a known default.
+                    let backupName = availableBackupName(
+                        for: file.fileName, suffix: backupSuffix(), in: directory)
+                    let backupURL = directory.appendingPathComponent(backupName, isDirectory: false)
+                    try fileManager.copyItem(at: userURL, to: backupURL)
+                    let backedUp = try Data(contentsOf: backupURL)
+                    guard knownDefaultHashes[file.fileName, default: []].contains(Self.sha256Hex(backedUp)) else {
+                        try? fileManager.removeItem(at: backupURL)
+                        Log.config.notice(
+                            "Skipped refreshing \(file.fileName, privacy: .public): it changed while being checked"
+                        )
+                        continue
+                    }
+                    do {
+                        try bundled.data.write(to: userURL, options: .atomic)
+                    } catch {
+                        // The file is untouched, and a kept copy would pile
+                        // up with every launch that retries.
+                        try? fileManager.removeItem(at: backupURL)
+                        throw error
+                    }
                     result.refreshedFileNames.append(file.fileName)
                     markResolved(file, hash: bundled.hash)
                     Log.config.notice(
-                        "Refreshed unedited default \(file.fileName, privacy: .public) to the current bundled version"
+                        "Refreshed unedited default \(file.fileName, privacy: .public) to the current bundled version; the old file is \(backupName, privacy: .public)"
                     )
                 } catch {
                     Log.config.error(

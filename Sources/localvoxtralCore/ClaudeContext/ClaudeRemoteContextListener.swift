@@ -117,6 +117,8 @@ public final class ClaudeRemoteContextListener: Sendable {
     /// Authenticated host activity can pre-start a slow herdr `-L` away from
     /// dictation latency. The path remains an opaque remote label.
     private let onRemoteHerdrActivity: @Sendable (String, String) -> Void
+    /// A host's shim listed its agents' skill names (#1024): host id, names.
+    private let onRemoteSkills: @Sendable (String, [String]) -> Void
     /// The Mac's asks for a remote project's terms (#641): which sessions'
     /// next reply carries `X-Lvx-Terms`, and which may answer on
     /// `/v1/terms`. Nil without a learned-term store; the route then 404s.
@@ -176,6 +178,7 @@ public final class ClaudeRemoteContextListener: Sendable {
         now: @escaping @Sendable () -> Date = { Date() },
         uptimeNanos: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
         onRemoteHerdrActivity: @escaping @Sendable (String, String) -> Void = { _, _ in },
+        onRemoteSkills: @escaping @Sendable (String, [String]) -> Void = { _, _ in },
         projectTerms: RemoteProjectTermRequests? = nil,
         quickCapture: RemoteQuickCaptureRequests? = nil,
         doctor: RemoteDoctorRoute? = nil
@@ -191,6 +194,7 @@ public final class ClaudeRemoteContextListener: Sendable {
         self.now = now
         self.uptimeNanos = uptimeNanos
         self.onRemoteHerdrActivity = onRemoteHerdrActivity
+        self.onRemoteSkills = onRemoteSkills
     }
 
     public var isRunning: Bool { state.withLock { $0.isRunning } }
@@ -598,7 +602,7 @@ public final class ClaudeRemoteContextListener: Sendable {
         // serializing body parsing behind it would stall every other host's
         // auth behind one slow payload. Only the COMMIT — the part the
         // revocation race is about — re-authenticates under the lock.
-        guard let prepared = prepareIngest(body: body, request: request, host: host) else {
+        guard var prepared = prepareIngest(body: body, request: request, host: host) else {
             // Unparseable payloads never touch the session registry, so
             // revocation has nothing to protect. The body stays identical to
             // an ingested record; only this fixed status header differs.
@@ -613,6 +617,11 @@ public final class ClaudeRemoteContextListener: Sendable {
                 sessionStatus: .unknown
             )
             return
+        }
+        prepared.shimVersion = switch prepared.record.agent {
+        case .claude: pluginVersionReport
+        case .vibe: vibeHooksVersion.map { .version($0) }
+        case .opencode, .codex: nil
         }
         guard let commitIngestStatus = hosts.withAuthenticatedHost(
             token: token,
@@ -639,6 +648,11 @@ public final class ClaudeRemoteContextListener: Sendable {
         noteVersions(hostID: host.id, agent: requestAgent, plugin: pluginVersionReport, vibe: vibeHooksVersion)
         if let socketPath = prepared.environment?.herdrSocketPath {
             onRemoteHerdrActivity(host.id, socketPath)
+        }
+        // Only here, after the re-authentication: a revoked host's list is
+        // never kept.
+        if let skills = AgentSkillNamesCodec.names(in: request.headers) {
+            onRemoteSkills(host.id, skills)
         }
         let scopedSessionID = ClaudeAgentSessionScope.scopedSessionID(
             agent: prepared.record.agent, sessionID: prepared.record.sessionID
@@ -945,6 +959,8 @@ public final class ClaudeRemoteContextListener: Sendable {
         let snippets: [ClaudeContentSnippet]
         let environment: ClaudeRemoteSessionEnvironment?
         let hostID: String
+        /// This request's shim version, per the agent the record names.
+        var shimVersion: ClaudeRemotePluginVersionReport?
     }
 
     /// The parse/scope half of ingest, safe outside any lock.
@@ -1039,7 +1055,8 @@ public final class ClaudeRemoteContextListener: Sendable {
             prepared.record,
             origin: origin,
             snippets: prepared.snippets,
-            environment: prepared.environment
+            environment: prepared.environment,
+            remoteShimVersion: prepared.shimVersion
         )
         // Shape only. A remote record carries the user's prompt and excerpts of
         // their code; a log is the wrong place for either.

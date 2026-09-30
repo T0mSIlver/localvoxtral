@@ -113,15 +113,7 @@ struct DiagnosticRecordStore: Sendable {
     }
 
     static func defaultDirectoryURL() -> URL {
-        let applicationSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Application Support", isDirectory: true)
-
-        return applicationSupport
-            .appendingPathComponent("localvoxtral", isDirectory: true)
+        LocalvoxtralDataDirectory.url()
             .appendingPathComponent("diagnostic-records", isDirectory: true)
     }
 

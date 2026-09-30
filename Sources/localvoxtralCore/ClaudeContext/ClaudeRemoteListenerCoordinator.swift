@@ -83,6 +83,7 @@ public final class ClaudeRemoteListenerCoordinator: ClaudeRemoteListenerControll
         sessions: ClaudeSessionRegistry,
         forwardProbes: ClaudeRemoteForwardProbeWitness = ClaudeRemoteForwardProbeWitness(),
         onRemoteHerdrActivity: @escaping @Sendable (String, String) -> Void = { _, _ in },
+        onRemoteSkills: @escaping @Sendable (String, [String]) -> Void = { _, _ in },
         projectTerms: RemoteProjectTermRequests? = nil,
         quickCapture: RemoteQuickCaptureRequests? = nil,
         doctor: RemoteDoctorRoute? = nil
@@ -94,6 +95,7 @@ public final class ClaudeRemoteListenerCoordinator: ClaudeRemoteListenerControll
                 rejections: rejections,
                 forwardProbes: forwardProbes,
                 onRemoteHerdrActivity: onRemoteHerdrActivity,
+                onRemoteSkills: onRemoteSkills,
                 projectTerms: projectTerms,
                 quickCapture: quickCapture,
                 doctor: doctor

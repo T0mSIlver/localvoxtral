@@ -48,12 +48,7 @@ public struct ClaudeSessionFileStore: ClaudeSessionStore {
     }
 
     public static func defaultFileURL() -> URL {
-        let applicationSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        return applicationSupport
-            .appendingPathComponent("localvoxtral", isDirectory: true)
+        return LocalvoxtralDataDirectory.url()
             .appendingPathComponent("claude", isDirectory: true)
             .appendingPathComponent("claude-sessions.json")
     }

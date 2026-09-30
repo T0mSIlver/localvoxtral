@@ -34,7 +34,7 @@ extension AgentDictationE2EEvalTests {
         }
         let set = try DictationReplaySupport.loadSet(
             at: repoRoot.appendingPathComponent(replayPath, isDirectory: true))
-        guard let history = DictationSessionStore(url: set.storeURL) else {
+        guard case let .success(history) = DictationSessionStore.open(url: set.storeURL) else {
             throw EvalInfraError("the replay set's default.store does not open")
         }
         let audioStore = DictationAudioStore(directoryURL: set.audioDirectory)

@@ -556,12 +556,7 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     }
 
     public static func defaultFileURL() -> URL {
-        let applicationSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        return applicationSupport
-            .appendingPathComponent("localvoxtral", isDirectory: true)
+        return LocalvoxtralDataDirectory.url()
             // The shared app-support directory already exists as 0755 on
             // normal installs. The hardened store requires a leaf it alone
             // owns at 0700; never try to tighten permissions on the shared
@@ -712,10 +707,10 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     ///
     /// MONOTONE by construction: the recorded value is the HIGHEST report
     /// this app session (`nil` < `.headerAbsent` < `.version` in numeric
-    /// order) and only a strictly higher report replaces it. Claude Code
-    /// applies a plugin update only on session restart, so after "Update
-    /// Plugin…" succeeds a host's already-running sessions keep executing the
-    /// OLD plugin's shim — their hooks arrive header-less, and a
+    /// order) and only a strictly higher report replaces it. After "Update
+    /// Plugin…" succeeds, a host's already-running sessions keep executing the
+    /// OLD plugin's shim until `/reload-plugins` (Claude Code 2.1.283) or a
+    /// restart (Vibe) — their hooks arrive header-less, and a
     /// last-writer-wins record would let them flip a verified host back to
     /// "Plugin update available" (the 2026-09-17 follow-up defect). The
     /// accepted cost: a genuine plugin DOWNGRADE on the host stays unread

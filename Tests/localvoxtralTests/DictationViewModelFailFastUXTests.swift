@@ -1,5 +1,6 @@
 import ClaudeContextWire
 import Foundation
+import SwiftData
 import XCTest
 @testable import localvoxtral
 
@@ -143,6 +144,21 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
             "failure details must not embed the AX warning, got: \(details ?? "nil")"
         )
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
+    }
+
+    /// The alert's Show Log reads the categories of the failure it reports (#1072).
+    func testAPolishFailureAsksForThePolishingLinesAndARealtimeOneForTheSessionLines() {
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+        let presenter = RecordingConnectionFailurePresenter()
+        viewModel.dependencies.connectionFailurePresenter = presenter
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.session.handleLLMPolishingConnectionFailure(message: "Polishing timed out.")
+        viewModel.session.handleConnectFailure(reason: .socketError(message: "WebSocket failed: [NSURLErrorDomain:-1004]"))
+
+        XCTAssertEqual(presenter.presented.map(\.log), [.polishing, .realtime])
+        XCTAssertFalse(ConnectionFailureLog.realtime.categories.contains("Deltas"))
+        XCTAssertFalse(ConnectionFailureLog.polishing.categories.contains("Insertion"))
     }
 
     func testWarningIsRecognizedAsAccessibilityErrorToken() {
@@ -352,7 +368,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
             settings: settings,
             backendManager: FakeManagedBackendManager(),
             overlayBufferCoordinator: MockOverlayCoordinator(),
-            startRuntimeServices: true
+            startRuntimeServices: true,
+            dependencies: DictationViewModel.Dependencies(historyDirectory: makeHistoryDirectory())
         )
 
         XCTAssertFalse(viewModel.permissions.hasRequestedStartupPermissions)
@@ -382,12 +399,53 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
             backendManager: FakeManagedBackendManager(),
             overlayBufferCoordinator: MockOverlayCoordinator(),
             startRuntimeServices: true,
-            suppressStartupPermissionPrompts: true
+            suppressStartupPermissionPrompts: true,
+            dependencies: DictationViewModel.Dependencies(historyDirectory: makeHistoryDirectory())
         )
 
         XCTAssertFalse(
             viewModel.permissions.hasRequestedStartupPermissions,
             "suppression must return before the latch — no prompt task may be spawned")
+    }
+
+    /// A history store that would not open says so in History and Insights,
+    /// not as an empty page (#985). Here the file holds another program's
+    /// table, as SwiftData's shared default.store did after icloudmailagent
+    /// migrated it.
+    func testHistoryAndInsightsSayTheStoreDidNotOpen() async throws {
+        let directory = makeHistoryDirectory()
+        let url = directory.appendingPathComponent("history.store")
+        let foreign = Schema([ForeignRequestModel.self])
+        _ = try ModelContainer(for: foreign, configurations: [ModelConfiguration(schema: foreign, url: url)])
+        let viewModel = DictationViewModel(
+            settings: makeExternalBackendSettings(outputMode: .overlayBuffer),
+            backendManager: FakeManagedBackendManager(),
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: true,
+            suppressStartupPermissionPrompts: true,
+            dependencies: DictationViewModel.Dependencies(historyDirectory: directory)
+        )
+
+        XCTAssertNil(viewModel.sessionStore)
+        XCTAssertEqual(viewModel.historyPopoverWarning, "History needs a newer localvoxtral.")
+        let history = DictationHistoryModel(viewModel: viewModel)
+        await history.reload()
+        XCTAssertEqual(
+            history.unavailableText,
+            "Your history was saved by a newer localvoxtral. This version won't open it.")
+        let insights = DictationInsightsModel(viewModel: viewModel)
+        await insights.reload()
+        XCTAssertEqual(insights.unavailableText, history.unavailableText)
+        XCTAssertTrue(insights.isCounting, "no zero counts under a store that did not open")
+    }
+
+    /// Runtime services open the history here, never the user's.
+    private func makeHistoryDirectory() -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-history-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return directory
     }
 
     // MARK: - Prompt-cache warmup hook (#489)
@@ -867,6 +925,37 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertNil(viewModel.engines.dictationShutdownTask)
         XCTAssertEqual(backendManager.stopDictationCallCount, 0)
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
+    }
+
+    /// A stored repo this build doesn't know runs as the default but stays
+    /// in defaults (#1040). Picking the default in Settings must replace it,
+    /// or a newer build would bring the unknown repo back.
+    func testPickingTheFallbackModelReplacesAnUnknownStoredRepo() async {
+        let defaults = makeSettingsDefaults()
+        defaults.set("someone/newer-model", forKey: "settings.managed_speech_model")
+        let settings = makeSettings(defaults: defaults)
+        settings.dictationBackendMode = .managedLocal
+        settings.onboardingCompleted = true
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            backendManager: backendManager,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false,
+            dependencies: .init(microphone: { FakeMicrophoneCaptureService() })
+        )
+        viewModel.appConfigStore = MockAppConfigStore()
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.engines.applyManagedSpeechModelChange(SpeechModelCatalog.defaultOption.repoID)
+
+        XCTAssertEqual(
+            defaults.string(forKey: "settings.managed_speech_model"),
+            SpeechModelCatalog.defaultOption.repoID
+        )
+        // The running model is already the default: no restart.
+        XCTAssertNil(viewModel.engines.dictationShutdownTask)
+        XCTAssertEqual(backendManager.stopDictationCallCount, 0)
     }
 
     private static let nemotronRepoID = "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
