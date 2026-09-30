@@ -1563,19 +1563,23 @@ final class ClaudeRemoteHerdrForwardEnrollmentRaceTests: XCTestCase, RemoteHerdr
         let supervisorSleeps: ParkedSupervisorSleeps
     }
 
-    private func makeWorld() -> World {
+    /// `heldClock` drives readiness and idle teardown; pass one when the
+    /// forward is unleased, or its idle teardown fires before the test's own.
+    private func makeWorld(heldClock: HeldForwardTestClock? = nil) -> World {
+        let clock = ForwardTestClock()
+        let now = heldClock?.now ?? clock.now
+        let sleepFor = heldClock?.sleepFor ?? clock.sleepFor
         // Every ssh ignores SIGTERM and SIGKILL, and the grace sleeps park, so
         // a teardown ends only when the test makes its process exit.
         let spawner = ForwardTestSpawner(freshProcessPerSpawn: true, ignoresSignals: true)
         let switches = Switches(enrolledHostID: hostID)
         let supervisorSleeps = ParkedSupervisorSleeps()
-        let clock = ForwardTestClock()
         let service = ClaudeRemoteHerdrForwardService(
             spawner: spawner,
             workspaces: ForwardTestWorkspaces(),
             isSocketDialable: { _ in switches.socketAnswers.withLock { $0 } },
-            now: clock.now,
-            sleepFor: clock.sleepFor,
+            now: now,
+            sleepFor: sleepFor,
             hostIDForAlias: { _ in switches.enrolledHostID.withLock { $0 } },
             supervisorSleep: supervisorSleeps.sleep,
             processIdentity: { _ in nil }
@@ -1648,7 +1652,10 @@ final class ClaudeRemoteHerdrForwardEnrollmentRaceTests: XCTestCase, RemoteHerdr
     func testAReconcileDuringPrepareTeardownStartsNoForward() async {
         // Only the reconciliation says the host is gone: the alias lookup
         // still answers, as it would for a store read that lags the revoke.
-        let world = makeWorld()
+        // The prepared forward has no lease, so its idle sleep is held: the
+        // only teardown here is the one the replacement waits on.
+        let clock = HeldForwardTestClock()
+        let world = makeWorld(heldClock: clock)
         await world.service.prepare(
             hostID: hostID, alias: "builder", remoteSocketPath: remoteSocketPath
         )
@@ -1671,6 +1678,7 @@ final class ClaudeRemoteHerdrForwardEnrollmentRaceTests: XCTestCase, RemoteHerdr
 
         XCTAssertEqual(world.spawner.spawnCount, 1, "no replacement ssh for a revoked host")
         finish(world)
+        clock.releaseAllSleeps()
     }
 
     func testQuitDuringReplacementTeardownOpensNoForward() async throws {
