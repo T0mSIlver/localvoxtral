@@ -166,6 +166,65 @@ final class HerdrPanePromptRouteTests: XCTestCase {
         XCTAssertEqual(kept, ["run the tests"])
     }
 
+    /// The same check for the other herdr joins, and for the tty: a
+    /// federated pane's text is typed while the client shows its machine,
+    /// a remote pane's while the tty's ssh session is the one joined, and
+    /// neither once the terminal focuses another tty.
+    func testARefusedTextIsTypedOnlyWhileTheSurfaceShowsTheJoinedMachine() async throws {
+        let claude = claude
+        let herdr = try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane("w1:p2", foreground: { claude }) { _ in
+            .error("pane_send_failed")
+        })
+        defer { herdr.stop() }
+        let builder = SSHDestinationTTYProbeResult.connection(SSHSurfaceConnection(
+            destination: "builder", hasCompetingHerdrClient: false, herdr: .plainClient(sessionSelector: nil)
+        ))
+        let focusedTTY = Box("/dev/ttys-outer")
+        let federation = Box<HerdrMachineFederation>(.notFederated)
+        let ssh = Box(builder)
+        let resolver = ClaudeSessionJoinResolver(
+            registry: registry(herdrSocket: herdr.socketPath),
+            focusedTerminalTTY: { _ in focusedTTY.get() },
+            herdrClientProbe: { _ in true },
+            herdrFederation: { federation.get() },
+            herdrClientSurfaceCount: { 1 },
+            herdrPanes: client,
+            herdrPaneWriter: client,
+            sshDestinationProbe: { _ in ssh.get() }
+        )
+        let resolved = await resolver.resolve(target: ghostty)
+        let local = try XCTUnwrap(resolved)
+        func route(_ mechanism: ClaudeSessionJoinMechanism, _ machine: HerdrJoinedSurface.Machine) throws -> HerdrPanePromptRoute {
+            let join = ClaudeSessionJoin(
+                target: local.target, snapshot: local.snapshot, windowID: nil, mechanism: mechanism,
+                herdrPane: local.herdrPane, herdrSurface: HerdrJoinedSurface(tty: "/dev/ttys-outer", machine: machine)
+            )
+            return try XCTUnwrap(resolver.herdrPromptRoute(for: join) { 4343 })
+        }
+        let federated = try route(.federatedHerdrPane, .herdrClient(.showingMachine(machineA)))
+        let remote = try route(.remoteHerdrPane, .ssh(builder))
+
+        federation.set(.showingMachine(machineA))
+        let federatedShown = await federated.deliver(.append("one"))
+        federation.set(.showingMachine(machineB))
+        let federatedSwitched = await federated.deliver(.append("two"))
+        let remoteShown = await remote.deliver(.append("three"))
+        ssh.set(.noSSHClient)
+        let remoteLeft = await remote.deliver(.append("four"))
+        ssh.set(builder)
+        focusedTTY.set("/dev/ttys-other")
+        let otherTTY = await remote.deliver(.append("five"))
+
+        XCTAssertEqual(federatedShown, .typeInstead)
+        XCTAssertEqual(federatedSwitched, .keepInHistory)
+        XCTAssertEqual(remoteShown, .typeInstead)
+        XCTAssertEqual(remoteLeft, .keepInHistory)
+        XCTAssertEqual(otherTTY, .keepInHistory)
+    }
+
+    private let machineA = HerdrMachineProfile(
+        id: String(repeating: "a", count: 32), label: "a", target: "a", session: "default", enabled: true
+    )
     private let machineB = HerdrMachineProfile(
         id: String(repeating: "b", count: 32), label: "b", target: "b", session: "default", enabled: true
     )
