@@ -78,6 +78,13 @@ final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
     private var pendingTeardowns: [UUID: Task<Void, Never>] = [:]
     private var orphanReapComplete: Bool
     private var orphanReapWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Bumped by every enrollment reconciliation. `open()` and `prepare()`
+    /// wait for the previous forward's teardown after removing its entry, so
+    /// a revoke in that window finds nothing to stop; the waiter compares
+    /// this and `reconciledHostIDs` when it resumes instead (#1104).
+    private var enrollmentEpoch = 0
+    private var reconciledHostIDs: Set<String> = []
+    private var stoppedForQuit = false
 
     init(
         spawner: any ClaudeRemoteHerdrForwardSpawning,
@@ -128,6 +135,7 @@ final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
     /// resolves it on the host that named it.
     func open(alias: String, remoteSocketPath: String) async -> ClaudeRemoteHerdrForwardHandle? {
         await waitForOrphanReap()
+        guard !stoppedForQuit else { return nil }
         guard ClaudeRemoteEnrollmentService.isValidHostAlias(alias) else {
             Log.claudeContext.info("Remote herdr forward refused: invalid host alias")
             return nil
@@ -140,6 +148,7 @@ final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
             Log.claudeContext.info("Remote herdr forward refused: alias no longer names one enrolled host")
             return nil
         }
+        let epoch = enrollmentEpoch
 
         if let entry = entries[hostID] {
             let sameTarget = entry.alias == alias && entry.remoteSocketPath == remoteSocketPath
@@ -155,6 +164,12 @@ final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
                 "Remote herdr forward health failed for host \(hostID, privacy: .public) (process alive: \(processAlive, privacy: .public), socket answers: \(socketAnswers, privacy: .public)); replacing it"
             )
             await tearDown(hostID: hostID, reason: .healthFailure)
+            guard mayStillCreate(hostID: hostID, alias: alias, since: epoch) else {
+                Log.claudeContext.info(
+                    "Remote herdr forward replacement abandoned for host \(hostID, privacy: .public): enrollment changed during teardown"
+                )
+                return nil
+            }
         }
 
         guard let entry = makeEntry(
@@ -214,6 +229,7 @@ final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
     /// active. Readiness is intentionally not awaited on this background path.
     func prepare(hostID: String, alias: String, remoteSocketPath: String) async {
         await waitForOrphanReap()
+        guard !stoppedForQuit else { return }
         guard ClaudeRemoteEnrollmentService.isValidHostAlias(alias),
               Self.isForwardableRemoteSocketPath(remoteSocketPath)
         else {
@@ -228,6 +244,7 @@ final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
             )
             return
         }
+        let epoch = enrollmentEpoch
         if let entry = entries[hostID] {
             if entry.alias == alias,
                entry.remoteSocketPath == remoteSocketPath,
@@ -239,6 +256,12 @@ final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
                 return
             }
             await tearDown(hostID: hostID, reason: .healthFailure)
+            guard mayStillCreate(hostID: hostID, alias: alias, since: epoch) else {
+                Log.claudeContext.info(
+                    "Remote herdr forward preparation abandoned for host \(hostID, privacy: .public): enrollment changed during teardown"
+                )
+                return
+            }
         }
         guard let entry = makeEntry(
             hostID: hostID, alias: alias, remoteSocketPath: remoteSocketPath
@@ -252,12 +275,15 @@ final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
     }
 
     func reconcileEnrollment(activeHostIDs: Set<String>) {
+        enrollmentEpoch += 1
+        reconciledHostIDs = activeHostIDs
         for hostID in Array(entries.keys) where !activeHostIDs.contains(hostID) {
             stopNow(hostID: hostID, reason: .revoked)
         }
     }
 
     func stopAllForQuit() {
+        stoppedForQuit = true
         for hostID in Array(entries.keys) { stopNow(hostID: hostID, reason: .quit) }
     }
 
@@ -269,6 +295,15 @@ final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
         let waiters = orphanReapWaiters
         orphanReapWaiters = []
         for waiter in waiters { waiter.resume() }
+    }
+
+    /// Asked after a suspension, before anything is spawned: the host must
+    /// still be enrolled under this alias, no reconciliation during the wait
+    /// may have dropped it, and the app must not be quitting.
+    private func mayStillCreate(hostID: String, alias: String, since epoch: Int) -> Bool {
+        guard !stoppedForQuit else { return false }
+        if enrollmentEpoch != epoch, !reconciledHostIDs.contains(hostID) { return false }
+        return hostIDForAlias(alias) == hostID
     }
 
     private func waitForOrphanReap() async {
