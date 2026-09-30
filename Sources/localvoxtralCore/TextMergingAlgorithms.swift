@@ -162,12 +162,15 @@ package enum TextMergingAlgorithms {
         // that here: a final of "hello. " must type "." — never a dangling
         // space the transcript itself discards.
         let normalizedFinal = finalText.trimmed
-        guard !liveInsertedText.isEmpty, normalizedFinal.hasPrefix(liveInsertedText) else {
+        // A later segment's first delta keeps its leading space (only the
+        // session's first chunk is stripped), which the trimmed final lacks.
+        let typedText = liveInsertedText.drop(while: \.isWhitespace)
+        guard !typedText.isEmpty, normalizedFinal.hasPrefix(typedText) else {
             return nil
         }
         let startIndex = normalizedFinal.index(
             normalizedFinal.startIndex,
-            offsetBy: liveInsertedText.count
+            offsetBy: typedText.count
         )
         let suffix = String(normalizedFinal[startIndex...])
         return suffix.isEmpty ? nil : suffix

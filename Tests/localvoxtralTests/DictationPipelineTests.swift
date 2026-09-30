@@ -54,6 +54,36 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.overlay.commitCallCount, 0)
     }
 
+    /// A later segment's first delta keeps its leading space, and its period
+    /// arrives only in the final: the period is still typed (#1091).
+    func testLiveAutoPasteTypesALaterSegmentsFinalOnlyPeriod() async throws {
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        let typed = TypedText()
+        pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        pipeline.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { chunk in
+                typed.append(chunk)
+                return true
+            },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false }
+        )
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.delta", "delta": "First part"])
+        pipeline.server.send(["type": "transcription.done", "text": "First part."])
+        pipeline.server.send(["type": "transcription.delta", "delta": " Second"])
+        pipeline.server.send(["type": "transcription.delta", "delta": " part"])
+        pipeline.server.send(["type": "transcription.done", "text": " Second part."])
+        let typedWhileDictating = await typed.waitFor("First part. Second part.")
+        XCTAssertTrue(typedWhileDictating, "typed so far: \(typed.text.debugDescription)")
+
+        await stopAndFinalize(pipeline, finalText: "")
+
+        XCTAssertEqual(typed.text, "First part. Second part.")
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), ["First part. Second part."])
+    }
+
     /// Overlay Buffer: the words collect in the overlay while the dictation
     /// runs and are committed once, on stop.
     func testOverlayBufferCommitsTheTranscriptOnStop() async throws {
