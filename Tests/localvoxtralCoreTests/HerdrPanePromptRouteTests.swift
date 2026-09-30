@@ -43,12 +43,15 @@ final class HerdrPanePromptRouteTests: XCTestCase {
 
     private func resolver(
         _ registry: ClaudeSessionRegistry,
-        focusedTTY: String = "/dev/ttys-outer"
+        focusedTTY: String = "/dev/ttys-outer",
+        federation: Box<HerdrMachineFederation> = Box(.notFederated)
     ) -> ClaudeSessionJoinResolver {
         ClaudeSessionJoinResolver(
             registry: registry,
             focusedTerminalTTY: { _ in focusedTTY },
             herdrClientProbe: { _ in true },
+            herdrFederation: { federation.get() },
+            herdrClientSurfaceCount: { 1 },
             herdrPanes: client,
             herdrPaneWriter: client
         )
@@ -134,6 +137,38 @@ final class HerdrPanePromptRouteTests: XCTestCase {
         XCTAssertEqual(otherAppInFront, .keepInHistory)
         XCTAssertEqual(otherPaneFocused, .keepInHistory)
     }
+
+    /// The herdr client switched to another saved machine after the join.
+    /// The local server keeps its focused pane while it stops showing it,
+    /// and the terminal stays in front, so keys typed now would land on the
+    /// machine the client shows. A refused text stays in History (#1105).
+    func testARefusalAfterTheClientSwitchedMachinesKeepsTheTextInHistory() async throws {
+        let claude = claude
+        let herdr = try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane("w1:p2", foreground: { claude }) { _ in
+            .error("pane_send_failed")
+        })
+        defer { herdr.stop() }
+        let federation = Box<HerdrMachineFederation>(.showingLocal)
+        let resolver = resolver(registry(herdrSocket: herdr.socketPath), federation: federation)
+        let resolved = await resolver.resolve(target: ghostty)
+        let join = try XCTUnwrap(resolved)
+        XCTAssertEqual(join.mechanism, .herdrPane)
+        let route = try XCTUnwrap(resolver.herdrPromptRoute(for: join) { 4343 })
+        var typed: [String] = []
+        var kept: [String] = []
+        let sink = AgentPromptSink(route: route, kept: { kept.append($0) }) { typed.append($0) }
+
+        federation.set(.showingMachine(machineB))
+        sink.append("run the tests")
+        await sink.waitUntilIdle()
+
+        XCTAssertEqual(typed, [], "nothing is typed into the machine the client shows now")
+        XCTAssertEqual(kept, ["run the tests"])
+    }
+
+    private let machineB = HerdrMachineProfile(
+        id: String(repeating: "b", count: 32), label: "b", target: "b", session: "default", enabled: true
+    )
 
     /// Focus moves to another app while herdr answers the focus question:
     /// the frontmost app is read after the answer, so the text is kept.
