@@ -193,6 +193,33 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertFalse(pipeline.viewModel.isFinalizingStop)
     }
 
+    /// A polish cut off at the backend's output limit (#1109): the real
+    /// client refuses the prefix, and the stop commits the whole transcript
+    /// once and says why.
+    func testAPolishCutOffAtTheOutputLimitCommitsTheTranscriptAndSaysSo() async throws {
+        StubHTTPProtocol.reply.withLock {
+            $0 = .http(200, #"{"choices":[{"index":0,"message":{"role":"assistant","content":"Hello from"},"finish_reason":"length"}]}"#)
+        }
+        URLProtocol.registerClass(StubHTTPProtocol.self)
+        addTeardownBlock { URLProtocol.unregisterClass(StubHTTPProtocol.self) }
+        let endpoint = "https://\(StubHTTPProtocol.host)/v1/chat/completions"
+        let pipeline = try await makePipeline(
+            outputMode: .overlayBuffer, polish: LLMPolishingService(), polishEndpoint: endpoint, earlyPolish: false)
+
+        await startAndSpeak(pipeline)
+        let notice = "The polish reached the model's output limit, so the transcript was not polished."
+        await stopAndFinalize(
+            pipeline,
+            expectedError: "\(notice) [endpoint: \(endpoint)]",
+            finalStatus: "LLM polishing failed.",
+            alerts: ["LLM Polishing Cut Off"]
+        )
+
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
+        XCTAssertNil(pipeline.records.all.first?.polishedText)
+    }
+
     /// A new dictation while the stopped one waits on its polish: the one
     /// saved as not inserted keeps its audio in History (#1090).
     func testANewDictationDuringThePolishKeepsTheOldDictationsAudio() async throws {
@@ -2110,6 +2137,7 @@ final class DictationPipelineTests: XCTestCase {
         _ pipeline: Pipeline, finalText: String = DictationPipelineTests.phrase,
         expectedError: String? = nil,
         finalStatus: String = DictationViewModel.StatusStrings.ready,
+        alerts: [String] = [],
         file: StaticString = #filePath, line: UInt = #line
     ) async {
         let viewModel = pipeline.viewModel
@@ -2144,7 +2172,7 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertFalse(viewModel.isDictating, file: file, line: line)
         XCTAssertEqual(viewModel.statusText, finalStatus, file: file, line: line)
         XCTAssertEqual(viewModel.lastError, expectedError, file: file, line: line)
-        XCTAssertTrue(pipeline.presenter.presented.isEmpty, file: file, line: line)
+        XCTAssertEqual(pipeline.presenter.presented.map(\.title), alerts, file: file, line: line)
     }
 
     // MARK: - Harness
@@ -2171,7 +2199,8 @@ final class DictationPipelineTests: XCTestCase {
 
     private func makePipeline(
         outputMode: DictationOutputMode,
-        polish: FakePolishingService? = nil,
+        polish: (any LLMPolishingServicing)? = nil,
+        polishEndpoint: String = "http://127.0.0.1:8080/v1/chat/completions",
         earlyPolish: Bool = true
     ) async throws -> Pipeline {
         let server = try FakeRealtimeServer()
@@ -2208,7 +2237,7 @@ final class DictationPipelineTests: XCTestCase {
         viewModel.appConfigStore = MockAppConfigStore()
         if let polish {
             settings.llmPolishingEnabled = true
-            settings.llmPolishingEndpointURL = "http://127.0.0.1:8080/v1/chat/completions"
+            settings.llmPolishingEndpointURL = polishEndpoint
             settings.earlyPolishEnabled = earlyPolish
             settings.polishClipboardContextEnabled = false
             settings.terminalScreenContextEnabled = false

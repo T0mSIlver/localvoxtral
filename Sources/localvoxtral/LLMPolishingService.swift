@@ -236,6 +236,13 @@ struct LLMPolishingService: LLMPolishingServicing {
         let usage = json.flatMap(LLMTokenUsage.init(responseObject:))
         recordUsage(request: request, configuration: configuration, usage: usage)
 
+        // A reply cut off at the backend's output limit is a prefix of the
+        // polish: committing it would drop the rest of the dictation (#1109).
+        // A request that set its own cap (the one-token warmup) asked for it.
+        if request.maxTokens == nil, let json, Self.stoppedAtOutputLimit(responseObject: json) {
+            throw LLMPolishingError.truncated
+        }
+
         guard let json, let content = Self.assistantText(inResponseObject: json) else {
             throw LLMPolishingError.invalidResponse
         }
@@ -282,6 +289,17 @@ struct LLMPolishingService: LLMPolishingServicing {
                 usage: usage,
                 promptCharacters: request.promptCharacters
             ))
+    }
+
+    /// Whether the first choice ended at a token limit rather than on its
+    /// own: `length` on OpenAI-compatible servers and polishd, and Mistral's
+    /// `model_length` when the context window runs out mid-answer. A missing
+    /// `finish_reason` counts as complete, as servers that omit it always did.
+    static func stoppedAtOutputLimit(responseObject json: [String: Any]) -> Bool {
+        guard let choices = json["choices"] as? [[String: Any]],
+              let reason = choices.first?["finish_reason"] as? String
+        else { return false }
+        return reason == "length" || reason == "model_length"
     }
 
     /// Extracts the assistant's answer from a decoded chat/completions

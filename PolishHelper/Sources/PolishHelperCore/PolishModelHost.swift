@@ -196,7 +196,18 @@ public final class MLXPolishModel: ChatResponding, @unchecked Sendable {
                 draftTokens: info?.proposedDraftTokens,
                 acceptedDraftTokens: info?.acceptedDraftTokens
             )
-            return ChatReply(content: output, timings: timings)
+            let finishReason: String
+            switch info?.stopReason {
+            case .length:
+                finishReason = "length"
+            case .stop:
+                finishReason = "stop"
+            case .cancelled, nil:
+                // A stream that ended without finishing its answer has no
+                // honest completion to return: the router answers 500.
+                throw CancellationError()
+            }
+            return ChatReply(content: output, timings: timings, finishReason: finishReason)
         }
     }
 

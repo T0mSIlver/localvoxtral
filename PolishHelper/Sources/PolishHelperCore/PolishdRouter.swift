@@ -62,7 +62,8 @@ public struct PolishdRouter: Sendable {
                 created: Int(Date().timeIntervalSince1970),
                 model: completion.model ?? modelName,
                 content: reply.content,
-                timings: reply.timings
+                timings: reply.timings,
+                finishReason: reply.finishReason
             )
             return .json(200, response)
         } catch let error as ChatRespondingError {
