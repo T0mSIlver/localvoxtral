@@ -337,6 +337,18 @@ gh workflow run ui-smoke.yml --ref main   # the Mac unlocked, the owner at it
 ./scripts/release.sh --dry-run patch      # the gate's answer, no dispatch
 ```
 
+The harness the check dictates with is `com.localvoxtral.e2e-harness`,
+signed `localvoxtral-dev`, so it holds an Accessibility row of its own. A
+harness under `com.localvoxtral.app` shared the owner's row, and since macOS
+ties a row to one signature, the ad-hoc release and the harness took the
+grant from each other (#1198). The run writes only the harness's defaults
+domain and launches it from
+`~/Library/Application Support/localvoxtral-e2e/localvoxtral.app`. The owner
+grants it once: System Settings > Privacy & Security > Accessibility, +,
+Cmd-Shift-G, that path, Open, then make sure its switch is on. The row
+survives rebuilds, since TCC keys it on the bundle id and the signing
+identity.
+
 On a PR the run is optional, for what only it reaches: text insertion into
 another app's window, focus handling and TCC. No agent account can run it
 directly, since the build gate has no GUI session and the UI gate reaches

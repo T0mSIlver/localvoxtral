@@ -169,11 +169,15 @@ jobs:
         # The e2e dictation check needs the test harness: the control socket
         # and the WAV that stands in for the microphone (docs/test-harness.md).
         # No release build has either; this is the one package that asks.
+        # Its own bundle id gives it its own Accessibility row, so the
+        # owner's ad-hoc release and this build stop taking the grant from
+        # each other (#1198).
         id: package
         if: steps.guard.outputs.run != 'false'
         env:
           LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
           LOCALVOXTRAL_E2E_HARNESS: "1"
+          LOCALVOXTRAL_BUNDLE_ID: com.localvoxtral.e2e-harness
         run: ./scripts/package_app.sh release
 
       - name: Run e2e dictation
@@ -186,17 +190,27 @@ jobs:
         # goes red.
         id: e2e
         if: steps.guard.outputs.run != 'false'
-        # A job timeout SIGKILLs the step, and then nothing restores the
-        # owner's defaults until the next lane run. Two scenarios take about
+        # A job timeout SIGKILLs the step, and then nothing relaunches the
+        # owner's app. Two scenarios take about
         # two minutes; this bound ends a wedged run while the job can still
         # deliver the script's TERM.
         timeout-minutes: 10
         env:
           LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN: "1"
         run: |
+          # From a fixed copy outside the workspace with .build hidden (#87).
+          # Fixed, so the owner can add it in System Settings > Privacy &
+          # Security > Accessibility once (docs/agent/test-tiers.md, "Proving
+          # a change with the e2e dictation check").
+          HARNESS_DIR="$HOME/Library/Application Support/localvoxtral-e2e"
+          mkdir -p "$HARNESS_DIR"
+          rm -rf "$HARNESS_DIR/localvoxtral.app"
+          ditto dist/localvoxtral.app "$HARNESS_DIR/localvoxtral.app"
+          mv .build .build.smoke-hidden
+          trap 'mv .build.smoke-hidden .build' EXIT
           mkdir -p logs
           set +e
-          ./scripts/e2e-dictation.sh 2>&1 | tee logs/e2e-dictation.log
+          ./scripts/e2e-dictation.sh "$HARNESS_DIR/localvoxtral.app" 2>&1 | tee logs/e2e-dictation.log
           STATUS="${PIPESTATUS[0]}"
           set -e
           if [[ "$STATUS" == "0" ]]; then
@@ -227,6 +241,21 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      - name: Package the harness build for the UI gate
+        # The UI gate launches only com.localvoxtral.app and drives it with
+        # the owner's settings, so it gets the harness under the release's
+        # id. Same build, so this repackage compiles nothing.
+        id: gate_package
+        if: >-
+          ${{ !cancelled()
+          && runner.environment == 'self-hosted'
+          && github.event_name == 'workflow_dispatch'
+          && steps.package.outcome == 'success' }}
+        env:
+          LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
+          LOCALVOXTRAL_E2E_HARNESS: "1"
+        run: ./scripts/package_app.sh release
+
       - name: Install the harness build into the UI gate's artifact root
         # An agent driving the SSH UI gate can build but cannot install: no
         # gate verb runs try-pr.sh and that account has no shell. This runner
@@ -242,7 +271,7 @@ jobs:
           ${{ !cancelled()
           && runner.environment == 'self-hosted'
           && github.event_name == 'workflow_dispatch'
-          && steps.package.outcome == 'success' }}
+          && steps.gate_package.outcome == 'success' }}
         run: |
           set -uo pipefail
           STATUS=0

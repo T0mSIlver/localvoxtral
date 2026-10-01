@@ -25,9 +25,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/launch-app.sh"
 #   phrase=<what `say` speaks and the score is measured against>
 #   min_word_accuracy=<0..1, scripts/lib/word-accuracy.sh>
 #
-# It needs a harness bundle (`LOCALVOXTRAL_E2E_HARNESS=1 ./scripts/package_app.sh
-# release`), an STT server on LV_E2E_REALTIME_ENDPOINT, an unlocked screen and
-# the app's Accessibility grant. It takes the keyboard focus for about half a
+# It needs a harness bundle under its own bundle id
+# (`LOCALVOXTRAL_E2E_HARNESS=1 LOCALVOXTRAL_BUNDLE_ID=com.localvoxtral.e2e-harness
+# ./scripts/package_app.sh release`), an STT server on LV_E2E_REALTIME_ENDPOINT, an unlocked screen and
+# that bundle's Accessibility grant. It takes the keyboard focus for about half a
 # minute per scenario and says so out loud first (LV_E2E_ANNOUNCE=0 to mute).
 #
 # The speech service is shared, and under load it can fall seconds behind the
@@ -47,12 +48,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_PATH="${1:-dist/localvoxtral.app}"
 [ "$#" -gt 0 ] && shift
 APP_PROCESS="localvoxtral"
+# The owner's app. The run quits and relaunches it but leaves its defaults
+# alone: owner-app-session.sh only restores a backup a dead lane left in them.
 BUNDLE_ID="com.localvoxtral.app"
+# The app under test has its own id (#1198), so its own defaults and its own
+# Accessibility row, which the owner's release never takes over.
+HARNESS_BUNDLE_ID="com.localvoxtral.e2e-harness"
 OWNER_APP_BUNDLE=""
 DRILL_LAUNCHED=0
 FAILED=0
 NOT_RUNNABLE=0
 CLEANED_UP=0
+HARNESS_DEFAULTS_WRITTEN=0
 ANNOUNCED=0
 WORK_DIR=""
 TARGET_OUTPUT_DIRS=()
@@ -158,11 +165,10 @@ cleanup() {
   if ((DRILL_LAUNCHED)) || [[ -n "$OWNER_APP_BUNDLE" ]]; then
     quit_app
   fi
-  if restore_defaults; then
-    relaunch_owner_app
-  else
-    printf 'WARNING: failed to restore defaults backup at %s; leaving it in place for the next run and NOT relaunching the owner app at %s.\n' "$PERSISTENT_DEFAULTS_BACKUP" "$OWNER_APP_BUNDLE" >&2
+  if ((HARNESS_DEFAULTS_WRITTEN)); then
+    defaults delete "$HARNESS_BUNDLE_ID" >/dev/null 2>&1 || true
   fi
+  relaunch_owner_app
   [[ -n "$WORK_DIR" ]] && rm -rf "$WORK_DIR"
   if ((ANNOUNCED)); then
     announce "localvoxtral end to end check finished."
@@ -455,6 +461,11 @@ if [[ "$("$PLISTBUDDY" -c 'Print :LVXE2EHarness' "$APP_PATH/Contents/Info.plist"
   record_fail "$APP_PATH is not a harness build; only a harness build can dictate from a file."
   finish
 fi
+app_bundle_id="$("$PLISTBUDDY" -c 'Print :CFBundleIdentifier' "$APP_PATH/Contents/Info.plist" 2>/dev/null)"
+if [[ "$app_bundle_id" != "$HARNESS_BUNDLE_ID" ]]; then
+  record_fail "$APP_PATH has bundle id '$app_bundle_id', not $HARNESS_BUNDLE_ID; package it with LOCALVOXTRAL_BUNDLE_ID=$HARNESS_BUNDLE_ID."
+  finish
+fi
 
 SCENARIOS=("$@")
 if ((${#SCENARIOS[@]} == 0)); then
@@ -529,32 +540,31 @@ announce "localvoxtral end to end check starting. It takes the keyboard for abou
 ANNOUNCED=1
 sleep 3
 
-# Quit the owner's instance before touching defaults: a running app would see
-# the forced modes live and could write its own values back on quit.
+# One localvoxtral at a time: the control socket, the hook socket and the
+# dictation key are per user, not per bundle id.
 quit_owner_app
 if pgrep -x "$APP_PROCESS" >/dev/null 2>&1; then
   record_fail "Existing app instance did not quit; cannot launch a fresh instance."
   finish
 fi
 
-if ! snapshot_defaults; then
-  record_fail "Could not create persistent defaults backup at $PERSISTENT_DEFAULTS_BACKUP; refusing to mutate owner defaults."
+# The harness starts from nothing but these. External dictation so the app
+# talks to the STT test service and spawns no helper of its own; polishing off
+# so the inserted text is the transcript.
+HARNESS_DEFAULTS_WRITTEN=1
+defaults delete "$HARNESS_BUNDLE_ID" >/dev/null 2>&1 || true
+if ! defaults write "$HARNESS_BUNDLE_ID" settings.dictation_backend_mode -string external_url \
+  || ! defaults write "$HARNESS_BUNDLE_ID" settings.polishing_backend_mode -string external_url \
+  || ! defaults write "$HARNESS_BUNDLE_ID" settings.realtime_provider -string realtime_api \
+  || ! defaults write "$HARNESS_BUNDLE_ID" settings.realtime_api_endpoint_url -string "$REALTIME_ENDPOINT" \
+  || ! defaults write "$HARNESS_BUNDLE_ID" settings.realtime_api_model_name -string "$REALTIME_MODEL" \
+  || ! defaults write "$HARNESS_BUNDLE_ID" settings.llm_polishing_enabled -bool false \
+  || ! defaults write "$HARNESS_BUNDLE_ID" settings.onboarding_completed -bool true \
+  || ! defaults write "$HARNESS_BUNDLE_ID" debug.dogfood_control_socket_enabled -bool true; then
+  record_fail "Could not write the harness's defaults."
   finish
 fi
-# External dictation so the app talks to the STT test service and spawns no
-# helper of its own; polishing off so the inserted text is the transcript.
-if ! defaults write "$BUNDLE_ID" settings.dictation_backend_mode -string external_url \
-  || ! defaults write "$BUNDLE_ID" settings.polishing_backend_mode -string external_url \
-  || ! defaults write "$BUNDLE_ID" settings.realtime_provider -string realtime_api \
-  || ! defaults write "$BUNDLE_ID" settings.realtime_api_endpoint_url -string "$REALTIME_ENDPOINT" \
-  || ! defaults write "$BUNDLE_ID" settings.realtime_api_model_name -string "$REALTIME_MODEL" \
-  || ! defaults write "$BUNDLE_ID" settings.llm_polishing_enabled -bool false \
-  || ! defaults write "$BUNDLE_ID" settings.onboarding_completed -bool true \
-  || ! defaults write "$BUNDLE_ID" debug.dogfood_control_socket_enabled -bool true; then
-  record_fail "Could not write the lane's defaults."
-  finish
-fi
-record_pass "Defaults snapshot captured; external STT, polishing off, control socket on."
+record_pass "Harness defaults written; external STT, polishing off, control socket on."
 
 for scenario in "${SCENARIOS[@]}"; do
   run_scenario "$scenario"
