@@ -435,6 +435,9 @@ final class DictationSessionController {
     var onQuickCapture: (@MainActor (_ text: String, _ historyRecordID: UUID?, _ group: ProjectGroup?) -> Void)?
     @ObservationIgnored
     var polishAndCommitTask: Task<Void, Never>?
+    /// The start's lookup of the joined session's git root (#1155).
+    @ObservationIgnored
+    var joinedRepositoryRootLookup: Task<Void, Never>?
     /// This Overlay Buffer dictation's pieces polished while the user speaks
     /// (#709). Handed to the stop's polish task, and cancelled on every
     /// other session exit.
@@ -1114,6 +1117,8 @@ extension DictationSessionController {
         // as `superseded`.
         editSignalWatcher.supersede()
         sessionClaudeJoinBadge = await context.captureAtStart()
+        joinedRepositoryRootLookup?.cancel()
+        joinedRepositoryRootLookup = Task { [weak self] in await self?.lookUpJoinedRepositoryRoot() }
         noteDictationJoinedAgentSession(context.claudeSessionJoin?.snapshot.sessionID)
         await context.resolveAgentPromptRoute()
     }

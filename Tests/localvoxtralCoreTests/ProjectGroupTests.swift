@@ -74,6 +74,27 @@ final class ProjectGroupTests: XCTestCase {
         }
     }
 
+    /// A session in a linked worktree outside its main checkout is in no
+    /// group by its directory alone; its git root and main checkout put it
+    /// in the checkout's (#1155).
+    func testASessionInAWorktreeOutsideItsCheckoutReadsTheCheckoutsGroupFromItsRoot() async {
+        let learned = learned()
+        let workspace = joined("/w/acme-feature/Sources")
+        XCTAssertNil(learned.group(ofJoinedWorkspace: workspace))
+        let root = LearnedTermProjectResolver.RepositoryRoot.root("/w/acme-feature", mainCheckout: "/w/acme")
+        XCTAssertEqual(learned.group(ofJoinedWorkspace: workspace, repositoryRoot: root), .work)
+
+        var snapshot = ClaudeSessionSnapshot(
+            sessionID: "s1", origin: .localAuthenticated(peerUID: 501), agent: .claude, firstSeen: now)
+        snapshot.workspace = workspace
+        var join = ClaudeSessionJoin(
+            target: TerminalScreenTarget(pid: 4242, bundleID: "com.apple.Terminal"),
+            snapshot: snapshot, windowID: 101, mechanism: .ttyDevice)
+        XCTAssertNil(learned.group(ofJoin: join))
+        join.repositoryRoot = root
+        XCTAssertEqual(learned.group(ofJoin: join), .work)
+    }
+
     /// A checkout linked to its repository after the user picked a group
     /// reads it from the repository's record, and the reverse.
     func testAGroupReachesEveryCheckoutOfItsRepository() async {

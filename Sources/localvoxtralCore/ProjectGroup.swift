@@ -78,10 +78,28 @@ extension LearnedTerms {
 
     /// The group of a dictation joined to a session in `workspace`
     /// (`ClaudeSessionSnapshot.learnedTermWorkspace`); nil with no join.
-    package func group(ofJoinedWorkspace workspace: ClaudeWorkspaceReference?) -> ProjectGroup? {
+    /// `repositoryRoot`, when known, widens a session in a linked worktree
+    /// to its main checkout, which no record's path holds when the worktree
+    /// sits outside it (#1155).
+    package func group(
+        ofJoinedWorkspace workspace: ClaudeWorkspaceReference?,
+        repositoryRoot: LearnedTermProjectResolver.RepositoryRoot = .unknown
+    ) -> ProjectGroup? {
         guard let workspace else { return nil }
-        let project = LearnedTermProjectResolver.resolve(repositoryRoot: .unknown, workspace: workspace)
+        let project = LearnedTermProjectResolver.resolve(repositoryRoot: repositoryRoot, workspace: workspace)
         return group(ofDictationProject: project?.key)
+    }
+
+    /// The group of a dictation with `join`; nil with none.
+    package func group(ofJoin join: ClaudeSessionJoin?) -> ProjectGroup? {
+        guard let join else { return nil }
+        return group(ofJoinedWorkspace: join.snapshot.learnedTermWorkspace, repositoryRoot: join.repositoryRoot)
+    }
+
+    /// Whether any project is in a group. Without one, no dictation's group
+    /// can be anything but nil, and nothing needs looking up to find it.
+    package var hasGroups: Bool {
+        projects.contains { $0.group != nil }
     }
 
     /// What a dictation in `group` may read across projects: the projects
