@@ -322,6 +322,9 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                 for case .send(let task, let text) in sends {
                     transmit(text, on: task)
                 }
+                // Before the final, so the session has opened the tail run's
+                // window by the time it shows that text.
+                emit(.tailRunStarted, from: generation)
             }
             if let text = findString(in: json, matching: ["text", "transcript", "delta"]) {
                 emit(.finalTranscript(text), from: generation)

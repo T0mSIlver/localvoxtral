@@ -63,6 +63,8 @@ extension DictationSessionController {
             handleErrorEvent(message)
         case .transcriptionStopped(let message):
             handleTranscriptionStoppedEvent(message)
+        case .tailRunStarted:
+            handleTailRunStartedEvent()
         }
     }
 
@@ -175,6 +177,13 @@ extension DictationSessionController {
         statusText = isFinalizingStop ? StatusStrings.finalizing : "Transcribing..."
         refreshOverlayBufferSession()
         reconsiderSpokenStop()
+    }
+
+    private func handleTailRunStartedEvent() {
+        guard acceptsRealtimeEvents, isFinalizingStop else { return }
+        let now = dependencies.clock.now()
+        realtimeTailRunStartedAt = now
+        realtimeFinalizationLastActivityAt = now
     }
 
     private func handleFinalTranscriptEvent(_ text: String) {

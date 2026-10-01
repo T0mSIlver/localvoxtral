@@ -377,6 +377,7 @@ extension DictationSessionController {
         firstChunkPreprocessor.reset()
         overlayBufferCoordinator.reset()
         realtimeFinalizationLastActivityAt = nil
+        realtimeTailRunStartedAt = nil
         textInsertion.clearPendingText()
         textInsertion.resetDiagnostics()
 
@@ -726,6 +727,9 @@ extension DictationSessionController {
                 let elapsed = now.timeIntervalSince(startedAt)
                 let lastActivity = self.realtimeFinalizationLastActivityAt ?? startedAt
                 let inactivity = now.timeIntervalSince(lastActivity)
+                // The tail run (#1070) gets the minimum the final commit got;
+                // the timeout above still counts from the stop.
+                let open = now.timeIntervalSince(self.realtimeTailRunStartedAt ?? startedAt)
 
                 if elapsed >= TimingConstants.stopFinalizationTimeout {
                     self.debugLog("stop finalization timeout (\(TimingConstants.stopFinalizationTimeout)s); forcing disconnect")
@@ -734,7 +738,7 @@ extension DictationSessionController {
                     return
                 }
 
-                if elapsed >= TimingConstants.finalizationMinimumOpen,
+                if open >= TimingConstants.finalizationMinimumOpen,
                    inactivity >= TimingConstants.finalizationInactivityThreshold
                 {
                     self.debugLog(
@@ -802,6 +806,7 @@ extension DictationSessionController {
         audio.stopMicrophoneIfInitialized()
         audio.audioDucking.restoreAfterSession()
         realtimeFinalizationLastActivityAt = nil
+        realtimeTailRunStartedAt = nil
         firstChunkPreprocessor.reset()
         textInsertion.endLiveReplacementSession()
         textInsertion.endPromptRelay()

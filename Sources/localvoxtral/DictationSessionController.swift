@@ -390,6 +390,10 @@ final class DictationSessionController {
     var isShowingConnectionFailureAlert = false
     @ObservationIgnored
     var realtimeFinalizationLastActivityAt: Date?
+    /// When the stop's tail run began (#1070); it gets the minimum window
+    /// the final commit got.
+    @ObservationIgnored
+    var realtimeTailRunStartedAt: Date?
     @ObservationIgnored
     var isAwaitingMicrophonePermission = false
     /// Gives up on a microphone prompt nobody answers.

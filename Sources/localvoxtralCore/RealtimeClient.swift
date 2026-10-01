@@ -80,6 +80,9 @@ package enum RealtimeEvent: Sendable {
     /// utterance limit, or a model end-of-stream). The message is one short sentence meant
     /// for the status line; the connection stays open (#314).
     case transcriptionStopped(String)
+    /// The stop's first `done` came, and the client asked the server for one
+    /// more run over the tail (#1070); the stop now waits for that run.
+    case tailRunStarted
 }
 
 /// `Sendable` because the session's audio-send and periodic-commit tasks hold

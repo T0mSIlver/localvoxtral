@@ -735,6 +735,7 @@ extension DictationSessionController {
         isConnectingRealtimeSession = false
         isCompletingStoppedSession = false
         realtimeFinalizationLastActivityAt = nil
+        realtimeTailRunStartedAt = nil
         polishAndCommitTask = nil
         saveInterruptedPolishCommit = nil
         liveSpokenSendSegmentMode = .undecided

@@ -98,6 +98,10 @@ struct RealtimeDeltaLog {
             Log.deltas.notice(
                 "[delta-log seq=\(sequence)] transcription finalized")
             emit(.transcriptionFinalized, payload: nil)
+        case .tailRunStarted:
+            Log.deltas.notice(
+                "[delta-log seq=\(sequence)] tail run started")
+            emit(.status, payload: "tail run started")
         }
     }
 }
