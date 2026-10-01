@@ -13,6 +13,8 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         /// Final commit has been sent and we are waiting for its
         /// `transcription.done` to emit `.transcriptionFinalized`.
         case awaitingFinalCommitTranscriptionDone
+        /// That `done` came, and the tail run it started (#1070) owes one more.
+        case awaitingTailRunDone
     }
 
     /// A frame held until the handshake, with the PCM bytes it carries (zero
@@ -172,7 +174,10 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
 
     package func sendAudioChunk(_ pcm16Data: Data) {
         guard !pcm16Data.isEmpty else { return }
-        state.withLock { $0.hasUncommittedAudio = true }
+        state.withLock { s in
+            s.hasUncommittedAudio = true
+            if s.isGenerationInProgress { s.hasAudioSinceRunBegan = true }
+        }
         debugLog("send append bytes=\(pcm16Data.count)")
         let payload: [String: Any] = [
             "type": "input_audio_buffer.append",
@@ -194,7 +199,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                 switch s.finalCommitCompletionGate {
                 case .idle:
                     break
-                case .awaitingFinalCommitTranscriptionDone:
+                case .awaitingFinalCommitTranscriptionDone, .awaitingTailRunDone:
                     return .none
                 }
 
@@ -209,6 +214,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             guard !s.isGenerationInProgress else { return .none }
             s.hasUncommittedAudio = false
             s.isGenerationInProgress = true
+            s.hasAudioSinceRunBegan = false
             return .sendCommitFrame(final: false)
         }
 
@@ -275,6 +281,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             enum DoneAction {
                 case none
                 case emitTranscriptionFinalized
+                case startTailRun([SendAction])
             }
 
             let doneAction: DoneAction = state.withLock { s in
@@ -287,15 +294,40 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                 case .idle:
                     return .none
                 case .awaitingFinalCommitTranscriptionDone:
+                    // vLLM ends a run at its context limit with a `done`
+                    // that can cross the final commit, and drops the queue
+                    // behind it, end-of-audio marker included: nothing would
+                    // read the audio sent since the run began. One more run,
+                    // closed at once, reads what the server still holds.
+                    guard s.tailRunAfterStopDone, s.hasAudioSinceRunBegan,
+                          let tailRun = Self.tailRunFrames
+                    else {
+                        s.finalCommitCompletionGate = .idle
+                        return .emitTranscriptionFinalized
+                    }
+                    s.hasAudioSinceRunBegan = false
+                    s.isGenerationInProgress = true
+                    s.finalCommitCompletionGate = .awaitingTailRunDone
+                    // Admitted under this lock, so both go to the socket
+                    // whose `done` asked for them.
+                    return .startTailRun(tailRun.map { admitLocked(&s, $0) })
+                case .awaitingTailRunDone:
                     s.finalCommitCompletionGate = .idle
                     return .emitTranscriptionFinalized
+                }
+            }
+            if case .startTailRun(let sends) = doneAction {
+                Log.backends.info("Realtime stop: done came with audio sent since its run began; running once more for the tail")
+                debugLog("send tail run commits")
+                for case .send(let task, let text) in sends {
+                    transmit(text, on: task)
                 }
             }
             if let text = findString(in: json, matching: ["text", "transcript", "delta"]) {
                 emit(.finalTranscript(text), from: generation)
             }
             switch doneAction {
-            case .none:
+            case .none, .startTailRun:
                 break
             case .emitTranscriptionFinalized:
                 emit(.transcriptionFinalized, from: generation)
@@ -358,36 +390,51 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     }
 
     private func sendText(_ text: String, audioBytes: Int = 0) {
-        let action: SendAction = state.withLock { s in
-            switch s.base.socketState {
-            case .connected:
-                // Behind the handshake's replay too: sent now, this frame
-                // would pass session.update and the audio queued before it.
-                guard s.hasReceivedSessionCreated || s.hasBypassedSessionCreatedGate,
-                      !s.isReplayingHandshakeQueue
-                else {
-                    s.pendingMessages.append(PendingFrame(text: text, audioBytes: audioBytes))
-                    return .queued
-                }
-                guard let webSocketTask = s.base.webSocketTask else { return .dropped }
-                // Counted when handed to the socket, as the Mistral client
-                // does: a send that fails as the socket dies over-counts by
-                // the frames in flight.
-                s.sentAudioBytes += audioBytes
-                return .send(task: webSocketTask, text: text)
-            case .connecting:
-                s.pendingMessages.append(PendingFrame(text: text, audioBytes: audioBytes))
-                return .queued
-            case .disconnected:
-                return .dropped
-            }
-        }
+        let action: SendAction = state.withLock { admitLocked(&$0, text, audioBytes: audioBytes) }
 
         guard case .send(let task, let payloadText) = action else {
             return
         }
         transmit(payloadText, on: task)
     }
+
+    /// Hands `text` to the open socket, or queues it behind the handshake.
+    private func admitLocked(_ s: inout State, _ text: String, audioBytes: Int = 0) -> SendAction {
+        switch s.base.socketState {
+        case .connected:
+            // Behind the handshake's replay too: sent now, this frame
+            // would pass session.update and the audio queued before it.
+            guard s.hasReceivedSessionCreated || s.hasBypassedSessionCreatedGate,
+                  !s.isReplayingHandshakeQueue
+            else {
+                s.pendingMessages.append(PendingFrame(text: text, audioBytes: audioBytes))
+                return .queued
+            }
+            guard let webSocketTask = s.base.webSocketTask else { return .dropped }
+            // Counted when handed to the socket, as the Mistral client
+            // does: a send that fails as the socket dies over-counts by
+            // the frames in flight.
+            s.sentAudioBytes += audioBytes
+            return .send(task: webSocketTask, text: text)
+        case .connecting:
+            s.pendingMessages.append(PendingFrame(text: text, audioBytes: audioBytes))
+            return .queued
+        case .disconnected:
+            return .dropped
+        }
+    }
+
+    /// A non-final commit, which starts a vLLM run, then the final one that
+    /// ends it (#1070).
+    private static let tailRunFrames: [String]? = {
+        let frames = [
+            ["type": "input_audio_buffer.commit"] as [String: Any],
+            ["type": "input_audio_buffer.commit", "final": true],
+        ].compactMap { event in
+            (try? JSONSerialization.data(withJSONObject: event)).flatMap { String(data: $0, encoding: .utf8) }
+        }
+        return frames.count == 2 ? frames : nil
+    }()
 
     /// The handshake, or the compatibility timer standing in for it, opens
     /// the send gate: session.update goes to the front of the queue, and
@@ -747,8 +794,7 @@ extension RealtimeAPIWebSocketClient {
                 hasUncommittedAudio: s.hasUncommittedAudio,
                 isGenerationInProgress: s.isGenerationInProgress,
                 hasReceivedSessionCreated: s.hasReceivedSessionCreated,
-                isAwaitingFinalCommitDone: s.finalCommitCompletionGate
-                    == .awaitingFinalCommitTranscriptionDone
+                isAwaitingFinalCommitDone: s.finalCommitCompletionGate != .idle
             )
         }
     }
