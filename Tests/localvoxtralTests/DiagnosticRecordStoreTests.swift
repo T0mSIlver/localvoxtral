@@ -143,8 +143,8 @@ final class DiagnosticRecordStoreTests: XCTestCase {
         XCTAssertEqual(decoded.text.rawTranscript, "check DictationViewModel plus Session")
         XCTAssertEqual(decoded.schemaVersion, DiagnosticRecord.currentSchemaVersion)
         XCTAssertEqual(store.storedIDs(), [id])
-        XCTAssertEqual(store.summary().records, 1)
-        XCTAssertEqual(store.summary().bytes, data.count)
+        XCTAssertEqual(try store.summary().records, 1)
+        XCTAssertEqual(try store.summary().bytes, data.count)
     }
 
     /// A record belongs to a History entry; an id that is not one is refused
@@ -258,7 +258,7 @@ final class DiagnosticRecordStoreTests: XCTestCase {
 
         XCTAssertEqual(store.removeAll(), 1)
         XCTAssertEqual(io.fileNames, [])
-        XCTAssertEqual(store.summary().records, 0)
+        XCTAssertEqual(try store.summary().records, 0)
     }
 
     /// A write decided before the user turned records off must not land
