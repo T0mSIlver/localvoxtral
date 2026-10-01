@@ -104,6 +104,12 @@ final class DictationHistoryModel {
         diagnosticRecordSummary = await store()?.diagnosticRecordSummary() ?? (0, 0)
     }
 
+    /// Whether switching "Keep dictation audio" off asks before deleting.
+    var turningAudioOffAsksFirst: Bool { audioSummary.recordings > 0 }
+
+    /// Whether switching "Keep diagnostic records" off asks before deleting.
+    var turningRecordsOffAsksFirst: Bool { diagnosticRecordSummary.records > 0 }
+
     func showMore() async {
         limit += Self.pageSize
         await reload()

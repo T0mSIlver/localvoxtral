@@ -222,7 +222,7 @@ struct HistorySettingsPane: View {
             set: { keep in
                 if keep {
                     settings.dictationAudioEnabled = true
-                } else if model.audioSummary.recordings > 0 {
+                } else if model.turningAudioOffAsksFirst {
                     isConfirmingAudioOff = true
                 } else {
                     turnAudioOff()
@@ -249,7 +249,7 @@ struct HistorySettingsPane: View {
             set: { keep in
                 if keep {
                     settings.diagnosticRecordsEnabled = true
-                } else if model.diagnosticRecordSummary.records > 0 {
+                } else if model.turningRecordsOffAsksFirst {
                     isConfirmingRecordsOff = true
                 } else {
                     turnRecordsOff()
