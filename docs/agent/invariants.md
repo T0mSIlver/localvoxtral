@@ -2430,9 +2430,12 @@ there is not.
   join starts from and the host queries `lstat` the file first and reload
   it when another copy replaced it, so a host one copy revokes or rotates
   is refused by the other on its next request. A file that changed and
-  cannot be read back (damaged, a newer build's format) authenticates
-  nothing and matches no alias until it reads again: it may hold a
-  revocation.
+  cannot be read back (damaged, a newer build's format) may hold a
+  revocation, so until it reads again it authenticates nothing and every
+  caller that selects a host gets none (`activeHostsIfReadable`): the
+  alias match, the `ssh -G` fallback, the app-held forwards and quick
+  capture's routing. Only Settings and the doctor still list hosts from
+  memory.
   A second copy of the app (a `try-pr.sh` build) loses this port and the
   broker socket to the running copy, and then waits:
   `ClaudeHookSocketTakeover` retries only the binds it lost, each time

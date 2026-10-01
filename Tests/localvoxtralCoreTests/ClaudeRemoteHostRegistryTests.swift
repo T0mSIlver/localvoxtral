@@ -825,12 +825,14 @@ final class ClaudeRemoteHostFileStoreIOTests: XCTestCase {
     /// it reads again (#1046).
     func testAStoreTheOtherCopyLeftUnreadableAuthenticatesNothing() throws {
         let installed = try ClaudeRemoteHostRegistry(fileURL: fileURL, io: io)
-        let enrollment = try installed.enroll(label: "studio")
+        let enrollment = try installed.enroll(label: "studio", sshHostAlias: "studio")
         XCTAssertNotNil(installed.authenticate(token: enrollment.token))
         let current = try XCTUnwrap(io.read(from: fileURL))
 
         try io.write(Data(#"{"v":2,"hosts":[]}"#.utf8), to: fileURL)
         XCTAssertNil(installed.authenticate(token: enrollment.token))
+        XCTAssertEqual(installed.hosts(matchingSSHDestination: "studio"), [])
+        XCTAssertEqual(installed.activeHostsIfReadable(), [], "the ssh -G fallback selects from these")
 
         try io.write(current, to: fileURL)
         XCTAssertEqual(installed.authenticate(token: enrollment.token)?.id, enrollment.host.id)

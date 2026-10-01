@@ -718,12 +718,22 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     /// Empty while the file cannot be read back: it may hold a revocation.
     public func hosts(matchingSSHDestination destination: String) -> [ClaudeRemoteHost] {
         let needle = destination.lowercased()
-        guard !needle.isEmpty, reloadIfChanged() else { return [] }
-        let hosts = state.withLock { $0.map(\.publicView) }
-        return hosts.filter { host in
-            guard !host.isRevoked, let alias = host.sshHostAlias else { return false }
+        guard !needle.isEmpty else { return [] }
+        return activeHostsIfReadable().filter { host in
+            guard let alias = host.sshHostAlias else { return false }
             return alias.lowercased() == needle
         }
+    }
+
+    /// The hosts that may take part in a join: active ones, and none while
+    /// the file changed and cannot be read back, since it may hold a
+    /// revocation another copy wrote (#1046). `hosts()` answers from memory
+    /// then, for Settings; anything that selects a host goes through here.
+    public func activeHostsIfReadable() -> [ClaudeRemoteHost] {
+        guard reloadIfChanged() else { return [] }
+        return state.withLock { $0.map(\.publicView) }
+            .filter { !$0.isRevoked }
+            .sorted { $0.createdAt < $1.createdAt }
     }
 
     /// Whether binding the listener is worth doing at all.
