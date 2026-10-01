@@ -234,6 +234,10 @@ final class DictationSessionController {
     /// services, so a unit test never reads the user's folders.
     @ObservationIgnored
     var agentSkillStore: AgentSkillStore?
+    /// Lists the repositories this Mac's coding agents worked in (#1027).
+    /// Nil without runtime services, like `agentSkillStore`.
+    @ObservationIgnored
+    var agentProjectScanner: AgentProjectActivityScanner?
     @ObservationIgnored
     var correctionLearning: CorrectionLearning?
     /// Where the last Overlay Buffer commit landed while its prompt may

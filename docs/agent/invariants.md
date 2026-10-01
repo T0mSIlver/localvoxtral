@@ -496,6 +496,25 @@ there is not.
   a name written into it). Built-in commands that exist on no disk are not
   listed.
 
+- **A host's agent projects leave as name and origin only** (#1027). The
+  Claude Code remote shim sends `X-Lvx-Agent-Projects` on SessionStart:
+  `<epoch>:<name>:<repository>` entries, newest first, for each repository
+  Claude Code ran in on that host in the last 30 days. `hooks/agent-projects.sh`
+  reads only the first top-level `cwd` key of each transcript folder's newest
+  `.jsonl`, never anything else in a transcript, and never decodes a folder
+  name into a path. It names the repository as the shim names a session's
+  project (the main checkout's basename, the origin from `capture.sh
+  repository`); a cwd outside git or without an origin is not listed, so no
+  path ever leaves. The scan takes seconds, so the hook sends the value cached
+  in its state folder and rescans detached when the cache is six hours old.
+  Each field is checked against an enumerated charset before it is cached and
+  the whole value again before it is sent; at most 30 entries and 2000 bytes.
+  The Mac reads its own `~/.claude/projects` the same way
+  (`AgentTranscripts`), at launch and at most hourly after, and takes a
+  checkout's `origin` from its git config file, never from git. A project
+  only agents' work listed (`LearnedTermProject.agentActiveAt`) goes 30 days
+  after that work unless a dictation, hook or proposal touched it since.
+
 - **A learned term does not rewrite ordinary words** (#522). The exact tier
   pre-applies any span that normalizes to a term, so a learned `useAuth`
   would turn "we should use auth tokens" into code. For the `.learned`

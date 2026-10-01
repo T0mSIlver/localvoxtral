@@ -30,6 +30,7 @@ final class RemoteQuickCaptureLiveTests: XCTestCase {
                 _ = $0.recordRemoteReport(project: project, asRepository: asRepository, repository: repository, hostID: hostID, now: Date())
             }
         }
+        func recordAgentActivity(_ repositories: [AgentWorkedRepository], hostID: String?) {}
     }
 
     private final class Shared: Sendable {

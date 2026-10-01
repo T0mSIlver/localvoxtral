@@ -744,6 +744,9 @@ final class DictationViewModel {
             )
             session.agentSkillStore = AgentSkillStore(fileURL: AgentSkillStore.defaultFileURL())
             if let learnedTermStore {
+                let agentProjectScanner = AgentProjectActivityScanner(store: learnedTermStore)
+                agentProjectScanner.refreshIfStale()
+                session.agentProjectScanner = agentProjectScanner
                 let correctionLearning = CorrectionLearning(
                     store: learnedTermStore,
                     knownTerms: { [settings] in settings.polishSpeakerTerms }
