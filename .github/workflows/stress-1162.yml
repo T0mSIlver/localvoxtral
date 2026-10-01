@@ -71,8 +71,8 @@ jobs:
           BUNDLE="$(find .build -maxdepth 3 -type d -name localvoxtralPackageTests.xctest | head -n 1)"
           LV_STRESS_CRASH=1 NSUnbufferedIO=YES xcrun xctest \
             -XCTest localvoxtralTests.OverlayControllerChurnStressTests/testDeliberateSegfault "$BUNDLE" \
-            > "$RUNNER_TEMP/crash.log" 2>&1
-          echo "xctest exited $?"
+            > "$RUNNER_TEMP/crash.log" 2>&1 && status=0 || status=$?
+          echo "xctest exited $status"
           tail -n 3 "$RUNNER_TEMP/crash.log"
 
       - name: Summarize it the way build-test does
