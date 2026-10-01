@@ -137,6 +137,42 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.map(\.rawText), ["the periodic part and the tail."])
     }
 
+    /// The cut run's done comes late, near the end of the window the final
+    /// commit gets. The tail run gets a window of its own, so a server that
+    /// takes longer than the inactivity threshold to answer it still lands
+    /// the tail (#1070, review).
+    func testATailRunAnsweredAfterTheInactivityThresholdStillKeepsTheTail() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+
+        await startAndSpeak(pipeline)
+        pipeline.clock.advance(by: TimingConstants.commitInterval)
+        await pipeline.server.awaitFrame("the periodic commit") {
+            $0.type == "input_audio_buffer.commit" && !$0.isFinalCommit
+        }
+        XCTAssertTrue(pipeline.microphone.deliver(Self.speech(seed: 2)), "the tail")
+
+        pipeline.viewModel.stopDictation(reason: "test")
+        let stopCommit = await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        await advanceFinalization(pipeline, by: TimingConstants.finalizationMinimumOpen - 0.1)
+        let shown = BoundedWait()
+        pipeline.overlay.onRefresh = { call in
+            if call.displayText.contains("the periodic part") { shown.resolve() }
+        }
+        pipeline.server.sendDoneAheadOfQueuedAudio("the periodic part")
+        let after = stopCommit?.index ?? .max
+        await pipeline.server.awaitFrame("the tail run's final commit") { $0.isFinalCommit && $0.index > after }
+        let arrived = await shown.value(failAfter: 10)
+        XCTAssertTrue(arrived, "the overlay never showed the cut run's final")
+        pipeline.overlay.onRefresh = nil
+        await advanceFinalization(pipeline, by: TimingConstants.finalizationInactivityThreshold + 0.1)
+        XCTAssertTrue(pipeline.viewModel.isFinalizingStop, "the tail run is still in its window")
+        pipeline.server.send(["type": "transcription.done", "text": "and the tail."])
+
+        let recorded = await pipeline.records.waitForCount(1)
+        XCTAssertTrue(recorded, "the session never finished and wrote its record")
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["the periodic part and the tail."])
+    }
+
     /// A settled sentence past 30 words, the first piece early polish takes.
     private static let settledPiece =
         "the first part of this dictation is long enough to settle into a piece of its own "
@@ -2120,6 +2156,18 @@ final class DictationPipelineTests: XCTestCase {
         let arrived = await shown.value(failAfter: 10)
         XCTAssertTrue(arrived, "the overlay never showed the final", file: file, line: line)
         pipeline.overlay.onRefresh = nil
+    }
+
+    /// Runs the stop's finalization poll for `seconds` of clock time, one
+    /// poll at a time.
+    private func advanceFinalization(_ pipeline: Pipeline, by seconds: TimeInterval) async {
+        var elapsed: TimeInterval = 0
+        while elapsed < seconds - 1e-9, pipeline.viewModel.isFinalizingStop {
+            await pipeline.clock.waitForSleepers(1)
+            pipeline.clock.advance(by: TimingConstants.finalizationPollInterval)
+            elapsed += TimingConstants.finalizationPollInterval
+            await Task.yield()
+        }
     }
 
     /// The transcript arrives as partials, split mid-phrase the way a
