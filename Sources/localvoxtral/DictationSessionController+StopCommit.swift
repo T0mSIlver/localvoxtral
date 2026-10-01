@@ -663,7 +663,9 @@ extension DictationSessionController {
         if liveDictationCanTeachACorrection {
             expectCorrection(of: liveTypedText(), join: context.claudeSessionJoin, project: nil)
         }
-        if !textInsertion.hasPendingInsertionText {
+        // Read before the cleanup below drops text the field refused (#1176).
+        let allTextInserted = !textInsertion.hasPendingInsertionText
+        if allTextInserted {
             proposeProjectTermsIfNew(join: context.claudeSessionJoin, inserted: liveTypedText())
         }
         completeStoppedSessionCleanup(
@@ -682,7 +684,7 @@ extension DictationSessionController {
             outputMode: capturedOutputMode,
             targetAppBundleID: nil,
             status: .sttCompleted,
-            commitSucceeded: true,
+            commitSucceeded: allTextInserted,
             audio: capturedAudio,
             joined: historyJoin
         )
