@@ -218,6 +218,7 @@ final class DogfoodControlServiceTests: XCTestCase {
     func testTheCapAbortsASessionStillConnectingWhenItExpires() async {
         let viewModel = makeViewModel()
         viewModel.isConnectingRealtimeSession = true
+        viewModel.session.managedStartupTaskID = UUID()
         let sleeps = ParkedCapSleeps()
         let service = makeService(viewModel: viewModel, sleepFor: sleeps.sleep)
 
@@ -230,6 +231,29 @@ final class DogfoodControlServiceTests: XCTestCase {
         await cap.value
 
         XCTAssertFalse(viewModel.isConnectingRealtimeSession, "the connect must be aborted")
+        XCTAssertFalse(service.isAutoStopArmed)
+    }
+
+    /// The socket's start failed and the owner started their own, still
+    /// connecting at expiry: no generation tells the two apart, the startup
+    /// task does.
+    func testTheCapLeavesAnotherStartsConnectAlone() async {
+        let viewModel = makeViewModel()
+        viewModel.isConnectingRealtimeSession = true
+        viewModel.session.managedStartupTaskID = UUID()
+        let sleeps = ParkedCapSleeps()
+        let service = makeService(viewModel: viewModel, sleepFor: sleeps.sleep)
+
+        _ = await expectSuccess(service, .sessionStart(.overlayBuffer))
+        guard let cap = service.autoStopTaskForTesting else {
+            return XCTFail("the cap must be armed before its window expires")
+        }
+        viewModel.session.managedStartupTaskID = UUID()
+        await sleeps.waitForEntries(1)
+        sleeps.releaseOne()
+        await cap.value
+
+        XCTAssertTrue(viewModel.isConnectingRealtimeSession, "the owner's connect must go on")
         XCTAssertFalse(service.isAutoStopArmed)
     }
 

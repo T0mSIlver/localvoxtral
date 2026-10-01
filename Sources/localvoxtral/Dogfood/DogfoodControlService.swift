@@ -264,11 +264,16 @@ final class DogfoodControlService {
         // THEIR dictation mid-thought at T+120. The socket verbs cannot see a
         // hotkey stop, so the identity has to be carried rather than observed.
         let armedGeneration = DiagnosticCaptureTap.shared.currentGeneration
+        // The generation only advances once a session goes live, so a start
+        // still connecting is told apart by its startup task instead. Nil when
+        // armed under the microphone prompt: that start has no task yet.
+        let armedStartID = viewModel?.session.managedStartupTaskID
         autoStopTask = Task { @MainActor [weak self] in
             while let self {
                 await self.sleepFor(self.autoStopAfter)
                 guard !Task.isCancelled else { return }
-                guard self.autoStopExpired(armedGeneration: armedGeneration) else { continue }
+                guard self.autoStopExpired(armedGeneration: armedGeneration, armedStartID: armedStartID)
+                else { continue }
                 self.autoStopTask = nil
                 return
             }
@@ -280,7 +285,7 @@ final class DogfoodControlService {
     /// only the user can answer the microphone prompt. The cap then waits
     /// another window instead of disarming, or that session goes live
     /// unbounded.
-    private func autoStopExpired(armedGeneration: UInt64) -> Bool {
+    private func autoStopExpired(armedGeneration: UInt64, armedStartID: UUID?) -> Bool {
         guard let viewModel else { return true }
         let phase = phase(of: viewModel)
         guard phase == .dictating || phase == .connecting || phase == .awaitingMicrophonePermission
@@ -291,6 +296,17 @@ final class DogfoodControlService {
                 "Dogfood control: cap expired on a session that already ended; the dictation running now is not ours"
             )
             return true
+        }
+        if phase == .connecting {
+            // Armed under the prompt: this connect may be ours or one the
+            // owner started after ours failed, so neither cancel nor disarm.
+            guard let armedStartID else { return false }
+            guard viewModel.session.managedStartupTaskID == armedStartID else {
+                Log.claudeContext.info(
+                    "Dogfood control: cap expired on a start that already ended; the one connecting now is not ours"
+                )
+                return true
+            }
         }
         guard phase == .dictating else {
             Log.claudeContext.error(
