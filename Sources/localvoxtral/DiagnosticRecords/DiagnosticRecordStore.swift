@@ -226,8 +226,9 @@ struct DiagnosticRecordStore: Sendable {
     }
 
     /// How many records there are and their size on disk, for the Settings row.
-    func summary() -> (records: Int, bytes: Int) {
-        let records = (try? listRecords()) ?? []
+    /// Throws when the folder will not list: that is not zero (#1166).
+    func summary() throws -> (records: Int, bytes: Int) {
+        let records = try listRecords()
         let bytes = records.reduce(0) { $0 + (directoryIO.size(of: $1.url) ?? 0) }
         return (records.count, bytes)
     }

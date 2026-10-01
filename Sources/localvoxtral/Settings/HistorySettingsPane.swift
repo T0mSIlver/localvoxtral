@@ -155,9 +155,7 @@ struct HistorySettingsPane: View {
             }
         }
         .confirmationDialog(
-            model.diagnosticRecordSummary.records == 1
-                ? "Delete 1 diagnostic record?"
-                : "Delete \(model.diagnosticRecordSummary.records.formatted()) diagnostic records?",
+            Self.recordsOffTitle(count: model.diagnosticRecordSummary?.records),
             isPresented: $isConfirmingRecordsOff
         ) {
             Button("Delete Records", role: .destructive) { turnRecordsOff() }
@@ -165,9 +163,7 @@ struct HistorySettingsPane: View {
             Text("The dictations stay. This can't be undone.")
         }
         .confirmationDialog(
-            model.audioSummary.recordings == 1
-                ? "Delete 1 recording?"
-                : "Delete \(model.audioSummary.recordings.formatted()) recordings?",
+            Self.audioOffTitle(count: model.audioSummary?.recordings),
             isPresented: $isConfirmingAudioOff
         ) {
             Button("Delete Recordings", role: .destructive) { turnAudioOff() }
@@ -208,12 +204,29 @@ struct HistorySettingsPane: View {
     /// Nil when there is nothing kept; history off disables the switch and
     /// the retention picker already says why.
     private var audioStatus: String? {
-        guard model.audioSummary.recordings > 0 else { return nil }
-        let size = ByteCountFormatter.string(
-            fromByteCount: Int64(model.audioSummary.bytes), countStyle: .file)
-        return model.audioSummary.recordings == 1
+        guard let summary = model.audioSummary, summary.recordings > 0 else { return nil }
+        let size = ByteCountFormatter.string(fromByteCount: Int64(summary.bytes), countStyle: .file)
+        return summary.recordings == 1
             ? "1 recording, \(size)."
-            : "\(model.audioSummary.recordings.formatted()) recordings, \(size)."
+            : "\(summary.recordings.formatted()) recordings, \(size)."
+    }
+
+    /// Without a count (not read yet, or the read failed) the question
+    /// names none.
+    private static func audioOffTitle(count: Int?) -> String {
+        switch count {
+        case nil: return "Delete every recording?"
+        case 1?: return "Delete 1 recording?"
+        case let count?: return "Delete \(count.formatted()) recordings?"
+        }
+    }
+
+    private static func recordsOffTitle(count: Int?) -> String {
+        switch count {
+        case nil: return "Delete every diagnostic record?"
+        case 1?: return "Delete 1 diagnostic record?"
+        case let count?: return "Delete \(count.formatted()) diagnostic records?"
+        }
     }
 
     private var audioBinding: Binding<Bool> {
@@ -233,8 +246,7 @@ struct HistorySettingsPane: View {
 
     /// Nil when there is nothing kept, like the audio row's.
     private var recordsStatus: String? {
-        let summary = model.diagnosticRecordSummary
-        guard summary.records > 0 else { return nil }
+        guard let summary = model.diagnosticRecordSummary, summary.records > 0 else { return nil }
         let size = ByteCountFormatter.string(fromByteCount: Int64(summary.bytes), countStyle: .file)
         return summary.records == 1
             ? "1 record, \(size)."

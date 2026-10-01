@@ -17,9 +17,11 @@ final class DictationHistoryModel {
     /// Shown in place of the dictations when the store did not open or
     /// failed to answer (#985). An empty list would read as "no history".
     private(set) var unavailableText: String?
-    /// Recordings on disk and their size, for the Storage group.
-    private(set) var audioSummary: (recordings: Int, bytes: Int) = (0, 0)
-    private(set) var diagnosticRecordSummary: (records: Int, bytes: Int) = (0, 0)
+    /// Recordings on disk and their size, for the Storage group. Nil until
+    /// the first read lands, and after one fails: not known is not zero, and
+    /// zero is what lets a switch delete without asking (#1166).
+    private(set) var audioSummary: (recordings: Int, bytes: Int)?
+    private(set) var diagnosticRecordSummary: (records: Int, bytes: Int)?
 
     var searchText = ""
     var filter = DictationHistoryQuery.Filter.all
@@ -100,15 +102,19 @@ final class DictationHistoryModel {
     }
 
     func reloadStorageSummary() async {
-        audioSummary = await store()?.audioSummary() ?? (0, 0)
-        diagnosticRecordSummary = await store()?.diagnosticRecordSummary() ?? (0, 0)
+        audioSummary = await store()?.audioSummary()
+        diagnosticRecordSummary = await store()?.diagnosticRecordSummary()
     }
 
     /// Whether switching "Keep dictation audio" off asks before deleting.
-    var turningAudioOffAsksFirst: Bool { audioSummary.recordings > 0 }
+    /// Only a count known to be zero turns it off at once.
+    var turningAudioOffAsksFirst: Bool { audioSummary.map { $0.recordings > 0 } ?? true }
 
-    /// Whether switching "Keep diagnostic records" off asks before deleting.
-    var turningRecordsOffAsksFirst: Bool { diagnosticRecordSummary.records > 0 }
+    /// Whether switching "Keep diagnostic records" off asks before deleting,
+    /// by the audio switch's rule.
+    var turningRecordsOffAsksFirst: Bool {
+        diagnosticRecordSummary.map { $0.records > 0 } ?? true
+    }
 
     func showMore() async {
         limit += Self.pageSize
