@@ -2447,7 +2447,12 @@ there is not.
   caller that selects a host gets none (`activeHostsIfReadable`): the
   alias match, the `ssh -G` fallback, the app-held forwards and quick
   capture's routing. Only Settings and the doctor still list hosts from
-  memory.
+  memory. A read or write that takes in a host the other copy revoked,
+  removed or rotated also calls the registry's hosts-dropped handler
+  (#1125): the Settings model hops to the main actor and runs what an
+  in-app revoke runs, so this copy's app-held forward, herdr forwards and,
+  after the last host, its listener come down without a relaunch. No timer
+  polls the file; the next hook or query is what notices.
   A second copy of the app (a `try-pr.sh` build) loses this port and the
   broker socket to the running copy, and then waits:
   `ClaudeHookSocketTakeover` retries only the binds it lost, each time

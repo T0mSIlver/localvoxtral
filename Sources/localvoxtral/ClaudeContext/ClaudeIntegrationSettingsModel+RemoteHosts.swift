@@ -204,6 +204,14 @@ extension ClaudeIntegrationSettingsModel {
         }
     }
 
+    /// What `revoke` runs after its write, for a host another running copy
+    /// revoked, removed or rotated (#1125). No alert: nobody here asked.
+    func reconcileAfterHostsDroppedElsewhere() {
+        Log.claudeContext.info("Claude remote hosts changed in another running copy; reconciling forwards and listener")
+        refreshHosts()
+        reconcileListener(presentAlert: false, logsPortConflict: false)
+    }
+
     /// Remove reverses the Mac side of enrollment — this host's ssh-config
     /// block, and the shell startup block only when no other host remains —
     /// and then revokes.
