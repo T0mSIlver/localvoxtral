@@ -15,9 +15,20 @@ import os
 /// pipeline already resolved — a file name, a product, a model — and the
 /// counters beside it, which is exactly what `SpeakerTerms` keeps for the
 /// hand-written list.
+///
+/// A file this build cannot read, or one a newer build wrote, is kept as it
+/// is: the store answers empty, refuses every write and says why in
+/// `problem` until the user moves the file aside (#989). It also holds the
+/// project and repository records, which an empty rewrite would lose.
+///
+/// Another running copy of the app may write the same file (#990). Every
+/// write re-reads it under their shared lock and applies its change to what
+/// the other copy wrote (`StoredFile.update`).
 package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectSummaryStoring, QuickCaptureProjectLinkStoring, @unchecked Sendable {
     private struct State {
         var terms: LearnedTerms?
+        /// Set, the file on disk is left alone.
+        var problem: StoredFileProblem?
     }
 
     package let fileURL: URL?
@@ -25,6 +36,8 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     private let writeQueue = DispatchQueue(label: "localvoxtral.learned-terms", qos: .utility)
     private let now: @Sendable () -> Date
     private let onChange: (@Sendable () -> Void)?
+    /// The bytes this copy last read or wrote. Write queue only.
+    private var lastSeen: Data?
 
     /// `fileURL` nil keeps everything in memory (tests, previews). The file is
     /// read on the write queue right away, and every later read and write is
@@ -39,40 +52,49 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         self.onChange = onChange
         if fileURL != nil {
             writeQueue.async { [self] in
-                var loaded = loadFromDisk()
+                let load = loadFromDisk()
+                if let problem = load.problem {
+                    state.withLock { state in
+                        state.terms = LearnedTerms()
+                        state.problem = problem
+                    }
+                    onChange?()
+                    return
+                }
+                let loaded = load.value ?? LearnedTerms()
                 // Every launch, not once: a hand fix in a worktree is keyed by
                 // the joined session's directory (the commit path may not read
                 // `.git`), and this is where it reaches the main checkout.
                 // Idempotent, so a file with nothing to fold is not rewritten.
-                let folded = loaded.foldWorktreesIntoMainCheckouts(now: now())
-                    // A checkout whose `origin` a hook or the linker already
-                    // recorded gives its terms to its repository (#971).
-                    + loaded.linkCheckoutsToRepositories(now: now())
-                // Proposals agents made before answers were filtered (#914).
-                let dropped = loaded.dropIdentifierProposals()
+                let moment = now()
+                let tidy: @Sendable (inout LearnedTerms) -> Int = { terms in
+                    terms.foldWorktreesIntoMainCheckouts(now: moment)
+                        // A checkout whose `origin` a hook or the linker already
+                        // recorded gives its terms to its repository (#971).
+                        + terms.linkCheckoutsToRepositories(now: moment)
+                        // Proposals agents made before answers were filtered (#914).
+                        + terms.dropIdentifierProposals()
+                }
+                var probe = loaded
                 let adopted = state.withLock { state in
                     guard state.terms == nil else { return false }
                     state.terms = loaded
                     return true
                 }
-                if folded + dropped > 0, adopted {
-                    Log.polishing.info(
-                        "Learned terms: folded \(folded, privacy: .public) worktrees and checkouts into their projects, dropped \(dropped, privacy: .public) proposals shaped like code"
-                    )
-                    write(loaded)
-                    onChange?()
+                if tidy(&probe) > 0, adopted {
+                    commit { terms in
+                        let tidied = tidy(&terms)
+                        Log.polishing.info(
+                            "Learned terms: \(tidied, privacy: .public) worktrees, checkouts and code-shaped proposals folded into their projects or dropped"
+                        )
+                    }
                 }
             }
         }
     }
 
     package static func defaultFileURL() -> URL {
-        let applicationSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        return applicationSupport
-            .appendingPathComponent("localvoxtral", isDirectory: true)
+        return LocalvoxtralDataDirectory.url()
             .appendingPathComponent("learned-terms.json")
     }
 
@@ -102,10 +124,15 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     package func loadedSnapshot() async -> LearnedTerms {
         await withCheckedContinuation { continuation in
             writeQueue.async { [self] in
-                let fallback = state.withLock { $0.terms } ?? loadFromDisk()
-                continuation.resume(returning: state.withLock { $0.terms } ?? fallback)
+                continuation.resume(returning: state.withLock { $0.terms } ?? LearnedTerms())
             }
         }
+    }
+
+    /// Why the file was not loaded, nil when it was or when there is none
+    /// yet. Answers nil until the launch load lands.
+    package var problem: StoredFileProblem? {
+        state.withLock { $0.problem }
     }
 
     /// Terms, then the projects that hold them.
@@ -132,21 +159,12 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     ) {
         guard !observations.isEmpty else { return }
         let moment = now()
-        writeQueue.async { [self] in
-            // Outside the lock: a reader on the main actor must never wait
-            // behind a disk read, even one that has already happened.
-            let fallback = state.withLock { $0.terms } ?? loadFromDisk()
-            let updated: LearnedTerms = state.withLock { state in
-                var terms = state.terms ?? fallback
-                terms.record(observations, project: project, now: moment)
-                state.terms = terms
-                return terms
-            }
+        mutate { terms in
+            terms.record(observations, project: project, now: moment)
+            let kept = terms.termCount
             Log.polishing.info(
-                "Learned terms recorded: \(observations.count, privacy: .public) in project \(project.key == LearnedTermProjectResolver.shared.key ? "shared" : "keyed", privacy: .public), \(updated.termCount, privacy: .public) kept"
+                "Learned terms recorded: \(observations.count, privacy: .public) in project \(project.key == LearnedTermProjectResolver.shared.key ? "shared" : "keyed", privacy: .public), \(kept, privacy: .public) kept"
             )
-            write(updated)
-            onChange?()
         }
     }
 
@@ -196,14 +214,17 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     ) async -> [String] {
         let moment = now()
         return await withCheckedContinuation { continuation in
-            mutate { memory in
-                let added = memory.recordCommandProposal(
-                    terms, proposer: proposer, project: project, excluding: excluding, now: moment)
-                Log.polishing.info(
-                    "Learned terms: \(added.count, privacy: .public) proposed by \(proposer, privacy: .public) through the command"
-                )
-                continuation.resume(returning: added)
-            }
+            mutate(
+                { memory in
+                    let added = memory.recordCommandProposal(
+                        terms, proposer: proposer, project: project, excluding: excluding, now: moment)
+                    Log.polishing.info(
+                        "Learned terms: \(added.count, privacy: .public) proposed by \(proposer, privacy: .public) through the command"
+                    )
+                    continuation.resume(returning: added)
+                },
+                refused: { continuation.resume(returning: []) }
+            )
         }
     }
 
@@ -313,31 +334,104 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         completion: @escaping @Sendable (LearnedTermsExport.ImportSummary) -> Void
     ) {
         let moment = now()
-        mutate { terms in
-            let summary = terms.merge(importing: projects, now: moment)
-            // Terms imported onto a linked checkout belong to its repository.
-            terms.linkCheckoutsToRepositories(now: moment)
-            let kept = terms.termCount
-            Log.polishing.info(
-                "Learned terms imported: \(summary.terms, privacy: .public) terms in \(summary.projects, privacy: .public) projects, \(kept, privacy: .public) kept"
-            )
-            completion(summary)
-        }
+        mutate(
+            { terms in
+                let summary = terms.merge(importing: projects, now: moment)
+                // Terms imported onto a linked checkout belong to its repository.
+                terms.linkCheckoutsToRepositories(now: moment)
+                let kept = terms.termCount
+                Log.polishing.info(
+                    "Learned terms imported: \(summary.terms, privacy: .public) terms in \(summary.projects, privacy: .public) projects, \(kept, privacy: .public) kept"
+                )
+                completion(summary)
+            },
+            refused: { completion(LearnedTermsExport.ImportSummary(terms: 0, projects: 0)) }
+        )
     }
 
     /// Folds `change` in on the write queue, behind the launch load and every
     /// earlier write, so an Undo can never land before the term it undoes.
-    private func mutate(_ change: @escaping @Sendable (inout LearnedTerms) -> Void) {
-        writeQueue.async { [self] in
-            let fallback = state.withLock { $0.terms } ?? loadFromDisk()
-            let updated: LearnedTerms = state.withLock { state in
-                var terms = state.terms ?? fallback
-                change(&terms)
-                state.terms = terms
-                return terms
-            }
-            write(updated)
+    /// While the file is refused, `change` never runs and `refused` does.
+    private func mutate(
+        _ change: @escaping @Sendable (inout LearnedTerms) -> Void,
+        refused: @escaping @Sendable () -> Void = {}
+    ) {
+        writeQueue.async { [self] in commit(change, refused: refused) }
+    }
+
+    /// `mutate`'s body, on the write queue. The launch load ran first on this
+    /// queue; a store with no file starts empty.
+    private func commit(
+        _ change: (inout LearnedTerms) -> Void,
+        refused: () -> Void = {}
+    ) {
+        let (memory, problem) = state.withLock { ($0.terms ?? LearnedTerms(), $0.problem) }
+        guard problem == nil else {
+            Log.persistence.error("learned terms: a change was refused, the file could not be loaded")
+            refused()
+            return
+        }
+        guard let fileURL else {
+            var terms = memory
+            change(&terms)
+            state.withLock { $0.terms = terms }
             onChange?()
+            return
+        }
+        let update = StoredFile.update(
+            fileURL, memory: memory, lastSeen: &lastSeen,
+            decode: Self.terms(fromFileContents:),
+            encode: { try Self.encoder.encode($0) },
+            write: { data, url in
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try data.write(to: url, options: .atomic)
+            },
+            change: change)
+        switch update {
+        case .written(let terms):
+            state.withLock { $0.terms = terms }
+        case .failed(let terms, let error):
+            state.withLock { $0.terms = terms }
+            Log.persistence.error("learned terms: write failed: \(error.localizedDescription, privacy: .public)")
+        case .refused(let problem):
+            // Another copy left a file this build cannot read: keep it.
+            state.withLock { state in
+                state.terms = LearnedTerms()
+                state.problem = problem
+            }
+            Log.persistence.error("learned terms: a change was refused, another copy left a file this build cannot read")
+            refused()
+        }
+        onChange?()
+    }
+
+    /// The Start Over in Settings: moves a refused file aside
+    /// (`StoredFile.moveAside`) and starts empty. Throws, keeping the refusal,
+    /// when the move could not be verified.
+    package func moveAsideAndStartOver() async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            writeQueue.async { [self] in
+                guard let fileURL, state.withLock({ $0.problem }) != nil else {
+                    continuation.resume(throwing: StoredFile.MoveAsideFailed())
+                    return
+                }
+                do {
+                    let aside = try StoredFile.moveAside(fileURL)
+                    lastSeen = nil
+                    state.withLock { state in
+                        state.terms = LearnedTerms()
+                        state.problem = nil
+                    }
+                    onChange?()
+                    continuation.resume(returning: aside)
+                } catch {
+                    Log.persistence.error(
+                        "learned terms: could not move the file aside: \(String(describing: error), privacy: .public)"
+                    )
+                    continuation.resume(throwing: error)
+                }
+            }
         }
     }
 
@@ -362,39 +456,25 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         return decoder
     }()
 
-    /// A file that does not decode — a torn write, a hand edit, a version this
-    /// build predates — starts over empty. Losing what was learned costs a few
-    /// dictations; refusing to start costs the feature.
-    package static func terms(fromFileContents data: Data) -> LearnedTerms {
-        guard let terms = try? decoder.decode(LearnedTerms.self, from: data),
-              terms.version <= LearnedTerms.currentVersion
-        else { return LearnedTerms() }
-        return terms
+    /// A file that does not decode — a torn write, a hand edit — or that a
+    /// later build wrote is refused, never read as empty (#989): the next
+    /// write would replace every learned spelling, pin and project record.
+    package static func terms(fromFileContents data: Data) -> StoredFileLoad<LearnedTerms> {
+        StoredFile.decode(
+            LearnedTerms.self, from: data, name: "learned-terms.json",
+            currentVersion: LearnedTerms.currentVersion, decoder: decoder)
     }
 
-    private func loadFromDisk() -> LearnedTerms {
-        guard let fileURL, let data = try? Data(contentsOf: fileURL) else { return LearnedTerms() }
-        var terms = Self.terms(fromFileContents: data)
+    /// Called on the write queue, never off it.
+    private func loadFromDisk() -> StoredFileLoad<LearnedTerms> {
+        guard let fileURL else { return .absent }
+        let (load, bytes) = StoredFile.loadShared(fileURL, decode: Self.terms(fromFileContents:))
+        lastSeen = bytes
+        guard var terms = load.value else { return load }
         // Decay applies to a file that has been sitting still, not only to one
         // being written: a project left alone for a season must not come back
         // grounding today's dictation.
         terms.prune(now: now())
-        return terms
-    }
-
-    /// Called on the write queue, never off it.
-    private func write(_ terms: LearnedTerms) {
-        guard let fileURL else { return }
-        do {
-            let data = try Self.encoder.encode(terms)
-            try FileManager.default.createDirectory(
-                at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
-            )
-            try data.write(to: fileURL, options: .atomic)
-        } catch {
-            Log.persistence.error(
-                "learned terms: write failed: \(error.localizedDescription, privacy: .public)"
-            )
-        }
+        return .loaded(terms)
     }
 }

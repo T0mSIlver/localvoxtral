@@ -67,7 +67,7 @@ case "$1" in
   -n|--env) ;;
   *)
     echo 4242 >"$RUNNING"
-    env | grep -E '^(RUNNER_TRACKING_ID|LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN)=' >>"$EVENTS"
+    env | grep -E '^(RUNNER_TRACKING_ID|LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN|LOCALVOXTRAL_DATA_HOME)=' >>"$EVENTS"
     ;;
 esac
 exit 0
@@ -80,6 +80,10 @@ case "$1" in
   import) exit "${STUB_IMPORT_STATUS:-0}" ;;
 esac
 exit 0
+STUB
+cat >"$BIN/plutil" <<'STUB'
+#!/bin/sh
+exit "${STUB_LINT_STATUS:-0}"
 STUB
 chmod +x "$BIN"/*
 
@@ -138,6 +142,9 @@ grep -q "^open --env.*$OWNER_BUNDLE" "$EVENTS" && fail "the owner relaunch carri
 # job ends; on 2026-09-25 that was the relaunched owner app, seven seconds
 # after the e2e check brought it back.
 grep -q "^RUNNER_TRACKING_ID=" "$EVENTS" && fail "the owner relaunch carried the runner's tracking id, so the job's end kills it"
+# The drill's data folder is deleted after the run: an owner app reopened on
+# it would save the owner's dictations into a folder about to go (#985).
+grep -q "^LOCALVOXTRAL_DATA_HOME=" "$EVENTS" && fail "the owner relaunch carried the drill's data folder"
 grep -q "^LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN=" "$EVENTS" && fail "the owner relaunch inherited the lane's keychain flag"
 [ -s "$RUNNING" ] || fail "the owner's app is not running after the drill"
 grep -q "Relaunched the owner's app" "$WORK/out" || fail "the relaunch is not reported in the drill output"
@@ -146,9 +153,12 @@ echo "PASS: the owner's app is quit before defaults change and relaunched after 
 # The app's log is streamed from before its launch (#594): a line logged
 # before the stream attaches is lost.
 stream_line="$(line_of "log stream")"
-launch_line="$(grep -n -m1 "^open --env LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN=1 -n" "$EVENTS" | cut -d: -f1 || true)"
+launch_line="$(grep -nE -m1 "^open --env LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN=1 (--env [^ ]+ )*-n" "$EVENTS" | cut -d: -f1 || true)"
 [ -n "$stream_line" ] || fail "the drill never streamed the app's log"
 [ -n "$launch_line" ] || fail "the drill never launched the app"
+# Its data stays out of the owner's (#985).
+grep -qE "^open .*--env LOCALVOXTRAL_DATA_HOME=/[^ ]+ .*-n" "$EVENTS" \
+  || fail "the drill launched the app on the owner's data"
 [ "$stream_line" -lt "$launch_line" ] || fail "the app's log stream started after the launch"
 echo "PASS: the app's log is streamed from before its launch"
 
@@ -165,5 +175,16 @@ assert_reached_launch
 grep -q "^open $OWNER_BUNDLE" "$EVENTS" && fail "the owner's app was relaunched without its defaults"
 grep -q "NOT relaunching the owner app" "$WORK/out" || fail "the skipped relaunch is not reported"
 echo "PASS: no relaunch when the owner's defaults could not be restored"
+
+# 5. The owner's defaults cannot be backed up: the drill touches nothing and
+#    still brings the owner's app back. Cleanup restores from an EXIT trap,
+#    where a bare `return` reported the failed drill's status as a failed
+#    restore and kept the owner's app down.
+STUB_LINT_STATUS=1 run_drill 0 yes
+grep -q "Could not create persistent defaults backup" "$WORK/out" \
+  || fail "the drill did not end at its snapshot: $(tail -n 3 "$WORK/out")"
+grep -q "^defaults write" "$EVENTS" && fail "the drill forced its defaults without a backup"
+grep -q "^open $OWNER_BUNDLE" "$EVENTS" || fail "the owner's app was not relaunched after a failed snapshot"
+echo "PASS: a failed snapshot leaves the defaults alone and relaunches the owner's app"
 
 echo "ui-smoke owner-app tests passed"

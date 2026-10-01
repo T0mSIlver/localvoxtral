@@ -21,6 +21,29 @@ package struct AgentCLIDoctorFacts: Sendable, Equatable {
     }
 
     package struct RemoteHost: Sendable, Equatable {
+        /// One live session on the host, as its hooks last reported it.
+        package struct Session: Sendable, Equatable {
+            /// The session's folder, as the Mac shows it.
+            package var label: String
+            package var agent: ClaudeHookAgent
+            /// The shim version its last hook sent, nil when none did.
+            package var shimVersion: ClaudeRemotePluginVersionReport?
+
+            package init(label: String, agent: ClaudeHookAgent, shimVersion: ClaudeRemotePluginVersionReport?) {
+                self.label = label
+                self.agent = agent
+                self.shimVersion = shimVersion
+            }
+
+            package init(_ snapshot: ClaudeSessionSnapshot) {
+                self.init(
+                    label: snapshot.workspace?.displayName ?? "(no folder)",
+                    agent: snapshot.agent,
+                    shimVersion: snapshot.remoteShimVersion
+                )
+            }
+        }
+
         package var label: String
         package var sshHostAlias: String?
         package var lastSeenAt: Date?
@@ -33,6 +56,11 @@ package struct AgentCLIDoctorFacts: Sendable, Equatable {
         /// a version, "1.9.0 or older" for a hook that sent none, nil when
         /// nothing was heard.
         package var reportedPluginVersion: String?
+        /// What the host has installed, as far as this app knows: the
+        /// highest version its hooks reported, or what Update Host… installed.
+        package var installedPluginVersion: ClaudeRemotePluginVersionReport?
+        package var installedVibeHooksVersion: String?
+        package var sessions: [Session]
 
         package init(
             label: String,
@@ -41,7 +69,10 @@ package struct AgentCLIDoctorFacts: Sendable, Equatable {
             pluginNeedsUpdate: Bool,
             forwardFailure: String? = nil,
             keepsTunnelOpen: Bool = false,
-            reportedPluginVersion: String? = nil
+            reportedPluginVersion: String? = nil,
+            installedPluginVersion: ClaudeRemotePluginVersionReport? = nil,
+            installedVibeHooksVersion: String? = nil,
+            sessions: [Session] = []
         ) {
             self.label = label
             self.sshHostAlias = sshHostAlias
@@ -50,6 +81,9 @@ package struct AgentCLIDoctorFacts: Sendable, Equatable {
             self.forwardFailure = forwardFailure
             self.keepsTunnelOpen = keepsTunnelOpen
             self.reportedPluginVersion = reportedPluginVersion
+            self.installedPluginVersion = installedPluginVersion
+            self.installedVibeHooksVersion = installedVibeHooksVersion
+            self.sessions = sessions
         }
     }
 
@@ -175,6 +209,7 @@ package enum AgentCLIDoctorChecks {
             // The host is the one asking: "run doctor on the host" is where it is.
             if check.fix == keepTunnelOpenHostFix { check.fix = keepTunnelOpenHostFixFromHost }
             checks.append(check)
+            if let stale = staleSessions(facts.remoteHosts[hostIndex], id: "remote-sessions") { checks.append(stale) }
         }
         checks.append(lastJoin(facts.recentJoins, now: facts.now))
         return checks
@@ -472,8 +507,9 @@ package enum AgentCLIDoctorChecks {
         guard !hosts.isEmpty else {
             return [AgentCLICheck(id: "remote-hosts", title: "Remote hosts", state: .skipped, detail: "None enrolled.")]
         }
-        return hosts.enumerated().map { index, host in
-            remoteHost(host, id: "remote-host.\(index + 1)", now: now)
+        return hosts.enumerated().flatMap { index, host in
+            [remoteHost(host, id: "remote-host.\(index + 1)", now: now)]
+                + [staleSessions(host, id: "remote-sessions.\(index + 1)")].compactMap { $0 }
         }
     }
 
@@ -491,7 +527,8 @@ package enum AgentCLIDoctorChecks {
         if host.pluginNeedsUpdate {
             return AgentCLICheck(
                 id: id, title: title, state: .warning, detail: "Its plugin is older than this app.\(plugin)",
-                fix: "Settings > Remote hosts > Update Host…, then restart the agent sessions on that host."
+                fix: "Settings > Remote hosts > Update Host…, then run `/reload-plugins` in its Claude Code sessions "
+                    + "and restart its Vibe sessions."
             )
         }
         guard let lastSeen = host.lastSeenAt else {
@@ -514,6 +551,51 @@ package enum AgentCLIDoctorChecks {
             )
         }
         return AgentCLICheck(id: id, title: title, state: .ok, detail: detail)
+    }
+
+    /// The host's live sessions whose last hook sent an older shim than the
+    /// host has installed, one line each; nil when there are none. Compares
+    /// the version headers only: a session keeps the shim it loaded until
+    /// `/reload-plugins` (Claude Code) or a restart (Vibe).
+    static func staleSessions(_ host: AgentCLIDoctorFacts.RemoteHost, id: String) -> AgentCLICheck? {
+        var lines: [String] = []
+        var agents: Set<ClaudeHookAgent> = []
+        for session in host.sessions {
+            guard let version = session.shimVersion else { continue }
+            switch session.agent {
+            case .claude:
+                guard let installed = host.installedPluginVersion, version < installed else { continue }
+                lines.append("\(session.label), Claude Code: plugin \(versionText(version)); "
+                    + "the host has \(versionText(installed)).")
+            case .vibe:
+                guard let installed = host.installedVibeHooksVersion, version < .version(installed) else { continue }
+                lines.append("\(session.label), Mistral Vibe: hooks \(versionText(version)); the host has \(installed).")
+            case .opencode, .codex:
+                continue
+            }
+            agents.insert(session.agent)
+        }
+        guard !lines.isEmpty else { return nil }
+        let fix = switch (agents.contains(.claude), agents.contains(.vibe)) {
+        case (true, false): "Run `/reload-plugins` in each session listed."
+        case (false, true): "Restart each session listed: Vibe has no `/reload-plugins`."
+        default: "Run `/reload-plugins` in each Claude Code session listed, and restart each Vibe one."
+        }
+        return AgentCLICheck(
+            id: id, title: "Sessions on \(host.label)", state: .warning,
+            detail: lines.count == 1
+                ? "1 session runs an older plugin than the host has."
+                : "\(lines.count) sessions run an older plugin than the host has.",
+            fix: fix, lines: lines
+        )
+    }
+
+    /// A reported version as the doctor prints it.
+    package static func versionText(_ report: ClaudeRemotePluginVersionReport) -> String {
+        switch report {
+        case .headerAbsent: "1.9.0 or older"
+        case .version(let version): version
+        }
     }
 
     private static func ageText(_ seconds: TimeInterval) -> String {

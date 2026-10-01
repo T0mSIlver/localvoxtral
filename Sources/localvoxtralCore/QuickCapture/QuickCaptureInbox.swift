@@ -64,8 +64,10 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
 
     package let id: UUID
     package let capturedAt: Date
-    /// The words as dictated. Never edited, so a bad draft can be redone.
-    package let text: String
+    /// The words as dictated, then as polished once before routing (#970).
+    /// Never edited after that, so a bad draft can be redone. History keeps
+    /// the raw transcript.
+    package var text: String
     /// The History record this capture was saved as, when History is on.
     package var historyRecordID: UUID?
     package var state: State
@@ -570,20 +572,27 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
 }
 
 package enum QuickCaptureInboxFile {
-    /// An unreadable or future file reads as empty and is left in place.
-    package static func load(from url: URL) -> QuickCaptureInbox {
-        guard let data = try? Data(contentsOf: url) else { return QuickCaptureInbox() }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard let inbox = try? decoder.decode(QuickCaptureInbox.self, from: data),
-              inbox.version <= QuickCaptureInbox.currentVersion
-        else {
-            Log.persistence.error("Quick capture inbox: unreadable file kept aside")
-            try? FileManager.default.moveItem(at: url, to: url.appendingPathExtension("unreadable"))
-            return QuickCaptureInbox()
-        }
-        // A capture interrupted mid-route or mid-draft by a quit waits for
-        // the user with its words.
+    /// An unreadable or future file is refused and left in place (#989):
+    /// the model then refuses every write, since the next one would replace
+    /// the user's captures.
+    package static func load(from url: URL) -> StoredFileLoad<QuickCaptureInbox> {
+        let load = StoredFile.load(
+            QuickCaptureInbox.self, from: url, currentVersion: QuickCaptureInbox.currentVersion, decoder: decoder)
+        guard let inbox = load.value else { return load }
+        return .loaded(resumingInterrupted(inbox))
+    }
+
+    /// The file's contents as written, for a save that re-reads what another
+    /// running copy wrote (#990): its captures mid-route are not interrupted.
+    package static func decode(_ data: Data) -> StoredFileLoad<QuickCaptureInbox> {
+        StoredFile.decode(
+            QuickCaptureInbox.self, from: data, name: "quick-captures.json",
+            currentVersion: QuickCaptureInbox.currentVersion, decoder: decoder)
+    }
+
+    /// A capture interrupted mid-route or mid-draft by a quit waits for the
+    /// user with its words.
+    package static func resumingInterrupted(_ inbox: QuickCaptureInbox) -> QuickCaptureInbox {
         var result = inbox
         for index in result.items.indices where result.items[index].codeCheck?.state == .checking {
             result.items[index].codeCheck?.state = .failed
@@ -600,11 +609,21 @@ package enum QuickCaptureInboxFile {
         return result
     }
 
-    package static func save(_ inbox: QuickCaptureInbox, to url: URL) throws {
+    package static func encode(_ inbox: QuickCaptureInbox) throws -> Data {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try PrivateFile.write(encoder.encode(inbox), to: url)
+        return try encoder.encode(inbox)
+    }
+
+    package static func save(_ inbox: QuickCaptureInbox, to url: URL) throws {
+        try PrivateFile.write(encode(inbox), to: url)
+    }
+
+    private static var decoder: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
     }
 }
 

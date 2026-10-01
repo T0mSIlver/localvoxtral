@@ -72,6 +72,7 @@ final class RemoteDoctorRouteTests: XCTestCase {
         let response = try post(headers: ["Authorization": "Bearer \(token)"])
         XCTAssertEqual(response.status, 200)
         XCTAssertEqual(response.headers["content-type"], "text/plain; charset=utf-8")
+        XCTAssertEqual(response.headers["x-lvx-doctor-failed"], "1")
         XCTAssertEqual(String(decoding: response.body, as: UTF8.self), """
             1. [ok  ] App: localvoxtral 1.4.0.
             2. [FAIL] Accessibility: Not allowed.
@@ -91,6 +92,18 @@ final class RemoteDoctorRouteTests: XCTestCase {
         XCTAssertEqual(response.status, 200)
         let decoded = try XCTUnwrap(AgentCLIWire.decodeResponse(response.body))
         XCTAssertEqual(decoded.doctor?.checks.map(\.id), ["app", "accessibility"])
+        XCTAssertEqual(response.headers["x-lvx-doctor-failed"], "1")
+    }
+
+    /// The host's exit status reads this count, so a clean Mac says 0 rather
+    /// than leaving the header out, which means a Mac too old to count.
+    func testNoFailedCheckSendsAFailedCountOfZero() throws {
+        try start(doctor: RemoteDoctorRoute { _ in
+            [AgentCLICheck(id: "accessibility", title: "Accessibility", state: .warning, detail: "Not checked.")]
+        })
+        let response = try post(headers: ["Authorization": "Bearer \(token)"])
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(response.headers["x-lvx-doctor-failed"], "0")
     }
 
     func testARevokedHostGetsNothing() throws {

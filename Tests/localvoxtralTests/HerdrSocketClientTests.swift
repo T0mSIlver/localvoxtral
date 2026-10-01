@@ -566,7 +566,7 @@ final class HerdrSocketClientTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(recorded.latencySeconds, 0)
     }
 
-    func testLatencyRecorderReceivesRefusalPayloadVerbatim() async throws {
+    func testLatencyRecorderReceivesRefusalCodeAndMessageLength() async throws {
         let server = try HerdrOneShotServer { request in
             herdrResponse(
                 for: request,
@@ -583,7 +583,7 @@ final class HerdrSocketClientTests: XCTestCase {
         let recorded = try XCTUnwrap(log.first)
         XCTAssertEqual(recorded.method, "pane.current")
         XCTAssertFalse(recorded.success)
-        XCTAssertEqual(recorded.detail, "pane_not_found: no such pane")
+        XCTAssertEqual(recorded.detail, "pane_not_found: 12-character message")
     }
 
     func testLatencyRecorderReceivesNoResponseOnTimeout() async throws {

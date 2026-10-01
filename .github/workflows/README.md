@@ -120,7 +120,7 @@ release covers main.
 Packaging, the uploads and the launch smoke (about 95 s of the Mac) are
 path-gated on PRs too (`scripts/ci/mac-package-filter.sh`). A PR whose every
 changed path stays out of the bundle (tests, docs, `scripts/` other than
-`package_app.sh` and `clean-stale-outputs.sh`, workflows other than
+`package_app.sh`, `clean-stale-outputs.sh` and `launch-smoke.py`, workflows other than
 `ci.yml`'s `mac-lanes` job, eval data, and Markdown under `Sources/` outside
 a `Resources/` directory or in the opencode and vibe integrations) builds no
 bundle, unless a lane that

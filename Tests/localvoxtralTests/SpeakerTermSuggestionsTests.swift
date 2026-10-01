@@ -454,6 +454,28 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         XCTAssertEqual(requestCount, 1)
     }
 
+    /// #1024: every polish carries the project names, so neither producer
+    /// offers one, and the model is told they are known.
+    func testAProjectNameIsNeverSuggested() async {
+        let settings = makePolishingSettings()
+        let service = Service()
+        service.reply = .success(#"["Vidtheque", "Qwen"]"#)
+        let model = SpeakerTermSuggestionModel(
+            settings: settings,
+            recentDictations: { [.init(raw: "the vid tech page", final: "the Vidtheque page")] },
+            learnedTerms: { ["vidtheque", "polishd"] },
+            sentNames: { ["vidtheque"] },
+            service: { service }
+        )
+
+        await model.suggest()
+
+        XCTAssertEqual(model.suggestions, ["Qwen", "polishd"])
+        let known = service.requests.first?.inputText.split(separator: "\n")
+            .first { $0.hasPrefix("Already known (do not list): ") }
+        XCTAssertTrue(known?.hasSuffix("vidtheque") ?? false, String(known ?? "no known list"))
+    }
+
     /// The bundled 4B cannot do this (measured): no request is ever sent.
     func testNothingIsSentWhenSuggestionsAreUnavailable() async {
         let settings = makePolishingSettings()

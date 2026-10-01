@@ -80,6 +80,197 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, true)
     }
 
+    /// A settled sentence past 30 words, the first piece early polish takes.
+    private static let settledPiece =
+        "the first part of this dictation is long enough to settle into a piece of its own "
+        + "because it has more than thirty words in it and ends right here."
+    private static let tail = "and this is the tail."
+
+    /// Overlay Buffer with polishing (#709): a settled piece is polished
+    /// while the user still speaks, and the stop polishes only the tail.
+    func testOverlayBufferPolishesTheSettledPieceWhileDictatingAndOnlyTheTailAtStop() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish)
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.done", "text": Self.settledPiece])
+        let pieceSent = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(pieceSent, "no piece was polished while dictating")
+        XCTAssertTrue(pipeline.viewModel.isDictating, "polished before the stop, not by it")
+
+        await stopAndFinalize(pipeline, finalText: Self.tail)
+
+        let inputs = await polish.requests.map(\.inputText)
+        XCTAssertEqual(inputs, [Self.settledPiece, Self.tail])
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(Self.settledPiece)> <\(Self.tail)>"])
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), ["\(Self.settledPiece) \(Self.tail)"])
+        XCTAssertEqual(pipeline.records.all.first?.polishedText, "<\(Self.settledPiece)> <\(Self.tail)>")
+    }
+
+    /// A new microphone restarts the dictation while the stopped text still
+    /// waits on its polish: that text is saved as not inserted, and the next
+    /// dictation's stop commits (#1055).
+    func testAMicrophoneChangeSavesTheTextStillPolishingAndLaterStopsCommit() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish, earlyPolish: false)
+        let builtIn = MicrophoneInputDevice(id: "BuiltInMicrophoneDevice", name: "MacBook Pro Microphone", channelCount: 1)
+        let usb = MicrophoneInputDevice(id: "AppleUSBAudioEngine:Rode:NT-USB:1", name: "NT-USB", channelCount: 1)
+        pipeline.microphone.configureDevices([builtIn, usb], defaultInputDeviceID: builtIn.id)
+        let shown = BoundedWait()
+        pipeline.overlay.onRefresh = { call in
+            if call.displayText == Self.phrase { shown.resolve() }
+        }
+
+        await startAndSpeak(pipeline)
+        sendPartials(pipeline)
+        let shownWhileDictating = await shown.value(failAfter: 10)
+        XCTAssertTrue(shownWhileDictating)
+        pipeline.overlay.onRefresh = nil
+        pipeline.server.forgetFrames()
+        await startAndSpeak(pipeline, start: { $0.selectMicrophoneInput(id: usb.id) })
+
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase], "the old text is in History")
+        XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
+        XCTAssertEqual(pipeline.overlay.committedTexts, [])
+
+        await stopAndFinalize(pipeline)
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(Self.phrase)>"], "the new dictation commits")
+    }
+
+    /// A cancel while the stopped text waits on its polish: nothing is
+    /// inserted when the reply comes, and History keeps the text (#1059).
+    func testACancelDuringThePolishInsertsNothing() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish, earlyPolish: false)
+        await polish.holdNextRequest()
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
+        let polishing = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(polishing, "the polish never started")
+
+        pipeline.viewModel.cancelDictation()
+        await polish.releaseHeldRequest()
+        let recorded = await pipeline.records.waitForCount(1)
+        XCTAssertTrue(recorded)
+        await pipeline.viewModel.session.polishAndCommitTask?.value
+
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing is inserted after a cancel")
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
+        XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
+        XCTAssertFalse(pipeline.viewModel.isFinalizingStop)
+    }
+
+    /// A new dictation while the stopped one waits on its polish: the one
+    /// saved as not inserted keeps its audio in History (#1090).
+    func testANewDictationDuringThePolishKeepsTheOldDictationsAudio() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish, earlyPolish: false)
+        pipeline.viewModel.settings.dictationAudioEnabled = true
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-audio-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let audioStore = DictationAudioStore(directoryURL: directory)
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
+        store.audioStore = audioStore
+        pipeline.viewModel.sessionStore = store
+        await polish.holdNextRequest()
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
+        let polishing = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(polishing, "the polish never started")
+
+        pipeline.server.forgetFrames()
+        await startAndSpeak(pipeline)
+        await polish.releaseHeldRequest()
+        _ = await store.count()
+
+        let interrupted = try XCTUnwrap(pipeline.records.all.first)
+        XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded), [false])
+        XCTAssertEqual(audioStore.storedIDs(), [interrupted.id])
+        XCTAssertEqual(
+            try Data(contentsOf: audioStore.fileURL(for: interrupted.id)),
+            DictationAudioRecording.wav(fromPCM16: Self.speech(seed: 1)))
+
+        await stopAndFinalize(pipeline)
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(Self.phrase)>"], "the new dictation commits")
+    }
+
+    /// With Polish while you speak off, nothing is polished while the user
+    /// speaks: the stop sends the whole text in one request, as before #709.
+    func testOverlayBufferWithEarlyPolishOffPolishesOnlyTheWholeTextAtStop() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish, earlyPolish: false)
+        let whole = "\(Self.settledPiece) \(Self.tail)"
+
+        await startAndSpeak(pipeline)
+        XCTAssertNil(pipeline.viewModel.session.earlyPolishRun)
+        await sendSettledFinal(pipeline, Self.settledPiece)
+
+        await stopAndFinalize(pipeline, finalText: Self.tail)
+
+        let requests = await polish.requests
+        XCTAssertEqual(requests.map(\.inputText), [whole])
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(whole)>"])
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [whole])
+        XCTAssertEqual(pipeline.records.all.first?.polishedText, "<\(whole)>")
+    }
+
+    /// Grounding is sampled at stop: when the stop's request carries context
+    /// the piece was polished without (here the clipboard), the piece is
+    /// discarded and the whole text is polished in one request, as before.
+    func testOverlayBufferPolishesTheWholeTextWhenTheStopGroundsItInContext() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish)
+        pipeline.viewModel.settings.polishClipboardContextEnabled = true
+        pipeline.viewModel.dependencies.pasteboardReader = {
+            PasteboardStub(string: "error in PolishContextBudget.swift line 40", types: [.string])
+        }
+        let whole = "\(Self.settledPiece) \(Self.tail)"
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.done", "text": Self.settledPiece])
+        let pieceSent = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(pieceSent, "no piece was polished while dictating")
+
+        await stopAndFinalize(pipeline, finalText: Self.tail)
+
+        let requests = await polish.requests
+        XCTAssertEqual(requests.map(\.inputText), [Self.settledPiece, whole])
+        XCTAssertTrue(
+            requests.last?.userPrompts.last?.contains("PolishContextBudget.swift") == true,
+            "the stop's request carries the clipboard"
+        )
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(whole)>"])
+    }
+
+    /// A quick capture is never polished, so no piece of it is sent to the
+    /// polisher while the user speaks (#709).
+    func testAQuickCaptureSendsNoPieceToThePolisher() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish)
+        let captured = QuickCaptures()
+        pipeline.viewModel.session.onQuickCapture = { text, _ in
+            captured.all.append((text, pipeline.records.all.count))
+        }
+
+        await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
+        XCTAssertNil(pipeline.viewModel.session.earlyPolishRun)
+        await sendSettledFinal(pipeline, Self.settledPiece)
+        await stopAndFinalize(
+            pipeline, finalText: Self.tail, finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved
+        )
+
+        let requests = await polish.requests
+        XCTAssertEqual(requests.count, 0)
+        XCTAssertEqual(captured.all.count, 1)
+    }
+
     /// Quick capture (#725): the shortcut's dictation runs as Overlay Buffer,
     /// but its stop commits nothing to the focused app. The History record
     /// is written first, then the words go to the Inbox.
@@ -249,6 +440,39 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(waiting.focuser.readBackSessionIDs, ["pay"], "the stop asked which session the pane shows")
     }
 
+    /// The dictation starts in a session with a prompt route, and Tab picks
+    /// another one: the words go into the picked pane by keyboard, and the
+    /// start session's route gets nothing (#1054).
+    func testTabToAnotherSessionNeverWritesThroughTheStartSessionsRoute() async throws {
+        let relay = try FakeOpencodePromptRelay()
+        addTeardownBlock { relay.stop() }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.overlay.insertsThroughCommitter = true
+        pipeline.overlay.passesTargetPIDToCommitter = false
+        joinOpencodePane(pipeline, relay: relay.relay(sessionID: "ses_a").address)
+        let waiting = installWaitingSessions(pipeline, ["pay": "/r/payments"])
+        let typed = recordTypedText(pipeline)
+        let terminalPID: pid_t = 4343
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == terminalPID ? TerminalScreenAllowlist.ghosttyBundleID : nil
+        }
+
+        await startAndSpeak(pipeline)
+        XCTAssertTrue(pipeline.viewModel.textInsertion.promptRelayTakesText, "precondition: the relay is armed")
+        pipeline.viewModel.session.moveDestination(forward: false)
+        await pipeline.viewModel.session.destinationFocusTask?.value
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
+
+        pipeline.overlay.commitTargetAppPID = terminalPID
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline)
+
+        XCTAssertEqual(waiting.focuser.readBackSessionIDs, ["pay"])
+        let typedAll = await typed.waitFor(Self.phrase)
+        XCTAssertTrue(typedAll, "typed: \(typed.text.debugDescription)")
+        XCTAssertEqual(relay.calls.map(\.path), [], "the start session's prompt gets nothing")
+    }
+
     /// Two sessions in two tabs of one terminal share its app. The user
     /// switched tabs between the pick and the stop: the focused pane no
     /// longer shows the picked session, so the words stay in History.
@@ -273,6 +497,44 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(waiting.focuser.readBackSessionIDs, ["pay"])
         XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "the other tab's session never gets the words")
         XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
+    }
+
+    /// The picked pane read back at the stop, and the user switched tabs of
+    /// the same terminal while the polish ran: the pane is read back again
+    /// before the insertion, and the words stay in History (#1056).
+    func testATabSwitchWhileThePolishRunsKeepsTheWordsInHistory() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish, earlyPolish: false)
+        let waiting = installWaitingSessions(pipeline, ["pay": "/r/payments"])
+        let terminalPID: pid_t = 5151
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == terminalPID ? TerminalScreenAllowlist.ghosttyBundleID : nil
+        }
+        await polish.holdNextRequest()
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.session.moveDestination(forward: false)
+        await pipeline.viewModel.session.destinationFocusTask?.value
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .session)
+        pipeline.overlay.commitTargetAppPID = terminalPID
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
+        let polishing = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(polishing, "the polish never started")
+        XCTAssertEqual(waiting.focuser.readBackSessionIDs, ["pay"], "read back before the polish")
+
+        // Same Ghostty, another tab, while the polish runs.
+        waiting.focuser.paneStillShowsSession = false
+        await polish.releaseHeldRequest()
+        let recorded = await pipeline.records.waitForCount(1)
+        XCTAssertTrue(recorded)
+
+        XCTAssertEqual(waiting.focuser.readBackSessionIDs, ["pay", "pay"], "and again before the insertion")
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "the other tab's session never gets the words")
+        XCTAssertEqual(pipeline.records.all.first?.rawText, Self.phrase)
+        XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
+        XCTAssertEqual(pipeline.viewModel.statusText, DictationSessionController.DestinationStatus.paneLeftFront)
     }
 
     /// Focus moved to another app between the pick and the stop: the words
@@ -1787,6 +2049,22 @@ final class DictationPipelineTests: XCTestCase {
         }
     }
 
+    /// Sends a segment's final and returns once the overlay shows it. A
+    /// stop sent before the client read it would take it for the answer to
+    /// the final commit, and finish without the text that follows.
+    private func sendSettledFinal(
+        _ pipeline: Pipeline, _ text: String, file: StaticString = #filePath, line: UInt = #line
+    ) async {
+        let shown = BoundedWait()
+        pipeline.overlay.onRefresh = { call in
+            if call.displayText.contains(text) { shown.resolve() }
+        }
+        pipeline.server.send(["type": "transcription.done", "text": text])
+        let arrived = await shown.value(failAfter: 10)
+        XCTAssertTrue(arrived, "the overlay never showed the final", file: file, line: line)
+        pipeline.overlay.onRefresh = nil
+    }
+
     /// The transcript arrives as partials, split mid-phrase the way a
     /// streaming model splits it.
     private func sendPartials(_ pipeline: Pipeline) {
@@ -1851,7 +2129,21 @@ final class DictationPipelineTests: XCTestCase {
         let records: SessionRecords
     }
 
-    private func makePipeline(outputMode: DictationOutputMode) async throws -> Pipeline {
+    /// True once `count` polish requests arrived, false after 10 s of wall time.
+    private func waitForPolishRequests(_ polish: FakePolishingService, _ count: Int) async -> Bool {
+        let arrived = BoundedWait()
+        Task {
+            await polish.waitForRequests(count)
+            arrived.resolve()
+        }
+        return await arrived.value(failAfter: 10)
+    }
+
+    private func makePipeline(
+        outputMode: DictationOutputMode,
+        polish: FakePolishingService? = nil,
+        earlyPolish: Bool = true
+    ) async throws -> Pipeline {
         let server = try FakeRealtimeServer()
         addTeardownBlock { server.stop() }
         let endpoint = try await server.start()
@@ -1884,6 +2176,16 @@ final class DictationPipelineTests: XCTestCase {
             )
         )
         viewModel.appConfigStore = MockAppConfigStore()
+        if let polish {
+            settings.llmPolishingEnabled = true
+            settings.llmPolishingEndpointURL = "http://127.0.0.1:8080/v1/chat/completions"
+            settings.earlyPolishEnabled = earlyPolish
+            settings.polishClipboardContextEnabled = false
+            settings.terminalScreenContextEnabled = false
+            settings.repoVocabularyEnabled = false
+            settings.claudeRepoContextEnabled = false
+            viewModel.llmPolishingService = polish
+        }
         retainForTestProcessLifetime(viewModel)
         // The session start arms Escape as a cancel key; keep it off the
         // host's global hotkeys.

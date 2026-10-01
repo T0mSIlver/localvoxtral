@@ -62,6 +62,26 @@ final class DictationInsightsTests: XCTestCase {
         XCTAssertEqual(insights.wordsPerMinute, 6)
     }
 
+    /// A quick capture is polished after its record is written (#970): its
+    /// polish is not taken out of its time, and it is not a polish wait.
+    func testAQuickCapturesPolishIsNeitherTakenOutOfItsTimeNorAPolishWait() {
+        let capture = DictationHistoryEntry(
+            id: UUID(), startedAt: origin, finishedAt: origin.addingTimeInterval(30),
+            rawText: "the local voxroll docs", polishedText: "The localvoxtral docs.", polishingDurationSeconds: 9,
+            provider: "p", model: "m", outputMode: DictationSessionRecord.quickCaptureOutputMode, targetAppBundleID: nil,
+            status: .sttCompleted, commitSucceeded: true, polishProfile: nil, polishContextSummary: nil)
+        let insights = DictationInsights(entries: [
+            capture,
+            entry("one two", polished: "One, two.", seconds: 32, polishSeconds: 2),
+        ])
+
+        XCTAssertEqual(insights.dictatingSeconds, 60)
+        XCTAssertEqual(insights.polishRan, 1)
+        XCTAssertEqual(insights.polishChanged, 1)
+        XCTAssertEqual(insights.medianPolishSeconds, 2)
+        XCTAssertEqual(insights.slowPolishSeconds, 2)
+    }
+
     func testTimeSavedIsTypingTimeLessDictatingTimeAndNeverNegative() {
         // 80 words at 40 words per minute is 120 s of typing.
         let fast = DictationInsights(entries: [

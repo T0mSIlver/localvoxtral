@@ -329,6 +329,10 @@ public enum ClaudeRemoteHTTPCodec {
     public static let readmeHeaderName = "X-Lvx-Readme"
     public static let readmeHeaderValue = "wanted"
     public static let draftHeaderName = "X-Lvx-Draft"
+    /// The reply header of `/v1/doctor` (`RemoteDoctorRoute`): how many of
+    /// the Mac's checks failed, in decimal. The host's `localvoxtral doctor`
+    /// takes its exit status from this number, not from the body's wording.
+    public static let doctorFailedHeaderName = "X-Lvx-Doctor-Failed"
 
     /// A draft id as the Mac mints it and the host shim accepts it: 32
     /// lowercase hex digits.
@@ -349,6 +353,7 @@ public enum ClaudeRemoteHTTPCodec {
         termsWanted: Bool = false,
         readmeWanted: Bool = false,
         draftID: String? = nil,
+        doctorFailed: Int? = nil,
         contentType: String = "application/json"
     ) -> Data {
         var head = "HTTP/1.1 \(status) \(reasonPhrase(for: status))\r\n"
@@ -370,6 +375,9 @@ public enum ClaudeRemoteHTTPCodec {
         }
         if status == 200, let draftID, isDraftID(draftID) {
             head += "\(draftHeaderName): \(draftID)\r\n"
+        }
+        if status == 200, let doctorFailed, doctorFailed >= 0 {
+            head += "\(doctorFailedHeaderName): \(doctorFailed)\r\n"
         }
         head += "\r\n"
         var data = Data(head.utf8)

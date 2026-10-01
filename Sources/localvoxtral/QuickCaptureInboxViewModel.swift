@@ -5,11 +5,14 @@ import Synchronization
 
 /// The Inbox page's observable face (#725). The work is
 /// `QuickCaptureInboxModel`'s, in the core so Linux tests reach it; this
-/// wraps it for SwiftUI and builds its router and drafter from Settings.
+/// wraps it for SwiftUI and builds its polish, router and drafter from
+/// Settings.
 @MainActor
 @Observable
 final class QuickCaptureInboxViewModel {
     private(set) var items: [QuickCaptureItem] = []
+    /// Set while the inbox file is refused (#989).
+    private(set) var storeProblem: StoredFileProblem?
     /// Bumped when a project's repository, GitHub description or filing
     /// choice lands, so the Projects pane reads them again.
     private(set) var projectsRevision = 0
@@ -29,7 +32,8 @@ final class QuickCaptureInboxViewModel {
         fileURL: URL?,
         applicationSupport: URL,
         github: any QuickCaptureGitHub = QuickCaptureGHClient(),
-        usageRecorder: (any UsageRecording)? = nil
+        usageRecorder: (any UsageRecording)? = nil,
+        polisher: QuickCaptureLLMPolisher? = nil
     ) {
         let remote = RemoteDraftsSlot()
         let drafter = QuickCaptureDrafter(
@@ -68,15 +72,19 @@ final class QuickCaptureInboxViewModel {
             },
             agents: { [.claude, .vibe, .opencode] },
             drafter: { drafter.withFirstDrafter(Self.firstDrafter(settings: settings, usageRecorder: usageRecorder)) },
-            github: github
+            github: github,
+            polisher: { polisher?.isConfigured == true ? polisher : nil },
+            polishVocabulary: { QuickCapturePolishVocabulary.terms(projects: $0, learned: learnedTerms()) }
         )
         store = learnedTermStore
         self.learnedTerms = learnedTerms
         linker = learnedTermStore.map { QuickCaptureProjectLinker(store: $0, github: github) }
         items = model.items
+        storeProblem = model.storeProblem
         model.onChange = { [weak self] in
             guard let self else { return }
             self.items = self.model.items
+            self.storeProblem = self.model.storeProblem
         }
         model.onRepositoryAnswered = { [weak learnedTermStore] key, repository in
             learnedTermStore?.recordTypedRepository(repository, projectKey: key)
@@ -156,9 +164,7 @@ final class QuickCaptureInboxViewModel {
     }
 
     static func defaultFileURL() -> URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("localvoxtral", isDirectory: true)
-            .appendingPathComponent("quick-captures.json")
+        LocalvoxtralDataDirectory.url().appendingPathComponent("quick-captures.json")
     }
 
     var waitingCount: Int { items.filter { $0.state != .filed }.count }

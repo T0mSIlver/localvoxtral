@@ -57,6 +57,31 @@ final class AppConfigDefaultsReconcileTests: XCTestCase {
         XCTAssertEqual(refreshed, try bundledData(for: "llm_system_prompt.toml"))
     }
 
+    /// A silent refresh can replace an old default the user restored on
+    /// purpose, so it keeps the bytes it replaces (#1040).
+    func testReconcileBacksUpTheFileItRefreshes() throws {
+        let directory = makeTemporaryConfigDirectory()
+        let staleSeed = "content = \"an older shipped default\""
+        try write(staleSeed, named: "llm_system_prompt.toml", in: directory)
+
+        var hashes = BundledConfigDefaultHistory.knownDefaultHashes
+        hashes["llm_system_prompt.toml", default: []]
+            .insert(AppConfigStore.sha256Hex(Data(staleSeed.utf8)))
+        let store = AppConfigStore(
+            configDirectoryOverride: directory,
+            knownDefaultHashes: hashes
+        )
+
+        XCTAssertEqual(store.reconcileBundledDefaults().refreshedFileNames, ["llm_system_prompt.toml"])
+
+        let backups = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            .filter { $0.hasPrefix("llm_system_prompt.toml.backup-") }
+        XCTAssertEqual(backups.count, 1)
+        let backup = try String(
+            contentsOf: directory.appendingPathComponent(try XCTUnwrap(backups.first)), encoding: .utf8)
+        XCTAssertEqual(backup, staleSeed)
+    }
+
     /// A silent refresh happens at most once per bundled version: a user who
     /// deliberately restores an OLD shipped default afterwards must not be
     /// re-refreshed on every launch (their restore sticks).

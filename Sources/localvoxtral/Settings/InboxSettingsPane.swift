@@ -13,7 +13,11 @@ struct InboxSettingsPane: View {
     var body: some View {
         SettingsPage(tab: .inbox) {
             SettingsGroup(title: "Captures") {
-                if let inbox, !inbox.items.isEmpty {
+                if let inbox, let problem = inbox.storeProblem {
+                    StoredFileProblemRow(problem: problem, fileName: "quick-captures.json") {
+                        try inbox.model.moveAsideAndStartOver()
+                    }
+                } else if let inbox, !inbox.items.isEmpty {
                     ForEach(inbox.items) { item in
                         InboxCaptureRow(item: item, inbox: inbox)
                     }

@@ -32,6 +32,7 @@ DerivedData/
 /.llm-polish-eval-enable.json
 /.polishd-integration-enable.json
 /.polishd-bench-enable.json
+/.quick-capture-polish-latency-enable.json
 /.speechd-integration-enable.json
 /.mistral-integration-enable.json
 /.mistral-soak-enable.json

@@ -97,11 +97,10 @@ final class BackendManager: ManagedBackendManaging {
     /// Megabytes speechd passes to `--cache-limit-mb`. It caps MLX's buffer
     /// cache (freed GPU buffers kept for reuse), not the weights. Voxtral's cache
     /// fills to whatever cap is set while time per step stays flat (#486), so a
-    /// higher cap only costs RAM. `speechd-bench` picked this value (#690):
-    /// 1024 MB matches 2048 MB's step time and lag with ~1 GB less footprint,
-    /// and 512 MB lags. Nemotron's cache stays near 10 MB, so the cap never
-    /// binds for it.
-    static let speechdCacheLimitMB = 1024
+    /// higher cap only costs RAM. `speechd-bench` picked this value (#963):
+    /// 512 MB matches 2048 MB's step time and lag with ~1.5 GB less footprint.
+    /// Nemotron's cache stays near 10 MB, so the cap never binds for it.
+    static let speechdCacheLimitMB = 512
 
     private(set) var speechdStatus: ManagedBackendStatus
     private(set) var polishdStatus: ManagedBackendStatus
@@ -631,6 +630,8 @@ final class BackendManager: ManagedBackendManaging {
                 option.repoID,
                 "--model-revision",
                 option.revision,
+                "--engine",
+                option.engine.rawValue,
                 "--port",
                 "\(spec.port)",
                 "--parent-pid",

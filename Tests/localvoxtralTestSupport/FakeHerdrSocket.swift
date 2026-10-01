@@ -29,7 +29,7 @@ package final class FakeHerdrSocket: @unchecked Sendable {
     package enum Answer: Sendable {
         case ok
         /// herdr's error envelope with this code (`pane_not_found`, ...).
-        case error(String)
+        case error(String, message: String = "fake")
         /// Close the connection without a reply.
         case hangUp
         /// A success whose `result` is this JSON object.
@@ -208,7 +208,7 @@ package final class FakeHerdrSocket: @unchecked Sendable {
         for wait in ready { wait.resolve() }
         let reply: String? = switch answer(request) {
         case .ok: #"{"id":"\#(id)","result":{"type":"ok"}}"#
-        case .error(let code): #"{"id":"\#(id)","error":{"code":"\#(code)","message":"fake"}}"#
+        case .error(let code, let message): #"{"id":"\#(id)","error":{"code":"\#(code)","message":"\#(message)"}}"#
         case .result(let json): #"{"id":"\#(id)","result":\#(json)}"#
         case .hangUp: nil
         case .raw(let line): line

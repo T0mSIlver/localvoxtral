@@ -1,5 +1,10 @@
 import Foundation
 import Synchronization
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 #if canImport(os)
 import os
 #endif
@@ -26,6 +31,8 @@ package struct UsageEntry: Codable, Equatable, Sendable {
         case quickCaptureRouting
         /// An agent's run drafting a quick capture as an issue (#731, #745).
         case quickCaptureDrafting
+        /// The one polish a quick capture gets before routing (#970).
+        case quickCapturePolish
     }
 
     /// What answered, which says who pays: the Mistral key, the Jev key, the
@@ -160,7 +167,7 @@ package struct UsageEntry: Codable, Equatable, Sendable {
         switch feature {
         case .dictation: return .dictation
         case .secondPass: return .retranscription
-        case .polish, .termSuggestions, .quickCaptureRouting: return .polish
+        case .polish, .termSuggestions, .quickCaptureRouting, .quickCapturePolish: return .polish
         case .projectTerms, .quickCaptureDrafting: return nil
         }
     }
@@ -532,7 +539,7 @@ package struct MistralUsageSummary: Equatable, Sendable {
                 polishCount += 1
             case .secondPass:
                 retranscriptionCount += 1
-            case .termSuggestions, .projectTerms, .quickCaptureRouting, .quickCaptureDrafting:
+            case .termSuggestions, .projectTerms, .quickCaptureRouting, .quickCaptureDrafting, .quickCapturePolish:
                 otherCount += 1
             }
             if let cost = entry.costEUR {
@@ -716,6 +723,7 @@ extension UsageEntry.Feature {
         case .projectTerms: return "Project terms"
         case .quickCaptureRouting: return "Quick-capture routing"
         case .quickCaptureDrafting: return "Quick-capture drafting"
+        case .quickCapturePolish: return "Quick-capture polishing"
         }
     }
 }
@@ -747,12 +755,7 @@ package final class UsageLedger: UsageRecording, @unchecked Sendable {
     /// Named for the one backend it recorded before #837; kept so the history
     /// it holds carries on.
     package static func defaultFileURL() -> URL {
-        let applicationSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        return applicationSupport
-            .appendingPathComponent("localvoxtral", isDirectory: true)
+        return LocalvoxtralDataDirectory.url()
             .appendingPathComponent("mistral-usage.jsonl")
     }
 
@@ -823,25 +826,50 @@ package final class UsageLedger: UsageRecording, @unchecked Sendable {
         return Self.entries(fromFileContents: data)
     }
 
+    /// Appends with `O_APPEND` under the lock other running copies share
+    /// (#990), so two copies never write at the same offset. A last line that
+    /// a crash left without its newline gets one first; otherwise it would
+    /// swallow this entry too.
     private static func append(_ line: Data, to fileURL: URL) {
-        let fileManager = FileManager.default
         do {
-            try fileManager.createDirectory(
+            try FileManager.default.createDirectory(
                 at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            if !fileManager.fileExists(atPath: fileURL.path) {
-                guard fileManager.createFile(atPath: fileURL.path, contents: line) else {
-                    Log.persistence.error("usage: could not create \(fileURL.path, privacy: .public)")
-                    return
-                }
+        } catch {
+            Log.persistence.error("usage: append failed: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        StoredFileLock.withLock(beside: fileURL) {
+            let descriptor = fileURL.path.withCString {
+                open($0, O_RDWR | O_APPEND | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
+            }
+            guard descriptor >= 0 else {
+                Log.persistence.error("usage: could not open the ledger: errno \(errno, privacy: .public)")
                 return
             }
-            let handle = try FileHandle(forWritingTo: fileURL)
-            defer { try? handle.close() }
-            try handle.seekToEnd()
-            try handle.write(contentsOf: line)
-        } catch {
-            Log.persistence.error(
-                "usage: append failed: \(error.localizedDescription, privacy: .public)")
+            defer { close(descriptor) }
+            var bytes = line
+            var info = stat()
+            if fstat(descriptor, &info) == 0, info.st_size > 0 {
+                var last: UInt8 = 0
+                if pread(descriptor, &last, 1, info.st_size - 1) == 1, last != UInt8(ascii: "\n") {
+                    Log.persistence.notice("usage: the last line had no end, closed it before this entry")
+                    bytes = Data("\n".utf8) + line
+                }
+            }
+            let written = bytes.withUnsafeBytes { raw -> Bool in
+                guard let base = raw.baseAddress else { return true }
+                var offset = 0
+                while offset < raw.count {
+                    let count = LibC.write(descriptor, base.advanced(by: offset), raw.count - offset)
+                    if count < 0, errno == EINTR { continue }
+                    guard count > 0 else { return false }
+                    offset += count
+                }
+                return true
+            }
+            if !written {
+                Log.persistence.error("usage: append failed: errno \(errno, privacy: .public)")
+            }
         }
     }
 }

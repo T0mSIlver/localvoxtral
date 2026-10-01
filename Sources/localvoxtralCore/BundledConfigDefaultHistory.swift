@@ -37,6 +37,8 @@ package enum BundledConfigDefaultHistory {
             "43ededf94739fe2a1d5ccfb7c99bcefc438afc30737c974cd9d284826bbbb771",
         ],
         "llm_system_prompt_agent.toml": [
+            // 2026-09-26 issue and PR numbers as GitHub references (#718)
+            "87d663e68b9f70f460e45e70b3beb6fd842fe933ae1e533c40d6ca88b71acced",
             // 2026-09-20 no added em dash or semicolon
             "6a1902b9cbe186cb3c764695738f5e67991c8081126ce6cb26686b459f922a2c",
             // 2026-07-14 human agent-dictation calibration

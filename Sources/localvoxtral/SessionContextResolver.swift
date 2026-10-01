@@ -176,7 +176,16 @@ final class SessionContextResolver {
         } else {
             relay = nil
         }
-        return relay.map { OpencodePromptRoute(relay: $0) }
+        let startPID = TerminalScreenContextSource.frontmostTarget()?.pid
+        return relay.map { relay in
+            OpencodePromptRoute(relay: relay, keysReachThePrompt: { @MainActor in
+                // The terminal the dictation started in, still frontmost,
+                // and its focused pane still the one this relay serves.
+                guard let target = TerminalScreenContextSource.frontmostTarget(), target.pid == startPID
+                else { return false }
+                return await resolver.opencodePromptRelay(target: target) == relay
+            })
+        }
     }
 
     /// The joined herdr pane, written through herdr's socket (#726). With

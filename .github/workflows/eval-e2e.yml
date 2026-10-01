@@ -58,21 +58,15 @@ jobs:
         #  * AC power (ac-power-guard.sh, owner request 2026-07-24): never
         #    drain the battery. It fails OPEN on probe errors so a broken
         #    probe can never silently disable the lane.
-        # All three scripts are tested in ci.yml's shell-test step.
+        # scheduled-run-guard.sh chains the three, as release.yml does; it and
+        # each guard are tested in ci.yml's shell-test step.
         id: guard
         if: github.event_name == 'schedule'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          proceeds() { [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" == "true" ]]; }
-          DECISION="$(./scripts/ci/night-window-guard.sh 30)"
-          if proceeds; then
-            DECISION="$(./scripts/ci/recent-run-guard.sh eval-e2e.yml 20)"
-          fi
-          if proceeds; then
-            DECISION="$(./scripts/ci/ac-power-guard.sh)"
-          fi
+          DECISION="$(./scripts/ci/scheduled-run-guard.sh eval-e2e.yml 30 20)"
           echo "$DECISION" >> "$GITHUB_OUTPUT"
           REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
           if [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" == "true" ]]; then
@@ -130,6 +124,26 @@ jobs:
                  "resident STT service; see scripts/mac/README.md to enable on-demand."
           fi
 
+      - name: Voices the runner's shell lists
+        # What `say` offers outside xctest, next to the eval's voices line (#960).
+        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
+        continue-on-error: true
+        run: |
+          echo "say -v ? lines: $(say -v '?' | wc -l)"
+          echo "Samantha/Daniel/Thomas lines: $(say -v '?' | grep -c -E '^(Samantha|Daniel|Thomas)')"
+          # The same report as the eval's "eval TTS env:" lines, home and
+          # user masked: the difference is what hides the voices from xctest.
+          home=$(perl -e 'print((getpwuid($<))[7])')
+          user=$(id -un)
+          mask() { sed -e "s|$home|<home>|g" -e "s|$user|<user>|g"; }
+          echo "shell env: keys: $(compgen -e | LC_ALL=C sort | tr '\n' ' ')"
+          for name in $(compgen -e | LC_ALL=C sort); do
+            case "$name" in
+              HOME|TMPDIR|CFFIXED_USER_HOME|DYLD_*|__XPC_*|XPC_*|__CF*)
+                echo "shell env: $name=${!name}" | mask ;;
+            esac
+          done
+
       - name: Run agent-dictation E2E eval
         id: eval
         if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
@@ -143,24 +157,20 @@ jobs:
         run: |
           mkdir -p logs
           set -o pipefail
-          # An older reaper stops the on-demand server 20 min after the last
-          # `ensure` even while a client uses it, so an eval longer than that
-          # lost its server mid-run (#821). The reaper counts clients since
-          # #829, but runs a copy of the script on the Mac: keep ours fresh
-          # until that copy is refreshed (scripts/mac/README.md).
-          if [ -d /Users/Shared/localvoxtral/run ]; then
-            while sleep 300; do
-              ./scripts/mac/lv-test-servers.sh ensure speechd >/dev/null 2>&1 || true
-            done &
-            keepalive=$!
-            trap 'kill "$keepalive" 2>/dev/null || true' EXIT
-          fi
           # --enable-code-coverage matches ci.yml's build flags in the SHARED
           # .build (clean: false): without it this nightly rebuilt the whole
           # app+test module uninstrumented, and the next morning's ci.yml
           # unit step rebuilt it back — the same flag-flip PR #157 fixed
           # inside ci.yml (PR #157 review finding).
           swift test --build-system native --filter AgentDictationE2EEvalTests --enable-code-coverage 2>&1 | tee logs/eval-e2e.log
+
+      - name: Voices the runner's shell lists after the eval
+        # Next to the eval's own listing (#960).
+        if: always() && (github.event_name != 'schedule' || steps.guard.outputs.run != 'false')
+        continue-on-error: true
+        run: |
+          echo "say -v ? lines: $(say -v '?' | wc -l)"
+          echo "Samantha/Daniel/Thomas lines: $(say -v '?' | grep -c -E '^(Samantha|Daniel|Thomas)')"
 
       - name: Name the STT service's state
         # A stalled eval reads the same whether the reaper stopped the server

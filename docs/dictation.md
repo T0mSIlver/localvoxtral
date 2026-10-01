@@ -41,19 +41,18 @@ Settings.
 
 ### Record a chord of modifier keys
 
-Three optional shortcuts can also be a chord of modifier keys, such as left
-Shift and right Shift together: **Answer the agent that needs you**, **Quick
-capture to Inbox** and **Copy last dictation**. A chord needs Accessibility
-permission. One chord does one job: the dictation key's chord can't also be
-one of these.
+To make **Answer the agent that needs you**, **Quick capture to Inbox** or
+**Copy last dictation** a chord of modifier keys, such as left Shift and
+right Shift together:
 
 1. Click the shortcut's field.
 2. Press the keys together.
 3. Let go.
 
-The chord fires when you let go. It fires only if its keys went down within
-100 ms of each other with no other key pressed in between, so holding one
-Shift while typing never fires it.
+The chord fires when you let go, under the dictation chord's 100 ms rule
+above, and only if no other key went down in between. A chord needs
+Accessibility permission. One chord does one job: the dictation key's chord
+can't also be one of these.
 
 ## Choose an output mode
 
@@ -65,10 +64,15 @@ talk.
 
 Your words collect in a floating overlay while you speak. When you stop, the
 text goes through the replacement dictionary and optional LLM polishing,
-then commits into the focused app.
+then commits into the focused app. A long dictation can be polished while
+you speak ([Polishing](coding-agents.md#polishing)).
 
-The overlay shows a **Polished** badge when the LLM changed your text. The
-menu bar popover keeps the raw transcript.
+While you speak, bars at the top left of the overlay move with your voice.
+When you stop with polishing on, a band sweeps the words until the
+polished text arrives. The words the LLM changed then show in teal for about
+a second, while the text is already going into the app. To use your system
+accent color instead, set **Color for polished words** in **Settings →
+Dictation → Overlay Buffer**. The menu bar popover keeps the raw transcript.
 
 To move the overlay, drag it by any part to a spot of your choice. It stays
 there across restarts. To anchor it to the focused window again, double-click
@@ -106,10 +110,6 @@ stop presses Return only when that send-phrase stop would have. Code:
 
 ### Live Auto-Paste
 
-Words land in the focused app while you talk. The app applies dictionary
-replacements before typing, and never backspaces over text an app has
-already drawn. It has no overlay, so Tab does not apply.
-
 Live Auto-Paste is off until you set it up under **Settings → Dictation →
 Advanced**:
 
@@ -117,25 +117,29 @@ Advanced**:
   Auto-Paste**;
 - with keyboard shortcuts, record a **Live Auto-Paste shortcut**.
 
+Words then land in the focused app while you talk. The app applies
+dictionary replacements before typing, and never backspaces over text an app
+has already drawn. It has no overlay, so Tab does not apply.
+
 ### Keeping words on their line
 
-Words reach the overlay a few letters at a time. A word that starts near the
-end of a line can therefore jump to the next one once it no longer fits. By
-default the overlay allows this and fills every line to the edge.
+Set **Keep words from jumping to the next line** (**Settings → Dictation →
+Overlay Buffer**) to 6, 10 or 14 letters.
 
-**Keep words from jumping to the next line** (**Settings → Dictation →
-Overlay Buffer**) prevents it for words up to 6, 10 or 14 letters. A word
-that starts with less room than that goes straight to the next line and
-stays there for the rest of the dictation.
+Words reach the overlay a few letters at a time, so a word that starts near
+the end of a line can jump to the next one once it no longer fits. By
+default the overlay allows this and fills every line to the edge. With the
+setting, a word that starts with less room than that many letters goes
+straight to the next line and stays there for the rest of the dictation.
 
 Lines can then end with empty space up to the width of that many letters.
 The committed text is the same either way.
 
 ## Where the words go
 
-While you dictate, the top of the overlay names where the words go, and
-"2 of 5" says how many places they could go. **Tab** moves to the next one
-and **⇧Tab** to the previous, in this order:
+Press **Tab** during a dictation to send the words somewhere else, and
+**⇧Tab** to go back. The top of the overlay names where the words go, and
+"2 of 5" says how many places they could go, in this order:
 
 - **The app you started in**, named after its coding agent session when it
   has one. A dictation goes here unless you press Tab.
@@ -163,9 +167,17 @@ again, it stops. It can be a
 
 ## Voice commands
 
-Some spoken phrases act instead of being typed. "Send it" presses Return.
-"Go to", "send that to" and "call this session" reach your coding agent
-sessions by name, in [Work with several agents](agents.md).
+Some spoken phrases act instead of being typed:
+
+- "send it" presses Return (below);
+- "go to payments" brings a session forward
+  ([Go to a session by voice](agents.md#go-to-a-session-by-voice));
+- "send that to payments" sends the dictation to that session
+  ([Send a dictation to another session](agents.md#send-a-dictation-to-another-session));
+- "call this session payments" names the session
+  ([Name a session](agents.md#name-a-session));
+- "paste clipboard" inserts the clipboard as a code block
+  ([Polishing](coding-agents.md#polishing)).
 
 ### Press Return with "send it"
 
@@ -227,13 +239,12 @@ Listing it there would make localvoxtral treat its prompt box as a terminal.
 
 ## Recover a dictation
 
-localvoxtral lives in the menu bar. Its popover shows the dictation status,
-a **microphone picker** and **Copy last dictation**. After a polished commit
-it also shows **Copy raw transcript**.
+Click **Copy last dictation** in the menu bar popover. It puts the last
+dictation on the clipboard: its polished text, or the transcript when
+polishing failed. After a polished commit the popover also offers **Copy raw
+transcript**, and it holds the **microphone picker**.
 
-**Copy last dictation** puts the last dictation on the clipboard: its
-polished text, or the transcript when polishing failed. Use it to recover a
-dictation that never reached the app because:
+Use it to recover a dictation that never reached the app because:
 
 - the insertion failed;
 - the connection dropped and could not come back (the app keeps the text
@@ -404,6 +415,13 @@ works that out.
 The app fixes the casing of a multi-word or mixed-case term even in Live
 Auto-Paste with no polishing.
 
+Your project names go with every dictation too: each project in
+**Settings → Projects** and its repository's name, whichever session the
+dictation joins. So do the names of your coding agents' skills and commands,
+on this Mac and on your ssh hosts; a host sends them when a session starts
+there. Neither belongs in Global terms. When a Global term only repeats one,
+**About you** offers to remove it, and suggestions never propose one.
+
 ### Get term suggestions
 
 **Suggest terms** sends your recent dictations to the polishing model you
@@ -504,8 +522,9 @@ opencode". They are suggestions:
 
 What a run costs and sends depends on the agent:
 
-- **Claude Code** runs non-interactively with Sonnet and read-only tools (Read,
-  Glob, Grep), with hooks and MCP servers off. It stops at 12 turns and
+- **Claude Code** runs non-interactively with Sonnet
+  ([why Sonnet](under-the-hood.md#terms-from-your-coding-agent)) and
+  read-only tools (Read, Glob, Grep), with hooks and MCP servers off. It stops at 12 turns and
   $0.50. Measured runs cost $0.03 to 0.12 and took 5 to 15 s. On a Claude.ai plan
   it spends quota instead.
 - **Mistral Vibe** runs non-interactively on Vibe's unified harness with
@@ -533,13 +552,9 @@ What a run costs and sends depends on the agent:
 Either way, the agent sends the files it reads to its provider, as it does
 in your own sessions.
 
-**On an enrolled ssh host.** A session there is asked too, once its host
-runs the remote plugin 1.15.0 or the Vibe hooks 1.2.0 (**Update Host…**).
-The run happens on that host, in the session's repository, with the same
-limits, and bills the host's own Claude Code login or Mistral key. The Mac
-only asks, on the session's next hook, and files the answer under the
-session's project. A session already running keeps the old hooks until you
-run `/reload-plugins` in it, or restart it if it is a Vibe session. Details:
+**On an enrolled ssh host.** A session there is asked too. The run happens
+on that host, with the same limits, and bills the host's own Claude Code
+login or Mistral key. Details are in
 [Terms from the coding agent on a host](remote-claude-context.md#terms-from-the-coding-agent-on-a-host).
 
 ### One project per repository
@@ -594,8 +609,18 @@ holds the replacement dictionary for both output modes, and the standard
 and agent system and user prompts for LLM polishing. The app's defaults are
 in [the bundled config folder](../Sources/localvoxtral/Resources/Config).
 
-To stop sending the dictionary to the LLM, remove
-`{{replacement_dictionary}}` from a user prompt template.
+The `{{replacement_dictionary}}` placeholder in a user prompt template
+carries the vocabulary sections, repo vocabulary among them. Remove it to
+stop sending them.
+
+When an update ships better defaults, the app refreshes the files you
+haven't edited. It never changes a file you edited without asking. It offers
+to update the file and keeps your version alongside as a backup file.
+
+**The replacement dictionary is legacy.** It applies fixed rewrites, which
+helps in Live Auto-Paste without polishing. The polisher no longer sees it,
+and the app imported its spellings into your
+[Global terms](#add-your-global-terms) once.
 
 ### What the prompt costs
 
@@ -605,8 +630,8 @@ tokens:
 - **Text Processing → Advanced → Polishing instructions**: the prompt files
   and the reference guide, sent with every polish. With the agent prompt
   profile on, both profiles are shown.
-- **Text Processing → About you → Global terms**: what your terms add to
-  every polish.
+- **Text Processing → About you → Global terms**: what your terms, your
+  project names and your agents' skill names add to every polish.
 - **Projects**, in a project's Terms: the most that project's terms add. A
   learned term is sent only when you say something that sounds like it, so
   most dictations carry a few of them or none.
@@ -624,20 +649,6 @@ counts 1.6 times as many tokens per character as prose, because names and
 identifiers split into short pieces. The exact count of each dictation's
 request is in [History](#history).
 
-When an update ships better defaults, the app refreshes the files you
-haven't edited. It never changes a file you edited without asking. It offers
-to update the file and keeps your version alongside as a backup file.
-
-**The replacement dictionary is legacy.** It applies fixed rewrites, which
-helps in Live Auto-Paste without polishing. The polisher no longer sees it,
-and the app imported its spellings into your
-[Global terms](#add-your-global-terms) once.
-
-**Extra terminal apps** live in **Settings → Terminals**, not in a config
-file. If you had a legacy terminal apps file, the app reads it once at
-launch and moves its entries into the Settings list, leaving the file
-untouched.
-
 ## Settings
 
 Open **Settings…** from the menu bar popover. Settings shares a window with
@@ -649,14 +660,10 @@ History; the panes sit under the sidebar's Settings header.
   at launch** opens the window on History every time the app starts. Both
   are off, and a first launch shows the setup wizard instead of the window.
 - **Engines**: Dictation and Polishing each switch on their own between
-  three sources:
-  - **Managed local**: a model picker and a status light for each.
-  - **External URL**: server URL, model name, API key. Dictation accepts an
-    OpenAI Realtime-compatible endpoint. For polishing, enter either a base
-    URL such as `http://127.0.0.1:8080` or the full chat completions URL;
-    the app appends `/v1/chat/completions` to a base URL.
-  - **Mistral API**: Mistral's hosted models on one API key, entered in the
-    pane's Mistral API group.
+  [Managed local](under-the-hood.md#the-managed-local-engines), with a model
+  picker and a status light for each,
+  [External URL](under-the-hood.md#bring-your-own-server) and
+  [Mistral API](under-the-hood.md#mistral-api).
 - **Dictation**: the [trigger](#shortcuts), **Copy on stop**, the
   [send phrases](#press-return-with-send-it), the wait before pressing
   Return and the Overlay Buffer send phrase switch, the
@@ -689,16 +696,11 @@ History; the panes sit under the sidebar's Settings header.
   - **herdr** shows detection and herdr's saved machines
     ([herdr](../integrations/herdr/README.md)).
   - **Remote hosts** enrolls SSH hosts for remote sessions.
-- **Terminals**: one pane per terminal app, plus any you add, showing
-  whether it is installed and what it supports.
-  - Dictation works in all of them.
-  - Session join and screen context work only on Ghostty (1.4+ or a tip
-    build), iTerm2, Terminal.app, and cmux.
-  - iTerm2 and Terminal.app ask for the Automation (AppleScript) permission
-    on the first session join.
-  - **Add app…** picks any application to treat as a terminal for
-    dictation. Added apps are removed from their own pane.
-  - cmux's pane also holds its session join and socket password.
+- **Terminals**: one pane per terminal app, plus any you
+  [add](coding-agents.md#dictate-into-a-terminal), showing whether it is
+  installed and what it supports
+  ([See whether a dictation joined](integration-matrix.md#see-whether-a-dictation-joined)).
+  cmux's pane also holds its [session join](coding-agents.md#join-sessions-in-cmux).
 - **About**: version, link to the repository, and **Export Diagnostics**,
   which writes a redacted local report to the Desktop.
 

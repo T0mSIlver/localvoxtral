@@ -43,16 +43,17 @@ enum DictationHistoryStoreFile {
     /// The one entity table this build's model has.
     static let entityTable = "ZDICTATIONSESSIONRECORD"
 
-    /// `~/Library/Application Support/localvoxtral`, through Foundation, so a
-    /// launch with `CFFIXED_USER_HOME` set (CI's launch smoke) resolves it
-    /// under that home instead.
+    /// The app's data folder (`LocalvoxtralDataDirectory`).
     static func defaultDirectoryURL() -> URL {
-        applicationSupportURL().appendingPathComponent("localvoxtral", isDirectory: true)
+        LocalvoxtralDataDirectory.url()
     }
 
     /// SwiftData's default store, where builds before #985 kept the history.
-    static func legacyStoreURL() -> URL {
-        applicationSupportURL().appendingPathComponent("default.store")
+    /// Nil under `LOCALVOXTRAL_DATA_HOME`: a lane with a data folder of its
+    /// own must not copy the owner's history into it.
+    static func legacyStoreURL() -> URL? {
+        guard !LocalvoxtralDataDirectory.isOverridden() else { return nil }
+        return applicationSupportURL().appendingPathComponent("default.store")
     }
 
     private static func applicationSupportURL() -> URL {

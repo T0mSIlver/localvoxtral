@@ -16,12 +16,7 @@ final class DictationAudioStore: Sendable {
     }
 
     static func defaultDirectoryURL() -> URL {
-        let applicationSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        return applicationSupport
-            .appendingPathComponent("localvoxtral", isDirectory: true)
+        return LocalvoxtralDataDirectory.url()
             .appendingPathComponent("dictation-audio", isDirectory: true)
     }
 
