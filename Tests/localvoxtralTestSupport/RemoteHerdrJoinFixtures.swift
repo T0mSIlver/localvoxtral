@@ -41,6 +41,9 @@ package final class RemoteJoinHerdrPanes:
     private let visibleTexts = Mutex<[String?]>([])
     package let panelReports = Mutex<[(socketPath: String, paneID: String, value: String?, ttl: Int?)]>([])
     private let panelReportSucceeds: Bool
+    /// Awaited inside every `pane.read` after it is recorded, so a test can
+    /// hold a stop-side read in flight while it changes the world around it.
+    private let paneReadGate: (@Sendable () async -> Void)?
 
     package init(
         focused: HerdrFocusedPane?,
@@ -48,11 +51,13 @@ package final class RemoteJoinHerdrPanes:
             shellPID: 8000, foregroundProcesses: [HerdrForegroundProcess(pid: 9001, name: "claude")]
         ),
         texts: [String?] = [],
-        panelReportSucceeds: Bool = true
+        panelReportSucceeds: Bool = true,
+        paneReadGate: (@Sendable () async -> Void)? = nil
     ) {
         self.focused = focused
         self.foreground = foreground
         self.panelReportSucceeds = panelReportSucceeds
+        self.paneReadGate = paneReadGate
         visibleTexts.withLock { $0 = texts }
     }
 
@@ -76,6 +81,7 @@ package final class RemoteJoinHerdrPanes:
         requests.withLock {
             $0.append(Request(method: "pane.read", socketPath: socketPath, paneID: paneID))
         }
+        await paneReadGate?()
         return visibleTexts.withLock { $0.isEmpty ? nil : $0.removeFirst() }
     }
 
