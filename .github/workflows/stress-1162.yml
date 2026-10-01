@@ -1,0 +1,118 @@
+name: Stress 1162
+
+# TEMPORARY (#1162): runs OverlayDestinationClickTests over and over on hosted
+# macOS and prints any xctest crash report into the log. Deleted before the
+# PR that adds it is marked ready.
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/stress-1162.yml
+      - Tests/localvoxtralTests/OverlayDestinationClickTests.swift
+      - Sources/localvoxtral/DictationOverlayController.swift
+      - Sources/localvoxtral/DictationOverlayView.swift
+
+concurrency:
+  group: stress-1162-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Record hosted toolchain
+        id: hosted_toolchain
+        run: |
+          SLUG="$(swift --version | head -1 | tr -cs 'a-zA-Z0-9.' '-' | cut -c1-48)"
+          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+
+      - name: Restore SwiftPM build cache
+        id: build_cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build
+          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.hosted_toolchain.outputs.slug }}-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+          restore-keys: |
+            swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.hosted_toolchain.outputs.slug }}-${{ hashFiles('Package.resolved') }}-
+            swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.hosted_toolchain.outputs.slug }}-
+
+      - name: Restore tracked-file mtimes from git
+        env:
+          MATCHED_KEY: ${{ steps.build_cache.outputs.cache-matched-key }}
+        run: |
+          CACHE_BASE=""
+          if [[ "$MATCHED_KEY" =~ -([0-9a-f]{40})$ ]]; then
+            CACHE_BASE="${BASH_REMATCH[1]}"
+          fi
+          ./scripts/ci/restore-mtimes.sh . "$CACHE_BASE"
+
+      - name: Build tests
+        run: swift build --build-system native --build-tests --enable-code-coverage 2>&1 | tail -n 5
+
+      - name: Screen and mouse
+        run: |
+          osascript -l JavaScript -e 'ObjC.import("AppKit"); var m = $.NSEvent.mouseLocation; var s = $.NSScreen.mainScreen.frame; "mouse=" + m.x + "," + m.y + " screen=" + s.size.width + "x" + s.size.height' || true
+
+      - name: Run the class repeatedly
+        env:
+          ITERATIONS: "120"
+        run: |
+          set -uo pipefail
+          BUNDLE="$(find .build -maxdepth 3 -type d -name localvoxtralPackageTests.xctest | head -n 1)"
+          echo "bundle: $BUNDLE"
+          rm -f ~/Library/Logs/DiagnosticReports/xctest*.ips
+          pass=0; fail=0
+          for i in $(seq 1 "$ITERATIONS"); do
+            NSUnbufferedIO=YES xcrun xctest -XCTest localvoxtralTests.OverlayDestinationClickTests "$BUNDLE" > "$RUNNER_TEMP/iter.log" 2>&1
+            status=$?
+            if [[ $status -eq 0 ]]; then
+              pass=$((pass + 1))
+            else
+              fail=$((fail + 1))
+              echo "::warning::iteration $i exited $status"
+              grep -E "Test Case|error|signal" "$RUNNER_TEMP/iter.log" | tail -n 12
+            fi
+          done
+          echo "RESULT: $pass passed, $fail failed of $ITERATIONS"
+          echo "$fail" > "$RUNNER_TEMP/fails"
+
+      - name: Crash reports
+        if: always()
+        run: |
+          sleep 5
+          python3 - <<'EOF'
+          import glob, json, os
+          paths = sorted(glob.glob(os.path.expanduser("~/Library/Logs/DiagnosticReports/xctest*.ips")))
+          print(f"{len(paths)} xctest crash report(s)")
+          for path in paths[:3]:
+              print("=" * 30, os.path.basename(path))
+              raw = open(path).read()
+              body = json.loads(raw.split("\n", 1)[1])
+              print("exception:", json.dumps(body.get("exception")), "termination:", json.dumps(body.get("termination", {}).get("indicator")))
+              images = body.get("usedImages", [])
+              def frames(thread):
+                  for f in thread.get("frames", [])[:40]:
+                      img = images[f["imageIndex"]].get("name", "?") if f.get("imageIndex") is not None and f["imageIndex"] < len(images) else "?"
+                      print(f"  {img:32} {f.get('symbol', '?')} +{f.get('symbolLocation', 0)}")
+              threads = body.get("threads", [])
+              faulting = body.get("faultingThread", 0)
+              print(f"-- faulting thread {faulting} --")
+              frames(threads[faulting])
+              if faulting != 0:
+                  print("-- main thread --")
+                  frames(threads[0])
+          EOF
+          test "$(cat "$RUNNER_TEMP/fails" 2>/dev/null || echo 1)" = 0
