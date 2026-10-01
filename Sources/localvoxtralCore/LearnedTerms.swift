@@ -190,6 +190,10 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
     /// on the repository's record (`repo:<remote>`), which every checkout
     /// of it shares. The repository's record carries it too.
     package var remote: String? = nil
+    /// The user added this GitHub repository from the Inbox's suggestion
+    /// (#930). Set only on a repository's record, which is then listed
+    /// although no checkout of it is.
+    package var addedFromInbox: Bool? = nil
 
     package init(
         key: String,
@@ -228,12 +232,15 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
 
     /// Kept with no terms: a proposal stamp, or a hook that named it. A
     /// project holding neither is dropped once its last term goes.
-    var isKeptWithoutTerms: Bool { hasProposalStamp || reportedAt != nil || isLinkedCheckout }
+    var isKeptWithoutTerms: Bool {
+        hasProposalStamp || reportedAt != nil || isLinkedCheckout || addedFromInbox == true
+    }
 
     /// The user made a choice here: a pinned term, a typed repository, the
     /// fork's filing choice. The caps never evict it (#989).
     package var isExplicit: Bool {
         terms.contains(where: \.isPinned) || repositoryTyped == true || filesUpstream != nil
+            || addedFromInbox == true
     }
 
     /// A checkout whose terms live on its repository's record.
@@ -470,6 +477,25 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         return true
     }
 
+    /// The user accepted the Inbox's suggestion of a GitHub repository no
+    /// project names (#930): its record becomes a listed project. Returns
+    /// the record's key; nil when `repository` is no `owner/name`, or the
+    /// caps hold only explicit projects already.
+    @discardableResult
+    package mutating func addRepositoryProject(_ repository: String, now: Date) -> String? {
+        guard let remote = ProjectRemote(githubRepository: repository) else { return nil }
+        let existing = projects.firstIndex { $0.key == remote.key }
+        // Like a typed repository, an added one stays past the cap.
+        guard existing.map({ projects[$0].isExplicit }) == true
+            || projects.filter(\.isExplicit).count < LearnedTerms.maxProjects
+        else { return nil }
+        let index = repositoryRecordIndex(for: remote, lastSeen: now)
+        projects[index].addedFromInbox = true
+        projects[index].lastSeen = max(projects[index].lastSeen, now)
+        prune(now: now)
+        return remote.key
+    }
+
     /// GitHub answered for `repository`. Kept on every project that still
     /// names it: a checkout on the Mac and one on a host share one answer.
     package mutating func recordGitHub(_ facts: GitHubRepositoryFacts, repository: String, now: Date) {
@@ -529,7 +555,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     }
 
     private static func isListed(_ project: LearnedTermProject, now: Date) -> Bool {
-        if project.key.hasPrefix("/") { return true }
+        if project.key.hasPrefix("/") || project.addedFromInbox == true { return true }
         guard project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix) else { return false }
         if project.reportedAsRepository == true { return true }
         if let summaryAt = project.summaryAt,

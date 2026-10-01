@@ -272,6 +272,15 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         }
     }
 
+    /// A GitHub repository the user added from the Inbox (#930).
+    package func addRepositoryProject(_ repository: String) {
+        let moment = now()
+        mutate { memory in
+            let key = memory.addRepositoryProject(repository, now: moment)
+            Log.polishing.info("Learned terms: an Inbox repository \(key == nil ? "dropped" : "added", privacy: .public)")
+        }
+    }
+
     /// GitHub's description of a repository (#926).
     package func recordGitHub(_ facts: GitHubRepositoryFacts, repository: String) {
         let moment = now()

@@ -446,7 +446,13 @@ A capture then goes through five steps.
    [Which projects a capture can go to](#which-projects-a-capture-can-go-to)).
    When it is unsure, or two projects tie, the capture stays unplaced with
    a **Move to** button for its best guess; nothing is drafted until you
-   click it or move the capture yourself.
+   click it or move the capture yourself. When it has no guess but your
+   words name one of your GitHub repositories that you pushed to in the
+   last 30 days and that no project names, the row offers **Add <name>?**:
+   it adds the repository as a project and moves the capture there. The
+   list comes from `gh repo list`, read at most once a day, and the
+   classifier sees a repository only once you add it. A project added this
+   way has no checkout to draft in until you dictate in one.
 3. **First draft.** Your polishing model sorts the capture as an **Issue**, a
    **Question**, a **Task** or a **Note** and writes a draft within
    seconds (see [How the draft is written](#how-the-draft-is-written)). A
@@ -516,7 +522,8 @@ The classifier picks from the projects **Settings → Projects** lists:
   is dropped;
 - with an older plugin, the folder a session ran in, which is a worktree's
   name when the session ran in one. It stays on the list for 7 days after
-  that session's last hook.
+  that session's last hook;
+- a GitHub repository you added from an Inbox row's **Add <name>?**.
 
 A repository checked out both on this Mac and on a host is one project,
 drafted on this Mac. How checkouts and worktrees make one project is in

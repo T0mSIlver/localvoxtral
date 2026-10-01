@@ -36,6 +36,9 @@ package final class QuickCaptureInboxModel {
     /// Nil when polishing is off: the capture routes its raw words at once.
     private let polisher: @MainActor () -> (any QuickCapturePolishing)?
     private let polishVocabulary: @MainActor ([QuickCaptureProject]) -> [String]
+    /// The user's recent GitHub repositories (#930), for a capture left
+    /// unplaced; never the router's options.
+    private let recentRepositories: @MainActor () async -> [GitHubListedRepository]
     private let now: @MainActor () -> Date
     /// The latest draft run per capture: an older run's answer is dropped.
     private var draftRuns: [UUID: Int] = [:]
@@ -56,6 +59,9 @@ package final class QuickCaptureInboxModel {
     /// The user typed `owner/name` for a project that has no repository
     /// (#926): kept on the project, so the Inbox asks once.
     package var onRepositoryAnswered: (@MainActor (_ projectKey: String, _ repository: String) -> Void)?
+    /// The user accepted "Add <name>?" (#930): the repository becomes a
+    /// project, listed once this returns.
+    package var onRepositoryAdded: (@MainActor (_ repository: String) async -> Void)?
 
     package init(
         fileURL: URL?,
@@ -66,6 +72,7 @@ package final class QuickCaptureInboxModel {
         github: any QuickCaptureGitHub,
         polisher: @escaping @MainActor () -> (any QuickCapturePolishing)? = { nil },
         polishVocabulary: @escaping @MainActor ([QuickCaptureProject]) -> [String] = { _ in [] },
+        recentRepositories: @escaping @MainActor () async -> [GitHubListedRepository] = { [] },
         now: @escaping @MainActor () -> Date = { Date() }
     ) {
         self.fileURL = fileURL
@@ -76,6 +83,7 @@ package final class QuickCaptureInboxModel {
         self.github = github
         self.polisher = polisher
         self.polishVocabulary = polishVocabulary
+        self.recentRepositories = recentRepositories
         self.now = now
         var load = StoredFileLoad<QuickCaptureInbox>.absent
         if let fileURL {
@@ -282,6 +290,9 @@ package final class QuickCaptureInboxModel {
             }
             return Task { @MainActor [weak self] in
                 await self?.draft(item.id, text: text, destination: route.destination, projects: projects)
+                if route.destination == .catchAll, route.suggestion == nil {
+                    await self?.suggestRepository(for: item.id, text: text)
+                }
             }
         }
         return Placement(
@@ -367,7 +378,9 @@ package final class QuickCaptureInboxModel {
                 $0.note = nil
                 $0.codeCheck = nil
                 // A remote project's host drafts on its next session hook.
-                if !key.hasPrefix("/") { $0.note = QuickCaptureInbox.waitingForHostNote }
+                if key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix) {
+                    $0.note = QuickCaptureInbox.waitingForHostNote
+                }
             }
         }
         let repository = await repository(of: projects.first { $0.key == key })
@@ -497,6 +510,53 @@ package final class QuickCaptureInboxModel {
             return nil
         }
         return move(id, toProjectKey: suggestion.projectKey)
+    }
+
+    // MARK: Repository suggestions (#930)
+
+    /// Offers one of the user's recent GitHub repositories that no project
+    /// names, when the capture's words name it; nothing when gh failed.
+    private func suggestRepository(for id: UUID, text: String) async {
+        let repositories = await recentRepositories()
+        guard let item = inbox.items.first(where: { $0.id == id }), item.state == .ready,
+              item.projectKey == nil, item.suggestion == nil,
+              let repository = GitHubRepositorySuggestions.suggestion(
+                  for: text, repositories: repositories, projects: projects(), now: now())
+        else { return }
+        Log.backends.notice("Quick capture: suggesting a recent GitHub repository no project names")
+        mutate { inbox in
+            inbox.update(id) {
+                $0.repositorySuggestion = QuickCaptureItem.RepositorySuggestion(
+                    repository: repository.nameWithOwner, name: repository.name)
+            }
+        }
+    }
+
+    /// "Add <name>?" (#930): the repository becomes a project, and the
+    /// capture moves there as after a move. When it could not be added the
+    /// capture stays, and says so.
+    @discardableResult
+    package func acceptRepositorySuggestion(_ id: UUID) -> Task<Void, Never>? {
+        guard let item = inbox.items.first(where: { $0.id == id }), item.state == .ready, item.projectKey == nil,
+              let suggestion = item.repositorySuggestion,
+              let key = ProjectRemote(githubRepository: suggestion.repository)?.key
+        else { return nil }
+        return Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.onRepositoryAdded?(suggestion.repository)
+            Log.backends.notice("Quick capture: the user added a suggested GitHub repository")
+            guard self.projects().contains(where: { $0.keys.contains(key) }) else {
+                Log.backends.error("Quick capture: the added repository is not listed")
+                self.mutate { inbox in
+                    inbox.update(id) {
+                        $0.repositorySuggestion = nil
+                        $0.note = "\(suggestion.name) could not be added. Move it to a project."
+                    }
+                }
+                return
+            }
+            await self.move(id, toProjectKey: key)?.value
+        }
     }
 
     package func discard(_ id: UUID) {

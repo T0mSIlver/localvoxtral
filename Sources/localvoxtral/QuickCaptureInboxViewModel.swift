@@ -59,6 +59,10 @@ final class QuickCaptureInboxViewModel {
             usageRecorder: usageRecorder
         )
         remoteSlot = remote
+        let repositoryList = GitHubRepositoryListCache(
+            fileURL: fileURL?.deletingLastPathComponent().appendingPathComponent("github-repositories.json"),
+            fetch: { await github.listRepositories() }
+        )
         model = QuickCaptureInboxModel(
             fileURL: fileURL,
             makeRouter: { QuickCaptureRouter(classifiers: Self.classifiers(settings: settings, usageRecorder: usageRecorder)) },
@@ -74,7 +78,8 @@ final class QuickCaptureInboxViewModel {
             drafter: { drafter.withFirstDrafter(Self.firstDrafter(settings: settings, usageRecorder: usageRecorder)) },
             github: github,
             polisher: { polisher?.isConfigured == true ? polisher : nil },
-            polishVocabulary: { QuickCapturePolishVocabulary.terms(projects: $0, learned: learnedTerms()) }
+            polishVocabulary: { QuickCapturePolishVocabulary.terms(projects: $0, learned: learnedTerms()) },
+            recentRepositories: { await repositoryList.repositories() }
         )
         store = learnedTermStore
         self.learnedTerms = learnedTerms
@@ -88,6 +93,13 @@ final class QuickCaptureInboxViewModel {
         }
         model.onRepositoryAnswered = { [weak learnedTermStore] key, repository in
             learnedTermStore?.recordTypedRepository(repository, projectKey: key)
+        }
+        model.onRepositoryAdded = { [weak self, weak learnedTermStore] repository in
+            guard let learnedTermStore else { return }
+            learnedTermStore.addRepositoryProject(repository)
+            _ = await learnedTermStore.loadedSnapshot()
+            // GitHub's description of it, for the router's next capture.
+            Task { [weak self] in await self?.refreshProjects() }
         }
         Task { [weak self] in await self?.refreshProjects() }
     }

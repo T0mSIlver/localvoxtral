@@ -155,6 +155,7 @@ package struct QuickCaptureDrafter: Sendable {
             return .notRun(.catchAll)
         }
         let key = project.key
+        if key.hasPrefix(ProjectRemote.keyPrefix) { return .notRun(.noCheckout) }
         guard key.hasPrefix("/") else {
             // A remote label never becomes a working directory here: the
             // host runs the agent in its own checkout.
