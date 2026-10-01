@@ -518,7 +518,7 @@ The classifier picks from the projects **Settings → Projects** lists:
   name when the session ran in one. It stays on the list for 7 days after
   that session's last hook;
 - a repository with an `origin` that Claude Code worked in during the last
-  30 days, on this Mac or on an ssh host with remote plugin 1.30.0 or
+  30 days, on this Mac or on an ssh host with remote plugin 1.32.0 or
   later, read from Claude Code's session history. It leaves the list 30
   days after that work unless a dictation used it since.
 

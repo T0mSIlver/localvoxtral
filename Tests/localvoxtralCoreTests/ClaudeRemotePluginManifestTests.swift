@@ -373,13 +373,14 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
 
     // MARK: Plugin version advertisement
     //
-    // One version stated three ways — the manifest Claude Code installs and
-    // updates against, the header constant the shim sends on every post, and
-    // the Swift constant the app compares reports to. Field finding
-    // 2026-09-17: a host ran 1.8.0 for weeks while the app expected 1.9.0 and
-    // nothing anywhere said so. Any two of the three drifting apart is either
-    // a user told to update an already-current plugin or — the failure that
-    // actually happened — an outdated host read as current.
+    // One version stated four ways — the manifest Claude Code installs and
+    // updates against, the header constant the shim sends on every post, the
+    // version the shim records for the host's doctor, and the Swift constant
+    // the app compares reports to. Field finding 2026-09-17: a host ran 1.8.0
+    // for weeks while the app expected 1.9.0 and nothing anywhere said so.
+    // Any two of them drifting apart is either a user told to update an
+    // already-current plugin or — the failure that actually happened — an
+    // outdated host read as current.
 
     func testTheManifestTheShimAndTheAppAgreeOnOnePluginVersion() throws {
         let expected = ClaudeRemoteEnrollmentService.remotePluginVersion
@@ -390,6 +391,10 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         XCTAssertTrue(
             try shimSource().contains("X-Lvx-Plugin-Version: \(expected)\n"),
             "the shim must advertise that same version as a header CONSTANT"
+        )
+        XCTAssertTrue(
+            try shimSource().contains("\nPLUGIN_VERSION=\(expected)\n"),
+            "the shim must record that same version for the host's doctor (#1159)"
         )
     }
 

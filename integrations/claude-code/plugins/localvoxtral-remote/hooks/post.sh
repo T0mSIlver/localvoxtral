@@ -109,6 +109,37 @@ case "$SESSION_ID" in
 *) [ "${#SESSION_ID}" -le 64 ] || SESSION_ID="" ;;
 esac
 
+# --- The plugin version this session runs (#1159) -----------------------------
+# `localvoxtral doctor` on this host names the sessions still running an older
+# plugin. Claude Code stopped writing the `.in_use/<pid>` markers it read
+# (none on 2.1.280 to 2.1.286), so every hook records its own version under the
+# session's id, and the doctor joins that to Claude Code's live sessions in
+# ~/.claude/sessions/<pid>.json. A reloaded session records its new version at
+# its next hook. Written when the recorded version differs, and refreshed on
+# SessionStart and UserPromptSubmit so that a live session's record outlasts
+# the age-out below.
+PLUGIN_VERSION=1.32.0
+VERSION_DIR="$STAMP_DIR/plugin-version"
+if [ -n "$STAMP_DIR" ] && [ -n "$SESSION_ID" ]; then
+  if [ "$EVENT" = "SessionEnd" ]; then
+    rm -f "$VERSION_DIR/$SESSION_ID" 2>/dev/null || :
+  else
+    RECORDED=""
+    { IFS= read -r RECORDED <"$VERSION_DIR/$SESSION_ID"; } 2>/dev/null || :
+    if [ "$RECORDED" != "$PLUGIN_VERSION" ] || [ "$EVENT" = "SessionStart" ] \
+      || [ "$EVENT" = "UserPromptSubmit" ]; then
+      {
+        mkdir -p "$VERSION_DIR" && chmod 700 "$STAMP_DIR" "$VERSION_DIR" \
+          && echo "$PLUGIN_VERSION" >"$VERSION_DIR/$SESSION_ID.$$" \
+          && mv -f "$VERSION_DIR/$SESSION_ID.$$" "$VERSION_DIR/$SESSION_ID"
+      } 2>/dev/null || { rm -f "$VERSION_DIR/$SESSION_ID.$$"; } 2>/dev/null || :
+    fi
+  fi
+  if [ "$EVENT" = "SessionStart" ] && [ -d "$VERSION_DIR" ]; then
+    find "$VERSION_DIR" -type f -mtime +6 -exec rm -f {} \; 2>/dev/null || :
+  fi
+fi
+
 # --- Notification: the type and nothing else (#717) ---------------------------
 # A Notification's `message` and `title` quote tool names and command text, so
 # its body is REBUILT here instead of posted as-is: the session id checked
@@ -271,7 +302,7 @@ fi
 # the app validates the shape and trusts nothing else about it.
 cat 2>/dev/null >"$WORK/header" <<EOF || fail_open
 Authorization: Bearer $TOKEN
-X-Lvx-Plugin-Version: 1.30.0
+X-Lvx-Plugin-Version: 1.32.0
 EOF
 
 # --- Allowlisted environment enrichment --------------------------------------

@@ -749,7 +749,10 @@ there is not.
     (`ClaudeSessionJoinResolver.herdrPromptRoute(for:)`), so it writes to
     that pane id over the socket or `ssh -L` forward the join already
     trusted, and only while that dictation runs. It never asks herdr which
-    pane to write to.
+    pane to write to. A remote or federated pane is written only while the
+    host its session's transport origin names is enrolled and not revoked,
+    asked before every call (#1117): a revoked host's pane gets neither a
+    write nor typed keys, and the text stays in History.
     *No control characters:* herdr writes `send_text` to the pane's input
     byte for byte, with no bracketed paste, so a newline would press Enter
     and an escape would start a key sequence. Text holding any Unicode
@@ -1462,6 +1465,11 @@ there is not.
     background queue): every caller is a user-visible path — idle, health
     replacement, revoke, app quit, all on the main actor — and a child wedged in an
     uninterruptible wait must cost a background thread, never the UI.
+    The arms read their host and session before the forward opens and
+    build the join after it and the pane reads answer, so each re-asks, after
+    its last await, that the host is still enrolled and not revoked and the
+    session still live in the same pane (`remoteHerdrJoinLapse`, #1117). A
+    revoke or a session end in between leaves no join.
     A remote herdr join authorizes no more than a local one: never the raw AX
     capture (that grid is the composite herdr TUI, on someone else's machine),
     and never local repo collection — the origin is remote, so

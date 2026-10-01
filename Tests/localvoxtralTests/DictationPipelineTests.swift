@@ -193,6 +193,47 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertFalse(pipeline.viewModel.isFinalizingStop)
     }
 
+    /// A 200 reply with no usable text, through the real client: the raw
+    /// transcript is committed once and the failure is shown (#1111).
+    func testAMalformedPolishReplyCommitsTheTranscriptOnceAndSaysSo() async throws {
+        try await assertUnusablePolishReply(#"{"choices":[{"message":"#)
+    }
+
+    func testAPolishReplyWithoutContentCommitsTheTranscriptOnceAndSaysSo() async throws {
+        try await assertUnusablePolishReply(#"{"choices":[{"message":{"role":"assistant"}}]}"#)
+    }
+
+    func testAWhitespacePolishReplyCommitsTheTranscriptOnceAndSaysSo() async throws {
+        try await assertUnusablePolishReply(#"{"choices":[{"message":{"role":"assistant","content":" \n\t "}}]}"#)
+    }
+
+    private func assertUnusablePolishReply(
+        _ body: String, file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        StubHTTPProtocol.reply.withLock { $0 = .http(200, body) }
+        URLProtocol.registerClass(StubHTTPProtocol.self)
+        defer { URLProtocol.unregisterClass(StubHTTPProtocol.self) }
+        let pipeline = try await makePipeline(
+            outputMode: .overlayBuffer,
+            polish: LLMPolishingService(),
+            polishEndpoint: "http://\(StubHTTPProtocol.host)/v1/chat/completions",
+            earlyPolish: false
+        )
+
+        await startAndSpeak(pipeline, file: file, line: line)
+        await stopAndFinalize(
+            pipeline,
+            expectedError: "The LLM polishing endpoint answered with no usable text, so the transcript was not polished."
+                + " [endpoint: http://\(StubHTTPProtocol.host)/v1/chat/completions]",
+            finalStatus: "LLM polishing failed.",
+            alerts: ["LLM Polishing Returned No Text"],
+            file: file, line: line
+        )
+
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase], file: file, line: line)
+        XCTAssertEqual(pipeline.records.all.map(\.status), [DictationSessionStatus.llmFailed.rawValue], file: file, line: line)
+    }
+
     /// A polish cut off at the backend's output limit (#1109): the real
     /// client refuses the prefix, and the stop commits the whole transcript
     /// once and says why.

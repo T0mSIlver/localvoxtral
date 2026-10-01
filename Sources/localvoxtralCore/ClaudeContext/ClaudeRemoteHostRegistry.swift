@@ -218,7 +218,7 @@ public protocol ClaudeRemoteHostStoreIO: Sendable {
     /// What `url` is now, from one `lstat`: equal stamps mean the bytes have
     /// not been replaced since. Nil means it cannot tell, and the caller
     /// reads the file instead (#1046).
-    func stamp(of url: URL) -> ClaudeRemoteHostStoreStamp?
+    func stamp(of url: URL) -> StoredFileStamp?
     /// Renames a file this build refused to `<name>.incompatible-<time>`,
     /// for diagnosis, so a fresh one can be written without losing it (#1041).
     func moveAside(_ url: URL) throws -> URL
@@ -234,27 +234,7 @@ extension ClaudeRemoteHostStoreIO {
         try StoredFile.moveAside(url, label: "incompatible", id: String(Int(Date().timeIntervalSince1970)))
     }
 
-    public func stamp(of url: URL) -> ClaudeRemoteHostStoreStamp? { nil }
-}
-
-/// The identity of the file at a path: which inode, how big, when its data
-/// and its metadata last changed. Every write renames a fresh file over the
-/// store, so a write by another copy changes the inode even when size and
-/// times collide.
-public struct ClaudeRemoteHostStoreStamp: Sendable, Equatable {
-    package let device: UInt64
-    package let inode: UInt64
-    package let size: Int64
-    package let modified: [Int64]
-    package let changed: [Int64]
-
-    package init(device: UInt64, inode: UInt64, size: Int64, modified: [Int64], changed: [Int64]) {
-        self.device = device
-        self.inode = inode
-        self.size = size
-        self.modified = modified
-        self.changed = changed
-    }
+    public func stamp(of url: URL) -> StoredFileStamp? { nil }
 }
 
 /// The on-disk implementation.
@@ -337,27 +317,8 @@ public struct ClaudeRemoteHostFileStoreIO: ClaudeRemoteHostStoreIO {
         return try StoredFileLock.withLock(beside: url, body)
     }
 
-    public func stamp(of url: URL) -> ClaudeRemoteHostStoreStamp? {
-        #if canImport(Darwin) || canImport(Glibc)
-        var info = stat()
-        guard lstat(url.path, &info) == 0 else { return nil }
-        #if canImport(Darwin)
-        let modified = info.st_mtimespec
-        let changed = info.st_ctimespec
-        #else
-        let modified = info.st_mtim
-        let changed = info.st_ctim
-        #endif
-        return ClaudeRemoteHostStoreStamp(
-            device: UInt64(info.st_dev),
-            inode: UInt64(info.st_ino),
-            size: Int64(info.st_size),
-            modified: [Int64(modified.tv_sec), Int64(modified.tv_nsec)],
-            changed: [Int64(changed.tv_sec), Int64(changed.tv_nsec)]
-        )
-        #else
-        return nil
-        #endif
+    public func stamp(of url: URL) -> StoredFileStamp? {
+        StoredFileStamp.of(url)
     }
 
     public func write(_ data: Data, to url: URL) throws {
@@ -571,7 +532,7 @@ public final class ClaudeRemoteHostRegistry: Sendable {
         var bytes: Data?
         /// Its stamp when those bytes were read; nil after a write, so the
         /// next query reads once to learn it (#1046).
-        var stamp: ClaudeRemoteHostStoreStamp?
+        var stamp: StoredFileStamp?
         /// The last reload failed, so the next failure is not logged again.
         var reloadFailed = false
     }
