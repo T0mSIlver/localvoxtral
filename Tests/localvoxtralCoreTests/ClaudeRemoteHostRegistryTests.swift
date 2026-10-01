@@ -820,6 +820,54 @@ final class ClaudeRemoteHostFileStoreIOTests: XCTestCase {
         XCTAssertEqual(tryBuild.authenticate(token: rotated.token)?.id, enrollment.host.id)
     }
 
+    /// The other copy's revoke, remove or rotate reaches this copy's handler
+    /// on its next read, so the app can take down what it runs for that host
+    /// (#1125). An enrollment there and this copy's own revoke do not.
+    func testAHostTheOtherCopyDropsReachesTheHandler() throws {
+        let drops: [(String, (ClaudeRemoteHostRegistry, String) throws -> Void)] = [
+            ("revoke", { try $0.revoke(hostID: $1) }),
+            ("remove", { try $0.remove(hostID: $1) }),
+            ("rotate", { _ = try $0.rotateToken(hostID: $1) }),
+        ]
+        for (name, drop) in drops {
+            try? FileManager.default.removeItem(at: fileURL)
+            let installed = try ClaudeRemoteHostRegistry(fileURL: fileURL, io: io)
+            let studio = try installed.enroll(label: "studio").host
+            let tryBuild = try ClaudeRemoteHostRegistry(fileURL: fileURL, io: io)
+            let calls = Mutex(0)
+            tryBuild.setHostsDroppedElsewhereHandler { calls.withLock { $0 += 1 } }
+
+            _ = try installed.enroll(label: "laptop")
+            _ = tryBuild.hosts()
+            XCTAssertEqual(calls.withLock { $0 }, 0, "\(name): an enrollment drops nothing")
+
+            try drop(installed, studio.id)
+            _ = tryBuild.hosts()
+            _ = tryBuild.hosts()
+            XCTAssertEqual(calls.withLock { $0 }, 1, "\(name): once, on the read that took it in")
+        }
+    }
+
+    /// A write is the read that takes the other copy's revocation in when it
+    /// comes first, and this copy's own revoke is reconciled by its caller.
+    func testAWriteThatTakesInTheOtherCopysRevokeReachesTheHandler() throws {
+        let installed = try ClaudeRemoteHostRegistry(fileURL: fileURL, io: io)
+        let studio = try installed.enroll(label: "studio").host
+        let laptop = try installed.enroll(label: "laptop").host
+        let tryBuild = try ClaudeRemoteHostRegistry(fileURL: fileURL, io: io)
+        let calls = Mutex(0)
+        tryBuild.setHostsDroppedElsewhereHandler { calls.withLock { $0 += 1 } }
+
+        try tryBuild.revoke(hostID: laptop.id)
+        XCTAssertEqual(calls.withLock { $0 }, 0)
+
+        try installed.revoke(hostID: studio.id)
+        _ = try tryBuild.enroll(label: "desktop")
+        XCTAssertEqual(calls.withLock { $0 }, 1)
+        _ = tryBuild.hosts()
+        XCTAssertEqual(calls.withLock { $0 }, 1)
+    }
+
     /// A file this copy cannot read any more (a newer build's format, a
     /// damaged write) may hold a revocation, so nothing authenticates until
     /// it reads again (#1046).

@@ -586,6 +586,7 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     private let now: @Sendable () -> Date
     private let makeToken: @Sendable () -> String
     private let makeHostID: @Sendable () -> String
+    private let hostsDroppedElsewhereHandler = Mutex<(@Sendable () -> Void)?>(nil)
 
     /// - Parameters:
     ///   - now: injected clock (AGENTS: no wall-clock in tests).
@@ -631,6 +632,29 @@ public final class ClaudeRemoteHostRegistry: Sendable {
             // parent and surprise unrelated app data.
             .appendingPathComponent("claude", isDirectory: true)
             .appendingPathComponent("claude-remote-hosts.json")
+    }
+
+    /// Called when this copy takes in a file where another running copy
+    /// revoked, removed or rotated a host that was active here, so the app
+    /// can run the reconciliation an in-app revoke runs (#1125). Called on
+    /// the thread that read the file, usually a listener thread, after the
+    /// new hosts are installed and outside the registry's locks.
+    public func setHostsDroppedElsewhereHandler(_ handler: (@Sendable () -> Void)?) {
+        hostsDroppedElsewhereHandler.withLock { $0 = handler }
+    }
+
+    private func notifyHostsDroppedElsewhere() {
+        hostsDroppedElsewhereHandler.withLock { $0 }?()
+    }
+
+    /// Whether a host active in `before` is not active with the same token in
+    /// `after`: revoked, removed or rotated.
+    private static func dropsActiveHost(from before: [StoredHost], to after: [StoredHost]) -> Bool {
+        before.contains { old in
+            guard old.revokedAt == nil else { return false }
+            guard let new = after.first(where: { $0.id == old.id }), new.revokedAt == nil else { return true }
+            return new.tokenHash != old.tokenHash || new.tokenSalt != old.tokenSalt
+        }
     }
 
     // MARK: - Queries
@@ -1097,9 +1121,12 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     private func transact<Outcome>(_ body: (inout [StoredHost]) throws -> Outcome) throws -> Outcome {
         // The other copies' lock first, then this process's: nothing that
         // holds `persistLock` ever waits on the file lock.
-        try io.withExclusiveAccess(to: fileURL) {
+        var droppedElsewhere = false
+        defer { if droppedElsewhere { notifyHostsDroppedElsewhere() } }
+        return try io.withExclusiveAccess(to: fileURL) {
             try persistLock.withLock { snapshot -> Outcome in
                 var proposed = state.withLock { $0 }
+                var mergedFromDisk = false
                 if let onDisk = try io.read(from: fileURL), onDisk != snapshot.bytes {
                     guard let file = try? JSONDecoder.claudeRemote.decode(StoredFile.self, from: onDisk) else {
                         throw StoreError.unreadable(path: fileURL.path)
@@ -1108,7 +1135,9 @@ public final class ClaudeRemoteHostRegistry: Sendable {
                         throw StoreError.unsupportedVersion(file.version)
                     }
                     Log.persistence.notice("Remote hosts: another running copy changed the file, applying on top")
+                    let before = proposed
                     proposed = Self.merging(file.hosts, into: proposed)
+                    mergedFromDisk = Self.dropsActiveHost(from: before, to: proposed)
                 }
                 let result = try body(&proposed)
                 let file = StoredFile(version: Self.fileVersion, hosts: proposed)
@@ -1116,6 +1145,7 @@ public final class ClaudeRemoteHostRegistry: Sendable {
                 try io.write(data, to: fileURL)
                 snapshot = FileSnapshot(bytes: data)
                 state.withLock { $0 = proposed }
+                droppedElsewhere = mergedFromDisk
                 return result
             }
         }
@@ -1131,7 +1161,9 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     ///   answering from memory.
     @discardableResult
     private func reloadIfChanged() -> Bool {
-        persistLock.withLock { snapshot in
+        var droppedElsewhere = false
+        defer { if droppedElsewhere { notifyHostsDroppedElsewhere() } }
+        return persistLock.withLock { snapshot in
             let stamp = io.stamp(of: fileURL)
             if let stamp, stamp == snapshot.stamp { return true }
             var hostsOnDisk: [StoredHost] = []
@@ -1157,7 +1189,11 @@ public final class ClaudeRemoteHostRegistry: Sendable {
             if data != snapshot.bytes {
                 // An absent file is what a relaunch would read as no hosts.
                 Log.persistence.notice("Remote hosts: another running copy changed the file, reloading")
-                state.withLock { $0 = Self.merging(hostsOnDisk, into: $0) }
+                state.withLock { hosts in
+                    let merged = Self.merging(hostsOnDisk, into: hosts)
+                    droppedElsewhere = Self.dropsActiveHost(from: hosts, to: merged)
+                    hosts = merged
+                }
             }
             snapshot = FileSnapshot(bytes: data, stamp: stamp)
             return true
