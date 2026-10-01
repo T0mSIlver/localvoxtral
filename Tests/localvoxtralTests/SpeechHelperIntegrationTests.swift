@@ -355,7 +355,7 @@ final class SpeechHelperIntegrationTests: XCTestCase {
             "the websocket client sends pcm sixteen audio at sixteen kilohertz in sequential chunks.",
             "if this transcript is non empty, end to end processing is confirmed.",
         ].joined(separator: " ")
-        let pcm16 = try makeSpokenPCM16Data(phrase: expected)
+        let pcm16 = try IntegrationTestSupport.makeSpokenPCM16Data(phrase: expected)
         XCTAssertGreaterThan(pcm16.count, 100_000)
         let chunks = IntegrationTestSupport.splitPCM16IntoChunks(pcm16, chunkSizeBytes: 3_200)
 
@@ -477,7 +477,7 @@ final class SpeechHelperIntegrationTests: XCTestCase {
             "the websocket client sends pcm sixteen audio at sixteen kilohertz in sequential chunks.",
             "every chunk after the limit must stay quiet instead of repeating the same report.",
         ].joined(separator: " ")
-        let pcm16 = try makeSpokenPCM16Data(phrase: phrase)
+        let pcm16 = try IntegrationTestSupport.makeSpokenPCM16Data(phrase: phrase)
         let spokenSeconds = Double(pcm16.count) / 32_000
         XCTAssertGreaterThan(
             spokenSeconds,
@@ -566,7 +566,7 @@ final class SpeechHelperIntegrationTests: XCTestCase {
             extraArguments: ["--max-utterance-seconds", "\(limitSeconds)"]
         )
 
-        let spoken = try makeSpokenPCM16Data(
+        let spoken = try IntegrationTestSupport.makeSpokenPCM16Data(
             phrase: "this passage runs a little past the limit, so its last fragment "
                 + "arrives with the final commit instead of with a streaming step."
         )
@@ -655,32 +655,6 @@ final class SpeechHelperIntegrationTests: XCTestCase {
         decoyParent.terminate()
         await fulfillment(of: [helperExited], timeout: 30)
         XCTAssertFalse(helper.isRunning)
-    }
-
-    private func makeSpokenPCM16Data(phrase: String) throws -> Data {
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("speechd-tts-\(UUID().uuidString)")
-            .appendingPathExtension("wav")
-        defer { try? FileManager.default.removeItem(at: tempURL) }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
-        process.arguments = [
-            "-o", tempURL.path,
-            "--file-format=WAVE",
-            "--data-format=LEI16@16000",
-            phrase,
-        ]
-        do {
-            try process.run()
-        } catch {
-            throw XCTSkip("Failed to execute /usr/bin/say: \(error.localizedDescription)")
-        }
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            throw XCTSkip("System TTS failed with status \(process.terminationStatus)")
-        }
-        return try IntegrationTestSupport.extractPCMDataFromWAV(at: tempURL)
     }
 }
 

@@ -34,7 +34,9 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
         say.arguments = ["-o", memo.path, "--file-format=m4af", "--data-format=aac", phrase]
         try say.run()
         say.waitUntilExit()
-        try XCTSkipUnless(say.terminationStatus == 0, "say could not write an m4a")
+        guard say.terminationStatus == 0 else {
+            throw SpokenAudioFailure(description: "say could not write an m4a (status \(say.terminationStatus))")
+        }
 
         let pcm = try VoiceMemoAudioDecoder.pcm16(from: memo)
         let audioSeconds = Double(pcm.count) / Double(AudioChunkBuffer.bytesPerSecond)
