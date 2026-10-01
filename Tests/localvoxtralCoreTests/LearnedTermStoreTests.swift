@@ -233,6 +233,40 @@ final class LearnedTermStoreTests: XCTestCase {
         XCTAssertEqual(store.problem, .newerVersion(LearnedTerms.currentVersion + 1))
     }
 
+    /// Another running copy wrote a term after this copy loaded: the Projects
+    /// pane shows it when it appears, not only after this copy's next write
+    /// (#1126).
+    func testAppearingShowsTermsAnotherCopyWroteSinceThisOneLoaded() async throws {
+        let fileURL = try makeFileURL()
+        let installed = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        let tryBuild = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        installed.recordCorrection("Voxtral", project: project)
+        installed.waitForPendingWrites()
+        tryBuild.recordCorrection("Mistral", project: project)
+        tryBuild.waitForPendingWrites()
+
+        await installed.reloadIfChanged()
+
+        XCTAssertEqual(Set(installed.confirmedTerms(projectKey: project.key)), ["Voxtral", "Mistral"])
+    }
+
+    /// Another running copy left a file in a newer format: appearing refuses
+    /// it as a write would, and keeps its bytes (#1126, #989).
+    func testAppearingAfterANewerCopyWroteRefusesTheFile() async throws {
+        let fileURL = try makeFileURL()
+        let store = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        store.recordCorrection("Voxtral", project: project)
+        store.waitForPendingWrites()
+        let newer = Data(#"{"version":\#(LearnedTerms.currentVersion + 1),"projects":[]}"#.utf8)
+        try newer.write(to: fileURL)
+
+        await store.reloadIfChanged()
+
+        XCTAssertEqual(store.problem, .newerVersion(LearnedTerms.currentVersion + 1))
+        XCTAssertEqual(store.confirmedTerms(projectKey: project.key), [])
+        XCTAssertEqual(try Data(contentsOf: fileURL), newer)
+    }
+
     /// Start Over moves the refused file beside itself, next to an earlier
     /// one, and the store writes again.
     func testStartOverMovesTheFileAsideAndWritesAgain() async throws {

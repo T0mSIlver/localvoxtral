@@ -72,6 +72,19 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(Set(installed.items.map(\.text)), ["Add a dark mode", "Fix the login"])
     }
 
+    /// Another running copy took a capture after this one loaded: the Inbox
+    /// shows it when it appears, not only after this copy's next write
+    /// (#1126).
+    func testAppearingShowsACaptureAnotherCopyTookSinceThisOneLoaded() async throws {
+        let installed = model(answer: ["reach": 0.9])
+        let tryBuild = model(answer: ["reach": 0.9])
+        await tryBuild.capture(text: "Fix the login", historyRecordID: nil).value
+
+        installed.reloadIfChanged()
+
+        XCTAssertEqual(installed.items.map(\.text), ["Fix the login"])
+    }
+
     func testTheCatchAllRunsNoAgentAndMovingItDraftsIt() async throws {
         let model = model(answer: ["inbox": 0.9])
         await model.capture(text: "An idea", historyRecordID: nil).value

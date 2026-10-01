@@ -66,6 +66,21 @@ final class UsageLedgerCoreTests: XCTestCase {
         XCTAssertEqual(Set(entries.map(\.model)).count, count)
     }
 
+    /// Another running copy recorded a request after this one loaded: the
+    /// usage views show it when they appear, not only after a relaunch
+    /// (#1126).
+    func testAppearingShowsEntriesAnotherCopyAppendedSinceThisOneLoaded() async throws {
+        let fileURL = temporaryFile()
+        let installed = UsageLedger(fileURL: fileURL)
+        let tryBuild = UsageLedger(fileURL: fileURL)
+        installed.record(UsageEntry(date: moment, feature: .polish, backend: .mistral, model: "mine", costEUR: 0.001))
+        tryBuild.record(UsageEntry(date: moment, feature: .polish, backend: .mistral, model: "theirs", costEUR: 0.001))
+
+        await installed.reloadIfChanged()
+
+        XCTAssertEqual(installed.entries().map(\.model), ["mine", "theirs"])
+    }
+
     /// A crash mid-append left a line with no end. The next entry starts a
     /// line of its own instead of joining it and going unread (#990).
     func testAnEntryAfterATornLastLineIsKept() throws {
