@@ -18,7 +18,8 @@ enum ClaudeDesktopWebAreaLookup: Equatable {
     /// Focus is in the primary pane's chat panel, and this is the address of
     /// the NEAREST web area above it (nil when it reported none). Only this
     /// web area is ever consulted: an outer one is the desktop shell, never a
-    /// session.
+    /// session. Also a Claude project's page from anywhere in the primary
+    /// pane (`ClaudeProjectPageURL`).
     case webArea(url: String?)
     /// The nearest web area was reached from somewhere its address does not
     /// name, so it was not read.
@@ -195,6 +196,16 @@ struct AXClaudeDesktopSessionURLReader: FocusedClaudeDesktopSessionURLReading {
                 case .primaryChat?:
                     guard case .success(let address) = url(current) else { return .unavailable }
                     return .webArea(url: address)
+                case .refused(.primaryPaneOutsideChat)?:
+                    // A Claude project's page has no chat panel element: its
+                    // prompt sits straight in the primary pane (measured on
+                    // 2.16120.0, #1194). Its address names no session, so it
+                    // can only tell the resolver the dictation goes to agents.
+                    guard case .success(let address) = url(current) else { return .unavailable }
+                    if let address, ClaudeProjectPageURL.isProjectPage(address) {
+                        return .webArea(url: address)
+                    }
+                    return .outsidePrimaryChat(.primaryPaneOutsideChat)
                 case .refused(let place)?:
                     return .outsidePrimaryChat(place)
                 case nil:
