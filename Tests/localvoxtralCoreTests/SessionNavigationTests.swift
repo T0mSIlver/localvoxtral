@@ -305,6 +305,32 @@ final class SessionNavigationTests: XCTestCase {
         XCTAssertEqual(focuser.focusedSessionIDs, ["s"])
     }
 
+    /// The agent exits while its pane comes forward or is read back: the
+    /// shell left in its tty must not count as the session (Codex audit
+    /// 2026-10-02, #1219).
+    @MainActor
+    func testASessionThatEndsDuringTheFocusOrReadBackIsNotThere() async {
+        let session = localSession("s", cwd: "/r/payments", tty: "/dev/ttys002")
+        let live = LiveSessions([session])
+        let focuser = FakeSessionPaneFocuser(outcome: .focused(bundleID: "com.mitchellh.ghostty"))
+        focuser.onFocus = { _ in live.sessions = [] }
+        focuser.onReadBack = { _ in live.sessions = [] }
+        let navigator = SessionNavigator(
+            liveSessions: { live.sessions },
+            repositoryRoot: { _ in .unknown },
+            focuser: focuser,
+            sleep: ManualSessionClock().sleep
+        )
+
+        let focus = await navigator.focusPane(sessionID: "s")
+        XCTAssertNil(focus, "focused, but the session ended meanwhile")
+
+        live.sessions = [session]
+        let shows = await navigator.focusedPaneShows(sessionID: "s", bundleID: "com.mitchellh.ghostty")
+        XCTAssertFalse(shows, "read back, but the session ended meanwhile")
+        XCTAssertEqual(focuser.readBackSessionIDs, ["s"])
+    }
+
     // MARK: - Helpers
 
     private func localSession(
@@ -338,5 +364,20 @@ final class SessionNavigationTests: XCTestCase {
         guard case .resolved(let snapshot) = SessionNameResolver.resolve(spokenName: spoken, candidates: candidates)
         else { return nil }
         return snapshot.sessionID
+    }
+}
+
+/// The registry's answer, changed by a test while the navigator awaits.
+private final class LiveSessions: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: [ClaudeSessionSnapshot]
+
+    init(_ sessions: [ClaudeSessionSnapshot]) {
+        value = sessions
+    }
+
+    var sessions: [ClaudeSessionSnapshot] {
+        get { lock.withLock { value } }
+        set { lock.withLock { value = newValue } }
     }
 }

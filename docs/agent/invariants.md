@@ -250,10 +250,13 @@ there is not.
   focused app. **The Return exception** (owner ruling): in a terminal tab,
   and only there, Return may be pressed in an app the app itself brought
   forward. The pane must first read back `.focused` (its tty through the
-  join's reader, never a window title); only then is the text typed, into
+  join's reader, never a window title) and the registry still list the
+  session after the focus, since the shell left by an agent that exited
+  holds the same tty (#1219); only then is the text typed, into
   the terminal pid that is frontmost and carries the focused bundle ID.
   After the typing the tty is read back again, and Return is pressed only
-  if it still matches, that pid is frontmost and on `ReturnSubmitsAppList`,
+  if it still matches, the registry still lists the session after that
+  read-back, that pid is frontmost and on `ReturnSubmitsAppList`,
   and Secure Keyboard Entry is off. A failed check before the typing types
   nothing and keeps the text in History; one after it leaves the text
   unsubmitted, and the popover says so. Correction learning and term

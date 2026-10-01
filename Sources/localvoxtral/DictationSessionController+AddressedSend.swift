@@ -209,7 +209,9 @@ extension DictationSessionController {
             Log.dictation.notice("send to session: the text did not land in the pane; no Return")
             return AddressedCommit(outcome: commit.outcome, inserted: false, status: nil)
         }
-        let stillThere = await navigator.focuser.focusedPaneShows(session, bundleID: bundleID)
+        // Through the navigator: the registry is asked again after the
+        // read-back, so an agent that exited meanwhile gets no Return (#1219).
+        let stillThere = await navigator.focusedPaneShows(sessionID: session.sessionID, bundleID: bundleID)
         // A new dictation took over during the read-back: its target is not
         // this pane. The typed text is still recorded.
         guard !Task.isCancelled else {
