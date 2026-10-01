@@ -88,6 +88,8 @@ final class DictationAudioStoreTests: XCTestCase {
         await store.save(kept, audio: pcm).value
         let torn = audio.directoryURL.appendingPathComponent(".dat.nosync1234.tmp")
         try Data([0]).write(to: torn)
+        // Far past the file's time: an old leftover, not another copy's write.
+        store.now = { Date(timeIntervalSince1970: 4_000_000_000) }
         await store.removeOrphanedAudio().value
 
         XCTAssertEqual(audio.storedIDs(), [kept.id])

@@ -263,6 +263,36 @@ struct DiagnosticRecordStore: Sendable {
         }
     }
 
+    /// Moves the records of exactly these ids into `folder`, for the History
+    /// sweeps, which never delete what they find outright (#985). Returns how
+    /// many moved.
+    @discardableResult
+    func quarantine(_ ids: Set<UUID>, into folder: URL) -> Int {
+        Self.recordMutationLock.withLock { _ in
+            var moved = 0
+            for record in ((try? listRecords()) ?? []) where ids.contains(record.id) {
+                do {
+                    guard let data = try io.read(from: record.url) else { continue }
+                    // Never over a record already there: another running copy
+                    // may have quarantined the same one a moment ago.
+                    var destination = folder.appendingPathComponent(record.url.lastPathComponent)
+                    if try io.read(from: destination) != nil {
+                        destination = folder.appendingPathComponent(
+                            "\(UUID().uuidString)-\(record.url.lastPathComponent)")
+                    }
+                    try io.write(data, to: destination)
+                    try directoryIO.remove(at: record.url)
+                    moved += 1
+                } catch {
+                    Log.backends.error(
+                        "Diagnostic record: could not move \(record.url.lastPathComponent, privacy: .public) to quarantine: \(error.localizedDescription, privacy: .public)"
+                    )
+                }
+            }
+            return moved
+        }
+    }
+
     /// Deletes the temporary files a write leaves when the app dies between
     /// creating one and renaming it into place (`ClaudeRemoteHostFileStoreIO`
     /// names them `.<record name>.<pid>.<random>.tmp`); they hold a whole
