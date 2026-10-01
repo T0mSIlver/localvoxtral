@@ -2131,7 +2131,7 @@ final class DictationPipelineTests: XCTestCase {
         /// The timers a listening session keeps armed: the send loop, the
         /// periodic commit and the microphone health poll, plus the
         /// insertion retry in Live Auto-Paste.
-        var listeningTimers: Int {
+        @MainActor var listeningTimers: Int {
             viewModel.session.isLiveAutoPasteModeEnabled ? 4 : 3
         }
     }
