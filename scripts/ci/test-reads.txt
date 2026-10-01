@@ -43,3 +43,8 @@ Tests/localvoxtralCoreTests/RemoteProjectTermsLiveTests.swift contentsOfDirector
 Tests/localvoxtralCoreTests/RemoteQuickCaptureLiveTests.swift /README.md none
 Tests/localvoxtralTests/AddressedSendWiringTests.swift contentsOfDirectory( none
 Tests/localvoxtralCoreTests/AgentCLILogPrivacyTests.swift enumerator( none
+Tests/localvoxtralCoreTests/AgentSkillInstallServiceTests.swift SKILL.md read integrations/claude-code/plugins/localvoxtral-remote/skills/*
+Tests/localvoxtralCoreTests/AgentSkillInstallServiceTests.swift .claude/skills/localvoxtral-doctor/SKILL.md none
+Tests/localvoxtralCoreTests/AgentSkillInstallServiceTests.swift .codex/skills/localvoxtral-doctor/SKILL.md none
+Tests/localvoxtralCoreTests/AgentSkillInstallServiceTests.swift .config/opencode/skills/localvoxtral-doctor/SKILL.md none
+Tests/localvoxtralCoreTests/AgentSkillInstallServiceTests.swift .vibe/skills/localvoxtral-doctor/SKILL.md none
