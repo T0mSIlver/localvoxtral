@@ -47,12 +47,6 @@ extension DictationSessionController {
             return
         }
 
-        // A cancelled live session types nothing more: the stop below
-        // would flush the word the stream still holds back.
-        if wasCancelled {
-            textInsertion.discardLiveReplacementSession()
-        }
-
         // A go-to still bringing a pane forward: the segments behind it land
         // before the session ends.
         guard !finishLiveAutoPasteSessionAfterGoTo(sessionMode: sessionMode, finish: { [weak self] sessionAudio in
@@ -661,7 +655,10 @@ extension DictationSessionController {
         let capturedOutputMode = sessionMode.rawValue
         let sessionAudio = finishedAudio ?? audio.sessionRecording.finish()
         let capturedAudio = sessionStoresAudio ? sessionAudio : nil
-        textInsertion.flushFinalLiveReplacementCorrections()
+        // A cancel types nothing more; the cleanup drops what is held (#1222).
+        if !wasCancelled {
+            textInsertion.flushFinalLiveReplacementCorrections()
+        }
         // Typed text may sit after the last commit, ending in a space.
         lastOverlayCommitLanding = nil
         let historyJoin = context.claudeSessionJoin.map(AgentCLIJoin.init)
@@ -738,6 +735,7 @@ extension DictationSessionController {
         overlayCommitOutcome: OverlayBufferCommitOutcome?,
         shouldCommitOverlay: Bool
     ) {
+        let cancelled = wasCancelled
         wasCancelled = false
         isFinalizingStop = false
         isConnectingRealtimeSession = false
@@ -774,6 +772,11 @@ extension DictationSessionController {
 
         textInsertion.stopInsertionRetryTask()
         textInsertion.logDiagnostics()
+        // Ending the session flushes the words the stream holds back; a
+        // cancelled one drops them instead, on every cancel path (#1222).
+        if cancelled {
+            textInsertion.discardLiveReplacementSession()
+        }
         textInsertion.endLiveReplacementSession()
         // After the last flush and any submit: calls already handed to the
         // relay still land, in order.

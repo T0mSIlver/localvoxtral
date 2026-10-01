@@ -597,11 +597,11 @@ final class TextInsertionService {
         // before calling clearPendingText().
     }
 
-    /// A cancelled session: the words the stream still holds and any text
-    /// not yet typed are dropped, never typed (#1222).
+    /// A cancelled session: the words the stream still holds are dropped,
+    /// never typed (#1222). Text whose insertion failed stays pending, for
+    /// the cleanup to report.
     func discardLiveReplacementSession() {
         liveHoldBackStream = nil
-        clearPendingText()
     }
 
     func flushFinalLiveReplacementCorrections() {
