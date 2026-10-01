@@ -255,6 +255,7 @@ package struct SessionDefaultNames: Equatable, Sendable {
     /// two words, so `release-202609` stays whole.
     package var readablePrimary: String? {
         guard let primary else { return nil }
+        if Self.isRemoteControlWorktree(primary) { return nil }
         let parts = primary.split(separator: "-", omittingEmptySubsequences: false)
         guard parts.count >= 3, let suffix = parts.last, suffix.count == 6,
               suffix.allSatisfy({ $0.isHexDigit && ($0.isNumber || $0.isLowercase) }),
@@ -274,17 +275,27 @@ package struct SessionDefaultNames: Equatable, Sendable {
         let key = SessionNameMatching.key(leaf)
         guard !key.isEmpty, !Self.trunks.contains(key) else { return nil }
         let folders = [primary, readablePrimary, repository].compactMap { $0.map(SessionNameMatching.key) }
-        return folders.contains(key) ? nil : leaf
+        if folders.contains(key) { return nil }
+        // Claude Code names a worktree's branch `worktree-<folder>`.
+        if let primary, key == SessionNameMatching.key("worktree-" + primary) { return nil }
+        return leaf
+    }
+
+    /// A worktree the Remote Control server made for one session: the folder
+    /// is `bridge-` plus the session's id (`bridge-cse_01APpLRSYFaxzhAjYcBXt2ds`),
+    /// which no one can say or recognize.
+    package static func isRemoteControlWorktree(_ folder: String) -> Bool {
+        folder.wholeMatch(of: /bridge-(cse|session)_[A-Za-z0-9]{8,}/) != nil
     }
 
     private static let trunks: Set<String> = ["main", "master", "trunk", "develop", "development", "head"]
 
     /// The name without a title or nickname: a linked worktree's named
-    /// branch, else its folder without the random suffix; a main checkout's
-    /// folder.
+    /// branch, else its folder without the random suffix, else (a Remote
+    /// Control worktree) its repository; a main checkout's folder.
     package var fallback: String? {
         if repository != nil, let namedBranch { return namedBranch }
-        return readablePrimary
+        return readablePrimary ?? repository ?? primary
     }
 
     /// What the session is shown as before duplicates are told apart.
