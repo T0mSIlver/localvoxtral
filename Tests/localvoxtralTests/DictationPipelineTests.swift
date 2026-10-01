@@ -51,7 +51,50 @@ final class DictationPipelineTests: XCTestCase {
 
         XCTAssertEqual(typed.text, Self.phrase)
         XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
+        XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, true)
         XCTAssertEqual(pipeline.overlay.commitCallCount, 0)
+    }
+
+    /// The field stops taking keystrokes before the last segment lands: the
+    /// stop says so and History saves the dictation as not inserted (#1176).
+    func testLiveAutoPasteWhoseLastTextFailedToInsertIsSavedAsNotInserted() async throws {
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        let typed = TypedText()
+        var fieldAccepts = true
+        let refused = BoundedWait()
+        pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        pipeline.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { chunk in
+                guard fieldAccepts else {
+                    refused.resolve()
+                    return false
+                }
+                typed.append(chunk)
+                return true
+            },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false }
+        )
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.delta", "delta": "First part"])
+        pipeline.server.send(["type": "transcription.done", "text": "First part."])
+        let typedFirst = await typed.waitFor("First part.")
+        XCTAssertTrue(typedFirst, "typed so far: \(typed.text.debugDescription)")
+        fieldAccepts = false
+        pipeline.server.send(["type": "transcription.done", "text": " Second part."])
+        let attempted = await refused.value(failAfter: 10)
+        XCTAssertTrue(attempted, "the second segment was never offered to the field")
+        XCTAssertTrue(pipeline.viewModel.textInsertion.hasPendingInsertionText)
+
+        await stopAndFinalize(
+            pipeline, finalText: "",
+            expectedError: "Some realtime text could not be inserted into the focused app."
+        )
+
+        XCTAssertEqual(typed.text, "First part.")
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), ["First part. Second part."])
+        XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
     }
 
     /// A later segment's first delta keeps its leading space, and its period
