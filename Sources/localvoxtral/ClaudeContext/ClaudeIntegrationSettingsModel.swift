@@ -360,7 +360,12 @@ public final class ClaudeIntegrationSettingsModel {
         herdrMachineCatalogReading: @escaping @Sendable () -> HerdrMachineCatalogReading = {
             .absent
         },
-        hasEnabledHerdrMachineReport: @escaping @Sendable () -> Bool = { false }
+        hasEnabledHerdrMachineReport: @escaping @Sendable () -> Bool = { false },
+        // How a registry reload on a listener thread reaches this model. A
+        // test passes one that it drains itself.
+        runOnMainActor: @escaping @Sendable (@escaping @MainActor @Sendable () -> Void) -> Void = { body in
+            Task { @MainActor in body() }
+        }
     ) {
         self.loginShell = loginShell
         self.shellRCWriter = shellRCWriter
@@ -413,6 +418,12 @@ public final class ClaudeIntegrationSettingsModel {
         // transition now patches its row in place.
         forwards?.onStateChange = { [weak self] hostID in
             self?.applyForwardState(hostID: hostID)
+        }
+        // Another running copy revoked, removed or rotated a host (#1125):
+        // this copy's forwards, herdr forwards and listener for it come down
+        // the way an in-app revoke takes them down.
+        registry?.setHostsDroppedElsewhereHandler { [weak self] in
+            runOnMainActor { self?.reconcileAfterHostsDroppedElsewhere() }
         }
     }
 
