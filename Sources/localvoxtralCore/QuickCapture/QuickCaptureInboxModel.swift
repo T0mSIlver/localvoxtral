@@ -678,18 +678,26 @@ package final class QuickCaptureInboxModel {
         }
     }
 
-    /// A coding agent filed the capture itself (#923). Its History record
-    /// says so, as after File. The check runs against the file, which
-    /// another running copy may have changed (#990).
+    /// A coding agent filed the capture itself (#923). It is done as after
+    /// File (#1177): the audio of the capture and its follow-ups goes once
+    /// the Inbox saved it, and every History record says where it went.
+    /// The check runs against the file, which another running copy may
+    /// have changed (#990).
     package func markFiled(_ id: UUID, url: String) -> Result<QuickCaptureItem, QuickCaptureInbox.MarkFiledRefusal> {
         let moment = now()
         // Stays notFound when the Inbox is refused and the change never runs.
         var result: Result<QuickCaptureItem, QuickCaptureInbox.MarkFiledRefusal> = .failure(.notFound)
-        mutate { result = $0.markFiled(id, url: url, now: moment) }
+        let saveFailure = mutate { result = $0.markFiled(id, url: url, now: moment) }
         if case .success(let item) = result {
             Log.backends.info("Quick capture: a coding agent filed \(url, privacy: .public)")
-            if let recordID = item.historyRecordID, let repository = item.repository {
-                onRouted?(recordID, "Filed in \(repository)")
+            // Unsaved, the capture comes back at launch: its audio stays (#988).
+            if saveFailure == nil {
+                for captureID in item.captureIDs { onDone?(captureID) }
+            }
+            if let repository = item.repository {
+                for recordID in historyRecordIDs(item) {
+                    onRouted?(recordID, "Filed in \(repository)")
+                }
             }
         }
         return result
