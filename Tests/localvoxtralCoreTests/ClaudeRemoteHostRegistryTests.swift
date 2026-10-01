@@ -788,6 +788,54 @@ final class ClaudeRemoteHostFileStoreIOTests: XCTestCase {
         XCTAssertEqual(Set(installed.hosts().map(\.id)), [first.host.id, second.host.id, third.host.id])
     }
 
+    /// A host the installed app revokes is refused by the try-pr build on its
+    /// next request, not after its next write or relaunch (#1046).
+    func testAHostOneCopyRevokesIsRefusedByTheOtherCopy() throws {
+        let installed = try ClaudeRemoteHostRegistry(fileURL: fileURL, io: io)
+        let enrollment = try installed.enroll(label: "studio", sshHostAlias: "studio")
+        let tryBuild = try ClaudeRemoteHostRegistry(fileURL: fileURL, io: io)
+        XCTAssertEqual(tryBuild.authenticate(token: enrollment.token)?.id, enrollment.host.id)
+
+        try installed.revoke(hostID: enrollment.host.id)
+
+        XCTAssertNil(tryBuild.authenticate(token: enrollment.token))
+        XCTAssertNil(tryBuild.withAuthenticatedHost(
+            token: enrollment.token, expectedHostID: enrollment.host.id
+        ) { _ in true })
+        XCTAssertEqual(tryBuild.hosts(matchingSSHDestination: "studio"), [])
+        XCTAssertEqual(tryBuild.host(id: enrollment.host.id)?.isRevoked, true)
+    }
+
+    /// Rotation answers a suspected leak: the other copy drops the old token
+    /// and takes the new one (#1046).
+    func testATokenOneCopyRotatesStopsWorkingInTheOtherCopy() throws {
+        let installed = try ClaudeRemoteHostRegistry(fileURL: fileURL, io: io)
+        let enrollment = try installed.enroll(label: "studio")
+        let tryBuild = try ClaudeRemoteHostRegistry(fileURL: fileURL, io: io)
+        XCTAssertNotNil(tryBuild.authenticate(token: enrollment.token))
+
+        let rotated = try installed.rotateToken(hostID: enrollment.host.id)
+
+        XCTAssertNil(tryBuild.authenticate(token: enrollment.token))
+        XCTAssertEqual(tryBuild.authenticate(token: rotated.token)?.id, enrollment.host.id)
+    }
+
+    /// A file this copy cannot read any more (a newer build's format, a
+    /// damaged write) may hold a revocation, so nothing authenticates until
+    /// it reads again (#1046).
+    func testAStoreTheOtherCopyLeftUnreadableAuthenticatesNothing() throws {
+        let installed = try ClaudeRemoteHostRegistry(fileURL: fileURL, io: io)
+        let enrollment = try installed.enroll(label: "studio")
+        XCTAssertNotNil(installed.authenticate(token: enrollment.token))
+        let current = try XCTUnwrap(io.read(from: fileURL))
+
+        try io.write(Data(#"{"v":2,"hosts":[]}"#.utf8), to: fileURL)
+        XCTAssertNil(installed.authenticate(token: enrollment.token))
+
+        try io.write(current, to: fileURL)
+        XCTAssertEqual(installed.authenticate(token: enrollment.token)?.id, enrollment.host.id)
+    }
+
     func testReadOfAnAbsentStoreIsNilNotAnError() throws {
         XCTAssertNil(try io.read(from: fileURL))
     }
