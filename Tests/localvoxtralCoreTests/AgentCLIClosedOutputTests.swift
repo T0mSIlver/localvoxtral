@@ -1,6 +1,14 @@
 import ClaudeContextWire
+import ClaudeHookPublisherCore
 import Foundation
 import XCTest
+@testable import localvoxtralCore
+
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 
 /// The built `localvoxtral` command with its stdout or stderr closed or
 /// broken (#1165). `FileHandle.write` raises an uncatchable exception on such
@@ -77,5 +85,25 @@ final class AgentCLIClosedOutputTests: XCTestCase {
         let ended = try runCommand(#"trap '' PIPE; exec "$0" --help"#, standardOutput: pipe)
         XCTAssertEqual(ended.reason, .exit, "ended by signal \(ended.status)")
         XCTAssertEqual(ended.status, 0)
+    }
+
+    /// The writer the command uses, on a descriptor that is not open: it
+    /// returns. A number past the descriptor limit, so no other test's file
+    /// can hold it.
+    func testWriterReturnsOnAClosedDescriptor() async {
+        let closed = Int32(getdtablesize())
+        XCTAssertEqual(fcntl(closed, F_GETFD), -1)
+        ClaudeHookPublisher.writeAll(Data("lost\n".utf8), toDescriptor: closed)
+    }
+
+    /// And on a pipe whose reader has gone: the write fails with EPIPE and
+    /// the writer returns.
+    func testWriterReturnsOnAPipeWithNoReader() async {
+        var descriptors: [Int32] = [-1, -1]
+        XCTAssertEqual(pipe(&descriptors), 0)
+        defer { close(descriptors[1]) }
+        POSIXSocket.suppressSIGPIPE(onPipe: descriptors[1])
+        close(descriptors[0])
+        ClaudeHookPublisher.writeAll(Data(repeating: 0x2A, count: 256 * 1024), toDescriptor: descriptors[1])
     }
 }
