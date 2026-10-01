@@ -133,6 +133,10 @@ enum DiagnosticRecordRedaction {
     /// renders it (`PolishContextExcerptSelector.renderedLine`: tabs as
     /// spaces, control characters dropped), because a context over its grant
     /// renders the second form (#1106).
+    ///
+    /// The screen gets one more pass first (`withholdingWrapped`): a terminal
+    /// soft-wraps a long prompt line at the pane width and expands its tabs,
+    /// so a row there can hold any stretch of a line (#1121).
     static func withholdPrompt(_ prompt: String?, from record: inout DiagnosticRecord) {
         guard let prompt, !prompt.isEmpty else { return }
         let label = ClaudeSessionContextText.priorPromptLabel
@@ -191,12 +195,84 @@ enum DiagnosticRecordRedaction {
         withholdOptional(&record.text.systemPrompt)
         record.text.userPrompts = record.text.userPrompts.map(withhold)
         if var screen = record.screen {
-            withholdOptional(&screen.sanitizedText)
+            screen.sanitizedText = screen.sanitizedText.map {
+                withhold(withholdingWrapped(prompt, in: $0))
+            }
             record.screen = screen
         }
         for index in record.sources.indices {
             withholdOptional(&record.sources[index].renderedExcerpt)
         }
+    }
+
+    /// Masks the stretches of `text` that spell a prompt line once whitespace
+    /// and control characters are ignored on both sides, so a row break, the
+    /// continuation row's indent or a tab's spaces never stop a match.
+    ///
+    /// A screen may hold only part of a line: rows scrolled off the top, rows
+    /// past the capture cap. So every `truncatedPrefixLength`-character
+    /// stretch of the line (and its last one) is an anchor, and each anchor
+    /// found is extended both ways for as long as the line goes on matching.
+    /// A line shorter than an anchor must match whole; one shorter than
+    /// `minimumLineLength` is not looked for, as in `withholdPrompt`.
+    static func withholdingWrapped(_ prompt: String, in text: String) -> String {
+        let needles = prompt.split(whereSeparator: \.isNewline)
+            .map { $0.filter(isSpelled) }
+            .filter { $0.count >= minimumLineLength }
+            .map(Array.init)
+            .sorted { $0.count > $1.count }
+        var output = text
+        for needle in needles {
+            let indices = output.indices.filter { isSpelled(output[$0]) }
+            let haystack = indices.map { output[$0] }
+            let anchor = min(needle.count, truncatedPrefixLength)
+            let starts = Set(Array(stride(from: 0, to: needle.count - anchor, by: anchor))
+                + [needle.count - anchor])
+
+            var spans: [Range<Int>] = []
+            for start in starts.sorted() {
+                let key = needle[start..<start + anchor]
+                var position = 0
+                while position + anchor <= haystack.count {
+                    defer { position += 1 }
+                    guard haystack[position..<position + anchor].elementsEqual(key) else { continue }
+                    var lower = position, upper = position + anchor
+                    var needleLower = start, needleUpper = start + anchor
+                    while lower > 0, needleLower > 0, haystack[lower - 1] == needle[needleLower - 1] {
+                        lower -= 1
+                        needleLower -= 1
+                    }
+                    while upper < haystack.count, needleUpper < needle.count,
+                          haystack[upper] == needle[needleUpper] {
+                        upper += 1
+                        needleUpper += 1
+                    }
+                    spans.append(lower..<upper)
+                }
+            }
+
+            var merged: [Range<Int>] = []
+            for span in spans.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+                if let last = merged.last, span.lowerBound <= last.upperBound {
+                    merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, span.upperBound)
+                } else {
+                    merged.append(span)
+                }
+            }
+            for span in merged.reversed() {
+                let range = indices[span.lowerBound]..<output.index(after: indices[span.upperBound - 1])
+                output.replaceSubrange(range, with: withheldPromptPlaceholder)
+            }
+        }
+        return output
+    }
+
+    /// A character a terminal shows as written: not whitespace, which wraps
+    /// and tab stops rewrite, and not a control character, which the screen
+    /// and excerpt sanitizers drop.
+    private static func isSpelled(_ character: Character) -> Bool {
+        !character.isWhitespace
+            && !character.unicodeScalars.contains { $0.properties.generalCategory == .control }
     }
 
     static let minimumLineLength = 8
