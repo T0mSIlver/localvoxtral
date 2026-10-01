@@ -184,6 +184,9 @@ final class ProjectTermProposerTests: XCTestCase {
         let quill = try XCTUnwrap(ProjectRemote("github.com/me/quillmark"))
         let store = LearnedTermStore(fileURL: nil, now: clock.now)
         store.ignoreProject(key: quill.key, name: "quillmark", keys: [])
+        // The ignore lands on the store's queue; the proposer reads the
+        // snapshot from its own task and could otherwise run first.
+        store.waitForPendingWrites()
         let proposer = ProjectTermProposer(
             store: store, runner: runner, now: clock.now, trackedFiles: { _ in [] }, origin: { _ in quill },
             usageRecorder: nil)
