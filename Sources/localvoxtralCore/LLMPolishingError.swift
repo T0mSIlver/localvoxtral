@@ -9,6 +9,10 @@ package enum LLMPolishingError: Error, LocalizedError, Sendable {
     /// timeout. Distinct from `networkError` so a slow polish (a long transcript, a cold
     /// prefix cache) never reads as "unable to connect" (#314).
     case timedOut(afterSeconds: TimeInterval)
+    /// The reply stopped at the backend's output limit (`finish_reason`
+    /// `length`), so its text is a prefix of the polish and would drop the
+    /// rest of the dictation (#1109).
+    case truncated
 
     package var errorDescription: String? {
         switch self {
@@ -22,6 +26,8 @@ package enum LLMPolishingError: Error, LocalizedError, Sendable {
             return "LLM network error: \(message)"
         case .timedOut(let seconds):
             return "LLM request timed out after \(Int(seconds.rounded())) s."
+        case .truncated:
+            return "LLM reply stopped at its output limit."
         }
     }
 

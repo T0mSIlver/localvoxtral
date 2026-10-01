@@ -87,6 +87,18 @@ final class PolishdRouterTests: XCTestCase {
         XCTAssertNil(decoded.timings)
     }
 
+    func testChatCompletionReportsAReplyCutOffAtTheTokenLimit() async throws {
+        let router = PolishdRouter(
+            responder: StubResponder(result: .success(ChatReply(content: "So the", finishReason: "length"))),
+            modelName: "m")
+        let response = await router.handle(
+            chatRequest("{\"messages\": [{\"role\": \"user\", \"content\": \"x\"}]}")
+        )
+
+        let decoded = try JSONDecoder().decode(ChatCompletionResponse.self, from: response.body)
+        XCTAssertEqual(decoded.choices.first?.finishReason, "length")
+    }
+
     func testChatCompletionReturnsTheEngineTimings() async throws {
         let timings = PolishTimings(
             firstTokenMilliseconds: 180, totalMilliseconds: 420, promptTokens: 900,
