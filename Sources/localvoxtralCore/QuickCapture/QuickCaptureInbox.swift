@@ -278,14 +278,15 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
     }
 
     /// Every capture and suggestion under the key and name of the project
-    /// that holds its key now. A capture still drafting keeps its key, since
-    /// its run answers for it.
+    /// that holds its key now. A capture still drafting or checking keeps
+    /// its key, since its run answers for it.
     package func adopting(_ projects: [QuickCaptureProject]) -> QuickCaptureInbox {
         var result = self
         for index in result.items.indices {
             let item = result.items[index]
             if let key = item.projectKey, let project = projects.first(where: { $0.keys.contains(key) }) {
-                if item.state != .drafting { result.items[index].projectKey = project.key }
+                let runs = item.state == .drafting || item.codeCheck?.state == .checking
+                if !runs { result.items[index].projectKey = project.key }
                 result.items[index].projectName = project.name
             }
             if let suggestion = item.suggestion,
