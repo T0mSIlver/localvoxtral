@@ -1878,8 +1878,8 @@ there is not.
     `https://claude.ai/code/session_…` (parsed by `ClaudeBridgeSessionURL`),
     resolves through the bridge lookup and binds the bridge id, which
     commit-time liveness re-resolves as the browser arm does (#1065).
-    Everything else follows the browser arm: both origins join (either id is
-    allocated outside this Mac and names the view the user is looking at), a
+    Everything else follows the browser arm: both origins join (neither id depends
+    on where the session runs, and each names the view the user is looking at), a
     `.desktopSession` join authorizes NO screen read and carries no window
     identity, commit-time liveness re-resolves the bound id (a desktop id never disappears while the session runs, so it adds no
     disconnect signal of its own; a bridge id goes when Remote Control disconnects), and the read happens ONLY under
