@@ -290,14 +290,19 @@ final class ProjectRemoteTests: XCTestCase {
         var drafting = QuickCaptureItem(capturedAt: now, text: "a third")
         drafting.projectKey = "remote:localvoxtral"
         drafting.state = .drafting
+        var checking = QuickCaptureItem(capturedAt: now, text: "a fourth")
+        checking.projectKey = "remote:localvoxtral"
+        checking.state = .ready
+        checking.codeCheck = QuickCaptureCodeCheck(state: .checking)
 
-        let adopted = QuickCaptureInbox(items: [routed, unplaced, drafting]).adopting(projects(learned))
+        let adopted = QuickCaptureInbox(items: [routed, unplaced, drafting, checking]).adopting(projects(learned))
 
         XCTAssertEqual(adopted.items[0].projectKey, "/Users/tom/Desktop/projects/supervoxtral")
         XCTAssertEqual(adopted.items[0].projectName, "localvoxtral")
         XCTAssertEqual(adopted.items[1].suggestion?.projectName, "localvoxtral")
         XCTAssertEqual(adopted.items[2].projectKey, "remote:localvoxtral", "a running draft keeps its key")
-        XCTAssertEqual(adopted.items.count, 3)
+        XCTAssertEqual(adopted.items[3].projectKey, "remote:localvoxtral", "so does a draft whose check runs")
+        XCTAssertEqual(adopted.items.count, 4)
         XCTAssertEqual(adopted.adopting(projects(learned)), adopted)
     }
 
