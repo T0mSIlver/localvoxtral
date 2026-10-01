@@ -2,13 +2,20 @@ import Foundation
 import XCTest
 import localvoxtralCore
 
+/// Spoken test audio could not be made. A thrown error, not an `XCTSkip`:
+/// callers reach it only once their lane is enabled, and a lane whose tests
+/// all skip exits 0 with nothing measured (#1196).
+package struct SpokenAudioFailure: Error, CustomStringConvertible {
+    package let description: String
+}
+
 package enum IntegrationTestSupport {
     private static let tokenRegex = try! NSRegularExpression(pattern: "[\\p{L}\\p{N}]+")
 
     package static func extractPCMDataFromWAV(at url: URL) throws -> Data {
         let wavData = try Data(contentsOf: url)
         guard wavData.count >= 44 else {
-            throw XCTSkip("Generated WAV audio is unexpectedly short.")
+            throw SpokenAudioFailure(description: "Generated WAV audio is unexpectedly short.")
         }
 
         var index = 12
@@ -31,16 +38,17 @@ package enum IntegrationTestSupport {
             }
         }
 
-        throw XCTSkip("WAV audio does not contain a valid data chunk.")
+        throw SpokenAudioFailure(description: "WAV audio does not contain a valid data chunk.")
     }
 
-    #if os(macOS)
     /// Synthesizes a spoken phrase with the system TTS and returns its raw
     /// 16 kHz mono PCM16 samples — the same synthetic-speech source every live
     /// realtime lane uses, so accuracy bars stay comparable across providers.
-    /// Skips (never fails) when `say` is unavailable or errors: that is an
-    /// environment problem, not a client regression.
-    package static func makeSpokenPCM16Data(phrase: String) throws -> Data {
+    /// Throws `SpokenAudioFailure` when `say` is missing or errors.
+    package static func makeSpokenPCM16Data(
+        phrase: String,
+        say: URL = URL(fileURLWithPath: "/usr/bin/say")
+    ) throws -> Data {
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("svxt-tts-\(UUID().uuidString)")
             .appendingPathExtension("wav")
@@ -50,7 +58,7 @@ package enum IntegrationTestSupport {
         }
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+        process.executableURL = say
         process.arguments = [
             "-o", tempURL.path,
             "--file-format=WAVE",
@@ -61,17 +69,16 @@ package enum IntegrationTestSupport {
         do {
             try process.run()
         } catch {
-            throw XCTSkip("Failed to execute /usr/bin/say for spoken-audio integration test: \(error.localizedDescription)")
+            throw SpokenAudioFailure(description: "Failed to execute \(say.path): \(error.localizedDescription)")
         }
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
-            throw XCTSkip("System TTS (say) failed with status \(process.terminationStatus).")
+            throw SpokenAudioFailure(description: "System TTS (say) failed with status \(process.terminationStatus).")
         }
 
         return try extractPCMDataFromWAV(at: tempURL)
     }
-    #endif
 
     package static func splitPCM16IntoChunks(_ pcm: Data, chunkSizeBytes: Int) -> [Data] {
         guard chunkSizeBytes > 0, !pcm.isEmpty else { return pcm.isEmpty ? [] : [pcm] }
