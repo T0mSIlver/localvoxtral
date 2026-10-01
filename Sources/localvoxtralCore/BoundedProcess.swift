@@ -110,6 +110,10 @@ package enum BoundedProcess {
         if !children.register(pid), process.isRunning {
             Log.polishing.info("\(label, privacy: .public): launched while quitting; killing")
             kill(pid, SIGKILL)
+        } else if !process.isRunning {
+            // Reaped before it was registered: its termination handler's
+            // unregister already ran, so drop the pid the kernel may reuse.
+            children.unregister(pid)
         }
 
         // The reader thread owns the pipe fd and only mutates the mutex-guarded
