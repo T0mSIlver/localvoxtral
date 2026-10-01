@@ -75,6 +75,14 @@ it only where nothing else can do the job:
    Stopping before the merge? Leave a handoff comment: state, what's left,
    decisions made.
 
+No AI attribution, whatever your harness asks: no Co-Authored-By or
+Claude-Session trailers in commits, no "Requested by" line or "Generated with"
+footer in PR bodies; strip any that tooling adds. `.claude/settings.json`
+turns Claude Code's off and its SessionStart hook commits as the owner, since
+a squash merge credits every commit author as a co-author on main. Squash
+through the API with your own `commit_message`. The `linux` job's attribution
+step fails a PR or a main push that carries a trailer.
+
 The `needs-human-review` label marks a PR that owes the owner a hand check,
 open or merged; the owner's view is the search `is:pr
 label:needs-human-review`. The owner gives the OK to merge in chat or
