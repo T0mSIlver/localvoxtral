@@ -187,17 +187,23 @@ there is not.
   `.focused` only when that tty is the session's. A Return after a focus
   (#723 step 3) or #717's answer hotkey must require `.focused`, never
   `.unverified`.
-- **A session's title is a name, never evidence** (#1013). Claude
+- **A session's title is a name, never evidence** (#1013, #1020). Claude
   Desktop's title for a session is read from Desktop's own file on this
   Mac (`ClaudeDesktopSessionTitles`, keyed by the `local_<uuid>` the hooks
-  reported), for an ssh-host session too, so no title crosses the wire.
-  It names the session in the overlay, the popover, banners and go-to,
-  and nothing else: no join, route or capture reads it, the registry file
-  does not keep it, and no log line carries it. Other harnesses' titles
-  (Claude Code's `session_title`, Codex's `thread_name`, opencode's and
-  Vibe's `title`) stay on their host until a wire step carries them: the
-  auto-generated ones summarize the first prompt, which needs an owner
-  ruling (#1013).
+  reported), for an ssh-host session too. The other harnesses' titles ride
+  on the hook record as the optional `session_title` (owner ruling on
+  #1013: a title the harness made from the first prompt may cross, the app
+  never summarizes a prompt itself): Claude Code's from `SessionStart`
+  input, local or remote; opencode's from `session.updated`, placeholder
+  titles skipped; Codex's `thread_name`, which the publisher reads from the
+  tail of `~/.codex/session_index.jsonl` (`CodexSessionIndex`). Vibe's
+  `meta.json` title is still null on every measured session, so it is not
+  sent. The wire makes a title one sanitized line of at most 320 bytes and
+  drops it from focus records; an app that predates the key ignores it.
+  Desktop's title wins over the record's. Either names the session in the
+  overlay, the popover, banners and go-to, and nothing else: no join, route
+  or capture reads it (`ClaudeSessionSnapshot.harnessTitle` has no other
+  reader), the registry file does not keep it, and no log line carries it.
 - **Live Auto-Paste holds back only what may still read "go to"** (#747).
   Typed words cannot be taken back, so while a session is live a segment is
   held while its words so far may still become "go to" ("G", "Go", "go t")
@@ -732,7 +738,14 @@ there is not.
     *Typed only into the same pane:* a text herdr refused (its own error
     answer for that request, or a request that never reached the socket) is
     typed only while keys would land in the joined pane: its terminal is
-    frontmost and herdr's `pane.current` is that pane. Otherwise, and
+    frontmost, herdr's `pane.current` is that pane, and the terminal still
+    shows the surface the join saw (#1105, `HerdrJoinedSurface`): the same
+    focused tty, and on it the same machine, read as the arm read it
+    (herdr's machine selection, alone on screen once machines are saved, or
+    the tty's ssh session). A client switched to another saved machine
+    keeps its tty, and the server it left keeps a focused pane it no longer
+    shows, so the pane check alone would type into the other machine.
+    Otherwise, and
     whenever the request went out with no valid answer (it may have landed),
     the text stays in History (`keepInHistory`).
     *Enter only over the joined agent:* before each Enter the route asks the
@@ -1365,7 +1378,10 @@ there is not.
     the moments that mattered (quit during polish, an aborted connect) and the
     ssh outlived the app. `DictationViewModel` owns only leases, releasing every
     one on its existing session-exit paths; the service owns idle, revoke, quit,
-    supervision, pid-ledger and next-launch orphan-reap lifecycles.
+    supervision, pid-ledger and next-launch orphan-reap lifecycles. Replacing
+    a forward removes the old entry before waiting for its teardown, so a
+    revoke or quit during that wait has nothing to stop; the waiter checks
+    enrollment and quit again when it resumes and spawns nothing (#1104).
   - **The remote herdr forward is a trust inversion, and it is bounded by what
     we SEND, not by what the socket allows.** herdr's JSON socket is
     full-control: over that same forwarded stream one could create panes, write
@@ -2168,6 +2184,12 @@ there is not.
   --repo`, after the Inbox shows it, and as `gh api repos/<owner>/<name>`,
   which only reads. A squatter on the port cannot send it: it rides on the
   host's authenticated hook.
+  `X-Lvx-Env-Branch` (#1020) is the branch checked out in the session's
+  cwd, from `git symbolic-ref --short HEAD` on the host (none on a
+  detached HEAD). It is read only as `SessionDefaultNames.branch`, a name
+  for a remote linked worktree, exactly as a local session's branch is; it
+  never reaches git, a path or a join, and the registry file does not keep
+  it.
 - **A remote request names its agent in a header, and the header buys nothing
   but a namespace.** A remote host runs no publisher of ours, so the agent
   cannot ride inside the record the way it does locally: the Vibe shim
@@ -2415,6 +2437,17 @@ there is not.
   that could put a byte on a terminal, so there is no variable part left for a
   squatter to aim at. The fixed `X-Lvx-Session: joined|unknown` response header
   only selects a private per-session status stamp and never reaches stdout.
+  Both copies still read one host file, and each answers a hook from the
+  file as it is now (#1046): `authenticate`, the alias match the remote
+  join starts from and the host queries `lstat` the file first and reload
+  it when another copy replaced it, so a host one copy revokes or rotates
+  is refused by the other on its next request. A file that changed and
+  cannot be read back (damaged, a newer build's format) may hold a
+  revocation, so until it reads again it authenticates nothing and every
+  caller that selects a host gets none (`activeHostsIfReadable`): the
+  alias match, the `ssh -G` fallback, the app-held forwards and quick
+  capture's routing. Only Settings and the doctor still list hosts from
+  memory.
   A second copy of the app (a `try-pr.sh` build) loses this port and the
   broker socket to the running copy, and then waits:
   `ClaudeHookSocketTakeover` retries only the binds it lost, each time

@@ -29,7 +29,7 @@ package final class FakeHerdrSocket: @unchecked Sendable {
     package enum Answer: Sendable {
         case ok
         /// herdr's error envelope with this code (`pane_not_found`, ...).
-        case error(String)
+        case error(String, message: String = "fake")
         /// Close the connection without a reply.
         case hangUp
         /// A success whose `result` is this JSON object.
@@ -78,6 +78,7 @@ package final class FakeHerdrSocket: @unchecked Sendable {
     private let afterAnswer: @Sendable () -> Void
     private typealias Watch = (reached: @Sendable ([Request]) -> Bool, wait: BoundedWait)
     private let state = Mutex<(requests: [Request], watches: [Watch], stopped: Bool)>(([], [], false))
+    private let serveEnded = BoundedWait()
 
     /// `afterAnswer` runs on the fake's thread once the reply is written
     /// (or withheld), before the next connection is taken.
@@ -159,12 +160,26 @@ package final class FakeHerdrSocket: @unchecked Sendable {
             return state.stopped
         }
         guard !wasStopped else { return }
+        // The serve thread closes the listener when it ends. Closing it here
+        // would free the descriptor while that thread may still be on its
+        // way back to `accept()`, and the next fixture's `socket()` reuses
+        // it (#1128).
         wakeBlockedUnixListener(atPath: socketPath)
-        close(listener)
         try? FileManager.default.removeItem(at: directory)
     }
 
+    /// True once the fake's thread has returned; false if it had not within
+    /// `failAfter` seconds of wall time.
+    package func waitForServeThreadToEnd(
+        failAfter: TimeInterval = 10,
+        isolation: isolated (any Actor)? = #isolation
+    ) async -> Bool {
+        await serveEnded.value(failAfter: failAfter)
+    }
+
     private func serve() {
+        defer { serveEnded.resolve() }
+        defer { close(listener) }
         while true {
             let connection = accept(listener, nil, nil)
             if state.withLock({ $0.stopped }) {
@@ -208,7 +223,7 @@ package final class FakeHerdrSocket: @unchecked Sendable {
         for wait in ready { wait.resolve() }
         let reply: String? = switch answer(request) {
         case .ok: #"{"id":"\#(id)","result":{"type":"ok"}}"#
-        case .error(let code): #"{"id":"\#(id)","error":{"code":"\#(code)","message":"fake"}}"#
+        case .error(let code, let message): #"{"id":"\#(id)","error":{"code":"\#(code)","message":"\#(message)"}}"#
         case .result(let json): #"{"id":"\#(id)","result":\#(json)}"#
         case .hangUp: nil
         case .raw(let line): line

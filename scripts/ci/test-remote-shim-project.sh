@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Regression test for the X-Lvx-Env-Project header both remote shims send
-# (#652), and X-Lvx-Env-Repository beside it (#926): the Claude Code plugin's
-# hooks/post.sh and the Vibe remote post.sh.
+# (#652), X-Lvx-Env-Repository beside it (#926) and X-Lvx-Env-Branch (#1020):
+# the Claude Code plugin's hooks/post.sh and the Vibe remote post.sh.
 #
 # Builds real repositories with git (a main checkout, a worktree inside it, one
 # outside it, a submodule, a bare repository's worktree, and names outside the
 # label charset), runs each shim from inside them with a stub curl that keeps
 # the header file it was handed, and checks the headers' values, or that there
 # are none. The repository is origin's: owner/name on github.com, a fork's
-# included, host/path elsewhere.
+# included, host/path elsewhere. The branch is the one checked out in the cwd,
+# none on a detached HEAD or outside the header charset.
 #
 # Needs git and python3 (the Vibe shim's compactor), no network:
 #   ./scripts/ci/test-remote-shim-project.sh
@@ -45,6 +46,9 @@ mkdir -p "$TMP_DIR/work/repo/Sources/deep"
 git -C "$TMP_DIR/work/repo" worktree add -q "$TMP_DIR/work/repo/.claude/worktrees/bold-bose" 2>/dev/null
 git -C "$TMP_DIR/work/repo" worktree add -q "$TMP_DIR/elsewhere/repo-fix" 2>/dev/null
 mkdir -p "$TMP_DIR/elsewhere/repo-fix/Sources"
+git -C "$TMP_DIR/work/repo" worktree add -q -b fix/overlay-names "$TMP_DIR/elsewhere/overlay" 2>/dev/null
+git -C "$TMP_DIR/work/repo" worktree add -q --detach "$TMP_DIR/elsewhere/detached" 2>/dev/null
+git -C "$TMP_DIR/work/repo" worktree add -q -b 'feat#1' "$TMP_DIR/elsewhere/hash" 2>/dev/null
 
 new_repo "$TMP_DIR/work/lib"
 git -C "$TMP_DIR/work/lib" remote add origin https://gitlab.com/me/lib.git
@@ -110,13 +114,15 @@ run_shim() {
         XDG_RUNTIME_DIR="$TMP_DIR/run" CAPTURE="$capture" \
         GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
         CLAUDE_PLUGIN_OPTION_TOKEN=unit-test-token LVX_PROJECT=inherited LVX_REPOSITORY=me/inherited \
+        LVX_BRANCH=inherited \
         "$SH" "$CLAUDE_SHIM" Stop >/dev/null
     else
       printf '%s' "$VIBE_PAYLOAD" | env -i PATH="$STUB:$PATH" HOME="$TMP_DIR" \
         XDG_RUNTIME_DIR="$TMP_DIR/run" CAPTURE="$capture" \
         GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
         LOCALVOXTRAL_VIBE_REMOTE_DIR="$VIBE_DIR" LOCALVOXTRAL_VIBE_WATCHER=off \
-        LVX_PROJECT=inherited LVX_REPOSITORY=me/inherited "$SH" "$VIBE_DIR/post.sh" >/dev/null
+        LVX_PROJECT=inherited LVX_REPOSITORY=me/inherited LVX_BRANCH=inherited \
+        "$SH" "$VIBE_DIR/post.sh" >/dev/null
     fi
   )
   [ -r "$capture" ] || fail "$1 shim in $2 never reached curl"
@@ -136,6 +142,19 @@ expect() {
   pass "$agent shim under $SH_NAME in ${dir#"$TMP_DIR"/}: '${want}' '${want_repo}'"
 }
 
+# expect_branch <agent> <cwd> <branch>: the branch header's value, empty for
+# none.
+expect_branch() {
+  local agent="$1" dir="$2" want="$3" got
+  run_shim "$agent" "$dir"
+  got="$(sed -n 's/^X-Lvx-Env-Branch: //p' "$TMP_DIR/capture-$agent")"
+  [ "$got" = "$want" ] \
+    || fail "$agent shim under $SH_NAME in ${dir#"$TMP_DIR"/}: X-Lvx-Env-Branch '$got', want '$want'"
+  pass "$agent shim under $SH_NAME in ${dir#"$TMP_DIR"/}: branch '${want}'"
+}
+
+MAIN_BRANCH="$(git -C "$TMP_DIR/work/repo" symbolic-ref --short HEAD)"
+
 for SH in "${SHELLS[@]}"; do
 case "$SH" in */bash-as-sh/sh) SH_NAME=bash ;; *) SH_NAME=/bin/sh ;; esac
 for agent in claude vibe; do
@@ -154,6 +173,15 @@ for agent in claude vibe; do
   expect "$agent" "$TMP_DIR/plain/dir" ""
   expect "$agent" "$TMP_DIR/work/my repo" ""
   expect "$agent" "$TMP_DIR/work/.dotted" ""
+
+  expect_branch "$agent" "$TMP_DIR/work/repo/Sources/deep" "$MAIN_BRANCH"
+  expect_branch "$agent" "$TMP_DIR/work/repo/.claude/worktrees/bold-bose" bold-bose
+  expect_branch "$agent" "$TMP_DIR/elsewhere/overlay" fix/overlay-names
+  # A detached HEAD names no branch, a name outside the charset is not sent,
+  # and outside a repository an inherited LVX_BRANCH is never sent either.
+  expect_branch "$agent" "$TMP_DIR/elsewhere/detached" ""
+  expect_branch "$agent" "$TMP_DIR/elsewhere/hash" ""
+  expect_branch "$agent" "$TMP_DIR/plain/dir" ""
 done
 done
 
@@ -164,4 +192,7 @@ grep -q 'case .project: return "X-Lvx-Env-Project"' \
 grep -q 'case .repository: return "X-Lvx-Env-Repository"' \
   "$ROOT_DIR/Sources/ClaudeContextWire/ClaudeRemoteSessionEnvironment.swift" \
   || fail "the Swift allowlist no longer reads X-Lvx-Env-Repository"
+grep -q 'case .branch: return "X-Lvx-Env-Branch"' \
+  "$ROOT_DIR/Sources/ClaudeContextWire/ClaudeRemoteSessionEnvironment.swift" \
+  || fail "the Swift allowlist no longer reads X-Lvx-Env-Branch"
 pass "the header names match the Swift allowlist"

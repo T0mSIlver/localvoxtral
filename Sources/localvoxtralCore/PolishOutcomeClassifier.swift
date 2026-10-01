@@ -104,6 +104,16 @@ package enum PolishOutcomeClassifier {
                     endpointURL: endpointURL
                 )
             )
+        case .some(.truncated):
+            let summary = "The polish reached the model's output limit, so the transcript was not polished."
+            return Failure(
+                title: "LLM Polishing Cut Off",
+                message: summary,
+                technicalDetails: connectionTechnicalDetails(
+                    summary,
+                    endpointURL: endpointURL
+                )
+            )
         case .some(.emptyInput), .none:
             return nil
         }

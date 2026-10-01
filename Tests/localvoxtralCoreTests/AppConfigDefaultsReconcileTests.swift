@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 
 @testable import localvoxtralCore
 
@@ -263,6 +264,32 @@ final class AppConfigDefaultsReconcileTests: XCTestCase {
             store.reconcileBundledDefaults().customizedOutdatedFileNames,
             ["llm_system_prompt.toml"]
         )
+    }
+
+    /// A power cut must leave the old config or the new one, never an empty
+    /// file (#1087): each replace syncs its temporary file before the rename
+    /// and the directory after it, and creates a missing directory first.
+    func testAdoptSyncsTheConfigAndStateWritesAroundTheirRenames() throws {
+        let directory = makeTemporaryConfigDirectory()
+        let calls = RecordingDurableFileSystem()
+        let store = AppConfigStore(configDirectoryOverride: directory, durableFileSystem: calls.fileSystem)
+
+        _ = store.adoptBundledDefaults(fileNames: ["llm_system_prompt.toml"])
+
+        let recorded = calls.recorded
+        guard recorded.count == 6,
+              case .sync(let configTemporary) = recorded[0],
+              case .sync(let stateTemporary) = recorded[3]
+        else { return XCTFail("calls: \(recorded)") }
+        let config = directory.appendingPathComponent("llm_system_prompt.toml").path
+        let state = directory.appendingPathComponent(".bundled-defaults-state.json").path
+        XCTAssertEqual(recorded, [
+            .sync(configTemporary), .rename(configTemporary, config), .sync(directory.path),
+            .sync(stateTemporary), .rename(stateTemporary, state), .sync(directory.path),
+        ])
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: config)), try bundledData(for: "llm_system_prompt.toml"))
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasSuffix(".tmp") }, [])
     }
 
     private func bundledData(for fileName: String) throws -> Data {

@@ -174,6 +174,12 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
         ([text] + (followUps ?? []).map(\.text)).joined(separator: "\n\n")
     }
 
+    /// The ids of its captures: its own, then each follow-up's. A voice
+    /// memo's recording is kept under one of them (#988).
+    package var captureIDs: [UUID] {
+        [id] + (followUps ?? []).map(\.id)
+    }
+
     /// When the last of its captures was made.
     package var lastCapturedAt: Date {
         (followUps ?? []).map(\.capturedAt).reduce(capturedAt, max)
@@ -249,6 +255,17 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
 
     package init(items: [QuickCaptureItem] = []) {
         self.items = items
+    }
+
+    /// The captures whose recordings stay: every capture not yet filed,
+    /// and each of its follow-ups (#988).
+    package var recordingIDsToKeep: Set<UUID> {
+        Set(items.filter { $0.state != .filed }.flatMap(\.captureIDs))
+    }
+
+    /// Whether capture `id` is listed, on its own or as a follow-up.
+    package func holds(_ id: UUID) -> Bool {
+        items.contains { $0.captureIDs.contains(id) }
     }
 
     package mutating func add(_ item: QuickCaptureItem) {
@@ -629,8 +646,9 @@ package enum QuickCaptureInboxFile {
 
 /// A file that holds the user's words or audio names.
 package enum PrivateFile {
-    /// Never readable by anyone else, not even for a moment: a 0600
-    /// temporary file renamed over the old one.
+    /// Never readable by anyone else, not even for a moment, and never left
+    /// empty by a power cut: `DurableFile`'s 0600 temporary file, synced and
+    /// renamed over the old one.
     package static func write(_ data: Data, to url: URL) throws {
         let fileManager = FileManager.default
         let directory = url.deletingLastPathComponent()
@@ -639,23 +657,6 @@ package enum PrivateFile {
                 at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
             )
         }
-        let temporary = directory.appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString)")
-        guard fileManager.createFile(
-            atPath: temporary.path, contents: nil, attributes: [.posixPermissions: 0o600]
-        ) else {
-            throw CocoaError(.fileWriteNoPermission)
-        }
-        do {
-            let handle = try FileHandle(forWritingTo: temporary)
-            try handle.write(contentsOf: data)
-            try handle.close()
-            // rename(2) replaces the old file in one step, on both platforms.
-            guard rename(temporary.path, url.path) == 0 else {
-                throw CocoaError(.fileWriteUnknown)
-            }
-        } catch {
-            try? fileManager.removeItem(at: temporary)
-            throw error
-        }
+        try DurableFile.write(data, to: url)
     }
 }

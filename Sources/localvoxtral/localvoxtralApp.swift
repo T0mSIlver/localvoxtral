@@ -278,11 +278,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             remoteHosts = nil
         }
-        let activeRemoteChannels = Set(
-            (remoteHosts?.hosts() ?? [])
-                .filter { !$0.isRevoked }
-                .map { ClaudeRemoteSessionScope.channel(hostID: $0.id) }
-        )
+        // Nil when the registry failed to load: channels unknown, not none,
+        // so the restore keeps remote sessions in the file (#1041).
+        let activeRemoteChannels = remoteHosts.map { registry in
+            Set(
+                registry.hosts()
+                    .filter { !$0.isRevoked }
+                    .map { ClaudeRemoteSessionScope.channel(hostID: $0.id) }
+            )
+        }
         claudeSessionRegistry = ClaudeSessionRegistry(
             store: ClaudeSessionFileStore(),
             allowedRemoteChannels: activeRemoteChannels
@@ -568,7 +572,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.claudeRemoteHosts?.hosts(matchingSSHDestination: destination) ?? []
             },
             canonicalizedEnrolledHosts: { [weak self] destination in
-                guard let hosts = self?.claudeRemoteHosts?.hosts() else { return [] }
+                guard let hosts = self?.claudeRemoteHosts?.activeHostsIfReadable() else { return [] }
                 return await canonicalizer.matchingHosts(destination: destination, enrolledHosts: hosts)
             }
         )
@@ -770,7 +774,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self?.claudeRemoteHosts?.hosts(matchingSSHDestination: destination) ?? []
                 },
                 canonicalizedEnrolledHosts: { [weak self] destination in
-                    guard let hosts = self?.claudeRemoteHosts?.hosts() else { return [] }
+                    guard let hosts = self?.claudeRemoteHosts?.activeHostsIfReadable() else { return [] }
                     return await sshDestinationCanonicalizer.matchingHosts(
                         destination: destination,
                         enrolledHosts: hosts
@@ -780,7 +784,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     await sshDestinationCanonicalizer.proxyJumpShape(for: destination)
                 },
                 speculativeHosts: { [weak self] in
-                    self?.claudeRemoteHosts?.hosts() ?? []
+                    self?.claudeRemoteHosts?.activeHostsIfReadable() ?? []
                 },
                 remoteHerdrForwards: claudeRemoteHerdrForwards,
                 herdrPanelMetadata: herdrClient,
@@ -1067,7 +1071,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         viewModel.quickCapture?.attachRemote(quickCapture)
         viewModel.quickCapture?.enrolledHosts = {
-            registry?.hosts().filter { $0.revokedAt == nil }.map { (id: $0.id, name: $0.label) } ?? []
+            registry?.activeHostsIfReadable().map { (id: $0.id, name: $0.label) } ?? []
         }
         viewModel.quickCapture?.liveSessions = { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() }
 

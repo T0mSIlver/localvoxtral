@@ -109,7 +109,15 @@ package struct VoiceMemoLedger: Codable, Equatable, Sendable {
 
     package struct Entry: Codable, Equatable, Sendable {
         package var size: Int
+        /// Absent in entries written before #1098.
+        package var modifiedAt: Date?
         package var state: State
+
+        /// Whether `file` is the file this entry was written for: a memo
+        /// replaced in iCloud may keep its name and size, not its date.
+        package func describes(_ file: VoiceMemoFile) -> Bool {
+            size == file.size && (modifiedAt == nil || modifiedAt == file.modifiedAt)
+        }
     }
 
     package var version = VoiceMemoLedger.currentVersion
@@ -120,8 +128,7 @@ package struct VoiceMemoLedger: Codable, Equatable, Sendable {
     /// Whether `file` still needs a capture: new, or a different file saved
     /// under a handled one's name, or interrupted before its item was saved.
     package func needsCapture(_ file: VoiceMemoFile, inboxHas: (UUID) -> Bool) -> Bool {
-        guard let entry = entries[file.name] else { return true }
-        if entry.size != file.size { return true }
+        guard let entry = entries[file.name], entry.describes(file) else { return true }
         if case .transcribing(let id) = entry.state { return !inboxHas(id) }
         return false
     }

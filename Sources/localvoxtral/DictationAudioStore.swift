@@ -61,23 +61,58 @@ final class DictationAudioStore: Sendable {
         return removed
     }
 
-    /// Deletes every file whose record is gone. Retention and Delete go
-    /// through the history store, so this is how their audio follows them,
-    /// whatever deleted the record.
+    /// Deletes every file whose id is not in `kept`.
     @discardableResult
     func removeAll(except kept: Set<UUID>) -> Int {
         remove(storedIDs().subtracting(kept))
     }
 
-    /// Deletes whatever in the folder is not a recording: the temporary file
-    /// an atomic write leaves when the app dies mid-write. Launch only, when
-    /// no write is in flight.
-    func removeStrayFiles() {
+    /// Moves the files of exactly these ids into `folder`, for the sweeps:
+    /// nothing they find is deleted outright (#985). Returns how many moved.
+    @discardableResult
+    func quarantine(_ ids: some Sequence<UUID>, into folder: URL) -> Int {
+        var moved = 0
+        for id in ids {
+            let url = fileURL(for: id)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            if Self.move(url, into: folder) { moved += 1 }
+        }
+        return moved
+    }
+
+    /// Moves into `folder` whatever in the folder is not a recording and was
+    /// last written before `cutoff`: the temporary file an atomic write
+    /// leaves when the app dies mid-write. A newer one may be another copy
+    /// of the app writing right now.
+    func quarantineStrayFiles(writtenBefore cutoff: Date, into folder: URL) {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: directoryURL.path)) ?? []
         for name in names {
             let isRecording = name.hasSuffix(".wav") && UUID(uuidString: String(name.dropLast(4))) != nil
             guard !isRecording else { continue }
-            try? FileManager.default.removeItem(at: directoryURL.appendingPathComponent(name))
+            let url = directoryURL.appendingPathComponent(name)
+            let modified = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+            guard let modified, modified < cutoff else { continue }
+            Self.move(url, into: folder)
+        }
+    }
+
+    @discardableResult
+    private static func move(_ url: URL, into folder: URL) -> Bool {
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            // Never over a file already there: another running copy may have
+            // quarantined the same recording a moment ago.
+            var destination = folder.appendingPathComponent(url.lastPathComponent)
+            if FileManager.default.fileExists(atPath: destination.path) {
+                destination = folder.appendingPathComponent("\(UUID().uuidString)-\(url.lastPathComponent)")
+            }
+            try FileManager.default.moveItem(at: url, to: destination)
+            return true
+        } catch {
+            Log.persistence.error(
+                "History: could not move \(url.lastPathComponent, privacy: .public) to quarantine: \(error.localizedDescription, privacy: .public)"
+            )
+            return false
         }
     }
 

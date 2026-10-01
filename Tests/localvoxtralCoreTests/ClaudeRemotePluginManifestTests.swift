@@ -1245,13 +1245,14 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     /// `$SSH_CONNECTION` is the one value the shim TRANSFORMS — its four
     /// space-separated fields are re-joined with commas, so an opaque
     /// `value-…` fixture would be correctly dropped. Each has a test of its
-    /// own below. `$LVX_PROJECT` is not read from the environment at all: the
-    /// shim computes it with git from its cwd (#652), and
+    /// own below. `$LVX_PROJECT` and `$LVX_BRANCH` are not read from the
+    /// environment at all: the shim computes them with git from its cwd
+    /// (#652, #1020), and
     /// `scripts/ci/test-remote-shim-project.sh` runs both shims in real
     /// repositories for it. `$CLAUDE_CODE_HOST_SESSION_ID` is sent only from a
     /// process tree the test runner is not, and has tests of its own (#657).
     private static let shimTransformedOrIntrinsicFields: Set<ClaudeRemoteEnvironmentField> =
-        [.hookParentPID, .sshConnection, .project, .repository, .desktopSessionID]
+        [.hookParentPID, .sshConnection, .project, .repository, .branch, .desktopSessionID]
 
     func testShimSendsEveryAllowlistedEnvValueUnderTheHeaderTheListenerReads() throws {
         // One distinct value per variable, so a copy-pasted header name shows
@@ -1311,7 +1312,8 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     /// inside a repository, so it is run inside one. On macOS that is bash
     /// 3.2 as /bin/sh, which ended the first version with a syntax error that
     /// Linux's dash never raised (#652). Its GitHub `origin` rides beside it
-    /// (#926), a fork's own rather than its upstream.
+    /// (#926), a fork's own rather than its upstream, and so does the branch
+    /// checked out (#1020).
     func testShimNamesTheRepositoryItRunsIn() throws {
         let repo = FileManager.default.temporaryDirectory
             .appendingPathComponent("shim-repo-\(UUID().uuidString)/api")
@@ -1321,6 +1323,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             ["init", "-q", repo.path],
             ["-C", repo.path, "remote", "add", "origin", "git@github.com:me/api.git"],
             ["-C", repo.path, "remote", "add", "upstream", "https://github.com/them/api.git"],
+            ["-C", repo.path, "checkout", "-q", "-b", "fix/overlay-names"],
         ] {
             let git = Process()
             git.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -1334,6 +1337,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         let environment = ClaudeRemoteEnvironmentCodec.environment(in: request.headers)
         XCTAssertEqual(environment?.project, "api")
         XCTAssertEqual(environment?.repository, "me/api")
+        XCTAssertEqual(environment?.branch, "fix/overlay-names")
     }
 
     func testShimTreatsAnExportedButEmptyVariableAsAbsent() throws {
@@ -1765,7 +1769,8 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
 
     /// What the shim posts for a recorded Desktop hook (#834), run as a
     /// Desktop session's own hook: the env headers and the body, read by the
-    /// listener's own parsers.
+    /// listener's own parsers. Run outside any repository, or the checkout
+    /// the suite runs in would lend the session its project and branch.
     private func desktopSessionPost(
         event: String, recorded name: String
     ) throws -> (environment: ClaudeRemoteSessionEnvironment?, body: Data) {
@@ -1783,6 +1788,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             status: "200",
             body: ClaudeRemoteHTTPCodec.hookResponseBody,
             extraEnvironment: environment,
+            workingDirectory: tree.root,
             payload: payload,
             launcher: tree.launcher
         )

@@ -132,9 +132,13 @@ final class VoiceMemoController {
 
         // Kept audio goes with its capture, whatever the setting says now.
         inbox.model.onDone = { [audioStore] id in audioStore.remove([id]) }
-        let waiting = Set(inbox.items.filter { $0.state != .filed }.map(\.id))
-        let removed = audioStore.removeAll(except: waiting)
-        if removed > 0 { Log.persistence.info("Voice memos: removed \(removed, privacy: .public) recordings with no capture") }
+        // An Inbox that did not load may hold any of them: keep them all (#988).
+        if inbox.model.storeProblem == nil {
+            let removed = audioStore.removeAll(except: inbox.model.recordingIDsToKeep)
+            if removed > 0 { Log.persistence.info("Voice memos: removed \(removed, privacy: .public) recordings with no capture") }
+        } else {
+            Log.persistence.error("Voice memos: recordings kept, the inbox file could not be loaded")
+        }
 
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
@@ -228,14 +232,16 @@ final class VoiceMemoController {
             ledgerURL: ledgerURL,
             transcriber: transcriber,
             inboxHas: { id in inbox.model.holds(id) },
+            inboxIsSaved: { !inbox.model.hasUnsavedChanges },
             capture: { id, text, recordedAt, pcm in
                 do {
                     try audioStore.write(pcm16: pcm, for: id)
                 } catch {
                     Log.persistence.error("Voice memos: audio write failed: \(error.localizedDescription, privacy: .public)")
+                    throw error
                 }
                 let recordID = saveHistory(text, recordedAt)
-                _ = inbox.model.capture(text: text, historyRecordID: recordID, id: id, capturedAt: recordedAt)
+                try inbox.model.captureVoiceMemo(text: text, historyRecordID: recordID, id: id, capturedAt: recordedAt)
             }
         )
         intake.canTranscribe = { [isDictationActive] in !isDictationActive() }

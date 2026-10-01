@@ -140,12 +140,16 @@ package final class FakeCmuxSocket: @unchecked Sendable {
             return state.stopped
         }
         guard !wasStopped else { return }
+        // The serve thread closes the listener when it ends. Closing it here
+        // would free the descriptor while that thread may still be on its
+        // way back to `accept()`, and the next fixture's `socket()` reuses
+        // it (#1128).
         wakeBlockedUnixListener(atPath: socketPath)
-        close(listener)
         try? FileManager.default.removeItem(at: directory)
     }
 
     private func serve() {
+        defer { close(listener) }
         while true {
             let connection = accept(listener, nil, nil)
             if state.withLock({ $0.stopped }) {

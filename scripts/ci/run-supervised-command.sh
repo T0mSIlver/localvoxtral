@@ -410,6 +410,16 @@ if (( command_status == 0 )); then
   echo "Command completed; final log output:"
   tail -n 40 "$log_file" || true
 else
+  # Swift prints a file's diagnostics together, so a compile error can sit
+  # above hundreds of warnings and out of the tail (#1094). Print the log's
+  # error lines first, each once, at most 50.
+  error_lines="$(grep -E '(^|[[:space:]:])error: ' "$log_file" 2>/dev/null | awk '
+    !seen[$0]++ { if (++n <= 50) print }
+    END { if (n > 50) printf "... %d more error lines not shown\n", n - 50 }')" || true
+  if [[ -n "$error_lines" ]]; then
+    echo "Command failed with status $command_status; error lines in the log:" >&2
+    printf '%s\n\n' "$error_lines" >&2
+  fi
   echo "Command failed with status $command_status; final log output:" >&2
   tail -n 200 "$log_file" >&2 || true
 fi
