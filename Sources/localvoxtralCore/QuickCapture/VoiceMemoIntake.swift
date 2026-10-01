@@ -63,6 +63,11 @@ package final class VoiceMemoIntake {
     private var reportedLedgerProblem = false
     private var reportedInboxProblem = false
     private var lastSeen: [String: VoiceMemoFile] = [:]
+    /// Items whose capture reached the Inbox but not its file (#1098). Once
+    /// the file is saved, the memo is done whether the item is still there
+    /// or the user discarded it. Memory only: after a relaunch the item is
+    /// gone, and the memo is taken again.
+    private var unsavedCaptures: Set<UUID> = []
     private var isScanning = false
     private var lastListFailure: String?
     /// Held while this copy of the app is the one that scans (#990).
@@ -180,12 +185,18 @@ package final class VoiceMemoIntake {
 
         var captured = 0
         for file in files.sorted(by: { $0.modifiedAt < $1.modifiedAt }) {
-            // A capture whose save failed, or a quit interrupted, and whose
-            // words have reached the Inbox file since.
-            if let entry = ledger.entries[file.name], entry.size == file.size,
-               case .transcribing(let itemID) = entry.state, inboxHas(itemID), inboxIsSaved()
+            // A capture whose save failed, or a quit interrupted: done once
+            // the Inbox file holds its words, or the user's discard of them.
+            if let entry = ledger.entries[file.name], entry.describes(file),
+               case .transcribing(let itemID) = entry.state,
+               inboxHas(itemID) || unsavedCaptures.contains(itemID)
             {
-                finish(file, itemID: itemID, at: directory.appendingPathComponent(file.name))
+                if inboxIsSaved() {
+                    if !inboxHas(itemID) {
+                        Log.backends.info("Voice memos: an unsaved capture was discarded; the memo is done")
+                    }
+                    finish(file, itemID: itemID, at: directory.appendingPathComponent(file.name))
+                }
                 continue
             }
             guard ledger.needsCapture(file, inboxHas: { inboxHas($0) }) else { continue }
@@ -265,6 +276,7 @@ package final class VoiceMemoIntake {
         } catch {
             // The ledger keeps `.transcribing`: a relaunch retries the memo
             // unless its words reached the Inbox file meanwhile.
+            if inboxHas(itemID) { unsavedCaptures.insert(itemID) }
             Log.persistence.error("Voice memos: capture not saved, the memo stays in the folder: \(error.localizedDescription, privacy: .public)")
             onStatus?("A voice memo could not be saved.")
             return .stopPass
@@ -286,6 +298,7 @@ package final class VoiceMemoIntake {
     /// The memo's capture is on disk: marks it captured and moves it to the
     /// Trash.
     private func finish(_ file: VoiceMemoFile, itemID: UUID, at url: URL) {
+        unsavedCaptures.remove(itemID)
         record(file, .captured(itemID: itemID))
         do {
             try removeTranscribed(url)
@@ -296,7 +309,7 @@ package final class VoiceMemoIntake {
     }
 
     private func record(_ file: VoiceMemoFile, _ state: VoiceMemoLedger.State) {
-        ledger.entries[file.name] = VoiceMemoLedger.Entry(size: file.size, state: state)
+        ledger.entries[file.name] = VoiceMemoLedger.Entry(size: file.size, modifiedAt: file.modifiedAt, state: state)
         saveLedger()
     }
 
