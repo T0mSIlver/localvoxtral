@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [churn, class-under-load, suite]
+        mode: [deliberate-crash]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -66,71 +66,14 @@ jobs:
         run: |
           osascript -l JavaScript -e 'ObjC.import("AppKit"); var m = $.NSEvent.mouseLocation; var s = $.NSScreen.mainScreen.frame; "mouse=" + m.x + "," + m.y + " screen=" + s.size.width + "x" + s.size.height' || true
 
-      - name: Stress (${{ matrix.mode }})
-        env:
-          MODE: ${{ matrix.mode }}
-          SECONDS_BUDGET: "2100"
+      - name: Crash an xctest on purpose
         run: |
-          set -uo pipefail
-          rm -f ~/Library/Logs/DiagnosticReports/xctest*.ips
           BUNDLE="$(find .build -maxdepth 3 -type d -name localvoxtralPackageTests.xctest | head -n 1)"
-          if [[ "$MODE" != suite ]]; then
-            # The crashed shard ran beside two others on a 3-core VM.
-            for _ in 1 2 3; do (yes > /dev/null &); done
-          fi
-          pass=0; fail=0; began=$(date +%s); round=0
-          while (( $(date +%s) - began < SECONDS_BUDGET )); do
-            round=$((round + 1))
-            case "$MODE" in
-              churn)
-                LV_STRESS_1162=1 NSUnbufferedIO=YES xcrun xctest \
-                  -XCTest localvoxtralTests.OverlayControllerChurnStressTests "$BUNDLE" > "$RUNNER_TEMP/round.log" 2>&1 ;;
-              class-under-load)
-                NSUnbufferedIO=YES xcrun xctest \
-                  -XCTest localvoxtralTests.OverlayDestinationClickTests "$BUNDLE" > "$RUNNER_TEMP/round.log" 2>&1 ;;
-              suite)
-                NSUnbufferedIO=YES ./scripts/ci/run-unit-shards.sh --coverage "$(sysctl -n hw.ncpu)" \
-                  RealtimeAPIVLLMIntegrationTests SpeechHelperIntegrationTests AgentDictationE2EEvalTests \
-                  HerdrIntegrationTests PolishContextPreparationTests OverlayControllerChurnStressTests \
-                  > "$RUNNER_TEMP/round.log" 2>&1 ;;
-            esac
-            status=$?
-            if [[ $status -eq 0 ]]; then
-              pass=$((pass + 1))
-            else
-              fail=$((fail + 1))
-              echo "::warning::round $round exited $status"
-              grep -E "signal code|==> |error:|failed \(|started\.$" "$RUNNER_TEMP/round.log" | cut -c1-300 | tail -n 8
-            fi
-          done
-          pkill yes || true
-          echo "RESULT: $MODE: $pass passed, $fail failed of $round rounds"
-          echo "$fail" > "$RUNNER_TEMP/fails"
+          LV_STRESS_CRASH=1 NSUnbufferedIO=YES xcrun xctest \
+            -XCTest localvoxtralTests.OverlayControllerChurnStressTests/testDeliberateSegfault "$BUNDLE" \
+            > "$RUNNER_TEMP/crash.log" 2>&1
+          echo "xctest exited $?"
+          tail -n 3 "$RUNNER_TEMP/crash.log"
 
-      - name: Crash reports
-        if: always()
-        run: |
-          sleep 5
-          python3 - <<'EOF'
-          import glob, json, os
-          paths = sorted(glob.glob(os.path.expanduser("~/Library/Logs/DiagnosticReports/xctest*.ips")))
-          print(f"{len(paths)} xctest crash report(s)")
-          for path in paths[:3]:
-              print("=" * 30, os.path.basename(path))
-              raw = open(path).read()
-              body = json.loads(raw.split("\n", 1)[1])
-              print("exception:", json.dumps(body.get("exception")), "termination:", json.dumps(body.get("termination", {}).get("indicator")))
-              images = body.get("usedImages", [])
-              def frames(thread):
-                  for f in thread.get("frames", [])[:40]:
-                      img = images[f["imageIndex"]].get("name", "?") if f.get("imageIndex") is not None and f["imageIndex"] < len(images) else "?"
-                      print(f"  {img:32} {f.get('symbol', '?')} +{f.get('symbolLocation', 0)}")
-              threads = body.get("threads", [])
-              faulting = body.get("faultingThread", 0)
-              print(f"-- faulting thread {faulting} --")
-              frames(threads[faulting])
-              if faulting != 0:
-                  print("-- main thread --")
-                  frames(threads[0])
-          EOF
-          test "$(cat "$RUNNER_TEMP/fails" 2>/dev/null || echo 1)" = 0
+      - name: Summarize it the way build-test does
+        run: ./scripts/ci/xctest-crash-summary.py --wait 30

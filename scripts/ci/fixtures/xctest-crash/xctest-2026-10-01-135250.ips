@@ -1,0 +1,21 @@
+{"app_name":"xctest","timestamp":"2026-10-01 13:52:50.00 +0000","app_version":"","slice_uuid":"00000000-0000-0000-0000-000000000000","bug_type":"309","os_version":"macOS 26.0","name":"xctest"}
+{
+  "procPath" : "\/Applications\/Xcode_26.6.app\/Contents\/Developer\/usr\/bin\/xctest",
+  "exception" : {"codes":"0x0000000000000001, 0x0000000000000008","rawCodes":[1,8],"type":"EXC_BAD_ACCESS","signal":"SIGSEGV","subtype":"KERN_INVALID_ADDRESS at 0x0000000000000008"},
+  "termination" : {"flags":0,"code":11,"namespace":"SIGNAL","indicator":"Segmentation fault: 11","byProc":"exc handler","byPid":4242},
+  "faultingThread" : 0,
+  "threads" : [
+    {"triggered":true,"id":1,"queue":"com.apple.main-thread","frames":[
+      {"imageOffset":4096,"symbol":"objc_msgSend","symbolLocation":56,"imageIndex":0},
+      {"imageOffset":8192,"symbol":"OverlayDestinationClickTests.testARowScrolledOutOfViewPicksNothing()","symbolLocation":120,"imageIndex":1,"sourceFile":"OverlayDestinationClickTests.swift","sourceLine":110},
+      {"imageOffset":12288,"imageIndex":2}
+    ]},
+    {"id":2,"name":"com.apple.NSEventThread","frames":[{"imageOffset":64,"symbol":"mach_msg2_trap","symbolLocation":8,"imageIndex":3}]}
+  ],
+  "usedImages" : [
+    {"name":"libobjc.A.dylib"},
+    {"name":"localvoxtralPackageTests"},
+    {"name":"XCTestCore"},
+    {"name":"libsystem_kernel.dylib"}
+  ]
+}

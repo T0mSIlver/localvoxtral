@@ -44,4 +44,11 @@ final class OverlayControllerChurnStressTests: XCTestCase {
             RunLoop.main.run(mode: .default, before: Date(timeIntervalSinceNow: Double(round % 4) * 0.01))
         }
     }
+
+    /// Dies on SIGSEGV, to prove build-test's crash-report step on a hosted
+    /// runner.
+    func testDeliberateSegfault() {
+        guard ProcessInfo.processInfo.environment["LV_STRESS_CRASH"] == "1" else { return }
+        UnsafeMutablePointer<Int>(bitPattern: 8)!.pointee = 1
+    }
 }

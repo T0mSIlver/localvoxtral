@@ -386,6 +386,19 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Crash reports from the unit suite
+        # A shard that dies on a signal logs only "exited with unexpected
+        # signal code"; the frames are in the .ips report macOS writes, and
+        # the hosted VM is discarded with it (#1162). Waits for the report
+        # only when a process did die: ReportCrash writes it seconds later.
+        if: ${{ failure() && steps.ci_scope.outputs.docs_only != 'true' }}
+        run: |
+          wait=0
+          if grep -q "exited with unexpected signal code" "$RUNNER_TEMP/localvoxtral-unit-tests.log" 2>/dev/null; then
+            wait=30
+          fi
+          ./scripts/ci/xctest-crash-summary.py --wait "$wait"
+
       - name: Save SwiftPM build cache
         # Main only: a PR restores main's newest entry through the restore
         # prefix, and saving per PR push would evict main's entries from the
