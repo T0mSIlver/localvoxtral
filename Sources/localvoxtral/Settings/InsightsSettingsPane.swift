@@ -35,6 +35,8 @@ struct InsightsSettingsPane: View {
             usageGroup(model.featureUsage)
         }
         .onAppear { viewModel.applyDictationHistoryRetention() }
+        // Another running copy may have recorded usage (#1126).
+        .task { await viewModel.engines.usageLedger?.reloadIfChanged() }
         .task(id: ReloadTrigger(
             revision: viewModel.dictationHistoryRevision, period: model.period
         )) {

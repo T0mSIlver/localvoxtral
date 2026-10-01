@@ -23,10 +23,10 @@ final class StoredFileUpdateTests: XCTestCase {
     private struct DiskFull: Error {}
 
     private func update(
-        _ memory: inout [String], lastSeen: inout Data?, writeFails: Bool = false, adding word: String
+        _ memory: inout [String], seen: inout StoredFileSeen, writeFails: Bool = false, adding word: String
     ) {
         let result = StoredFile.update(
-            fileURL, memory: memory, lastSeen: &lastSeen,
+            fileURL, memory: memory, seen: &seen,
             decode: { data in (try? JSONDecoder().decode([String].self, from: data)).map { .loaded($0) } ?? .refused(.unreadable) },
             encode: { try JSONEncoder().encode($0) },
             write: { data, url in
@@ -45,13 +45,13 @@ final class StoredFileUpdateTests: XCTestCase {
     /// written by the next update.
     func testAChangeWhoseWriteFailedAfterAnotherCopyWroteIsKept() throws {
         var memory: [String] = []
-        var lastSeen: Data?
-        update(&memory, lastSeen: &lastSeen, adding: "Voxtral")
+        var seen = StoredFileSeen()
+        update(&memory, seen: &seen, adding: "Voxtral")
         try JSONEncoder().encode(["Voxtral", "Mistral"]).write(to: fileURL)
 
-        update(&memory, lastSeen: &lastSeen, writeFails: true, adding: "Tekken")
+        update(&memory, seen: &seen, writeFails: true, adding: "Tekken")
         XCTAssertEqual(memory, ["Voxtral", "Mistral", "Tekken"])
-        update(&memory, lastSeen: &lastSeen, adding: "Ministral")
+        update(&memory, seen: &seen, adding: "Ministral")
 
         XCTAssertEqual(
             try JSONDecoder().decode([String].self, from: Data(contentsOf: fileURL)),
