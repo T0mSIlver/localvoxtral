@@ -203,6 +203,54 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
         )
     }
 
+    /// A stop that runs once more after its done, as an External URL session's
+    /// does (#1070): the live server answers that run too, so the stop ends on
+    /// it with the whole transcript.
+    func testVLLMStopWithTheTailRunEndsOnTheServersAnswer() async throws {
+        let base = try integrationConfiguration()
+        let configuration = RealtimeSessionConfiguration(
+            endpoint: base.endpoint, apiKey: base.apiKey, model: base.model, tailRunAfterStopDone: true)
+        let phrase = "the stop runs once more after its done, and the server answers that run as well."
+        let chunks = IntegrationTestSupport.splitPCM16IntoChunks(
+            try IntegrationTestSupport.makeSpokenPCM16Data(phrase: phrase), chunkSizeBytes: 3_200)
+        let client = RealtimeAPIWebSocketClient()
+        let finalTexts = NSLockingStringCollector()
+        let finalized = expectation(description: "finalized")
+        let realtimeError = expectation(description: "realtime error")
+        realtimeError.isInverted = true
+
+        client.setEventHandler { event, _ in
+            switch event {
+            case .connected:
+                // Audio on both sides of the run's commit, as in a dictation.
+                let half = chunks.count / 2
+                chunks[..<half].forEach(client.sendAudioChunk)
+                client.sendCommit(final: false)
+                chunks[half...].forEach(client.sendAudioChunk)
+                client.sendCommit(final: true)
+            case .finalTranscript(let text):
+                let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !normalized.isEmpty { finalTexts.append(normalized) }
+            case .transcriptionFinalized:
+                finalized.fulfill()
+            case .error:
+                realtimeError.fulfill()
+            default:
+                break
+            }
+        }
+
+        try client.connect(configuration: configuration)
+        await fulfillment(of: [finalized], timeout: 60.0)
+        client.disconnect()
+        await fulfillment(of: [realtimeError], timeout: 0.2)
+
+        let transcript = finalTexts.snapshot().joined(separator: " ")
+        let accuracy = IntegrationTestSupport.wordAccuracy(expected: phrase, actual: transcript)
+        print("tail run integration: word accuracy \(String(format: "%.3f", accuracy)); transcript: \(transcript)")
+        XCTAssertGreaterThanOrEqual(accuracy, 0.55, "Transcript: \(transcript)")
+    }
+
     /// The backend half of the mid-dictation reconnect (#380): after a socket
     /// drops mid-utterance, the session that replaces it must transcribe the
     /// audio the gap buffered, delivered as the single burst the restarted send
