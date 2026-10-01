@@ -1503,7 +1503,13 @@ there is not.
     reconcile, vocab-always / raw-excerpt-only-after-authorized-join). A TTY
     join in iTerm2/Terminal.app authorizes attaching that focused pane's
     contents; herdr and cmux joins never attach AX surface text on any
-    terminal.
+    terminal. A TTY join authorizes only the pane it matched: the start
+    capture carries the focused pane's tty, read just before its text, and
+    the join's own tty read just after it closes the bracket. The two must
+    be equal, because a window's tabs share its window identity and a tab
+    switch between the capture and the join would otherwise pair one tab's
+    screen with another tab's session (#1226). This is the one extra surface
+    read per dictation; it selects nothing, it only binds the capture.
   - **The local-tty echo arm (`.remoteLocalTTY`, 2026-09-06).** The tty arm,
     with the identifier taking one extra trip — and the arm that actually
     serves the configs people have. `resolve(tty:)` compares the focused
