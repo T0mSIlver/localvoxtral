@@ -7,6 +7,7 @@
     "passthroughExtraParameters" : false,
     "requestShape" : "openAICompatible"
   },
+  "lastError" : "The LLM polishing endpoint answered with no usable text, so the transcript was not polished. [endpoint: http://127.0.0.1:8080/v1/chat/completions]",
   "learnedTermsRecorded" : [
 
   ],
@@ -32,5 +33,5 @@
       "Working text:\nplease fix localvoxtral before the release"
     ]
   },
-  "statusText" : "Ready"
+  "statusText" : "LLM polishing failed."
 }
