@@ -74,6 +74,8 @@ struct DiagnosticRecordStore: Sendable {
         case invalidID(String)
         /// The record exists but could not be read back or decoded.
         case unreadableRecord(path: String)
+        /// A newer build wrote the record; patching it would lose its fields.
+        case newerRecord(schemaVersion: Int)
     }
 
     /// Serializes every read-modify-write over a record file: the behavior
@@ -179,6 +181,14 @@ struct DiagnosticRecordStore: Sendable {
             else {
                 throw StoreError.unreadableRecord(path: url.path)
             }
+            // Re-encoding a newer build's record would drop the fields this
+            // build does not know (#1042).
+            guard record.schemaVersion <= DiagnosticRecord.currentSchemaVersion else {
+                Log.backends.error(
+                    "Diagnostic record: kept a schema \(record.schemaVersion, privacy: .public) record unpatched; this build writes \(DiagnosticRecord.currentSchemaVersion, privacy: .public)"
+                )
+                throw StoreError.newerRecord(schemaVersion: record.schemaVersion)
+            }
             record.behavior = behavior
             guard let encoded = try? makeEncoder().encode(record) else {
                 throw StoreError.encodingFailed
@@ -250,6 +260,36 @@ struct DiagnosticRecordStore: Sendable {
     func removeAll(except kept: Set<UUID>) -> Int {
         Self.recordMutationLock.withLock { _ in
             removeLocked(((try? listRecords()) ?? []).filter { !kept.contains($0.id) })
+        }
+    }
+
+    /// Moves the records of exactly these ids into `folder`, for the History
+    /// sweeps, which never delete what they find outright (#985). Returns how
+    /// many moved.
+    @discardableResult
+    func quarantine(_ ids: Set<UUID>, into folder: URL) -> Int {
+        Self.recordMutationLock.withLock { _ in
+            var moved = 0
+            for record in ((try? listRecords()) ?? []) where ids.contains(record.id) {
+                do {
+                    guard let data = try io.read(from: record.url) else { continue }
+                    // Never over a record already there: another running copy
+                    // may have quarantined the same one a moment ago.
+                    var destination = folder.appendingPathComponent(record.url.lastPathComponent)
+                    if try io.read(from: destination) != nil {
+                        destination = folder.appendingPathComponent(
+                            "\(UUID().uuidString)-\(record.url.lastPathComponent)")
+                    }
+                    try io.write(data, to: destination)
+                    try directoryIO.remove(at: record.url)
+                    moved += 1
+                } catch {
+                    Log.backends.error(
+                        "Diagnostic record: could not move \(record.url.lastPathComponent, privacy: .public) to quarantine: \(error.localizedDescription, privacy: .public)"
+                    )
+                }
+            }
+            return moved
         }
     }
 

@@ -255,6 +255,41 @@ final class PolishHelperIntegrationTests: XCTestCase {
         warmed.process.terminate()
     }
 
+    /// A polish that hits the helper's generation cap is reported as cut off,
+    /// never served as a finished polish (#1109): the helper's
+    /// `finish_reason` says `length` and the production client refuses the
+    /// prefix, so the stop commits the raw transcript.
+    func testAPolishCutOffByTheGenerationCapIsRefused() async throws {
+        let (binary, model) = try helperConfiguration()
+        try await ensurePolishModelCached(model)
+        let option = PolishModelCatalog.option(forRepoID: model)
+        let (templates, cleanup) = try LLMPolishEvalSupport.defaultPromptTemplates()
+        addTeardownBlock { cleanup() }
+
+        let helper = try await launchPolishHelper(
+            binary: binary, model: model, extraArguments: ["--default-max-tokens", "4"])
+        let transcript =
+            "so the plan for tomorrow is to finish the migration then run the full test suite and ship it before lunch"
+        let request = LLMPolishingRequest(
+            inputText: transcript,
+            systemPrompt: templates.systemContent,
+            userPrompts: templates.renderedUserPrompts(inputText: transcript, replacementDictionary: "")
+        )
+        let configuration = LLMPolishingConfiguration(
+            endpointURL: URL(string: "http://127.0.0.1:\(helper.port)/v1/chat/completions")!,
+            apiKey: "",
+            model: model,
+            samplingDefaults: option?.samplingDefaults,
+            chatTemplateArguments: option?.chatTemplateArguments
+        )
+
+        do {
+            let result = try await LLMPolishingService().polish(request: request, configuration: configuration)
+            XCTFail("a 4-token polish was accepted: \(result.polishedText.debugDescription)")
+        } catch LLMPolishingError.truncated {
+        }
+    }
+
     /// The two-slot cache demonstration: alternate two distinct prompt
     /// profiles (the bundled standard templates plus a synthetic
     /// agent-flavored profile — independent of #113's agent templates)
