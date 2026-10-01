@@ -454,9 +454,9 @@ there is not.
   About-you block ends with `Their projects (repository names): …`, built by
   `PolishProjectNames` from quick capture's project list
   (`QuickCaptureProjects.projects`): each project's name and its
-  repository's, sorted, the 30 most recent projects, without labels a tool
-  generated (a folder name ending in a hex hash, such as a Claude Desktop
-  worktree's). It goes to every endpoint whatever the context toggles say,
+  repository's, sorted, the 30 most recent projects. That list holds no
+  label a tool generated (a folder name ending in a hex hash, such as a
+  Claude Desktop worktree's, `LearnedTerms.isGeneratedLabel`, #1026). It goes to every endpoint whatever the context toggles say,
   on the same ruling as learned terms above: a repository name is the
   speaker's vocabulary. A remote project's name is a label its host sent, so
   a host can put up to 60 characters of its choosing in every prompt; the

@@ -100,6 +100,29 @@ final class QuickCaptureProjectsTests: XCTestCase {
         )
     }
 
+    /// #1026: a folder name a tool generated is no project, however recent
+    /// its hook; a repository whose name ends in a hex word still is.
+    func testAToolGeneratedFolderNameIsNotListed() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let term = LearnedTerm(term: "ScreenPipe", sources: ["screen"], dictations: 3, firstSeen: now, lastSeen: now)
+        let labels = [
+            "ci-speed-optimizations-7ffef0", "deepseek-v4-setup-questions-c7abac", "agent-add526d17c28bb610", "quill-fix",
+        ]
+        var learned = LearnedTerms(projects: labels.map {
+            LearnedTermProject(key: "remote:" + $0, name: $0, terms: [term], lastSeen: now)
+        })
+        for label in labels {
+            learned.recordRemoteReport(project: .init(key: "remote:" + label, name: label), asRepository: false, now: now)
+        }
+        learned.recordRemoteReport(project: .init(key: "remote:sha-abc123", name: "sha-abc123"), asRepository: true, now: now)
+
+        XCTAssertEqual(
+            QuickCaptureProjects.projects(from: learned, userLines: [:], now: now, readme: { _ in nil }).map(\.name),
+            ["quill-fix", "sha-abc123"]
+        )
+        XCTAssertEqual(PolishProjectNames.names(from: learned, now: now), ["quill-fix", "sha-abc123"])
+    }
+
     /// #891: the agent's sentence is the description when the user wrote
     /// none, and a remote project whose host sent its README is listed:
     /// only a shim that names the repository sends one.
