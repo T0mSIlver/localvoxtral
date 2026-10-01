@@ -129,11 +129,14 @@ enum PolishContextGatherer {
         }
         // The stop-side pane read above was the LAST reader of a
         // remote herdr join's `ssh -L`; everything downstream works
-        // from text already in hand. Closed through the view model,
+        // from text already in hand. Released through the view model,
         // which OWNS the handle — the join was consumed pre-Task,
         // so closing "the join's" tunnel here would leave the owner
-        // holding a closed handle it still had to forget.
-        context.closeRemoteHerdrForwards()
+        // holding a closed handle it still had to forget. Only this
+        // commit's lease: a new dictation that cancelled this one
+        // during the read may hold its own by now (#1112).
+        context.releaseRemoteHerdrForward(of: capturedClaudeJoin)
+        guard !Task.isCancelled else { return nil }
 
         // The polish request is assembled HERE, inside the Task, so
         // the opt-in repo-vocabulary indexing — whose git subprocess

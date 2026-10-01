@@ -163,6 +163,23 @@ final class DiagnosticRecordStoreTests: XCTestCase {
         XCTAssertEqual(store.storedIDs().count, 2)
     }
 
+    /// A record already in quarantine is never overwritten: another running
+    /// copy may have moved the same record there a moment ago.
+    func testQuarantineNeverOverwritesARecordAlreadyThere() throws {
+        let store = makeStore()
+        let record = makeRecord()
+        let url = try store.write(record)
+        let folder = URL(fileURLWithPath: "/tmp/lvx-quarantine-test")
+        let earlier = folder.appendingPathComponent(url.lastPathComponent)
+        io.seed(Data([9]), at: earlier)
+
+        XCTAssertEqual(store.quarantine([try XCTUnwrap(UUID(uuidString: record.id))], into: folder), 1)
+
+        XCTAssertEqual(try io.read(from: earlier), Data([9]))
+        XCTAssertEqual(io.fileNames.filter { $0.hasSuffix(url.lastPathComponent) }.count, 2)
+        XCTAssertTrue(store.storedIDs().isEmpty)
+    }
+
     func testWriteRefusesAnIDThatIsNotAHistoryID() {
         XCTAssertThrowsError(try makeStore().write(makeRecord(id: "not-a-uuid"))) {
             XCTAssertEqual($0 as? DiagnosticRecordStore.StoreError, .invalidID("not-a-uuid"))
@@ -275,6 +292,26 @@ final class DiagnosticRecordStoreTests: XCTestCase {
         XCTAssertNil(try io.read(from: stray))
         XCTAssertNotNil(try io.read(from: kept))
         XCTAssertNotNil(try io.read(from: foreign))
+    }
+
+    /// Re-encoding a newer build's record drops the fields this build does
+    /// not know, so the patch leaves it alone (#1042).
+    func testAttachBehaviorLeavesANewerSchemaRecordUnchanged() throws {
+        let store = makeStore()
+        var record = makeRecord()
+        record.schemaVersion = DiagnosticRecord.currentSchemaVersion + 1
+        let url = try store.write(record)
+        let before = try XCTUnwrap(io.read(from: url))
+        let behavior = DiagnosticRecord.Behavior(
+            outcome: .clean, signal: nil, secondsSinceCommitBucket: nil,
+            wordCountBucket: "1-5", watchWindowSeconds: 2, outputMode: "overlayBuffer")
+
+        XCTAssertThrowsError(try store.attachBehavior(behavior, toRecordAt: url)) {
+            XCTAssertEqual(
+                $0 as? DiagnosticRecordStore.StoreError,
+                .newerRecord(schemaVersion: DiagnosticRecord.currentSchemaVersion + 1))
+        }
+        XCTAssertEqual(try io.read(from: url), before)
     }
 
     func testFileNameParsingRejectsForeignNames() {

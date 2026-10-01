@@ -177,4 +177,5 @@ private struct ReadOnlyClaudeSessionStore: ClaudeSessionStore {
     func load() throws -> Data? { try file.load() }
     func save(_ data: Data) throws {}
     func clear() throws {}
+    func moveAside() throws {}
 }

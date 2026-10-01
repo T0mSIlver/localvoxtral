@@ -59,6 +59,18 @@ final class TranscriptAccumulatorTests: XCTestCase {
         XCTAssertEqual(finalized?.liveInsertion, ", right?")
     }
 
+    func testALaterSegmentsFinalOnlyPeriodIsTyped() {
+        var transcript = TranscriptAccumulator()
+        feedGeneration(["First", " part", "."], into: &transcript)
+        transcript.appendPartial(" Second")
+        transcript.appendPartial(" part")
+
+        let finalized = transcript.applyFinal(" Second part.")
+
+        XCTAssertEqual(finalized?.liveInsertion, ".")
+        XCTAssertEqual(transcript.currentDictationEventText, "First part. Second part.")
+    }
+
     func testFinalThatRevisesTypedPartialsInsertsNothing() {
         var transcript = TranscriptAccumulator()
         transcript.appendPartial("sparisce")

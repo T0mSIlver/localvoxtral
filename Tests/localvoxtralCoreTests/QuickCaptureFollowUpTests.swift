@@ -169,6 +169,29 @@ final class QuickCaptureFollowUpTests: XCTestCase {
         XCTAssertEqual(model.items.first?.state, .ready)
     }
 
+    /// #988: after a relaunch a follow-up still counts as in the Inbox, and
+    /// its recording is kept with its item's until the item is done.
+    func testAFollowUpKeepsItsRecordingAcrossARelaunchUntilItsItemIsDiscarded() async throws {
+        let classifier = ScriptedQuickCaptureClassifier([["inbox": 0.9]])
+        let first = model(classifier: classifier, runner: FakeQuickCaptureDraftRunner())
+        let parent = UUID()
+        let followUp = UUID()
+        await first.capture(text: "Renew the passport", historyRecordID: nil, id: parent).value
+        await first.capture(text: "Also book the photo", historyRecordID: nil, id: followUp).value
+        XCTAssertEqual(first.items.map(\.id), [parent])
+
+        let relaunched = model(classifier: classifier, runner: FakeQuickCaptureDraftRunner())
+        XCTAssertTrue(relaunched.holds(followUp))
+        XCTAssertEqual(relaunched.recordingIDsToKeep, [parent, followUp])
+
+        var done: [UUID] = []
+        relaunched.onDone = { done.append($0) }
+        relaunched.discard(parent)
+        XCTAssertEqual(done, [parent, followUp])
+        XCTAssertFalse(relaunched.holds(followUp))
+        XCTAssertEqual(relaunched.recordingIDsToKeep, [])
+    }
+
     // MARK: Split
 
     func testSplitGivesTheDraftBackAndRoutesTheFollowUpOnItsOwn() async throws {

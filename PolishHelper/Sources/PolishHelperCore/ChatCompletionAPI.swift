@@ -220,10 +220,14 @@ public struct PolishTimings: Codable, Sendable, Equatable {
 public struct ChatReply: Sendable, Equatable {
     public var content: String
     public var timings: PolishTimings?
+    /// The OpenAI `finish_reason`: `stop` when the model ended its answer,
+    /// `length` when generation hit `max_tokens` and `content` is a prefix.
+    public var finishReason: String
 
-    public init(content: String, timings: PolishTimings? = nil) {
+    public init(content: String, timings: PolishTimings? = nil, finishReason: String = "stop") {
         self.content = content
         self.timings = timings
+        self.finishReason = finishReason
     }
 }
 
@@ -254,7 +258,8 @@ public struct ChatCompletionResponse: Codable, Sendable {
     public var timings: PolishTimings?
 
     public init(
-        id: String, created: Int, model: String, content: String, timings: PolishTimings? = nil
+        id: String, created: Int, model: String, content: String, timings: PolishTimings? = nil,
+        finishReason: String = "stop"
     ) {
         self.id = id
         self.object = "chat.completion"
@@ -265,7 +270,7 @@ public struct ChatCompletionResponse: Codable, Sendable {
             Choice(
                 index: 0,
                 message: ChatCompletionMessage(role: "assistant", content: content),
-                finishReason: "stop"
+                finishReason: finishReason
             )
         ]
     }
