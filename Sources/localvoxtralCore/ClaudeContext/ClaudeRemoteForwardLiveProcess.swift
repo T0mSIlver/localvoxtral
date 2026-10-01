@@ -34,6 +34,29 @@ package final class ClaudeRemoteForwardLiveProcess: ClaudeRemoteForwardProcess, 
     private let exitState = Mutex(ExitState())
     private let partialLine = Mutex<String>("")
     private let descriptor: Int32
+    private let hooks: Hooks
+
+    /// Test seams for the interleaving between the readability handler and
+    /// the termination handler, which no real ssh can force on demand.
+    package struct Hooks: Sendable {
+        /// Runs in the readability handler after it read a chunk and before
+        /// it ingests it.
+        package var afterHandlerRead: (@Sendable () -> Void)?
+        /// Runs when the termination handler enters `finish`.
+        package var willFinish: (@Sendable () -> Void)?
+        /// Runs once `finish` has finished `standardErrorLines`.
+        package var didFinishStream: (@Sendable () -> Void)?
+
+        package init(
+            afterHandlerRead: (@Sendable () -> Void)? = nil,
+            willFinish: (@Sendable () -> Void)? = nil,
+            didFinishStream: (@Sendable () -> Void)? = nil
+        ) {
+            self.afterHandlerRead = afterHandlerRead
+            self.willFinish = willFinish
+            self.didFinishStream = didFinishStream
+        }
+    }
 
     /// The spawned child's pid, for the pid ledger that lets the NEXT launch
     /// find this process should this one die without tearing it down.
@@ -42,8 +65,13 @@ package final class ClaudeRemoteForwardLiveProcess: ClaudeRemoteForwardProcess, 
 
     /// - Parameter argv: complete, including `ssh` at index 0 (the shape
     ///   `Configuration.argv` produces and the enrollment service already uses).
-    package init(argv: [String], sshExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/ssh")) throws {
+    package init(
+        argv: [String],
+        sshExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/ssh"),
+        hooks: Hooks = Hooks()
+    ) throws {
         precondition(!argv.isEmpty)
+        self.hooks = hooks
         let (stream, continuation) = AsyncStream<String>.makeStream(of: String.self)
         standardErrorLines = stream
         self.continuation = continuation
@@ -68,6 +96,7 @@ package final class ClaudeRemoteForwardLiveProcess: ClaudeRemoteForwardProcess, 
                 handle.readabilityHandler = nil
                 return
             }
+            hooks.afterHandlerRead?()
             self?.ingest(data)
         }
 
@@ -119,6 +148,7 @@ package final class ClaudeRemoteForwardLiveProcess: ClaudeRemoteForwardProcess, 
     /// that explains the exit, so dropping an unterminated tail would lose
     /// exactly the line that matters.
     private func finish(status: Int32) {
+        hooks.willFinish?()
         // Drain what the pipe still holds BEFORE closing the stream. The
         // termination handler can fire before the readability handler has been
         // scheduled for the last chunk, and that last chunk is precisely
@@ -138,6 +168,7 @@ package final class ClaudeRemoteForwardLiveProcess: ClaudeRemoteForwardProcess, 
         }
         if !tail.isEmpty { continuation.yield(tail) }
         continuation.finish()
+        hooks.didFinishStream?()
         let exitStatus = ClaudeRemoteForwardExitStatus.code(status)
         let waiters = exitState.withLock {
             state -> [CheckedContinuation<ClaudeRemoteForwardExitStatus, Never>] in
