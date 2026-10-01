@@ -70,6 +70,38 @@ final class ClaudeRemoteForwardPidLedgerTests: XCTestCase {
         )
     }
 
+    func testANewerLedgerIsMovedAsideBeforeTheNextRecord() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("lvx-pid-ledger-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("claude-remote-forward-pids.json")
+        let newer = Data(#"{"version":2,"records":{},"from":"a later build"}"#.utf8)
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: url.path,
+            contents: newer,
+            attributes: [.posixPermissions: NSNumber(value: Int16(0o600))]
+        ))
+
+        let ledger = ClaudeRemoteForwardPidLedger(fileURL: url)
+        XCTAssertTrue(ledger.records().isEmpty)
+        let recorded = record(pid: 4242)
+        ledger.remember(hostID: "host", record: recorded)
+
+        let aside = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            .filter { $0.hasPrefix("claude-remote-forward-pids.json.incompatible-") }
+        XCTAssertEqual(aside.count, 1)
+        XCTAssertEqual(
+            try Data(contentsOf: directory.appendingPathComponent(try XCTUnwrap(aside.first))),
+            newer
+        )
+        XCTAssertEqual(ledger.records(), ["host": recorded])
+    }
+
     func testMissingFileReadsAsEmpty() {
         XCTAssertTrue(
             ClaudeRemoteForwardPidLedger(fileURL: makeURL(), io: MemoryLedgerStore())
