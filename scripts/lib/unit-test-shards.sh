@@ -233,10 +233,16 @@ lv_run_unit_shards() {
     LV_SHARD_PIDS+=($!)
   done <"$work/plan"
 
-  local ran=0 status=0 shard_status seconds executed classes
+  local ran=0 status=0 shard_status seconds executed classes runner_status recap=""
   for index in $(seq 1 "$planned"); do
-    wait "${LV_SHARD_PIDS[$((index - 1))]}" 2>/dev/null
-    read -r shard_status seconds <"$work/$index.status" 2>/dev/null || { shard_status=1; seconds="?"; }
+    runner_status=0
+    wait "${LV_SHARD_PIDS[$((index - 1))]}" 2>/dev/null || runner_status=$?
+    if ! read -r shard_status seconds 2>/dev/null <"$work/$index.status"; then
+      echo "==> Shard $index: its runner ended with status $runner_status and wrote no exit status" \
+        >>"$work/$index.log"
+      shard_status=1
+      seconds="?"
+    fi
     executed="$(lv_executed_test_count "$work/$index.log")"
     ran=$((ran + executed))
     classes="$(sed -n "${index}p" "$work/plan" | awk '{ print NF - 1 }')"
@@ -245,11 +251,17 @@ lv_run_unit_shards() {
       cat "$work/$index.log"
       echo "==> Shard $index/$planned: exit $shard_status, $executed tests, ${seconds} s"
     } | tee -a "$log"
+    recap+="${recap:+; }$index/$planned exit $shard_status, $executed tests, ${seconds} s"
     : >"$work/$index.logged"
     [[ "$shard_status" == "0" ]] || status=1
   done
   trap - INT TERM HUP
   eval "$LV_SHARD_SAVED_TRAPS"
+
+  # Again, together, right above the summary: a failed step prints only the
+  # log's last lines, which hold the last shard's tests and none of the
+  # other shards' exit lines (#1084).
+  echo "==> Shard exits: $recap" | tee -a "$log"
 
   echo "==> Unit shards: $ran of $expected tests ran in $planned shards, $((SECONDS - started)) s (build ${build_seconds} s)" \
     | tee -a "$log"
@@ -299,14 +311,16 @@ lv_shard_failed_only_on_lock() {
 # lv_shard_failed_only_on_lock says the lock was its only fault.
 #   $3  the number of tests the shard's filters select
 lv_run_one_unit_shard() {
-  local work="$1" index="$2" expected="$3" child shard_status shard_started=$SECONDS attempt
+  local work="$1" index="$2" expected="$3" child shard_status shard_started=$SECONDS attempt signal
   shift 3
   : >"$work/$index.log"
   for attempt in 1 2 3; do
     lv_shard_swift test --skip-build --ignore-lock "$@" >"$work/$index.attempt" 2>&1 &
     child=$!
     # shellcheck disable=SC2064
-    trap "pkill -TERM -P $child 2>/dev/null; kill $child 2>/dev/null; wait $child 2>/dev/null; cat '$work/$index.attempt' >>'$work/$index.log'; exit 143" TERM INT HUP
+    for signal in TERM INT HUP; do
+      trap "pkill -TERM -P $child 2>/dev/null; kill $child 2>/dev/null; wait $child 2>/dev/null; cat '$work/$index.attempt' >>'$work/$index.log'; echo '==> Shard $index: stopped by SIG$signal' >>'$work/$index.log'; exit 143" "$signal"
+    done
     wait "$child"
     shard_status=$?
     cat "$work/$index.attempt" >>"$work/$index.log"
