@@ -1026,12 +1026,11 @@ final class TextInsertionService {
         }
 
         var didPostAnyEvent = false
-        let utf16 = Array(text.utf16)
-        let chunkSize = 20
+        var end = 0
 
-        for i in stride(from: 0, to: utf16.count, by: chunkSize) {
-            let end = min(i + chunkSize, utf16.count)
-            var chunk = Array(utf16[i ..< end])
+        for var chunk in UnicodeEventChunks.chunks(text) {
+            let start = end
+            end += chunk.count
 
             if isScalarTracingEnabled {
                 // Opt-in field diagnostic (marker file in the config folder):
@@ -1041,7 +1040,7 @@ final class TextInsertionService {
                 // IS transcript content — hence opt-in and privacy: .public.
                 let hex = chunk.map { String(format: "%04X", $0) }.joined(separator: " ")
                 Log.insertion.notice(
-                    "scalar-trace chunk[\(i, privacy: .public)..<\(end, privacy: .public)]: \(hex, privacy: .public)"
+                    "scalar-trace chunk[\(start, privacy: .public)..<\(end, privacy: .public)]: \(hex, privacy: .public)"
                 )
             }
 
