@@ -75,6 +75,58 @@ package final class StoredFileLock: @unchecked Sendable {
     }
 }
 
+/// The identity of the file at a path: which inode, how big, when its data
+/// and its metadata last changed. The stores replace their files with
+/// `rename(2)`, so another copy's write changes the inode even when size and
+/// times collide; an append changes the size (#1046, #1126).
+public struct StoredFileStamp: Sendable, Equatable {
+    package let device: UInt64
+    package let inode: UInt64
+    package let size: Int64
+    package let modified: [Int64]
+    package let changed: [Int64]
+
+    package init(device: UInt64, inode: UInt64, size: Int64, modified: [Int64], changed: [Int64]) {
+        self.device = device
+        self.inode = inode
+        self.size = size
+        self.modified = modified
+        self.changed = changed
+    }
+
+    /// One `lstat` of `url`. Nil when nothing is there or it cannot be read.
+    package static func of(_ url: URL) -> StoredFileStamp? {
+        var info = stat()
+        guard lstat(url.path, &info) == 0 else { return nil }
+        #if canImport(Darwin)
+        let modified = info.st_mtimespec
+        let changed = info.st_ctimespec
+        #else
+        let modified = info.st_mtim
+        let changed = info.st_ctim
+        #endif
+        return StoredFileStamp(
+            device: UInt64(info.st_dev),
+            inode: UInt64(info.st_ino),
+            size: Int64(info.st_size),
+            modified: [Int64(modified.tv_sec), Int64(modified.tv_nsec)],
+            changed: [Int64(changed.tv_sec), Int64(changed.tv_nsec)]
+        )
+    }
+}
+
+/// A store's file as this copy last read or wrote it (#990): its bytes, and
+/// its stamp then, which tells a view whether to read it again (#1126).
+package struct StoredFileSeen: Equatable {
+    package var bytes: Data?
+    package var stamp: StoredFileStamp?
+
+    package init(bytes: Data? = nil, stamp: StoredFileStamp? = nil) {
+        self.bytes = bytes
+        self.stamp = stamp
+    }
+}
+
 /// What reading a store's file found, before decoding.
 package enum StoredFileBytes: Equatable {
     case absent
@@ -108,24 +160,55 @@ extension StoredFile {
     }
 
     /// Loads a file that other running copies may write (#990): reads it
-    /// under their shared lock and returns the bytes, which the store hands
-    /// back to `update` as `lastSeen`.
+    /// under their shared lock and returns what it read, which the store
+    /// hands back to `update` and `reloadIfChanged` as `seen`.
     package static func loadShared<Value>(
         _ url: URL,
         decode: (Data) -> StoredFileLoad<Value>
-    ) -> (load: StoredFileLoad<Value>, lastSeen: Data?) {
+    ) -> (load: StoredFileLoad<Value>, seen: StoredFileSeen) {
         StoredFileLock.withLock(beside: url) {
+            let stamp = StoredFileStamp.of(url)
             switch read(url) {
-            case .absent: return (.absent, nil)
-            case .unreadable: return (.refused(.unreadable), nil)
-            case .bytes(let data): return (decode(data), data)
+            case .absent: return (.absent, StoredFileSeen(stamp: stamp))
+            case .unreadable: return (.refused(.unreadable), StoredFileSeen())
+            case .bytes(let data): return (decode(data), StoredFileSeen(bytes: data, stamp: stamp))
+            }
+        }
+    }
+
+    /// Reads the file again when another running copy wrote it since this
+    /// copy last read or wrote it (#1126), for a view about to show it. When
+    /// its stamp is unchanged this costs one `lstat` and returns nil; nil
+    /// also when the bytes are the ones `seen` holds. `.absent` means another
+    /// copy removed it, and the store keeps what it holds: its next write
+    /// writes the file again, as `update` does.
+    package static func reloadIfChanged<Value>(
+        _ url: URL,
+        seen: inout StoredFileSeen,
+        decode: (Data) -> StoredFileLoad<Value>
+    ) -> StoredFileLoad<Value>? {
+        guard StoredFileStamp.of(url) != seen.stamp else { return nil }
+        return StoredFileLock.withLock(beside: url) {
+            let stamp = StoredFileStamp.of(url)
+            switch read(url) {
+            case .absent:
+                seen.stamp = stamp
+                return seen.bytes == nil ? nil : .absent
+            case .unreadable:
+                return .refused(.unreadable)
+            case .bytes(let data):
+                seen.stamp = stamp
+                guard data != seen.bytes else { return nil }
+                let load = decode(data)
+                if load.value != nil { seen.bytes = data }
+                return load
             }
         }
     }
 
     /// One change to a store's file, as a transaction with every other
     /// running copy (#990). Under the shared lock it reads the file. When the
-    /// bytes are not the ones this copy last read or wrote (`lastSeen`),
+    /// bytes are not the ones this copy last read or wrote (`seen`),
     /// another copy wrote it, and `change` applies to what is on disk instead
     /// of to `memory`, so the other copy's change survives this one. Stores
     /// hand over the change itself, never a copy of their whole state, for
@@ -136,7 +219,7 @@ extension StoredFile {
     package static func update<Value>(
         _ url: URL,
         memory: Value,
-        lastSeen: inout Data?,
+        seen: inout StoredFileSeen,
         decode: (Data) -> StoredFileLoad<Value>,
         encode: (Value) throws -> Data,
         write: (Data, URL) throws -> Void,
@@ -144,7 +227,7 @@ extension StoredFile {
     ) -> StoredFileUpdate<Value> {
         StoredFileLock.withLock(beside: url) {
             updateHoldingTheLock(
-                url, memory: memory, lastSeen: &lastSeen, decode: decode, encode: encode, write: write,
+                url, memory: memory, seen: &seen, decode: decode, encode: encode, write: write,
                 change: change)
         }
     }
@@ -154,23 +237,24 @@ extension StoredFile {
     package static func updateHoldingTheLock<Value>(
         _ url: URL,
         memory: Value,
-        lastSeen: inout Data?,
+        seen: inout StoredFileSeen,
         decode: (Data) -> StoredFileLoad<Value>,
         encode: (Value) throws -> Data,
         write: (Data, URL) throws -> Void,
         change: (inout Value) -> Void
     ) -> StoredFileUpdate<Value> {
         var value = memory
+        let stamp = StoredFileStamp.of(url)
         switch read(url) {
         case .unreadable:
             return .refused(.unreadable)
         case .absent:
-            if lastSeen != nil {
+            if seen.bytes != nil {
                 Log.persistence.notice(
                     "\(url.lastPathComponent, privacy: .public): gone since this copy last wrote it, written again"
                 )
             }
-        case .bytes(let data) where data != lastSeen:
+        case .bytes(let data) where data != seen.bytes:
             switch decode(data) {
             case .loaded(let onDisk):
                 Log.persistence.notice(
@@ -180,20 +264,20 @@ extension StoredFile {
                 // Memory now holds these bytes plus the change: should the
                 // write fail, the next update applies to memory, not to
                 // these bytes again, and keeps the change.
-                lastSeen = data
+                seen = StoredFileSeen(bytes: data, stamp: stamp)
             case .refused(let problem):
                 return .refused(problem)
             case .absent:
                 return .refused(.unreadable)
             }
         case .bytes:
-            break
+            seen.stamp = stamp
         }
         change(&value)
         do {
             let data = try encode(value)
             try write(data, url)
-            lastSeen = data
+            seen = StoredFileSeen(bytes: data, stamp: StoredFileStamp.of(url))
             return .written(value)
         } catch {
             return .failed(value, error)

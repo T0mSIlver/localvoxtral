@@ -428,11 +428,18 @@ public struct ClaudeHookPublisher: Sendable {
     /// avoid. A closed or broken stdout here is simply a status line that does
     /// not render today.
     public static func writeStdout(_ data: Data) {
+        writeAll(data, toDescriptor: 1)
+    }
+
+    /// Write all of `data` to `descriptor` with raw `write(2)`, looping over
+    /// partial writes and EINTR, and dropping the rest on any other failure
+    /// (EBADF, EPIPE). Shared with the `localvoxtral` command (#1165).
+    public static func writeAll(_ data: Data, toDescriptor descriptor: Int32) {
         data.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return }
             var offset = 0
             while offset < raw.count {
-                let written = retryingOnEINTR { write(1, base.advanced(by: offset), raw.count - offset) }
+                let written = retryingOnEINTR { write(descriptor, base.advanced(by: offset), raw.count - offset) }
                 if written <= 0 { return } // EPIPE/EBADF: give up silently.
                 offset += written
             }

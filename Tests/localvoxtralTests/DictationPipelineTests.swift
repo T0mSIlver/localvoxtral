@@ -51,7 +51,50 @@ final class DictationPipelineTests: XCTestCase {
 
         XCTAssertEqual(typed.text, Self.phrase)
         XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
+        XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, true)
         XCTAssertEqual(pipeline.overlay.commitCallCount, 0)
+    }
+
+    /// The field stops taking keystrokes before the last segment lands: the
+    /// stop says so and History saves the dictation as not inserted (#1176).
+    func testLiveAutoPasteWhoseLastTextFailedToInsertIsSavedAsNotInserted() async throws {
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        let typed = TypedText()
+        var fieldAccepts = true
+        let refused = BoundedWait()
+        pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        pipeline.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { chunk in
+                guard fieldAccepts else {
+                    refused.resolve()
+                    return false
+                }
+                typed.append(chunk)
+                return true
+            },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false }
+        )
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.delta", "delta": "First part"])
+        pipeline.server.send(["type": "transcription.done", "text": "First part."])
+        let typedFirst = await typed.waitFor("First part.")
+        XCTAssertTrue(typedFirst, "typed so far: \(typed.text.debugDescription)")
+        fieldAccepts = false
+        pipeline.server.send(["type": "transcription.done", "text": " Second part."])
+        let attempted = await refused.value(failAfter: 10)
+        XCTAssertTrue(attempted, "the second segment was never offered to the field")
+        XCTAssertTrue(pipeline.viewModel.textInsertion.hasPendingInsertionText)
+
+        await stopAndFinalize(
+            pipeline, finalText: "",
+            expectedError: "Some realtime text could not be inserted into the focused app."
+        )
+
+        XCTAssertEqual(typed.text, "First part.")
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), ["First part. Second part."])
+        XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
     }
 
     /// A later segment's first delta keeps its leading space, and its period
@@ -191,6 +234,47 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
         XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
         XCTAssertFalse(pipeline.viewModel.isFinalizingStop)
+    }
+
+    /// A 200 reply with no usable text, through the real client: the raw
+    /// transcript is committed once and the failure is shown (#1111).
+    func testAMalformedPolishReplyCommitsTheTranscriptOnceAndSaysSo() async throws {
+        try await assertUnusablePolishReply(#"{"choices":[{"message":"#)
+    }
+
+    func testAPolishReplyWithoutContentCommitsTheTranscriptOnceAndSaysSo() async throws {
+        try await assertUnusablePolishReply(#"{"choices":[{"message":{"role":"assistant"}}]}"#)
+    }
+
+    func testAWhitespacePolishReplyCommitsTheTranscriptOnceAndSaysSo() async throws {
+        try await assertUnusablePolishReply(#"{"choices":[{"message":{"role":"assistant","content":" \n\t "}}]}"#)
+    }
+
+    private func assertUnusablePolishReply(
+        _ body: String, file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        StubHTTPProtocol.reply.withLock { $0 = .http(200, body) }
+        URLProtocol.registerClass(StubHTTPProtocol.self)
+        defer { URLProtocol.unregisterClass(StubHTTPProtocol.self) }
+        let pipeline = try await makePipeline(
+            outputMode: .overlayBuffer,
+            polish: LLMPolishingService(),
+            polishEndpoint: "http://\(StubHTTPProtocol.host)/v1/chat/completions",
+            earlyPolish: false
+        )
+
+        await startAndSpeak(pipeline, file: file, line: line)
+        await stopAndFinalize(
+            pipeline,
+            expectedError: "The LLM polishing endpoint answered with no usable text, so the transcript was not polished."
+                + " [endpoint: http://\(StubHTTPProtocol.host)/v1/chat/completions]",
+            finalStatus: "LLM polishing failed.",
+            alerts: ["LLM Polishing Returned No Text"],
+            file: file, line: line
+        )
+
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase], file: file, line: line)
+        XCTAssertEqual(pipeline.records.all.map(\.status), [DictationSessionStatus.llmFailed.rawValue], file: file, line: line)
     }
 
     /// A polish cut off at the backend's output limit (#1109): the real
@@ -1572,7 +1656,7 @@ final class DictationPipelineTests: XCTestCase {
         await startAndSpeak(pipeline)
         await sendDelta(pipeline, "run the tests, send it.")
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "armed by the trailing phrase")
-        await pipeline.clock.waitForSleepers(3)
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
         pipeline.clock.advance(by: 3 - 0.01)
         XCTAssertTrue(pipeline.viewModel.isDictating, "one hundredth short, still dictating")
 
@@ -1603,7 +1687,7 @@ final class DictationPipelineTests: XCTestCase {
         await sendDelta(pipeline, "d")
         await sendDelta(pipeline, " it.")
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "overlay: \(pipeline.overlay.refreshCalls.last?.displayText.debugDescription ?? "")")
-        await pipeline.clock.waitForSleepers(3)
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
         pipeline.clock.advance(by: 3)
         await armed.value
         await finishStoppedSession(pipeline, finalText: "d it.")
@@ -1639,7 +1723,7 @@ final class DictationPipelineTests: XCTestCase {
         await startAndSpeak(pipeline)
         await sendDelta(pipeline, "run the tests, send it.")
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask)
-        await pipeline.clock.waitForSleepers(3)
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
         pipeline.clock.advance(by: 2.9)
         await sendDelta(pipeline, " and then report.")
         await armed.value
@@ -1663,13 +1747,13 @@ final class DictationPipelineTests: XCTestCase {
         targetClaudeDesktop(pipeline, returns: { returns.append($0) })
 
         await startAndSpeak(pipeline)
-        // The send loop and the periodic commit sleep on this clock too: the
-        // stop's sleep is the one the phrase added.
+        // The session's other timers sleep on this clock too: the stop's
+        // sleep is the one the phrase added.
         let sessionSleeps = pipeline.clock.pendingDeadlines
         let saidAt = pipeline.clock.now
         await sendDelta(pipeline, "run the tests, send it.")
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "armed by the trailing phrase")
-        await pipeline.clock.waitForSleepers(3)
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
         var stopSleeps = pipeline.clock.pendingDeadlines
         for deadline in sessionSleeps {
             if let index = stopSleeps.firstIndex(of: deadline) { stopSleeps.remove(at: index) }
@@ -1702,7 +1786,7 @@ final class DictationPipelineTests: XCTestCase {
         await startAndSpeak(pipeline)
         await sendDelta(pipeline, "run the tests, send it.")
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask)
-        await pipeline.clock.waitForSleepers(3)
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
         pipeline.clock.advance(by: 1.4)
         await sendDelta(pipeline, " and then report.")
         await armed.value
@@ -1747,7 +1831,7 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertNil(pipeline.viewModel.session.spokenStopTask, "send it is ordinary text now")
         await sendDelta(pipeline, " Ship it.")
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask)
-        await pipeline.clock.waitForSleepers(3)
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
         pipeline.clock.advance(by: 3)
         await armed.value
         await finishStoppedSession(pipeline, finalText: "run the tests, send it. Ship it.")
@@ -1770,7 +1854,7 @@ final class DictationPipelineTests: XCTestCase {
         await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
         await sendDelta(pipeline, "buy milk, send it.")
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask)
-        await pipeline.clock.waitForSleepers(3)
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
         pipeline.clock.advance(by: 3)
         await armed.value
         await finishStoppedSession(
@@ -1806,7 +1890,7 @@ final class DictationPipelineTests: XCTestCase {
 
         pipeline.viewModel.session.moveDestination(forward: true)
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "the Inbox stops on its phrase")
-        await pipeline.clock.waitForSleepers(3)
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
         pipeline.clock.advance(by: 3)
         await armed.value
         await finishStoppedSession(
@@ -1942,7 +2026,7 @@ final class DictationPipelineTests: XCTestCase {
         await pipeline.server.awaitFrame("session.update") { $0.type == "session.update" }
         let rest = Self.speech(seed: 5)
         XCTAssertTrue(pipeline.microphone.deliver(rest))
-        await pipeline.clock.waitForSleepers(2)
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers)
         pipeline.clock.advance(by: TimingConstants.audioSendInterval)
         let sent = await pipeline.server.awaitFrame("the captured audio") { $0.audio != nil }
         XCTAssertEqual(sent?.audio, firstWord + rest, "the first word leads the audio, whole")
@@ -2017,7 +2101,7 @@ final class DictationPipelineTests: XCTestCase {
         await startAndSpeak(pipeline, start: { $0.session.answerAgentThatNeedsYou() })
         await sendDelta(pipeline, "Drop it.")
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "armed by the whole phrase")
-        await pipeline.clock.waitForSleepers(3)
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
         pipeline.clock.advance(by: 3)
         await armed.value
         XCTAssertFalse(pipeline.viewModel.isDictating)
@@ -2040,7 +2124,7 @@ final class DictationPipelineTests: XCTestCase {
         await startAndSpeak(pipeline, start: { $0.session.answerAgentThatNeedsYou() })
         await sendDelta(pipeline, "Make it only the popover part, send it.")
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "armed by the send phrase")
-        await pipeline.clock.waitForSleepers(3)
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
         pipeline.clock.advance(by: 3)
         await armed.value
         await finishStoppedSession(
@@ -2091,9 +2175,9 @@ final class DictationPipelineTests: XCTestCase {
             $0.type == "session.update"
         }
         XCTAssertEqual(update?.json["model"] as? String, Self.model, file: file, line: line)
-        // The send loop and the periodic commit start at connect, and sleep
-        // on the clock: armed, they say the session is listening.
-        await pipeline.clock.waitForSleepers(2, file: file, line: line)
+        // The session's timers start at connect and sleep on the clock:
+        // armed, they say the session is listening.
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers, file: file, line: line)
         XCTAssertTrue(pipeline.viewModel.isDictating, file: file, line: line)
         XCTAssertEqual(pipeline.viewModel.statusText, "Listening...", file: file, line: line)
 
@@ -2185,6 +2269,13 @@ final class DictationPipelineTests: XCTestCase {
         let overlay: MockOverlayCoordinator
         let presenter: RecordingConnectionFailurePresenter
         let records: SessionRecords
+
+        /// The timers a listening session keeps armed: the send loop, the
+        /// periodic commit and the microphone health poll, plus the
+        /// insertion retry in Live Auto-Paste.
+        @MainActor var listeningTimers: Int {
+            viewModel.session.isLiveAutoPasteModeEnabled ? 4 : 3
+        }
     }
 
     /// True once `count` polish requests arrived, false after 10 s of wall time.

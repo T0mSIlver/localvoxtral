@@ -156,19 +156,58 @@ public struct VibeHooksBlockEditor: Sendable, Equatable {
         return openBasic || openLiteral
     }
 
-    /// Is `hooks` defined as a plain value (`hooks = [...]`) or a plain table
-    /// (`[hooks]`)? TOML forbids extending either with `[[hooks]]` tables, so
-    /// appending our block would make the WHOLE file unparseable and stop
-    /// every hook the user has (GLM review, 2026-09-20).
+    /// Is `hooks` defined as a plain value (`hooks = [...]`) or as a table:
+    /// `[hooks]`, a `[hooks.x]` or `[[hooks.x]]` header before any `[[hooks]]`,
+    /// or a dotted `hooks.x = …` key? TOML forbids extending any of them with
+    /// `[[hooks]]` tables, so appending our block would make the WHOLE file
+    /// unparseable and stop every hook the user has (GLM review, 2026-09-20;
+    /// #1167). After a `[[hooks]]` header, `[hooks.x]` is a sub-table of that
+    /// hook and is fine. A key is checked in any table: errs toward refusing.
     package func definesHooksStatically(_ existing: String) -> Bool {
-        block.splitLines(existing).contains { line in
+        var hooksIsArray = false
+        for line in block.splitLines(existing) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if let (key, _) = keyValue(in: line), key == "hooks" { return true }
-            guard trimmed.hasPrefix("["), !trimmed.hasPrefix("[[") else { return false }
-            let header = trimmed.dropFirst().prefix { $0 != "]" }.trimmingCharacters(in: .whitespaces)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-            return header == "hooks"
+            if trimmed.hasPrefix("#") { continue }
+            if trimmed.hasPrefix("[") {
+                let isArray = trimmed.hasPrefix("[[")
+                let path = keyPath(trimmed.dropFirst(isArray ? 2 : 1).prefix { $0 != "]" })
+                guard path.first == "hooks" else { continue }
+                if path.count == 1 {
+                    if !isArray { return true }
+                    hooksIsArray = true
+                } else if !hooksIsArray {
+                    return true
+                }
+                continue
+            }
+            guard trimmed.contains("=") else { continue }
+            if keyPath(trimmed.prefix { $0 != "=" }).first == "hooks" { return true }
         }
+        return false
+    }
+
+    /// The dotted parts of a TOML key or table header, each unquoted:
+    /// `"hooks" . x` is `["hooks", "x"]`, but `"hooks.x"` is one part.
+    private func keyPath(_ text: Substring) -> [String] {
+        let space: (Character) -> Bool = { $0 == " " || $0 == "\t" }
+        var parts: [String] = []
+        var rest = text.drop(while: space)
+        while let first = rest.first {
+            if first == "\"" || first == "'" {
+                let body = rest.dropFirst()
+                let close = body.firstIndex(of: first) ?? body.endIndex
+                parts.append(String(body[..<close]))
+                rest = close == body.endIndex ? body[close...] : body[body.index(after: close)...]
+            } else {
+                let end = rest.firstIndex(of: ".") ?? rest.endIndex
+                parts.append(rest[..<end].trimmingCharacters(in: .whitespaces))
+                rest = rest[end...]
+            }
+            rest = rest.drop(while: space)
+            guard rest.first == "." else { break }
+            rest = rest.dropFirst().drop(while: space)
+        }
+        return parts
     }
 
     /// `key = value` of one line, the key unquoted. Nil for anything else.

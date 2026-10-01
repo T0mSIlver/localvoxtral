@@ -197,6 +197,9 @@ extension ClaudeSessionJoinResolver {
         frontmostPID: @escaping @MainActor () -> pid_t?
     ) -> HerdrPanePromptRoute? {
         guard let writer = herdrPaneWriter, let panes = herdrPanes else { return nil }
+        // A remote or federated pane is written over a forward to an enrolled
+        // host; one whose session names no host fails closed.
+        let remoteHostID = Self.remoteHostID(of: snapshot)
         return HerdrPanePromptRoute(
             binding: binding,
             writer: writer,
@@ -220,6 +223,9 @@ extension ClaudeSessionJoinResolver {
                       await self.displaysJoinedSurface(surface, terminal: terminal)
                 else { return false }
                 return frontmostPID() == terminal.pid
+            },
+            hostIsEnrolled: mechanism == .herdrPane ? nil : { @MainActor in
+                remoteHostID.map(self.remoteHostIsEnrolled) ?? false
             }
         )
     }

@@ -118,6 +118,11 @@ final class AgentCLIDoctorTests: XCTestCase {
             "Settings > Remote hosts > Update Host…, then run `/reload-plugins` in its Claude Code sessions "
                 + "and restart its Vibe sessions."
         )
+        XCTAssertEqual(
+            fixes["claude-plugin"],
+            "Settings > Claude Code > Update, then run `/reload-plugins` in each Claude Code session: "
+                + "a running session keeps the hooks it loaded."
+        )
         XCTAssertEqual(fixes["opencode-plugin"], "Settings > opencode > Set up…")
         XCTAssertEqual(
             fixes["dictation-note.claudeCode"],

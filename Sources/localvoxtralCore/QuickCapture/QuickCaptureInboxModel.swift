@@ -25,9 +25,9 @@ package final class QuickCaptureInboxModel {
     /// Set, the inbox file could not be loaded: it is left as it is, the
     /// Inbox is empty and refuses every change (#989).
     package private(set) var storeProblem: StoredFileProblem?
-    /// The file's bytes as this copy last read or wrote them: another running
-    /// copy of the app may write it too (#990).
-    private var lastSeen: Data?
+    /// The file as this copy last read or wrote it: another running copy of
+    /// the app may write it too (#990).
+    private var seen = StoredFileSeen()
     private let makeRouter: @MainActor () -> QuickCaptureRouter
     private let projects: @MainActor () -> [QuickCaptureProject]
     private let agents: @MainActor () -> [ProjectTermProposal.Agent]
@@ -79,7 +79,7 @@ package final class QuickCaptureInboxModel {
         self.now = now
         var load = StoredFileLoad<QuickCaptureInbox>.absent
         if let fileURL {
-            (load, lastSeen) = StoredFile.loadShared(fileURL, decode: QuickCaptureInboxFile.decode)
+            (load, seen) = StoredFile.loadShared(fileURL, decode: QuickCaptureInboxFile.decode)
         }
         storeProblem = load.problem
         var loaded = load.value.map(QuickCaptureInboxFile.resumingInterrupted) ?? QuickCaptureInbox()
@@ -678,18 +678,26 @@ package final class QuickCaptureInboxModel {
         }
     }
 
-    /// A coding agent filed the capture itself (#923). Its History record
-    /// says so, as after File. The check runs against the file, which
-    /// another running copy may have changed (#990).
+    /// A coding agent filed the capture itself (#923). It is done as after
+    /// File (#1177): the audio of the capture and its follow-ups goes once
+    /// the Inbox saved it, and every History record says where it went.
+    /// The check runs against the file, which another running copy may
+    /// have changed (#990).
     package func markFiled(_ id: UUID, url: String) -> Result<QuickCaptureItem, QuickCaptureInbox.MarkFiledRefusal> {
         let moment = now()
         // Stays notFound when the Inbox is refused and the change never runs.
         var result: Result<QuickCaptureItem, QuickCaptureInbox.MarkFiledRefusal> = .failure(.notFound)
-        mutate { result = $0.markFiled(id, url: url, now: moment) }
+        let saveFailure = mutate { result = $0.markFiled(id, url: url, now: moment) }
         if case .success(let item) = result {
             Log.backends.info("Quick capture: a coding agent filed \(url, privacy: .public)")
-            if let recordID = item.historyRecordID, let repository = item.repository {
-                onRouted?(recordID, "Filed in \(repository)")
+            // Unsaved, the capture comes back at launch: its audio stays (#988).
+            if saveFailure == nil {
+                for captureID in item.captureIDs { onDone?(captureID) }
+            }
+            if let repository = item.repository {
+                for recordID in historyRecordIDs(item) {
+                    onRouted?(recordID, "Filed in \(repository)")
+                }
             }
         }
         return result
@@ -705,10 +713,32 @@ package final class QuickCaptureInboxModel {
     package func moveAsideAndStartOver() throws -> URL {
         guard storeProblem != nil, let fileURL else { throw StoredFile.MoveAsideFailed() }
         let aside = try StoredFile.moveAside(fileURL)
-        lastSeen = nil
+        seen = StoredFileSeen()
         storeProblem = nil
         onChange?()
         return aside
+    }
+
+    /// The Inbox appeared: when another running copy wrote the file since
+    /// this copy last read or wrote it, the Inbox takes the file as it is
+    /// now (#1126). One `lstat` when nothing changed. A refused file stays
+    /// refused, and a failed write's change is not dropped: the next write
+    /// applies it on top of the other copy's.
+    package func reloadIfChanged() {
+        guard let fileURL, storeProblem == nil, !hasUnsavedChanges else { return }
+        switch StoredFile.reloadIfChanged(fileURL, seen: &seen, decode: QuickCaptureInboxFile.decode) {
+        case nil, .absent?:
+            return
+        case .loaded(var loaded)?:
+            loaded.prune(now: now())
+            Log.persistence.notice("Quick capture inbox: another running copy wrote the file, read again")
+            inbox = loaded
+            adoptProjects()
+        case .refused(let problem)?:
+            Log.persistence.error("Quick capture inbox: another copy left a file this build cannot read")
+            storeProblem = problem
+            inbox = QuickCaptureInbox()
+        }
     }
 
     /// Why a change was not taken: the Inbox file could not be loaded.
@@ -729,7 +759,7 @@ package final class QuickCaptureInboxModel {
         }
         // The change applies to what another running copy wrote, if it did.
         switch StoredFile.update(
-            fileURL, memory: inbox, lastSeen: &lastSeen,
+            fileURL, memory: inbox, seen: &seen,
             decode: QuickCaptureInboxFile.decode, encode: QuickCaptureInboxFile.encode,
             write: PrivateFile.write, change: change)
         {

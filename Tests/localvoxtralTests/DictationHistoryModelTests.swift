@@ -179,6 +179,64 @@ final class DictationHistoryModelTests: XCTestCase {
         XCTAssertEqual(model.entries, [])
         XCTAssertTrue(model.hasLoaded)
     }
+
+    // MARK: - Turning audio and diagnostic records off (#1166)
+
+    /// A store whose audio and diagnostic records live in their own folders
+    /// under a fresh temporary directory.
+    private func makeStoreWithAttachments() throws -> (DictationSessionStore, URL) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-history-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let store = try makeStore()
+        store.audioStore = DictationAudioStore(
+            directoryURL: directory.appendingPathComponent("audio", isDirectory: true))
+        store.diagnosticRecordStore = DiagnosticRecordStore(
+            directoryURL: directory.appendingPathComponent("records", isDirectory: true))
+        return (store, directory)
+    }
+
+    func testBeforeTheCountLoadsTurningEitherOffAsksFirst() async throws {
+        let (store, _) = try makeStoreWithAttachments()
+        let model = makeModel(store)
+
+        XCTAssertTrue(model.turningAudioOffAsksFirst)
+        XCTAssertTrue(model.turningRecordsOffAsksFirst)
+    }
+
+    func testWithoutAStoreTurningEitherOffAsksFirst() async {
+        let model = makeModel(nil)
+        await model.reloadStorageSummary()
+
+        XCTAssertTrue(model.turningAudioOffAsksFirst)
+        XCTAssertTrue(model.turningRecordsOffAsksFirst)
+    }
+
+    func testAFolderThatWillNotListIsNotZeroAndTurningItOffAsksFirst() async throws {
+        let (store, directory) = try makeStoreWithAttachments()
+        // A file where each folder should be: listing it fails.
+        for name in ["audio", "records"] {
+            try Data().write(to: directory.appendingPathComponent(name, isDirectory: false))
+        }
+        let model = makeModel(store)
+        await model.reloadStorageSummary()
+
+        XCTAssertTrue(model.turningAudioOffAsksFirst)
+        XCTAssertTrue(model.turningRecordsOffAsksFirst)
+    }
+
+    func testAKnownZeroTurnsOffWithoutAskingAndAKnownCountAsks() async throws {
+        let (store, _) = try makeStoreWithAttachments()
+        let model = makeModel(store)
+        await model.reloadStorageSummary()
+        XCTAssertFalse(model.turningAudioOffAsksFirst)
+        XCTAssertFalse(model.turningRecordsOffAsksFirst)
+
+        await store.save(record("kept"), audio: Data([1, 0, 2, 0])).value
+        await model.reloadStorageSummary()
+        XCTAssertTrue(model.turningAudioOffAsksFirst)
+    }
 }
 
 final class DictationHistoryRowTextTests: XCTestCase {

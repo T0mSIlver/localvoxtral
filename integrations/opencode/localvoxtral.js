@@ -70,6 +70,10 @@ const MAX_LINE_BYTES = 64 * 1024;
 const MAX_PROMPT_BYTES = 8 * 1024;
 const MAX_PATH_BYTES = 4 * 1024;
 const MAX_FILES_PER_RECORD = 16;
+const MAX_TITLE_BYTES = 320;
+// opencode names a session "New session - <ISO time>" (a child "Child
+// session - …") until its model titles it. That placeholder names nothing.
+const PLACEHOLDER_TITLE = /^(New|Child) session - \d{4}-\d{2}-\d{2}T/;
 
 // The registry treats a focus declaration as stale after 45 seconds
 // (ClaudeRegistryLimits.defaultFocusDeclarationTTL); a 20-second heartbeat
@@ -306,6 +310,9 @@ function record(event, sessionID, fields, tty, relay) {
   if (fields && typeof fields.notificationType === "string") {
     result.notification_type = fields.notificationType;
   }
+  if (fields && typeof fields.title === "string" && fields.title) {
+    result.session_title = truncateBytes(fields.title, MAX_TITLE_BYTES);
+  }
   if (fields && Array.isArray(fields.files) && fields.files.length > 0) {
     result.files = fields.files.slice(0, MAX_FILES_PER_RECORD).map((file) => ({
       path: truncateBytes(file.path, MAX_PATH_BYTES),
@@ -338,6 +345,10 @@ const ServerHalf = async () => {
   // the bound) stops publishing entirely — dictation abstains for it instead
   // of risking a child session's content grounding someone's prompt.
   const topLevelSessions = new Set();
+  // session id -> opencode's title for it, from session.updated (#1020). It
+  // rides on the session's next records as session_title: a name for the
+  // app to show, bounded like the allowlist above.
+  const titleBySession = new Map();
 
   function rememberTopLevel(sessionID) {
     topLevelSessions.add(sessionID);
@@ -345,11 +356,27 @@ const ServerHalf = async () => {
       const oldest = topLevelSessions.values().next().value;
       topLevelSessions.delete(oldest);
       directoryBySession.delete(oldest);
+      titleBySession.delete(oldest);
     }
   }
 
   function directoryFor(sessionID) {
     return directoryBySession.get(sessionID);
+  }
+
+  // The fields every record of a session carries: its cwd and its title.
+  function sessionFields(sessionID, fields) {
+    const result = Object.assign({ cwd: directoryFor(sessionID) }, fields);
+    const title = titleBySession.get(sessionID);
+    if (title) result.title = title;
+    return result;
+  }
+
+  function rememberTitle(info) {
+    if (!info.id || !topLevelSessions.has(info.id)) return;
+    const title = typeof info.title === "string" ? info.title.trim() : "";
+    if (!title || PLACEHOLDER_TITLE.test(title)) return;
+    titleBySession.set(info.id, title);
   }
 
   return {
@@ -365,21 +392,27 @@ const ServerHalf = async () => {
           if (typeof info.directory === "string" && info.directory) {
             directoryBySession.set(info.id, info.directory);
           }
-          publish(record("SessionStart", info.id, { cwd: directoryFor(info.id) }));
+          rememberTitle(info);
+          publish(record("SessionStart", info.id, sessionFields(info.id)));
+          return;
+        }
+        if (type === "session.updated") {
+          rememberTitle(properties.info || {});
           return;
         }
         if (type === "session.deleted") {
           const info = properties.info || {};
           if (!info.id) return;
           if (!topLevelSessions.delete(info.id)) return;
-          publish(record("SessionEnd", info.id, { cwd: directoryFor(info.id) }));
+          publish(record("SessionEnd", info.id, sessionFields(info.id)));
           directoryBySession.delete(info.id);
+          titleBySession.delete(info.id);
           return;
         }
         if (type === "session.idle") {
           const sessionID = properties.sessionID;
           if (!sessionID || !topLevelSessions.has(sessionID)) return;
-          publish(record("Stop", sessionID, { cwd: directoryFor(sessionID) }));
+          publish(record("Stop", sessionID, sessionFields(sessionID)));
           return;
         }
         // The session waits on the user (#717): a permission or a question.
@@ -388,10 +421,9 @@ const ServerHalf = async () => {
         if (waitsFor) {
           const sessionID = properties.sessionID;
           if (!sessionID || !topLevelSessions.has(sessionID)) return;
-          publish(record("Notification", sessionID, {
-            cwd: directoryFor(sessionID),
+          publish(record("Notification", sessionID, sessionFields(sessionID, {
             notificationType: waitsFor,
-          }));
+          })));
         }
       } catch {}
     },
@@ -408,10 +440,7 @@ const ServerHalf = async () => {
           .map((part) => part.text)
           .join("\n");
         publish(
-          record("UserPromptSubmit", sessionID, {
-            prompt,
-            cwd: directoryFor(sessionID),
-          })
+          record("UserPromptSubmit", sessionID, sessionFields(sessionID, { prompt }))
         );
       } catch {}
     },
@@ -430,11 +459,10 @@ const ServerHalf = async () => {
         const filePath = input.args && typeof input.args.filePath === "string" ? input.args.filePath : undefined;
         if (!filePath) return;
         publish(
-          record("PostToolUse", sessionID, {
+          record("PostToolUse", sessionID, sessionFields(sessionID, {
             toolName: tool,
             files: [{ path: filePath, kind }],
-            cwd: directoryFor(sessionID),
-          })
+          }))
         );
       } catch {}
     },

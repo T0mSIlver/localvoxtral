@@ -258,6 +258,16 @@ final class SSHDestinationCanonicalizerTests: XCTestCase {
             // herdr's own catalog test fixtures include IPv6 literals.
             "ssh://dev@[::1]:2222",
             "ssh://[2001:db8::1]",
+            // Every port 1-65535 the user wrote, in both host shapes, with
+            // leading zeros allowed (#1164).
+            "ssh://build.example:7",
+            "ssh://build.example:07",
+            "ssh://build.example:65535",
+            "ssh://build.example:0000022",
+            "ssh://[::1]:7",
+            "ssh://[::1]:07",
+            "ssh://[::1]:22",
+            "ssh://[::1]:65535",
         ]
         for operand in accepted {
             XCTAssertTrue(
@@ -294,6 +304,16 @@ final class SSHDestinationCanonicalizerTests: XCTestCase {
             "ssh://build.example:22:22",
             "ssh://build.example:nope",
             "ssh://build.example:0",
+            "ssh://build.example:00",
+            "ssh://build.example:",
+            "ssh://build.example:65536",
+            "ssh://build.example:123456",
+            "ssh://build.example:+22",
+            "ssh://build.example:\u{0662}\u{0662}",
+            "ssh://[::1]:0",
+            "ssh://[::1]:",
+            "ssh://[::1]:65536",
+            "ssh://[::1]:123456",
             // Only the ssh scheme; anything else keeps the blanket refusal.
             "http://build.example",
             "ssh6://build.example",

@@ -21,6 +21,9 @@ package struct HerdrPanePromptRoute: AgentPromptRoute {
     /// machine there, and herdr's focused pane is this one. Asked only after
     /// a refusal, to choose between typing the text and keeping it in History.
     private let keysReachThePane: @Sendable () async -> Bool
+    /// For a remote or federated pane: whether its host is still enrolled and
+    /// not revoked (#1117). Asked before every call; nil for a local pane.
+    private let hostIsEnrolled: (@Sendable () async -> Bool)?
 
     package var name: String { "herdr pane" }
 
@@ -28,15 +31,22 @@ package struct HerdrPanePromptRoute: AgentPromptRoute {
         binding: ClaudeHerdrPaneBinding,
         writer: any HerdrPaneWriting,
         agentIsForeground: @escaping @Sendable () async -> Bool,
-        keysReachThePane: @escaping @Sendable () async -> Bool
+        keysReachThePane: @escaping @Sendable () async -> Bool,
+        hostIsEnrolled: (@Sendable () async -> Bool)? = nil
     ) {
         self.binding = binding
         self.writer = writer
         self.agentIsForeground = agentIsForeground
         self.keysReachThePane = keysReachThePane
+        self.hostIsEnrolled = hostIsEnrolled
     }
 
     package func deliver(_ call: AgentPromptCall) async -> AgentPromptDelivery {
+        if let hostIsEnrolled, await !hostIsEnrolled() {
+            // Neither sent nor typed: keys would land in the revoked host's pane.
+            Log.backends.notice("herdr pane route: the remote host is no longer enrolled; not sent")
+            return .keepInHistory
+        }
         let outcome: HerdrWriteOutcome
         switch call {
         case .append(let text):

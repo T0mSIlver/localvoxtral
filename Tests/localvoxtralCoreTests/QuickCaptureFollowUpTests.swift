@@ -239,6 +239,61 @@ final class QuickCaptureFollowUpTests: XCTestCase {
         XCTAssertFalse(redraft.contains("new logo"))
     }
 
+    // MARK: Filed by a coding agent
+
+    /// #1177: a capture a coding agent filed is done like one filed on a
+    /// click: the audio of the capture and its follow-up goes once the
+    /// Inbox saved it, and both History records say where it went. A
+    /// failed save keeps the audio, and a refused Inbox changes nothing.
+    func testAnAgentFilingACaptureWithAFollowUpReleasesBothAndRoutesBothRecords() async throws {
+        for outcome in ["saved", "save failed", "refused"] {
+            try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent())
+            let runner = FakeQuickCaptureDraftRunner()
+            runner.nextTitles.withLock { $0 = ["Dark mode", "Dark mode, settings too"] }
+            let model = model(classifier: ScriptedQuickCaptureClassifier([["reach": 0.95]]), runner: runner)
+            var done: [UUID] = []
+            var routedRecords: [UUID: String] = [:]
+            model.onDone = { done.append($0) }
+            let id = UUID(), followUp = UUID(), record = UUID(), followUpRecord = UUID()
+            await model.capture(text: "Add a dark mode", historyRecordID: record, id: id).value
+            await model.capture(text: "Also, the settings window", historyRecordID: followUpRecord, id: followUp).value
+            XCTAssertEqual(model.items.first?.followUps?.map(\.id), [followUp], outcome)
+            model.onRouted = { routedRecords[$0] = $1 }
+
+            switch outcome {
+            case "save failed":
+                // A file where the Inbox's folder goes: the Inbox reads as
+                // absent and every save fails, even as root (as in
+                // VoiceMemoIntakeTests; a folder at the file's path would
+                // refuse the Inbox instead).
+                let folder = fileURL.deletingLastPathComponent()
+                try FileManager.default.removeItem(at: folder)
+                try Data().write(to: folder)
+            case "refused":
+                try Data(#"{"version":1,"items":[{"text":"half"#.utf8).write(to: fileURL)
+            default:
+                break
+            }
+            let result = model.markFiled(id, url: "https://github.com/o/reach/issues/12")
+
+            switch outcome {
+            case "saved":
+                XCTAssertEqual(try result.get().state, .filed)
+                XCTAssertEqual(done, [id, followUp])
+                XCTAssertEqual(routedRecords, [record: "Filed in o/reach", followUpRecord: "Filed in o/reach"])
+            case "save failed":
+                XCTAssertEqual(try result.get().state, .filed)
+                XCTAssertTrue(model.hasUnsavedChanges)
+                XCTAssertEqual(done, [], "a relaunch brings the capture back, so its audio stays")
+                XCTAssertEqual(routedRecords, [record: "Filed in o/reach", followUpRecord: "Filed in o/reach"])
+            default:
+                XCTAssertEqual(result, .failure(.notFound))
+                XCTAssertEqual(done, [])
+                XCTAssertEqual(routedRecords, [:])
+            }
+        }
+    }
+
     // MARK: Comment on #N
 
     func testCommentOnTheIssueADraftExtendsPostsOnceOnClick() async throws {
