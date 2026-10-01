@@ -373,9 +373,9 @@ final class SessionContextResolver {
     /// Releases every remote herdr lease. Idempotent, and safe from any path —
     /// including ones that never knew a tunnel existed.
     ///
-    /// Called from every dictation exit (`discardTerminalScreenCapture`, the
-    /// commit path once the stop-side pane read is done, `abortConnectingSession`)
-    /// and from `applicationWillTerminate`. Closing ALL of them rather than one
+    /// Called from every dictation exit (`discardTerminalScreenCapture`,
+    /// `abortConnectingSession`) and from `applicationWillTerminate`. The
+    /// commit's own stop-side release is `releaseRemoteHerdrForward(of:)`. Closing ALL of them rather than one
     /// is what makes a leaked handle from some path nobody thought of
     /// self-healing at the next exit.
     func closeRemoteHerdrForwards() {
@@ -387,6 +387,23 @@ final class SessionContextResolver {
         let forwards = liveRemoteHerdrForwards
         liveRemoteHerdrForwards = []
         for forward in forwards { forward.close() }
+    }
+
+    /// Releases only the lease `join` holds. For a commit that runs after its
+    /// session ended: by the time it gets here a new dictation may hold leases
+    /// of its own, which `closeRemoteHerdrForwards()` would release too (#1112).
+    func releaseRemoteHerdrForward(of join: ClaudeSessionJoin?) {
+        if let indicator = join?.remoteHerdrIndicator {
+            guard let index = liveRemoteHerdrIndicators.firstIndex(of: indicator) else { return }
+            liveRemoteHerdrIndicators.remove(at: index)
+            indicator.stop()
+            return
+        }
+        guard let forward = join?.remoteHerdrForward,
+              let index = liveRemoteHerdrForwards.firstIndex(of: forward)
+        else { return }
+        liveRemoteHerdrForwards.remove(at: index)
+        forward.close()
     }
 
     /// Test seam: how many tunnels this view model is holding open.

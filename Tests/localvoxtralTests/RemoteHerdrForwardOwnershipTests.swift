@@ -143,6 +143,106 @@ final class RemoteHerdrForwardOwnershipTests: XCTestCase, RemoteHerdrJoinFixture
         XCTAssertEqual(forwards.process.terminations.withLock { $0 }, 1)
     }
 
+    /// #1112: a commit cancelled while its stop-side pane read is in flight
+    /// resumes after the next dictation has taken its own lease. It must
+    /// release only its own, never the next dictation's indicator and forward.
+    func testACancelledCommitLeavesTheNextDictationsLeaseAlone() async throws {
+        // Dictation A: a remote herdr join whose stop-side pane read is held.
+        let (readEntered, readEnteredContinuation) = AsyncStream.makeStream(of: Void.self)
+        let (readRelease, readReleaseContinuation) = AsyncStream.makeStream(of: Void.self)
+        let registryA = makeRegistry()
+        ingestRemoteHerdrSession(into: registryA)
+        let panesA = RemoteJoinHerdrPanes(
+            focused: focusedPane(),
+            texts: ["stop text"],
+            paneReadGate: {
+                readEnteredContinuation.yield()
+                var iterator = readRelease.makeAsyncIterator()
+                _ = await iterator.next()
+            }
+        )
+        let forwardsA = RecordingForwards()
+        let resolverA = resolver(registry: registryA, panes: panesA, forwards: forwardsA)
+        let joinA = try unwrapAsync(await resolverA.resolve(target: ghostty))
+        let paneKeyA = try XCTUnwrap(joinA.socketPaneKey)
+
+        // Dictation B: a panel-authorized join, so it owns a mic indicator.
+        let registryB = makeRegistry()
+        ingestRemoteHerdrSession(into: registryB)
+        let panesB = RemoteJoinHerdrPanes(focused: focusedPane())
+        let forwardsB = RecordingForwards()
+        let token = HerdrPanelBindingProbe.token(randomBits: 31)
+        let (ticks, tickContinuation) = AsyncStream.makeStream(of: Void.self)
+        let joinB = try unwrapAsync(await resolver(
+            registry: registryB,
+            panes: panesB,
+            forwards: forwardsB,
+            panelMetadata: panesB,
+            panelGrid: token,
+            panelRandomBits: 31,
+            indicatorSleepFor: { _ in
+                var iterator = ticks.makeAsyncIterator()
+                _ = await iterator.next()
+            }
+        ).resolve(target: ghostty))
+        let indicatorB = try XCTUnwrap(joinB.remoteHerdrIndicator)
+
+        let viewModel = makeViewModel()
+        viewModel.settings.terminalScreenContextEnabled = true
+        viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        viewModel.context.claudeSessionJoinResolver = resolverA
+        viewModel.context.retainRemoteHerdrForward(of: joinA)
+
+        let endpointURL = try XCTUnwrap(URL(string: "http://127.0.0.1:8080/v1/chat/completions"))
+        let commitA = Task { @MainActor in
+            await PolishContextGatherer.gather(PolishContextGatherer.Input(
+                settings: viewModel.settings,
+                textInsertion: viewModel.textInsertion,
+                context: viewModel.context,
+                repoVocabularyGrounding: FakeRepoVocabularyGrounding(outcome: nil),
+                learnedTermStore: nil,
+                endpointURL: endpointURL,
+                workingText: "hello",
+                capturedScreenDecision: .drop(reason: .noStartCapture),
+                capturedSocketPaneStart: SocketPaneScreenCapture(text: "start text", paneKey: paneKeyA),
+                capturedClaudeJoin: joinA,
+                capturedClipboardContext: nil,
+                templateCarriesDictionarySlot: false,
+                needsRepoGroundingForConflictSafety: false
+            ))
+        }
+        var entered = readEntered.makeAsyncIterator()
+        _ = await entered.next()
+
+        // A new dictation cancels A (its cleanup releases A's lease), then B
+        // takes its own lease, all while A's pane read is still out.
+        commitA.cancel()
+        viewModel.context.discardTerminalScreenCapture()
+        XCTAssertEqual(forwardsA.closeCount, 1)
+        viewModel.context.retainRemoteHerdrForward(of: joinB)
+
+        readReleaseContinuation.yield()
+        let material = await commitA.value
+
+        XCTAssertNil(material, "a cancelled commit stops at the checkpoint after the pane read")
+        XCTAssertEqual(
+            viewModel.context.liveRemoteHerdrIndicators,
+            [indicatorB],
+            "the cancelled commit must not stop the next dictation's indicator"
+        )
+        XCTAssertEqual(viewModel.context.openRemoteHerdrForwardCount, 1)
+        XCTAssertFalse(
+            panesB.panelReports.withLock { $0 }.contains { $0.value == nil },
+            "B's panel token must not be cleared"
+        )
+        XCTAssertEqual(forwardsB.closeCount, 0, "B's forward stays leased")
+
+        viewModel.context.closeRemoteHerdrForwards()
+        await indicatorB.stopAndWait()
+        tickContinuation.finish()
+        XCTAssertEqual(forwardsB.closeCount, 1)
+    }
+
     func testAJoinWithNoTunnelIsNotRetained() async {
         let viewModel = makeViewModel()
         viewModel.context.retainRemoteHerdrForward(of: nil)
