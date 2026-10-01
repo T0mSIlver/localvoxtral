@@ -739,6 +739,9 @@ package final class UsageLedger: UsageRecording, @unchecked Sendable {
         /// The file's stamp when `entries` last matched it, nil when they may
         /// not.
         var stamp: StoredFileStamp?
+        /// Entries whose append failed: memory keeps them until relaunch,
+        /// and a reload keeps them too.
+        var unsaved: [UsageEntry] = []
     }
 
     package let fileURL: URL?
@@ -791,6 +794,7 @@ package final class UsageLedger: UsageRecording, @unchecked Sendable {
                 // Only this copy's line went in since memory matched the
                 // file; otherwise the next reload reads another copy's.
                 s.stamp = stamps != nil && stamps?.before == s.stamp ? stamps?.after : nil
+                if stamps == nil { s.unsaved.append(entry) }
             }
         }
         onChange?()
@@ -811,11 +815,21 @@ package final class UsageLedger: UsageRecording, @unchecked Sendable {
         guard let fileURL else { return }
         let changed = await withCheckedContinuation { continuation in
             writeQueue.async { [self] in
-                continuation.resume(returning: state.withLock { s -> Bool in
-                    guard s.entries != nil, StoredFileStamp.of(fileURL) != s.stamp else { return false }
-                    s.entries = loadEntries(stamp: &s.stamp)
-                    return true
-                })
+                // This copy appends only on this queue, so the file read
+                // outside the mutex is not racing this copy's own lines, and
+                // a Settings render reading `entries()` does not wait on it.
+                let (loaded, current) = state.withLock { ($0.entries != nil, $0.stamp) }
+                guard loaded, StoredFileStamp.of(fileURL) != current else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                var stamp: StoredFileStamp?
+                let onDisk = loadEntries(stamp: &stamp)
+                state.withLock { s in
+                    s.entries = onDisk + s.unsaved
+                    s.stamp = stamp
+                }
+                continuation.resume(returning: true)
             }
         }
         guard changed else { return }

@@ -81,6 +81,20 @@ final class UsageLedgerCoreTests: XCTestCase {
         XCTAssertEqual(installed.entries().map(\.model), ["mine", "theirs"])
     }
 
+    /// An entry whose append failed stays in the totals until relaunch; a
+    /// view appearing does not retract it (#1126 review).
+    func testAppearingKeepsAnEntryWhoseAppendFailed() async throws {
+        let fileURL = temporaryFile()
+        // A directory where the ledger should be: every append fails.
+        try FileManager.default.createDirectory(at: fileURL, withIntermediateDirectories: true)
+        let ledger = UsageLedger(fileURL: fileURL)
+        ledger.record(UsageEntry(date: moment, feature: .polish, backend: .mistral, model: "unsaved", costEUR: 0.001))
+
+        await ledger.reloadIfChanged()
+
+        XCTAssertEqual(ledger.entries().map(\.model), ["unsaved"])
+    }
+
     /// A crash mid-append left a line with no end. The next entry starts a
     /// line of its own instead of joining it and going unread (#990).
     func testAnEntryAfterATornLastLineIsKept() throws {
