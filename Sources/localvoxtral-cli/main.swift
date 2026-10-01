@@ -1,4 +1,5 @@
 import ClaudeContextWire
+import ClaudeHookPublisherCore
 import Foundation
 import LocalvoxtralCLICore
 
@@ -17,22 +18,29 @@ let arguments = AgentCLIArguments(
     environment: environment
 )
 
-func write(_ text: String, to handle: FileHandle) {
+/// Raw `write(2)`, never `FileHandle.write`: that raises an uncatchable
+/// exception on a closed or broken descriptor, and the command aborted
+/// instead of exiting with its status (#1165). A lost write never changes the
+/// status.
+func write(_ text: String, toDescriptor descriptor: Int32) {
     guard !text.isEmpty else { return }
-    handle.write(Data(text.utf8))
+    ClaudeHookPublisher.writeAll(Data(text.utf8), toDescriptor: descriptor)
 }
+
+let standardOutput: Int32 = 1
+let standardError: Int32 = 2
 
 switch arguments.parse(Array(CommandLine.arguments.dropFirst())) {
 case .help:
-    write(AgentCLIArguments.usage + "\n", to: .standardOutput)
+    write(AgentCLIArguments.usage + "\n", toDescriptor: standardOutput)
     exit(0)
 case .usageError(let message):
-    write("localvoxtral: \(message)\n\n\(AgentCLIArguments.usage)\n", to: .standardError)
+    write("localvoxtral: \(message)\n\n\(AgentCLIArguments.usage)\n", toDescriptor: standardError)
     exit(AgentCLIRunner.ExitCode.usage.rawValue)
 case .logs(let query):
     let outcome = AgentCLILogs.run(query, timeZone: .current, readLog: AgentCLILogs.readWithLogShow)
-    write(outcome.stdout, to: .standardOutput)
-    write(outcome.stderr, to: .standardError)
+    write(outcome.stdout, toDescriptor: standardOutput)
+    write(outcome.stderr, toDescriptor: standardError)
     exit(outcome.exitCode.rawValue)
 case .run(let invocation):
     let runner = AgentCLIRunner(
@@ -40,7 +48,7 @@ case .run(let invocation):
         timeZone: .current
     )
     let outcome = runner.run(invocation)
-    write(outcome.stdout, to: .standardOutput)
-    write(outcome.stderr, to: .standardError)
+    write(outcome.stdout, toDescriptor: standardOutput)
+    write(outcome.stderr, toDescriptor: standardError)
     exit(outcome.exitCode.rawValue)
 }
