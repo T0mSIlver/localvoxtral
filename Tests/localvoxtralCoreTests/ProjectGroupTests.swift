@@ -93,6 +93,23 @@ final class ProjectGroupTests: XCTestCase {
         XCTAssertEqual(learned.inGroup(.personal).confirmedEverywhere(), [])
     }
 
+    /// The project cap never evicts a grouped project: its next dictation
+    /// would come back in no group, and its names would reach the other
+    /// group's dictations again.
+    func testTheProjectCapKeepsAGroupedProject() async {
+        var learned = LearnedTerms(projects: [
+            LearnedTermProject(key: "/w/acme", name: "acme", terms: [term("Kubrix")], lastSeen: now),
+        ])
+        learned.setGroup(.work, keys: ["/w/acme"])
+        for index in 0..<LearnedTerms.maxProjects {
+            learned.record(
+                [LearnedTermObservation(term: "Term\(index)", source: .repository)],
+                project: .init(key: "/x/project\(index)", name: "project\(index)"),
+                now: now.addingTimeInterval(Double(index + 1) * 60))
+        }
+        XCTAssertEqual(learned.group(ofProjectKey: "/w/acme"), .work)
+    }
+
     // MARK: Quick capture
 
     private func captureModel(

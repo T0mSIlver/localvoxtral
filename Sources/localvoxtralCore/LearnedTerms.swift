@@ -235,9 +235,9 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
     var isKeptWithoutTerms: Bool { hasProposalStamp || reportedAt != nil || isLinkedCheckout || group != nil }
 
     /// The user made a choice here: a pinned term, a typed repository, the
-    /// fork's filing choice. The caps never evict it (#989).
+    /// fork's filing choice, a group (#1005). The caps never evict it (#989).
     package var isExplicit: Bool {
-        terms.contains(where: \.isPinned) || repositoryTyped == true || filesUpstream != nil
+        terms.contains(where: \.isPinned) || repositoryTyped == true || filesUpstream != nil || group != nil
     }
 
     /// A checkout whose terms live on its repository's record.
