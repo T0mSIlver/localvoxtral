@@ -11,43 +11,22 @@ import localvoxtralTestSupport
 /// vLLM answers a final commit only when a run is going, and speechd answers
 /// only the final one. The Mistral client has its own commit and is not here.
 final class RealtimeServerCommitTests: XCTestCase {
-    /// The client wired to a server model: every frame the client sends
-    /// reaches the model, and `pump()` hands the model's answers back.
-    private final class Harness: @unchecked Sendable {
-        let client = RealtimeAPIWebSocketClient()
+    /// What crossed the wire: the server's answers not yet handed back, the
+    /// commits the client sent, and the events it raised. The client's
+    /// callbacks hold this, never the harness: the client's timers can fire
+    /// after a test has ended.
+    private final class Line: @unchecked Sendable {
         let server: RealtimeServerModel
-        private let session: URLSession
-        private let task: URLSessionWebSocketTask
-        private let lock = NSLock()
-        private var outbox: [[String: Any]] = []
-        private var sentCommits: [Bool] = []
-        private var heard: [RealtimeEvent] = []
+        let lock = NSLock()
+        var outbox: [[String: Any]] = []
+        var sentCommits: [Bool] = []
+        var heard: [RealtimeEvent] = []
 
-        init(_ kind: RealtimeServerModel.Kind) {
-            server = RealtimeServerModel(kind)
-            session = URLSession(configuration: .ephemeral)
-            task = session.webSocketTask(with: URL(string: "ws://127.0.0.1:65535/test")!)
-            client.debugObserveTransmits { [unowned self] _, text in self.serverReceives(text) }
-            client.setEventHandler { [unowned self] event, _ in
-                self.lock.lock()
-                self.heard.append(event)
-                self.lock.unlock()
-            }
-            client.debugPrimeConnectedStateForTesting(task: task, modelName: "model")
-            client.debugSetGenerationTrackingState(hasUncommittedAudio: false, isGenerationInProgress: false)
-            client.debugHandleFrameForTesting(json: ["type": "session.created"])
-            pump()
-            lock.lock()
-            heard.removeAll()
-            lock.unlock()
+        init(_ server: RealtimeServerModel) {
+            self.server = server
         }
 
-        deinit {
-            task.cancel()
-            session.invalidateAndCancel()
-        }
-
-        private func serverReceives(_ text: String) {
+        func serverReceives(_ text: String) {
             let json = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any]
             let answers = server.receive(text)
             lock.lock()
@@ -58,15 +37,56 @@ final class RealtimeServerCommitTests: XCTestCase {
             lock.unlock()
         }
 
+        func hear(_ event: RealtimeEvent) {
+            lock.lock()
+            heard.append(event)
+            lock.unlock()
+        }
+    }
+
+    /// The client wired to a server model: every frame the client sends
+    /// reaches the model, and `pump()` hands the model's answers back.
+    private final class Harness: @unchecked Sendable {
+        let client = RealtimeAPIWebSocketClient()
+        let server: RealtimeServerModel
+        private let line: Line
+        private let session: URLSession
+        private let task: URLSessionWebSocketTask
+        private var lock: NSLock { line.lock }
+
+        init(_ kind: RealtimeServerModel.Kind) {
+            let model = RealtimeServerModel(kind)
+            server = model
+            let wire = Line(model)
+            line = wire
+            session = URLSession(configuration: .ephemeral)
+            task = session.webSocketTask(with: URL(string: "ws://127.0.0.1:65535/test")!)
+            client.debugObserveTransmits { _, text in wire.serverReceives(text) }
+            client.setEventHandler { event, _ in wire.hear(event) }
+            client.debugPrimeConnectedStateForTesting(task: task, modelName: "model")
+            client.debugSetGenerationTrackingState(hasUncommittedAudio: false, isGenerationInProgress: false)
+            client.debugHandleFrameForTesting(json: ["type": "session.created"])
+            pump()
+            lock.lock()
+            line.heard.removeAll()
+            lock.unlock()
+        }
+
+        deinit {
+            client.debugObserveTransmits(nil)
+            task.cancel()
+            session.invalidateAndCancel()
+        }
+
         /// Hands the client every frame the server has sent, in order.
         func pump() {
             while true {
                 lock.lock()
-                guard !outbox.isEmpty else {
+                guard !line.outbox.isEmpty else {
                     lock.unlock()
                     return
                 }
-                let frame = outbox.removeFirst()
+                let frame = line.outbox.removeFirst()
                 lock.unlock()
                 client.debugHandleFrameForTesting(json: frame)
             }
@@ -85,7 +105,7 @@ final class RealtimeServerCommitTests: XCTestCase {
         var commits: [Bool] {
             lock.lock()
             defer { lock.unlock() }
-            return sentCommits
+            return line.sentCommits
         }
 
         var finalTexts: [String] {
@@ -105,7 +125,7 @@ final class RealtimeServerCommitTests: XCTestCase {
         var events: [RealtimeEvent] {
             lock.lock()
             defer { lock.unlock() }
-            return heard
+            return line.heard
         }
     }
 
