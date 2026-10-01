@@ -1878,11 +1878,11 @@ there is not.
     `https://claude.ai/code/session_…` (parsed by `ClaudeBridgeSessionURL`),
     resolves through the bridge lookup and binds the bridge id, which
     commit-time liveness re-resolves as the browser arm does (#1065).
-    Everything else follows the browser arm: both origins join (the id is
-    desktop-allocated and names the view the user is looking at), a
+    Everything else follows the browser arm: both origins join (either id is
+    allocated outside this Mac and names the view the user is looking at), a
     `.desktopSession` join authorizes NO screen read and carries no window
-    identity, commit-time liveness re-resolves the bound id (the id never disappears while the session runs, so it adds no
-    disconnect signal of its own), and the read happens ONLY under
+    identity, commit-time liveness re-resolves the bound id (a desktop id never disappears while the session runs, so it adds no
+    disconnect signal of its own; a bridge id goes when Remote Control disconnects), and the read happens ONLY under
     `claudeRepoContextEnabled`. It is an Accessibility read, not an Apple
     event: no Automation consent, and nothing to pre-warm. It sets Electron's
     `AXManualAccessibility` on the desktop app before each read (Chromium
