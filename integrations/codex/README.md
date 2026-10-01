@@ -65,7 +65,8 @@ the app is not running, each hook exits after one failed connect.
 | A session ends | the end of the session |
 
 Each record also names the Codex process, its terminal and, inside herdr or
-cmux, the pane.
+cmux, the pane, and carries the session's name from Codex's
+`~/.codex/session_index.jsonl`, the one Codex shows in its session list.
 
 The hooks drop the transcript's path, the model name, tool output, the patch
 body and Codex's last message. Codex reads files through shell commands, so

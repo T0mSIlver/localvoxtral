@@ -187,17 +187,23 @@ there is not.
   `.focused` only when that tty is the session's. A Return after a focus
   (#723 step 3) or #717's answer hotkey must require `.focused`, never
   `.unverified`.
-- **A session's title is a name, never evidence** (#1013). Claude
+- **A session's title is a name, never evidence** (#1013, #1020). Claude
   Desktop's title for a session is read from Desktop's own file on this
   Mac (`ClaudeDesktopSessionTitles`, keyed by the `local_<uuid>` the hooks
-  reported), for an ssh-host session too, so no title crosses the wire.
-  It names the session in the overlay, the popover, banners and go-to,
-  and nothing else: no join, route or capture reads it, the registry file
-  does not keep it, and no log line carries it. Other harnesses' titles
-  (Claude Code's `session_title`, Codex's `thread_name`, opencode's and
-  Vibe's `title`) stay on their host until a wire step carries them: the
-  auto-generated ones summarize the first prompt, which needs an owner
-  ruling (#1013).
+  reported), for an ssh-host session too. The other harnesses' titles ride
+  on the hook record as the optional `session_title` (owner ruling on
+  #1013: a title the harness made from the first prompt may cross, the app
+  never summarizes a prompt itself): Claude Code's from `SessionStart`
+  input, local or remote; opencode's from `session.updated`, placeholder
+  titles skipped; Codex's `thread_name`, which the publisher reads from the
+  tail of `~/.codex/session_index.jsonl` (`CodexSessionIndex`). Vibe's
+  `meta.json` title is still null on every measured session, so it is not
+  sent. The wire makes a title one sanitized line of at most 320 bytes and
+  drops it from focus records; an app that predates the key ignores it.
+  Desktop's title wins over the record's. Either names the session in the
+  overlay, the popover, banners and go-to, and nothing else: no join, route
+  or capture reads it (`ClaudeSessionSnapshot.harnessTitle` has no other
+  reader), the registry file does not keep it, and no log line carries it.
 - **Live Auto-Paste holds back only what may still read "go to"** (#747).
   Typed words cannot be taken back, so while a session is live a segment is
   held while its words so far may still become "go to" ("G", "Go", "go t")
@@ -2178,6 +2184,12 @@ there is not.
   --repo`, after the Inbox shows it, and as `gh api repos/<owner>/<name>`,
   which only reads. A squatter on the port cannot send it: it rides on the
   host's authenticated hook.
+  `X-Lvx-Env-Branch` (#1020) is the branch checked out in the session's
+  cwd, from `git symbolic-ref --short HEAD` on the host (none on a
+  detached HEAD). It is read only as `SessionDefaultNames.branch`, a name
+  for a remote linked worktree, exactly as a local session's branch is; it
+  never reaches git, a path or a join, and the registry file does not keep
+  it.
 - **A remote request names its agent in a header, and the header buys nothing
   but a namespace.** A remote host runs no publisher of ours, so the agent
   cannot ride inside the record the way it does locally: the Vibe shim

@@ -931,6 +931,9 @@ final class ClaudeSessionPersistenceTests: XCTestCase {
     func testLocalAndRemoteSessionsSurviveRestartWithoutPersistingContent() throws {
         let store = MemoryClaudeSessionStore()
         let first = registry(store: store)
+        var titled = localRecord(.sessionStart)
+        titled.sessionTitle = "private title must stay in memory"
+        first.ingest(titled, origin: .localAuthenticated(peerUID: 501))
         first.ingest(
             localRecord(.userPromptSubmit, prompt: "private prompt must stay in memory"),
             origin: .localAuthenticated(peerUID: 501)
@@ -955,6 +958,7 @@ final class ClaudeSessionPersistenceTests: XCTestCase {
         let persisted = try XCTUnwrap(store.data)
         let text = String(decoding: persisted, as: UTF8.self)
         XCTAssertFalse(text.contains("private prompt"))
+        XCTAssertFalse(text.contains("private title"))
         XCTAssertFalse(text.contains("private snippet"))
         XCTAssertFalse(text.contains("Edit new_string"))
 
@@ -964,6 +968,7 @@ final class ClaudeSessionPersistenceTests: XCTestCase {
         }
         XCTAssertEqual(local.sessionID, "local-session")
         XCTAssertNil(local.latestPriorUserPrompt)
+        XCTAssertNil(local.harnessTitle)
         XCTAssertTrue(local.recentFiles.isEmpty)
         XCTAssertTrue(local.recentSnippets.isEmpty)
 
