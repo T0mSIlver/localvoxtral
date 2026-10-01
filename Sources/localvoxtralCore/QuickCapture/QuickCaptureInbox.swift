@@ -629,8 +629,9 @@ package enum QuickCaptureInboxFile {
 
 /// A file that holds the user's words or audio names.
 package enum PrivateFile {
-    /// Never readable by anyone else, not even for a moment: a 0600
-    /// temporary file renamed over the old one.
+    /// Never readable by anyone else, not even for a moment, and never left
+    /// empty by a power cut: `DurableFile`'s 0600 temporary file, synced and
+    /// renamed over the old one.
     package static func write(_ data: Data, to url: URL) throws {
         let fileManager = FileManager.default
         let directory = url.deletingLastPathComponent()
@@ -639,23 +640,6 @@ package enum PrivateFile {
                 at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
             )
         }
-        let temporary = directory.appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString)")
-        guard fileManager.createFile(
-            atPath: temporary.path, contents: nil, attributes: [.posixPermissions: 0o600]
-        ) else {
-            throw CocoaError(.fileWriteNoPermission)
-        }
-        do {
-            let handle = try FileHandle(forWritingTo: temporary)
-            try handle.write(contentsOf: data)
-            try handle.close()
-            // rename(2) replaces the old file in one step, on both platforms.
-            guard rename(temporary.path, url.path) == 0 else {
-                throw CocoaError(.fileWriteUnknown)
-            }
-        } catch {
-            try? fileManager.removeItem(at: temporary)
-            throw error
-        }
+        try DurableFile.write(data, to: url)
     }
 }

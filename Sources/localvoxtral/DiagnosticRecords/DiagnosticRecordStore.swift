@@ -74,6 +74,8 @@ struct DiagnosticRecordStore: Sendable {
         case invalidID(String)
         /// The record exists but could not be read back or decoded.
         case unreadableRecord(path: String)
+        /// A newer build wrote the record; patching it would lose its fields.
+        case newerRecord(schemaVersion: Int)
     }
 
     /// Serializes every read-modify-write over a record file: the behavior
@@ -178,6 +180,14 @@ struct DiagnosticRecordStore: Sendable {
                 var record = try? makeDecoder().decode(DiagnosticRecord.self, from: data)
             else {
                 throw StoreError.unreadableRecord(path: url.path)
+            }
+            // Re-encoding a newer build's record would drop the fields this
+            // build does not know (#1042).
+            guard record.schemaVersion <= DiagnosticRecord.currentSchemaVersion else {
+                Log.backends.error(
+                    "Diagnostic record: kept a schema \(record.schemaVersion, privacy: .public) record unpatched; this build writes \(DiagnosticRecord.currentSchemaVersion, privacy: .public)"
+                )
+                throw StoreError.newerRecord(schemaVersion: record.schemaVersion)
             }
             record.behavior = behavior
             guard let encoded = try? makeEncoder().encode(record) else {

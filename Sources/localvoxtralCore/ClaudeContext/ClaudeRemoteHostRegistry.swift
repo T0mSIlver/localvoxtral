@@ -313,77 +313,18 @@ public struct ClaudeRemoteHostFileStoreIO: ClaudeRemoteHostStoreIO {
         // report, not to paper over.
         try ClaudeSocketGuard.prepareDirectory(at: directory.path)
 
-        // Unique per attempt. A fixed name is shared mutable state between two
-        // concurrent writers (and between us and anything else in the
-        // directory): one would rename the other's half-written bytes over the
-        // target.
-        let temporaryPath = directory
-            .appendingPathComponent(".\(url.lastPathComponent).\(getpid()).\(UInt64.random(in: 0..<UInt64.max)).tmp")
-            .path
-
-        let fd = temporaryPath.withCString { path in
-            open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
-        }
-        guard fd >= 0 else {
+        // `DurableFile`: a unique temporary file per attempt, synced before
+        // the rename and the directory after it, and removed on every failure.
+        do {
+            try DurableFile.write(data, to: url)
+        } catch {
+            Log.persistence.error("remote host store: \(String(describing: error), privacy: .public)")
             throw ClaudeRemoteHostRegistry.StoreError.writeFailed(path: url.path)
         }
-
-        // From here on every exit removes the temp file. The only path that
-        // must NOT is the successful rename, which consumes it.
-        var renamed = false
-        defer {
-            close(fd)
-            if !renamed { _ = temporaryPath.withCString { unlink($0) } }
-        }
-
-        try data.withUnsafeBytes { raw in
-            guard let base = raw.baseAddress else { return }
-            var offset = 0
-            while offset < raw.count {
-                let written = ClaudeRemoteHostFileStoreIO.retryingOnEINTR {
-                    LibC.write(fd, base.advanced(by: offset), raw.count - offset)
-                }
-                guard written > 0 else {
-                    throw ClaudeRemoteHostRegistry.StoreError.writeFailed(path: url.path)
-                }
-                offset += written
-            }
-        }
-        // The rename is atomic, but it does not imply the DATA reached the
-        // platter. Without this a crash can leave the renamed target pointing at
-        // unwritten blocks — an empty file where the enrollments were.
-        guard fsync(fd) == 0 else {
-            throw ClaudeRemoteHostRegistry.StoreError.writeFailed(path: url.path)
-        }
-
-        // POSIX rename(2): atomically replaces the target if it exists. No
-        // `removeItem` first — that window is exactly when a crash loses the
-        // file, and any reader in it sees "no hosts enrolled" rather than the
-        // previous contents.
-        let moved = temporaryPath.withCString { source in
-            url.path.withCString { destination in
-                rename(source, destination)
-            }
-        }
-        guard moved == 0 else {
-            throw ClaudeRemoteHostRegistry.StoreError.writeFailed(path: url.path)
-        }
-        renamed = true
         #else
         try data.write(to: url, options: [.atomic, .completeFileProtection])
         #endif
     }
-
-    #if canImport(Darwin) || canImport(Glibc)
-    @inline(__always)
-    package static func retryingOnEINTR(_ body: () -> Int) -> Int {
-        while true {
-            let result = body()
-            if result == -1 && errno == EINTR { continue }
-            return result
-        }
-    }
-    #endif
 }
 
 /// Enrolled remote hosts and their token hashes.

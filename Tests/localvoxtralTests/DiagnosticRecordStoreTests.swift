@@ -277,6 +277,26 @@ final class DiagnosticRecordStoreTests: XCTestCase {
         XCTAssertNotNil(try io.read(from: foreign))
     }
 
+    /// Re-encoding a newer build's record drops the fields this build does
+    /// not know, so the patch leaves it alone (#1042).
+    func testAttachBehaviorLeavesANewerSchemaRecordUnchanged() throws {
+        let store = makeStore()
+        var record = makeRecord()
+        record.schemaVersion = DiagnosticRecord.currentSchemaVersion + 1
+        let url = try store.write(record)
+        let before = try XCTUnwrap(io.read(from: url))
+        let behavior = DiagnosticRecord.Behavior(
+            outcome: .clean, signal: nil, secondsSinceCommitBucket: nil,
+            wordCountBucket: "1-5", watchWindowSeconds: 2, outputMode: "overlayBuffer")
+
+        XCTAssertThrowsError(try store.attachBehavior(behavior, toRecordAt: url)) {
+            XCTAssertEqual(
+                $0 as? DiagnosticRecordStore.StoreError,
+                .newerRecord(schemaVersion: DiagnosticRecord.currentSchemaVersion + 1))
+        }
+        XCTAssertEqual(try io.read(from: url), before)
+    }
+
     func testFileNameParsingRejectsForeignNames() {
         XCTAssertNil(DiagnosticRecordFileName.parse("notes.txt"))
         XCTAssertNil(DiagnosticRecordFileName.parse("dictation-garbage.json"))
