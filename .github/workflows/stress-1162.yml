@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        mode: [churn, class-under-load, suite]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -66,29 +66,45 @@ jobs:
         run: |
           osascript -l JavaScript -e 'ObjC.import("AppKit"); var m = $.NSEvent.mouseLocation; var s = $.NSScreen.mainScreen.frame; "mouse=" + m.x + "," + m.y + " screen=" + s.size.width + "x" + s.size.height' || true
 
-      - name: Run the sharded unit suite repeatedly
+      - name: Stress (${{ matrix.mode }})
         env:
-          ROUNDS_SECONDS: "2100"
+          MODE: ${{ matrix.mode }}
+          SECONDS_BUDGET: "2100"
         run: |
           set -uo pipefail
           rm -f ~/Library/Logs/DiagnosticReports/xctest*.ips
+          BUNDLE="$(find .build -maxdepth 3 -type d -name localvoxtralPackageTests.xctest | head -n 1)"
+          if [[ "$MODE" != suite ]]; then
+            # The crashed shard ran beside two others on a 3-core VM.
+            for _ in 1 2 3; do (yes > /dev/null &); done
+          fi
           pass=0; fail=0; began=$(date +%s); round=0
-          while (( $(date +%s) - began < ROUNDS_SECONDS )); do
+          while (( $(date +%s) - began < SECONDS_BUDGET )); do
             round=$((round + 1))
-            NSUnbufferedIO=YES ./scripts/ci/run-unit-shards.sh --coverage "$(sysctl -n hw.ncpu)" \
-              RealtimeAPIVLLMIntegrationTests SpeechHelperIntegrationTests AgentDictationE2EEvalTests \
-              HerdrIntegrationTests PolishContextPreparationTests > "$RUNNER_TEMP/round.log" 2>&1
+            case "$MODE" in
+              churn)
+                LV_STRESS_1162=1 NSUnbufferedIO=YES xcrun xctest \
+                  -XCTest localvoxtralTests.OverlayControllerChurnStressTests "$BUNDLE" > "$RUNNER_TEMP/round.log" 2>&1 ;;
+              class-under-load)
+                NSUnbufferedIO=YES xcrun xctest \
+                  -XCTest localvoxtralTests.OverlayDestinationClickTests "$BUNDLE" > "$RUNNER_TEMP/round.log" 2>&1 ;;
+              suite)
+                NSUnbufferedIO=YES ./scripts/ci/run-unit-shards.sh --coverage "$(sysctl -n hw.ncpu)" \
+                  RealtimeAPIVLLMIntegrationTests SpeechHelperIntegrationTests AgentDictationE2EEvalTests \
+                  HerdrIntegrationTests PolishContextPreparationTests OverlayControllerChurnStressTests \
+                  > "$RUNNER_TEMP/round.log" 2>&1 ;;
+            esac
             status=$?
             if [[ $status -eq 0 ]]; then
               pass=$((pass + 1))
             else
               fail=$((fail + 1))
               echo "::warning::round $round exited $status"
-              grep -E "signal code|==> |error:|failed \(" "$RUNNER_TEMP/round.log" | cut -c1-300 | tail -n 15
+              grep -E "signal code|==> |error:|failed \(|started\.$" "$RUNNER_TEMP/round.log" | cut -c1-300 | tail -n 8
             fi
-            echo "round $round done at $(( $(date +%s) - began ))s, status $status"
           done
-          echo "RESULT: $pass passed, $fail failed of $round rounds"
+          pkill yes || true
+          echo "RESULT: $MODE: $pass passed, $fail failed of $round rounds"
           echo "$fail" > "$RUNNER_TEMP/fails"
 
       - name: Crash reports
