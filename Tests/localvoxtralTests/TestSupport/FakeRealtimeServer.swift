@@ -7,7 +7,8 @@ import XCTest
 /// put the real `RealtimeAPIWebSocketClient` and its socket on the session
 /// path. It answers each connection with `session.created` and records every
 /// frame the client sends; what it transcribes, and when, is the test's to
-/// say with `send`.
+/// say with `send`. It answers one thing itself, as speechd and vLLM both do:
+/// the stop's tail run (#1070) when no audio is queued.
 ///
 /// The OS picks the port (#442: test classes run in several processes at
 /// once). One client at a time: a new connection replaces the previous one.
@@ -15,6 +16,8 @@ final class FakeRealtimeServer: @unchecked Sendable {
     /// One JSON frame the client sent, in arrival order.
     struct Frame: @unchecked Sendable {
         let json: [String: Any]
+        /// Its place among the frames received since `forgetFrames`.
+        let index: Int
         var type: String { json["type"] as? String ?? "" }
 
         /// The PCM an `input_audio_buffer.append` carried.
@@ -42,6 +45,10 @@ final class FakeRealtimeServer: @unchecked Sendable {
         var holdsConnections = false
         var heldConnections: [NWConnection] = []
         var heldWaiters: [BoundedWait] = []
+        /// The connection's final commits so far.
+        var finalCommits = 0
+        /// Audio arrived that no `done` has emptied from the queue.
+        var holdsAudio = false
     }
 
     private let listener: NWListener
@@ -98,9 +105,25 @@ final class FakeRealtimeServer: @unchecked Sendable {
         held.forEach { $0.cancel() }
     }
 
-    /// Sends one JSON frame to the connected client.
+    /// Sends one JSON frame to the connected client. A `done` empties the
+    /// queued audio, as both servers do.
     func send(_ json: [String: Any]) {
-        guard let connection = state.withLock({ $0.connection }) else {
+        send(json, emptiesQueue: json["type"] as? String == "transcription.done")
+    }
+
+    /// Sends a `done` the server sent before the audio received since reached
+    /// it, which stays queued: vLLM's run cut at its context limit, crossing
+    /// the stop's final commit (#1070).
+    func sendDoneAheadOfQueuedAudio(_ text: String) {
+        send(["type": "transcription.done", "text": text], emptiesQueue: false)
+    }
+
+    private func send(_ json: [String: Any], emptiesQueue: Bool) {
+        let connection = state.withLock { state -> NWConnection? in
+            if emptiesQueue { state.holdsAudio = false }
+            return state.connection
+        }
+        guard let connection else {
             XCTFail("no client is connected to send \(json["type"] ?? "a frame") to")
             return
         }
@@ -215,6 +238,8 @@ final class FakeRealtimeServer: @unchecked Sendable {
             let previous = state.connection
             state.connection = connection
             state.isClosed = false
+            state.finalCommits = 0
+            state.holdsAudio = false
             return previous
         }
         previous?.cancel()
@@ -243,18 +268,32 @@ final class FakeRealtimeServer: @unchecked Sendable {
                 return
             }
             if let json = try? JSONSerialization.jsonObject(with: content) as? [String: Any] {
-                self.record(Frame(json: json))
+                self.record(json, from: connection)
             }
             self.receive(on: connection)
         }
     }
 
-    private func record(_ frame: Frame) {
-        let satisfied = state.withLock { state -> [BoundedWait] in
+    private func record(_ json: [String: Any], from connection: NWConnection) {
+        let (satisfied, answersTailRun) = state.withLock { state -> ([BoundedWait], Bool) in
+            let frame = Frame(json: json, index: state.frames.count)
             state.frames.append(frame)
+            var answersTailRun = false
+            if frame.type == "input_audio_buffer.append" {
+                state.holdsAudio = true
+            } else if frame.isFinalCommit {
+                state.finalCommits += 1
+                // The stop's own final commit is the test's to answer. A later
+                // one ends the tail run, which finds nothing queued: speechd
+                // and vLLM both answer it at once, with no text.
+                answersTailRun = state.finalCommits > 1 && !state.holdsAudio
+            }
             let satisfied = state.frameWaiters.filter { $0.matches(frame) }
             state.frameWaiters.removeAll { $0.matches(frame) }
-            return satisfied.map(\.wait)
+            return (satisfied.map(\.wait), answersTailRun)
+        }
+        if answersTailRun {
+            send(["type": "transcription.done", "text": ""], on: connection)
         }
         satisfied.forEach { $0.resolve() }
     }

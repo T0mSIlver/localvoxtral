@@ -9,12 +9,22 @@ package struct RealtimeSessionConfiguration: Sendable {
     /// user's own server. Nil records nothing. The Mistral client ignores it:
     /// its socket is always `.mistral`.
     package let usageBackend: UsageEntry.Backend?
+    /// After the stop's `done`, run once more over the audio sent since the
+    /// last run began (#1070). vLLM can end a run at its context limit with a
+    /// `done` that crosses the stop's final commit, and drops the audio queued
+    /// behind it; speechd answers only the final commit, so the bundled
+    /// helper leaves this off. The Mistral client ignores it.
+    package let tailRunAfterStopDone: Bool
 
-    package init(endpoint: URL, apiKey: String, model: String, usageBackend: UsageEntry.Backend? = nil) {
+    package init(
+        endpoint: URL, apiKey: String, model: String, usageBackend: UsageEntry.Backend? = nil,
+        tailRunAfterStopDone: Bool = false
+    ) {
         self.endpoint = endpoint
         self.apiKey = apiKey
         self.model = model
         self.usageBackend = usageBackend
+        self.tailRunAfterStopDone = tailRunAfterStopDone
     }
 }
 

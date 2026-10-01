@@ -3,6 +3,7 @@ import Foundation
 import FoundationNetworking
 #endif
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtralCore
 
 #if DEBUG
@@ -582,6 +583,144 @@ final class WebSocketClientLifecycleTests: XCTestCase {
         guard case .transcriptionFinalized = events[0] else {
             XCTFail("Expected .transcriptionFinalized after done")
             return
+        }
+    }
+
+    // MARK: - The stop's tail run (#1070)
+
+    /// vLLM ends a run at its context limit while the dictation goes on. That
+    /// run's done crosses the stop's final commit, and the server has emptied
+    /// its queue behind it, end-of-audio marker included. The client runs once
+    /// more over the audio the server still holds, and the stop ends on that
+    /// run's done.
+    func testAVLLMRunEndedAtItsLimitAcrossTheStopStillTranscribesTheTail() {
+        let stop = TailRunStop(server: RealtimeServerModel(.vllm(limitChunks: 2)), tailRunAfterStopDone: true)
+        defer { stop.close() }
+
+        stop.client.sendAudioChunk(Data("one".utf8))
+        stop.client.sendCommit(final: false)
+        stop.client.sendAudioChunk(Data("two".utf8))
+        // The run has reached its limit; its done is on the wire.
+        stop.client.sendAudioChunk(Data("three".utf8))
+        stop.client.sendCommit(final: true)
+
+        stop.deliverServerFrames()
+        XCTAssertEqual(stop.finalizedCount, 0, "the run cut at its limit does not end the stop")
+        stop.deliverServerFrames()
+
+        XCTAssertEqual(stop.finals, ["one two", "three"])
+        XCTAssertEqual(stop.finalizedCount, 1)
+        XCTAssertFalse(stop.client.debugStateSnapshot().isAwaitingFinalCommitDone)
+    }
+
+    /// vLLM's run reads the final commit's end-of-audio and answers the stop
+    /// itself. That done looks like one cut at the limit, so the client still
+    /// runs once more; the run finds no audio and answers at once.
+    func testAVLLMStopAnsweredByItsOwnRunEndsOnTheEmptyRunAfterIt() {
+        let stop = TailRunStop(server: RealtimeServerModel(.vllm(limitChunks: nil)), tailRunAfterStopDone: true)
+        defer { stop.close() }
+
+        stop.client.sendAudioChunk(Data("one".utf8))
+        stop.client.sendCommit(final: false)
+        stop.client.sendAudioChunk(Data("two".utf8))
+        stop.client.sendCommit(final: true)
+        let sentBeforeTheDone = stop.sentKinds.count
+
+        stop.deliverServerFrames()
+        XCTAssertEqual(stop.finalizedCount, 0)
+        XCTAssertEqual(
+            Array(stop.sentKinds.dropFirst(sentBeforeTheDone)),
+            ["input_audio_buffer.commit", "input_audio_buffer.commit:final"]
+        )
+        stop.deliverServerFrames()
+
+        XCTAssertEqual(stop.finals, ["one two"])
+        XCTAssertEqual(stop.finalizedCount, 1)
+    }
+
+    /// speechd answers only the final commit. The bundled helper's stop ends
+    /// on that done, and nothing goes out after it.
+    func testASpeechdStopEndsOnItsDoneAndSendsNothingAfter() {
+        let stop = TailRunStop(server: RealtimeServerModel(.speechd), tailRunAfterStopDone: false)
+        defer { stop.close() }
+
+        stop.client.sendAudioChunk(Data("one".utf8))
+        stop.client.sendCommit(final: false)
+        stop.client.sendAudioChunk(Data("two".utf8))
+        stop.client.sendCommit(final: true)
+        let sentBeforeTheDone = stop.sentKinds.count
+
+        stop.deliverServerFrames()
+
+        XCTAssertEqual(stop.finals, ["one two"])
+        XCTAssertEqual(stop.finalizedCount, 1)
+        XCTAssertEqual(stop.sentKinds.count, sentBeforeTheDone)
+    }
+
+    /// A client past its handshake whose frames reach `server`, and whose
+    /// events are collected; the test delivers the server's answers.
+    private final class TailRunStop: @unchecked Sendable {
+        let client = RealtimeAPIWebSocketClient()
+        let server: RealtimeServerModel
+        private let collector = EventCollector()
+        private let session: URLSession
+        private let task: URLSessionWebSocketTask
+        private let lock = NSLock()
+        private var sent: [String] = []
+
+        init(server: RealtimeServerModel, tailRunAfterStopDone: Bool) {
+            self.server = server
+            session = URLSession(configuration: .ephemeral)
+            task = session.webSocketTask(with: URL(string: "ws://127.0.0.1:65535/test")!)
+            client.setEventHandler { [collector] in collector.append($0, from: $1) }
+            client.debugObserveTransmits { [weak self] _, text in self?.transmitted(text) }
+            client.debugPrimeConnectedStateForTesting(
+                task: task, hasReceivedSessionCreated: true, tailRunAfterStopDone: tailRunAfterStopDone)
+            client.debugSetGenerationTrackingState(hasUncommittedAudio: false, isGenerationInProgress: false)
+        }
+
+        /// The type of each JSON frame the client sent, `:final` marking a
+        /// final commit.
+        var sentKinds: [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return sent
+        }
+
+        var finals: [String] {
+            collector.snapshot().compactMap { event in
+                if case .finalTranscript(let text) = event { return text }
+                return nil
+            }
+        }
+
+        var finalizedCount: Int {
+            collector.snapshot().filter { event in
+                if case .transcriptionFinalized = event { return true }
+                return false
+            }.count
+        }
+
+        func deliverServerFrames() {
+            for frame in server.takeSent() {
+                client.debugHandleFrameForTesting(json: frame)
+            }
+        }
+
+        func close() {
+            task.cancel()
+            session.invalidateAndCancel()
+        }
+
+        private func transmitted(_ text: String) {
+            if let json = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any],
+               let type = json["type"] as? String
+            {
+                lock.lock()
+                sent.append(json["final"] as? Bool == true ? type + ":final" : type)
+                lock.unlock()
+            }
+            server.receive(text)
         }
     }
 }

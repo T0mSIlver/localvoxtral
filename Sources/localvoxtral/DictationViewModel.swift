@@ -1092,7 +1092,8 @@ extension DictationViewModel {
             endpoint: endpoint,
             apiKey: settings.trimmedAPIKey,
             model: settings.effectiveModelName(for: provider),
-            usageBackend: DictationSessionController.usageBackend(for: mode)
+            usageBackend: DictationSessionController.usageBackend(for: mode),
+            tailRunAfterStopDone: DictationSessionController.tailRunAfterStopDone(for: mode)
         )
         if mode == .mistralAPI {
             return (configuration, {

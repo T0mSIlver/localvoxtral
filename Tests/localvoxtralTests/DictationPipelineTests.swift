@@ -110,6 +110,33 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, true)
     }
 
+    /// vLLM ends a run at its context limit, and that run's done crosses the
+    /// stop's final commit with the tail still queued at the server. The
+    /// session runs once more and commits the tail too (#1070).
+    func testAVLLMRunCutAtItsLimitAcrossTheStopKeepsTheTail() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+
+        await startAndSpeak(pipeline)
+        pipeline.clock.advance(by: TimingConstants.commitInterval)
+        await pipeline.server.awaitFrame("the periodic commit") {
+            $0.type == "input_audio_buffer.commit" && !$0.isFinalCommit
+        }
+        XCTAssertTrue(pipeline.microphone.deliver(Self.speech(seed: 2)), "the tail")
+
+        pipeline.viewModel.stopDictation(reason: "test")
+        let stopCommit = await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        pipeline.server.sendDoneAheadOfQueuedAudio("the periodic part")
+        let after = stopCommit?.index ?? .max
+        await pipeline.server.awaitFrame("the tail run's final commit") { $0.isFinalCommit && $0.index > after }
+        pipeline.server.send(["type": "transcription.done", "text": "and the tail."])
+
+        let recorded = await pipeline.records.waitForCount(1)
+        XCTAssertTrue(recorded, "the session never finished and wrote its record")
+        await pipeline.server.awaitClose()
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["the periodic part and the tail."])
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), ["the periodic part and the tail."])
+    }
+
     /// A settled sentence past 30 words, the first piece early polish takes.
     private static let settledPiece =
         "the first part of this dictation is long enough to settle into a piece of its own "

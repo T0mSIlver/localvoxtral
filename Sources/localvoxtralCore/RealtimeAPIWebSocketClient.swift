@@ -31,6 +31,10 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         var hasSentSessionUpdate = false
         var hasUncommittedAudio = false
         var isGenerationInProgress = false
+        /// Audio went out after the running generation's commit (#1070).
+        var hasAudioSinceRunBegan = false
+        /// The open socket's `RealtimeSessionConfiguration.tailRunAfterStopDone`.
+        var tailRunAfterStopDone = false
         var finalCommitCompletionGate: FinalCommitCompletionGate = .idle
         var pendingMessages: [PendingFrame] = []
         /// The handshake's replay of `pendingMessages` is under way: new
@@ -137,6 +141,8 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             s.hasSentSessionUpdate = false
             s.hasUncommittedAudio = false
             s.isGenerationInProgress = false
+            s.hasAudioSinceRunBegan = false
+            s.tailRunAfterStopDone = configuration.tailRunAfterStopDone
             s.finalCommitCompletionGate = .idle
             s.usageBackend = configuration.usageBackend
             s.usageModel = modelName
@@ -596,6 +602,8 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         s.hasSentSessionUpdate = false
         s.hasUncommittedAudio = false
         s.isGenerationInProgress = false
+        s.hasAudioSinceRunBegan = false
+        s.tailRunAfterStopDone = false
         s.finalCommitCompletionGate = .idle
         s.pendingMessages.removeAll(keepingCapacity: false)
         s.isReplayingHandshakeQueue = false
@@ -683,11 +691,13 @@ extension RealtimeAPIWebSocketClient {
         hasReceivedSessionCreated: Bool = false,
         usageBackend: UsageEntry.Backend? = nil,
         usageModel: String = "",
-        modelName: String = ""
+        modelName: String = "",
+        tailRunAfterStopDone: Bool = false
     ) {
         state.withLock { s in
             closeSocketLocked(&s, cancelTask: false)
             s.pendingModelName = modelName
+            s.tailRunAfterStopDone = tailRunAfterStopDone
             s.base.connectionGeneration = .next()
             s.base.webSocketTask = task
             s.base.socketState = .connected

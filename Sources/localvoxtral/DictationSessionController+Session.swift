@@ -317,6 +317,7 @@ extension DictationSessionController {
         // 2026-09-16). One mode, one snapshot: client, endpoint, model, key.
         let apiKey = settings.trimmedAPIKey
         let usageBackend = Self.usageBackend(for: settings.dictationBackendMode)
+        let tailRunAfterStopDone = Self.tailRunAfterStopDone(for: settings.dictationBackendMode)
         // Pick THIS session's client before anything else touches one: from
         // here to the stop, every send, poll and disconnect goes to the latched
         // client, whatever Settings does in the meantime.
@@ -392,7 +393,8 @@ extension DictationSessionController {
             endpoint: endpoint,
             apiKey: apiKey,
             model: model,
-            usageBackend: usageBackend
+            usageBackend: usageBackend,
+            tailRunAfterStopDone: tailRunAfterStopDone
         )
     }
 
@@ -404,6 +406,13 @@ extension DictationSessionController {
         case .externalURL: return .userServer
         case .mistralAPI: return .mistral
         }
+    }
+
+    /// Whether a stop in `mode` runs once more after its `done` (#1070).
+    /// Only a user's server can be vLLM; the extra run costs speechd a
+    /// round trip it never needs.
+    static func tailRunAfterStopDone(for mode: BackendMode) -> Bool {
+        mode == .externalURL
     }
 
     /// Opens the socket for a prepared start, and arms its timeout. It dials

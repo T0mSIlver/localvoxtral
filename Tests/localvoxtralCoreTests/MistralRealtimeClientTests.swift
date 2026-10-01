@@ -478,6 +478,7 @@ final class MistralRealtimeClientTests: XCTestCase {
         let collector = EventCollector()
 
         client.sendCommit(final: true)
+        let sentBeforeTheDone = client.debugRecordedFrames()
         client.setEventHandler { collector.append($0, from: $1) }
         client.debugHandleFrameForTesting(json: ["type": "transcription.done", "text": "final text"])
 
@@ -492,6 +493,8 @@ final class MistralRealtimeClientTests: XCTestCase {
             XCTFail("Expected second event to be .transcriptionFinalized")
             return
         }
+        // No tail run (#1070): Mistral answers the end of audio, not a commit.
+        XCTAssertEqual(client.debugRecordedFrames(), sentBeforeTheDone)
     }
 
     func testRepeatedDoneFinalizesExactlyOnce() {
