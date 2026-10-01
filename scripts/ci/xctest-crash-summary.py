@@ -9,8 +9,8 @@ exception and crashed-thread frames land in the job log.
 
   xctest-crash-summary.py [--dir DIR] [--max N] [--wait SECONDS]
 
---wait polls for the first report that long: ReportCrash writes it a few
-seconds after the process dies. Always exits 0 unless the arguments are bad;
+--wait polls for the first report that long: ReportCrash writes it well after
+the process dies (27 s on a hosted runner). Always exits 0 unless the arguments are bad;
 it is forensics, not a gate.
 """
 

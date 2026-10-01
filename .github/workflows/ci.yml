@@ -390,12 +390,13 @@ jobs:
         # A shard that dies on a signal logs only "exited with unexpected
         # signal code"; the frames are in the .ips report macOS writes, and
         # the hosted VM is discarded with it (#1162). Waits for the report
-        # only when a process did die: ReportCrash writes it seconds later.
+        # only when a process did die: ReportCrash wrote it 27 s after a
+        # deliberate segfault on a hosted runner (#1173).
         if: ${{ failure() && steps.ci_scope.outputs.docs_only != 'true' }}
         run: |
           wait=0
           if grep -q "exited with unexpected signal code" "$RUNNER_TEMP/localvoxtral-unit-tests.log" 2>/dev/null; then
-            wait=30
+            wait=90
           fi
           ./scripts/ci/xctest-crash-summary.py --wait "$wait"
 
