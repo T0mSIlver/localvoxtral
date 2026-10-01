@@ -253,13 +253,16 @@ final class QuickCaptureInboxTests: XCTestCase {
         let filed = UUID(), discarded = UUID()
         await model.capture(text: "Add a dark mode", historyRecordID: nil, id: filed).value
         await model.capture(text: "Add a light mode", historyRecordID: nil, id: discarded).value
-        // A folder where the Inbox file goes: every save fails, even as root.
-        try FileManager.default.removeItem(at: fileURL)
-        try FileManager.default.createDirectory(
-            at: fileURL.appendingPathComponent("blocker"), withIntermediateDirectories: true)
+        // A file where the Inbox's folder goes: every save fails, even as
+        // root. A folder at the file's own path would read as unreadable,
+        // which refuses the Inbox instead (#990).
+        let inboxFolder = fileURL.deletingLastPathComponent()
+        try FileManager.default.removeItem(at: inboxFolder)
+        try Data().write(to: inboxFolder)
 
         github.createResult = .success("https://github.com/o/reach/issues/9")
         await model.file(filed)?.value
+        XCTAssertTrue(model.hasUnsavedChanges, "the save failed rather than the Inbox being refused")
         model.discard(discarded)
         XCTAssertEqual(done, [])
     }
