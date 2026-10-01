@@ -161,6 +161,8 @@ struct ProjectsSettingsPane: View {
             }
         }
         .task {
+            // Another running copy may have changed the projects (#1126).
+            await viewModel.learnedTermStore?.reloadIfChanged()
             if let store = viewModel.sessionStore {
                 let entries = await store.entries(since: Date().addingTimeInterval(-7 * 86_400))
                 dictationProjectKeys = entries.map(\.projectKey)

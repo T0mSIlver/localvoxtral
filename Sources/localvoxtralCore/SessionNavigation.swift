@@ -188,10 +188,12 @@ package struct SessionDefaultNames: Equatable, Sendable {
     /// The repository's name, when it differs from `primary` (a linked
     /// worktree, or a remote host's project name).
     package var repository: String?
-    /// The harness's own title for the session: Claude Desktop's today
-    /// (`ClaudeDesktopSessionTitles`).
+    /// The harness's own title for the session: Claude Desktop's
+    /// (`ClaudeDesktopSessionTitles`), else the one its hooks reported
+    /// (`ClaudeSessionSnapshot.harnessTitle`, #1020).
     package var title: String?
-    /// The branch checked out at the git root, local sessions only.
+    /// The branch checked out at the git root, or the one a remote host
+    /// reported.
     package var branch: String?
 
     package init(primary: String?, repository: String?, title: String? = nil, branch: String? = nil) {
@@ -201,15 +203,21 @@ package struct SessionDefaultNames: Equatable, Sendable {
         self.branch = branch
     }
 
-    /// - Parameter repositoryRoot: what a git-root walk from the session's
-    ///   cwd found. Ignored for a remote session and when it does not contain
-    ///   the cwd.
+    /// - Parameters:
+    ///   - repositoryRoot: what a git-root walk from the session's cwd found.
+    ///     Ignored for a remote session and when it does not contain the cwd.
+    ///   - title: Claude Desktop's title; nil falls back to the hooks' one.
+    ///   - branch: the local git root's branch. A remote session's comes from
+    ///     its host.
     package static func of(
         _ snapshot: ClaudeSessionSnapshot,
         repositoryRoot: LearnedTermProjectResolver.RepositoryRoot,
         title: String? = nil,
         branch: String? = nil
     ) -> SessionDefaultNames {
+        let title = title ?? snapshot.harnessTitle.flatMap {
+            SessionTitleText.clean($0, maxLength: ClaudeDesktopSessionTitles.maxLength)
+        }
         switch snapshot.workspace {
         case .local(let path)?:
             var directory = path.path
@@ -233,7 +241,8 @@ package struct SessionDefaultNames: Equatable, Sendable {
             return SessionDefaultNames(
                 primary: label,
                 repository: project == label ? nil : project,
-                title: title
+                title: title,
+                branch: snapshot.remoteBranch
             )
         case nil:
             return SessionDefaultNames(primary: nil, repository: nil, title: title)
@@ -303,7 +312,7 @@ package struct SessionNameCandidate: Equatable, Sendable {
 }
 
 extension SessionNameCandidate {
-    /// The names `AgentAttentionText.name` builds: the cwd's, no branch.
+    /// The names `AgentAttentionText.name` builds: the cwd's, no git-root walk.
     var withoutWalk: SessionNameCandidate {
         var candidate = self
         candidate.names = SessionDefaultNames.of(snapshot, repositoryRoot: .unknown, title: names.title)

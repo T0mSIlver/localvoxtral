@@ -23,7 +23,8 @@ import os
 ///
 /// Another running copy of the app may write the same file (#990). Every
 /// write re-reads it under their shared lock and applies its change to what
-/// the other copy wrote (`StoredFile.update`).
+/// the other copy wrote (`StoredFile.update`), and Settings' Projects pane
+/// reads it again when it appears (`reloadIfChanged`, #1126).
 package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectSummaryStoring, QuickCaptureProjectLinkStoring, @unchecked Sendable {
     private struct State {
         var terms: LearnedTerms?
@@ -47,10 +48,13 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     private let writeQueue = DispatchQueue(label: "localvoxtral.learned-terms", qos: .utility)
     private let now: @Sendable () -> Date
     private let onChange: (@Sendable () -> Void)?
-    /// The bytes this copy last read or wrote. Write queue only.
-    private var lastSeen: Data?
-    /// The same, for `ignored-projects.json`. Write queue only.
-    private var lastSeenIgnored: Data?
+    /// The file as this copy last read or wrote it. Write queue only.
+    private var seen = StoredFileSeen()
+    /// The last write failed, so memory holds a change the file does not.
+    /// Write queue only.
+    private var hasUnsavedChanges = false
+    /// The same as `seen`, for `ignored-projects.json`. Write queue only.
+    private var seenIgnored = StoredFileSeen()
     /// Ignore-list changes whose write failed, replayed by the next one.
     /// Write queue only.
     private var pendingListChanges: [(inout IgnoredProjects) -> Void] = []
@@ -531,7 +535,7 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         beforeTermsUpdate?()
         var swept = ignored
         let update = StoredFile.update(
-            fileURL, memory: memory, lastSeen: &lastSeen,
+            fileURL, memory: memory, seen: &seen,
             decode: Self.terms(fromFileContents:),
             encode: { try Self.encoder.encode($0) },
             write: Self.writeFile,
@@ -546,8 +550,10 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         switch update {
         case .written(let terms):
             state.withLock { $0.terms = terms }
+            hasUnsavedChanges = false
         case .failed(let terms, let error):
             state.withLock { $0.terms = terms }
+            hasUnsavedChanges = true
             Log.persistence.error("learned terms: write failed: \(error.localizedDescription, privacy: .public)")
         case .refused(let problem):
             // Another copy left a file this build cannot read: keep it.
@@ -589,7 +595,7 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         }
         let changes = pendingListChanges + (change.map { [$0] } ?? [])
         let update = StoredFile.updateHoldingTheLock(
-            url, memory: current, lastSeen: &lastSeenIgnored,
+            url, memory: current, seen: &seenIgnored,
             decode: Self.ignored(fromFileContents:),
             encode: { try Self.encoder.encode($0) },
             write: writeIgnoredList,
@@ -621,6 +627,7 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     /// The list as on disk, adopted when another copy wrote it since this
     /// one last read or wrote it. The caller holds the list's lock.
     private func readIgnoredList(_ url: URL, memory: IgnoredProjects) -> IgnoredProjects? {
+        let stamp = StoredFileStamp.of(url)
         switch StoredFile.read(url) {
         case .absent:
             return memory
@@ -628,10 +635,10 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
             refuseIgnoredList(.unreadable, memory: memory)
             return nil
         case .bytes(let data):
-            guard data != lastSeenIgnored else { return memory }
+            guard data != seenIgnored.bytes else { return memory }
             switch Self.ignored(fromFileContents: data) {
             case .loaded(let list):
-                lastSeenIgnored = data
+                seenIgnored = StoredFileSeen(bytes: data, stamp: stamp)
                 Log.persistence.notice("ignored projects: another running copy changed the list, adopted")
                 state.withLock { $0.terms?.ignored = list }
                 return list
@@ -669,7 +676,7 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
                 }
                 do {
                     let aside = try StoredFile.moveAside(fileURL)
-                    lastSeen = nil
+                    seen = StoredFileSeen()
                     state.withLock { state in
                         // The ignore list has its own file, which still
                         // holds: an empty one here would lift every opt-out.
@@ -702,7 +709,7 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
                 }
                 do {
                     let aside = try StoredFile.moveAside(ignoredFileURL)
-                    lastSeenIgnored = nil
+                    seenIgnored = StoredFileSeen()
                     pendingListChanges = []
                     state.withLock { state in
                         state.ignoredListProblem = nil
@@ -719,6 +726,52 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
                 }
             }
         }
+    }
+
+    /// Settings' Projects pane appeared: when another running copy wrote the
+    /// file since this copy last read or wrote it, memory takes the file as
+    /// it is now, and `onChange` runs. One `lstat` when nothing changed. On
+    /// the write queue, behind the launch load and every queued write;
+    /// returns once done. A refused file stays refused, and a failed write's
+    /// change is not dropped: the next write applies it on top of the other
+    /// copy's.
+    package func reloadIfChanged() async {
+        guard fileURL != nil else { return }
+        await withCheckedContinuation { continuation in
+            writeQueue.async { [self] in
+                reloadFromDisk()
+                continuation.resume()
+            }
+        }
+    }
+
+    /// `reloadIfChanged`'s body, on the write queue.
+    private func reloadFromDisk() {
+        guard let fileURL, state.withLock({ $0.problem }) == nil, !hasUnsavedChanges else { return }
+        switch StoredFile.reloadIfChanged(fileURL, seen: &seen, decode: Self.terms(fromFileContents:)) {
+        case nil, .absent?:
+            return
+        case .loaded(var terms)?:
+            terms.prune(now: now())
+            state.withLock { state in
+                // The ignore list has its own file: the terms' file never
+                // carries it, and an older copy may have recorded an ignored
+                // repo there (#1006).
+                terms.ignored = state.terms?.ignored ?? IgnoredProjects()
+                terms.removeIgnoredProjects()
+                state.terms = terms
+            }
+            Log.persistence.notice("learned terms: another running copy wrote the file, read again")
+        case .refused(let problem)?:
+            state.withLock { state in
+                var fresh = LearnedTerms()
+                fresh.ignored = state.terms?.ignored ?? IgnoredProjects()
+                state.terms = fresh
+                state.problem = problem
+            }
+            Log.persistence.error("learned terms: another copy left a file this build cannot read")
+        }
+        onChange?()
     }
 
     /// Blocks until the queued writes have landed. For tests and for nothing
@@ -754,8 +807,8 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     /// Called on the write queue, never off it.
     private func loadFromDisk() -> StoredFileLoad<LearnedTerms> {
         guard let fileURL else { return .absent }
-        let (load, bytes) = StoredFile.loadShared(fileURL, decode: Self.terms(fromFileContents:))
-        lastSeen = bytes
+        let load: StoredFileLoad<LearnedTerms>
+        (load, seen) = StoredFile.loadShared(fileURL, decode: Self.terms(fromFileContents:))
         guard var terms = load.value else { return load }
         // Decay applies to a file that has been sitting still, not only to one
         // being written: a project left alone for a season must not come back
@@ -776,8 +829,8 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     /// Called on the write queue, never off it.
     private func loadIgnoredFromDisk() -> StoredFileLoad<IgnoredProjects> {
         guard let ignoredFileURL else { return .absent }
-        let (load, bytes) = StoredFile.loadShared(ignoredFileURL, decode: Self.ignored(fromFileContents:))
-        lastSeenIgnored = bytes
+        let load: StoredFileLoad<IgnoredProjects>
+        (load, seenIgnored) = StoredFile.loadShared(ignoredFileURL, decode: Self.ignored(fromFileContents:))
         return load
     }
 

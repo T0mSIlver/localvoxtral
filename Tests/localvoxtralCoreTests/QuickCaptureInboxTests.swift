@@ -72,6 +72,19 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(Set(installed.items.map(\.text)), ["Add a dark mode", "Fix the login"])
     }
 
+    /// Another running copy took a capture after this one loaded: the Inbox
+    /// shows it when it appears, not only after this copy's next write
+    /// (#1126).
+    func testAppearingShowsACaptureAnotherCopyTookSinceThisOneLoaded() async throws {
+        let installed = model(answer: ["reach": 0.9])
+        let tryBuild = model(answer: ["reach": 0.9])
+        await tryBuild.capture(text: "Fix the login", historyRecordID: nil).value
+
+        installed.reloadIfChanged()
+
+        XCTAssertEqual(installed.items.map(\.text), ["Fix the login"])
+    }
+
     func testTheCatchAllRunsNoAgentAndMovingItDraftsIt() async throws {
         let model = model(answer: ["inbox": 0.9])
         await model.capture(text: "An idea", historyRecordID: nil).value
@@ -240,13 +253,16 @@ final class QuickCaptureInboxTests: XCTestCase {
         let filed = UUID(), discarded = UUID()
         await model.capture(text: "Add a dark mode", historyRecordID: nil, id: filed).value
         await model.capture(text: "Add a light mode", historyRecordID: nil, id: discarded).value
-        // A folder where the Inbox file goes: every save fails, even as root.
-        try FileManager.default.removeItem(at: fileURL)
-        try FileManager.default.createDirectory(
-            at: fileURL.appendingPathComponent("blocker"), withIntermediateDirectories: true)
+        // A file where the Inbox's folder goes: every save fails, even as
+        // root. A folder at the file's own path would read as unreadable,
+        // which refuses the Inbox instead (#990).
+        let inboxFolder = fileURL.deletingLastPathComponent()
+        try FileManager.default.removeItem(at: inboxFolder)
+        try Data().write(to: inboxFolder)
 
         github.createResult = .success("https://github.com/o/reach/issues/9")
         await model.file(filed)?.value
+        XCTAssertTrue(model.hasUnsavedChanges, "the save failed rather than the Inbox being refused")
         model.discard(discarded)
         XCTAssertEqual(done, [])
     }

@@ -361,8 +361,8 @@ package enum AgentCLIDoctorChecks {
         case .updateAvailable(let installed, let bundled):
             return AgentCLICheck(
                 id: id, title: title, state: .warning, detail: "Installed \(installed), this app ships \(bundled).",
-                fix: "Settings > Claude Code > Update, then restart Claude Code sessions: "
-                    + "a running session keeps the hooks it started with."
+                fix: "Settings > Claude Code > Update, then run `/reload-plugins` in each Claude Code session: "
+                    + "a running session keeps the hooks it loaded."
             )
         case .failedToLoad:
             return AgentCLICheck(

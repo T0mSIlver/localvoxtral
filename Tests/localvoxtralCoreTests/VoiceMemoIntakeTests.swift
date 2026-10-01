@@ -330,6 +330,76 @@ final class VoiceMemoIntakeTests: XCTestCase {
         XCTAssertEqual(transcriber.calls.withLock { $0 }, ["walk.m4a"], "transcribed once")
     }
 
+    /// An intake whose captures go to a real Inbox model. A file sits where
+    /// the Inbox's folder goes, as in the test above: every Inbox save fails
+    /// until the returned blocker is removed.
+    private func intakeOverFailingInbox() throws -> (VoiceMemoIntake, QuickCaptureInboxModel, blocker: URL) {
+        let inboxFolder = workDirectory.appendingPathComponent("inbox")
+        try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
+        try Data().write(to: inboxFolder)
+        let model = QuickCaptureFixture.model(
+            fileURL: inboxFolder.appendingPathComponent("quick-captures.json"), answer: [:],
+            github: FakeQuickCaptureGitHub(), runner: FakeQuickCaptureDraftRunner()
+        )
+        let intake = VoiceMemoIntake(
+            directory: directory, ledgerURL: ledgerURL, transcriber: transcriber,
+            list: { [unowned self] _ in files },
+            removeTranscribed: { [unowned self] url in
+                trashed.append(url.lastPathComponent)
+                files.removeAll { $0.name == url.lastPathComponent }
+            },
+            inboxHas: { id in model.holds(id) },
+            inboxIsSaved: { !model.hasUnsavedChanges },
+            capture: { id, text, recordedAt, _ in
+                try model.captureVoiceMemo(text: text, historyRecordID: nil, id: id, capturedAt: recordedAt)
+            }
+        )
+        return (intake, model, inboxFolder)
+    }
+
+    /// #1098: the user discards a capture whose save failed, and the
+    /// discard saves. The memo is done, not transcribed again.
+    func testADiscardedCaptureWhoseSaveFailedIsNotTranscribedAgain() async throws {
+        let (intake, model, blocker) = try intakeOverFailingInbox()
+        files = [memo("walk.m4a")]
+        _ = await intake.scan()
+        _ = await intake.scan()
+        let itemID = try XCTUnwrap(model.items.first?.id)
+
+        try FileManager.default.removeItem(at: blocker)
+        model.discard(itemID)
+        XCTAssertFalse(model.hasUnsavedChanges, "the discard reached the Inbox file")
+        _ = await intake.scan()
+        _ = await intake.scan()
+
+        XCTAssertEqual(transcriber.calls.withLock { $0 }, ["walk.m4a"], "transcribed once")
+        XCTAssertEqual(model.items, [])
+    }
+
+    /// #1098: a memo replaced in iCloud under the same name and size while
+    /// its first capture waited for a save is a new memo: it is transcribed,
+    /// not trashed on the strength of the old words.
+    func testAMemoReplacedWhileItsCaptureWaitedForASaveIsTranscribed() async throws {
+        let (intake, model, blocker) = try intakeOverFailingInbox()
+        transcriber.results.withLock { $0["walk.m4a"] = .success("first take") }
+        files = [memo("walk.m4a", minute: 1)]
+        _ = await intake.scan()
+        _ = await intake.scan()
+        let firstID = try XCTUnwrap(model.items.first?.id)
+
+        transcriber.results.withLock { $0["walk.m4a"] = .success("second take") }
+        files = [memo("walk.m4a", minute: 7)]
+        try FileManager.default.removeItem(at: blocker)
+        model.setTitle("A walk", for: firstID)
+        XCTAssertFalse(model.hasUnsavedChanges, "the first take reached the Inbox file")
+        _ = await intake.scan()
+        XCTAssertEqual(trashed, [], "the replacement is not trashed untranscribed")
+        _ = await intake.scan()
+
+        XCTAssertEqual(model.items.map(\.text).sorted(), ["first take", "second take"])
+        XCTAssertEqual(trashed, ["walk.m4a"])
+    }
+
     func testANewMemoSavedUnderAnOldNameIsANewMemo() async {
         transcriber.results.withLock { $0["memo.m4a"] = .success("") }
         files = [memo("memo.m4a", size: 1_000)]

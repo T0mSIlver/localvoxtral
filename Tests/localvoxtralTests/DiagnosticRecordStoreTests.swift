@@ -143,8 +143,8 @@ final class DiagnosticRecordStoreTests: XCTestCase {
         XCTAssertEqual(decoded.text.rawTranscript, "check DictationViewModel plus Session")
         XCTAssertEqual(decoded.schemaVersion, DiagnosticRecord.currentSchemaVersion)
         XCTAssertEqual(store.storedIDs(), [id])
-        XCTAssertEqual(store.summary().records, 1)
-        XCTAssertEqual(store.summary().bytes, data.count)
+        XCTAssertEqual(try store.summary().records, 1)
+        XCTAssertEqual(try store.summary().bytes, data.count)
     }
 
     /// A record belongs to a History entry; an id that is not one is refused
@@ -258,7 +258,7 @@ final class DiagnosticRecordStoreTests: XCTestCase {
 
         XCTAssertEqual(store.removeAll(), 1)
         XCTAssertEqual(io.fileNames, [])
-        XCTAssertEqual(store.summary().records, 0)
+        XCTAssertEqual(try store.summary().records, 0)
     }
 
     /// A write decided before the user turned records off must not land
@@ -590,6 +590,47 @@ final class DiagnosticRecordRedactionTests: XCTestCase {
             record.sources[0].renderedExcerpt,
             "previous request to the agent: \(DiagnosticRecordRedaction.withheldPromptPlaceholder)\nnext line"
         )
+    }
+
+    /// A terminal shows a long prompt line soft-wrapped at the pane width,
+    /// with its tab expanded to the next tab stop, so a row holds a stretch
+    /// from the middle of the line that no whole-line or prefix pass matches
+    /// (#1121).
+    func testWithholdsAPromptTheScreenSoftWrappedAndTabExpanded() throws {
+        let prompt = "Rename the SessionContextResolver join cache\tso every dictation resolves the pane"
+            + " once, then update DiagnosticRecordStoreTests and the field-debugging doc so the probe"
+            + " and the record agree on the arm they name"
+        var expanded = ""
+        for character in "> " + prompt {
+            if character == "\t" {
+                repeat { expanded.append(" ") } while expanded.count % 8 != 0
+            } else {
+                expanded.append(character)
+            }
+        }
+        let rows = stride(from: 0, to: expanded.count, by: 80).map { start in
+            String(Array(expanded)[start..<min(start + 80, expanded.count)])
+        }
+        XCTAssertGreaterThan(rows.count, 2)
+        var record = recordCarrying("files the agent recently touched")
+        record.screen?.sanitizedText = (["$ git status"] + rows + ["Done. 3 files changed"])
+            .joined(separator: "\n")
+
+        DiagnosticRecordRedaction.withholdPrompt(prompt, from: &record)
+
+        let encoded = try XCTUnwrap(String(data: JSONEncoder().encode(record), encoding: .utf8))
+        for form in [prompt, expanded] {
+            let characters = Array(form)
+            for start in 0...(characters.count - 12) {
+                let fragment = String(characters[start..<start + 12])
+                guard !fragment.contains("\t") else { continue }
+                XCTAssertFalse(encoded.contains(fragment), "'\(fragment)' survived")
+            }
+        }
+        XCTAssertEqual(
+            record.screen?.sanitizedText,
+            "$ git status\n> \(DiagnosticRecordRedaction.withheldPromptPlaceholder)\nDone. 3 files changed")
+        XCTAssertEqual(record.text.rawTranscript, "rename the hook publisher")
     }
 
     /// The builder takes the prompt out before the record exists: nothing the

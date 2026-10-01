@@ -14,6 +14,9 @@ import Foundation
 /// * any `origin`-ish key — dropped. Trust comes from the transport.
 /// * `Notification`'s `message` and `title`, and `Stop`'s
 ///   `last_assistant_message` — dropped. Only `notification_type` is kept.
+///
+/// `session_title`, which Claude Code sends on `SessionStart` when the
+/// session has one (#1020), is kept: it names the session.
 public enum ClaudeHookInputParser {
     /// Tool-input keys that name a single file. Everything else in `tool_input`
     /// is ignored.
@@ -71,7 +74,8 @@ public enum ClaudeHookInputParser {
             prompt: payload["prompt"] as? String,
             toolName: toolName,
             files: filePaths(in: payload, event: event, toolName: toolName),
-            notificationType: notificationType
+            notificationType: notificationType,
+            sessionTitle: payload["session_title"] as? String
         )
         record.version = ClaudeHookWire.version
         return ClaudeHookWireCodec.clamp(record, limits: limits)

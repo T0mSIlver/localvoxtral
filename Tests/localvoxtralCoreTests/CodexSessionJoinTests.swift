@@ -124,6 +124,32 @@ final class CodexSessionJoinTests: XCTestCase {
         XCTAssertFalse(registry.hasHeard(localAgent: .codex))
     }
 
+    /// #1020: Codex's `thread_name` names the session. Codex appends a line
+    /// per rename, so the newest line for the session's id wins, and another
+    /// session's line is not read.
+    func testTheSessionIsNamedByItsNewestThreadName() throws {
+        try start()
+        defer { stop() }
+        let codexHome = directory.appendingPathComponent("codex-home")
+        try FileManager.default.createDirectory(at: codexHome, withIntermediateDirectories: true)
+        try [
+            #"{"id":"\#(rawSessionID)","thread_name":"Probe notes","updated_at":"2026-09-27T08:30:14Z"}"#,
+            #"{"id":"\#(rawSessionID)","thread_name":"Probe the notes file","updated_at":"2026-09-27T08:31:02Z"}"#,
+            #"{"id":"01a0e1fc-6771-7ff3-8f1c-b5c4b5401064","thread_name":"Another session","updated_at":"2026-09-27T08:32:00Z"}"#,
+        ].joined(separator: "\n").appending("\n").write(
+            to: codexHome.appendingPathComponent(CodexSessionIndex.fileName), atomically: true, encoding: .utf8
+        )
+        try publish(turn, extra: ["CODEX_HOME": codexHome.path])
+
+        guard case .resolved(let snapshot) = registry.resolve(tty: tty) else {
+            return XCTFail("the pane Codex runs in has no session")
+        }
+        XCTAssertEqual(snapshot.harnessTitle, "Probe the notes file")
+        XCTAssertEqual(
+            SessionDefaultNames.of(snapshot, repositoryRoot: .unknown).shown, "Probe the notes file"
+        )
+    }
+
     func testSessionEndRemovesTheSession() throws {
         try start()
         defer { stop() }

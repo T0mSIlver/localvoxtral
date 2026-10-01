@@ -91,6 +91,19 @@ package enum PolishOutcomeClassifier {
                     endpointURL: endpointURL
                 )
             )
+        case .some(.invalidResponse):
+            // A 200 whose body is not JSON, carries no assistant text or
+            // only whitespace (#1111). The raw transcript still commits, but
+            // the user is told it was not polished.
+            let summary = llmPolishingInvalidResponseMessage
+            return Failure(
+                title: "LLM Polishing Returned No Text",
+                message: summary,
+                technicalDetails: connectionTechnicalDetails(
+                    summary,
+                    endpointURL: endpointURL
+                )
+            )
         case .some(.truncated):
             let summary = "The polish reached the model's output limit, so the transcript was not polished."
             return Failure(
@@ -101,10 +114,13 @@ package enum PolishOutcomeClassifier {
                     endpointURL: endpointURL
                 )
             )
-        case .some(.emptyInput), .some(.invalidResponse), .none:
+        case .some(.emptyInput), .none:
             return nil
         }
     }
+
+    package static let llmPolishingInvalidResponseMessage =
+        "The LLM polishing endpoint answered with no usable text, so the transcript was not polished."
 
     /// One line for a polish request that outlived its timeout. The overlay commits the
     /// unpolished transcript on any polish failure, so nothing dictated is lost.

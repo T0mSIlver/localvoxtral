@@ -202,19 +202,25 @@ package final class RecordingForwards: ClaudeRemoteHerdrForwarding {
     private let failingRemoteSocketPaths: Set<String>
     package let process = FakeForwardProcess()
     package let workspaces = RecordingWorkspaces()
+    /// Awaited inside every `open` after it is recorded, so a test can hold
+    /// the join arm at its forward while it changes the world around it.
+    private let openGate: (@Sendable () async -> Void)?
 
     package init(
         succeeds: Bool = true,
         localSocketPath: String = "/tmp/lvx-herdr-fwd-test/h.sock",
-        failingRemoteSocketPaths: Set<String> = []
+        failingRemoteSocketPaths: Set<String> = [],
+        openGate: (@Sendable () async -> Void)? = nil
     ) {
         self.succeeds = succeeds
         self.localSocketPath = localSocketPath
         self.failingRemoteSocketPaths = failingRemoteSocketPaths
+        self.openGate = openGate
     }
 
     package func open(alias: String, remoteSocketPath: String) async -> ClaudeRemoteHerdrForwardHandle? {
         opens.withLock { $0.append(Opened(alias: alias, remoteSocketPath: remoteSocketPath)) }
+        await openGate?()
         guard succeeds, !failingRemoteSocketPaths.contains(remoteSocketPath) else { return nil }
         return ClaudeRemoteHerdrForwardHandle(
             workspace: ClaudeRemoteHerdrForwardWorkspace(
@@ -343,9 +349,13 @@ extension RemoteHerdrJoinFixture {
         clientSurfaces: Int? = nil,
         // When set, the exact-alias seam returns these verbatim, unfiltered:
         // the arm itself must refuse revoked or alias-less hits.
-        exactHosts: [ClaudeRemoteHost]? = nil
+        exactHosts: [ClaudeRemoteHost]? = nil,
+        // When set, every host lookup reads this at call time instead of
+        // `hosts`, so a test can revoke a host while a join is in flight.
+        liveHosts: (@MainActor () -> [ClaudeRemoteHost])? = nil
     ) -> ClaudeSessionJoinResolver {
-        let hostList = hosts ?? [enrolledHost()]
+        let fixedHosts = hosts ?? [enrolledHost()]
+        let currentHosts: @MainActor () -> [ClaudeRemoteHost] = { liveHosts?() ?? fixedHosts }
         let fixedNow = epoch
         return ClaudeSessionJoinResolver(
             registry: registry,
@@ -360,7 +370,7 @@ extension RemoteHerdrJoinFixture {
             sshDestinationProbe: { _ in sshResult },
             enrolledHosts: { destination in
                 if let exactHosts { return exactHosts }
-                return hostList.filter { host in
+                return currentHosts().filter { host in
                     guard !host.isRevoked, let alias = host.sshHostAlias else { return false }
                     return alias.lowercased() == destination.lowercased()
                 }
@@ -369,10 +379,10 @@ extension RemoteHerdrJoinFixture {
                 guard let canonicalizer else { return [] }
                 return await canonicalizer.matchingHosts(
                     destination: destination,
-                    enrolledHosts: hostList
+                    enrolledHosts: currentHosts()
                 )
             },
-            speculativeHosts: { hostList },
+            speculativeHosts: { currentHosts() },
             remoteHerdrForwards: forwards,
             herdrPanelMetadata: panelMetadata,
             readFocusedGrid: { _ in panelGrid },
