@@ -2425,6 +2425,14 @@ there is not.
   that could put a byte on a terminal, so there is no variable part left for a
   squatter to aim at. The fixed `X-Lvx-Session: joined|unknown` response header
   only selects a private per-session status stamp and never reaches stdout.
+  Both copies still read one host file, and each answers a hook from the
+  file as it is now (#1046): `authenticate`, the alias match the remote
+  join starts from and the host queries `lstat` the file first and reload
+  it when another copy replaced it, so a host one copy revokes or rotates
+  is refused by the other on its next request. A file that changed and
+  cannot be read back (damaged, a newer build's format) authenticates
+  nothing and matches no alias until it reads again: it may hold a
+  revocation.
   A second copy of the app (a `try-pr.sh` build) loses this port and the
   broker socket to the running copy, and then waits:
   `ClaudeHookSocketTakeover` retries only the binds it lost, each time
