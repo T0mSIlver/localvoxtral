@@ -432,7 +432,7 @@ final class DictationSessionController {
     /// Where a stopped quick capture's words go, with its History record's
     /// id when History kept it. The view model points it at the Inbox.
     @ObservationIgnored
-    var onQuickCapture: (@MainActor (_ text: String, _ historyRecordID: UUID?) -> Void)?
+    var onQuickCapture: (@MainActor (_ text: String, _ historyRecordID: UUID?, _ group: ProjectGroup?) -> Void)?
     @ObservationIgnored
     var polishAndCommitTask: Task<Void, Never>?
     /// This Overlay Buffer dictation's pieces polished while the user speaks

@@ -111,6 +111,15 @@ package final class QuickCaptureInboxModel {
     package var waitingCount: Int { inbox.items.filter { $0.state != .filed }.count }
     package var projectChoices: [QuickCaptureProject] { projects() }
 
+    /// The projects a capture said in `group` may be polished with and
+    /// routed to (#1005); every project for nil. The user can still move a
+    /// capture to any project.
+    private func projects(in group: ProjectGroup?) -> [QuickCaptureProject] {
+        let all = projects()
+        guard let group else { return all }
+        return all.filter { $0.group == group }
+    }
+
     // MARK: Capture
 
     /// Adds the capture, polishes it, and starts routing it. Returns the task
@@ -119,7 +128,8 @@ package final class QuickCaptureInboxModel {
     /// recorded.
     ///
     /// The file holds the raw words before the polish starts. The polish
-    /// (#970) runs once, with every project's names and confirmed terms; its
+    /// (#970) runs once, with the names and confirmed terms of every project
+    /// in `group` (#1005), or of every project with no group; its
     /// words replace the raw ones in the Inbox, and the router and drafter
     /// read them. A failed polish, or no polishing configuration, routes the
     /// raw words.
@@ -129,7 +139,7 @@ package final class QuickCaptureInboxModel {
     /// any of them on the same call that picks a project.
     @discardableResult
     package func capture(
-        text: String, historyRecordID: UUID?, id: UUID = UUID(), capturedAt: Date? = nil
+        text: String, historyRecordID: UUID?, id: UUID = UUID(), capturedAt: Date? = nil, group: ProjectGroup? = nil
     ) -> Task<Void, Never> {
         guard storeProblem == nil else {
             // The words are in History; the Inbox file is not replaced.
@@ -138,7 +148,7 @@ package final class QuickCaptureInboxModel {
             return Task {}
         }
         let item = QuickCaptureItem(
-            id: id, capturedAt: capturedAt ?? now(), text: text, historyRecordID: historyRecordID)
+            id: id, capturedAt: capturedAt ?? now(), text: text, historyRecordID: historyRecordID, group: group)
         mutate { $0.add(item) }
         guard storeProblem == nil else {
             // Another running copy left a file this build cannot read.
@@ -173,7 +183,7 @@ package final class QuickCaptureInboxModel {
         // the one before it has, so an "also" whose polish ends first still
         // finds the capture it follows.
         let previous = lastPlaced
-        let vocabulary = polisher == nil ? [] : polishVocabulary(projects())
+        let vocabulary = polisher == nil ? [] : polishVocabulary(projects(in: item.group))
         if polisher != nil {
             Log.backends.notice("Quick capture: saved, polishing with \(vocabulary.count, privacy: .public) terms")
         }
@@ -235,6 +245,7 @@ package final class QuickCaptureInboxModel {
     private func place(_ item: QuickCaptureItem, rawText: String) -> Placement {
         let open = inbox.items
             .filter { $0.id != item.id && $0.acceptsFollowUp(at: item.capturedAt) }
+            .filter { item.group == nil || $0.group == item.group }
             .sorted { $0.lastCapturedAt > $1.lastCapturedAt }
         if QuickCaptureInbox.saysFollowUp(item.text) || QuickCaptureInbox.saysFollowUp(rawText),
            let latest = open.first
@@ -254,7 +265,7 @@ package final class QuickCaptureInboxModel {
     /// capture the router matched.
     private func route(_ item: QuickCaptureItem, openCaptures: [QuickCaptureOpenCapture]) -> Placement {
         let router = makeRouter()
-        let projects = projects()
+        let projects = projects(in: item.group)
         let text = item.text
         let historyRecordID = item.historyRecordID
         // What is left once the capture has its place: the joined capture's

@@ -1008,8 +1008,8 @@ extension DictationViewModel {
     /// record.
     func installQuickCaptureInbox(_ inbox: QuickCaptureInboxViewModel) {
         quickCapture = inbox
-        session.onQuickCapture = { [weak inbox] text, historyRecordID in
-            inbox?.capture(text: text, historyRecordID: historyRecordID)
+        session.onQuickCapture = { [weak inbox] text, historyRecordID, group in
+            inbox?.capture(text: text, historyRecordID: historyRecordID, group: group)
         }
         inbox.model.onStatus = { [weak self] sentence in
             // Mid-session the status line belongs to the session.

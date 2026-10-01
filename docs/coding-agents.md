@@ -546,6 +546,16 @@ terms. Ignored projects are listed under **Ignored**, at the bottom of
 **Settings → Projects**, each with **Un-ignore**. The list is kept in
 `ignored-projects.json`, beside `learned-terms.json`.
 
+#### Keep work and personal projects apart
+
+The **Group** column puts a project in **Work** or **Personal**. A dictation
+joined to a project in a group then reads only that group's projects
+wherever it reads more than its own: the project names every polish
+carries, the confirmed terms the second pass sends, and a quick capture's
+polish, routing and follow-ups. A dictation with no join, or joined to a
+project in no group, reads every project, as before. You can still move a
+capture to any project by hand.
+
 ### Each project's repository
 
 A project's repository is the GitHub repository its `origin` remote points

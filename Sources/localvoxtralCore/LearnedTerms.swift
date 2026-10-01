@@ -190,6 +190,9 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
     /// on the repository's record (`repo:<remote>`), which every checkout
     /// of it shares. The repository's record carries it too.
     package var remote: String? = nil
+    /// The user's Work or Personal choice (#1005); nil in no group. Set on
+    /// each of a Projects row's records, read by `LearnedTerms.group`.
+    package var group: ProjectGroup? = nil
 
     package init(
         key: String,
@@ -226,9 +229,10 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
         return proposalRevision ?? (agentLineAt != nil ? 2 : 1)
     }
 
-    /// Kept with no terms: a proposal stamp, or a hook that named it. A
-    /// project holding neither is dropped once its last term goes.
-    var isKeptWithoutTerms: Bool { hasProposalStamp || reportedAt != nil || isLinkedCheckout }
+    /// Kept with no terms: a proposal stamp, a hook that named it, or the
+    /// user's group. A project holding none is dropped once its last term
+    /// goes.
+    var isKeptWithoutTerms: Bool { hasProposalStamp || reportedAt != nil || isLinkedCheckout || group != nil }
 
     /// The user made a choice here: a pinned term, a typed repository, the
     /// fork's filing choice. The caps never evict it (#989).

@@ -35,12 +35,14 @@ package struct QuickCaptureProject: Equatable, Sendable {
     /// Where File sends its issues (`LearnedTermProject.issueRepository`).
     package let issueRepository: String?
     package let github: GitHubRepositoryFacts?
+    /// The user's Work or Personal choice (#1005), nil in no group.
+    package let group: ProjectGroup?
 
     package init(
         key: String, name: String, summary: String?, terms: [String],
         agentLine: String? = nil, userLine: String?,
         keys: [String]? = nil, repository: String? = nil, issueRepository: String? = nil,
-        github: GitHubRepositoryFacts? = nil
+        github: GitHubRepositoryFacts? = nil, group: ProjectGroup? = nil
     ) {
         self.key = key
         self.keys = keys ?? [key]
@@ -52,12 +54,13 @@ package struct QuickCaptureProject: Equatable, Sendable {
         self.repository = repository
         self.issueRepository = issueRepository ?? repository
         self.github = github
+        self.group = group
     }
 
     func renamed(_ name: String) -> QuickCaptureProject {
         QuickCaptureProject(
             key: key, name: name, summary: summary, terms: terms, agentLine: agentLine, userLine: userLine,
-            keys: keys, repository: repository, issueRepository: issueRepository, github: github
+            keys: keys, repository: repository, issueRepository: issueRepository, github: github, group: group
         )
     }
 
@@ -180,7 +183,8 @@ package enum QuickCaptureProjects {
                 keys: keys,
                 repository: primary.repository,
                 issueRepository: primary.issueRepository,
-                github: github
+                github: github,
+                group: keys.lazy.compactMap { learned.group(ofProjectKey: $0) }.first
             )
             return (project, remote)
         }

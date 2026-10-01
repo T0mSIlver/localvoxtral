@@ -560,7 +560,7 @@ extension DictationSessionController {
             ),
             settings: settings,
             appConfigStore: appConfigStore,
-            projectNames: polishProjectNames(),
+            projectNames: polishProjectNames(join: context.claudeSessionJoin),
             skillNames: polishSkillNames()
         )
     }

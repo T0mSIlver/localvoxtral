@@ -207,7 +207,7 @@ extension DictationSessionController {
                 profile: polishProfile,
                 settings: settings,
                 appConfigStore: appConfigStore,
-                projectNames: polishProjectNames(),
+                projectNames: polishProjectNames(join: capture.claudeJoin),
                 skillNames: polishSkillNames()
             )
             agentSkillStore?.refreshLocalIfStale()
@@ -852,6 +852,10 @@ extension DictationSessionController {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let recordID = UUID()
         let keptInHistory = !text.isEmpty && settings.dictationHistoryRetention.savesDictations && sessionStore != nil
+        // Read before the cleanup lets the join go: the capture is polished
+        // and routed among its group's projects only (#1005).
+        let group = learnedTermStore?.snapshot()
+            .group(ofJoinedWorkspace: context.claudeSessionJoin?.snapshot.learnedTermWorkspace)
         saveSessionRecord(
             id: recordID,
             startedAt: sessionStartedAt ?? Date(),
@@ -876,7 +880,7 @@ extension DictationSessionController {
         }
         Log.dictation.info("quick capture: \(text.count, privacy: .public) chars to the inbox")
         statusText = StatusStrings.quickCaptureSaved
-        onQuickCapture?(text, keptInHistory ? recordID : nil)
+        onQuickCapture?(text, keptInHistory ? recordID : nil, group)
     }
 
     /// Returns the saved entry's id, or nil when nothing was saved.
@@ -1129,7 +1133,9 @@ extension DictationSessionController {
                     context.repository = memory.unconfirmedProposals(projectKey: project.key)
                 }
             }
-            learnedTerms += memory.confirmedEverywhere().map(\.term)
+            // Only the joined project's group's (#1005).
+            let group = request.workspace == nil ? nil : memory.group(ofDictationProject: project?.key)
+            learnedTerms += memory.inGroup(group).confirmedEverywhere().map(\.term)
         }
         let candidates = StopSecondPass.candidates(
             userTerms: request.userTerms,
