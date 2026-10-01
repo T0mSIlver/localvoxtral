@@ -172,15 +172,30 @@ final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
             }
         }
 
-        guard let entry = makeEntry(
-            hostID: hostID, alias: alias, remoteSocketPath: remoteSocketPath
-        ) else { return nil }
-        entries[hostID] = entry
-        entry.supervisor.start()
-        // `start()` registers supervision synchronously and launches on the
-        // main actor. Give that launch one actor turn before charging the cold
-        // readiness clock; spawn failures used to return before the first poll.
-        await Task.yield()
+        let entry: Entry
+        if let installed = entries[hostID] {
+            // A prepare() filled the slot while the old forward drained.
+            // Overwriting it would orphan its running ssh, so wait on it when
+            // it is this target and step aside when it is another.
+            guard installed.alias == alias, installed.remoteSocketPath == remoteSocketPath else {
+                Log.claudeContext.info(
+                    "Remote herdr forward cold open superseded for host \(hostID, privacy: .public)"
+                )
+                return nil
+            }
+            entry = installed
+        } else {
+            guard let made = makeEntry(
+                hostID: hostID, alias: alias, remoteSocketPath: remoteSocketPath
+            ) else { return nil }
+            entry = made
+            entries[hostID] = entry
+            entry.supervisor.start()
+            // `start()` registers supervision synchronously and launches on the
+            // main actor. Give that launch one actor turn before charging the cold
+            // readiness clock; spawn failures used to return before the first poll.
+            await Task.yield()
+        }
 
         // Preserve the existing dictation-start ceiling. Activity-driven
         // preparation starts the same supervised process off this path, so a
@@ -259,6 +274,15 @@ final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
             guard mayStillCreate(hostID: hostID, alias: alias, since: epoch) else {
                 Log.claudeContext.info(
                     "Remote herdr forward preparation abandoned for host \(hostID, privacy: .public): enrollment changed during teardown"
+                )
+                return
+            }
+            // An open() filled the slot while the old forward drained. Its
+            // forward is newer than this activity; replacing it would orphan
+            // its running ssh.
+            guard entries[hostID] == nil else {
+                Log.claudeContext.info(
+                    "Remote herdr forward preparation superseded for host \(hostID, privacy: .public)"
                 )
                 return
             }
