@@ -31,13 +31,13 @@ package enum BoundedProcess {
         }
     }
 
-    /// Hops to a background queue so the blocking run never touches the
-    /// calling actor. Nil when the process could not be launched, or did not
-    /// exit even after SIGKILL.
     /// How long a process that hit the output cap gets to exit on SIGTERM
     /// before SIGKILL.
     static let capGraceSeconds: TimeInterval = 1.0
 
+    /// Hops to a background queue so the blocking run never touches the
+    /// calling actor. Nil when the process could not be launched, or did not
+    /// exit even after SIGKILL.
     package static func run(
         executableURL: URL,
         arguments: [String],
