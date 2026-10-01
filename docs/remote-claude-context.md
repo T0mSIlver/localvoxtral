@@ -180,8 +180,11 @@ same.
 **When the app will not write it.** The app inserts the block after the
 one-sentence consent. It refuses to write when `~/.ssh/config` or `~/.ssh` is a
 symlink (a dotfiles setup, where an atomic rename would replace your link), or
-when `~/.ssh` is not exclusively yours to write. In those cases, edit the real
-file yourself using the block above.
+when `~/.ssh` is not exclusively yours to write. It also refuses, for both
+writing and Remove Host, when the file holds this host's `# BEGIN` line without
+its `# END` line or the other way round: writing past a lone marker would add a
+second block OpenSSH ignores, and a later update would delete your lines between
+the two. In those cases, edit the real file yourself using the block above.
 
 ### 2. The plugin on the host
 
