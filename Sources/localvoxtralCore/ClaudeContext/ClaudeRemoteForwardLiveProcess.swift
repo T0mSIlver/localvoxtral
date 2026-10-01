@@ -32,7 +32,16 @@ package final class ClaudeRemoteForwardLiveProcess: ClaudeRemoteForwardProcess, 
     }
 
     private let exitState = Mutex(ExitState())
-    private let partialLine = Mutex<String>("")
+
+    /// The handler's read-and-ingest and `finish`'s drain-and-close run under
+    /// this one lock. Otherwise a handler that has read a chunk can ingest it
+    /// after `finish` closed the stream, and the yield is lost (#1086).
+    private struct ReaderState {
+        var partialLine = ""
+        var closed = false
+    }
+
+    private let readerState = Mutex(ReaderState())
     private let descriptor: Int32
     private let hooks: Hooks
 
@@ -91,13 +100,10 @@ package final class ClaudeRemoteForwardLiveProcess: ClaudeRemoteForwardProcess, 
         let stderrDescriptor = stderrPipe.fileHandleForReading.fileDescriptor
         descriptor = stderrDescriptor
         stderrPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = POSIXPipeRead.nextChunk(fromDescriptor: stderrDescriptor)
-            guard !data.isEmpty else {
+            guard let self, self.readAvailableChunk() else {
                 handle.readabilityHandler = nil
                 return
             }
-            hooks.afterHandlerRead?()
-            self?.ingest(data)
         }
 
         process.terminationHandler = { [weak self] finished in
@@ -126,21 +132,28 @@ package final class ClaudeRemoteForwardLiveProcess: ClaudeRemoteForwardProcess, 
         return environment
     }
 
-    private func ingest(_ data: Data) {
+    /// Reads and ingests one chunk for the readability handler. Returns false
+    /// on EOF, on a read error, or once `finish` has closed the stream.
+    private func readAvailableChunk() -> Bool {
+        readerState.withLock { state in
+            guard !state.closed else { return false }
+            let data = POSIXPipeRead.nextChunk(fromDescriptor: descriptor)
+            guard !data.isEmpty else { return false }
+            hooks.afterHandlerRead?()
+            ingest(data, into: &state)
+            return true
+        }
+    }
+
+    private func ingest(_ data: Data, into state: inout ReaderState) {
         guard let text = String(data: data, encoding: .utf8) else { return }
-        let lines: [String] = partialLine.withLock { partial in
-            var buffer = partial + text
-            var complete: [String] = []
-            while let newline = buffer.firstIndex(of: "\n") {
-                complete.append(String(buffer[buffer.startIndex..<newline]))
-                buffer = String(buffer[buffer.index(after: newline)...])
-            }
-            partial = buffer
-            return complete
+        var buffer = state.partialLine + text
+        while let newline = buffer.firstIndex(of: "\n") {
+            let line = String(buffer[buffer.startIndex..<newline])
+            if !line.isEmpty { continuation.yield(line) }
+            buffer = String(buffer[buffer.index(after: newline)...])
         }
-        for line in lines where !line.isEmpty {
-            continuation.yield(line)
-        }
+        state.partialLine = buffer
     }
 
     /// Called once, from the termination handler. Flushes a trailing partial
@@ -157,17 +170,17 @@ package final class ClaudeRemoteForwardLiveProcess: ClaudeRemoteForwardProcess, 
         // ordinary crash-restart loop. `POSIXPipeRead` returns empty on EOF and
         // on any error, so this terminates either way.
         stderrPipe.fileHandleForReading.readabilityHandler = nil
-        while true {
-            let remaining = POSIXPipeRead.nextChunk(fromDescriptor: descriptor)
-            if remaining.isEmpty { break }
-            ingest(remaining)
+        readerState.withLock { state in
+            while true {
+                let remaining = POSIXPipeRead.nextChunk(fromDescriptor: descriptor)
+                if remaining.isEmpty { break }
+                ingest(remaining, into: &state)
+            }
+            if !state.partialLine.isEmpty { continuation.yield(state.partialLine) }
+            state.partialLine = ""
+            state.closed = true
+            continuation.finish()
         }
-        let tail = partialLine.withLock { partial -> String in
-            defer { partial = "" }
-            return partial
-        }
-        if !tail.isEmpty { continuation.yield(tail) }
-        continuation.finish()
         hooks.didFinishStream?()
         let exitStatus = ClaudeRemoteForwardExitStatus.code(status)
         let waiters = exitState.withLock {
