@@ -55,6 +55,9 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
         var hasRequestedFinalCommit = false
         var finalCommitCompletionGate: FinalCommitCompletionGate = .idle
         var pendingMessages: [PendingFrame] = []
+        /// The handshake's replay of `pendingMessages` is under way: new
+        /// frames queue behind it until it has emptied the queue (#1058).
+        var isReplayingHandshakeQueue = false
         /// The model this socket was opened for, nil when none is open.
         var usageModel: String?
         /// PCM bytes of `input_audio.append` actually handed to the socket
@@ -67,6 +70,8 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
         var recordedFrames: [String] = []
         var lastConnectConfigurationForTesting: RealtimeSessionConfiguration?
         var stallReportsForTesting: [MistralStreamHealth.StallReport] = []
+        var beforeHandshakeDrainForTesting: (@Sendable () -> Void)?
+        var transmitObserverForTesting: (@Sendable (URLSessionWebSocketTask, String) -> Void)?
         #endif
     }
 
@@ -370,7 +375,9 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
                 guard isCurrentConnectionLocked(s.base, generation) else { return }
                 s.finalCommitCompletionGate = .idle
             }
-            Log.realtime.notice("mistral realtime error: \(message, privacy: .public)")
+            Log.realtime.notice(
+                "mistral realtime error: \(Self.publicErrorLogDescription(from: json), privacy: .public) \(message, privacy: .private)"
+            )
             emit(.error(message), from: generation)
 
         case "transcription.language", "transcription.segment":
@@ -386,27 +393,32 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
     private func handleSessionCreated(
         requestID: String?, from generation: RealtimeConnectionGeneration
     ) {
-        let queuedMessages: [PendingFrame]? = state.withLock { s in
+        let declaration = encodedFrame(sessionUpdatePayload())
+        let opened: Bool = state.withLock { s in
             // A stale handshake applied here would replay the NEW socket's
             // queue ahead of the audio-format declaration it owes the server.
-            guard isCurrentConnectionLocked(s.base, generation) else { return nil }
-            guard s.base.socketState == .connected else { return nil }
-            guard !s.hasReceivedSessionCreated else { return nil }
+            guard isCurrentConnectionLocked(s.base, generation) else { return false }
+            guard s.base.socketState == .connected else { return false }
+            guard !s.hasReceivedSessionCreated else { return false }
             s.hasReceivedSessionCreated = true
             s.health?.sessionCreated(requestID: requestID)
-            let queued = s.pendingMessages
-            s.pendingMessages.removeAll(keepingCapacity: true)
-            return queued
+            // The declaration goes first, then the queue in order; frames
+            // sent from here on queue behind them until the replay is done.
+            if let declaration {
+                s.pendingMessages.insert(PendingFrame(text: declaration, audioBytes: 0), at: 0)
+            }
+            s.isReplayingHandshakeQueue = true
+            return true
         }
 
-        if let queuedMessages {
+        if opened {
+            #if DEBUG
+            if let declaration { recordFrameForTesting(declaration) }
+            state.withLock { $0.beforeHandshakeDrainForTesting }?()
+            #endif
             Log.realtime.notice(
                 "mistral realtime session ready request_id=\(requestID ?? "<none>", privacy: .public)")
-            send(event: sessionUpdatePayload())
-            for message in queuedMessages {
-                sendText(
-                    message.text, audioBytes: message.audioBytes, levelDBFS: message.levelDBFS)
-            }
+            replayHandshakeQueue(for: generation)
         }
 
         // Status goes out AFTER session.update and the replayed queue, so a
@@ -460,16 +472,7 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
     static func errorMessage(from json: [String: Any]) -> String {
         let errorObject = json["error"] as? [String: Any]
 
-        var message = ""
-        if let errorObject {
-            if let text = errorObject["message"] as? String {
-                message = text.trimmed
-            } else if let nested = errorObject["message"] as? [String: Any],
-                let detail = nested["detail"] as? String
-            {
-                message = detail.trimmed
-            }
-        }
+        var message = serverErrorText(in: errorObject)
         if message.isEmpty {
             message = "Mistral realtime error."
         }
@@ -483,6 +486,23 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
         }
         guard !annotations.isEmpty else { return message }
         return "\(message) [\(annotations.joined(separator: ", "))]"
+    }
+
+    /// An error frame without the server's message, which can quote what it
+    /// was sent: its code and type public, the message only as a length (#936).
+    static func publicErrorLogDescription(from json: [String: Any]) -> String {
+        let errorObject = json["error"] as? [String: Any]
+        let code = scalarString(errorObject?["code"]) ?? "none"
+        let type = scalarString(errorObject?["type"]) ?? "none"
+        return "code=\(code) type=\(type) message=\(serverErrorText(in: errorObject).count) characters"
+    }
+
+    private static func serverErrorText(in errorObject: [String: Any]?) -> String {
+        if let text = errorObject?["message"] as? String { return text.trimmed }
+        if let nested = errorObject?["message"] as? [String: Any], let detail = nested["detail"] as? String {
+            return detail.trimmed
+        }
+        return ""
     }
 
     private static func scalarString(_ value: Any?) -> String? {
@@ -514,9 +534,34 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
     }
 
     private func send(event: [String: Any], audioBytes: Int = 0, levelDBFS: Double? = nil) {
+        guard let text = encodedFrame(event) else { return }
+        #if DEBUG
+        recordFrameForTesting(text)
+        #endif
+        sendText(text, audioBytes: audioBytes, levelDBFS: levelDBFS)
+    }
+
+    #if DEBUG
+    private func recordFrameForTesting(_ text: String) {
+        state.withLock { s in
+            // A bounded ring, not a transcript: audio frames arrive every
+            // 100 ms at ~4 KB each, and a DEBUG build (Xcode, the harness
+            // tree) would otherwise grow by ~150 MB per hour of dictation
+            // for a buffer only the unit suite reads (GLM review, 2026-09-16).
+            s.recordedFrames.append(text)
+            if s.recordedFrames.count > Self.debugRecordedFrameLimit {
+                s.recordedFrames.removeFirst(
+                    s.recordedFrames.count - Self.debugRecordedFrameLimit)
+            }
+        }
+    }
+    #endif
+
+    /// The frame's wire text, or nil after reporting why it has none.
+    private func encodedFrame(_ event: [String: Any]) -> String? {
         guard JSONSerialization.isValidJSONObject(event) else {
             emit(.error("Invalid JSON payload generated."), from: currentConnectionGeneration)
-            return
+            return nil
         }
 
         do {
@@ -530,31 +575,19 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
                 emit(
                     .error("Failed to encode WebSocket frame."),
                     from: currentConnectionGeneration)
-                return
+                return nil
             }
 
-            #if DEBUG
-            state.withLock { s in
-                // A bounded ring, not a transcript: audio frames arrive every
-                // 100 ms at ~4 KB each, and a DEBUG build (Xcode, the harness
-                // tree) would otherwise grow by ~150 MB per hour of dictation
-                // for a buffer only the unit suite reads (GLM review, 2026-09-16).
-                s.recordedFrames.append(text)
-                if s.recordedFrames.count > Self.debugRecordedFrameLimit {
-                    s.recordedFrames.removeFirst(
-                        s.recordedFrames.count - Self.debugRecordedFrameLimit)
-                }
-            }
-            #endif
 
             if let type = event["type"] as? String {
                 debugLog("queue event type=\(type)")
             }
-            sendText(text, audioBytes: audioBytes, levelDBFS: levelDBFS)
+            return text
         } catch {
             emit(
                 .error("Failed to serialize WebSocket payload: \(error.localizedDescription)"),
                 from: currentConnectionGeneration)
+            return nil
         }
     }
 
@@ -562,22 +595,15 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
         let action: SendAction = state.withLock { s in
             switch s.base.socketState {
             case .connected:
-                guard s.hasReceivedSessionCreated else {
+                // Behind the handshake's replay too: sent now, this frame
+                // would pass the declaration and the audio queued before it.
+                guard s.hasReceivedSessionCreated, !s.isReplayingHandshakeQueue else {
                     s.pendingMessages.append(
                         PendingFrame(text: text, audioBytes: audioBytes, levelDBFS: levelDBFS))
                     return .queued
                 }
                 guard let webSocketTask = s.base.webSocketTask else { return .dropped }
-                // Counted when handed to the socket, not on its completion: a
-                // send that fails as the socket dies over-counts by the frames
-                // in flight — at most a fraction of a second.
-                s.sentAudioBytes += audioBytes
-                let stall =
-                    audioBytes > 0 ? s.health?.audioSent(
-                        bytes: audioBytes, levelDBFS: levelDBFS, at: now()) : nil
-                #if DEBUG
-                if let stall { s.stallReportsForTesting.append(stall) }
-                #endif
+                let stall = admitLocked(&s, audioBytes: audioBytes, levelDBFS: levelDBFS)
                 return .send(task: webSocketTask, text: text, stall: stall)
             case .connecting:
                 s.pendingMessages.append(
@@ -591,11 +617,66 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
         guard case .send(let task, let payloadText, let stall) = action else {
             return
         }
+        transmit(payloadText, audioBytes: audioBytes, stall: stall, on: task)
+    }
+
+    /// Sends the declaration and what queued before `session.created`, then
+    /// whatever queued while those were being sent, until the queue is empty;
+    /// only then do frames go straight to the socket again. It stops, sending
+    /// nothing more, once the socket that answered is no longer this
+    /// client's: its replacement keeps its own queue (#1058).
+    private func replayHandshakeQueue(for generation: RealtimeConnectionGeneration) {
+        while true {
+            let batch: (task: URLSessionWebSocketTask, frames: [(PendingFrame, MistralStreamHealth.StallReport?)])? =
+                state.withLock { s in
+                    guard isCurrentConnectionLocked(s.base, generation), s.base.socketState == .connected,
+                          let task = s.base.webSocketTask
+                    else { return nil }
+                    guard !s.pendingMessages.isEmpty else {
+                        s.isReplayingHandshakeQueue = false
+                        return nil
+                    }
+                    let frames = s.pendingMessages.map { frame in
+                        (frame, admitLocked(&s, audioBytes: frame.audioBytes, levelDBFS: frame.levelDBFS))
+                    }
+                    s.pendingMessages.removeAll(keepingCapacity: true)
+                    return (task, frames)
+                }
+            guard let batch else { return }
+            for (frame, stall) in batch.frames {
+                transmit(frame.text, audioBytes: frame.audioBytes, stall: stall, on: batch.task)
+            }
+        }
+    }
+
+    /// Counts a frame handed to the socket, not its completion: a send that
+    /// fails as the socket dies over-counts by the frames in flight — at most
+    /// a fraction of a second.
+    private func admitLocked(
+        _ s: inout State, audioBytes: Int, levelDBFS: Double?
+    ) -> MistralStreamHealth.StallReport? {
+        s.sentAudioBytes += audioBytes
+        let stall =
+            audioBytes > 0 ? s.health?.audioSent(
+                bytes: audioBytes, levelDBFS: levelDBFS, at: now()) : nil
+        #if DEBUG
+        if let stall { s.stallReportsForTesting.append(stall) }
+        #endif
+        return stall
+    }
+
+    private func transmit(
+        _ text: String, audioBytes: Int, stall: MistralStreamHealth.StallReport?,
+        on task: URLSessionWebSocketTask
+    ) {
         if let stall {
             Log.realtime.notice("mistral realtime server silent: \(stall.logDescription, privacy: .public)")
         }
+        #if DEBUG
+        state.withLock { $0.transmitObserverForTesting }?(task, text)
+        #endif
 
-        task.send(.string(payloadText)) { [weak self] error in
+        task.send(.string(text)) { [weak self] error in
             guard let self else { return }
             guard let error else {
                 if audioBytes > 0 {
@@ -761,6 +842,7 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
         s.hasRequestedFinalCommit = false
         s.finalCommitCompletionGate = .idle
         s.pendingMessages.removeAll(keepingCapacity: false)
+        s.isReplayingHandshakeQueue = false
         s.health = nil
     }
 }
@@ -780,6 +862,17 @@ extension MistralRealtimeWebSocketClient {
     /// creating a process-retained URLSession or touching a live backend.
     package func debugSkipSocketCreationForTesting() {
         state.withLock { $0.skipsSocketCreationForTesting = true }
+    }
+
+    /// Runs between the handshake opening the send gate and the queue
+    /// replay, so a test can send or swap the socket there (#1058).
+    package func debugSetBeforeHandshakeDrain(_ hook: (@Sendable () -> Void)?) {
+        state.withLock { $0.beforeHandshakeDrainForTesting = hook }
+    }
+
+    /// Hears every frame as it is handed to a socket, in order.
+    package func debugObserveTransmits(_ observer: (@Sendable (URLSessionWebSocketTask, String) -> Void)?) {
+        state.withLock { $0.transmitObserverForTesting = observer }
     }
 
     package func debugPrimeConnectedStateForTesting(

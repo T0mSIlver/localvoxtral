@@ -259,6 +259,36 @@ final class OverlayLayoutMetricsTests: XCTestCase {
         }
     }
 
+    /// The open destination list (#1015) grows the panel by what the view
+    /// draws for it, at both ends of the font setting, below and past the
+    /// rows it shows before scrolling.
+    func testTheOpenDestinationListAddsWhatTheViewDraws() {
+        for size in [OverlayLayoutMetrics.minimumBodyFontSize, OverlayLayoutMetrics.maximumBodyFontSize] {
+            let metrics = OverlayLayoutMetrics(bodyFontSize: size)
+            for waiting in [1, 10] {
+                func strip(open: Bool) -> OverlayDestinationStrip {
+                    OverlayDestinationStrip(
+                        list: DictationDestinationList(
+                            waitingSessionIDs: (0..<waiting).map { "s\($0)" }, focusedSessionID: nil),
+                        focusedAppLabel: "app", focusedAppJoined: nil, sessionName: { $0 }, isOpen: open)
+                }
+                func rendered(_ strip: OverlayDestinationStrip) -> CGFloat {
+                    let view = DictationOverlayView(
+                        phase: .buffering, text: "hello", errorMessage: nil, secureInputActive: false,
+                        metrics: metrics, destinations: strip)
+                        .frame(width: metrics.panelWidth)
+                    return NSHostingController(rootView: view)
+                        .sizeThatFits(in: CGSize(width: metrics.panelWidth, height: .greatestFiniteMagnitude))
+                        .height
+                }
+                let drawn = rendered(strip(open: true)) - rendered(strip(open: false))
+                let sized = metrics.contentHeight(text: "hello", errorMessage: nil, destinations: strip(open: true))
+                    - metrics.contentHeight(text: "hello", errorMessage: nil, destinations: strip(open: false))
+                XCTAssertEqual(sized, drawn, accuracy: 0.5, "font size \(size), \(waiting) waiting")
+            }
+        }
+    }
+
     // MARK: - Keeping words on their line (#640)
 
     /// Off, the default, leaves wrapping to SwiftUI at the full width: the

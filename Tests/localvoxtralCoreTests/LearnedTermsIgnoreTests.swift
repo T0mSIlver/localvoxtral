@@ -169,14 +169,17 @@ final class LearnedTermsIgnoreTests: XCTestCase {
     /// write tries again, so a relaunch never lifts the opt-out silently.
     func testAnIgnoreListThatCouldNotBeWrittenIsRetriedAndNeverLiftedSilently() throws {
         let fileURL = makeFileURL()
-        let store = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        let listWriteFails = Mutex(false)
+        let store = LearnedTermStore(
+            fileURL: fileURL, now: { Self.start },
+            writeIgnoredList: { data, url in
+                if listWriteFails.withLock({ $0 }) { throw CocoaError(.fileWriteOutOfSpace) }
+                try LearnedTermStore.writeFile(data, to: url)
+            })
         let mac = LearnedTermProjectIdentity(key: "/w/quill", name: "quill")
         store.record(observations("Kern"), project: mac)
         store.waitForPendingWrites()
-        // A folder where the file goes makes its write fail.
-        let ignoredURL = try XCTUnwrap(store.ignoredFileURL)
-        try FileManager.default.createDirectory(at: ignoredURL, withIntermediateDirectories: true)
-        try Data().write(to: ignoredURL.appendingPathComponent("blocker"))
+        listWriteFails.withLock { $0 = true }
 
         store.ignoreProject(key: quill.key, name: "quill", keys: [mac.key])
         store.waitForPendingWrites()
@@ -186,7 +189,7 @@ final class LearnedTermsIgnoreTests: XCTestCase {
         let onDisk = try XCTUnwrap(LearnedTermStore.terms(fromFileContents: Data(contentsOf: fileURL)).value)
         XCTAssertEqual(onDisk.projects.map(\.key), [mac.key], "no deletion on disk without its ignore entry")
 
-        try FileManager.default.removeItem(at: ignoredURL)
+        listWriteFails.withLock { $0 = false }
         store.record(observations("Inkwell"), project: .init(key: "/w/ink", name: "ink"))
         store.waitForPendingWrites()
         XCTAssertFalse(store.ignoredListUnsaved)
@@ -195,6 +198,38 @@ final class LearnedTermsIgnoreTests: XCTestCase {
         reopened.waitForPendingWrites()
         XCTAssertEqual(reopened.snapshot().ignored.projects.map(\.key), [quill.key], "the next write saved the list")
         XCTAssertEqual(reopened.snapshot().projects.map(\.key), ["/w/ink"])
+    }
+
+    /// Two running copies of the app (#990): each ignore applies to the
+    /// list the other wrote, and a copy that never ignored the repo itself
+    /// records nothing for it once the other has.
+    func testTwoRunningCopiesKeepEachOthersIgnores() throws {
+        let fileURL = makeFileURL()
+        let first = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        let second = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        let mac = LearnedTermProjectIdentity(key: "/w/quill", name: "quill")
+        first.waitForPendingWrites()
+        second.waitForPendingWrites()
+
+        first.ignoreProject(key: quill.key, name: "quill", keys: [mac.key])
+        first.waitForPendingWrites()
+        second.ignoreProject(key: "/w/notes", name: "notes", keys: [])
+        second.waitForPendingWrites()
+        second.record(observations("Kern"), project: mac)
+        second.waitForPendingWrites()
+        first.unignoreProject(key: "/w/missing")
+        first.waitForPendingWrites()
+
+        XCTAssertEqual(second.snapshot().ignored.projects.map(\.key), [quill.key, "/w/notes"])
+        XCTAssertTrue(second.snapshot().projects.isEmpty, "the other copy's ignore keeps the repo out")
+        XCTAssertEqual(first.snapshot().ignored.projects.map(\.key), [quill.key, "/w/notes"])
+        let onDisk = try XCTUnwrap(
+            LearnedTermStore.ignored(fromFileContents: Data(contentsOf: XCTUnwrap(first.ignoredFileURL))).value)
+        XCTAssertEqual(onDisk.projects.map(\.key), [quill.key, "/w/notes"])
+        let reopened = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        reopened.waitForPendingWrites()
+        XCTAssertEqual(reopened.snapshot().ignored.projects.map(\.key), [quill.key, "/w/notes"])
+        XCTAssertTrue(reopened.snapshot().projects.isEmpty)
     }
 
     func testUnignoreLetsTheNextDictationRecordIt() {

@@ -499,7 +499,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
     }
 
     func testADictationIsSavedAndOlderOnesPastTheRetentionAreTrimmed() async throws {
-        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
         let longAgo = Date(timeIntervalSince1970: 1_000_000)
         store.save(
             DictationSessionRecord(
@@ -517,7 +517,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
     /// runs that delete again, so one that failed does not leave the archive
     /// on disk until the next launch.
     func testUnderOffADictationIsNotSavedAndWhatWasLeftIsDeleted() async throws {
-        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
         let longAgo = Date(timeIntervalSince1970: 1_000_000)
         store.save(
             DictationSessionRecord(
@@ -553,7 +553,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
             startRuntimeServices: false
         )
         viewModel.llmPolishingService = SilentService()
-        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
         let longAgo = Date(timeIntervalSince1970: 1_000_000)
         store.save(
             DictationSessionRecord(
@@ -644,6 +644,70 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(overlayCoordinator.markPolishedCalls.last, false)
         XCTAssertNil(viewModel.lastPolishChangedRawTranscript)
         XCTAssertFalse(viewModel.canCopyRawTranscript)
+    }
+
+    /// #1074: showing what polish changed never delays the text. The polished
+    /// text reaches the focused field in the same main-actor turn it reaches
+    /// the overlay, and only then is the panel held, longer when polish
+    /// changed words so their marks can be seen.
+    func testPolishedTextIsInsertedInTheTurnItLandsThenHeldForItsMarks() async {
+        for (reply, changed) in [("Hello world.", true), ("hello world", false)] {
+            let settings = makeSettings(outputMode: .overlayBuffer)
+            settings.llmPolishingEnabled = true
+            settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
+            let overlayCoordinator = MockOverlayCoordinator()
+            let viewModel = DictationViewModel(
+                settings: settings,
+                overlayBufferCoordinator: overlayCoordinator,
+                startRuntimeServices: false
+            )
+            viewModel.appConfigStore = MockAppConfigStore()
+            viewModel.llmPolishingService = FakePolishingService(returning: reply)
+            retainForTestProcessLifetime(viewModel)
+
+            viewModel.session.sessionOutputMode = .overlayBuffer
+            viewModel.isFinalizingStop = true
+            viewModel.transcript.currentDictationEventText = "hello world"
+            viewModel.session.finishStoppedSession(promotePendingSegment: false)
+            await awaitStoppedSessionCommit(viewModel)
+
+            let hold = changed
+                ? TimingConstants.overlayPolishedVisibility
+                : TimingConstants.overlayFinalWordVisibilityMinimum
+            XCTAssertEqual(
+                overlayCoordinator.events,
+                [.polishing(true), .polished(changed), .committed(reply), .held(hold)],
+                "reply \(reply)")
+            XCTAssertEqual(
+                overlayCoordinator.commitsInPolishedTurn, [true],
+                "the insertion ran in the turn the polished text landed, reply \(reply)")
+        }
+    }
+
+    func testFailedPolishEndsTheSweepAndInsertsTheTranscript() async {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.llmPolishingEnabled = true
+        settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = MockAppConfigStore()
+        viewModel.llmPolishingService = FakePolishingService(failing: LLMPolishingError.invalidResponse)
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.session.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.transcript.currentDictationEventText = "hello world"
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await awaitStoppedSessionCommit(viewModel)
+
+        XCTAssertEqual(
+            overlayCoordinator.events,
+            [.polishing(true), .polishing(false), .committed("hello world"),
+             .held(TimingConstants.overlayFinalWordVisibilityMinimum)])
     }
 
     func testCopyRawTranscriptWritesRawTextThroughPasteboardSeam() {

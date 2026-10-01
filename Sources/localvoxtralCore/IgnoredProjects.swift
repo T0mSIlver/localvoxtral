@@ -49,6 +49,17 @@ package struct IgnoredProjects: Codable, Equatable, Sendable {
         projects.contains { $0.key == key || $0.checkouts.contains(key) }
     }
 
+    /// The checkouts `other` knows for entries this list holds: a sweep
+    /// found them (`removeIgnoredProjects`). Entries are never added or
+    /// removed here, so an un-ignore another copy wrote stays.
+    package mutating func adoptCheckouts(from other: IgnoredProjects) {
+        for index in projects.indices {
+            guard let found = other.projects.first(where: { $0.key == projects[index].key }) else { continue }
+            let merged = Array(Set(projects[index].checkouts + found.checkouts)).sorted()
+            if merged != projects[index].checkouts { projects[index].checkouts = merged }
+        }
+    }
+
     /// Whether the record is an ignored project's: by its own key, or by the
     /// repository its checkout links to.
     package func contains(_ record: LearnedTermProject) -> Bool {

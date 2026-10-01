@@ -256,35 +256,31 @@ final class ClaudePluginManifestTests: XCTestCase {
         }
     }
 
-    func testEveryHookCommandUsesPluginRootAndTheShim() throws {
-        let commands = try allCommands()
-        XCTAssertEqual(commands.count, 7, "one command per event")
-        for command in commands {
-            // QUOTED (F7): hook commands run through a shell, and the plugin
-            // root lives under "~/.claude" today but is an implementation
-            // detail — an unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on any
-            // space in the path (e.g. an "Application Support" install) and
-            // the hook dies silently.
-            XCTAssertTrue(
-                command.hasPrefix("\"${CLAUDE_PLUGIN_ROOT}/hooks/publish.sh\" "),
-                "hook command must resolve through a QUOTED ${CLAUDE_PLUGIN_ROOT}: \(command)"
-            )
-        }
-    }
-
-    func testEachHookPassesItsOwnEventName() throws {
+    func testEveryHookCommandUsesPluginRootAndTheShimAndPassesItsOwnEventName() throws {
+        var count = 0
         for (event, matchers) in try hooksByEvent() {
             let commands = matchers.flatMap { matcher -> [String] in
                 let entries = matcher["hooks"] as? [[String: Any]] ?? []
                 return entries.compactMap { $0["command"] as? String }
             }
             for command in commands {
+                count += 1
+                // QUOTED (F7): hook commands run through a shell, and the plugin
+                // root lives under "~/.claude" today but is an implementation
+                // detail — an unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on any
+                // space in the path (e.g. an "Application Support" install) and
+                // the hook dies silently.
+                XCTAssertTrue(
+                    command.hasPrefix("\"${CLAUDE_PLUGIN_ROOT}/hooks/publish.sh\" "),
+                    "hook command must resolve through a QUOTED ${CLAUDE_PLUGIN_ROOT}: \(command)"
+                )
                 XCTAssertTrue(
                     command.hasSuffix(" \(event)"),
                     "\(event) hook must pass its event name, got: \(command)"
                 )
             }
         }
+        XCTAssertEqual(count, 7, "one command per event")
     }
 
     func testEveryHookIsACommandTypeWithAShortTimeout() throws {
@@ -474,9 +470,12 @@ final class ClaudePluginManifestTests: XCTestCase {
         let output = Pipe()
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
+        // terminationHandler, not waitUntilExit(): see `Process.runUntilExit()`.
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         try process.run()
         let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        exited.wait()
         return (process.terminationStatus, String(decoding: data, as: UTF8.self))
     }
 

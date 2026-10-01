@@ -22,7 +22,7 @@ package struct LearnedTerm: Codable, Equatable, Sendable {
     /// Provenance only. A remembered term stays in the vocabulary whatever the
     /// context toggles say later (owner ruling, 2026-09-20): once the speaker
     /// keeps saying a name, it is their vocabulary, the way a name typed into
-    /// Names and terms is. The field is here so a future setting can drop
+    /// Global terms is. The field is here so a future setting can drop
     /// what one source taught without dropping the rest.
     package var sources: [String]
     /// Distinct dictations that resolved it. The confirmation counter.

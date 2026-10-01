@@ -12,7 +12,7 @@ struct SessionDestinations {
     let originLabel: String
     let originJoined: Bool?
     /// Names of the sessions listed, kept once a session leaves the queue:
-    /// picking it answers it, and its pill still needs a name.
+    /// picking it answers it, and its row still needs a name.
     var names: [String: String] = [:]
     /// What is in front as far as the picks know. Anything but `.origin`
     /// means going back to the focused app has to bring it back.
@@ -24,6 +24,15 @@ struct SessionDestinations {
     var focusInFlight = false
     /// Bumped per pick task, so only the latest one clears `focusInFlight`.
     var pickGeneration = 0
+    /// The overlay lists every destination while the user moves between
+    /// them (#1015), until `DestinationListRule.openFor` passes without a move.
+    var listOpen = false
+}
+
+enum DestinationListRule {
+    /// How long the overlay's list stays open after the last Tab, arrow or
+    /// click.
+    static let openFor: Duration = .seconds(2)
 }
 
 /// Which window a dictation's picks may have put in front.
@@ -49,7 +58,8 @@ enum DestinationCommitGuard: Equatable {
 }
 
 /// Tab and ⇧Tab (or → and ←, or a click) during an Overlay Buffer dictation
-/// move its words to the focused app, a session that needs you, or the Inbox. The words go only
+/// move its words to the focused app, the Inbox, or a session that needs
+/// you, and open the overlay's list of them for a moment. The words go only
 /// where the overlay shows: a session is picked only once its terminal
 /// confirmed the pane is in front (`.focused`), the way the answer shortcut
 /// starts a dictation (#785), and the stop then commits into that pane like
@@ -101,6 +111,8 @@ extension DictationSessionController {
         destinationKeyHandler.stop()
         destinationFocusTask?.cancel()
         destinationFocusTask = nil
+        destinationListCloseTask?.cancel()
+        destinationListCloseTask = nil
         destinations = nil
     }
 
@@ -110,21 +122,41 @@ extension DictationSessionController {
         refreshDestinationList(&state)
         let base = state.pending ?? state.list.selected
         destinations = state
+        openDestinationList()
         pickDestination(state.list.moving(from: base, forward: forward))
     }
 
     /// A click on a destination in the overlay (#880) picks it the way Tab
-    /// would. A click on where the picks are already going does nothing, and
-    /// one on a session that left the list since the overlay drew it is
-    /// dropped.
+    /// would. A click on where the picks are already going opens the list,
+    /// the only way to reach the others by click while it is closed. One on
+    /// a session that left the list since the overlay drew it is dropped.
     func clickDestination(_ destination: DictationDestination) {
         guard isDictating, var state = destinations else { return }
         refreshDestinationList(&state)
         destinations = state
-        guard state.list.entries.contains(destination),
-              destination != (state.pending ?? state.list.selected)
-        else { return }
+        guard state.list.entries.contains(destination) else { return }
+        openDestinationList()
+        guard destination != (state.pending ?? state.list.selected) else { return }
         pickDestination(destination)
+    }
+
+    /// Opens the overlay's list, or keeps it open, for another
+    /// `DestinationListRule.openFor` on `dependencies.clock`.
+    private func openDestinationList() {
+        guard destinations != nil else { return }
+        if destinations?.listOpen == false {
+            destinations?.listOpen = true
+            showDestinations()
+        }
+        destinationListCloseTask?.cancel()
+        let clock = dependencies.clock
+        destinationListCloseTask = Task { @MainActor [weak self] in
+            await clock.sleep(DestinationListRule.openFor)
+            guard let self, !Task.isCancelled, self.destinations?.listOpen == true else { return }
+            self.destinationListCloseTask = nil
+            self.destinations?.listOpen = false
+            self.showDestinations()
+        }
     }
 
     /// The quick capture shortcut during an Overlay Buffer dictation picks
@@ -322,6 +354,7 @@ extension DictationSessionController {
     /// tells them apart. What fails keeps the words in History as not
     /// inserted.
     func checkDestinationBeforeCommit(sessionMode: DictationOutputMode) -> DestinationCommitCheck {
+        sessionPickedPane = nil
         guard let commitGuard = sessionCommitGuard else { return .commit }
         sessionCommitGuard = nil
         let targetPID = overlayBufferCoordinator.commitTargetAppPID
@@ -332,6 +365,8 @@ extension DictationSessionController {
                 keepOverlayInHistory(sessionMode: sessionMode, status: DestinationStatus.paneLeftFront, record: nil)
                 return .kept
             }
+            // Before the commit samples the stop, which takes the join.
+            leaveStartSessionForPickedSession()
             return .readBack(sessionID: sessionID, bundleID: bundleID)
         case .focusedApp(let originPID, let paneBundleID):
             guard targetPID == nil || targetPID != originPID || targetBundleID == paneBundleID else { return .commit }
@@ -341,6 +376,17 @@ extension DictationSessionController {
             keepOverlayInHistory(sessionMode: sessionMode, status: DestinationStatus.stoppedWhileSwitching, record: nil)
             return .kept
         }
+    }
+
+    /// The words go to a session Tab picked, not to the one the dictation
+    /// started in. The route armed for that session's prompt would write
+    /// them there (#1054), and its join would ground the polish, the leading
+    /// space and correction learning in the wrong session. The picked pane
+    /// gets them by keyboard, once it reads back.
+    private func leaveStartSessionForPickedSession() {
+        Log.dictation.notice("destination: a picked session; the start session's route and join are dropped")
+        textInsertion.endPromptRelay()
+        context.discardTerminalScreenCapture()
     }
 
     /// Runs `proceed`, the rest of the commit, once the focused pane reads
@@ -375,8 +421,34 @@ extension DictationSessionController {
                 self.keepOverlayInHistory(sessionMode: sessionMode, status: DestinationStatus.paneLeftFront, record: record)
                 return
             }
+            self.sessionPickedPane = (sessionID, bundleID)
             proceed()
         }
+    }
+
+    /// Asked by a commit task after an await (the polish, the second pass),
+    /// right before it inserts: two tabs of one terminal share its pid, so
+    /// a tab switch while the task waited would take the words (#1056).
+    /// True when no pane was picked or the focused pane still shows the
+    /// picked session. Otherwise the text is saved as not inserted, the stop
+    /// finishes, and the caller inserts nothing; a cancelled task returns
+    /// false and changes nothing.
+    func pickedPaneStillShownBeforeInsertion(sessionMode: DictationOutputMode) async -> Bool {
+        guard let picked = sessionPickedPane else { return true }
+        var shows = false
+        if let navigator = sessionNavigator {
+            shows = await navigator.focusedPaneShows(sessionID: picked.sessionID, bundleID: picked.bundleID)
+        }
+        guard !Task.isCancelled else { return false }
+        guard !shows else { return true }
+        Log.dictation.notice("destination: the picked session's pane left the front while the commit waited; kept in History")
+        let saveNotInserted = saveInterruptedPolishCommit
+        saveInterruptedPolishCommit = nil
+        saveNotInserted?()
+        overlayBufferCoordinator.reset()
+        completeStoppedSessionCleanup(sessionMode: sessionMode, overlayCommitOutcome: nil, shouldCommitOverlay: true)
+        statusText = DestinationStatus.paneLeftFront
+        return false
     }
 
     /// Saves the stopped overlay dictation as not inserted and finishes the
@@ -434,7 +506,8 @@ extension DictationSessionController {
                 list: state.list,
                 focusedAppLabel: state.originLabel,
                 focusedAppJoined: state.originJoined,
-                sessionName: { state.names[$0] ?? AgentAttentionText.unnamed }
+                sessionName: { state.names[$0] ?? AgentAttentionText.unnamed },
+                isOpen: state.listOpen
             )
         )
     }

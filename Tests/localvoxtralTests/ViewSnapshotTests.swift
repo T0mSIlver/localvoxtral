@@ -155,17 +155,22 @@ final class ViewSnapshotTests: XCTestCase {
 
     /// Projects (#939), light and dark: the table, with a fork waiting for
     /// a choice, a project with no GitHub repository and the "No project"
-    /// entry (#972), the collapsed Ignored group (#1006), then that group
-    /// open and with its list unsaved, one project's sheet with its whole
-    /// term list and after a failed Export Terms…, and the "No project"
-    /// sheet. Made-up projects and hosts: the artifacts are public.
+    /// entry (#972), Import… and Export… under it (#999), the collapsed
+    /// Ignored group (#1006), then that group open and with its list
+    /// unsaved, one project's sheet with its whole term list and after a
+    /// failed Export Terms…, and the "No project" sheet. Made-up projects
+    /// and hosts: the artifacts are public.
     func testProjectsPane() async throws {
         for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             try await recordSettings(
                 pane: .projects, name: "settings-projects-\(theme)", setUp: false, appearance: appearance
             ) { viewModel in
                 viewModel.installQuickCaptureInbox(try self.projectsInbox(viewModel.settings))
-                viewModel.learnedTermStore = self.ignoringStore()
+                // Export… shows only when the store holds terms (#999).
+                let store = self.ignoringStore()
+                store.importProjects(self.projectsLearnedTerms().projects) { _ in }
+                store.waitForPendingWrites()
+                viewModel.learnedTermStore = store
             }
             try record(
                 IgnoredProjectsGroup(store: ignoringStore(), revision: 0, expanded: true)
@@ -217,19 +222,65 @@ final class ViewSnapshotTests: XCTestCase {
     }
 
     /// A made-up ignored repository whose `ignored-projects.json` could not
-    /// be written: a folder sits where the file goes.
+    /// be written.
     private func unsavedIgnoringStore() throws -> LearnedTermStore {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("ViewSnapshotTests-\(UUID().uuidString)", isDirectory: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-        let store = LearnedTermStore(fileURL: directory.appendingPathComponent("learned-terms.json"))
+        let store = LearnedTermStore(
+            fileURL: directory.appendingPathComponent("learned-terms.json"),
+            writeIgnoredList: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
         store.waitForPendingWrites()
-        let ignoredURL = try XCTUnwrap(store.ignoredFileURL)
-        try FileManager.default.createDirectory(at: ignoredURL, withIntermediateDirectories: true)
-        try Data().write(to: ignoredURL.appendingPathComponent("blocker"))
         store.ignoreProject(key: "repo:github.com/example/side-project", name: "side-project", keys: [])
         store.waitForPendingWrites()
         return store
+    }
+
+    /// The polish prompt's sizes (#1007): Global terms with a count and
+    /// tokens, and the instructions under Advanced for both profiles, at the
+    /// ratio twenty measured Mistral requests give.
+    func testTextProcessingPromptSizes() async throws {
+        try await recordSettings(pane: .textProcessing, name: "settings-textProcessing-prompt-sizes", setUp: false) {
+            viewModel in
+            let settings = viewModel.settings
+            settings.polishSpeakerTerms = [
+                "Qwen", "Claude Code", "vLLM", "Ghostty", "SwiftPM", "herdr", "Voxtral", "MLX",
+                "Tailscale", "PostgreSQL", "Kubernetes", "OpenTelemetry",
+            ]
+            settings.agentPolishProfileEnabled = true
+            settings.polishingBackendMode = .mistralAPI
+            let ledger = UsageLedger(fileURL: nil)
+            for _ in 0..<20 {
+                ledger.record(UsageEntry(
+                    date: Date(), feature: .polish, backend: .mistral, model: "zai-glm-5-3",
+                    promptTokens: 1_949, promptCharacters: 9_100))
+            }
+            viewModel.installUsageLedger(ledger)
+        }
+    }
+
+    /// A History row opened: its details line ends with the prompt tokens
+    /// the polish request sent (#1007). Made-up words.
+    func testHistoryEntryDetails() async throws {
+        let (settings, viewModel) = makeViewModel()
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
+        let dictation = DictationSessionRecord(
+            startedAt: Date().addingTimeInterval(-120), finishedAt: Date().addingTimeInterval(-110),
+            rawText: "the mac queue is stuck again, check the runner",
+            polishedText: "The Mac queue is stuck again; check the runner.",
+            polishingDurationSeconds: 0.84, provider: "mistral", model: "zai-glm-5-3",
+            outputMode: "overlay_buffer", targetAppBundleID: "com.mitchellh.ghostty", status: .completed,
+            commitSucceeded: true, polishProfile: PolishPromptProfile.agent.rawValue)
+        dictation.polishPromptTokens = 1_949
+        await store.save(dictation).value
+        viewModel.sessionStore = store
+        let model = DictationHistoryModel(store: { store })
+        await model.reload()
+        model.expandedEntryID = dictation.id
+        try record(
+            HistorySettingsPane(settings: settings, viewModel: viewModel, model: model),
+            name: "settings-history-entry-details",
+            width: Self.settingsSize.width, height: Self.settingsSize.height, growToFit: true)
     }
 
     private func projectsLearnedTerms() -> LearnedTerms {
@@ -310,7 +361,7 @@ final class ViewSnapshotTests: XCTestCase {
         return inbox
     }
 
-    /// Dictation → Output → Phrases that press Return (#839): the saved
+    /// Dictation → Output → Send phrases (#839): the saved
     /// list, and a refused one with its reason under the row.
     func testSendPhrasesRow() throws {
         let (settings, _) = makeViewModel()
@@ -360,6 +411,26 @@ final class ViewSnapshotTests: XCTestCase {
                 .padding(12)
                 .background(Color(nsColor: .windowBackgroundColor))
             try record(view, name: "popover-\(state.name)", width: 304, height: 420, growToFit: false)
+        }
+    }
+
+    // MARK: - Failure log
+
+    /// The failure alert's Show Log window after a polish timeout, and when
+    /// `log show` cannot be read (#1072).
+    func testFailureLogWindow() throws {
+        let lines = """
+            2026-09-29 14:02:11 [Polishing] LLM polishing request sent [endpoint: http://127.0.0.1:8090/v1]
+            2026-09-29 14:02:41 [Polishing] error: LLM polishing connection failure [endpoint: http://127.0.0.1:8090/v1] Polishing timed out.
+            2026-09-29 14:02:41 [Backends] error: polish request failed: <private>
+
+            """
+        let states: [(String, FailureLogModel)] = [
+            ("loaded", FailureLogModel(details: "The request timed out. (NSURLErrorDomain -1001)", lines: .loaded(lines))),
+            ("unreadable", FailureLogModel(details: nil, lines: .unreadable("Could not read the log: /usr/bin/log exited with 64."))),
+        ]
+        for (name, model) in states {
+            try record(FailureLogView(model: model), name: "failure-log-\(name)", width: 760, height: 460, growToFit: false)
         }
     }
 
@@ -427,28 +498,30 @@ final class ViewSnapshotTests: XCTestCase {
     func testOverlayPanelStates() throws {
         let metrics = OverlayLayoutMetrics(bodyFontSize: OverlayLayoutMetrics.defaultBodyFontSize)
         let sample = "Rename the retry helper and run the unit tests again."
+        // What polish landed on (#1074): the raw words, then the polished.
+        let raw = "so um rename the retry helper to retry with back off and run the unit test again"
+        let polishedText = "Rename the retry helper to retryWithBackoff and run the unit tests again."
+        let speaking = OverlayMicLevel()
+        for level in [0.35, 0.95, 0.6, 0.8] { speaking.push(level) }
         let states: [(name: String, view: DictationOverlayView)] = [
             ("ready", DictationOverlayView(
                 phase: .idle, text: "", errorMessage: nil, secureInputActive: false,
                 metrics: metrics)),
             ("listening", DictationOverlayView(
                 phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
-                metrics: metrics)),
+                metrics: metrics, micLevel: speaking, motion: .frozen)),
+            ("listening-silent", DictationOverlayView(
+                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, micLevel: OverlayMicLevel(), motion: .frozen)),
+            ("listening-reduce-motion", DictationOverlayView(
+                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, micLevel: speaking, motion: .reduced)),
             ("listening-joined", DictationOverlayView(
                 phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
                 metrics: metrics, claudeJoin: .joined(label: "localvoxtral"))),
             ("listening-unjoined", DictationOverlayView(
                 phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
                 metrics: metrics, claudeJoin: .unjoined)),
-            ("destinations-here", DictationOverlayView(
-                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
-                metrics: metrics, destinations: Self.strip(selected: .focusedApp))),
-            ("destinations-session", DictationOverlayView(
-                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
-                metrics: metrics, destinations: Self.strip(selected: .session(id: "pay")))),
-            ("destinations-inbox", DictationOverlayView(
-                phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
-                metrics: metrics, destinations: Self.strip(selected: .inbox))),
             ("draft-review", DictationOverlayView(
                 phase: .buffering, text: "", errorMessage: nil, secureInputActive: false,
                 metrics: metrics, draftReview: Self.draft)),
@@ -461,26 +534,60 @@ final class ViewSnapshotTests: XCTestCase {
             ("finalizing", DictationOverlayView(
                 phase: .finalizing, text: sample, errorMessage: nil, secureInputActive: false,
                 metrics: metrics)),
+            ("polishing", DictationOverlayView(
+                phase: .finalizing, text: raw, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, polishing: true, motion: .frozen)),
+            ("polishing-reduce-motion", DictationOverlayView(
+                phase: .finalizing, text: raw, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, polishing: true, motion: .reduced)),
             ("polished", DictationOverlayView(
-                phase: .finalizing, text: sample, errorMessage: nil, secureInputActive: false,
-                metrics: metrics, polished: true)),
+                phase: .finalizing, text: polishedText, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, polished: true, polishedFrom: raw, motion: .frozen)),
+            // "Color for polished words" set to the system accent.
+            ("polishing-accent", DictationOverlayView(
+                phase: .finalizing, text: raw, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, polishing: true, motion: .frozen,
+                polishColor: OverlayPolishColor.systemAccent.color)),
+            ("polished-accent", DictationOverlayView(
+                phase: .finalizing, text: polishedText, errorMessage: nil, secureInputActive: false,
+                metrics: metrics, polished: true, polishedFrom: raw, motion: .frozen,
+                polishColor: OverlayPolishColor.systemAccent.color)),
             ("commit-failed", DictationOverlayView(
                 phase: .commitFailed, text: sample,
                 errorMessage: "Couldn't insert. Copied for manual paste.",
                 secureInputActive: false, metrics: metrics)),
         ]
-        for state in states {
+        // Where the words go (#1015), with 1, 3 and 10 agents waiting: the
+        // list closed on the second agent, then open on it.
+        let destinations = [1, 3, 10].flatMap { waiting in
+            [false, true].map { open in
+                (name: "destinations-\(waiting)-\(open ? "open" : "closed")",
+                 view: DictationOverlayView(
+                    phase: .buffering, text: sample, errorMessage: nil, secureInputActive: false,
+                    metrics: metrics, destinations: Self.strip(waiting: waiting, open: open)))
+            }
+        }
+        // The #1074 states on a dark desktop too: the marks, the band and
+        // the tints must read on both.
+        let darkNames: Set = [
+            "listening", "polishing", "polished", "polished-accent", "destinations-3-open", "destinations-3-closed",
+        ]
+        let renders: [(String, DictationOverlayView, NSAppearance.Name)] = (states + destinations).map { ($0.name, $0.view, .aqua) }
+            + (states + destinations).filter { darkNames.contains($0.name) }.map { ("\($0.name)-dark", $0.view, .darkAqua) }
+        for (name, overlay, appearance) in renders {
             let height = metrics.contentHeight(
-                text: state.view.text, errorMessage: state.view.errorMessage, draftReview: state.view.draftReview)
+                text: overlay.text, errorMessage: overlay.errorMessage, draftReview: overlay.draftReview,
+                destinations: overlay.destinations)
             // A flat backdrop stands in for the desktop the panel floats over.
             let inset: CGFloat = 16
-            let view = state.view
+            let view = overlay
                 .frame(width: metrics.panelWidth, height: height)
                 .padding(inset)
-                .background(Color(white: 0.55))
+                .background(Color(white: appearance == .darkAqua ? 0.22 : 0.55))
             try record(
-                view, name: "overlay-\(state.name)",
-                width: metrics.panelWidth + 2 * inset, height: height + 2 * inset, growToFit: false)
+                view, name: "overlay-\(name)",
+                width: metrics.panelWidth + 2 * inset, height: height + 2 * inset, growToFit: false,
+                appearance: appearance)
         }
     }
 
@@ -498,13 +605,32 @@ final class ViewSnapshotTests: XCTestCase {
         """
     )
 
-    /// The overlay's destinations (#840) with one session waiting.
-    private static func strip(selected: DictationDestination) -> OverlayDestinationStrip {
-        OverlayDestinationStrip(
-            list: DictationDestinationList(waitingSessionIDs: ["pay"], focusedSessionID: nil, selected: selected),
-            focusedAppLabel: "localvoxtral",
+    /// Made-up session names as long as real ones: worktree folders, and
+    /// Claude Desktop titles, which run to about 70 characters (#1013).
+    private static let sessionNames = [
+        "Fix test-remote-doctor.sh broken-pipe flake in the harness scripts",
+        "history-store-own-file-a41c2e",
+        "Polish prompt token sizes in Settings and History",
+        "quick-capture-polish-before-routing",
+        "Voice memos keep follow-up recordings",
+        "overlay-destination-list-1015",
+        "Learned terms import and export move to Projects",
+        "remote-join-diagnosis-3b9d10",
+        "Boost the user's terms while Nemotron decodes",
+        "eval-e2e-scheduled-run-guard-874",
+    ]
+
+    /// The overlay's destinations (#840) with `waiting` sessions waiting,
+    /// the first of them picked: the second Tab.
+    private static func strip(waiting: Int, open: Bool) -> OverlayDestinationStrip {
+        let ids = (0..<waiting).map { "s\($0)" }
+        return OverlayDestinationStrip(
+            list: DictationDestinationList(
+                waitingSessionIDs: ids, focusedSessionID: nil, selected: .session(id: ids[0])),
+            focusedAppLabel: "ci-speed-optimizations-7ffef0",
             focusedAppJoined: true,
-            sessionName: { _ in "payments" }
+            sessionName: { id in sessionNames[Int(id.dropFirst())!] },
+            isOpen: open
         )
     }
 

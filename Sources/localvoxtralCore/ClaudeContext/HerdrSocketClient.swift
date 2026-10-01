@@ -93,6 +93,17 @@ package protocol HerdrPaneWriting: Sendable {
     func pressEnter(socketPath: String, paneID: String) async -> HerdrWriteOutcome
 }
 
+/// The one write session navigation makes (#1012; owner ruling on #1012,
+/// 2026-09-28): focus the pane of the session the user asked to reach.
+/// herdr switches workspace and tab itself, and focus is per server, so every
+/// attached client follows. The caller confirms by reading the focus back
+/// (`HerdrPaneQuerying.focusedPane`); the answer alone never is.
+package protocol HerdrPaneFocusing: Sendable {
+    /// `pane.focus {pane_id}`. `.ok` only for herdr's `pane_info` answer
+    /// naming that pane as focused.
+    func focusPane(socketPath: String, paneID: String) async -> HerdrWriteOutcome
+}
+
 package enum HerdrWriteOutcome: Sendable, Equatable {
     /// herdr answered this request with `ok`.
     case ok
@@ -106,19 +117,19 @@ package enum HerdrWriteOutcome: Sendable, Equatable {
 
 /// Minimal capability-bounded client for herdr's one-request-per-connection
 /// JSON API. Reads are limited to the focused/joined pane; the mutations are
-/// the short-lived `lvmark` panel token used by remote surface authorization
-/// and the two `HerdrPaneWriting` calls, which only the dictation's herdr
-/// route makes.
+/// the short-lived `lvmark` panel token used by remote surface authorization,
+/// the two `HerdrPaneWriting` calls, which only the dictation's herdr route
+/// makes, and navigation's `pane.focus` (`HerdrPaneFocusing`).
 ///
 /// Every syscall shares one absolute monotonic deadline. A per-phase timeout
 /// would let a slow connect, write, and response each consume the whole budget,
 /// while a per-read timeout would let a trickling peer retain the task forever.
-package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting, HerdrPaneWriting {
+package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting, HerdrPaneWriting, HerdrPaneFocusing {
     /// Per-request observation: method name, latency in seconds, success, and
-    /// — on failure only — the server's error payload verbatim
-    /// (`"<code>: <message>"`, content-free) or a local failure cause
-    /// (`"no-response"`, `"invalid-response"`). Never carries pane ids,
-    /// socket paths, or response bodies.
+    /// — on failure only — the server's error (`ErrorBody.logDescription`)
+    /// or a local failure cause (`"no-response"`, `"invalid-response"`).
+    /// Never carries pane ids, socket paths, response bodies or herdr's
+    /// error message.
     package typealias LatencyReport = @Sendable (_ method: String, _ latencySeconds: TimeInterval, _ success: Bool, _ detail: String) -> Void
 
     private let timeout: TimeInterval
@@ -249,8 +260,8 @@ package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting
                   result.read.paneID == paneID
             else {
                 // Never log the raw line here: a pane.read body carries the
-                // user's terminal text. Only the server's error envelope
-                // (code + message, content-free) is safe to record verbatim.
+                // user's terminal text. Only the server's error envelope is
+                // recorded, reduced to `ErrorBody.logDescription`.
                 let detail = Self.errorPayload(from: line) ?? "invalid-response"
                 noteLatency(method: "pane.read", startNanos: startNanos, success: false, detail: detail)
                 Log.claudeContext.info("Herdr pane read abstained: invalid response")
@@ -313,10 +324,34 @@ package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting
         )
     }
 
-    /// One write whose only success answer is `ok`. Logs the method and the
-    /// outcome, never the pane id or the text.
+    package func focusPane(socketPath: String, paneID: String) async -> HerdrWriteOutcome {
+        await sendOK(
+            socketPath: socketPath,
+            method: "pane.focus",
+            params: ["pane_id": paneID],
+            accept: { line, requestID in
+                guard let envelope = try? JSONDecoder().decode(Envelope<PaneInfoResult>.self, from: line),
+                      envelope.id == requestID,
+                      let result = envelope.result
+                else { return false }
+                return result.type == "pane_info" && result.pane.paneID == paneID && result.pane.focused
+            }
+        )
+    }
+
+    /// One write whose only success answer is `ok` (or what `accept` takes
+    /// instead). Logs the method and the outcome, never the pane id or the
+    /// text.
     private func sendOK(
-        socketPath: String, method: String, params: some Encodable & Sendable
+        socketPath: String,
+        method: String,
+        params: some Encodable & Sendable,
+        accept: @escaping @Sendable (Data, String) -> Bool = { line, requestID in
+            guard let envelope = try? JSONDecoder().decode(Envelope<OKResult>.self, from: line) else {
+                return false
+            }
+            return envelope.id == requestID && envelope.result?.type == "ok"
+        }
     ) async -> HerdrWriteOutcome {
         await Task.detached(priority: .userInitiated) { [self] in
             let startNanos = uptimeNanos()
@@ -332,9 +367,7 @@ package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting
             case .answer(let answer):
                 line = answer
             }
-            if let envelope = try? JSONDecoder().decode(Envelope<OKResult>.self, from: line),
-               envelope.id == request.id,
-               envelope.result?.type == "ok" {
+            if accept(line, request.id) {
                 noteLatency(method: method, startNanos: startNanos, success: true, detail: "ok")
                 return .ok
             }
@@ -343,7 +376,7 @@ package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting
             if let error = try? JSONDecoder().decode(ErrorEnvelope.self, from: line), error.id == request.id {
                 noteLatency(
                     method: method, startNanos: startNanos, success: false,
-                    detail: "\(error.error.code): \(error.error.message)"
+                    detail: error.error.logDescription
                 )
                 return .refused
             }
@@ -366,7 +399,7 @@ package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting
         latencyRecorder?(method, elapsedSeconds, success, detail)
     }
 
-    /// The server's error envelope verbatim (`"<code>: <message>"`), or nil
+    /// The server's error envelope as `ErrorBody.logDescription`, or nil
     /// when the line is not an error envelope at all. Only error envelopes
     /// are ever recorded: success bodies carry pane ids and terminal text
     /// and must never reach a log.
@@ -374,7 +407,7 @@ package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting
         guard let envelope = try? JSONDecoder().decode(ErrorEnvelope.self, from: line) else {
             return nil
         }
-        return "\(envelope.error.code): \(envelope.error.message)"
+        return envelope.error.logDescription
     }
 
     private func query(socketPath: String, request: some Encodable) -> Data? {
@@ -668,9 +701,26 @@ package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting
     private struct ErrorBody: Decodable {
         var code: String
         var message: String
+
+        /// What the log and the latency recorder get: the code when it is
+        /// shaped like one (`pane_not_found`), and the message's length. The
+        /// answer can come through a remote forward, so both fields are
+        /// untrusted text that may quote a prompt or a key (#1107).
+        var logDescription: String {
+            "\(Self.isCodeShaped(code) ? code : "unrecognized-code"): \(message.count)-character message"
+        }
+
+        /// Lowercase words joined by underscores, at most 40 characters. No
+        /// digits: herdr's codes have none, and keys and tokens do.
+        static func isCodeShaped(_ code: String) -> Bool {
+            guard (1...40).contains(code.count) else { return false }
+            return code.split(separator: "_", omittingEmptySubsequences: false).allSatisfy { word in
+                !word.isEmpty && word.allSatisfy { $0.isASCII && $0.isLowercase }
+            }
+        }
     }
 
-    /// Error-only envelope for verbatim refusal logging. Decodes ONLY
+    /// Error-only envelope for refusal logging. Decodes ONLY
     /// responses carrying `error`; a success body never matches (its `error`
     /// key is absent and required here), so success payloads cannot leak
     /// through this path.
@@ -681,6 +731,12 @@ package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting
 
     private struct OKResult: Decodable {
         var type: String
+    }
+
+    /// `pane.focus`'s answer: the pane it focused.
+    private struct PaneInfoResult: Decodable {
+        var type: String
+        var pane: Pane
     }
 
     private struct PaneCurrentResult: Decodable {

@@ -14,6 +14,9 @@ final class DictationHistoryModel {
     /// Whether the store holds more matches than `entries` shows.
     private(set) var hasMore = false
     private(set) var hasLoaded = false
+    /// Shown in place of the dictations when the store did not open or
+    /// failed to answer (#985). An empty list would read as "no history".
+    private(set) var unavailableText: String?
     /// Recordings on disk and their size, for the Storage group.
     private(set) var audioSummary: (recordings: Int, bytes: Int) = (0, 0)
     private(set) var diagnosticRecordSummary: (records: Int, bytes: Int) = (0, 0)
@@ -34,18 +37,27 @@ final class DictationHistoryModel {
     /// A slow read must not overwrite the result of the one started after it.
     @ObservationIgnored private var reloadGeneration = 0
     @ObservationIgnored private let store: @MainActor () -> DictationSessionStore?
+    @ObservationIgnored private let unavailable: @MainActor () -> String?
     @ObservationIgnored private let copyToPasteboard: @MainActor (String) -> Void
     @ObservationIgnored private let appName: @MainActor (String) -> String?
     @ObservationIgnored private var appNames: [String: String?] = [:]
 
     init(
         store: @escaping @MainActor () -> DictationSessionStore?,
+        unavailable: @escaping @MainActor () -> String? = { nil },
         copyToPasteboard: @escaping @MainActor (String) -> Void = DictationHistoryModel.systemCopy,
         appName: @escaping @MainActor (String) -> String? = DictationHistoryModel.installedAppName
     ) {
         self.store = store
+        self.unavailable = unavailable
         self.copyToPasteboard = copyToPasteboard
         self.appName = appName
+    }
+
+    convenience init(viewModel: DictationViewModel) {
+        self.init(
+            store: { [weak viewModel] in viewModel?.sessionStore },
+            unavailable: { [weak viewModel] in viewModel?.historyUnavailableText })
     }
 
     var isFiltering: Bool {
@@ -61,6 +73,7 @@ final class DictationHistoryModel {
             totalCount = 0
             hasMore = false
             hasLoaded = true
+            unavailableText = unavailable()
             return
         }
         var query = DictationHistoryQuery()
@@ -80,6 +93,7 @@ final class DictationHistoryModel {
         hasMore = fetched.count > limit
         totalCount = count
         hasLoaded = true
+        unavailableText = unavailable()
         if let expandedEntryID, !entries.contains(where: { $0.id == expandedEntryID }) {
             self.expandedEntryID = nil
         }
@@ -206,6 +220,9 @@ enum DictationHistoryRowText {
         }
         if entry.polishProfile == PolishPromptProfile.agent.rawValue {
             parts.append("agent")
+        }
+        if let tokens = entry.polishPromptTokens {
+            parts.append("\(tokens.formatted()) prompt tokens")
         }
         return parts.joined(separator: " · ")
     }

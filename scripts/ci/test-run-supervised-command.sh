@@ -66,6 +66,35 @@ fi
 [[ "$status" == "7" ]] || fail "exit status changed from 7 to $status"
 grep -q '^failed-output$' "$failure_log" || fail "failure output was not captured"
 
+# A compile error above 300 warning lines is out of the 200-line tail, so a
+# failed run prints the log's error lines first (#1094: the build-test log
+# showed only warnings). Duplicates print once, and the list stops at 50.
+error_log="$TMP_DIR/compile-error.log"
+error_output="$TMP_DIR/compile-error.out"
+if "$SUPERVISOR" 30 "$error_log" -- /bin/bash -c '
+  echo "/src/QuickCaptureLLMPolisherTests.swift:12:5: error: missing argument for parameter"
+  echo "/src/QuickCaptureLLMPolisherTests.swift:12:5: error: missing argument for parameter"
+  for i in $(seq 1 60); do echo "/src/Other.swift:$i:1: error: distinct failure $i"; done
+  for i in $(seq 1 300); do echo "/src/Other.swift:$i:1: warning: var never mutated"; done
+  exit 1' >"$error_output" 2>&1; then
+  fail "compile-error command unexpectedly succeeded"
+else
+  status=$?
+fi
+[[ "$status" == "1" ]] || fail "compile-error run: exit status changed from 1 to $status"
+grep -q 'QuickCaptureLLMPolisherTests.swift:12:5: error: missing argument' "$error_output" \
+  || fail "failed run did not print the error line hidden above the tail"
+[[ "$(grep -c 'QuickCaptureLLMPolisherTests.swift:12:5: error:' "$error_output")" == "1" ]] \
+  || fail "failed run printed a duplicated error line more than once"
+grep -q 'error: distinct failure 49$' "$error_output" \
+  || fail "failed run dropped an error line inside the cap"
+grep -q 'error: distinct failure 50$' "$error_output" \
+  && fail "failed run printed error lines past the cap of 50"
+grep -q '11 more error lines' "$error_output" \
+  || fail "failed run did not count the error lines past the cap"
+grep -q 'warning: var never mutated' "$error_output" \
+  || fail "failed run no longer prints the log tail"
+
 # A FIFO triggers the timeout path deterministically; no wall-clock polling.
 pid_fifo="$TMP_DIR/timeout-pids"
 timeout_fifo="$TMP_DIR/timeout-trigger"

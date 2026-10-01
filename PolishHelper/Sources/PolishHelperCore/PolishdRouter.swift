@@ -1,7 +1,11 @@
 import Foundation
 
-/// Routes the two endpoints the app's supervisor and polish client use:
-/// GET /health (readiness probe) and POST /v1/chat/completions.
+/// Routes the endpoints the app's supervisor, polish client and Settings use:
+/// GET /health (readiness probe), POST /v1/chat/completions, and
+/// POST /v1/tokenize, which counts a text's tokens for Settings' prompt sizes.
+///
+/// `/v1/tokenize` takes `{"text": "..."}` and answers `{"tokens": n}`. It only
+/// reads the tokenizer, so it changes nothing a polish sends or gets back.
 public struct PolishdRouter: Sendable {
     private let responder: any ChatResponding
     private let modelName: String
@@ -17,7 +21,9 @@ public struct PolishdRouter: Sendable {
             return .json(200, ["status": "ok"])
         case ("POST", "/v1/chat/completions"):
             return await handleChatCompletion(request)
-        case (_, "/health"), (_, "/v1/chat/completions"):
+        case ("POST", "/v1/tokenize"):
+            return await handleTokenize(request)
+        case (_, "/health"), (_, "/v1/chat/completions"), (_, "/v1/tokenize"):
             return errorResponse(405, "method not allowed", type: "invalid_request_error")
         default:
             return errorResponse(404, "not found: \(request.path)", type: "invalid_request_error")
@@ -64,6 +70,29 @@ public struct PolishdRouter: Sendable {
         } catch {
             PolishdLog.error("chat.completion failed: \(error)")
             return errorResponse(500, "generation failed: \(error)", type: "server_error")
+        }
+    }
+
+    private struct TokenizeRequest: Decodable {
+        let text: String
+    }
+
+    private struct TokenizeResponse: Encodable {
+        let tokens: Int
+    }
+
+    private func handleTokenize(_ request: HTTPRequest) async -> HTTPResponse {
+        let tokenize: TokenizeRequest
+        do {
+            tokenize = try JSONDecoder().decode(TokenizeRequest.self, from: request.body)
+        } catch {
+            return errorResponse(400, "invalid JSON body: \(error)", type: "invalid_request_error")
+        }
+        do {
+            return .json(200, TokenizeResponse(tokens: try await responder.tokenCount(of: tokenize.text)))
+        } catch {
+            PolishdLog.error("tokenize failed: \(error)")
+            return errorResponse(500, "tokenize failed: \(error)", type: "server_error")
         }
     }
 

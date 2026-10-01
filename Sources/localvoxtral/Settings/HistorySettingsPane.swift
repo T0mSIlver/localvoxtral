@@ -345,6 +345,14 @@ struct HistorySettingsPane: View {
                 }
             }
 
+            if let notice = viewModel.historyImportNotice {
+                SettingsGroupRow {
+                    Text(notice)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("history.importNotice")
+                }
+            }
+
             if let since = model.since {
                 SettingsGroupRow {
                     HStack {
@@ -387,6 +395,7 @@ struct HistorySettingsPane: View {
 
     private var emptyText: String {
         if !model.hasLoaded { return "Loading…" }
+        if let unavailable = model.unavailableText { return unavailable }
         if model.isFiltering { return "No dictation matches." }
         return settings.dictationHistoryRetention.savesDictations
             ? "No dictations yet."

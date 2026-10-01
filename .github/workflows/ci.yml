@@ -236,6 +236,7 @@ jobs:
             ./scripts/ci/test-ui-smoke-guard.sh \
             ./scripts/ci/test-ui-smoke-dispatch.sh \
             ./scripts/ci/test-ui-smoke-owner-app.sh \
+            ./scripts/ci/test-owner-defaults-backup.sh \
             ./scripts/ci/test-runner-node-resign.sh \
             ./scripts/ci/test-launch-app-shim.sh \
             ./scripts/ci/test-word-accuracy.sh \
@@ -254,6 +255,7 @@ jobs:
             ./scripts/ci/test-lane-diff-facts.sh \
             ./scripts/ci/test-remote-doctor.sh \
             ./scripts/ci/test-herdr-fixture-recovery.sh \
+            ./scripts/ci/test-json-value.sh \
             ./scripts/ci/test-clean-stale-outputs.sh \
             ./scripts/ci/test-workflow-step-names.sh \
             ./scripts/ci/test-agents-guide-budget.sh \
@@ -1321,26 +1323,12 @@ jobs:
           ditto dist/localvoxtral.app "$SMOKE_DIR/localvoxtral.app"
           mv .build .build.smoke-hidden
           trap 'mv .build.smoke-hidden .build' EXIT
-          SMOKE_APP="$SMOKE_DIR/localvoxtral.app" python3 - <<'PY'
-          import os
-          import subprocess
-          import time
-
-          app_binary = os.environ["SMOKE_APP"] + "/Contents/MacOS/localvoxtral"
-          process = subprocess.Popen([app_binary])
-          time.sleep(2)
-
-          exit_code = process.poll()
-          if exit_code is not None:
-            raise SystemExit(f"packaged app exited during smoke test: {exit_code}")
-
-          process.terminate()
-          try:
-            process.wait(timeout=5)
-          except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
-          PY
+          # The runner runs as the owner: without a home of its own, this
+          # copy would open the owner's dictation history, audio and settings
+          # (#985). The script points CFFIXED_USER_HOME at SMOKE_HOME.
+          mkdir -p "$SMOKE_DIR/home"
+          SMOKE_APP="$SMOKE_DIR/localvoxtral.app" SMOKE_HOME="$SMOKE_DIR/home" \
+            python3 scripts/ci/launch-smoke.py
 
       # ---- CONDITIONAL LIVE LANES --------------------------------------
       # Artifact production is finished above; below this line are the lanes

@@ -97,6 +97,69 @@ final class AgentCLILogPrivacyTests: XCTestCase {
         )
     }
 
+    /// `claude plugin` prints whatever the user's Claude Code prints, so the
+    /// four plugin failure lines log what failed public and the output not.
+    func testAPluginFailureLogsWhatFailedPublicAndTheCLIOutputNot() {
+        let failed = ClaudePluginActionFailure(ClaudePluginInstallService.ServiceError.commandFailed(
+            action: .update, exitCode: 1, message: "error: the words I dictated"
+        ))
+        XCTAssertEqual(failed.publicLogDescription, "claude plugin update exited 1 with 27 characters of output")
+        XCTAssertTrue(failed.describedError.contains("the words I dictated"))
+
+        struct Refused: Error { var detail = "the words I dictated" }
+        let other = ClaudePluginActionFailure(Refused())
+        XCTAssertFalse(other.publicLogDescription.contains("dictated"), other.publicLogDescription)
+        XCTAssertTrue(other.publicLogDescription.contains("Refused"), other.publicLogDescription)
+    }
+
+    /// An enrollment step's command and output can hold ssh and file-system
+    /// text, so the six enrollment failure lines log the case public and not them.
+    func testAnEnrollmentFailureLogsWhatFailedPublicAndTheCommandAndOutputNot() {
+        let failed = ClaudeEnrollmentActionFailure(ClaudeRemoteEnrollmentService.ServiceError.commandFailed(
+            step: 3, command: "ssh devbox cat /home/tom/secret", exitCode: 255, message: "Permission denied (publickey)"
+        ))
+        XCTAssertEqual(failed.publicLogDescription, "step 3 exited 255 with 29 characters of output")
+        XCTAssertTrue(failed.describedError.contains("/home/tom/secret"))
+
+        let timedOut = ClaudeEnrollmentActionFailure(ClaudeRemoteEnrollmentService.ServiceError.commandTimedOut(
+            step: 2, command: "ssh devbox", seconds: 30, message: "devbox: no route"
+        ))
+        XCTAssertEqual(timedOut.publicLogDescription, "step 2 timed out after 30 s")
+
+        struct Refused: Error { var detail = "/home/tom/secret" }
+        let other = ClaudeEnrollmentActionFailure(Refused())
+        XCTAssertFalse(other.publicLogDescription.contains("secret"), other.publicLogDescription)
+        XCTAssertTrue(other.publicLogDescription.contains("Refused"), other.publicLogDescription)
+    }
+
+    /// A Mistral realtime error message can quote what the server was sent,
+    /// so the client logs its code and type public and the message not.
+    func testAMistralRealtimeErrorLogsItsCodePublicAndItsMessageNot() {
+        let frame: [String: Any] = [
+            "type": "error",
+            "error": ["message": "Invalid input: the words I dictated", "code": 3001, "type": "invalid_request"],
+        ]
+        XCTAssertEqual(
+            MistralRealtimeWebSocketClient.publicErrorLogDescription(from: frame),
+            "code=3001 type=invalid_request message=35 characters"
+        )
+        XCTAssertTrue(MistralRealtimeWebSocketClient.errorMessage(from: frame).contains("the words I dictated"))
+    }
+
+    /// A realtime `.error` or `.transcriptionStopped` event carries the
+    /// server's sentence, so the session logs its kind public and the text not.
+    func testARealtimeErrorEventLogsItsKindPublicAndItsTextNot() {
+        XCTAssertEqual(
+            RealtimeConnectionFailureClassifier.publicLogDescription(of: "Rejected: the words I dictated"),
+            "unknown, 30 characters"
+        )
+        XCTAssertEqual(
+            RealtimeConnectionFailureClassifier.publicLogDescription(of: "HTTP 401: the words I dictated"),
+            "unauthorized, 30 characters"
+        )
+        XCTAssertEqual(RealtimeConnectionFailureClassifier.publicLogDescription(of: nil), "unknown, 0 characters")
+    }
+
     /// The expression of every `\(…, privacy: .public)`, parentheses
     /// balanced, so a call inside the interpolation stays whole.
     static func publicExpressions(in source: String) -> [String] {

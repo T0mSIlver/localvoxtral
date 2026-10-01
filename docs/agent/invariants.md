@@ -150,25 +150,32 @@ there is not.
 - **A voice stop is the stop key, never a second commit path** (#839).
   An Overlay Buffer dictation whose words (settled segments plus the
   partial in flight: the Mistral API sends no final before the stop) end in
-  a send phrase, followed by `SpokenStopRule.silenceWindow` (3 s) with no
-  new words, calls `stopDictation` like the key; the stop's commit then
+  a send phrase, followed by the user's `SpokenStopWait` (3 s unless set,
+  #1009) with no new words, calls `stopDictation` like the key; the stop's commit then
   cuts the phrase and sends as above. It arms only when the commit would
   send (`planOverlaySpokenSend`, asked again when the timer fires), so a
   phrase the commit would keep as text never ends the dictation. A held
   dictation never arms: its release is the stop, and a stop while the key
   is down would leave a release with nothing to stop (#840). A quick
   capture stops the same way, saves without the phrase and presses
-  nothing. The window is measured, not guessed: on the owner's 138
+  nothing. The 3 s default is measured, not guessed: on the owner's 138
   dictations with audio, 5.6 % of speech pauses reach 3 s and the one
   mid-sentence "send it" was followed by 2.4 s; a false stop sends half a
-  prompt, a late one costs a key press. The user's phrase list
+  prompt, a late one costs a key press. No choice goes under 1 s: streaming
+  ASR delivers words 0.5–1 s behind speech, so a shorter wait can fire
+  before the rest of the sentence arrives. The user's phrase list
   (`SendTriggerPhrases`) refuses one common word and anything over four
   words, and a stored list that no longer validates loads as the default.
 - **"Go to <name>" is a command only when the name resolves** (#723 step
   1). An Overlay Buffer dictation (a Live Auto-Paste segment, #747) that
-  is only "go to" plus at most four words is looked up against the live registry's default names (the git
-  root's directory name first, then the main checkout's) before the spoken
-  send cut, the dictionary and the polisher. No match: it is ordinary text
+  is only "go to" plus at most four words is looked up against the live
+  registry's names (`SessionNameResolver`: nickname, the folder name with
+  duplicates told apart, the git root's directory or named branch, the main
+  checkout's, the harness's title, the title's first two to four words)
+  before the spoken send cut, the dictionary and the polisher. A title
+  never outranks a folder name: the session sets its own title (Desktop's
+  `titleSource: tool`), so it could otherwise take a name the user meant
+  for another session. No match: it is ordinary text
   and commits as dictated, because "go to the tests" is a prompt too. A
   match: nothing is inserted, no Return is pressed, and nothing is saved to
   History. Two panes on one name is ambiguous and does nothing; sessions on
@@ -180,6 +187,17 @@ there is not.
   `.focused` only when that tty is the session's. A Return after a focus
   (#723 step 3) or #717's answer hotkey must require `.focused`, never
   `.unverified`.
+- **A session's title is a name, never evidence** (#1013). Claude
+  Desktop's title for a session is read from Desktop's own file on this
+  Mac (`ClaudeDesktopSessionTitles`, keyed by the `local_<uuid>` the hooks
+  reported), for an ssh-host session too, so no title crosses the wire.
+  It names the session in the overlay, the popover, banners and go-to,
+  and nothing else: no join, route or capture reads it, the registry file
+  does not keep it, and no log line carries it. Other harnesses' titles
+  (Claude Code's `session_title`, Codex's `thread_name`, opencode's and
+  Vibe's `title`) stay on their host until a wire step carries them: the
+  auto-generated ones summarize the first prompt, which needs an owner
+  ruling (#1013).
 - **Live Auto-Paste holds back only what may still read "go to"** (#747).
   Typed words cannot be taken back, so while a session is live a segment is
   held while its words so far may still become "go to" ("G", "Go", "go t")
@@ -274,6 +292,29 @@ there is not.
   goes last against the 100-term cap: a listed term nobody says is
   sometimes written anyway. A new dictation that cancels
   the pass saves the realtime text as not inserted, as it does for a polish.
+- **Early polish reuses a piece only when the stop would have sent it the
+  same way** (#709). In Overlay Buffer with polishing, `EarlyPolishRun`
+  polishes each settled piece (whole sentences past 30 words of backend
+  finals, `EarlyPolishPlan`) while the user speaks, alone and one at a
+  time. A piece request carries only the templates, the reference guide and
+  About you. The stop still gathers and assembles the request for the whole
+  text, and polishes only the tail when that request equals the bare one
+  (`PolishRequestAssembler.bareRequest`), the templates and endpoint are the
+  pieces', and the prepared text starts with the pieces' exact prefix.
+  Otherwise the pieces are dropped and the whole text is polished: context,
+  vocabulary or a pre-applied spelling from the stop sample, a changed
+  profile, the dictionary, the payload macro and the spoken send cut all
+  land here, so learned terms, the macro and the trigger keep working on
+  the whole text. A piece is never given the text polished before it, and
+  the stop never re-polishes a piece's last sentence: both changed more
+  words than polishing it alone on the #709 replay. The stop waits for the
+  piece in flight and keeps it rather than cancelling it, because polishd
+  keeps generating a dropped request on its one slot. Sessions with a
+  second pass never start early polish: Mistral's realtime stream settles
+  nothing before the stop, and the batch text replaces the realtime text.
+  With **Polish while you speak** off (`SettingsStore.earlyPolishEnabled`,
+  default on for the bundled helper only) no run starts, and the stop takes
+  the pre-#709 path unchanged.
 - **Claude Desktop is a text field whose Return sends, and gets its
   newlines as Shift+Return** (#660). Three lists name it, each for one
   capability: `TerminalTargetDetector`'s text-field list fixes its verdict
@@ -381,12 +422,14 @@ there is not.
   under its own header — with no endpoint check and no re-check of the
   setting that first produced it. Owner ruling, 2026-09-20: a name the
   speaker keeps saying is their vocabulary, exactly like a name typed into
-  Names and terms, which has always been sent to whatever endpoint is
+  Global terms, which has always been sent to whatever endpoint is
   configured. What the app owes in exchange is stated here rather than
   enforced by a gate: each term keeps the sources that proposed it, so a
   later setting can drop what one source taught; nothing below the
   three-dictation bar is ever sent unless the user pinned it or fixed it by
-  hand, and an import (`LearnedTerms.merge`, #523) confirms nothing the
+  hand (a quick capture's polish, #970, matches every routable project's
+  confirmed terms, which the router already sends with each project), and
+  an import (`LearnedTerms.merge`, #523) confirms nothing the
   file does not record as earned, taking the max of the counts, never the
   sum; a remembered term never outranks a live
   source (`.learned` is LAST in `PolishContextSource`, so a contested span
@@ -400,6 +443,52 @@ there is not.
   project-less dictation reads them. Known limit of the bar: it counts
   dictations, not independent evidence, so one stale clipboard read across
   three dictations is three confirmations.
+
+- **Every polish carries every listed project's name** (#1024). The
+  About-you block ends with `Their projects (repository names): …`, built by
+  `PolishProjectNames` from quick capture's project list
+  (`QuickCaptureProjects.projects`): each project's name and its
+  repository's, sorted, the 30 most recent projects, without labels a tool
+  generated (a folder name ending in a hex hash, such as a Claude Desktop
+  worktree's). It goes to every endpoint whatever the context toggles say,
+  on the same ruling as learned terms above: a repository name is the
+  speaker's vocabulary. A remote project's name is a label its host sent, so
+  a host can put up to 60 characters of its choosing in every prompt; the
+  host is one the user enrolled, and the label is sanitized like a term
+  (`SpeakerTerms.sanitized`: one line, no quotes, no commas). The list sits
+  in the SYSTEM prompt and is sorted rather than ordered by recency, so the
+  helper's cached prefix changes only when a project is added or dropped,
+  never because the user dictated into another one. Measured on GLM 5.3
+  with Tom's dictations (#1024): with the names, 117/122 repository names
+  came out right against 58 without and 104 with his hand-typed Global
+  terms, and no control got a name written into it. A name already among
+  the Global terms is listed there only, and Settings offers to remove such
+  a term; nothing removes it without a click.
+
+- **A host's skill names reach every polish, as names only** (#1024). The
+  remote shims send `X-Lvx-Skills`: the Claude Code plugin on SessionStart,
+  Vibe's at each turn's end (it has no start hook). The value is the names of
+  the skill folders (holding `SKILL.md`) and command files under the host's
+  Claude Code, Codex, opencode, Vibe and `~/.agents` folders, the installed
+  Claude Code plugins' skills, and the session folder's `.claude/`. Never a
+  file's contents, never a path. The Mac lists the same folders on itself
+  (`AgentSkillDirectories`). It is its own header, not an `X-Lvx-Env-*`
+  one: a list outgrows the environment's 200-byte values, and it is content,
+  not a label about where a session runs. It is untrusted text a host
+  writes into the prompt, so `AgentSkillNamesCodec` keeps only folder-shaped
+  names (ASCII letters, digits, `.`, `_`, `-`, 64 bytes, no leading dot or
+  dash), at most 80, and reports nothing for a value over 2 KiB. The
+  listener passes them on only after the re-authentication, so a revoked
+  host's list is never kept. `AgentSkillStore` keeps one list per host id in
+  `agent-skills.json`, rewrites it at most daily while a list is unchanged,
+  never overwrites a file it could not read, and drops a host after 30 days
+  without a report. Every polish gets the union, sorted, as `Skills they
+  invoke in their coding agents: …` after the project line, whichever
+  harness the dictation joined: the joined harness's list alone would change
+  the system prompt at every join and break the cached prefix, and the #1024
+  eval found no cost in sending 43 names where 11 were used (no control got
+  a name written into it). Built-in commands that exist on no disk are not
+  listed.
 
 - **A learned term does not rewrite ordinary words** (#522). The exact tier
   pre-applies any span that normalizes to a term, so a learned `useAuth`
@@ -562,8 +651,11 @@ there is not.
   and each adds its own below:
   (1) *One route, resolved at start.* `SessionContextResolver.resolveAgentPromptRoute()`
   picks at most one route per dictation, next to the join, for the session
-  the join resolved and nothing else. It is dropped with the join. The one
-  exception is a dictation addressed by name ("Send that to <name>" above):
+  the join resolved and nothing else. It is dropped with the join, and
+  both are dropped before an Overlay Buffer commit into a session Tab
+  picked (#1054): that pane gets the words by keyboard after its read-back,
+  and the start session's route would write them into the start session's
+  prompt. The one exception is a dictation addressed by name ("Send that to <name>" above):
   its route is resolved at commit, for the named session, by
   `ClaudeSessionJoinResolver.addressedRoute(for:)`, and never falls back
   to keys.
@@ -599,6 +691,13 @@ there is not.
     token, a `Host` other than its own address, and any call for a session
     the pane no longer displays. It forwards through the TUI's in-process
     client, so the app never needs or sees opencode's server password.
+    *Typed only into the same prompt* (#1057): a call the relay refused
+    with a status other than 409, or one that never reached it (connection
+    refused, text too long), is typed only while the terminal the dictation
+    started in is frontmost and its focused pane still resolves to this
+    relay. A 409 (the pane shows another session now) and a request with no
+    answer read back (timeout, dropped connection: it may have landed) stay
+    in History (`keepInHistory`).
     *Resolution:* it reuses the join's session when the join resolved, and
     otherwise asks only local questions
     (`ClaudeSessionJoinResolver.opencodePromptRelay(target:)`): the focused
@@ -618,7 +717,8 @@ there is not.
     and a submit is `pane.send_keys {pane_id, keys: ["enter"]}`
     (`HerdrPaneWriting`; wire shapes from herdr 0.9.0, the version installed
     when this was written). Never `pane.run`, never another key, never
-    `agent.prompt`, `agent.send_keys`, `pane.send_input` or a focus call.
+    `agent.prompt`, `agent.send_keys`, `pane.send_input` or a focus call
+    (navigation's focus, below, is its own bounded write).
     *Only the joined pane:* the route exists only for a herdr pane join
     (local, remote or federated) and is keyed by the binding the arm captured
     (`ClaudeSessionJoinResolver.herdrPromptRoute(for:)`), so it writes to
@@ -632,7 +732,14 @@ there is not.
     *Typed only into the same pane:* a text herdr refused (its own error
     answer for that request, or a request that never reached the socket) is
     typed only while keys would land in the joined pane: its terminal is
-    frontmost and herdr's `pane.current` is that pane. Otherwise, and
+    frontmost, herdr's `pane.current` is that pane, and the terminal still
+    shows the surface the join saw (#1105, `HerdrJoinedSurface`): the same
+    focused tty, and on it the same machine, read as the arm read it
+    (herdr's machine selection, alone on screen once machines are saved, or
+    the tty's ssh session). A client switched to another saved machine
+    keeps its tty, and the server it left keeps a focused pane it no longer
+    shows, so the pane check alone would type into the other machine.
+    Otherwise, and
     whenever the request went out with no valid answer (it may have landed),
     the text stays in History (`keepInHistory`).
     *Enter only over the joined agent:* before each Enter the route asks the
@@ -648,6 +755,39 @@ there is not.
     never kept as a join, reads nothing from the pane, never reaches a
     remote or federated herdr, and asks the focused TTY only while a live
     local session sits in a herdr pane.
+  - *herdr focus for navigation* (#1012, `HerdrSessionPaneFocuser`; owner
+    ruling on #1012, 2026-09-28). *One call, nothing else:* `pane.focus
+    {pane_id}` (`HerdrPaneFocusing`), only for the pane of the session the
+    user asked to reach (Tab, the answer shortcut, "go to"), over the pane's
+    local socket or the join's `ssh -L` forward. No keys, no text, no layout,
+    tab, workspace or pane creation, no `agent.focus`, no machine switch.
+    *Confirmed by reading back:* `.focused`, the only outcome that starts a
+    dictation, needs herdr's `pane.current` to name that pane AND the
+    terminal's focused tty to be the window raised; the answer to
+    `pane.focus` alone never is. *Window first* (#1033): `pane.focus` is sent
+    only after the window reads back in front, so a window that does not
+    come up leaves herdr's pane as it was, and a failure after the raise is
+    `.unverified`, never an outcome that reads as nothing moved. The
+    previous pane is not restored: that would be a second `pane.focus`.
+    *The window, never by title:* herdr has no client introspection, so
+    `HerdrWindowLocator` takes the join's process-table evidence and wants
+    exactly one tty. For a local pane: the one live local herdr socket is the
+    pane's, the machine selection shows Local (a lone client once machines
+    are saved), and one tty runs a herdr client. For a remote pane: a tty
+    whose foreground ssh goes to exactly that enrolled host with a plain herdr
+    client of that socket's session and no competing herdr view, or the lone
+    herdr client whose selection names that host and session. Several
+    candidates raise none, even though clients of one server mirror it.
+    Not reached: `ssh host` then a typed `herdr` (only the panel nonce could
+    prove that window, and it needs the window frontmost first), argv an ssh
+    wrapper hides, and a client showing another machine.
+    *herdr's side, measured on 0.9.0 and 0.9.1:* `pane.focus` answers
+    `pane_info` with `focused: true`, or `pane_not_found`, and switches
+    workspace and tab itself. The CLI has no command for it (`herdr pane
+    focus` is directional only); `agent.focus {target}` refuses a pane herdr
+    does not see as an agent (`agent_not_found`). Focus is per server: every
+    attached TUI client moves to the pane, and an explicit focus marks the
+    agent seen (`done` becomes `idle`).
   - *cmux surfaces* (#727, `CmuxSurfaceRoute`). *Exactly two calls:*
     `surface.send_text` with `surface_id` and `text`, and `surface.send_key`
     with `surface_id` and `key: "enter"`. Never a call without `surface_id`:
@@ -783,8 +923,9 @@ there is not.
     `HerdrSocketClient` (hand-written and capability-bounded — reads are only
     `pane.current`, `pane.process_info`, and `pane.read`; its mutations are
     the remote panel probe's short-lived `lvmark` through
-    `pane.report_metadata` and the herdr pane route's two writes, bounded in
-    "The app writes into an agent only through its routes". herdr was AGPL when this
+    `pane.report_metadata`, the herdr pane route's two writes, bounded in
+    "The app writes into an agent only through its routes", and navigation's
+    `pane.focus`, bounded in "herdr focus for navigation". herdr was AGPL when this
     was written and is Apache-2.0 since v0.8.0, repo `herdrdev/herdr`, so its
     docs and source are freely readable; the client stays hand-written anyway,
     because a vendored dependency would be a second implementation of the trust
@@ -1231,7 +1372,10 @@ there is not.
     the moments that mattered (quit during polish, an aborted connect) and the
     ssh outlived the app. `DictationViewModel` owns only leases, releasing every
     one on its existing session-exit paths; the service owns idle, revoke, quit,
-    supervision, pid-ledger and next-launch orphan-reap lifecycles.
+    supervision, pid-ledger and next-launch orphan-reap lifecycles. Replacing
+    a forward removes the old entry before waiting for its teardown, so a
+    revoke or quit during that wait has nothing to stop; the waiter checks
+    enrollment and quit again when it resumes and spawns nothing (#1104).
   - **The remote herdr forward is a trust inversion, and it is bounded by what
     we SEND, not by what the socket allows.** herdr's JSON socket is
     full-control: over that same forwarded stream one could create panes, write
@@ -2462,7 +2606,7 @@ there is not.
   and it never reaches the registry. The trust is the hook path's, unchanged:
   the 0700 directory, the 0600 socket and `getpeereid` before the first byte,
   so only processes running as the user can ask, and each of them could read
-  `default.store` and `learned-terms.json` from disk already. That equivalence
+  `history.store` and `learned-terms.json` from disk already. That equivalence
   is the whole argument, so it bounds what the command may do: no TCP
   listener, ever (a loopback port is reachable by every local user and every
   page a browser loads); no command that writes history or starts a
@@ -2486,8 +2630,20 @@ there is not.
   its stop takes `commitQuickCapture` before any polish, second pass, screen
   or clipboard sample, or insertion: the History record is written first,
   the overlay closes as a cancelled one does, and the words go to
-  `QuickCaptureInboxModel`, which writes them to its 0600 file before
-  routing. The router sends a low or tied answer to the catch-all, never a
+  `QuickCaptureInboxModel`, which writes them to its 0600 file before it
+  polishes them. The capture is polished once there (#970), before the
+  follow-up check and routing: one request to the polishing endpoint with
+  the standard profile's prompt and the user's terms, and no screen,
+  clipboard or session context. Its vocabulary is every routable project's
+  name, repository name and confirmed learned terms
+  (`QuickCapturePolishVocabulary`, capped per project and in total; no
+  proposals), matched against the words as a dictation's learned terms are.
+  The router, drafter and follow-ups read the polished words; History keeps
+  the raw ones and gets the polished text on the same record, which
+  Insights leaves out of its polish waits. A failed
+  polish, or none configured, routes the raw words. Polishes run side by
+  side, but captures join or route in the order they were made: an "also"
+  whose polish answers first waits for the capture before it. The router sends a low or tied answer to the catch-all, never a
   guessed project: the guess is kept as the route's `suggestion`, and
   nothing drafts until the user accepts it (#938). Jev and the chat model both need 0.9: on the replay
   (#741, #744) every right project came at 0.95 or more, and nearly every

@@ -2,8 +2,9 @@ import Foundation
 import XCTest
 @testable import localvoxtralCore
 
-/// The overlay's destinations (#840): the focused app, the sessions that
-/// need you in answer order, then the Inbox; Tab and ⇧Tab move between them.
+/// The overlay's destinations (#840): the focused app, the Inbox, then the
+/// sessions that need you in answer order (#1015); Tab and ⇧Tab move
+/// between them.
 final class DictationDestinationTests: XCTestCase {
     func testWithNobodyWaitingOneTabReachesTheInboxAndASecondComesBack() {
         var list = DictationDestinationList(waitingSessionIDs: [], focusedSessionID: nil)
@@ -15,19 +16,21 @@ final class DictationDestinationTests: XCTestCase {
         XCTAssertEqual(list.selected, .focusedApp)
     }
 
-    func testWaitingSessionsSitBetweenTheFocusedAppAndTheInboxInAnswerOrder() {
+    func testOneTabReachesTheInboxAndWaitingSessionsFollowInAnswerOrder() {
         var list = DictationDestinationList(waitingSessionIDs: ["pay", "web"], focusedSessionID: nil)
-        XCTAssertEqual(list.entries, [.focusedApp, .session(id: "pay"), .session(id: "web"), .inbox])
+        XCTAssertEqual(list.entries, [.focusedApp, .inbox, .session(id: "pay"), .session(id: "web")])
         list.select(list.next)
-        XCTAssertEqual(list.selected, .session(id: "pay"), "one Tab answers the oldest")
-        XCTAssertEqual(list.previous, .focusedApp)
-        list.select(list.previous)
-        XCTAssertEqual(list.previous, .inbox, "⇧Tab from the focused app wraps to the Inbox")
+        XCTAssertEqual(list.selected, .inbox, "one Tab reaches the Inbox with sessions waiting too")
+        list.select(list.next)
+        XCTAssertEqual(list.selected, .session(id: "pay"), "the second answers the oldest")
+        XCTAssertEqual(list.previous, .inbox)
+        list.select(.focusedApp)
+        XCTAssertEqual(list.previous, .session(id: "web"), "⇧Tab from the focused app wraps to the last session")
     }
 
     func testTheSessionTheFocusedPaneShowsIsTheFocusedAppNotASecondEntry() {
         let list = DictationDestinationList(waitingSessionIDs: ["pay", "web", "pay"], focusedSessionID: "pay")
-        XCTAssertEqual(list.entries, [.focusedApp, .session(id: "web"), .inbox])
+        XCTAssertEqual(list.entries, [.focusedApp, .inbox, .session(id: "web")])
     }
 
     func testAnOpeningEntryTheListLacksFallsBackToTheFocusedApp() {
@@ -49,12 +52,12 @@ final class DictationDestinationTests: XCTestCase {
         list.refresh(waitingSessionIDs: ["a", "c", "d"], focusedSessionID: nil)
         XCTAssertEqual(
             list.entries,
-            [.focusedApp, .session(id: "a"), .session(id: "b"), .session(id: "c"), .session(id: "d"), .inbox]
+            [.focusedApp, .inbox, .session(id: "a"), .session(id: "b"), .session(id: "c"), .session(id: "d")]
         )
         XCTAssertEqual(list.selected, .session(id: "b"))
         list.select(.inbox)
         list.refresh(waitingSessionIDs: ["c"], focusedSessionID: nil)
-        XCTAssertEqual(list.entries, [.focusedApp, .session(id: "c"), .inbox])
+        XCTAssertEqual(list.entries, [.focusedApp, .inbox, .session(id: "c")])
         XCTAssertEqual(list.selected, .inbox)
     }
 

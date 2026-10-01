@@ -49,6 +49,11 @@ struct LLMPolishingRequest: Sendable {
         self.prefersDeepReasoning = prefersDeepReasoning
         self.usageFeature = usageFeature
     }
+
+    /// The characters of every message sent, for the usage ledger.
+    var promptCharacters: Int {
+        userPrompts.reduce(systemPrompt.count) { $0 + $1.count }
+    }
 }
 
 /// Which wire dialect one polish request is serialized in. The app talks to
@@ -274,7 +279,8 @@ struct LLMPolishingService: LLMPolishingServicing {
                 feature: feature,
                 backend: configuration.usageBackend,
                 requestedModel: configuration.model,
-                usage: usage
+                usage: usage,
+                promptCharacters: request.promptCharacters
             ))
     }
 

@@ -801,20 +801,6 @@ final class ClaudeRepoContentFilterTests: XCTestCase {
         )
     }
 
-    func testShortBasenamesAreNotSelected() {
-        // `app.ts` normalizes to `appts` — far too collision-prone with prose
-        // to pull a whole file in on.
-        XCTAssertEqual(
-            ClaudeRepoContentFilter.transcriptMatchedPaths(
-                trackedPaths: ["src/app.ts"],
-                excluding: [],
-                transcript: "the app test is failing",
-                limit: 5
-            ),
-            []
-        )
-    }
-
     func testLongestMatchWinsAndSelectionIsDeterministic() {
         let paths = ["Session.swift", "DictationViewModel+Session.swift"]
         let result = ClaudeRepoContentFilter.transcriptMatchedPaths(
@@ -884,7 +870,7 @@ final class ClaudeRepoContentFilterTests: XCTestCase {
 
     // Dropping the extension must not smuggle a short stem past the guard: the
     // length rule applies per form, not to the basename it came from.
-    func testShortStemsAreExcludedEvenWhenTheBasenameIsLongEnough() {
+    func testShortBasenamesAndShortStemsAreNeverSelectedEvenWhenTheBasenameIsLongEnough() {
         // `App.swift` -> `appswift` (8) clears the bar; its stem `app` (3) does
         // not, and must not.
         XCTAssertEqual(ClaudeRepoContentFilter.basenameMatchForms("Sources/App.swift"), ["appswift"])
@@ -897,6 +883,17 @@ final class ClaudeRepoContentFilterTests: XCTestCase {
             ),
             [],
             "a three-letter stem must never select a whole file"
+        )
+        // `app.ts` normalizes to `appts` — far too collision-prone with prose
+        // to pull a whole file in on.
+        XCTAssertEqual(
+            ClaudeRepoContentFilter.transcriptMatchedPaths(
+                trackedPaths: ["src/app.ts"],
+                excluding: [],
+                transcript: "the app test is failing",
+                limit: 5
+            ),
+            []
         )
     }
 

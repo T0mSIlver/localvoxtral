@@ -57,6 +57,7 @@ final class SettingsStore {
         static let overlaySpokenSendEnabled = "settings.overlay_spoken_send_enabled"
         static let liveSpokenSendEnabled = "settings.live_spoken_send_enabled"
         static let spokenSendTriggerPhrases = "settings.spoken_send_trigger_phrases"
+        static let spokenStopWait = "settings.spoken_stop_wait_ms"
         static let audioDuckingEnabled = "settings.audio_ducking_enabled"
         static let audioDuckingFadeDuration = "settings.audio_ducking_fade_duration"
         /// The device and volume a launch ducked away from, written at the
@@ -80,6 +81,7 @@ final class SettingsStore {
         static let managedLLMPolishingModel = "settings.managed_llm_polishing_model"
         static let replacementDictionaryEnabled = "settings.replacement_dictionary_enabled"
         static let agentPolishProfileEnabled = "settings.agent_polish_profile_enabled"
+        static let earlyPolishEnabled = "settings.early_polish_enabled"
         static let polishClipboardContextEnabled = "settings.polish_clipboard_context_enabled"
         static let polishSpeakerProfile = "settings.polish_speaker_profile"
         static let polishSpeakerTerms = "settings.polish_speaker_terms"
@@ -128,6 +130,7 @@ final class SettingsStore {
         static let overlayBufferVisibleLines = "settings.overlay_buffer_visible_lines"
         static let overlayBufferSilenceAutoStop = "settings.overlay_buffer_silence_auto_stop"
         static let overlayBufferWordHold = "settings.overlay_buffer_word_hold"
+        static let overlayBufferPolishColor = "settings.overlay_buffer_polish_color"
         static let overlayBufferPositionScreenID = "settings.overlay_buffer_position_screen_id"
         static let overlayBufferPositionOffsetX = "settings.overlay_buffer_position_offset_x"
         static let overlayBufferPositionOffsetY = "settings.overlay_buffer_position_offset_y"
@@ -349,6 +352,12 @@ final class SettingsStore {
         didSet { defaults.set(spokenSendTriggerPhrases, forKey: Keys.spokenSendTriggerPhrases) }
     }
 
+    /// How long an Overlay Buffer dictation that ends in a send phrase waits
+    /// for new words before it stops (#1009). Read when the wait starts.
+    var spokenStopWait: SpokenStopWait {
+        didSet { defaults.set(spokenStopWait.rawValue, forKey: Keys.spokenStopWait) }
+    }
+
     /// Lower other audio while dictating, and fade it back on stop. On by
     /// default (owner ruling, 2026-09-21, after hand-testing it): dictating
     /// over music is the common case, and the fade makes it unobtrusive
@@ -470,6 +479,27 @@ final class SettingsStore {
         }
     }
 
+    /// The user's own choice for early polish (#709), nil until they flip the
+    /// toggle. See `earlyPolishEnabled` for the default.
+    var earlyPolishChoice: Bool? {
+        didSet {
+            if let earlyPolishChoice {
+                defaults.set(earlyPolishChoice, forKey: Keys.earlyPolishEnabled)
+            } else {
+                defaults.removeObject(forKey: Keys.earlyPolishEnabled)
+            }
+        }
+    }
+
+    /// Whether Overlay Buffer polishes settled pieces while the user speaks
+    /// (#709). Until the user chooses, on for the bundled helper only: early
+    /// polish sends about 3 times the input characters per dictation, which
+    /// costs money on a paid endpoint and nothing on the helper.
+    var earlyPolishEnabled: Bool {
+        get { earlyPolishChoice ?? (polishingBackendMode == .managedLocal) }
+        set { earlyPolishChoice = newValue }
+    }
+
     /// The user's own description of who they are and the names they use,
     /// sent with every polish request (any app, any endpoint — like the
     /// replacement dictionary, it is text they typed for this purpose).
@@ -479,7 +509,7 @@ final class SettingsStore {
         }
     }
 
-    /// The user's names and terms, correct spelling only (`SpeakerTerms`).
+    /// The user's global terms, correct spelling only (`SpeakerTerms`).
     /// An ABSENT key means "never set", which is what lets the one-time import
     /// from the replacement dictionary tell a new install from an emptied list.
     var polishSpeakerTerms: [String] {
@@ -848,6 +878,12 @@ final class SettingsStore {
         didSet { defaults.set(overlayBufferWordHold.rawValue, forKey: Keys.overlayBufferWordHold) }
     }
 
+    /// The color the overlay shows polish in: the sweep and the changed
+    /// words (#1074).
+    var overlayBufferPolishColor: OverlayPolishColor {
+        didSet { defaults.set(overlayBufferPolishColor.rawValue, forKey: Keys.overlayBufferPolishColor) }
+    }
+
     /// Stop an Overlay Buffer tap session after this long without new text.
     var overlayBufferSilenceAutoStop: SilenceAutoStop {
         didSet { defaults.set(overlayBufferSilenceAutoStop.rawValue, forKey: Keys.overlayBufferSilenceAutoStop) }
@@ -996,18 +1032,27 @@ final class SettingsStore {
         let resolvedBackendModes = Self.resolveBackendModes(defaults: defaults, environment: environment)
         dictationBackendMode = resolvedBackendModes.dictation
         polishingBackendMode = resolvedBackendModes.polishing
-        defaults.set(resolvedBackendModes.dictation.rawValue, forKey: Keys.dictationBackendMode)
-        defaults.set(resolvedBackendModes.polishing.rawValue, forKey: Keys.polishingBackendMode)
+        // Only a missing mode is persisted. One this build can't parse may
+        // come from a newer build, and saving the migrated mode over it would
+        // erase that choice (#1040).
+        if defaults.object(forKey: Keys.dictationBackendMode) == nil {
+            defaults.set(resolvedBackendModes.dictation.rawValue, forKey: Keys.dictationBackendMode)
+        }
+        if defaults.object(forKey: Keys.polishingBackendMode) == nil {
+            defaults.set(resolvedBackendModes.polishing.rawValue, forKey: Keys.polishingBackendMode)
+        }
 
-        // A repo that left the catalog (or was hand-written into the plist)
-        // must never reach a helper launch: fall back to the default and
-        // rewrite the stored value so the picker and the launch agree.
+        // A repo outside this build's catalog must never reach a helper
+        // launch, so the default runs instead. The stored repo stays: a newer
+        // build may have added it (#1040).
         let storedSpeechModel = defaults.string(forKey: Keys.managedSpeechModel)?.trimmed ?? ""
         if let option = SpeechModelCatalog.option(forRepoID: storedSpeechModel) {
             managedSpeechModel = option.repoID
         } else {
             managedSpeechModel = SpeechModelCatalog.defaultOption.repoID
-            defaults.set(SpeechModelCatalog.defaultOption.repoID, forKey: Keys.managedSpeechModel)
+            if storedSpeechModel.isEmpty {
+                defaults.set(SpeechModelCatalog.defaultOption.repoID, forKey: Keys.managedSpeechModel)
+            }
         }
 
         let configuredProvider = Self.loadString(
@@ -1090,6 +1135,9 @@ final class SettingsStore {
             defaults: defaults, key: Keys.liveSpokenSendEnabled, fallback: false)
         spokenSendTriggerPhrases = SendTriggerPhrases.loaded(
             defaults.stringArray(forKey: Keys.spokenSendTriggerPhrases))
+        spokenStopWait =
+            (defaults.object(forKey: Keys.spokenStopWait) as? Int)
+            .flatMap(SpokenStopWait.init(rawValue:)) ?? .default
         audioDuckingEnabled = Self.loadBool(
             defaults: defaults, key: Keys.audioDuckingEnabled, fallback: true)
         let storedDuckingFade = defaults.object(forKey: Keys.audioDuckingFadeDuration) != nil
@@ -1164,6 +1212,7 @@ final class SettingsStore {
             defaults: defaults, key: Keys.replacementDictionaryEnabled, fallback: false)
         agentPolishProfileEnabled = Self.loadBool(
             defaults: defaults, key: Keys.agentPolishProfileEnabled, fallback: true)
+        earlyPolishChoice = defaults.object(forKey: Keys.earlyPolishEnabled) as? Bool
         polishSpeakerProfile = defaults.string(forKey: Keys.polishSpeakerProfile) ?? ""
         polishDismissedTermSuggestions =
             defaults.stringArray(forKey: Keys.polishDismissedTermSuggestions) ?? []
@@ -1233,6 +1282,9 @@ final class SettingsStore {
         overlayBufferWordHold =
             (defaults.object(forKey: Keys.overlayBufferWordHold) as? Int)
             .flatMap(OverlayWordHold.init(rawValue:)) ?? .off
+        overlayBufferPolishColor =
+            defaults.string(forKey: Keys.overlayBufferPolishColor)
+            .flatMap(OverlayPolishColor.init(rawValue:)) ?? .teal
         overlayBufferSilenceAutoStop =
             (defaults.object(forKey: Keys.overlayBufferSilenceAutoStop) as? Int)
             .flatMap(SilenceAutoStop.init(rawValue:)) ?? .off

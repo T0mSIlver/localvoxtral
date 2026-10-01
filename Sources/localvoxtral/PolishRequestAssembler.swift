@@ -43,6 +43,18 @@ enum PolishRequestAssembler {
         let clipboardVocabularyCount: Int
     }
 
+    /// The request `assemble` builds when nothing grounds the polish: no
+    /// vocabulary, no pre-applied spelling, no context block. Early polish
+    /// (#709) sends it for each piece, and the stop reuses the pieces only
+    /// when its own assembled request equals this one for the whole text.
+    static func bareRequest(workingText: String, templates: LLMPromptTemplates) -> LLMPolishingRequest {
+        LLMPolishingRequest(
+            inputText: workingText,
+            systemPrompt: templates.systemContent,
+            userPrompts: templates.renderedUserPrompts(inputText: workingText, replacementDictionary: "")
+        )
+    }
+
     static func assemble(_ input: Input) -> Assembly {
         let merged = input.merged
         let templateCarriesDictionarySlot = input.templateCarriesDictionarySlot

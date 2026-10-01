@@ -4,9 +4,8 @@ import SwiftUI
 struct TextProcessingSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
-    /// Selects the Projects pane, where the learned terms are (#972).
-    var openProjects: () -> Void = {}
-    @State private var learnedTermsFileMessage: String?
+    @State private var instructionsTokens: String?
+    @State private var globalTermsTokens: String?
 
     static let speakerProfileExample = """
         Backend engineer at Acme, mostly Swift and Python.
@@ -24,12 +23,60 @@ struct TextProcessingSettingsPane: View {
         settings.isOverlayBufferSessionReachable
     }
 
-    /// Reading `learnedTermRevision` is what re-renders the row after a
-    /// dictation or an import: the store is a plain class, so nothing else
-    /// observes it.
-    private var hasLearnedTerms: Bool {
-        _ = viewModel.learnedTermRevision
-        return !(viewModel.learnedTermStore?.snapshot().projects.isEmpty ?? true)
+    private var tokenCounter: PolishPromptTokenCounter {
+        PolishPromptTokenCounter(settings: settings, ledger: viewModel.engines.usageLedger)
+    }
+
+    /// What a count depends on; the backend picks exact or estimated.
+    private struct TokenCountKey: Equatable {
+        let backend: BackendMode
+        let agentProfile: Bool
+        let terms: [String]
+        /// The project and skill names sent with them (#1024).
+        let projects: [String]
+        let skills: [String]
+        /// With About-you text, the header is its, not the terms'.
+        let hasProfile: Bool
+    }
+
+    private var tokenCountKey: TokenCountKey {
+        TokenCountKey(
+            backend: settings.polishingBackendMode,
+            agentProfile: settings.agentPolishProfileEnabled,
+            terms: settings.polishSpeakerTerms,
+            projects: viewModel.session.polishProjectNames(),
+            skills: viewModel.session.polishSkillNames(),
+            hasProfile: !settings.polishSpeakerProfile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    /// Reads the prompt files once per visit and change, not on every render.
+    private func countPromptParts() async {
+        let counter = tokenCounter
+        let instructions = { (profile: PolishPromptProfile) in
+            PolishPromptParts.instructionText(
+                viewModel.appConfigStore.loadLLMPromptTemplates(profile: profile).withReferenceGuide())
+        }
+        let standardText = instructions(.standard)
+        let agentText = settings.agentPolishProfileEnabled ? instructions(.agent) : nil
+        let terms = SpeakerTerms.sanitized(settings.polishSpeakerTerms)
+        // What the terms add does not depend on the instructions.
+        let projects = viewModel.session.polishProjectNames()
+        let skills = viewModel.session.polishSkillNames()
+        let termText = PolishPromptParts.globalTermText(
+            LLMPromptTemplates(systemContent: "", userContent: ""),
+            profile: settings.polishSpeakerProfile, terms: terms, projects: projects, skills: skills)
+        // What the block lists besides the terms, after its dedupe.
+        let termKeys = Set(terms.map(PolishProjectNames.key))
+        let names = Set((projects + skills).map(PolishProjectNames.key)).subtracting(termKeys).count
+
+        if let standard = await counter.count(standardText) {
+            var agent: PolishPromptTokenCounter.Count?
+            if let agentText { agent = await counter.count(agentText) }
+            instructionsTokens = PolishPromptTokenText.instructions(standard: standard, agent: agent)
+        }
+        globalTermsTokens = await counter.count(termText, termList: true).map {
+            PolishPromptTokenText.globalTerms(count: terms.count, names: names, tokens: $0)
+        }
     }
 
     private var llmPolishingEnabledBinding: Binding<Bool> {
@@ -86,10 +133,28 @@ struct TextProcessingSettingsPane: View {
                 }
 
                 SettingsFieldRow(
-                    title: "Names and terms",
+                    title: "Global terms",
+                    status: globalTermsTokens,
                     layout: .stacked
                 ) {
                     SpeakerTermsField(terms: $settings.polishSpeakerTerms)
+                }
+
+                // Every polish sends the project and skill names already (#1024).
+                let repeated = PolishProjectNames.globalTerms(
+                    settings.polishSpeakerTerms,
+                    repeating: viewModel.session.polishProjectNames() + viewModel.session.polishSkillNames())
+                if !repeated.isEmpty {
+                    SettingsFieldRow(
+                        title: "Global terms that repeat a project or skill name",
+                        status: repeated.joined(separator: ", ")
+                    ) {
+                        Button("Remove") {
+                            let removed = Set(repeated)
+                            settings.polishSpeakerTerms.removeAll { removed.contains($0) }
+                        }
+                        .accessibilityIdentifier("settings.aboutYou.removeProjectNameTerms")
+                    }
                 }
 
                 SettingsFieldRow(
@@ -131,6 +196,11 @@ struct TextProcessingSettingsPane: View {
                             .labelsHidden()
                     }
 
+                    SettingsFieldRow(title: "Polish while you speak") {
+                        Toggle("", isOn: $settings.earlyPolishEnabled)
+                            .labelsHidden()
+                    }
+
                     SettingsFieldRow(title: "Agent prompt profile in terminals and Claude Desktop") {
                         Toggle("", isOn: $settings.agentPolishProfileEnabled)
                             .labelsHidden()
@@ -158,33 +228,6 @@ struct TextProcessingSettingsPane: View {
                     .disabled(settings.polishDismissedTermSuggestions.isEmpty)
                 }
 
-                // The terms themselves are in Projects, each under its
-                // project (#972); moving them between machines is here.
-                SettingsFieldRow(
-                    title: "Terms learned from polishing",
-                    status: learnedTermsFileMessage
-                ) {
-                    HStack(spacing: 8) {
-                        Button("Show in Projects", action: openProjects)
-                            .accessibilityIdentifier("settings.learnedTerms.show")
-                        // Enabled with no terms: a new machine imports (#523).
-                        Button("Import…") {
-                            LearnedTermsTransfer.importTerms(into: viewModel.learnedTermStore) {
-                                learnedTermsFileMessage = $0
-                            }
-                        }
-                        .accessibilityIdentifier("settings.learnedTerms.import")
-                        if hasLearnedTerms {
-                            Button("Export…") {
-                                LearnedTermsTransfer.exportTerms(from: viewModel.learnedTermStore) {
-                                    learnedTermsFileMessage = $0
-                                }
-                            }
-                            .accessibilityIdentifier("settings.learnedTerms.export")
-                        }
-                    }
-                }
-
                 SettingsFieldRow(title: "Ask the coding agent for each new project's terms") {
                     Toggle("", isOn: $settings.projectTermProposalsEnabled)
                         .labelsHidden()
@@ -194,6 +237,13 @@ struct TextProcessingSettingsPane: View {
                 SettingsFieldRow(title: "Replacement dictionary (legacy)") {
                     Toggle("", isOn: $settings.replacementDictionaryEnabled)
                         .labelsHidden()
+                }
+
+                SettingsFieldRow(title: "Polishing instructions", status: instructionsTokens) {
+                    EmptyView()
+                }
+                .task(id: tokenCountKey) {
+                    await countPromptParts()
                 }
 
                 SettingsFieldRow(title: "Config folder") {

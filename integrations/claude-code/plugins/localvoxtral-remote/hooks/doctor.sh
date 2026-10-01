@@ -20,7 +20,7 @@
 set -u
 umask 077
 
-DOCTOR_VERSION=1.26.0
+DOCTOR_VERSION=1.28.0
 JSON=0
 case "${1:-}" in
 --json) JSON=1 ;;
@@ -152,6 +152,7 @@ esac
 # answering behind it on the Mac.
 URL="http://127.0.0.1:$PORT/v1/doctor"
 MAC_BODY=""
+MAC_FAILED=""
 if ! command -v curl >/dev/null 2>&1; then
   check tunnel failed "Tunnel" "curl is not installed, and the hooks need it." \
     "Install curl on this host."
@@ -185,12 +186,16 @@ EOF
 Accept: application/json
 EOF
       fi
-      CODE="$(curl -sS -o "$WORK/mac" -w '%{http_code}' --max-time 12 -X POST -H 'Content-Length: 0' \
-        --header "@$WORK/header" "$URL" 2>/dev/null)" || CODE="000"
+      CODE="$(curl -sS -o "$WORK/mac" -D "$WORK/mac-head" -w '%{http_code}' --max-time 12 -X POST \
+        -H 'Content-Length: 0' --header "@$WORK/header" "$URL" 2>/dev/null)" || CODE="000"
       case "$CODE" in
       200)
         check token ok "Token" "Accepted (from $TOKEN_FROM)."
         MAC_BODY="$WORK/mac"
+        # The Mac's count of failed checks, from its reply header; empty
+        # from a Mac older than the header (remote plugin 1.27.0).
+        MAC_FAILED="$(LC_ALL=C awk -F': *' 'tolower($1) == "x-lvx-doctor-failed" {
+          sub(/\r$/, "", $2); if ($2 ~ /^[0-9]+$/) n = $2 } END { print n }' "$WORK/mac-head" 2>/dev/null)"
         ;;
       401)
         check token failed "Token" "Refused (from $TOKEN_FROM): revoked, rotated, or another Mac's." \
@@ -325,5 +330,11 @@ else
 fi
 
 if [ "$FAILED" -gt 0 ]; then exit 4; fi
-if [ -n "$MAC_BODY" ] && LC_ALL=C grep -q '\[FAIL\]\|"state":"failed"' "$MAC_BODY" 2>/dev/null; then exit 4; fi
+if [ -n "$MAC_FAILED" ]; then
+  [ "$MAC_FAILED" -eq 0 ] || exit 4
+# A Mac without the header: read its report. Remove once no Mac older than
+# remote plugin 1.27.0 answers.
+elif [ -n "$MAC_BODY" ] && LC_ALL=C grep -q '\[FAIL\]\|"state":"failed"' "$MAC_BODY" 2>/dev/null; then
+  exit 4
+fi
 exit 0

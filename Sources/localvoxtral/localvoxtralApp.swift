@@ -185,8 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let settingsNavigator = SettingsNavigator()
     /// What the History and Insights panes show, kept while the app runs so
     /// that neither starts from nothing each time it opens.
-    lazy var historyModel = DictationHistoryModel(
-        store: { [weak viewModel] in viewModel?.sessionStore })
+    lazy var historyModel = DictationHistoryModel(viewModel: viewModel)
     lazy var insightsModel = DictationInsightsModel(viewModel: viewModel)
     private var widgetSnapshotWriter: WidgetSnapshotWriter?
     /// "Open localvoxtral at login". Built here so the pane reads the login
@@ -348,7 +347,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewModel.engines.preflightConfiguredLocalNetworkEndpoints()
         switch LaunchWindowPolicy.decide(
             onboardingCompleted: settingsStore.onboardingCompleted,
-            opensWindowAtLaunch: settingsStore.opensWindowAtLaunch
+            opensWindowAtLaunch: settingsStore.opensWindowAtLaunch,
+            isLaunchSmoke: StartupPermissionSuppression.isActive()
         ) {
         case .onboarding:
             presentOnboarding()
@@ -408,6 +408,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // persistent `ssh -L` children. During polish the join has already been
         // consumed, so the explicit service owner is what makes quit complete.
         viewModel.context.closeRemoteHerdrForwards()
+        drainHistoryWrites(within: 3.0)
+    }
+
+    /// Waits for the dictations already queued for History to reach the
+    /// disk. The queue is serial and each write is one SQLite transaction; a
+    /// quit that returned first dropped the last dictation (#985).
+    private func drainHistoryWrites(within seconds: TimeInterval) {
+        guard let pending = viewModel.sessionStore?.pendingWrites else { return }
+        let deadline = Date().addingTimeInterval(seconds)
+        let finished = Mutex(false)
+        Task { @MainActor in
+            await pending.value
+            finished.withLock { $0 = true }
+        }
+        while !finished.withLock({ $0 }), Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+        }
+        if !finished.withLock({ $0 }) {
+            Log.persistence.error("History writes did not finish before quit; the last dictation may be lost")
+        }
     }
 
     /// Spin the run loop until every forward teardown has finished, or the
@@ -529,6 +549,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     #endif
 
+    /// A herdr pane (#1012): the window found with the join's process-table
+    /// probes, herdr reached over its local socket or the join's `ssh -L`
+    /// forward, the window raised with the terminal focuser's tty path.
+    private func liveHerdrFocuser(
+        terminal: TerminalSessionPaneFocuser,
+        ttyReader: AppleScriptTerminalTTYReader,
+        herdrClient: HerdrSocketClient,
+        canonicalizer: SSHDestinationCanonicalizer
+    ) -> HerdrSessionPaneFocuser {
+        let locator = HerdrWindowLocator(
+            herdrClientTTYs: { HerdrWindowLocator.liveForegroundTTYs(named: "herdr") },
+            sshClientTTYs: { HerdrWindowLocator.liveForegroundTTYs(named: "ssh") },
+            sshConnection: { SSHDestinationTTYProbe.connection(onTTYDevicePath: $0) },
+            federation: { HerdrMachineFederationReader.live().federation() },
+            liveLocalHerdrSockets: { [claudeSessionRegistry] in claudeSessionRegistry.liveLocalHerdrSocketPaths() },
+            enrolledHosts: { [weak self] destination in
+                self?.claudeRemoteHosts?.hosts(matchingSSHDestination: destination) ?? []
+            },
+            canonicalizedEnrolledHosts: { [weak self] destination in
+                guard let hosts = self?.claudeRemoteHosts?.hosts() else { return [] }
+                return await canonicalizer.matchingHosts(destination: destination, enrolledHosts: hosts)
+            }
+        )
+        return HerdrSessionPaneFocuser(
+            windowTTY: { await locator.windowTTY(for: $0) },
+            openSocket: { [weak self] target in
+                switch target {
+                case .local(_, let socketPath):
+                    return HerdrFocusSocket(path: socketPath)
+                case .remote(let hostID, _, let remoteSocketPath):
+                    guard let self,
+                          let host = self.claudeRemoteHosts?.host(id: hostID),
+                          !host.isRevoked,
+                          let alias = host.sshHostAlias,
+                          let forward = await self.claudeRemoteHerdrForwards.open(
+                              alias: alias, remoteSocketPath: remoteSocketPath
+                          )
+                    else { return nil }
+                    return HerdrFocusSocket(path: forward.localSocketPath, release: { forward.close() })
+                }
+            },
+            // A write waits longer than a read, like the pane route's.
+            focuser: HerdrSocketClient(timeout: 2),
+            panes: herdrClient,
+            raiseTTY: { await terminal.focus(tty: $0, termProgram: $1) },
+            focusedTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) }
+        )
+    }
+
     /// Claude Desktop's session link, opened in Desktop itself (another app
     /// may also claim `claude://`), read back through the join's resolver.
     private static func liveClaudeDesktopFocuser(
@@ -567,7 +636,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func installAgentAttention(
         ttyReader: AppleScriptTerminalTTYReader,
         desktopSessionReader: AXClaudeDesktopSessionURLReader,
-        herdrClient: HerdrSocketClient
+        herdrClient: HerdrSocketClient,
+        nicknames: SessionNicknameStore,
+        desktopTitles: ClaudeDesktopSessionTitles
     ) {
         let registry = claudeSessionRegistry
         let paneResolver = ClaudeSessionJoinResolver(
@@ -590,7 +661,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return await paneResolver.sessionShown(target: target) == session.sessionID
             },
             liveSessionIDs: { Set(registry.liveSessions().map(\.sessionID)) },
-            now: { Date() }
+            now: { Date() },
+            name: { session in
+                AgentAttentionText.name(
+                    of: session,
+                    among: registry.liveSessions(),
+                    title: desktopTitles.title(of:),
+                    nickname: nicknames.nickname(for:)
+                )
+            }
         )
         let announcer = AgentAttentionAnnouncer()
         if settings.agentAttentionEnabled { announcer.requestSoundIfMissing() }
@@ -622,7 +701,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // The `localvoxtral` command's requests arrive on the same socket
         // (#721) and are answered from the app's own stores.
-        let agentCLI = AgentCLIService(source: AgentCLIAppDataSource(viewModel: viewModel))
+        let agentCLI = AgentCLIService(
+            source: AgentCLIAppDataSource(viewModel: viewModel, sessions: claudeSessionRegistry)
+        )
         let broker = ClaudeContextBroker(
             socketPath: socketPath,
             registry: claudeSessionRegistry,
@@ -711,23 +792,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // "Go to <name>" (#723): the same registry and the same
             // focused-pane reader as the join, so a pane counts as brought
             // forward by the evidence the join trusts.
+            let nicknames = SessionNicknameStore.userDefaults(.standard, key: "session_navigation.nicknames")
+            let desktopTitles = ClaudeDesktopSessionTitles.live()
+            let terminalFocuser = TerminalSessionPaneFocuser.live(ttyReader: ttyReader)
             viewModel.session.sessionNavigator = SessionNavigator(
                 liveSessions: { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() },
                 repositoryRoot: SessionNavigator.liveRepositoryRoot,
                 focuser: SessionPaneFocuserRouter(
-                    terminal: TerminalSessionPaneFocuser.live(ttyReader: ttyReader),
+                    terminal: terminalFocuser,
                     claudeDesktop: Self.liveClaudeDesktopFocuser(
                         resolver: resolver,
                         sleep: viewModel.session.dependencies.clock.sleep
+                    ),
+                    herdr: liveHerdrFocuser(
+                        terminal: terminalFocuser,
+                        ttyReader: ttyReader,
+                        herdrClient: herdrClient,
+                        canonicalizer: sshDestinationCanonicalizer
                     )
                 ),
                 sleep: viewModel.session.dependencies.clock.sleep,
-                nicknames: .userDefaults(.standard, key: "session_navigation.nicknames")
+                nicknames: nicknames,
+                branch: { RepoIndexing.branch(root: $0) },
+                title: desktopTitles.title(of:)
             )
             installAgentAttention(
                 ttyReader: ttyReader,
                 desktopSessionReader: desktopSessionReader,
-                herdrClient: herdrClient
+                herdrClient: herdrClient,
+                nicknames: nicknames,
+                desktopTitles: desktopTitles
             )
             // Correction learning compares each submitted prompt with the
             // dictation the app inserted into that session. The registry
@@ -996,11 +1090,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         )
                     }
                 },
+                onRemoteSkills: { [store = viewModel.session.agentSkillStore] hostID, names in
+                    store?.record(hostID: hostID, names: names)
+                },
                 projectTerms: projectTerms,
                 quickCapture: quickCapture,
-                doctor: RemoteDoctorRoute { @MainActor [weak viewModel] hostID in
+                doctor: RemoteDoctorRoute { @MainActor [weak viewModel, claudeSessionRegistry] hostID in
                     guard let viewModel else { return [] }
-                    return await AgentCLIAppDataSource(viewModel: viewModel).hostDoctorChecks(hostID: hostID)
+                    return await AgentCLIAppDataSource(viewModel: viewModel, sessions: claudeSessionRegistry)
+                        .hostDoctorChecks(hostID: hostID)
                 }
             )
         }

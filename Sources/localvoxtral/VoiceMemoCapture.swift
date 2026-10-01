@@ -227,7 +227,7 @@ final class VoiceMemoController {
             directory: folder,
             ledgerURL: ledgerURL,
             transcriber: transcriber,
-            inboxHas: { id in inbox.items.contains { $0.id == id } },
+            inboxHas: { id in inbox.model.holds(id) },
             capture: { id, text, recordedAt, pcm in
                 do {
                     try audioStore.write(pcm16: pcm, for: id)
@@ -239,6 +239,7 @@ final class VoiceMemoController {
             }
         )
         intake.canTranscribe = { [isDictationActive] in !isDictationActive() }
+        intake.inboxProblem = { inbox.model.storeProblem }
         intake.onStatus = { [weak self] in self?.onStatus?($0) }
         intake.onListFailure = { [weak self] error in
             guard let self, Self.isPermissionError(error) else { return }

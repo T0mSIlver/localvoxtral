@@ -10,6 +10,8 @@ its code.
   screenshots
 - [Terminals & coding agents](coding-agents.md): dictating into Claude Code
   and other CLI agents, session joins, the SSH remote plugin
+- [Work with several agents](agents.md): being told an agent needs you,
+  jumping to it, and naming, reaching and sending to sessions by voice
 - [Integration matrix](integration-matrix.md): for each coding agent and
   terminal, what joins, what context is attached, and why the gaps exist
 - [Under the hood](under-the-hood.md): privacy, the managed local engines
@@ -24,7 +26,9 @@ its code.
 - [Codex](../integrations/codex/README.md)
 - [herdr](../integrations/herdr/README.md): dictating into a herdr pane, on
   this Mac, on an ssh host and on a federated machine
-- [Remote Claude Code over SSH](remote-claude-context.md)
+- [Remote Claude Code over SSH](remote-claude-context.md): enrolling a
+  host, what the token does and does not authorize, the per-Mac forward
+  port, manual checks, and uninstalling
 
 ## Developing localvoxtral
 
@@ -33,9 +37,6 @@ its code.
 - [Architecture](architecture.md): the subsystem map
 - [Test harness](test-harness.md): the control socket and the WAV
   microphone that debug and UI smoke builds carry, and release builds never
-- [Remote Claude Code context over SSH](remote-claude-context.md): enrolling
-  a host, what the token does and does not authorize, the per-Mac forward
-  port, manual checks, and uninstalling
 
 ## Guides for agents that work on localvoxtral
 

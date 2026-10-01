@@ -17,8 +17,9 @@ package struct HerdrPanePromptRoute: AgentPromptRoute {
     /// run the prompt as a command.
     private let agentIsForeground: @Sendable () async -> Bool
     /// Whether a key typed now would land in this pane: its terminal is
-    /// frontmost and herdr's focused pane is this one. Asked only after a
-    /// refusal, to choose between typing the text and keeping it in History.
+    /// frontmost, focused on the tty the join saw and showing the same
+    /// machine there, and herdr's focused pane is this one. Asked only after
+    /// a refusal, to choose between typing the text and keeping it in History.
     private let keysReachThePane: @Sendable () async -> Bool
 
     package var name: String { "herdr pane" }

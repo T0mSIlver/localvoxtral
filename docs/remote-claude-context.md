@@ -27,8 +27,8 @@ A remote host can send:
 
 A remote host can never:
 
-- make localvoxtral read a file on your Mac. A remote working directory is a
-  string, not a path, and the app has no way to turn one into a local file read;
+- make localvoxtral read a file on your Mac
+  ([why](integration-matrix.md#no-repo-context-for-a-remote-session));
 - impersonate another enrolled host. Each session belongs to the host whose
   token authenticated it;
 - reach your dictation while the toggle is off.
@@ -44,17 +44,18 @@ reaches the polisher.
 The toggle does not close the port. While any enrolled host is unrevoked, the
 listener keeps accepting and caching valid hook records.
 
-**Revocation** stops a host. The listener then rejects its requests, since
-another enrolled host may still hold the port open. With no active hosts left,
-the listener closes the port.
+**Revocation is what actually stops the host**: **Revoke** or **Remove** in
+**Settings › Remote hosts**. It takes effect at once, without a relaunch. The token is
+invalidated on this Mac, not on the host, and the listener then rejects the
+host's requests, since another enrolled host may still hold the port open.
+With no active hosts left, the listener closes the port. Uninstalling the
+remote plugin only stops the host asking.
 
 ### Where polish context goes
 
-By default, polish context also stays on this Mac. The app sends it only to a
-polisher running here.
-
-Turn on **Send context to non-local polishing servers** to extend it to the
-polishing endpoint you configured.
+Like local context, it goes only to a polisher on this Mac unless you turn
+on **Send context to non-local polishing servers**
+([Polish context](coding-agents.md#polish-context-what-each-toggle-sends)).
 
 ## Enroll a host
 
@@ -228,9 +229,7 @@ practice:
 - On a shared or multi-user host, paste the command yourself, at a time and
   place you choose, rather than letting setup run it. The exposure is brief
   either way, but you pick the moment.
-- If you think someone saw the token, **rotate it**. Rotation takes effect
-  immediately, with no grace period, and running **Set Up** with the new token
-  is the whole recovery.
+- If you think someone saw the token, **rotate it** ([A token](#3-a-token)).
 
 ### 3. A token
 
@@ -238,17 +237,16 @@ The app generates the token on enrollment and passes it straight into the
 setup run you consented to. Settings never shows it.
 
 localvoxtral stores only a hash, so after an interrupted or dismissed setup,
-you recover by rotating. Rotation takes effect immediately with no grace
-period.
+or when someone may have seen the token, you recover by rotating. Rotation
+takes effect immediately with no grace period, and running **Set Up** with
+the new token is the whole recovery.
 
 The token authorizes one thing: a host that presents it may *contribute remote
 context*. The listener tags every session it accepts as remote, whatever the
 payload claims, so a host cannot get itself treated as local.
 
-**Revoking the host in localvoxtral is the real off switch.** It takes effect
-immediately, without a relaunch, and with no enrolled hosts left the app stops
-listening on the port at all. Uninstalling the remote plugin only stops the
-host asking.
+**Revoking the host in localvoxtral is the real off switch**
+([The toggle and revocation](#the-toggle-and-revocation)).
 
 A malicious process running as you *on the remote host* can read `~/.claude/`
 and so that host's token. The token limits what a remote host can do. It does
@@ -261,19 +259,19 @@ guarantee.
 
 If you paste the command into a shell that records it anyway, or you are not
 sure, **rotate the token**. Running the setup from the app avoids shell history
-altogether. The token goes through SSH stdin and never into a process argument
-on this Mac. On the host, it is in that one `claude plugin install` command's
-arguments while it runs (see above).
+altogether, since the token goes through SSH stdin (see above).
 
 ## Checking the setup
 
-Use **Check Setup** in the enrollment sheet. It runs two read-only checks and
-explains the results. The checks below run them by hand.
+Press **Check Setup** in the enrollment sheet. It runs two read-only checks
+and explains the results. The checks below run them by hand.
 
-On the host, `localvoxtral doctor` runs them all from there: the forward
-port, the 401 without the token and the 200 with it, the plugin version each
-running session loaded, the Vibe hooks and the last hook's outcome. It then
-prints the Mac's own checks for this host. It reads the token from
+Or run `localvoxtral doctor` in a Claude Code session on the host. It runs
+them all from there: the forward port, the 401 without the token and the 200
+with it, the plugin version each running session loaded, the Vibe hooks and
+the last hook's outcome. It then prints the Mac's own checks for this host,
+fetched through the tunnel, without local paths and without your other
+hosts. It reads the token from
 `~/.claude/.credentials.json` or `~/.vibe/localvoxtral/remote/token` and
 never prints it. On a macOS host, Claude Code keeps the token in the
 Keychain, and the token check says so. Without the Claude Code plugin, run
@@ -345,8 +343,7 @@ port check gives the real answer either way, so the app does not run this one.
 ## Fix a missing or dropped tunnel
 
 Hook events reach your Mac only while something holds the tunnel. When nothing
-does, you get no context and no error. The sections below explain why, and
-what to turn on.
+does, you get no context and no error.
 
 ### Why a failed forward is silent
 
@@ -467,6 +464,10 @@ marketplace copy and the plugin, stores this Mac's allocated port, and rewrites
 this host's SSH config block in the same action, so the two halves always
 agree.
 
+Sessions already running on the host keep the old hook script until you run
+`/reload-plugins` in a Claude Code session (Claude Code 2.1.283) or restart a
+Vibe session, since Vibe has no such command.
+
 Your token is preserved: `claude plugin update` keeps the stored config, and
 each --config option merges per key.
 
@@ -551,8 +552,10 @@ label for it, never a path it could hand to ssh. The run goes like this:
    Vibe hooks 1.2.0. A project answered with an older version of the request
    is asked once more, on a host whose runner asks the newer one: the
    project's sentence from localvoxtral-remote 1.20.0 or Vibe hooks 1.5.0,
-   names people say from 1.21.0 or 1.6.0. The Mac marks that session
-   in memory for 10 minutes and records an attempt on the project.
+   names people say from 1.21.0 or 1.6.0. **Update Host…** installs them
+   ([sessions already running need a reload](#update-a-host-enrolled-before-per-mac-ports)).
+   The Mac marks that session in memory for 10 minutes and records an
+   attempt on the project.
 2. **Mac, next hook.** The reply to that session's next hook carries a
    terms-wanted header, once. The body stays the constant one.
 3. **Host hook script.** The
@@ -615,13 +618,8 @@ tell projects apart.
 
 Both need localvoxtral-remote 1.17.0 or Vibe hooks 1.3.0 on the host.
 
-**Projects.** A hook that names its repository (plugin 1.13.0 and later) adds
-that repository to the Mac's projects, so the router offers every repository a
-session runs in.
-
-An older hook script names only the session's directory, which adds nothing
-and keeps an existing project listed for a week. A project no hook names for
-90 days is dropped.
+**Projects.** Which remote repositories the router offers is in
+[Which projects a capture can go to](coding-agents.md#which-projects-a-capture-can-go-to).
 
 **README.** The reply to a hook from a session in a remote project the Mac
 holds, with no README summary or one a week old, asks for the README. The hook
@@ -738,9 +736,8 @@ On this Mac:
    block from `~/.ssh/config`.
 2. In **Settings › Remote hosts**, **Revoke** (or **Remove**) the host.
 
-Step 2 is the one that matters. Revocation is what actually stops the host. The
-token is invalidated on this Mac, not on the remote. With no active hosts left,
-the listener closes its port.
+Step 2 is the one that matters
+([The toggle and revocation](#the-toggle-and-revocation)).
 
 **What Remove undoes for you.** Removing the host reverses the Mac side. It
 removes the SSH config block, and the shell startup block only when no other

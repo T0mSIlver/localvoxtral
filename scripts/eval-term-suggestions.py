@@ -10,7 +10,7 @@ arm is not a difference.
 
     # once, on the Mac that dictated (the files hold dictated text: copy
     # them only into the gitignored local-notes/, delete them when done):
-    sqlite3 ~/Library/Application\\ Support/default.store ".backup default.store"
+    sqlite3 ~/Library/Application\\ Support/localvoxtral/history.store ".backup default.store"
     defaults read com.localvoxtral.app settings.polish_speaker_terms \\
         | plutil -convert json -r -o speaker-terms.json -
     defaults read com.localvoxtral.app settings.polish_dismissed_term_suggestions \\
@@ -24,7 +24,7 @@ Scores per run, as counts of distinct terms:
   proposed    distinct terms the model returned
   spelled     the recognizer wrote its letters right in some dictation and
               nothing shows it getting them wrong: a useless chip
-  accepted    on the owner's Names and terms list
+  accepted    on the owner's Global terms list
   refused     on the owner's refused list
 Only these aggregates are printed; the terms themselves go to the JSONL in
 --out, which belongs in the gitignored local-notes/.
@@ -311,7 +311,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command")
     ex = sub.add_parser("export", help="history store + term lists -> export JSON")
     ex.add_argument("--store", required=True, type=Path)
-    ex.add_argument("--terms", type=Path, help="Names and terms, as a JSON array")
+    ex.add_argument("--terms", type=Path, help="Global terms, as a JSON array")
     ex.add_argument("--refused", type=Path, help="refused suggestions, as a JSON array")
     ex.add_argument("-o", "--output", required=True, type=Path)
     rn = sub.add_parser("run", help="replay both arms against an export")

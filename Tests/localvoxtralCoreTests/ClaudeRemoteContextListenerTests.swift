@@ -59,7 +59,8 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         limits: ClaudeRemoteListenerLimits? = nil,
         forwardProbes: ClaudeRemoteForwardProbeWitness = ClaudeRemoteForwardProbeWitness(),
         uptimeNanos: (@Sendable () -> UInt64)? = nil,
-        onRemoteHerdrActivity: @escaping @Sendable (String, String) -> Void = { _, _ in }
+        onRemoteHerdrActivity: @escaping @Sendable (String, String) -> Void = { _, _ in },
+        onRemoteSkills: @escaping @Sendable (String, [String]) -> Void = { _, _ in }
     ) throws {
         listener = ClaudeRemoteContextListener(
             registry: sessions,
@@ -67,7 +68,8 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
             limits: limits ?? ClaudeRemoteListenerLimits(port: port),
             forwardProbes: forwardProbes,
             uptimeNanos: uptimeNanos ?? { DispatchTime.now().uptimeNanoseconds },
-            onRemoteHerdrActivity: onRemoteHerdrActivity
+            onRemoteHerdrActivity: onRemoteHerdrActivity,
+            onRemoteSkills: onRemoteSkills
         )
         try listener.start()
     }
@@ -328,6 +330,25 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
             activities.withLock { $0 },
             [Activity(hostID: hostID, socketPath: "/run/user/1000/herdr/default.sock")]
         )
+    }
+
+    /// #1024: a host's skill names reach the store only from an accepted
+    /// hook, and a revoked host's never do.
+    func testSkillNamesAreKeptOnlyFromAnAuthenticatedHook() throws {
+        let reports = Mutex<[[String]]>([])
+        let expectedHost: String = hostID
+        try startListener(onRemoteSkills: { reportedHost, names in
+            XCTAssertEqual(reportedHost, expectedHost)
+            reports.withLock { $0.append(names) }
+        })
+
+        XCTAssertEqual(try send(hookRequest(token: token, extraHeaders: ["X-Lvx-Skills: unslop,bad name,gh-stack"]))?.status, 200)
+        XCTAssertEqual(try send(hookRequest(token: token))?.status, 200)
+        XCTAssertEqual(reports.withLock { $0 }, [["unslop", "gh-stack"]], "a hook without the header reports nothing")
+
+        try hosts.revoke(hostID: hostID)
+        XCTAssertEqual(try send(hookRequest(token: token, extraHeaders: ["X-Lvx-Skills: leaked"]))?.status, 401)
+        XCTAssertEqual(reports.withLock { $0 }.count, 1)
     }
 
     /// The property that makes the whole design safe.
@@ -1290,6 +1311,43 @@ extension ClaudeRemoteContextListenerTests {
         _ = try send(hookRequest(token: token, extraHeaders: ["X-Lvx-Plugin-Version: 1.11.0"]))
         XCTAssertEqual(hosts.host(id: hostID)?.reportedPluginVersion, .version("1.11.0"))
         XCTAssertEqual(hosts.host(id: hostID)?.reportedVibeHooksVersion, "1.0.0")
+    }
+
+    /// Each session keeps the version its LAST hook sent, which can trail
+    /// the host's: a session started before Update Host… sends the old one
+    /// until `/reload-plugins`. The doctor names it from that record (#969).
+    func testEachSessionKeepsTheShimVersionItsLastHookSent() throws {
+        try startListener()
+        func hook(_ id: String, _ cwd: String, _ headers: [String]) throws {
+            let response = try send(hookRequest(
+                event: "UserPromptSubmit", token: token, payload: ["session_id": id, "cwd": cwd], extraHeaders: headers
+            ))
+            XCTAssertEqual(response?.status, 200)
+        }
+        try hook("new", "/srv/web", ["X-Lvx-Plugin-Version: 1.25.0"])
+        try hook("old", "/srv/api", ["X-Lvx-Plugin-Version: 1.24.0"])
+        try hook("vibe", "/srv/notes", ["X-Lvx-Agent: vibe", "X-Lvx-Vibe-Hooks-Version: 1.3.0"])
+        try hook("vibe2", "/srv/cli", ["X-Lvx-Agent: vibe", "X-Lvx-Vibe-Hooks-Version: 1.4.0"])
+
+        func doctorLines() throws -> [String]? {
+            let host = try XCTUnwrap(hosts.host(id: hostID))
+            let facts = AgentCLIDoctorFacts.RemoteHost(
+                label: "devbox", lastSeenAt: nil, pluginNeedsUpdate: false,
+                installedPluginVersion: host.reportedPluginVersion,
+                installedVibeHooksVersion: host.reportedVibeHooksVersion,
+                sessions: sessions.liveRemoteSessions(hostID: hostID).map(AgentCLIDoctorFacts.RemoteHost.Session.init)
+            )
+            return AgentCLIDoctorChecks.staleSessions(facts, id: "remote-sessions.1")?.lines
+        }
+        XCTAssertEqual(try doctorLines()?.sorted(), [
+            "api, Claude Code: plugin 1.24.0; the host has 1.25.0.",
+            "notes, Mistral Vibe: hooks 1.3.0; the host has 1.4.0.",
+        ])
+
+        // `/reload-plugins` in "old", a restart of the Vibe session.
+        try hook("old", "/srv/api", ["X-Lvx-Plugin-Version: 1.25.0"])
+        try hook("vibe", "/srv/notes", ["X-Lvx-Agent: vibe", "X-Lvx-Vibe-Hooks-Version: 1.4.0"])
+        XCTAssertNil(try doctorLines())
     }
 
     func testAClaudeRequestKeepsItsSessionHandles() throws {

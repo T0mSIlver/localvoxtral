@@ -148,15 +148,12 @@ final class TerminalAppsModelTests: XCTestCase {
                 "\(slug): installed dictation-only is yellow even with every gate clear"
             )
         }
-    }
-
-    func testUserAddedAppsAreYellowWhenInstalled() {
-        let app = TerminalAppsSettingsModel.descriptor(
+        let userApp = TerminalAppsSettingsModel.descriptor(
             for: UserTerminalApp(bundleID: "dev.some.Editor", displayName: "Editor")
         )
         XCTAssertEqual(
             TerminalAppsSettingsModel.dot(
-                for: TerminalAppsSettingsModel.Row(app: app, installed: true, version: "1.0"),
+                for: TerminalAppsSettingsModel.Row(app: userApp, installed: true, version: "1.0"),
                 isCmuxSocketSetUp: true
             ),
             .yellow,
@@ -347,16 +344,14 @@ final class TerminalAppsModelTests: XCTestCase {
         XCTAssertTrue(row.installed, "any of Warp's channel bundle ids counts as installed")
         XCTAssertEqual(row.version, "1.0")
         XCTAssertEqual(model.dot(for: warp), .yellow)
-    }
 
-    func testRowReadsVersionFromTheMatchingBundle() {
-        let store = makeStore()
-        let model = makeModel(store: store, installedVersions: [
+        // The version comes from the matching bundle: Ghostty at 1.4.2 is green.
+        let ghosttyModel = makeModel(store: store, installedVersions: [
             "com.mitchellh.ghostty": "1.4.2",
         ])
         let ghostty = XCTUnwrapApp("ghostty")
-        XCTAssertTrue(model.row(for: ghostty).installed)
-        XCTAssertEqual(model.dot(for: ghostty), .green)
+        XCTAssertTrue(ghosttyModel.row(for: ghostty).installed)
+        XCTAssertEqual(ghosttyModel.dot(for: ghostty), .green)
     }
 
     // MARK: - Ghostty tip builds
@@ -722,29 +717,6 @@ final class TerminalAppsModelTests: XCTestCase {
         XCTAssertEqual(
             defaults.stringArray(forKey: UserTerminalAppsMigrator.importedBundleIDsKey),
             ["dev.some.Editor"]
-        )
-    }
-
-    func testMigrationNeverResurrectsARemovedApp() {
-        let first = UserTerminalAppsMigrator.planImport(
-            tomlBundleIDs: ["dev.some.Editor"], storedApps: [], defaults: defaults
-        )
-        UserTerminalAppsMigrator.record(first, defaults: defaults)
-
-        // The user removes it in Settings; the TOML still lists it. The
-        // removal is recorded in the removed-ids ledger at removal time.
-        let store = makeStore()
-        store.userTerminalApps += first.additions
-        store.removeUserTerminalApp(bundleID: "dev.some.Editor")
-
-        let afterRemoval = UserTerminalAppsMigrator.planImport(
-            tomlBundleIDs: ["dev.some.Editor"],
-            storedApps: store.userTerminalApps,
-            defaults: defaults
-        )
-        XCTAssertTrue(
-            afterRemoval.isEmpty,
-            "an id the user removed must not resurrect just because the TOML still lists it"
         )
     }
 

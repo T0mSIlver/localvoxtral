@@ -64,8 +64,10 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
 
     package let id: UUID
     package let capturedAt: Date
-    /// The words as dictated. Never edited, so a bad draft can be redone.
-    package let text: String
+    /// The words as dictated, then as polished once before routing (#970).
+    /// Never edited after that, so a bad draft can be redone. History keeps
+    /// the raw transcript.
+    package var text: String
     /// The History record this capture was saved as, when History is on.
     package var historyRecordID: UUID?
     package var state: State
@@ -574,13 +576,23 @@ package enum QuickCaptureInboxFile {
     /// the model then refuses every write, since the next one would replace
     /// the user's captures.
     package static func load(from url: URL) -> StoredFileLoad<QuickCaptureInbox> {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
         let load = StoredFile.load(
             QuickCaptureInbox.self, from: url, currentVersion: QuickCaptureInbox.currentVersion, decoder: decoder)
         guard let inbox = load.value else { return load }
-        // A capture interrupted mid-route or mid-draft by a quit waits for
-        // the user with its words.
+        return .loaded(resumingInterrupted(inbox))
+    }
+
+    /// The file's contents as written, for a save that re-reads what another
+    /// running copy wrote (#990): its captures mid-route are not interrupted.
+    package static func decode(_ data: Data) -> StoredFileLoad<QuickCaptureInbox> {
+        StoredFile.decode(
+            QuickCaptureInbox.self, from: data, name: "quick-captures.json",
+            currentVersion: QuickCaptureInbox.currentVersion, decoder: decoder)
+    }
+
+    /// A capture interrupted mid-route or mid-draft by a quit waits for the
+    /// user with its words.
+    package static func resumingInterrupted(_ inbox: QuickCaptureInbox) -> QuickCaptureInbox {
         var result = inbox
         for index in result.items.indices where result.items[index].codeCheck?.state == .checking {
             result.items[index].codeCheck?.state = .failed
@@ -594,14 +606,24 @@ package enum QuickCaptureInboxFile {
                 result.items[index].note = "Interrupted before a draft."
             }
         }
-        return .loaded(result)
+        return result
     }
 
-    package static func save(_ inbox: QuickCaptureInbox, to url: URL) throws {
+    package static func encode(_ inbox: QuickCaptureInbox) throws -> Data {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try PrivateFile.write(encoder.encode(inbox), to: url)
+        return try encoder.encode(inbox)
+    }
+
+    package static func save(_ inbox: QuickCaptureInbox, to url: URL) throws {
+        try PrivateFile.write(encode(inbox), to: url)
+    }
+
+    private static var decoder: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
     }
 }
 

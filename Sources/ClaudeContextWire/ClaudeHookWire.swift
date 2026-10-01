@@ -445,19 +445,21 @@ extension ClaudeHookRecord: Codable {
     }
 }
 
-/// Errors surfaced while turning a wire line into a record.
+/// Errors surfaced while turning a wire line into a record. No case carries
+/// text from the line: the broker logs these public, and a rejected field can
+/// hold a prompt or a key (#1107).
 public enum ClaudeHookWireError: Error, Equatable {
     /// Line exceeded `ClaudeHookLimits.maxLineBytes`.
     case lineTooLong(bytes: Int)
     /// `v` was absent or not a version this build understands.
     case unsupportedVersion(Int?)
     /// Event name we do not know (e.g. from a newer plugin).
-    case unknownEvent(String?)
+    case unknownEvent
     /// Agent name we do not know. Dropped for the same reason as an unknown
     /// event — and additionally because per-agent rules (session namespacing,
     /// and which arms may speak for it) cannot be applied to an agent this
     /// build has never heard of.
-    case unknownAgent(String?)
+    case unknownAgent
     /// Malformed JSON, or a required field missing.
     case malformed
     /// `session_id` was empty — the record cannot be attributed.
@@ -511,7 +513,7 @@ public enum ClaudeHookWireCodec {
         }
         let eventName = dictionary["event"] as? String
         guard let eventName, ClaudeHookEvent(rawValue: eventName) != nil else {
-            throw ClaudeHookWireError.unknownEvent(eventName)
+            throw ClaudeHookWireError.unknownEvent
         }
         // Probed like the event: an unknown agent must be a precise "ignored",
         // not a generic decode failure — and never a fallthrough to `.claude`,
@@ -526,7 +528,7 @@ public enum ClaudeHookWireCodec {
             }
             let agentName = agentValue as? String
             guard let agentName, ClaudeHookAgent(rawValue: agentName) != nil else {
-                throw ClaudeHookWireError.unknownAgent(agentName)
+                throw ClaudeHookWireError.unknownAgent
             }
         }
 

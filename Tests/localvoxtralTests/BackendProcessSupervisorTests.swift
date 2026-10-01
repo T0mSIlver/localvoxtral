@@ -6,6 +6,17 @@ import XCTest
 
 @MainActor
 final class BackendProcessSupervisorTests: XCTestCase {
+    /// A helper may print what it transcribes, so its output lines log their
+    /// origin and length public and their text not.
+    func testAHelperOutputLineLogsItsOriginPublicAndItsTextNot() {
+        XCTAssertEqual(
+            BackendProcessSupervisor.publicOutputLogDescription(
+                name: "speechd", source: "stderr", line: "partial: the words I dictated"
+            ),
+            "[speechd stderr] 29 characters"
+        )
+    }
+
     func testHappyPathWaitsForReadinessThenRuns() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -193,8 +204,7 @@ final class BackendProcessSupervisorTests: XCTestCase {
         // Each child stays alive after writing its count until the test
         // releases it: the ordering #753 hit under load, where the count
         // exists but the exit has not reached the supervisor yet.
-        let release = directory.appendingPathComponent("release")
-        XCTAssertEqual(mkfifo(release.path, 0o600), 0)
+        let release = try FifoGate(at: directory.appendingPathComponent("release"))
         let script = try writeScript(
             in: directory,
             name: "backend.sh",
@@ -206,13 +216,13 @@ final class BackendProcessSupervisorTests: XCTestCase {
             fi
             count=$((count + 1))
             echo "$count" > "\(countFile.path)"
-            read _ < "\(release.path)"
+            read _ < "\(release.url.path)"
             echo "fatal backend failure $count" >&2
             exit 7
             """
         )
         let sleeps = ExitGatedSleep(readinessPollInterval: .milliseconds(10)) {
-            releaseOneReader(of: release)
+            release.releaseOne()
         }
         let supervisor = makeSupervisor(
             executableURL: script,
@@ -595,13 +605,44 @@ private final class StateWatcher: @unchecked Sendable {
 
 private struct WaitTimeout: Error {}
 
-/// Ends one child's `read _ < fifo` by opening the fifo for writing and
-/// closing it. The open blocks until the child opens its end, so it runs off
-/// the caller's thread.
-private func releaseOneReader(of fifo: URL) {
-    DispatchQueue.global().async {
-        let descriptor = open(fifo.path, O_WRONLY)
-        if descriptor >= 0 { close(descriptor) }
+/// A fifo a child script waits at with `read _ < fifo`. The test holds it
+/// open for reading and writing, so a child's open never waits for a peer, and
+/// a release is one newline in the fifo's buffer: sent before the child
+/// reaches its `read`, it waits there. The earlier release opened the fifo for
+/// writing and closed it, and the child waited for end-of-file. Under parallel
+/// load that end-of-file sometimes never came, though the open and close had
+/// both succeeded, and the child sat in `read` until the test timed out
+/// (#984). A newline ends a `read` whatever else holds the fifo open.
+private final class FifoGate: Sendable {
+    let url: URL
+    private let descriptor: Int32
+
+    init(at url: URL) throws {
+        guard mkfifo(url.path, 0o600) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        // A fifo opened for both reading and writing does not wait for a peer.
+        let descriptor = open(url.path, O_RDWR | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        self.url = url
+        self.descriptor = descriptor
+    }
+
+    deinit {
+        close(descriptor)
+    }
+
+    /// Lets exactly one `read _ < fifo` through: `sh` reads a pipe one byte at
+    /// a time, so one newline ends one `read`.
+    func releaseOne() {
+        var newline = UInt8(ascii: "\n")
+        var written: Int
+        repeat {
+            written = write(descriptor, &newline, 1)
+        } while written == -1 && errno == EINTR
+        precondition(written == 1, "fifo release failed: \(String(cString: strerror(errno)))")
     }
 }
 

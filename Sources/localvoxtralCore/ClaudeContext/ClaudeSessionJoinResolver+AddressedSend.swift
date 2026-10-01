@@ -24,7 +24,9 @@ extension ClaudeSessionJoinResolver {
         guard session.origin.isLocalAuthenticated else { return .unsupported(.remote) }
         if session.agent == .opencode, let relay = registry.opencodePromptRelay(sessionID: session.sessionID) {
             Log.claudeContext.notice("send to session: opencode prompt relay")
-            return .prompt(AddressedPromptRoute(OpencodePromptRoute(relay: relay)))
+            // An addressed dictation never types: the focused app is not the
+            // named session.
+            return .prompt(AddressedPromptRoute(OpencodePromptRoute(relay: relay, keysReachThePrompt: { false })))
         }
         if session.process?.herdrPaneID != nil {
             guard let route = await addressedHerdrRoute(for: session) else { return .unsupported(.herdr) }
@@ -34,6 +36,9 @@ extension ClaudeSessionJoinResolver {
         switch SessionPaneFocusRoute.of(session) {
         case .terminalTTY:
             return .terminalPane
+        case .herdrPane:
+            // Handled above: a local herdr pane is written through its route.
+            return .unsupported(.herdr)
         case .claudeDesktop:
             // The Return exception is ruled for terminal tabs only.
             Log.claudeContext.notice("send to session: no route (claudeDesktop)")

@@ -1,4 +1,5 @@
 import AppKit
+import ClaudeContextWire
 import Foundation
 import Synchronization
 import XCTest
@@ -114,7 +115,7 @@ final class DiagnosticRecordWiringTests: XCTestCase {
     /// A record whose dictation was deleted before its write ran is not
     /// written: the write waits behind the History queue and checks the entry.
     func testARecordWaitingOnADeletedDictationIsNotWritten() async throws {
-        let history = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let history = try XCTUnwrap(DictationSessionStore.inMemory())
         let wrote = WriteFlag()
 
         let url = await history.writeDiagnosticRecord(forDictation: UUID()) {
@@ -208,6 +209,73 @@ final class DiagnosticRecordWiringTests: XCTestCase {
         // What `applyDictationHistoryRetention` runs for "Don't keep".
         await history.trim(olderThan: try XCTUnwrap(DictationHistoryRetention.off.cutoff(now: Date()))).value
         XCTAssertEqual(try recordsOnDisk(in: harness.captureDirectory).count, 0)
+    }
+
+    /// A session context over its grant renders selected lines with tabs as
+    /// spaces. The prompt the user last sent the agent must still be out of
+    /// every field that reaches disk (#1106), a tab in its first 24
+    /// characters included.
+    func testAnOverflowingTabbedPriorPromptNeverReachesTheRecord() async throws {
+        let harness = try makeHarness(recordsEnabled: true)
+        let viewModel = harness.viewModel
+        viewModel.settings.claudeRepoContextEnabled = true
+        viewModel.stubCommitTarget { TerminalScreenAllowlist.ghosttyBundleID }
+        viewModel.transcript.currentDictationEventText = "review the payment ledger deployment"
+
+        // A pasted log after the request pushes the context past the whole
+        // 6000-character budget, so the selector picks lines.
+        let filler = (0..<110).map { "log line \($0): worker heartbeat ok, queue depth nominal, no action" }
+        let prompt = (["Review\tPaymentLedger for deployment", "Then\tcheck SettlementBatch totals"] + filler)
+            .joined(separator: "\n")
+        XCTAssertGreaterThan(prompt.count, PolishContextBudget.totalCharacterBudget)
+        let registry = ClaudeSessionRegistry(
+            now: { Date(timeIntervalSince1970: 1_000) },
+            isProcessAlive: { _ in true }
+        )
+        let origin = ClaudeTransportOrigin.remote(channel: "ssh:devbox")
+        registry.ingest(
+            ClaudeHookRecord(event: .sessionStart, sessionID: "r1", timestamp: 0, rawCwd: "/home/dev/ledger"),
+            origin: origin
+        )
+        registry.ingest(
+            ClaudeHookRecord(
+                event: .userPromptSubmit, sessionID: "r1", timestamp: 1,
+                rawCwd: "/home/dev/ledger", prompt: prompt
+            ),
+            origin: origin
+        )
+        let snapshot = try XCTUnwrap(registry.snapshot(sessionID: "r1"))
+        XCTAssertEqual(snapshot.latestPriorUserPrompt, prompt, "the hook wire keeps the tab")
+        viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(registry: registry)
+        viewModel.context.claudeSessionJoin = ClaudeSessionJoin(
+            target: TerminalScreenTarget(pid: 4242, bundleID: TerminalScreenAllowlist.ghosttyBundleID),
+            snapshot: snapshot,
+            windowID: 101,
+            mechanism: .remoteSSHConnection
+        )
+
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        await viewModel.session.polishAndCommitTask?.value
+
+        let names = try FileManager.default.contentsOfDirectory(atPath: harness.captureDirectory.path)
+        XCTAssertEqual(names.count, 1)
+        let encoded = try String(
+            contentsOf: harness.captureDirectory.appendingPathComponent(names[0]), encoding: .utf8)
+        let record = try XCTUnwrap(recordsOnDisk(in: harness.captureDirectory).first)
+        let excerpt = try XCTUnwrap(
+            record.sources.first { $0.source == "claude" }?.renderedExcerpt,
+            "the session context rendered")
+        XCTAssertTrue(
+            record.allocation.contains { $0.source == "claude" && $0.excerptWasSelected },
+            "the context overflowed its grant")
+        XCTAssertTrue(
+            record.text.userPrompts.joined().contains(DiagnosticRecordRedaction.withheldPromptPlaceholder),
+            "the prompt was in the rendered request")
+        for field in [excerpt] + record.text.userPrompts + [encoded] {
+            XCTAssertFalse(field.contains("PaymentLedger for deployment"), field)
+            XCTAssertFalse(field.contains("SettlementBatch totals"), field)
+            XCTAssertFalse(field.contains("worker heartbeat"), field)
+        }
     }
 
     /// A failing store must cost the record, never the commit: the dictation
@@ -828,7 +896,7 @@ final class DiagnosticRecordWiringTests: XCTestCase {
         viewModel.session.diagnosticRecordStore = recordStore
         var history: DictationSessionStore?
         if withHistory {
-            history = try XCTUnwrap(DictationSessionStore(inMemory: true))
+            history = try XCTUnwrap(DictationSessionStore.inMemory())
             history?.diagnosticRecordStore = recordStore
             viewModel.sessionStore = history
         }

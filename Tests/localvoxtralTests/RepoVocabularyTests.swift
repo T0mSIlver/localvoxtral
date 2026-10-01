@@ -2,6 +2,7 @@
 import Foundation
 import XCTest
 @testable import localvoxtral
+import localvoxtralTestSupport
 
 // MARK: - Terminal window-title parser
 
@@ -558,9 +559,18 @@ final class RepoVocabularyIndexerEndToEndTests: XCTestCase {
         env["GIT_TERMINAL_PROMPT"] = "0"
         env["HOME"] = directory.path
         process.environment = env
-        try? process.run()
-        process.waitUntilExit()
+        do { try process.runUntilExit() } catch { return -1 }
         return process.terminationStatus
+    }
+
+    /// `git commit` with the identity and signing settings given per command
+    /// rather than written into each fixture repo's config by three more
+    /// spawns.
+    private func commitAll(in directory: URL) -> Int32 {
+        runGit([
+            "-c", "user.email=test@example.com", "-c", "user.name=Test",
+            "-c", "commit.gpgsign=false", "commit", "-m", "init",
+        ], in: directory)
     }
 
     func testHarvestsVocabularyFromRealRepo() async throws {
@@ -573,9 +583,6 @@ final class RepoVocabularyIndexerEndToEndTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: repo) }
 
         XCTAssertEqual(runGit(["init", "-b", "main"], in: repo), 0)
-        runGit(["config", "user.email", "test@example.com"], in: repo)
-        runGit(["config", "user.name", "Test"], in: repo)
-        runGit(["config", "commit.gpgsign", "false"], in: repo)
 
         try "export const useAuth = () => {}\n".write(
             to: repo.appendingPathComponent("useAuth.ts"), atomically: true, encoding: .utf8
@@ -588,7 +595,7 @@ final class RepoVocabularyIndexerEndToEndTests: XCTestCase {
         )
 
         XCTAssertEqual(runGit(["add", "-A"], in: repo), 0)
-        XCTAssertEqual(runGit(["commit", "-m", "init"], in: repo), 0)
+        XCTAssertEqual(commitAll(in: repo), 0)
 
         let vocab = await RepoVocabularyService.vocabulary(
             forWorkingDirectory: repo.path,
@@ -773,14 +780,11 @@ final class RepoVocabularyIndexerEndToEndTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: repo) }
 
         XCTAssertEqual(runGit(["init", "-b", "main"], in: repo), 0)
-        runGit(["config", "user.email", "test@example.com"], in: repo)
-        runGit(["config", "user.name", "Test"], in: repo)
-        runGit(["config", "commit.gpgsign", "false"], in: repo)
         try "export const useAuth = () => {}\n".write(
             to: repo.appendingPathComponent("useAuth.ts"), atomically: true, encoding: .utf8
         )
         XCTAssertEqual(runGit(["add", "-A"], in: repo), 0)
-        XCTAssertEqual(runGit(["commit", "-m", "init"], in: repo), 0)
+        XCTAssertEqual(commitAll(in: repo), 0)
 
         let entries = await RepoVocabularyService.entries(
             forWindowTitle: "Claude Code",
@@ -839,9 +843,6 @@ final class RepoVocabularyIndexerEndToEndTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: repo) }
 
         XCTAssertEqual(runGit(["init", "-b", "main"], in: repo), 0)
-        runGit(["config", "user.email", "test@example.com"], in: repo)
-        runGit(["config", "user.name", "Test"], in: repo)
-        runGit(["config", "commit.gpgsign", "false"], in: repo)
         for index in 0..<5 {
             try "x\n".write(
                 to: repo.appendingPathComponent("file-\(index).txt"),
@@ -849,7 +850,7 @@ final class RepoVocabularyIndexerEndToEndTests: XCTestCase {
             )
         }
         XCTAssertEqual(runGit(["add", "-A"], in: repo), 0)
-        XCTAssertEqual(runGit(["commit", "-m", "init"], in: repo), 0)
+        XCTAssertEqual(commitAll(in: repo), 0)
 
         let rawOutput = await RepoGitRunner.lsFiles(
             root: repo.path, timeoutSeconds: 2.0, maxBytes: 4

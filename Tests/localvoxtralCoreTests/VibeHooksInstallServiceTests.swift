@@ -231,6 +231,8 @@ final class VibeHooksInstallServiceTests: XCTestCase {
         XCTAssertEqual(
             VibeHooksInstallService.sentence(for: .conflictingHooks), "hooks.toml needs a manual fix."
         )
+        // A static `hooks` value beside the block is a conflict, not an install.
+        XCTAssertEqual(service(state: installed(hooks: "hooks = []\n" + Self.block)).0.status(), .conflictingHooks)
         // A comment or a new table after the block is fine.
         let fine = Self.block + "\n# mine\n[[hooks]]\nname = \"after\"\n"
         XCTAssertEqual(service(state: installed(hooks: fine)).0.status(), .installed)
@@ -276,11 +278,6 @@ final class VibeHooksInstallServiceTests: XCTestCase {
             XCTAssertTrue(sentence.contains("hooks.toml"), sentence)
             XCTAssertTrue(sentence.hasSuffix("."), sentence)
         }
-    }
-
-    func testAStaticHooksValueShowsAsAConflictNotAsInstalled() {
-        let existing = "hooks = []\n" + Self.block
-        XCTAssertEqual(service(state: installed(hooks: existing)).0.status(), .conflictingHooks)
     }
 
     func testInstallNeedsBothBundledFilesAndAWellFormedBlock() {

@@ -841,7 +841,7 @@ final class PolishPromptWarmupPlanTests: XCTestCase {
         store.llmPolishingEnabled = true
 
         let plan = try XCTUnwrap(
-            PolishPromptWarmup.plan(settings: store, appConfigStore: configStore)
+            PolishPromptWarmup.plan(settings: store, appConfigStore: configStore, projectNames: [])
         )
 
         XCTAssertEqual(
@@ -862,7 +862,7 @@ final class PolishPromptWarmupPlanTests: XCTestCase {
         store.agentPolishProfileEnabled = true
 
         let plan = try XCTUnwrap(
-            PolishPromptWarmup.plan(settings: store, appConfigStore: profileAwareConfigStore)
+            PolishPromptWarmup.plan(settings: store, appConfigStore: profileAwareConfigStore, projectNames: [])
         )
 
         XCTAssertEqual(plan.requests.map(\.profile), [.standard, .agent])
@@ -881,7 +881,7 @@ final class PolishPromptWarmupPlanTests: XCTestCase {
         store.agentPolishProfileEnabled = false
 
         let plan = try XCTUnwrap(
-            PolishPromptWarmup.plan(settings: store, appConfigStore: profileAwareConfigStore)
+            PolishPromptWarmup.plan(settings: store, appConfigStore: profileAwareConfigStore, projectNames: [])
         )
 
         XCTAssertEqual(plan.requests.map(\.profile), [.standard])
@@ -896,7 +896,7 @@ final class PolishPromptWarmupPlanTests: XCTestCase {
         store.agentPolishProfileEnabled = true
 
         let plan = try XCTUnwrap(
-            PolishPromptWarmup.plan(settings: store, appConfigStore: configStore)
+            PolishPromptWarmup.plan(settings: store, appConfigStore: configStore, projectNames: [])
         )
 
         XCTAssertEqual(plan.requests.map(\.profile), [.standard])
@@ -934,7 +934,7 @@ final class PolishPromptWarmupPlanTests: XCTestCase {
         store.agentPolishProfileEnabled = true
 
         let plan = try XCTUnwrap(
-            PolishPromptWarmup.plan(settings: store, appConfigStore: TailOnlyDiff())
+            PolishPromptWarmup.plan(settings: store, appConfigStore: TailOnlyDiff(), projectNames: [])
         )
 
         XCTAssertEqual(plan.requests.map(\.profile), [.standard])
@@ -952,7 +952,7 @@ final class PolishPromptWarmupPlanTests: XCTestCase {
         let configStore = profileAwareConfigStore
         let coordinator = PolishPromptWarmupCoordinator(
             serviceProvider: { service },
-            planProvider: { PolishPromptWarmup.plan(settings: store, appConfigStore: configStore) },
+            planProvider: { PolishPromptWarmup.plan(settings: store, appConfigStore: configStore, projectNames: []) },
             clock: clock.clock
         )
         coordinator.observePlanInputs()
@@ -993,7 +993,7 @@ final class PolishPromptWarmupPlanTests: XCTestCase {
         let store = makeStore()
         store.llmPolishingEnabled = false
 
-        XCTAssertNil(PolishPromptWarmup.plan(settings: store, appConfigStore: configStore))
+        XCTAssertNil(PolishPromptWarmup.plan(settings: store, appConfigStore: configStore, projectNames: []))
     }
 
     func testPlanIsNilInExternalURLMode() {
@@ -1007,6 +1007,6 @@ final class PolishPromptWarmupPlanTests: XCTestCase {
         store.llmPolishingAPIKey = "sk-test"
 
         XCTAssertNotNil(store.llmPolishingConfiguration, "precondition: external config is valid")
-        XCTAssertNil(PolishPromptWarmup.plan(settings: store, appConfigStore: configStore))
+        XCTAssertNil(PolishPromptWarmup.plan(settings: store, appConfigStore: configStore, projectNames: []))
     }
 }

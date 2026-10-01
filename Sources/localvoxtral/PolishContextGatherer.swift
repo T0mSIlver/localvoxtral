@@ -451,7 +451,7 @@ enum PolishContextGatherer {
     ///
     /// No gate beyond polishing itself: a term the speaker has said three
     /// times in this project is their vocabulary, and it travels with the
-    /// request the way the hand-written Names and terms list does (owner
+    /// request the way the hand-written Global terms list does (owner
     /// ruling, 2026-09-20 — `docs/agent/invariants.md`).
     ///
     /// Reading the terms touches no disk (`LearnedTermStore.snapshot`), and the

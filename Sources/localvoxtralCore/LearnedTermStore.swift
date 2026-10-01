@@ -20,6 +20,10 @@ import os
 /// is: the store answers empty, refuses every write and says why in
 /// `problem` until the user moves the file aside (#989). It also holds the
 /// project and repository records, which an empty rewrite would lose.
+///
+/// Another running copy of the app may write the same file (#990). Every
+/// write re-reads it under their shared lock and applies its change to what
+/// the other copy wrote (`StoredFile.update`).
 package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectSummaryStoring, QuickCaptureProjectLinkStoring, @unchecked Sendable {
     private struct State {
         var terms: LearnedTerms?
@@ -43,6 +47,12 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     private let writeQueue = DispatchQueue(label: "localvoxtral.learned-terms", qos: .utility)
     private let now: @Sendable () -> Date
     private let onChange: (@Sendable () -> Void)?
+    /// The bytes this copy last read or wrote. Write queue only.
+    private var lastSeen: Data?
+    /// The same, for `ignored-projects.json`. Write queue only.
+    private var lastSeenIgnored: Data?
+    /// Writes `ignored-projects.json`; tests make it fail.
+    private let writeIgnoredList: (Data, URL) throws -> Void
 
     /// `fileURL` nil keeps everything in memory (tests, previews). The file is
     /// read on the write queue right away, and every later read and write is
@@ -53,9 +63,11 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         fileURL: URL?,
         now: @escaping @Sendable () -> Date = { Date() },
         onChange: (@Sendable () -> Void)? = nil,
-        beforeLaunchLoad: (@Sendable () -> Void)? = nil
+        beforeLaunchLoad: (@Sendable () -> Void)? = nil,
+        writeIgnoredList: @escaping @Sendable (Data, URL) throws -> Void = LearnedTermStore.writeFile
     ) {
         self.fileURL = fileURL
+        self.writeIgnoredList = writeIgnoredList
         self.now = now
         self.onChange = onChange
         if fileURL != nil {
@@ -83,40 +95,38 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
                 // the joined session's directory (the commit path may not read
                 // `.git`), and this is where it reaches the main checkout.
                 // Idempotent, so a file with nothing to fold is not rewritten.
-                let folded = loaded.foldWorktreesIntoMainCheckouts(now: now())
-                    // A checkout whose `origin` a hook or the linker already
-                    // recorded gives its terms to its repository (#971).
-                    + loaded.linkCheckoutsToRepositories(now: now())
-                // Proposals agents made before answers were filtered (#914),
-                // and records an older build kept for an ignored repo.
-                let dropped = loaded.dropIdentifierProposals() + loaded.removeIgnoredProjects()
+                let moment = now()
+                let tidy: @Sendable (inout LearnedTerms) -> Int = { terms in
+                    terms.foldWorktreesIntoMainCheckouts(now: moment)
+                        // A checkout whose `origin` a hook or the linker already
+                        // recorded gives its terms to its repository (#971).
+                        + terms.linkCheckoutsToRepositories(now: moment)
+                        // Proposals agents made before answers were filtered (#914).
+                        + terms.dropIdentifierProposals()
+                        // Records an older build kept for an ignored repo (#1006).
+                        + terms.removeIgnoredProjects()
+                }
+                var probe = loaded
                 let adopted = state.withLock { state in
                     guard state.terms == nil else { return false }
                     state.terms = loaded
                     return true
                 }
-                if folded + dropped > 0, adopted, ignoredLoad.problem == nil {
-                    if loaded.ignored != ignored, !writeIgnored(loaded.ignored) {
-                        onChange?()
-                        return
+                if tidy(&probe) > 0, adopted {
+                    // Refused, and so not written, while the ignore list is.
+                    commit { terms in
+                        let tidied = tidy(&terms)
+                        Log.polishing.info(
+                            "Learned terms: \(tidied, privacy: .public) worktrees, checkouts, code-shaped proposals and records of ignored repos folded into their projects or dropped"
+                        )
                     }
-                    Log.polishing.info(
-                        "Learned terms: folded \(folded, privacy: .public) worktrees and checkouts into their projects, dropped \(dropped, privacy: .public) proposals shaped like code or records of ignored repos"
-                    )
-                    write(loaded)
-                    onChange?()
                 }
             }
         }
     }
 
     package static func defaultFileURL() -> URL {
-        let applicationSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        return applicationSupport
-            .appendingPathComponent("localvoxtral", isDirectory: true)
+        return LocalvoxtralDataDirectory.url()
             .appendingPathComponent("learned-terms.json")
     }
 
@@ -378,20 +388,29 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     /// Ignore Project (#1006): forgotten, and kept out from now on.
     package func ignoreProject(key: String, name: String, keys: [String]) {
         let moment = now()
-        mutate { terms in
-            terms.ignoreProject(key: key, name: name, keys: keys, now: moment)
-            let count = terms.ignored.projects.count
-            Log.polishing.info("Learned terms: a project ignored, \(count, privacy: .public) ignored")
-        }
+        mutate(
+            { terms in
+                terms.ignoreProject(key: key, name: name, keys: keys, now: moment)
+                let count = terms.ignored.projects.count
+                Log.polishing.info("Learned terms: a project ignored, \(count, privacy: .public) ignored")
+            },
+            // The entry, added to the list as another running copy left it.
+            ignoring: { terms, list in
+                var probe = terms
+                probe.ignored = list
+                probe.ignoreProject(key: key, name: name, keys: keys, now: moment)
+                list = probe.ignored
+            })
     }
 
     /// Un-ignore: the project comes back at its next dictation.
     package func unignoreProject(key: String) {
-        mutate { terms in
-            terms.unignoreProject(key: key)
-            let count = terms.ignored.projects.count
-            Log.polishing.info("Learned terms: a project un-ignored, \(count, privacy: .public) ignored")
-        }
+        mutate(
+            { terms in
+                let count = terms.ignored.projects.count
+                Log.polishing.info("Learned terms: a project un-ignored, \(count, privacy: .public) ignored")
+            },
+            ignoring: { _, list in list.projects.removeAll { $0.key == key } })
     }
 
     /// Folds an imported file's projects in (`LearnedTerms.merge`), ordered
@@ -422,36 +441,161 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     /// While the file is refused, `change` never runs and `refused` does.
     private func mutate(
         _ change: @escaping @Sendable (inout LearnedTerms) -> Void,
+        ignoring ignoredChange: (@Sendable (LearnedTerms, inout IgnoredProjects) -> Void)? = nil,
         refused: @escaping @Sendable () -> Void = {}
     ) {
-        writeQueue.async { [self] in
-            // The launch load ran first on this queue; a store with no file
-            // starts empty.
-            let changed: (terms: LearnedTerms, ignoredChanged: Bool)? = state.withLock { state in
-                guard state.problem == nil, state.ignoredListProblem == nil else { return nil }
-                var terms = state.terms ?? LearnedTerms()
-                let ignoredBefore = terms.ignored
+        writeQueue.async { [self] in commit(change, ignoring: ignoredChange, refused: refused) }
+    }
+
+    /// `mutate`'s body, on the write queue. The launch load ran first on this
+    /// queue; a store with no file starts empty.
+    ///
+    /// Two files, each a transaction with other running copies (#990). The
+    /// ignore list goes first: `ignoredChange` applies to what is on disk,
+    /// so another copy's ignores stay, and a crash between the two writes
+    /// leaves an ignored repo's records to the next sweep, never a forgotten
+    /// record with no entry to keep it out. While the list is unsaved, the
+    /// terms' change holds in memory only. Then the terms: `change`, and the
+    /// sweep of ignored records inside the same transaction, so it also
+    /// applies to what another copy wrote.
+    private func commit(
+        _ change: (inout LearnedTerms) -> Void,
+        ignoring ignoredChange: ((LearnedTerms, inout IgnoredProjects) -> Void)? = nil,
+        refused: () -> Void = {}
+    ) {
+        let (memory, problem, listProblem) = state.withLock {
+            ($0.terms ?? LearnedTerms(), $0.problem, $0.ignoredListProblem)
+        }
+        guard problem == nil, listProblem == nil else {
+            Log.persistence.error("learned terms: a change was refused, a file could not be loaded")
+            refused()
+            return
+        }
+        guard let fileURL, let ignoredFileURL else {
+            var terms = memory
+            ignoredChange?(memory, &terms.ignored)
+            change(&terms)
+            terms.removeIgnoredProjects()
+            state.withLock { $0.terms = terms }
+            onChange?()
+            return
+        }
+        let listChange = ignoredChange.map { ignoredChange in { (list: inout IgnoredProjects) in ignoredChange(memory, &list) } }
+        guard let ignored = updateIgnoredList(ignoredFileURL, memory: memory.ignored, change: listChange) else {
+            refused()
+            onChange?()
+            return
+        }
+        if state.withLock({ $0.ignoredListUnsaved }) {
+            var terms = memory
+            terms.ignored = ignored
+            change(&terms)
+            terms.removeIgnoredProjects()
+            state.withLock { $0.terms = terms }
+            onChange?()
+            return
+        }
+        var swept = ignored
+        let update = StoredFile.update(
+            fileURL, memory: memory, lastSeen: &lastSeen,
+            decode: Self.terms(fromFileContents:),
+            encode: { try Self.encoder.encode($0) },
+            write: Self.writeFile,
+            change: { terms in
+                terms.ignored = ignored
                 change(&terms)
                 // The one place every write passes: whatever it recorded for
                 // an ignored repo goes before it is kept or written (#1006).
                 terms.removeIgnoredProjects()
-                state.terms = terms
-                return (terms, terms.ignored != ignoredBefore || state.ignoredListUnsaved)
+                swept = terms.ignored
+            })
+        switch update {
+        case .written(let terms):
+            state.withLock { $0.terms = terms }
+        case .failed(let terms, let error):
+            state.withLock { $0.terms = terms }
+            Log.persistence.error("learned terms: write failed: \(error.localizedDescription, privacy: .public)")
+        case .refused(let problem):
+            // Another copy left a file this build cannot read: keep it.
+            state.withLock { state in
+                state.terms = LearnedTerms()
+                state.terms?.ignored = ignored
+                state.problem = problem
             }
-            guard let changed else {
-                Log.persistence.error("learned terms: a change was refused, a file could not be loaded")
-                refused()
-                return
-            }
-            // The ignore list first: a crash between the two writes then
-            // leaves an ignored repo's records to the next load's sweep, never
-            // a forgotten record with no ignore entry to keep it out.
-            if changed.ignoredChanged, !writeIgnored(changed.terms.ignored) {
-                onChange?()
-                return
-            }
-            write(changed.terms)
+            Log.persistence.error("learned terms: a change was refused, another copy left a file this build cannot read")
+            refused()
             onChange?()
+            return
+        }
+        if swept != ignored {
+            // The sweep found a checkout of an ignored repo, such as a new
+            // clone: its key joins the entry.
+            _ = updateIgnoredList(ignoredFileURL, memory: ignored, change: { $0.adoptCheckouts(from: swept) })
+        }
+        onChange?()
+    }
+
+    /// One change to `ignored-projects.json`, as a transaction like the
+    /// terms' (`StoredFile.update`). With no change and nothing unsaved it
+    /// only reads the file, to pick up another copy's ignores. Returns the
+    /// list, also put in memory, or nil when the file was refused.
+    private func updateIgnoredList(
+        _ url: URL, memory: IgnoredProjects, change: ((inout IgnoredProjects) -> Void)?
+    ) -> IgnoredProjects? {
+        let unsaved = state.withLock { $0.ignoredListUnsaved }
+        if change == nil, !unsaved {
+            let (load, bytes) = StoredFile.loadShared(url, decode: Self.ignored(fromFileContents:))
+            switch load {
+            case .absent:
+                return memory
+            case .loaded(let list):
+                guard bytes != lastSeenIgnored else { return memory }
+                lastSeenIgnored = bytes
+                Log.persistence.notice("ignored projects: another running copy changed the list, adopted")
+                state.withLock { $0.terms?.ignored = list }
+                return list
+            case .refused(let problem):
+                refuseIgnoredList(problem, memory: memory)
+                return nil
+            }
+        }
+        let update = StoredFile.update(
+            url, memory: memory, lastSeen: &lastSeenIgnored,
+            decode: Self.ignored(fromFileContents:),
+            encode: { try Self.encoder.encode($0) },
+            write: writeIgnoredList,
+            change: { change?(&$0) })
+        switch update {
+        case .written(let list):
+            state.withLock { state in
+                state.terms?.ignored = list
+                state.ignoredListUnsaved = false
+            }
+            return list
+        case .failed(let list, let error):
+            Log.persistence.error(
+                "ignored projects: write failed, kept in memory until the next change: \(error.localizedDescription, privacy: .public)"
+            )
+            state.withLock { state in
+                state.terms?.ignored = list
+                state.ignoredListUnsaved = true
+            }
+            return list
+        case .refused(let problem):
+            refuseIgnoredList(problem, memory: memory)
+            return nil
+        }
+    }
+
+    /// Another copy left a list this build cannot read: it is kept, and
+    /// nothing is learned until Start Over, since any repo may be ignored.
+    private func refuseIgnoredList(_ problem: StoredFileProblem, memory: IgnoredProjects) {
+        Log.persistence.error("ignored projects: a change was refused, another copy left a file this build cannot read")
+        state.withLock { state in
+            state.ignoredListProblem = problem
+            var unreadable = memory
+            unreadable.isUnreadable = true
+            state.terms?.ignored = unreadable
         }
     }
 
@@ -467,6 +611,7 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
                 }
                 do {
                     let aside = try StoredFile.moveAside(fileURL)
+                    lastSeen = nil
                     state.withLock { state in
                         // The ignore list has its own file, which still
                         // holds: an empty one here would lift every opt-out.
@@ -499,8 +644,10 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
                 }
                 do {
                     let aside = try StoredFile.moveAside(ignoredFileURL)
+                    lastSeenIgnored = nil
                     state.withLock { state in
                         state.ignoredListProblem = nil
+                        state.ignoredListUnsaved = false
                         state.terms?.ignored = IgnoredProjects()
                     }
                     onChange?()
@@ -545,10 +692,11 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
             currentVersion: LearnedTerms.currentVersion, decoder: decoder)
     }
 
+    /// Called on the write queue, never off it.
     private func loadFromDisk() -> StoredFileLoad<LearnedTerms> {
         guard let fileURL else { return .absent }
-        let load = StoredFile.load(
-            LearnedTerms.self, from: fileURL, currentVersion: LearnedTerms.currentVersion, decoder: Self.decoder)
+        let (load, bytes) = StoredFile.loadShared(fileURL, decode: Self.terms(fromFileContents:))
+        lastSeen = bytes
         guard var terms = load.value else { return load }
         // Decay applies to a file that has been sitting still, not only to one
         // being written: a project left alone for a season must not come back
@@ -566,48 +714,17 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
             currentVersion: IgnoredProjects.currentVersion, decoder: decoder)
     }
 
+    /// Called on the write queue, never off it.
     private func loadIgnoredFromDisk() -> StoredFileLoad<IgnoredProjects> {
         guard let ignoredFileURL else { return .absent }
-        return StoredFile.load(
-            IgnoredProjects.self, from: ignoredFileURL, currentVersion: IgnoredProjects.currentVersion,
-            decoder: Self.decoder)
+        let (load, bytes) = StoredFile.loadShared(ignoredFileURL, decode: Self.ignored(fromFileContents:))
+        lastSeenIgnored = bytes
+        return load
     }
 
-    /// Called on the write queue, never off it. False when the write
-    /// failed, which `ignoredListUnsaved` then says.
-    @discardableResult
-    private func writeIgnored(_ ignored: IgnoredProjects) -> Bool {
-        guard let ignoredFileURL, state.withLock({ $0.ignoredListProblem }) == nil else { return true }
-        do {
-            let data = try Self.encoder.encode(ignored)
-            try FileManager.default.createDirectory(
-                at: ignoredFileURL.deletingLastPathComponent(), withIntermediateDirectories: true
-            )
-            try data.write(to: ignoredFileURL, options: .atomic)
-            state.withLock { $0.ignoredListUnsaved = false }
-            return true
-        } catch {
-            Log.persistence.error(
-                "ignored projects: write failed, kept in memory until the next change: \(error.localizedDescription, privacy: .public)"
-            )
-            state.withLock { $0.ignoredListUnsaved = true }
-            return false
-        }
-    }
-
-    /// Called on the write queue, never off it.
-    private func write(_ terms: LearnedTerms) {
-        guard let fileURL, state.withLock({ $0.problem == nil && $0.ignoredListProblem == nil }) else { return }
-        do {
-            let data = try Self.encoder.encode(terms)
-            try FileManager.default.createDirectory(
-                at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
-            )
-            try data.write(to: fileURL, options: .atomic)
-        } catch {
-            Log.persistence.error(
-                "learned terms: write failed: \(error.localizedDescription, privacy: .public)"
-            )
-        }
+    package static func writeFile(_ data: Data, to url: URL) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
     }
 }

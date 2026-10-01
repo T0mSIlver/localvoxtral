@@ -17,63 +17,48 @@ final class RepoVocabularyPhoneticTests: XCTestCase {
 
     // MARK: - Field regressions
 
-    /// `clothes code` is one phonetic-key edit from `Claude Code`, not enough
-    /// evidence to rewrite the user's bytes. It must nevertheless survive as
-    /// an explicit possible-mishearing candidate for the model.
-    func testClaudeCodeNearPhoneticHitIsVerificationOnly() {
-        let outcome = RepoVocabularyMatcher.groundedCandidates(
-            transcript: "open clothes code please",
-            vocabulary: makeVocabulary(["Claude Code"])
-        )
-
-        XCTAssertTrue(outcome.entries.isEmpty)
-        XCTAssertTrue(outcome.phoneticEntries.isEmpty)
-        XCTAssertEqual(
-            outcome.verificationCandidates,
-            [ReplacementEntry(replaceWith: "Claude Code", matches: ["clothes code"])]
-        )
-    }
-
-    /// `pain` and `pane` have equal full-length keys, the strongest phonetic
-    /// evidence there is. It still only nominates: the transcript is untouched.
-    func testTerminalPaneExactPhoneticHitNominates() {
-        let transcript = "click the terminal pain"
-        let outcome = RepoVocabularyMatcher.groundedCandidates(
-            transcript: transcript,
-            vocabulary: makeVocabulary(["terminal pane"])
-        )
-
-        XCTAssertTrue(outcome.entries.isEmpty)
-        XCTAssertTrue(outcome.phoneticEntries.isEmpty)
-        XCTAssertEqual(
-            outcome.verificationCandidates,
-            [ReplacementEntry(replaceWith: "terminal pane", matches: ["terminal pain"])]
-        )
-    }
-
-    /// A multi-word term that glues a stopword onto a short homophone must
-    /// not silently rewrite prose: both the heard span and the agreeing key
-    /// are too short for the pre-apply grade. The guess survives only as a
-    /// verification pair.
-    func testStopwordGluedShortHomophoneIsVerificationOnly() {
-        let transcript = "the pain is here"
-        let outcome = RepoVocabularyMatcher.groundedCandidates(
-            transcript: transcript,
-            vocabulary: makeVocabulary(["thePane"])
-        )
-
-        XCTAssertTrue(outcome.entries.isEmpty)
-        XCTAssertTrue(outcome.phoneticEntries.isEmpty)
-        XCTAssertEqual(
-            outcome.verificationCandidates,
-            [ReplacementEntry(replaceWith: "thePane", matches: ["the pain"])]
-        )
-        XCTAssertEqual(
-            RepoVocabularyMatcher.preapplying(
-                entries: outcome.phoneticEntries, to: transcript
+    /// Each hit below is real evidence of a mishearing but too weak to rewrite
+    /// the user's bytes, so it must survive only as a possible-mishearing
+    /// candidate for the model: no entry, no phonetic pre-apply, the
+    /// transcript untouched.
+    func testNearHitsAreOfferedToTheModelAndNeverWritten() {
+        let cases: [(name: String, transcript: String, terms: [String], offered: ReplacementEntry)] = [
+            // `clothes code` is one phonetic-key edit from `Claude Code`.
+            (
+                "ClaudeCodeNearPhoneticHit", "open clothes code please", ["Claude Code"],
+                ReplacementEntry(replaceWith: "Claude Code", matches: ["clothes code"])
             ),
-            transcript
-        )
+            // `pain` and `pane` have equal full-length keys, the strongest
+            // phonetic evidence there is. It still only nominates.
+            (
+                "TerminalPaneExactPhoneticHit", "click the terminal pain", ["terminal pane"],
+                ReplacementEntry(replaceWith: "terminal pane", matches: ["terminal pain"])
+            ),
+            // A multi-word term that glues a stopword onto a short homophone:
+            // both the heard span and the agreeing key are too short for the
+            // pre-apply grade.
+            (
+                "StopwordGluedShortHomophone", "the pain is here", ["thePane"],
+                ReplacementEntry(replaceWith: "thePane", matches: ["the pain"])
+            ),
+        ]
+        for (name, transcript, terms, offered) in cases {
+            let outcome = RepoVocabularyMatcher.groundedCandidates(
+                transcript: transcript,
+                vocabulary: makeVocabulary(terms)
+            )
+
+            XCTAssertTrue(outcome.entries.isEmpty, name)
+            XCTAssertTrue(outcome.phoneticEntries.isEmpty, name)
+            XCTAssertEqual(outcome.verificationCandidates, [offered], name)
+            XCTAssertEqual(
+                RepoVocabularyMatcher.preapplying(
+                    entries: outcome.entries + outcome.phoneticEntries, to: transcript
+                ),
+                transcript,
+                name
+            )
+        }
     }
 
     /// A span the character tiers abstained on because two terms tied is
@@ -103,32 +88,20 @@ final class RepoVocabularyPhoneticTests: XCTestCase {
 
     // MARK: - Eligibility and stronger-tier ownership
 
-    func testShortSingleWordClaudeDoesNotMatchCloseOrClothes() {
-        for transcript in ["please close this", "fold the clothes please"] {
-            XCTAssertEqual(phonetic(transcript, terms: ["Claude"]), .empty, transcript)
+    /// Terms the phonetic tier must leave alone: too short a single word,
+    /// only common heard words, or a gram a stronger tier already owns.
+    func testPhoneticTierAbstainsWhereItIsNotEligibleOrAStrongerTierOwnsTheGram() {
+        let cases: [(name: String, transcript: String, terms: [String])] = [
+            ("ShortSingleWordClaudeVsClose", "please close this", ["Claude"]),
+            ("ShortSingleWordClaudeVsClothes", "fold the clothes please", ["Claude"]),
+            ("ShortSingleWordPaneVsPain", "the pain is visible", ["pane"]),
+            ("AllCommonHeardWordsNeverFire", "in the", ["innThy"]),
+            ("IdenticalGramBelongsToExactTier", "open terminal pane", ["terminal pane"]),
+            ("EditDistanceOneGramBelongsToFuzzyTier", "open terminal pan", ["terminal pane"]),
+        ]
+        for (name, transcript, terms) in cases {
+            XCTAssertEqual(phonetic(transcript, terms: terms), .empty, name)
         }
-    }
-
-    func testShortSingleWordPaneDoesNotMatchPain() {
-        XCTAssertEqual(phonetic("the pain is visible", terms: ["pane"]), .empty)
-    }
-
-    func testAllCommonHeardWordsNeverFire() {
-        XCTAssertEqual(phonetic("in the", terms: ["innThy"]), .empty)
-    }
-
-    func testIdenticalGramBelongsToExactTier() {
-        XCTAssertEqual(
-            phonetic("open terminal pane", terms: ["terminal pane"]),
-            .empty
-        )
-    }
-
-    func testEditDistanceOneGramBelongsToFuzzyTier() {
-        XCTAssertEqual(
-            phonetic("open terminal pan", terms: ["terminal pane"]),
-            .empty
-        )
     }
 
     // MARK: - Confidence demotions
@@ -173,27 +146,20 @@ final class RepoVocabularyPhoneticTests: XCTestCase {
 
     // MARK: - Word-unit splitting
 
-    func testPhoneticWordUnitsSplitRepositoryAndIdentifierBoundaries() {
-        XCTAssertEqual(
-            RepoVocabularyMatcher.phoneticWordUnits(of: "useAuth.ts"),
-            ["use", "Auth", "ts"]
-        )
-        XCTAssertEqual(
-            RepoVocabularyMatcher.phoneticWordUnits(of: "src/session_sync/HTTP2Client"),
-            ["src", "session", "sync", "HTTP", "2Client"]
-        )
-        XCTAssertEqual(
-            RepoVocabularyMatcher.phoneticWordUnits(of: "alpha-beta gamma"),
-            ["alpha", "beta", "gamma"]
-        )
-    }
-
-    func testPhoneticWordUnitsDropEmptyAndNonLetterUnits() {
-        XCTAssertEqual(RepoVocabularyMatcher.phoneticWordUnits(of: "///__--"), [])
-        XCTAssertEqual(
-            RepoVocabularyMatcher.phoneticWordUnits(of: "model2/123/_pane"),
-            ["model", "pane"]
-        )
+    func testPhoneticWordUnits() {
+        let cases: [(name: String, text: String, expected: [String])] = [
+            ("SplitsIdentifierBoundaries", "useAuth.ts", ["use", "Auth", "ts"]),
+            (
+                "SplitsRepositoryBoundaries", "src/session_sync/HTTP2Client",
+                ["src", "session", "sync", "HTTP", "2Client"]
+            ),
+            ("SplitsHyphensAndSpaces", "alpha-beta gamma", ["alpha", "beta", "gamma"]),
+            ("DropsEmptyUnits", "///__--", []),
+            ("DropsNonLetterUnits", "model2/123/_pane", ["model", "pane"]),
+        ]
+        for (name, text, expected) in cases {
+            XCTAssertEqual(RepoVocabularyMatcher.phoneticWordUnits(of: text), expected, name)
+        }
     }
 
     func testIndexEligibilityIncludesLongSinglesAndPhrasesButSkipsLongIdentifiers() {
@@ -275,48 +241,29 @@ final class RepoVocabularyPhoneticTests: XCTestCase {
         )
     }
 
-    func testAlignedNearScoreDemotesBestCandidate() {
-        let vocabulary = makeVocabulary(["abcdefghij"])
-        let outcome = RepoVocabularyMatcher.alignedFallbackOutcome(
-            transcript: "abcx efyy",
-            vocabulary: vocabulary
-        )
+    func testAlignedDemotionsKeepTheGuessOnlyAsVerification() {
+        let cases: [(name: String, transcript: String, terms: [String], verification: [ReplacementEntry])] = [
+            (
+                "NearScoreDemotesBestCandidate", "abcx efyy", ["abcdefghij"],
+                [ReplacementEntry(replaceWith: "abcdefghij", matches: ["abcx efyy"])]
+            ),
+            (
+                "UnspokenExtensionDemotesBestCandidate", "Fix the user session manager.",
+                ["UserSessionManager.swift"],
+                [ReplacementEntry(replaceWith: "UserSessionManager.swift", matches: ["user session manager"])]
+            ),
+            // A single word that would inflate in length stays a hard drop.
+            ("SingleWordLengthInflationRemainsHardDrop", "Ouvreusot.ts maintenant.", ["useAuth.ts"], []),
+        ]
+        for (name, transcript, terms, verification) in cases {
+            let outcome = RepoVocabularyMatcher.alignedFallbackOutcome(
+                transcript: transcript,
+                vocabulary: makeVocabulary(terms)
+            )
 
-        XCTAssertNil(outcome.approved)
-        XCTAssertEqual(
-            outcome.verification,
-            [ReplacementEntry(replaceWith: "abcdefghij", matches: ["abcx efyy"])]
-        )
-    }
-
-    func testAlignedUnspokenExtensionDemotesBestCandidate() {
-        let vocabulary = makeVocabulary(["UserSessionManager.swift"])
-        let outcome = RepoVocabularyMatcher.alignedFallbackOutcome(
-            transcript: "Fix the user session manager.",
-            vocabulary: vocabulary
-        )
-
-        XCTAssertNil(outcome.approved)
-        XCTAssertEqual(
-            outcome.verification,
-            [
-                ReplacementEntry(
-                    replaceWith: "UserSessionManager.swift",
-                    matches: ["user session manager"]
-                ),
-            ]
-        )
-    }
-
-    func testAlignedSingleWordLengthInflationRemainsHardDrop() {
-        let vocabulary = makeVocabulary(["useAuth.ts"])
-        let outcome = RepoVocabularyMatcher.alignedFallbackOutcome(
-            transcript: "Ouvreusot.ts maintenant.",
-            vocabulary: vocabulary
-        )
-
-        XCTAssertNil(outcome.approved)
-        XCTAssertTrue(outcome.verification.isEmpty)
+            XCTAssertNil(outcome.approved, name)
+            XCTAssertEqual(outcome.verification, verification, name)
+        }
     }
 
     func testAlignedFallbackApprovesAConfidentSingleCandidate() {

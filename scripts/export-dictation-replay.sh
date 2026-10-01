@@ -18,7 +18,7 @@ if [[ $# -ne 1 ]]; then
 fi
 OUT="$1"
 SUPPORT="$HOME/Library/Application Support"
-STORE="$SUPPORT/default.store"
+STORE="$SUPPORT/localvoxtral/history.store"
 AUDIO="$SUPPORT/localvoxtral/dictation-audio"
 LEARNED="$SUPPORT/localvoxtral/learned-terms.json"
 DOMAIN="com.localvoxtral.app"
@@ -45,7 +45,7 @@ cp -R "$AUDIO" "$OUT/dictation-audio"
 if [[ -f "$LEARNED" ]]; then
   cp "$LEARNED" "$OUT/learned-terms.json"
 fi
-# Names and terms live in the app's defaults; the key has dots, so read it
+# Global terms live in the app's defaults; the key has dots, so read it
 # whole and let plutil turn the old-style plist into JSON.
 if defaults read "$DOMAIN" settings.polish_speaker_terms >/dev/null 2>&1; then
   defaults read "$DOMAIN" settings.polish_speaker_terms \

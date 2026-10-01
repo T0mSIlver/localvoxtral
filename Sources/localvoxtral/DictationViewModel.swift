@@ -199,6 +199,43 @@ final class DictationViewModel {
         set { session.appConfigStore = newValue }
     }
     var sessionStore: DictationSessionStore? { get { session.sessionStore } set { session.sessionStore = newValue } }
+    /// Why the history store did not open at launch; nil when it did (#985).
+    private(set) var historyOpenFailure: DictationHistoryOpenFailure?
+    /// The store's last read or write error while it keeps failing.
+    private(set) var historyAccessFailure: String?
+    /// What History and Insights say in place of dictations: the store did
+    /// not open, or its last read or write failed. The log has the error.
+    var historyUnavailableText: String? {
+        switch historyOpenFailure {
+        case .missingHistoryTable:
+            return "Your history file lost its dictations to another program. Nothing was deleted. The log says why."
+        case .unknownContents:
+            return "Your history was saved by a newer localvoxtral. This version won't open it."
+        case .unreadable:
+            return "Your history couldn't be opened. The log says why."
+        case nil:
+            return historyAccessFailure == nil
+                ? nil : "Your history couldn't be read or saved. Nothing was deleted. The log says why."
+        }
+    }
+
+    /// Said above the History list after a launch whose copy from
+    /// `default.store` found no dictations there: the history did not come
+    /// along, and the old file is left for a restore by hand.
+    var historyImportNotice: String? {
+        guard case .legacyHoldsNoHistory = sessionStore?.legacyImport else { return nil }
+        return "Your earlier history wasn't in default.store, so nothing was copied. That file is kept."
+    }
+
+    /// The popover's one line while History is not saving.
+    var historyPopoverWarning: String? {
+        switch historyOpenFailure {
+        case .unknownContents: return "History needs a newer localvoxtral."
+        case .missingHistoryTable: return "History isn't saving; nothing was deleted."
+        case .unreadable: return "History isn't saving; nothing was deleted."
+        case nil: return historyAccessFailure == nil ? nil : "History isn't saving; nothing was deleted."
+        }
+    }
     var learnedTermStore: LearnedTermStore? {
         get { session.learnedTermStore }
         set { session.learnedTermStore = newValue }
@@ -369,6 +406,10 @@ final class DictationViewModel {
         /// Mistral's batch endpoint, for the second pass an Overlay Buffer
         /// dictation gets on stop in Mistral API mode (#317).
         var batchTranscriber: any MistralBatchTranscribing
+        /// The folder holding the history store, its audio and its diagnostic
+        /// records. Nil is the app's folder in Application Support; a test
+        /// that starts runtime services passes a temporary one.
+        var historyDirectory: URL?
 
         init(
             microphone: (() -> any MicrophoneCapturing)? = nil,
@@ -391,7 +432,8 @@ final class DictationViewModel {
             repoVocabularyGrounding: (any RepoVocabularyGrounding)? = nil,
             onRealtimeDeltaLogRecord: ((DebugRealtimeDeltaLogRecord) -> Void)? = nil,
             clock: SessionClock = .live,
-            batchTranscriber: any MistralBatchTranscribing = MistralBatchTranscriptionClient()
+            batchTranscriber: any MistralBatchTranscribing = MistralBatchTranscriptionClient(),
+            historyDirectory: URL? = nil
         ) {
             self.microphone = microphone
             self.pasteboardReader = pasteboardReader
@@ -407,6 +449,7 @@ final class DictationViewModel {
             self.onRealtimeDeltaLogRecord = onRealtimeDeltaLogRecord
             self.clock = clock
             self.batchTranscriber = batchTranscriber
+            self.historyDirectory = historyDirectory
         }
     }
     /// Warms the managed polishing helper's prompt-prefix cache on every
@@ -525,6 +568,7 @@ final class DictationViewModel {
                         visibleLines: settings.overlayBufferVisibleLines,
                         wordHold: settings.overlayBufferWordHold)
                 },
+                polishColorProvider: { settings.overlayBufferPolishColor },
                 storedPlacementProvider: { settings.overlayBufferPlacement },
                 placementWriter: { settings.overlayBufferPlacement = $0 }
             )
@@ -651,7 +695,16 @@ final class DictationViewModel {
 
         textInsertion.refreshAccessibilityTrustState()
         if startRuntimeServices {
-            sessionStore = DictationSessionStore()
+            switch DictationSessionStore.open(directory: dependencies.historyDirectory) {
+            case let .success(store):
+                sessionStore = store
+            case let .failure(failure):
+                historyOpenFailure = failure
+            }
+            sessionStore?.onAccessFailureChange = { [weak self] failure in
+                self?.historyAccessFailure = failure
+                self?.dictationHistoryRevision += 1
+            }
             sessionStore?.onChange = { [weak self] in
                 self?.dictationHistoryRevision += 1
                 Task { await self?.session.refreshLastDictationFromStore() }
@@ -660,10 +713,15 @@ final class DictationViewModel {
             // Attached whatever the setting says, so Delete and retention
             // still clear recordings kept before it was turned off.
             sessionStore?.audioStore = DictationAudioStore(
-                directoryURL: DictationAudioStore.defaultDirectoryURL())
+                directoryURL: dependencies.historyDirectory.map {
+                    $0.appendingPathComponent("dictation-audio", isDirectory: true)
+                } ?? DictationAudioStore.defaultDirectoryURL())
             // One store for writes and for deletes: a record follows its
             // History entry the way its audio does.
-            let diagnosticRecordStore = DiagnosticRecordStore()
+            let diagnosticRecordStore = DiagnosticRecordStore(
+                directoryURL: dependencies.historyDirectory.map {
+                    $0.appendingPathComponent("diagnostic-records", isDirectory: true)
+                })
             session.diagnosticRecordStore = diagnosticRecordStore
             sessionStore?.diagnosticRecordStore = diagnosticRecordStore
             sessionStore?.removeOrphanedAudio()
@@ -684,6 +742,7 @@ final class DictationViewModel {
                     }
                 }
             )
+            session.agentSkillStore = AgentSkillStore(fileURL: AgentSkillStore.defaultFileURL())
             if let learnedTermStore {
                 let correctionLearning = CorrectionLearning(
                     store: learnedTermStore,
@@ -711,7 +770,12 @@ final class DictationViewModel {
                     learnedTermStore: learnedTermStore,
                     fileURL: QuickCaptureInboxViewModel.defaultFileURL(),
                     applicationSupport: LearnedTermStore.defaultFileURL().deletingLastPathComponent(),
-                    usageRecorder: usageLedger
+                    usageRecorder: usageLedger,
+                    polisher: QuickCaptureLLMPolisher(
+                        settings: settings,
+                        appConfigStore: { [weak self] in self?.appConfigStore ?? AppConfigStore() },
+                        service: { [weak self] in self?.llmPolishingService ?? LLMPolishingService() }
+                    )
                 )
             )
             session.termSuggestionCadence = TermSuggestionCadence(
@@ -740,7 +804,9 @@ final class DictationViewModel {
                     guard let self else { return nil }
                     return PolishPromptWarmup.plan(
                         settings: self.settings,
-                        appConfigStore: self.appConfigStore
+                        appConfigStore: self.appConfigStore,
+                        projectNames: self.session.polishProjectNames(),
+                        skillNames: self.session.polishSkillNames()
                     )
                 },
                 clock: dependencies.clock
@@ -938,7 +1004,8 @@ extension DictationViewModel {
 
 extension DictationViewModel {
     /// Points stopped quick captures at the Inbox, its routing sentence at
-    /// the popover, and where each capture went at its History record.
+    /// the popover, and each capture's polish and destination at its History
+    /// record.
     func installQuickCaptureInbox(_ inbox: QuickCaptureInboxViewModel) {
         quickCapture = inbox
         session.onQuickCapture = { [weak inbox] text, historyRecordID in
@@ -948,6 +1015,9 @@ extension DictationViewModel {
             // Mid-session the status line belongs to the session.
             guard let self, !self.isDictating, !self.isFinalizingStop, !self.isConnectingRealtimeSession else { return }
             self.statusText = sentence
+        }
+        inbox.model.onPolished = { [weak self] recordID, polishedText, seconds in
+            self?.sessionStore?.setQuickCapturePolish(polishedText, seconds: seconds, id: recordID)
         }
         inbox.model.onRouted = { [weak self] recordID, destination in
             self?.sessionStore?.setQuickCaptureDestination(destination, id: recordID)

@@ -8,7 +8,7 @@ import Foundation
 /// broker tells the two apart before it decodes anything else. The socket's
 /// trust is unchanged: a private directory, a 0600 socket, and the peer's uid
 /// checked before the first byte is read, so only the user's own processes
-/// can ask, and they could already read `default.store` themselves.
+/// can ask, and they could already read `history.store` themselves.
 public enum AgentCLIWire {
     public static let version = 1
 
@@ -285,7 +285,7 @@ public struct AgentCLITermProject: Sendable, Equatable, Codable {
 }
 
 public struct AgentCLITerms: Sendable, Equatable, Codable {
-    /// Settings' Names and terms, which apply everywhere.
+    /// Settings' Global terms, which apply everywhere.
     public var userTerms: [String]
     public var projects: [AgentCLITermProject]
 
@@ -300,7 +300,7 @@ public struct AgentCLIProposal: Sendable, Equatable, Codable {
         public enum Reason: String, Sendable, Codable {
             /// The project already holds it, in any state.
             case known
-            /// In Names and terms, or a suggestion the user refused.
+            /// In Global terms, or a suggestion the user refused.
             case userList
             /// Not a term: too long, a sentence, control characters.
             case notTermShaped

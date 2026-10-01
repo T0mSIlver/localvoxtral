@@ -7,14 +7,16 @@ import CoreGraphics
 import Foundation
 
 extension ClaudeSessionJoinResolver {
-    package func resolveViaHerdr(target: TerminalScreenTarget) async -> ClaudeSessionJoin? {
+    package func resolveViaHerdr(target: TerminalScreenTarget, tty: String) async -> ClaudeSessionJoin? {
         // herdr 0.9 attaches several machines to one client, and while a remote
         // machine is selected the local server keeps a focused pane it has
         // merely stopped presenting. `pane.current` below would then describe a
         // pane nobody is looking at, and every cross-check in this arm would
         // pass on it, so the federation state is read BEFORE the socket
         // question is asked at all (issue #286).
-        switch herdrFederation() {
+        let selection = herdrFederation()
+        let surface = HerdrJoinedSurface(tty: tty, machine: .herdrClient(selection))
+        switch selection {
         case .notFederated:
             break
         case .showingMachine(let profile):
@@ -22,7 +24,9 @@ extension ClaudeSessionJoinResolver {
             // local arm cannot do with it — so instead of abstaining (#290),
             // the federated arm takes over and resolves against that
             // machine's own herdr, over the app-managed forward.
-            return await resolveViaFederatedHerdr(target: target, profile: profile)
+            var join = await resolveViaFederatedHerdr(target: target, profile: profile)
+            join?.herdrSurface = surface
+            return join
         case .unreadable:
             Self.abstainedHerdrJoin(outcome: "herdr machine state unreadable")
             return nil
@@ -52,7 +56,8 @@ extension ClaudeSessionJoinResolver {
             snapshot: snapshot,
             windowID: focusedWindowID(target.pid),
             mechanism: .herdrPane,
-            herdrPane: ClaudeHerdrPaneBinding(paneID: pane.paneID, socketPath: socketPath)
+            herdrPane: ClaudeHerdrPaneBinding(paneID: pane.paneID, socketPath: socketPath),
+            herdrSurface: surface
         )
     }
 
@@ -158,7 +163,9 @@ extension ClaudeSessionJoinResolver {
     /// asks that pane again whether the joined agent is foreground, with the
     /// same test the arm joined on: the pid for a local pane, the parent pid
     /// or agent name for a remote one. `frontmostPID` names the app keys
-    /// would go to, for the fallback's choice between typing and History.
+    /// would go to, for the fallback's choice between typing and History;
+    /// that choice also needs the surface the join recorded to show the same
+    /// machine still (`displaysJoinedSurface`).
     package func herdrPromptRoute(
         for join: ClaudeSessionJoin,
         frontmostPID: @escaping @MainActor () -> pid_t?
@@ -173,7 +180,8 @@ extension ClaudeSessionJoinResolver {
             binding: binding,
             snapshot: join.snapshot,
             mechanism: mechanism,
-            terminalPID: join.target.pid,
+            terminal: join.target,
+            surface: join.herdrSurface,
             frontmostPID: frontmostPID
         )
     }
@@ -184,7 +192,8 @@ extension ClaudeSessionJoinResolver {
         binding: ClaudeHerdrPaneBinding,
         snapshot: ClaudeSessionSnapshot,
         mechanism: ClaudeSessionJoinMechanism,
-        terminalPID: pid_t,
+        terminal: TerminalScreenTarget,
+        surface: HerdrJoinedSurface?,
         frontmostPID: @escaping @MainActor () -> pid_t?
     ) -> HerdrPanePromptRoute? {
         guard let writer = herdrPaneWriter, let panes = herdrPanes else { return nil }
@@ -204,10 +213,13 @@ extension ClaudeSessionJoinResolver {
                 )
             },
             keysReachThePane: { @MainActor in
-                // The frontmost app is read after the socket answers, so a
-                // focus change during the query is seen.
-                let paneFocused = await panes.focusedPane(socketPath: binding.socketPath)?.paneID == binding.paneID
-                return paneFocused && frontmostPID() == terminalPID
+                // The frontmost app is read after the socket and the surface
+                // answer, so a focus change during either query is seen.
+                guard let surface,
+                      await panes.focusedPane(socketPath: binding.socketPath)?.paneID == binding.paneID,
+                      await self.displaysJoinedSurface(surface, terminal: terminal)
+                else { return false }
+                return frontmostPID() == terminal.pid
             }
         )
     }
