@@ -597,6 +597,13 @@ final class TextInsertionService {
         // before calling clearPendingText().
     }
 
+    /// A cancelled session: the words the stream still holds and any text
+    /// not yet typed are dropped, never typed (#1222).
+    func discardLiveReplacementSession() {
+        liveHoldBackStream = nil
+        clearPendingText()
+    }
+
     func flushFinalLiveReplacementCorrections() {
         // Session stop: release the whole held tail with replacements applied.
         guard liveHoldBackStream != nil else { return }

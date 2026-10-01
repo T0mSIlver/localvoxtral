@@ -47,6 +47,12 @@ extension DictationSessionController {
             return
         }
 
+        // A cancelled live session types nothing more: the stop below
+        // would flush the word the stream still holds back.
+        if wasCancelled {
+            textInsertion.discardLiveReplacementSession()
+        }
+
         // A go-to still bringing a pane forward: the segments behind it land
         // before the session ends.
         guard !finishLiveAutoPasteSessionAfterGoTo(sessionMode: sessionMode, finish: { [weak self] sessionAudio in
