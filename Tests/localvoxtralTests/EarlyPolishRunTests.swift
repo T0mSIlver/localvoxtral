@@ -20,14 +20,16 @@ final class EarlyPolishRunTests: XCTestCase {
 
     private func makeRun(
         _ polish: FakePolishingService,
-        now: @escaping @Sendable () -> Date = { Date(timeIntervalSince1970: 0) }
+        now: @escaping @Sendable () -> Date = { Date(timeIntervalSince1970: 0) },
+        logFailure: @escaping EarlyPolishRun.LogFailure = EarlyPolishRun.logFailure
     ) -> EarlyPolishRun {
         let templates = templates
         return EarlyPolishRun(
             service: polish,
             configuration: configuration,
             templates: { templates },
-            now: now
+            now: now,
+            logFailure: logFailure
         )
     }
 
@@ -85,5 +87,28 @@ final class EarlyPolishRunTests: XCTestCase {
         XCTAssertNil(handoff)
         let count = await polish.requests.count
         XCTAssertEqual(count, 0)
+    }
+
+    /// A polish backend's rejection can quote the request, so the dictated
+    /// text: a failed piece logs only its status public (#1110).
+    func testAFailedPieceLogsTheRejectionBodyOnlyInPrivate() async {
+        let sentinel = "SENTINEL-sk-live-4f9a2c"
+        let polish = FakePolishingService(failing: LLMPolishingError.requestFailed(
+            statusCode: 400, body: #"{"error":"bad input: \#(sentinel)"}"#
+        ))
+        var logged: [(piece: Int, publicDetail: String, privateDetail: String)] = []
+        let failureLogged = BoundedWait()
+        let run = makeRun(polish, logFailure: { piece, publicDetail, privateDetail in
+            logged.append((piece, publicDetail, privateDetail))
+            failureLogged.resolve()
+        })
+
+        run.settledTextChanged("\(Self.first) and more")
+        let didLog = await failureLogged.value(failAfter: 10)
+
+        XCTAssertTrue(didLog)
+        XCTAssertEqual(logged.map(\.piece), [0])
+        XCTAssertEqual(logged.map(\.publicDetail), ["LLM request failed (HTTP 400)."])
+        XCTAssertTrue(logged.allSatisfy { $0.privateDetail.contains(sentinel) })
     }
 }

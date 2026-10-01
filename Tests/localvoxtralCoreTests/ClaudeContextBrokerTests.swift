@@ -577,6 +577,29 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         XCTAssertEqual(error, .unsupportedVersion(99))
     }
 
+    /// The broker logs a rejection public, so the rejection must not carry
+    /// the rejected field: an unknown `event` or `agent` can hold a prompt or
+    /// a key (#1107).
+    func testARejectedEventOrAgentNameIsNotCarriedIntoTheRejection() throws {
+        try broker.start()
+        let sentinel = "SENTINEL-sk-live-4f9a2c"
+        let (expectation, collector) = expectIngest(count: 2)
+        var payload = Data(#"{"v":2,"event":"\#(sentinel)","session_id":"s","ts":1}"#.utf8 + [0x0A])
+        payload.append(Data(#"{"v":2,"event":"Stop","agent":"\#(sentinel)","session_id":"s","ts":1}"#.utf8 + [0x0A]))
+        XCTAssertNil(send(payload))
+        wait(for: [expectation], timeout: 5)
+
+        let rejections = collector.all.map { result -> String in
+            guard case .failure(let error) = result else { return "accepted" }
+            return String(describing: error)
+        }
+        XCTAssertEqual(rejections.count, 2)
+        XCTAssertTrue(rejections[0].hasPrefix("unknownEvent"), rejections[0])
+        XCTAssertTrue(rejections[1].hasPrefix("unknownAgent"), rejections[1])
+        XCTAssertFalse(rejections.contains { $0.contains(sentinel) }, "\(rejections)")
+        XCTAssertTrue(registry.liveSessions().isEmpty)
+    }
+
     /// Regression: the cap is on one LINE, not on how much a peer may send.
     /// Checking the pre-split buffer dropped a connection that delivered
     /// several complete records in one chunk — punishing a publisher for being
