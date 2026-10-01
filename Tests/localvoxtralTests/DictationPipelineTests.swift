@@ -190,6 +190,44 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertNil(pipeline.records.all.first?.polishedText)
     }
 
+    /// A new dictation while the stopped one waits on its polish: the one
+    /// saved as not inserted keeps its audio in History (#1090).
+    func testANewDictationDuringThePolishKeepsTheOldDictationsAudio() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish, earlyPolish: false)
+        pipeline.viewModel.settings.dictationAudioEnabled = true
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-audio-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let audioStore = DictationAudioStore(directoryURL: directory)
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
+        store.audioStore = audioStore
+        pipeline.viewModel.sessionStore = store
+        await polish.holdNextRequest()
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
+        let polishing = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(polishing, "the polish never started")
+
+        pipeline.server.forgetFrames()
+        await startAndSpeak(pipeline)
+        await polish.releaseHeldRequest()
+        _ = await store.count()
+
+        let interrupted = try XCTUnwrap(pipeline.records.all.first)
+        XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded), [false])
+        XCTAssertEqual(audioStore.storedIDs(), [interrupted.id])
+        XCTAssertEqual(
+            try Data(contentsOf: audioStore.fileURL(for: interrupted.id)),
+            DictationAudioRecording.wav(fromPCM16: Self.speech(seed: 1)))
+
+        await stopAndFinalize(pipeline)
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(Self.phrase)>"], "the new dictation commits")
+    }
+
     /// With Polish while you speak off, nothing is polished while the user
     /// speaks: the stop sends the whole text in one request, as before #709.
     func testOverlayBufferWithEarlyPolishOffPolishesOnlyTheWholeTextAtStop() async throws {

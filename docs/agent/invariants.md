@@ -732,7 +732,14 @@ there is not.
     *Typed only into the same pane:* a text herdr refused (its own error
     answer for that request, or a request that never reached the socket) is
     typed only while keys would land in the joined pane: its terminal is
-    frontmost and herdr's `pane.current` is that pane. Otherwise, and
+    frontmost, herdr's `pane.current` is that pane, and the terminal still
+    shows the surface the join saw (#1105, `HerdrJoinedSurface`): the same
+    focused tty, and on it the same machine, read as the arm read it
+    (herdr's machine selection, alone on screen once machines are saved, or
+    the tty's ssh session). A client switched to another saved machine
+    keeps its tty, and the server it left keeps a focused pane it no longer
+    shows, so the pane check alone would type into the other machine.
+    Otherwise, and
     whenever the request went out with no valid answer (it may have landed),
     the text stays in History (`keepInHistory`).
     *Enter only over the joined agent:* before each Enter the route asks the
@@ -1365,7 +1372,10 @@ there is not.
     the moments that mattered (quit during polish, an aborted connect) and the
     ssh outlived the app. `DictationViewModel` owns only leases, releasing every
     one on its existing session-exit paths; the service owns idle, revoke, quit,
-    supervision, pid-ledger and next-launch orphan-reap lifecycles.
+    supervision, pid-ledger and next-launch orphan-reap lifecycles. Replacing
+    a forward removes the old entry before waiting for its teardown, so a
+    revoke or quit during that wait has nothing to stop; the waiter checks
+    enrollment and quit again when it resumes and spawns nothing (#1104).
   - **The remote herdr forward is a trust inversion, and it is bounded by what
     we SEND, not by what the socket allows.** herdr's JSON socket is
     full-control: over that same forwarded stream one could create panes, write
