@@ -68,6 +68,10 @@ On an enrolled host, the remote plugin runs that one-shot run on the host
 instead, when the Mac asks for a session's project
 ([Terms from the coding agent on a host](../../docs/remote-claude-context.md#terms-from-the-coding-agent-on-a-host)).
 
+The remote plugin also ships the `localvoxtral-doctor` skill. Its one-line
+description sits in each session's context on the host; the rest loads only
+when you ask why dictation misbehaves.
+
 The remote plugin also drafts a quick capture routed to one of that host's
 projects. It has the same caps as the Mac's own draft, $0.50 at most
 ([Quick capture on a host](../../docs/remote-claude-context.md#quick-capture-on-a-host)).
