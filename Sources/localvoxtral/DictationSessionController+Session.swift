@@ -445,7 +445,10 @@ extension DictationSessionController {
         let client = activeRealtimeClient
         Task { @MainActor [weak self] in
             let budget = await lookup(configuration)
-            guard let self, self.realtimeContextLimitLookupID == lookupID, self.acceptsRealtimeEvents else { return }
+            // The lookup id alone: the answer often lands while the socket
+            // is still opening, before the session counts as dictating. A
+            // budget left on an idle client is reset by the next connect.
+            guard let self, self.realtimeContextLimitLookupID == lookupID else { return }
             client.setContextBudget(budget)
         }
     }
