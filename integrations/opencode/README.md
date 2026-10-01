@@ -90,8 +90,9 @@ publishes bounded records over localvoxtral's private UNIX socket, which
 authenticates the connecting peer. When the app is not running, every write
 silently does nothing.
 
-The records carry only the prior prompt (bounded), the working directory and
-the paths of touched files. Session transcripts, model output and file
+The records carry only the prior prompt (bounded), the working directory, the
+paths of touched files and the session's title once opencode's model named
+it, which localvoxtral shows the session by. Session transcripts, model output and file
 contents are never sent.
 
 When a session asks for a permission or asks you a question, the plugin sends

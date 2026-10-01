@@ -87,11 +87,14 @@ payments, and "go to payments" reaches it ahead of any other name. Naming
 another session payments moves the name to it.
 
 Without a name you gave it, the overlay, the popover and the banners show a
-session by its Claude Desktop title, else its folder. The folder is the
+session by its title, else its folder. The title is Claude Desktop's, else the
+one Claude Code, opencode or Codex gave the session. Claude Code sends its
+title when a session starts or resumes, so a `/rename` shows from the next
+resume. The folder is the
 repository's, or in a linked worktree the worktree's, without the random
 ending of a worktree Claude created (`zealous-chaplygin-aa1a02` shows as
 "zealous-chaplygin"). A worktree on a branch you named shows the branch
-instead (`fix/overlay-names` shows as "overlay-names").
+instead (`fix/overlay-names` shows as "overlay-names"), on an ssh host too.
 
 When sessions would show the same name, each gets its agent
 ("localvoxtral · Codex") or a number ("localvoxtral · 2") added.
@@ -102,7 +105,7 @@ A session answers to, in this order:
 2. the name it shows, suffix included ("go to localvoxtral two");
 3. its folder or branch, with or without the random ending;
 4. its repository's name;
-5. its Claude Desktop title, whole or its first two to four words
+5. its title, whole or its first two to four words
    ("go to better session names").
 
 A name that several sessions share matches none of them.

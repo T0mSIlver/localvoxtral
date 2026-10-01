@@ -164,17 +164,22 @@ public struct ClaudeHookLimits: Sendable, Equatable {
     public var maxPathBytes: Int
     /// Max file paths carried by a single record.
     public var maxFilePathsPerRecord: Int
+    /// Max UTF-8 bytes of a session title (#1020). A title is a name, and
+    /// the app shows at most 80 characters of it.
+    public var maxTitleBytes: Int
 
     public init(
         maxLineBytes: Int = 64 * 1024,
         maxPromptBytes: Int = 8 * 1024,
         maxPathBytes: Int = 4 * 1024,
-        maxFilePathsPerRecord: Int = 16
+        maxFilePathsPerRecord: Int = 16,
+        maxTitleBytes: Int = 320
     ) {
         self.maxLineBytes = maxLineBytes
         self.maxPromptBytes = maxPromptBytes
         self.maxPathBytes = maxPathBytes
         self.maxFilePathsPerRecord = maxFilePathsPerRecord
+        self.maxTitleBytes = maxTitleBytes
     }
 
     public static let `default` = ClaudeHookLimits()
@@ -327,6 +332,13 @@ public struct ClaudeHookRecord: Sendable, Equatable {
     /// What a `Notification` record waits for. Required on that event and
     /// dropped by `clamp` from every other one.
     public var notificationType: ClaudeNotificationType?
+    /// The harness's own title for the session (#1020): Claude Code's
+    /// `session_title`, opencode's `title`, Codex's `thread_name`. A name to
+    /// show and say, never evidence (docs/agent/invariants.md, "A session's
+    /// title is a name, never evidence"). Optional and additive: an app that
+    /// predates it ignores the key, and a record without it reads nil. `clamp`
+    /// makes it one sanitized line and drops it from focus records.
+    public var sessionTitle: String?
 
     public init(
         version: Int = ClaudeHookWire.version,
@@ -340,7 +352,8 @@ public struct ClaudeHookRecord: Sendable, Equatable {
         files: [ClaudeFileTouch] = [],
         process: ClaudeHookProcessInfo? = nil,
         promptRelay: OpencodePromptRelayAddress? = nil,
-        notificationType: ClaudeNotificationType? = nil
+        notificationType: ClaudeNotificationType? = nil,
+        sessionTitle: String? = nil
     ) {
         self.version = version
         self.event = event
@@ -354,6 +367,7 @@ public struct ClaudeHookRecord: Sendable, Equatable {
         self.process = process
         self.promptRelay = promptRelay
         self.notificationType = notificationType
+        self.sessionTitle = sessionTitle
     }
 }
 
@@ -396,6 +410,7 @@ extension ClaudeHookRecord: Codable {
         case process
         case promptRelay = "prompt_relay"
         case notificationType = "notification_type"
+        case sessionTitle = "session_title"
     }
 
     public init(from decoder: Decoder) throws {
@@ -420,6 +435,8 @@ extension ClaudeHookRecord: Codable {
         // An unknown type decodes to nil, and `decodeLine` drops a
         // Notification without one.
         notificationType = (try? container.decodeIfPresent(ClaudeNotificationType.self, forKey: .notificationType)) ?? nil
+        // A title that is not a string loses the field, not the record.
+        sessionTitle = (try? container.decodeIfPresent(String.self, forKey: .sessionTitle)) ?? nil
         // Any other key on the wire — notably an `origin`-shaped one — is
         // silently discarded here. That is the point: trust is not a field.
     }
@@ -442,6 +459,7 @@ extension ClaudeHookRecord: Codable {
         try container.encodeIfPresent(process, forKey: .process)
         try container.encodeIfPresent(promptRelay, forKey: .promptRelay)
         try container.encodeIfPresent(notificationType, forKey: .notificationType)
+        try container.encodeIfPresent(sessionTitle, forKey: .sessionTitle)
     }
 }
 
@@ -576,6 +594,12 @@ public enum ClaudeHookWireCodec {
         if record.event != .notification {
             clamped.notificationType = nil
         }
+        // A focus record describes a pane, not the session.
+        if record.event == .focusChanged || record.event == .focusCleared {
+            clamped.sessionTitle = nil
+        } else {
+            clamped.sessionTitle = record.sessionTitle.flatMap { cleanTitle($0, limits: limits) }
+        }
         clamped.sessionID = truncate(record.sessionID, toUTF8Bytes: limits.maxPathBytes)
         clamped.prompt = record.prompt.map { truncate($0, toUTF8Bytes: limits.maxPromptBytes) }
         clamped.rawCwd = record.rawCwd.map { truncate($0, toUTF8Bytes: limits.maxPathBytes) }
@@ -609,6 +633,15 @@ public enum ClaudeHookWireCodec {
             clamped.process = process
         }
         return clamped
+    }
+
+    /// A title as one line: controls, bidi overrides and zero-width
+    /// characters removed (`ClaudeTextSanitizer`), bounded, nil when nothing
+    /// is left.
+    static func cleanTitle(_ raw: String, limits: ClaudeHookLimits) -> String? {
+        let line = ClaudeTextSanitizer.sanitize(raw, maxBytes: limits.maxTitleBytes)
+            .trimmingCharacters(in: .whitespaces)
+        return line.isEmpty ? nil : line
     }
 
     /// Truncate on a Character boundary so the result is always valid UTF-8

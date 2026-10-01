@@ -85,6 +85,11 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
     /// layout (`ClaudeWorkspaceReference.claudeWorktreeRepository`). A label,
     /// like `workspace`; remote only.
     public var remoteWorktreeRepository: String?
+    /// The harness's own title for the session, as its last record carrying
+    /// one said (#1020). A name, never evidence: nothing but
+    /// `SessionDefaultNames` reads it, the registry file does not keep it,
+    /// and no log line carries it.
+    package var harnessTitle: String?
     /// The shim version a remote session's last accepted hook sent: the
     /// Claude Code plugin's `X-Lvx-Plugin-Version`, or the Vibe hooks'
     /// version. A running session keeps the shim it loaded, so this can
@@ -117,6 +122,12 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
     package var remoteProject: String? {
         guard !origin.isLocalAuthenticated else { return nil }
         return remoteEnvironment?.project ?? remoteWorktreeRepository
+    }
+
+    /// The branch a remote session's host reported (`X-Lvx-Env-Branch`), a
+    /// label. Nil for a local session, whose branch the app reads itself.
+    package var remoteBranch: String? {
+        remoteSessionEnvironment?.branch
     }
 
     /// Recent files that name paths on THIS machine.
@@ -207,6 +218,7 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
         self.process = nil
         self.remoteEnvironment = nil
         self.remoteWorktreeRepository = nil
+        self.harnessTitle = nil
         self.firstSeen = firstSeen
         self.lastActivity = firstSeen
     }
@@ -272,6 +284,12 @@ public enum ClaudeSessionReducer {
         if case .remote = origin, let environment, !environment.isEmpty,
            record.event != .focusChanged, record.event != .focusCleared {
             snapshot.remoteEnvironment = environment
+        }
+        // Kept until a record carries another: Claude Code sends its title on
+        // `SessionStart` only. The wire clamp already dropped it from focus
+        // records.
+        if let title = record.sessionTitle {
+            snapshot.harnessTitle = title
         }
 
         switch record.event {

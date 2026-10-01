@@ -21,13 +21,26 @@ extension ClaudeHookPublisher {
     /// The Codex process's start time rides along: Codex does send
     /// `SessionEnd`, but only under a 3 s ceiling it may miss, and a reused
     /// pid must not keep a dead session joinable.
+    ///
+    /// - Parameter threadName: the session's `thread_name` by session id;
+    ///   nil reads Codex's index (`CodexSessionIndex`).
     @discardableResult
-    public func runCodex(stdin: Data, vibe: VibeEnvironment = VibeEnvironment()) -> Outcome {
+    public func runCodex(
+        stdin: Data,
+        vibe: VibeEnvironment = VibeEnvironment(),
+        threadName: (@Sendable (String) -> String?)? = nil
+    ) -> Outcome {
         guard var record = CodexHookInputParser.parse(
             data: stdin, timestamp: environment.now(), limits: limits
         ) else {
             return .droppedUnparseable
         }
+        let indexPath = CodexSessionIndex.path(variables: environment.variables)
+        let threadName = threadName ?? {
+            CodexSessionIndex.threadName(sessionID: $0, atPath: indexPath, deadline: 0.25)
+        }
+        // `encodeLine` clamps it to one sanitized line.
+        record.sessionTitle = threadName(record.sessionID)
         guard let socketPath = ClaudeHookSocketPath.resolve(environment: environment.variables) else {
             return .droppedNoSocketPath
         }
