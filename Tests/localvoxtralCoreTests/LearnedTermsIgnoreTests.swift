@@ -232,6 +232,80 @@ final class LearnedTermsIgnoreTests: XCTestCase {
         XCTAssertTrue(reopened.snapshot().projects.isEmpty)
     }
 
+    /// Another copy un-ignores a repo and records a correction there while
+    /// this copy is between reading the list and updating the terms
+    /// (review, 2026-10-01). The list's lock is held across both, so the
+    /// other copy waits, and this copy's sweep never deletes the correction.
+    func testAnUnignoreByAnotherCopyDuringAWriteKeepsItsCorrection() throws {
+        let fileURL = makeFileURL()
+        let mac = LearnedTermProjectIdentity(key: "/w/quill", name: "quill")
+        let other = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        other.ignoreProject(key: quill.key, name: "quill", keys: [mac.key])
+        other.waitForPendingWrites()
+        let ignoredURL = try XCTUnwrap(other.ignoredFileURL)
+        let armed = Mutex(false)
+        let ranMidWrite = Mutex(false)
+        let quillKey = quill.key
+        let otherWrites: @Sendable () -> Void = {
+            other.unignoreProject(key: quillKey)
+            other.recordCorrection("Kern", project: mac)
+            other.waitForPendingWrites()
+        }
+        let store = LearnedTermStore(
+            fileURL: fileURL, now: { Self.start },
+            beforeTermsUpdate: {
+                guard armed.withLock({ armed in defer { armed = false }; return armed }) else { return }
+                // The other copy can write only while this one leaves the list free.
+                guard StoredFileLock.tryHolding(beside: ignoredURL) != nil else { return }
+                otherWrites()
+                ranMidWrite.withLock { $0 = true }
+            })
+        store.waitForPendingWrites()
+
+        armed.withLock { $0 = true }
+        store.record(observations("Inkwell"), project: .init(key: "/w/ink", name: "ink"))
+        store.waitForPendingWrites()
+        if !ranMidWrite.withLock({ $0 }) { otherWrites() }
+
+        let onDisk = try XCTUnwrap(LearnedTermStore.terms(fromFileContents: Data(contentsOf: fileURL)).value)
+        XCTAssertEqual(
+            onDisk.projects.first { $0.key == mac.key }?.terms.map(\.term), ["Kern"],
+            "the other copy's correction stays")
+        XCTAssertNotNil(onDisk.projects.first { $0.key == "/w/ink" })
+    }
+
+    /// An ignore whose write failed, then another copy's write to the list,
+    /// then this copy's next write (review, 2026-10-01): the failed ignore
+    /// is replayed onto the other copy's list, so neither is lost.
+    func testAnIgnoreWhoseWriteFailedSurvivesAnotherCopysWrite() throws {
+        let fileURL = makeFileURL()
+        let listWriteFails = Mutex(false)
+        let first = LearnedTermStore(
+            fileURL: fileURL, now: { Self.start },
+            writeIgnoredList: { data, url in
+                if listWriteFails.withLock({ $0 }) { throw CocoaError(.fileWriteOutOfSpace) }
+                try LearnedTermStore.writeFile(data, to: url)
+            })
+        let second = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        first.waitForPendingWrites()
+        second.waitForPendingWrites()
+
+        listWriteFails.withLock { $0 = true }
+        first.ignoreProject(key: quill.key, name: "quill", keys: ["/w/quill"])
+        first.waitForPendingWrites()
+        XCTAssertTrue(first.ignoredListUnsaved)
+        second.ignoreProject(key: "/w/notes", name: "notes", keys: [])
+        second.waitForPendingWrites()
+        listWriteFails.withLock { $0 = false }
+        first.record(observations("Inkwell"), project: .init(key: "/w/ink", name: "ink"))
+        first.waitForPendingWrites()
+
+        XCTAssertFalse(first.ignoredListUnsaved)
+        let onDisk = try XCTUnwrap(
+            LearnedTermStore.ignored(fromFileContents: Data(contentsOf: XCTUnwrap(first.ignoredFileURL))).value)
+        XCTAssertEqual(onDisk.projects.map(\.key).sorted(), ["/w/notes", quill.key].sorted())
+    }
+
     func testUnignoreLetsTheNextDictationRecordIt() {
         let store = LearnedTermStore(fileURL: nil, now: { Self.start })
         let mac = LearnedTermProjectIdentity(key: "/w/quill", name: "quill")

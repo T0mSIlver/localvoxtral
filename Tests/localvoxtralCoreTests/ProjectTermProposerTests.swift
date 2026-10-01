@@ -48,6 +48,7 @@ final class ProjectTermProposerTests: XCTestCase {
         func recordOrigin(_ remote: ProjectRemote, projectKey: String) {
             memory.withLock {
                 $0.recordOrigin(remote, projectKey: projectKey)
+                $0.ignored.addCheckout(projectKey, ofEntryHolding: remote.key)
                 $0.removeIgnoredProjects()
             }
         }
@@ -172,6 +173,31 @@ final class ProjectTermProposerTests: XCTestCase {
         XCTAssertEqual(runner.count, 0)
         XCTAssertTrue(store.snapshot().projects.isEmpty, "what the clone learned went")
         XCTAssertTrue(store.snapshot().ignored.contains(key: repo), "and its key is known from now on")
+    }
+
+    /// A first dictation in a new clone of an ignored repo that learned
+    /// nothing, so it has no record (review, 2026-10-01): its key still joins
+    /// the entry, and the clone learns nothing afterwards.
+    func testANewCloneWithNoRecordJoinsItsIgnoredEntry() async throws {
+        let repo = try checkout("quillmark")
+        let runner = FakeRunner(.terms(["inkwell"]))
+        let quill = try XCTUnwrap(ProjectRemote("github.com/me/quillmark"))
+        let store = LearnedTermStore(fileURL: nil, now: clock.now)
+        store.ignoreProject(key: quill.key, name: "quillmark", keys: [])
+        let proposer = ProjectTermProposer(
+            store: store, runner: runner, now: clock.now, trackedFiles: { _ in [] }, origin: { _ in quill },
+            usageRecorder: nil)
+
+        await commit(proposer, join(repo + "/src"))
+        store.waitForPendingWrites()
+
+        XCTAssertEqual(runner.count, 0)
+        XCTAssertTrue(store.snapshot().ignored.contains(key: repo), "its key is known from now on")
+        store.record(
+            [LearnedTermObservation(term: "Inkwell", source: .repository)],
+            project: .init(key: repo, name: "quillmark"))
+        store.waitForPendingWrites()
+        XCTAssertTrue(store.snapshot().projects.isEmpty, "the clone learns nothing")
     }
 
     /// Until the launch load lands, the store cannot tell which repos are

@@ -143,44 +143,60 @@ extension StoredFile {
         change: (inout Value) -> Void
     ) -> StoredFileUpdate<Value> {
         StoredFileLock.withLock(beside: url) {
-            var value = memory
-            switch read(url) {
-            case .unreadable:
-                return .refused(.unreadable)
-            case .absent:
-                if lastSeen != nil {
-                    Log.persistence.notice(
-                        "\(url.lastPathComponent, privacy: .public): gone since this copy last wrote it, written again"
-                    )
-                }
-            case .bytes(let data) where data != lastSeen:
-                switch decode(data) {
-                case .loaded(let onDisk):
-                    Log.persistence.notice(
-                        "\(url.lastPathComponent, privacy: .public): another running copy wrote it, this change applies on top"
-                    )
-                    value = onDisk
-                    // Memory now holds these bytes plus the change: should the
-                    // write fail, the next update applies to memory, not to
-                    // these bytes again, and keeps the change.
-                    lastSeen = data
-                case .refused(let problem):
-                    return .refused(problem)
-                case .absent:
-                    return .refused(.unreadable)
-                }
-            case .bytes:
-                break
+            updateHoldingTheLock(
+                url, memory: memory, lastSeen: &lastSeen, decode: decode, encode: encode, write: write,
+                change: change)
+        }
+    }
+
+    /// `update`, for a caller that already holds `url`'s lock: a store that
+    /// keeps one file's lock across a change to another (#1006).
+    package static func updateHoldingTheLock<Value>(
+        _ url: URL,
+        memory: Value,
+        lastSeen: inout Data?,
+        decode: (Data) -> StoredFileLoad<Value>,
+        encode: (Value) throws -> Data,
+        write: (Data, URL) throws -> Void,
+        change: (inout Value) -> Void
+    ) -> StoredFileUpdate<Value> {
+        var value = memory
+        switch read(url) {
+        case .unreadable:
+            return .refused(.unreadable)
+        case .absent:
+            if lastSeen != nil {
+                Log.persistence.notice(
+                    "\(url.lastPathComponent, privacy: .public): gone since this copy last wrote it, written again"
+                )
             }
-            change(&value)
-            do {
-                let data = try encode(value)
-                try write(data, url)
+        case .bytes(let data) where data != lastSeen:
+            switch decode(data) {
+            case .loaded(let onDisk):
+                Log.persistence.notice(
+                    "\(url.lastPathComponent, privacy: .public): another running copy wrote it, this change applies on top"
+                )
+                value = onDisk
+                // Memory now holds these bytes plus the change: should the
+                // write fail, the next update applies to memory, not to
+                // these bytes again, and keeps the change.
                 lastSeen = data
-                return .written(value)
-            } catch {
-                return .failed(value, error)
+            case .refused(let problem):
+                return .refused(problem)
+            case .absent:
+                return .refused(.unreadable)
             }
+        case .bytes:
+            break
+        }
+        change(&value)
+        do {
+            let data = try encode(value)
+            try write(data, url)
+            lastSeen = data
+            return .written(value)
+        } catch {
+            return .failed(value, error)
         }
     }
 }

@@ -60,6 +60,15 @@ package struct IgnoredProjects: Codable, Equatable, Sendable {
         }
     }
 
+    /// Adds checkout `key` to the entry that holds `remote` as its key or a
+    /// checkout's. No such entry, nothing changes.
+    package mutating func addCheckout(_ key: String, ofEntryHolding remote: String) {
+        guard let index = projects.firstIndex(where: { $0.key == remote || $0.checkouts.contains(remote) }),
+              projects[index].key != key, !projects[index].checkouts.contains(key)
+        else { return }
+        projects[index].checkouts = (projects[index].checkouts + [key]).sorted()
+    }
+
     /// Whether the record is an ignored project's: by its own key, or by the
     /// repository its checkout links to.
     package func contains(_ record: LearnedTermProject) -> Bool {
