@@ -644,6 +644,28 @@ final class DiagnosticRecordRedactionTests: XCTestCase {
 
         XCTAssertFalse(record.text.userPrompts.joined().contains("SIGPIPE killed"))
     }
+
+    /// A source's harvest is re-derived from its text, so it would keep the
+    /// prompt's identifiers while the excerpts beside it read withheld.
+    /// Terms the rest of the text holds stay.
+    func testTheBuilderHarvestsNoTermOnlyThePriorPromptHeld() {
+        let prompt = "fix the UserProfileCache race"
+        let context = "previous request to the agent: \(prompt)\n\nfiles the agent recently touched:\nSessionRouter.swift (edit)"
+        var inputs = DiagnosticRecordInputs.minimal(context: context)
+        inputs.screenDecision = .render(excerpt: "> \(prompt)\nDone", startText: "> \(prompt)\nDone", elidedChurnLines: 0)
+        inputs.clipboardRetainedText = "\(prompt)\nSessionRouter"
+        inputs.withheldPrompt = prompt
+
+        let record = DiagnosticRecordBuilder.build(id: UUID().uuidString, capturedAt: Date(), inputs: inputs)
+
+        XCTAssertEqual(record.sources.map(\.source), ["terminal", "claude", "clipboard"])
+        for source in record.sources {
+            XCTAssertFalse(source.harvest.contains { $0.contains("UserProfileCache") }, "\(source.source): \(source.harvest)")
+        }
+        for source in record.sources.dropFirst() {
+            XCTAssertTrue(source.harvest.contains { $0.contains("SessionRouter") }, "\(source.source): \(source.harvest)")
+        }
+    }
 }
 
 private extension DiagnosticRecordInputs {
