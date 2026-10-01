@@ -1874,6 +1874,10 @@ there is not.
     (`ClaudeSessionPageURL`), path exactly `/epitaxy/local_[A-Za-z0-9_-]+`;
     the registry match is exact equality with one fresh reporter
     (`resolve(desktopSessionID:)`, shared rules with the bridge lookup).
+    An address that is instead a Remote Control page,
+    `https://claude.ai/code/session_…` (parsed by `ClaudeBridgeSessionURL`),
+    resolves through the bridge lookup and binds the bridge id, which
+    commit-time liveness re-resolves as the browser arm does (#1065).
     Everything else follows the browser arm: both origins join (the id is
     desktop-allocated and names the view the user is looking at), a
     `.desktopSession` join authorizes NO screen read and carries no window

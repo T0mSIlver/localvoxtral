@@ -28,8 +28,10 @@ package enum ClaudeSessionJoinMechanism: Sendable, Equatable {
     case browserTab
     /// The web view holding keyboard focus in Claude Desktop is a Code-tab
     /// session page whose `local_…` id matched a live session's
-    /// `CLAUDE_CODE_HOST_SESSION_ID`. No screen is ever read for this
-    /// mechanism either — see `TerminalScreenClaudeJoinAuthorizer`.
+    /// `CLAUDE_CODE_HOST_SESSION_ID`, or is the `claude.ai/code/session_…`
+    /// page of a Remote Control session whose bridge id matched (#1065). No
+    /// screen is ever read for this mechanism either — see
+    /// `TerminalScreenClaudeJoinAuthorizer`.
     case desktopSession
     /// A cmux surface, matched by the surface id cmux injected into the
     /// session's environment. Local surfaces and `cmux ssh` remote shells both

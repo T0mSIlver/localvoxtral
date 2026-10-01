@@ -216,6 +216,119 @@ final class DesktopSessionClaudeJoinTests: XCTestCase {
         XCTAssertNil(join, "a bridge id under the desktop path is not a desktop session address")
     }
 
+    // MARK: - A Remote Control session opened in Claude Desktop (#1065)
+
+    private let bridgeID = "session_01AbCdEfGhIjKlMnOpQrStUv"
+    private var bridgeAddress: String { "https://claude.ai/code/\(bridgeID)" }
+
+    private func bridgeRecord(session: String = "s1", bridgeSessionID: String? = nil) -> ClaudeHookRecord {
+        ClaudeHookRecord(
+            event: .sessionStart,
+            sessionID: session,
+            timestamp: 0,
+            rawCwd: "/repo",
+            process: ClaudeHookProcessInfo(
+                hookPID: 1, claudePID: 9001, bridgeSessionID: bridgeSessionID
+            )
+        )
+    }
+
+    func testDesktopWebViewWithABridgeIDJoinsTheSessionThatReportedIt() async throws {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(bridgeRecord(bridgeSessionID: bridgeID), origin: local))
+        XCTAssertNotNil(registry.ingest(record(session: "s2"), origin: local))
+        let resolved = await resolver(registry: registry, address: bridgeAddress).resolve(target: desktop)
+        let join = try XCTUnwrap(resolved)
+        XCTAssertEqual(join.mechanism, .desktopSession)
+        XCTAssertEqual(join.snapshot.sessionID, "s1")
+        XCTAssertEqual(join.browserTab?.bridgeSessionID, bridgeID)
+        XCTAssertNil(join.desktopSession)
+    }
+
+    func testDesktopWebViewWithABridgeIDJoinsARemoteSession() async throws {
+        let registry = makeRegistry()
+        XCTAssertNotNil(
+            registry.ingest(
+                record(claudePID: nil),
+                origin: remote,
+                environment: ClaudeRemoteSessionEnvironment(bridgeSessionID: bridgeID)
+            )
+        )
+        let resolved = await resolver(registry: registry, address: bridgeAddress).resolve(target: desktop)
+        let join = try XCTUnwrap(resolved)
+        XCTAssertEqual(join.snapshot.sessionID, "s1")
+        XCTAssertNil(join.localWorkspacePath)
+    }
+
+    func testLookAlikeBridgeAddressesDoNotJoin() async {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(bridgeRecord(bridgeSessionID: bridgeID), origin: local))
+        for address in [
+            "https://claude.ai.evil.com/code/\(bridgeID)",
+            "https://evil.com/claude.ai/code/\(bridgeID)",
+            "https://claude.ai@evil.com/code/\(bridgeID)",
+            "http://claude.ai/code/\(bridgeID)",
+            "https://claude.ai:8443/code/\(bridgeID)",
+            "https://claude.ai/code/x/\(bridgeID)",
+            "https://claude.ai/codex/\(bridgeID)",
+            "https://claude.ai/code/\(bridgeID)%2F",
+        ] {
+            let resolution = await resolver(registry: registry, address: address).resolution(target: desktop)
+            XCTAssertEqual(resolution, ClaudeJoinResolution(join: nil), address)
+        }
+    }
+
+    func testBridgeIDNobodyReportsDoesNotJoin() async {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(bridgeRecord(bridgeSessionID: "session_other"), origin: local))
+        let resolution = await resolver(registry: registry, address: bridgeAddress).resolution(target: desktop)
+        XCTAssertEqual(resolution, ClaudeJoinResolution(join: nil, focusedSessionUnmatched: true))
+    }
+
+    func testTwoSessionsReportingOneBridgeIDAbstain() async {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(bridgeRecord(session: "s1", bridgeSessionID: bridgeID), origin: local))
+        XCTAssertNotNil(
+            registry.ingest(
+                record(session: "s2", claudePID: nil),
+                origin: remote,
+                environment: ClaudeRemoteSessionEnvironment(bridgeSessionID: bridgeID)
+            )
+        )
+        let resolution = await resolver(registry: registry, address: bridgeAddress).resolution(target: desktop)
+        XCTAssertEqual(resolution, ClaudeJoinResolution(join: nil, focusedSessionUnmatched: true))
+    }
+
+    // The Remote Control connection ends mid-dictation: the session's next
+    // hook carries no bridge id, so the join no longer holds at commit.
+    func testABridgeJoinEndsWhenTheSessionStopsReportingTheBridgeID() async throws {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(bridgeRecord(bridgeSessionID: bridgeID), origin: local))
+        let joinResolver = resolver(registry: registry, address: bridgeAddress)
+        let resolved = await joinResolver.resolve(target: desktop)
+        let join = try XCTUnwrap(resolved)
+        XCTAssertTrue(joinResolver.isStillLive(join))
+        XCTAssertNotNil(registry.ingest(bridgeRecord(bridgeSessionID: nil), origin: local))
+        XCTAssertNotNil(registry.snapshot(sessionID: "s1"), "the session itself is still live")
+        XCTAssertFalse(joinResolver.isStillLive(join))
+    }
+
+    func testABridgeCollisionAppearingAfterResolutionKillsTheJoin() async throws {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(bridgeRecord(session: "s1", bridgeSessionID: bridgeID), origin: local))
+        let joinResolver = resolver(registry: registry, address: bridgeAddress)
+        let resolved = await joinResolver.resolve(target: desktop)
+        let join = try XCTUnwrap(resolved)
+        XCTAssertNotNil(
+            registry.ingest(
+                record(session: "s2", claudePID: nil),
+                origin: remote,
+                environment: ClaudeRemoteSessionEnvironment(bridgeSessionID: bridgeID)
+            )
+        )
+        XCTAssertFalse(joinResolver.isStillLive(join))
+    }
+
     // MARK: - Which reader each target reaches
 
     func testDesktopTargetAsksOnlyTheDesktopReader() async {
