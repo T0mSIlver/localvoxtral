@@ -112,7 +112,7 @@ HOOK_VERSION="$(sed -n 's/^PLUGIN_VERSION=//p' "$PLUGIN/hooks/post.sh")"
 SESSION_ID="0b5e7d1c-9a3f-4e2b-8c6d-1f2e3a4b5c6d"
 # write_session_record PID SESSION_ID [SKEW]: Claude Code's record of a live
 # session. On Linux it carries the process start time, off by SKEW ticks to
-# stand for a pid reused since; without /proc a reused pid cannot be faked.
+# stand for a pid reused since.
 write_session_record() {
   _start=""
   if [ -r "/proc/$1/stat" ]; then
@@ -299,9 +299,15 @@ $OUT"
   expect_state host claude-plugin ok "recorded current session"
   pass "$SH_NAME: the hook's own record makes its session current"
   write_installed 1.22.0
-  # A pid reused by another process is not the session.
-  write_session_record "$SLEEPER_PID" "$SESSION_ID" 1
+  # A pid reused by another process is not the session: on Linux its start
+  # time differs, without /proc its command is not claude.
+  rm -f "$CLAUDE_DIR/sessions/"*
+  sleep 60 &
+  REUSED_PID=$!
+  write_session_record "$REUSED_PID" "$SESSION_ID" 1
   run_doctor
+  kill "$REUSED_PID" 2>/dev/null || true
+  wait "$REUSED_PID" 2>/dev/null || true
   expect_line "[ok  ] Claude Code plugin: 1.22.0 installed; 0 running session(s), none on an older version." "reused pid"
   pass "$SH_NAME: a session record whose pid was reused counts nothing"
   rm -f "$CLAUDE_DIR/sessions/"* "$TMP_DIR/run/localvoxtral/plugin-version/"*
