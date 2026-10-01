@@ -131,7 +131,12 @@ final class RealtimeContextRolloverTests: XCTestCase {
         private var needsHandshake = false
         private var sockets: [URLSessionWebSocketTask] = []
 
-        init(budget: RealtimeContextBudget? = RealtimeContextRolloverTests.budget) {
+        /// Resolved when the session hears its socket go.
+        let dropped = BoundedWait()
+
+        /// `dials`: a rollover dials a real socket (to a closed loopback
+        /// port) instead of taking one from the harness.
+        init(budget: RealtimeContextBudget? = RealtimeContextRolloverTests.budget, dials: Bool = false) {
             server = LimitedServer(limitBytes: (budget ?? RealtimeContextRolloverTests.budget).capacityBytes)
             client = RealtimeAPIWebSocketClient(clock: clock.clock)
             let first = urlSession.webSocketTask(with: URL(string: "ws://127.0.0.1:65535/v1/realtime")!)
@@ -142,9 +147,11 @@ final class RealtimeContextRolloverTests: XCTestCase {
                 self.serverReceives(text, on: task, generation: self.client.connectionGeneration)
             }
             client.setEventHandler { [weak self] event, generation in self?.hear(event, from: generation) }
-            client.debugSetRolloverSocket { [weak self] in
-                guard let self else { fatalError("harness gone") }
-                return self.openSocket()
+            if !dials {
+                client.debugSetRolloverSocket { [weak self] in
+                    guard let self else { fatalError("harness gone") }
+                    return self.openSocket()
+                }
             }
             client.debugPrimeConnectedStateForTesting(task: first, modelName: "voxtral")
             client.debugSetGenerationTrackingState(hasUncommittedAudio: false, isGenerationInProgress: false)
@@ -207,6 +214,7 @@ final class RealtimeContextRolloverTests: XCTestCase {
                 sessionGeneration = next
                 rolledOver.resolve()
             }
+            if case .disconnected = event { dropped.resolve() }
             accepted.append(event)
         }
 
@@ -470,6 +478,22 @@ final class RealtimeContextRolloverTests: XCTestCase {
         XCTAssertTrue(rolledOver, "the watchdog never moved the session on")
         XCTAssertEqual(harness.rollovers, 1)
         XCTAssertTrue(harness.errorsOrDrops.isEmpty, "\(harness.errorsOrDrops)")
+    }
+
+    /// The rolled-over socket is really dialled, off the retiring socket's
+    /// receive path (swift-corelibs traps creating it there, #1147): here it
+    /// reaches a closed port, and the session, already on the new
+    /// connection, hears that socket fail.
+    func testTheNextSocketIsDialledAndReportsToTheSession() async {
+        let harness = Harness(dials: true)
+        harness.speak(seconds: 0.1)
+        harness.client.sendCommit(final: false)
+        harness.speak(seconds: 6.7)
+        XCTAssertEqual(harness.rollovers, 1)
+
+        let dropped = await harness.dropped.value(failAfter: 10)
+
+        XCTAssertTrue(dropped, "the next socket was never dialled")
     }
 
     /// The retiring socket closing before its `done` (vLLM's 1012) moves the

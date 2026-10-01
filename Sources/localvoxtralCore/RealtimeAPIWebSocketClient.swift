@@ -183,7 +183,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     /// `connecting`. The caller has closed the old one and stamped the new
     /// generation in the same locked block.
     private func installSocketLocked(
-        _ s: inout State, session: URLSession?, task: URLSessionWebSocketTask,
+        _ s: inout State, session: URLSession?, task: URLSessionWebSocketTask?,
         configuration: RealtimeSessionConfiguration
     ) {
         let modelName = configuration.model.trimmed
@@ -377,7 +377,9 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         /// The session's stop came in and nothing was carried: the retiring
         /// socket's `done` answers it.
         case finalized
-        case switched(next: RealtimeConnectionGeneration, task: URLSessionWebSocketTask?, usage: SocketUsage?, carriedBytes: Int)
+        case switched(
+            next: RealtimeConnectionGeneration, dial: RealtimeSessionConfiguration?, usage: SocketUsage?,
+            carriedBytes: Int)
         case noConfiguration(stopRequested: Bool)
     }
 
@@ -411,17 +413,18 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             closeSocketLocked(&s, cancelTask: true)
             let next = RealtimeConnectionGeneration.next()
             s.base.connectionGeneration = next
-            let task: URLSessionWebSocketTask?
+            let dial: RealtimeSessionConfiguration?
             if let testSocket {
                 installSocketLocked(&s, session: nil, task: testSocket(), configuration: configuration)
                 s.base.socketState = .connected
-                task = nil
+                dial = nil
             } else {
-                let (session, opened) = createWebSocketSession(
-                    request: Self.socketRequest(for: configuration), delegate: self)
-                installSocketLocked(&s, session: session, task: opened, configuration: configuration)
+                // `connecting` with no task yet: the socket itself is created
+                // off this queue (`dialRolloverSocket`). Frames sent meanwhile
+                // queue for the handshake as they do while any socket opens.
+                installSocketLocked(&s, session: nil, task: nil, configuration: configuration)
                 s.isRolloverSocketOpening = true
-                task = opened
+                dial = configuration
             }
 
             // The carried audio goes out first, behind session.update, then
@@ -449,7 +452,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                 }
             }
             s.isGenerationInProgress = true
-            return .switched(next: next, task: task, usage: usage, carriedBytes: carriedBytes)
+            return .switched(next: next, dial: dial, usage: usage, carriedBytes: carriedBytes)
         }
 
         switch end {
@@ -463,7 +466,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         case .finalized:
             Log.backends.notice("realtime rollover ended by the stop, with no audio to carry")
             emit(.transcriptionFinalized, from: retiring)
-        case .switched(let next, let task, let usage, let carriedBytes):
+        case .switched(let next, let dial, let usage, let carriedBytes):
             recordUsage(usage)
             if let cause {
                 Log.backends.error(
@@ -473,10 +476,44 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             Log.backends.notice(
                 "realtime rollover: connection \(retiring.description, privacy: .public) finished; continuing on \(next.description, privacy: .public) with \(String(format: "%.1f", Double(carriedBytes) / Double(AudioChunkBuffer.bytesPerSecond)), privacy: .public)s of carried audio"
             )
-            // Before the new socket can raise anything: it is not resumed yet.
+            // Before the new socket can raise anything: it does not exist yet.
             emit(.sessionRolledOver(to: next), from: retiring)
-            task?.resume()
+            if let dial {
+                // Usually on the retiring socket's receive callback. On Linux,
+                // swift-corelibs-foundation's `webSocketTask(with:)` syncs onto
+                // that same work queue and traps (SIGILL, found by the live
+                // take on #1147), so the socket is created elsewhere on every
+                // platform.
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    self?.dialRolloverSocket(next, configuration: dial)
+                }
+            }
         }
+    }
+
+    /// Creates and resumes the socket a rollover switched to, unless the
+    /// client moved on meanwhile (a disconnect, a new `connect()`).
+    private func dialRolloverSocket(
+        _ generation: RealtimeConnectionGeneration, configuration: RealtimeSessionConfiguration
+    ) {
+        let (session, task) = createWebSocketSession(
+            request: Self.socketRequest(for: configuration), delegate: self)
+        let installed: Bool = state.withLock { s in
+            guard isCurrentConnectionLocked(s.base, generation),
+                  s.base.socketState == .connecting, s.base.webSocketTask == nil
+            else { return false }
+            s.base.urlSession = session
+            s.base.webSocketTask = task
+            return true
+        }
+        guard installed else {
+            Log.backends.notice(
+                "realtime rollover: connection \(generation.description, privacy: .public) was given up before it was dialled"
+            )
+            session.invalidateAndCancel()
+            return
+        }
+        task.resume()
     }
 
     private static func frameText(_ event: [String: Any]) -> String? {
