@@ -354,6 +354,7 @@ extension DictationSessionController {
     /// tells them apart. What fails keeps the words in History as not
     /// inserted.
     func checkDestinationBeforeCommit(sessionMode: DictationOutputMode) -> DestinationCommitCheck {
+        sessionPickedPane = nil
         guard let commitGuard = sessionCommitGuard else { return .commit }
         sessionCommitGuard = nil
         let targetPID = overlayBufferCoordinator.commitTargetAppPID
@@ -364,6 +365,8 @@ extension DictationSessionController {
                 keepOverlayInHistory(sessionMode: sessionMode, status: DestinationStatus.paneLeftFront, record: nil)
                 return .kept
             }
+            // Before the commit samples the stop, which takes the join.
+            leaveStartSessionForPickedSession()
             return .readBack(sessionID: sessionID, bundleID: bundleID)
         case .focusedApp(let originPID, let paneBundleID):
             guard targetPID == nil || targetPID != originPID || targetBundleID == paneBundleID else { return .commit }
@@ -373,6 +376,17 @@ extension DictationSessionController {
             keepOverlayInHistory(sessionMode: sessionMode, status: DestinationStatus.stoppedWhileSwitching, record: nil)
             return .kept
         }
+    }
+
+    /// The words go to a session Tab picked, not to the one the dictation
+    /// started in. The route armed for that session's prompt would write
+    /// them there (#1054), and its join would ground the polish, the leading
+    /// space and correction learning in the wrong session. The picked pane
+    /// gets them by keyboard, once it reads back.
+    private func leaveStartSessionForPickedSession() {
+        Log.dictation.notice("destination: a picked session; the start session's route and join are dropped")
+        textInsertion.endPromptRelay()
+        context.discardTerminalScreenCapture()
     }
 
     /// Runs `proceed`, the rest of the commit, once the focused pane reads
@@ -407,8 +421,34 @@ extension DictationSessionController {
                 self.keepOverlayInHistory(sessionMode: sessionMode, status: DestinationStatus.paneLeftFront, record: record)
                 return
             }
+            self.sessionPickedPane = (sessionID, bundleID)
             proceed()
         }
+    }
+
+    /// Asked by a commit task after an await (the polish, the second pass),
+    /// right before it inserts: two tabs of one terminal share its pid, so
+    /// a tab switch while the task waited would take the words (#1056).
+    /// True when no pane was picked or the focused pane still shows the
+    /// picked session. Otherwise the text is saved as not inserted, the stop
+    /// finishes, and the caller inserts nothing; a cancelled task returns
+    /// false and changes nothing.
+    func pickedPaneStillShownBeforeInsertion(sessionMode: DictationOutputMode) async -> Bool {
+        guard let picked = sessionPickedPane else { return true }
+        var shows = false
+        if let navigator = sessionNavigator {
+            shows = await navigator.focusedPaneShows(sessionID: picked.sessionID, bundleID: picked.bundleID)
+        }
+        guard !Task.isCancelled else { return false }
+        guard !shows else { return true }
+        Log.dictation.notice("destination: the picked session's pane left the front while the commit waited; kept in History")
+        let saveNotInserted = saveInterruptedPolishCommit
+        saveInterruptedPolishCommit = nil
+        saveNotInserted?()
+        overlayBufferCoordinator.reset()
+        completeStoppedSessionCleanup(sessionMode: sessionMode, overlayCommitOutcome: nil, shouldCommitOverlay: true)
+        statusText = DestinationStatus.paneLeftFront
+        return false
     }
 
     /// Saves the stopped overlay dictation as not inserted and finishes the

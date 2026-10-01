@@ -772,6 +772,22 @@ final class ClaudeRemoteHostFileStoreIOTests: XCTestCase {
         XCTAssertEqual(metadata.mode, 0o600)
     }
 
+    /// A try-pr build beside the installed app (#990): each enrolls a host
+    /// after the other loaded the file, and neither un-enrolls the other's.
+    func testTwoRunningCopiesKeepEachOthersEnrollments() throws {
+        let installed = try ClaudeRemoteHostRegistry(fileURL: fileURL, io: io)
+        let tryBuild = try ClaudeRemoteHostRegistry(fileURL: fileURL, io: io)
+
+        let first = try installed.enroll(label: "studio")
+        let second = try tryBuild.enroll(label: "laptop")
+        let third = try installed.enroll(label: "server")
+
+        let reopened = try ClaudeRemoteHostRegistry(fileURL: fileURL, io: io)
+        XCTAssertEqual(
+            Set(reopened.hosts().map(\.id)), [first.host.id, second.host.id, third.host.id])
+        XCTAssertEqual(Set(installed.hosts().map(\.id)), [first.host.id, second.host.id, third.host.id])
+    }
+
     func testReadOfAnAbsentStoreIsNilNotAnError() throws {
         XCTAssertNil(try io.read(from: fileURL))
     }

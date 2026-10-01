@@ -175,7 +175,7 @@ final class MistralAPIModeTests: XCTestCase {
         // request would be billed for nothing.
         XCTAssertNotNil(settings.llmPolishingConfiguration, "precondition: config resolves")
         XCTAssertNil(
-            PolishPromptWarmup.plan(settings: settings, appConfigStore: MockAppConfigStore())
+            PolishPromptWarmup.plan(settings: settings, appConfigStore: MockAppConfigStore(), projectNames: [])
         )
     }
 

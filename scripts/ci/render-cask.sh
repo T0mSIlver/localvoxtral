@@ -68,9 +68,10 @@ cask "localvoxtral" do
 
   uninstall quit: "com.localvoxtral.app"
 
-  # Dictation history is not listed: it lives in SwiftData's default store,
-  # ~/Library/Application Support/default.store, a name other apps can share.
-  # Downloaded models in ~/.cache/huggingface are shared too.
+  # Dictation history lives in the app's folder (history.store). Builds before
+  # #985 kept it in ~/Library/Application Support/default.store, a name other
+  # apps share, so zap leaves that file. Downloaded models in
+  # ~/.cache/huggingface are shared too.
   zap trash: [
     "~/Library/Application Support/localvoxtral",
     "~/Library/Caches/com.localvoxtral.app",

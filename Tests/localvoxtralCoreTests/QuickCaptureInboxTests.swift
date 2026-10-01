@@ -42,7 +42,7 @@ final class QuickCaptureInboxTests: XCTestCase {
     func testACaptureIsOnDiskBeforeRoutingAndDraftedInItsProject() async throws {
         let model = model(answer: ["reach": 0.9])
         let task = model.capture(text: "Add a dark mode", historyRecordID: UUID())
-        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).items.map(\.text), ["Add a dark mode"])
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.map(\.text), ["Add a dark mode"])
         await task.value
         let item = try XCTUnwrap(model.items.first)
         XCTAssertEqual(item.state, .ready)
@@ -52,7 +52,24 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(statuses, ["Sent to reach inbox"])
         XCTAssertEqual(routed, ["reach"])
         XCTAssertTrue(github.created.withLock { $0.isEmpty }, "nothing is filed without File")
-        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).items.first?.title, "Dark mode")
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.first?.title, "Dark mode")
+    }
+
+    /// A try-pr build beside the installed app (#990): both opened the
+    /// Inbox before either captured, and neither loses the other's capture.
+    func testTwoRunningCopiesKeepEachOthersCaptures() async throws {
+        let installed = model(answer: ["reach": 0.9])
+        let tryBuild = model(answer: ["reach": 0.9])
+
+        await installed.capture(text: "Add a dark mode", historyRecordID: nil).value
+        await tryBuild.capture(text: "Fix the login", historyRecordID: nil).value
+        let first = try XCTUnwrap(installed.items.first { $0.text == "Add a dark mode" })
+        installed.setTitle("Dark mode, finally", for: first.id)
+
+        let onDisk = try XCTUnwrap(QuickCaptureInboxFile.load(from: fileURL).value)
+        XCTAssertEqual(Set(onDisk.items.map(\.text)), ["Add a dark mode", "Fix the login"])
+        XCTAssertEqual(onDisk.items.first { $0.id == first.id }?.title, "Dark mode, finally")
+        XCTAssertEqual(Set(installed.items.map(\.text)), ["Add a dark mode", "Fix the login"])
     }
 
     func testTheCatchAllRunsNoAgentAndMovingItDraftsIt() async throws {
@@ -96,15 +113,33 @@ final class QuickCaptureInboxTests: XCTestCase {
 
         XCTAssertEqual(model.markFiled(id, url: "https://github.com/o/other/issues/3"), .failure(.otherRepository("o/reach")))
         XCTAssertEqual(model.markFiled(id, url: "https://github.com/o/reach/pull/3"), .failure(.notAnIssue))
-        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).items.first?.state, .ready)
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.first?.state, .ready)
 
         let filed = try model.markFiled(id, url: "https://github.com/O/Reach/issues/12").get()
         XCTAssertEqual(filed.state, .filed)
         XCTAssertEqual(filed.filedAt, Date(timeIntervalSince1970: 1_000_000))
-        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).items.first?.filedURL, "https://github.com/O/Reach/issues/12")
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.first?.filedURL, "https://github.com/O/Reach/issues/12")
         XCTAssertEqual(routed.last, "Filed in o/reach")
         XCTAssertTrue(github.created.withLock { $0.isEmpty }, "the app files nothing itself")
         XCTAssertEqual(model.markFiled(id, url: "https://github.com/o/reach/issues/13"), .failure(.notReady(.filed)))
+    }
+
+    /// Another running copy moved the capture to another repository after
+    /// this one loaded it (#990 review): marking it filed in the old one is
+    /// refused against the file, and History is not told it was filed.
+    func testMarkingFiledChecksWhatAnotherCopyChanged() async throws {
+        let model = model(answer: ["reach": 0.9])
+        await model.capture(text: "Add a dark mode", historyRecordID: UUID()).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        var onDisk = try XCTUnwrap(QuickCaptureInboxFile.load(from: fileURL).value)
+        onDisk.update(id) { $0.repository = "o/website" }
+        try PrivateFile.write(QuickCaptureInboxFile.encode(onDisk), to: fileURL)
+        routed = []
+
+        XCTAssertEqual(
+            model.markFiled(id, url: "https://github.com/o/reach/issues/12"), .failure(.otherRepository("o/website")))
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.first?.state, .ready)
+        XCTAssertEqual(routed, [])
     }
 
     /// #938: an unsure capture waits unplaced with the router's guess; no
@@ -120,7 +155,7 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(statuses, ["Sent to inbox"])
         XCTAssertEqual(routed, ["Inbox"])
         XCTAssertEqual(runner.runs.withLock { $0 }, 0, "no agent spend on a guess")
-        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).items.first?.suggestion?.projectKey, "/w/reach")
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.first?.suggestion?.projectKey, "/w/reach")
 
         await model.acceptSuggestion(id)?.value
         item = try XCTUnwrap(model.items.first)
@@ -234,7 +269,7 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(model.items.first?.state, .drafting)
         XCTAssertEqual(model.items.first?.note, QuickCaptureInbox.waitingForHostNote)
         XCTAssertEqual(
-            QuickCaptureInboxFile.load(from: fileURL).items.first?.note, "Interrupted before a draft.",
+            QuickCaptureInboxFile.load(from: fileURL).value?.items.first?.note, "Interrupted before a draft.",
             "a quit while it waits does not leave it claiming to wait"
         )
         sleeper.wakeAll()
@@ -308,11 +343,68 @@ final class QuickCaptureInboxTests: XCTestCase {
         }
     }
 
+    // MARK: An inbox file this build cannot load (#989)
+
+    private func writeInboxFile(_ contents: String) throws -> Data {
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let data = Data(contents.utf8)
+        try data.write(to: fileURL)
+        return data
+    }
+
+    /// A capture into a refused Inbox is not taken: the file keeps its
+    /// bytes, the popover says so, and the words stay in History.
+    private func assertRefusesACapture(
+        _ contents: Data, problem: StoredFileProblem, file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        let model = model(answer: ["reach": 0.9])
+        XCTAssertEqual(model.storeProblem, problem, file: file, line: line)
+        await model.capture(text: "Add a dark mode", historyRecordID: UUID()).value
+
+        XCTAssertEqual(try Data(contentsOf: fileURL), contents, "the file keeps its bytes", file: file, line: line)
+        XCTAssertTrue(model.items.isEmpty, file: file, line: line)
+        XCTAssertEqual(statuses, [QuickCaptureInboxModel.refusedStatus], file: file, line: line)
+    }
+
+    func testANewerInboxFileKeepsItsBytesAfterACapture() async throws {
+        let data = try writeInboxFile(#"{"version":\#(QuickCaptureInbox.currentVersion + 1),"items":[{"future":true}]}"#)
+        try await assertRefusesACapture(data, problem: .newerVersion(QuickCaptureInbox.currentVersion + 1))
+    }
+
+    func testACorruptInboxFileKeepsItsBytesAfterACapture() async throws {
+        let data = try writeInboxFile(#"{"version":1,"items":[{"text":"half"#)
+        try await assertRefusesACapture(data, problem: .unreadable)
+    }
+
+    /// Before #989 the load renamed a bad file to one fixed `.unreadable`
+    /// name and went on empty when that name was taken.
+    func testAnEarlierUnreadableFileIsLeftAloneToo() async throws {
+        let data = try writeInboxFile(#"{"version":1,"items":[{"text":"half"#)
+        let earlier = fileURL.appendingPathExtension("unreadable")
+        try Data("earlier".utf8).write(to: earlier)
+        try await assertRefusesACapture(data, problem: .unreadable)
+        XCTAssertEqual(try Data(contentsOf: earlier), Data("earlier".utf8))
+    }
+
+    /// Start Over moves the file beside itself under a new name, and the
+    /// Inbox saves again.
+    func testStartOverMovesTheInboxFileAsideAndSavesAgain() async throws {
+        let data = try writeInboxFile("{ not json")
+        let model = model(answer: ["reach": 0.9])
+        let aside = try model.moveAsideAndStartOver()
+
+        XCTAssertEqual(try Data(contentsOf: aside), data)
+        XCTAssertNil(model.storeProblem)
+        await model.capture(text: "Add a dark mode", historyRecordID: UUID()).value
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.map(\.text), ["Add a dark mode"])
+    }
+
     func testACaptureInterruptedByAQuitWaitsWithItsWords() throws {
         var inbox = QuickCaptureInbox()
         inbox.add(QuickCaptureItem(capturedAt: Date(), text: "Half done"))
         try QuickCaptureInboxFile.save(inbox, to: fileURL)
-        let loaded = QuickCaptureInboxFile.load(from: fileURL)
+        let loaded = try XCTUnwrap(QuickCaptureInboxFile.load(from: fileURL).value)
         XCTAssertEqual(loaded.items.first?.state, .ready)
         XCTAssertEqual(loaded.items.first?.note, "Interrupted before a draft.")
         let mode = try FileManager.default.attributesOfItem(atPath: fileURL.path)[.posixPermissions] as? NSNumber

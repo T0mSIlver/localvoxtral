@@ -298,6 +298,29 @@ there is not.
   goes last against the 100-term cap: a listed term nobody says is
   sometimes written anyway. A new dictation that cancels
   the pass saves the realtime text as not inserted, as it does for a polish.
+- **Early polish reuses a piece only when the stop would have sent it the
+  same way** (#709). In Overlay Buffer with polishing, `EarlyPolishRun`
+  polishes each settled piece (whole sentences past 30 words of backend
+  finals, `EarlyPolishPlan`) while the user speaks, alone and one at a
+  time. A piece request carries only the templates, the reference guide and
+  About you. The stop still gathers and assembles the request for the whole
+  text, and polishes only the tail when that request equals the bare one
+  (`PolishRequestAssembler.bareRequest`), the templates and endpoint are the
+  pieces', and the prepared text starts with the pieces' exact prefix.
+  Otherwise the pieces are dropped and the whole text is polished: context,
+  vocabulary or a pre-applied spelling from the stop sample, a changed
+  profile, the dictionary, the payload macro and the spoken send cut all
+  land here, so learned terms, the macro and the trigger keep working on
+  the whole text. A piece is never given the text polished before it, and
+  the stop never re-polishes a piece's last sentence: both changed more
+  words than polishing it alone on the #709 replay. The stop waits for the
+  piece in flight and keeps it rather than cancelling it, because polishd
+  keeps generating a dropped request on its one slot. Sessions with a
+  second pass never start early polish: Mistral's realtime stream settles
+  nothing before the stop, and the batch text replaces the realtime text.
+  With **Polish while you speak** off (`SettingsStore.earlyPolishEnabled`,
+  default on for the bundled helper only) no run starts, and the stop takes
+  the pre-#709 path unchanged.
 - **Claude Desktop is a text field whose Return sends, and gets its
   newlines as Shift+Return** (#660). Three lists name it, each for one
   capability: `TerminalTargetDetector`'s text-field list fixes its verdict
@@ -426,6 +449,52 @@ there is not.
   project-less dictation reads them. Known limit of the bar: it counts
   dictations, not independent evidence, so one stale clipboard read across
   three dictations is three confirmations.
+
+- **Every polish carries every listed project's name** (#1024). The
+  About-you block ends with `Their projects (repository names): …`, built by
+  `PolishProjectNames` from quick capture's project list
+  (`QuickCaptureProjects.projects`): each project's name and its
+  repository's, sorted, the 30 most recent projects, without labels a tool
+  generated (a folder name ending in a hex hash, such as a Claude Desktop
+  worktree's). It goes to every endpoint whatever the context toggles say,
+  on the same ruling as learned terms above: a repository name is the
+  speaker's vocabulary. A remote project's name is a label its host sent, so
+  a host can put up to 60 characters of its choosing in every prompt; the
+  host is one the user enrolled, and the label is sanitized like a term
+  (`SpeakerTerms.sanitized`: one line, no quotes, no commas). The list sits
+  in the SYSTEM prompt and is sorted rather than ordered by recency, so the
+  helper's cached prefix changes only when a project is added or dropped,
+  never because the user dictated into another one. Measured on GLM 5.3
+  with Tom's dictations (#1024): with the names, 117/122 repository names
+  came out right against 58 without and 104 with his hand-typed Global
+  terms, and no control got a name written into it. A name already among
+  the Global terms is listed there only, and Settings offers to remove such
+  a term; nothing removes it without a click.
+
+- **A host's skill names reach every polish, as names only** (#1024). The
+  remote shims send `X-Lvx-Skills`: the Claude Code plugin on SessionStart,
+  Vibe's at each turn's end (it has no start hook). The value is the names of
+  the skill folders (holding `SKILL.md`) and command files under the host's
+  Claude Code, Codex, opencode, Vibe and `~/.agents` folders, the installed
+  Claude Code plugins' skills, and the session folder's `.claude/`. Never a
+  file's contents, never a path. The Mac lists the same folders on itself
+  (`AgentSkillDirectories`). It is its own header, not an `X-Lvx-Env-*`
+  one: a list outgrows the environment's 200-byte values, and it is content,
+  not a label about where a session runs. It is untrusted text a host
+  writes into the prompt, so `AgentSkillNamesCodec` keeps only folder-shaped
+  names (ASCII letters, digits, `.`, `_`, `-`, 64 bytes, no leading dot or
+  dash), at most 80, and reports nothing for a value over 2 KiB. The
+  listener passes them on only after the re-authentication, so a revoked
+  host's list is never kept. `AgentSkillStore` keeps one list per host id in
+  `agent-skills.json`, rewrites it at most daily while a list is unchanged,
+  never overwrites a file it could not read, and drops a host after 30 days
+  without a report. Every polish gets the union, sorted, as `Skills they
+  invoke in their coding agents: …` after the project line, whichever
+  harness the dictation joined: the joined harness's list alone would change
+  the system prompt at every join and break the cached prefix, and the #1024
+  eval found no cost in sending 43 names where 11 were used (no control got
+  a name written into it). Built-in commands that exist on no disk are not
+  listed.
 
 - **A learned term does not rewrite ordinary words** (#522). The exact tier
   pre-applies any span that normalizes to a term, so a learned `useAuth`
@@ -588,8 +657,11 @@ there is not.
   and each adds its own below:
   (1) *One route, resolved at start.* `SessionContextResolver.resolveAgentPromptRoute()`
   picks at most one route per dictation, next to the join, for the session
-  the join resolved and nothing else. It is dropped with the join. The one
-  exception is a dictation addressed by name ("Send that to <name>" above):
+  the join resolved and nothing else. It is dropped with the join, and
+  both are dropped before an Overlay Buffer commit into a session Tab
+  picked (#1054): that pane gets the words by keyboard after its read-back,
+  and the start session's route would write them into the start session's
+  prompt. The one exception is a dictation addressed by name ("Send that to <name>" above):
   its route is resolved at commit, for the named session, by
   `ClaudeSessionJoinResolver.addressedRoute(for:)`, and never falls back
   to keys.
@@ -625,6 +697,13 @@ there is not.
     token, a `Host` other than its own address, and any call for a session
     the pane no longer displays. It forwards through the TUI's in-process
     client, so the app never needs or sees opencode's server password.
+    *Typed only into the same prompt* (#1057): a call the relay refused
+    with a status other than 409, or one that never reached it (connection
+    refused, text too long), is typed only while the terminal the dictation
+    started in is frontmost and its focused pane still resolves to this
+    relay. A 409 (the pane shows another session now) and a request with no
+    answer read back (timeout, dropped connection: it may have landed) stay
+    in History (`keepInHistory`).
     *Resolution:* it reuses the join's session when the join resolved, and
     otherwise asks only local questions
     (`ClaudeSessionJoinResolver.opencodePromptRelay(target:)`): the focused
@@ -659,7 +738,14 @@ there is not.
     *Typed only into the same pane:* a text herdr refused (its own error
     answer for that request, or a request that never reached the socket) is
     typed only while keys would land in the joined pane: its terminal is
-    frontmost and herdr's `pane.current` is that pane. Otherwise, and
+    frontmost, herdr's `pane.current` is that pane, and the terminal still
+    shows the surface the join saw (#1105, `HerdrJoinedSurface`): the same
+    focused tty, and on it the same machine, read as the arm read it
+    (herdr's machine selection, alone on screen once machines are saved, or
+    the tty's ssh session). A client switched to another saved machine
+    keeps its tty, and the server it left keeps a focused pane it no longer
+    shows, so the pane check alone would type into the other machine.
+    Otherwise, and
     whenever the request went out with no valid answer (it may have landed),
     the text stays in History (`keepInHistory`).
     *Enter only over the joined agent:* before each Enter the route asks the
@@ -1292,7 +1378,10 @@ there is not.
     the moments that mattered (quit during polish, an aborted connect) and the
     ssh outlived the app. `DictationViewModel` owns only leases, releasing every
     one on its existing session-exit paths; the service owns idle, revoke, quit,
-    supervision, pid-ledger and next-launch orphan-reap lifecycles.
+    supervision, pid-ledger and next-launch orphan-reap lifecycles. Replacing
+    a forward removes the old entry before waiting for its teardown, so a
+    revoke or quit during that wait has nothing to stop; the waiter checks
+    enrollment and quit again when it resumes and spawns nothing (#1104).
   - **The remote herdr forward is a trust inversion, and it is bounded by what
     we SEND, not by what the socket allows.** herdr's JSON socket is
     full-control: over that same forwarded stream one could create panes, write
@@ -2529,7 +2618,7 @@ there is not.
   and it never reaches the registry. The trust is the hook path's, unchanged:
   the 0700 directory, the 0600 socket and `getpeereid` before the first byte,
   so only processes running as the user can ask, and each of them could read
-  `default.store` and `learned-terms.json` from disk already. That equivalence
+  `history.store` and `learned-terms.json` from disk already. That equivalence
   is the whole argument, so it bounds what the command may do: no TCP
   listener, ever (a loopback port is reachable by every local user and every
   page a browser loads); no command that writes history or starts a

@@ -99,7 +99,7 @@ extension ClaudeIntegrationSettingsModel {
                         .skipped("The shell startup file was left unchanged; see Details.")
                     )
                     Log.claudeContext.error(
-                        "Claude remote setup skipped shell startup edit: \(shellFailure.describedError, privacy: .public)"
+                        "Claude remote setup skipped shell startup edit: \(shellFailure.publicLogDescription, privacy: .public) \(shellFailure.describedError, privacy: .private)"
                     )
                 } else {
                     markSetup(.shellStartup, .done("The shell startup block is applied."))
@@ -356,7 +356,7 @@ extension ClaudeIntegrationSettingsModel {
         }
         if let failure = detectionFailure {
             Log.claudeContext.error(
-                "Claude remote setup could not check for Claude Desktop: \(failure.describedError, privacy: .public)"
+                "Claude remote setup could not check for Claude Desktop: \(failure.publicLogDescription, privacy: .public) \(failure.describedError, privacy: .private)"
             )
             return false
         }

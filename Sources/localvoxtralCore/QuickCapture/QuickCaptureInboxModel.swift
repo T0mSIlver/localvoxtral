@@ -22,6 +22,12 @@ package final class QuickCaptureInboxModel {
     package var onChange: (@MainActor () -> Void)?
 
     private let fileURL: URL?
+    /// Set, the inbox file could not be loaded: it is left as it is, the
+    /// Inbox is empty and refuses every change (#989).
+    package private(set) var storeProblem: StoredFileProblem?
+    /// The file's bytes as this copy last read or wrote them: another running
+    /// copy of the app may write it too (#990).
+    private var lastSeen: Data?
     private let makeRouter: @MainActor () -> QuickCaptureRouter
     private let projects: @MainActor () -> [QuickCaptureProject]
     private let agents: @MainActor () -> [ProjectTermProposal.Agent]
@@ -71,7 +77,12 @@ package final class QuickCaptureInboxModel {
         self.polisher = polisher
         self.polishVocabulary = polishVocabulary
         self.now = now
-        var loaded = fileURL.map(QuickCaptureInboxFile.load(from:)) ?? QuickCaptureInbox()
+        var load = StoredFileLoad<QuickCaptureInbox>.absent
+        if let fileURL {
+            (load, lastSeen) = StoredFile.loadShared(fileURL, decode: QuickCaptureInboxFile.decode)
+        }
+        storeProblem = load.problem
+        var loaded = load.value.map(QuickCaptureInboxFile.resumingInterrupted) ?? QuickCaptureInbox()
         loaded.prune(now: now())
         inbox = loaded
         adoptProjects()
@@ -110,9 +121,20 @@ package final class QuickCaptureInboxModel {
     package func capture(
         text: String, historyRecordID: UUID?, id: UUID = UUID(), capturedAt: Date? = nil
     ) -> Task<Void, Never> {
+        guard storeProblem == nil else {
+            // The words are in History; the Inbox file is not replaced.
+            Log.persistence.error("Quick capture: not saved, the inbox file could not be loaded")
+            onStatus?(Self.refusedStatus)
+            return Task {}
+        }
         let item = QuickCaptureItem(
             id: id, capturedAt: capturedAt ?? now(), text: text, historyRecordID: historyRecordID)
         mutate { $0.add(item) }
+        guard storeProblem == nil else {
+            // Another running copy left a file this build cannot read.
+            onStatus?(Self.refusedStatus)
+            return Task {}
+        }
         let polisher = polisher()
         guard polisher != nil || pendingPlacements > 0 else {
             return track(place(item, rawText: text))
@@ -624,13 +646,21 @@ package final class QuickCaptureInboxModel {
         }
     }
 
+    /// True when capture `id` is in the Inbox, on its own or joined to
+    /// another as a follow-up.
+    package func holds(_ id: UUID) -> Bool {
+        inbox.items.contains { $0.id == id || ($0.followUps ?? []).contains { $0.id == id } }
+    }
+
     /// A coding agent filed the capture itself (#923). Its History record
-    /// says so, as after File.
+    /// says so, as after File. The check runs against the file, which
+    /// another running copy may have changed (#990).
     package func markFiled(_ id: UUID, url: String) -> Result<QuickCaptureItem, QuickCaptureInbox.MarkFiledRefusal> {
-        var changed = inbox
-        let result = changed.markFiled(id, url: url, now: now())
+        let moment = now()
+        // Stays notFound when the Inbox is refused and the change never runs.
+        var result: Result<QuickCaptureItem, QuickCaptureInbox.MarkFiledRefusal> = .failure(.notFound)
+        mutate { result = $0.markFiled(id, url: url, now: moment) }
         if case .success(let item) = result {
-            mutate { $0 = changed }
             Log.backends.info("Quick capture: a coding agent filed \(url, privacy: .public)")
             if let recordID = item.historyRecordID, let repository = item.repository {
                 onRouted?(recordID, "Filed in \(repository)")
@@ -639,13 +669,46 @@ package final class QuickCaptureInboxModel {
         return result
     }
 
+    /// The popover's sentence for a capture the refused Inbox did not take.
+    package static let refusedStatus = "Inbox unreadable; capture not saved"
+
+    /// The Inbox pane's Start Over: moves the refused file aside
+    /// (`StoredFile.moveAside`) and starts an empty Inbox. Throws, keeping
+    /// the refusal, when the move could not be verified.
+    @discardableResult
+    package func moveAsideAndStartOver() throws -> URL {
+        guard storeProblem != nil, let fileURL else { throw StoredFile.MoveAsideFailed() }
+        let aside = try StoredFile.moveAside(fileURL)
+        lastSeen = nil
+        storeProblem = nil
+        onChange?()
+        return aside
+    }
+
     private func mutate(_ change: (inout QuickCaptureInbox) -> Void) {
-        change(&inbox)
-        guard let fileURL else { return }
-        do {
-            try QuickCaptureInboxFile.save(inbox, to: fileURL)
-        } catch {
+        guard storeProblem == nil else {
+            Log.persistence.error("Quick capture inbox: a change was refused, the file could not be loaded")
+            return
+        }
+        guard let fileURL else {
+            change(&inbox)
+            return
+        }
+        // The change applies to what another running copy wrote, if it did.
+        switch StoredFile.update(
+            fileURL, memory: inbox, lastSeen: &lastSeen,
+            decode: QuickCaptureInboxFile.decode, encode: QuickCaptureInboxFile.encode,
+            write: PrivateFile.write, change: change)
+        {
+        case .written(let updated):
+            inbox = updated
+        case .failed(let updated, let error):
+            inbox = updated
             Log.persistence.error("Quick capture inbox: save failed: \(error.localizedDescription, privacy: .public)")
+        case .refused(let problem):
+            Log.persistence.error("Quick capture inbox: a change was refused, another copy left a file this build cannot read")
+            storeProblem = problem
+            inbox = QuickCaptureInbox()
         }
     }
 }

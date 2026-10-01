@@ -120,16 +120,21 @@ final class LearnedTermStoreTests: XCTestCase {
         XCTAssertEqual(reopened.snapshot().projects.map(\.key), [main.path])
         XCTAssertEqual(reopened.confirmedTerms(projectKey: main.path), ["Voxtral"])
 
-        let written = LearnedTermStore.terms(fromFileContents: try Data(contentsOf: fileURL))
+        let written = try XCTUnwrap(LearnedTermStore.terms(fromFileContents: try Data(contentsOf: fileURL)).value)
         XCTAssertEqual(written.projects.map(\.key), [main.path])
     }
 
-    func testDamagedFileReadsAsEmpty() {
-        XCTAssertEqual(LearnedTermStore.terms(fromFileContents: Data("{ not json".utf8)).termCount, 0)
+    /// Was "reads as empty" until #989: an empty read let the next write
+    /// replace every spelling, pin and project record.
+    func testDamagedFileIsRefusedNotReadAsEmpty() {
+        let load = LearnedTermStore.terms(fromFileContents: Data("{ not json".utf8))
+        XCTAssertNil(load.value)
+        XCTAssertEqual(load.problem, .unreadable)
     }
 
-    /// A file written by a later build is not guessed at.
-    func testFileFromTheFutureIsDiscarded() throws {
+    /// A file written by a later build is not guessed at, nor discarded
+    /// (#989: was "is discarded").
+    func testFileFromTheFutureIsRefused() throws {
         let future = LearnedTerms(
             version: LearnedTerms.currentVersion + 1,
             projects: [
@@ -150,7 +155,107 @@ final class LearnedTermStoreTests: XCTestCase {
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(future)
 
-        XCTAssertEqual(LearnedTermStore.terms(fromFileContents: data).termCount, 0)
+        let load = LearnedTermStore.terms(fromFileContents: data)
+        XCTAssertNil(load.value)
+        XCTAssertEqual(load.problem, .newerVersion(LearnedTerms.currentVersion + 1))
+    }
+
+    // MARK: A file this build cannot load (#989)
+
+    private func assertKeepsItsBytes(
+        _ contents: Data, problem: StoredFileProblem, file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        let fileURL = try makeFileURL()
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try contents.write(to: fileURL)
+
+        let store = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        store.record(observations("Voxtral"), project: project)
+        store.recordCorrection("herdr", project: project)
+        store.recordOrigin(ProjectRemote(remoteURL: "git@github.com:o/r.git")!, projectKey: project.key)
+        store.waitForPendingWrites()
+
+        XCTAssertEqual(try Data(contentsOf: fileURL), contents, "the file keeps its bytes", file: file, line: line)
+        XCTAssertEqual(store.problem, problem, file: file, line: line)
+        XCTAssertEqual(store.snapshot().termCount, 0, "nothing is held that a relaunch would lose", file: file, line: line)
+        let added = await store.recordCommandProposal(
+            ["polishd"], proposer: "test", project: LearnedTermProjectIdentity(key: project.key, name: project.name),
+            excluding: [])
+        XCTAssertEqual(added, [], "a refused proposal still answers", file: file, line: line)
+    }
+
+    func testANewerFileKeepsItsBytesAfterAWrite() async throws {
+        let json = #"{"version":\#(LearnedTerms.currentVersion + 1),"projects":[{"future":true}]}"#
+        try await assertKeepsItsBytes(Data(json.utf8), problem: .newerVersion(LearnedTerms.currentVersion + 1))
+    }
+
+    func testACorruptFileKeepsItsBytesAfterAWrite() async throws {
+        try await assertKeepsItsBytes(Data(#"{"version":1,"projects":[{"key":"/r""#.utf8), problem: .unreadable)
+    }
+
+    /// A try-pr build beside the installed app (#990): each loaded the file
+    /// before the other wrote, and each keeps the other's spelling.
+    func testTwoRunningCopiesKeepEachOthersTerms() throws {
+        let fileURL = try makeFileURL()
+        let installed = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        let tryBuild = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        installed.waitForPendingWrites()
+        tryBuild.waitForPendingWrites()
+
+        installed.recordCorrection("Voxtral", project: project)
+        installed.waitForPendingWrites()
+        tryBuild.recordCorrection("Mistral", project: project)
+        tryBuild.waitForPendingWrites()
+        installed.recordCorrection("Tekken", project: project)
+        installed.waitForPendingWrites()
+
+        let reopened = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        reopened.waitForPendingWrites()
+        XCTAssertEqual(
+            Set(reopened.confirmedTerms(projectKey: project.key)), ["Voxtral", "Mistral", "Tekken"])
+    }
+
+    /// A newer build running beside this one rewrote the file in its format:
+    /// this copy's next change is refused and the file keeps its bytes (#990).
+    func testACopyThatFindsANewerFileSinceItLoadedRefusesToWrite() throws {
+        let fileURL = try makeFileURL()
+        let store = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        store.recordCorrection("Voxtral", project: project)
+        store.waitForPendingWrites()
+        let newer = Data(#"{"version":\#(LearnedTerms.currentVersion + 1),"projects":[]}"#.utf8)
+        try newer.write(to: fileURL)
+
+        store.recordCorrection("Mistral", project: project)
+        store.waitForPendingWrites()
+
+        XCTAssertEqual(try Data(contentsOf: fileURL), newer)
+        XCTAssertEqual(store.problem, .newerVersion(LearnedTerms.currentVersion + 1))
+    }
+
+    /// Start Over moves the refused file beside itself, next to an earlier
+    /// one, and the store writes again.
+    func testStartOverMovesTheFileAsideAndWritesAgain() async throws {
+        let fileURL = try makeFileURL()
+        let directory = fileURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let damaged = Data("{ not json".utf8)
+        try damaged.write(to: fileURL)
+        let earlier = directory.appendingPathComponent("learned-terms.json.unreadable")
+        try Data("earlier".utf8).write(to: earlier)
+
+        let store = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        store.waitForPendingWrites()
+        let aside = try await store.moveAsideAndStartOver()
+
+        XCTAssertEqual(try Data(contentsOf: aside), damaged)
+        XCTAssertEqual(try Data(contentsOf: earlier), Data("earlier".utf8))
+        XCTAssertNil(store.problem)
+        for _ in 0..<3 { store.record(observations("Voxtral"), project: project) }
+        store.waitForPendingWrites()
+        let reopened = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        reopened.waitForPendingWrites()
+        XCTAssertEqual(reopened.confirmedTerms(projectKey: project.key), ["Voxtral"])
     }
 
     /// The store is also the read side of the feature, so what it hands back

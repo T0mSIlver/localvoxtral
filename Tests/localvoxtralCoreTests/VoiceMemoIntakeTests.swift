@@ -38,6 +38,8 @@ final class VoiceMemoIntakeTests: XCTestCase {
     private var trashed: [String] = []
     private var downloadRequests: [String] = []
     private var trashFails = false
+    /// The Inbox turned the capture down, as a refused Inbox does.
+    private var captureRefused = false
 
     override func setUp() async throws {
         workDirectory = FileManager.default.temporaryDirectory
@@ -55,7 +57,10 @@ final class VoiceMemoIntakeTests: XCTestCase {
     }
 
     /// A fresh intake over the same ledger file: what a relaunch sees.
-    private func intake() -> VoiceMemoIntake {
+    private func intake(
+        inboxHas: (@MainActor (UUID) -> Bool)? = nil,
+        capture: (@MainActor (UUID, String, Date, Data) -> Void)? = nil
+    ) -> VoiceMemoIntake {
         VoiceMemoIntake(
             directory: directory,
             ledgerURL: ledgerURL,
@@ -67,8 +72,9 @@ final class VoiceMemoIntakeTests: XCTestCase {
                 trashed.append(url.lastPathComponent)
                 files.removeAll { $0.name == url.lastPathComponent }
             },
-            inboxHas: { [unowned self] id in captured.contains { $0.id == id } },
-            capture: { [unowned self] id, text, recordedAt, pcm in
+            inboxHas: inboxHas ?? { [unowned self] id in captured.contains { $0.id == id } },
+            capture: capture ?? { [unowned self] id, text, recordedAt, pcm in
+                if captureRefused { return }
                 captured.append(Captured(id: id, text: text, recordedAt: recordedAt, pcm16: pcm))
             }
         )
@@ -90,6 +96,80 @@ final class VoiceMemoIntakeTests: XCTestCase {
 
         _ = await intake.scan()
         XCTAssertEqual(captured.count, 1)
+    }
+
+    /// A try-pr build beside the installed app (#990): one copy takes the
+    /// memo, the other leaves the folder alone, and takes over once the
+    /// first quits without taking the memo a second time.
+    func testTwoRunningCopiesTakeAMemoOnce() async {
+        files = [memo("walk.m4a")]
+        trashFails = true
+        let tryBuild = intake()
+        do {
+            let installed = intake()
+            for _ in 0..<2 {
+                _ = await installed.scan()
+                _ = await tryBuild.scan()
+            }
+        }
+        XCTAssertEqual(captured.map(\.text), ["words of walk.m4a"])
+
+        for _ in 0..<2 { _ = await tryBuild.scan() }
+        XCTAssertEqual(captured.map(\.text), ["words of walk.m4a"])
+        XCTAssertEqual(transcriber.calls.withLock { $0 }.count, 1)
+    }
+
+    /// The Inbox refused the capture while the memo was being transcribed
+    /// (#990 review): the memo stays in the folder and is not marked taken.
+    func testAMemoTheInboxTurnsDownStaysInTheFolder() async {
+        files = [memo("walk.m4a")]
+        captureRefused = true
+        let intake = intake()
+        _ = await intake.scan()
+        _ = await intake.scan()
+        XCTAssertEqual(trashed, [])
+        XCTAssertNil(VoiceMemoLedger.load(from: ledgerURL).value?.entries["walk.m4a"])
+
+        captureRefused = false
+        _ = await intake.scan()
+        XCTAssertEqual(captured.map(\.text), ["words of walk.m4a"])
+        XCTAssertEqual(trashed, ["walk.m4a"])
+    }
+
+    /// A memo that begins "also" joins the capture before it (#990 review):
+    /// the Inbox took it, so it goes to the Trash and is transcribed once.
+    func testAMemoThatJoinsTheCaptureBeforeItIsTakenOnce() async throws {
+        let inbox = QuickCaptureFixture.model(
+            fileURL: workDirectory.appendingPathComponent("quick-captures.json"), answer: ["reach": 0.9],
+            github: FakeQuickCaptureGitHub(), runner: FakeQuickCaptureDraftRunner())
+        await inbox.capture(text: "Add a dark mode", historyRecordID: nil).value
+        transcriber.results.withLock { $0["walk.m4a"] = .success("Also make it the default") }
+        files = [memo("walk.m4a")]
+        let intake = intake(
+            inboxHas: { inbox.holds($0) },
+            capture: { id, text, recordedAt, _ in
+                _ = inbox.capture(text: text, historyRecordID: nil, id: id, capturedAt: recordedAt)
+            })
+        for _ in 0..<3 { _ = await intake.scan() }
+
+        XCTAssertEqual(inbox.items.map(\.text), ["Add a dark mode"])
+        XCTAssertEqual(inbox.items.first?.followUps?.map(\.text), ["Also make it the default"])
+        XCTAssertEqual(trashed, ["walk.m4a"])
+        XCTAssertEqual(transcriber.calls.withLock { $0 }.count, 1)
+    }
+
+    /// A copy whose Inbox is refused does not keep the folder from the copy
+    /// that can take memos (#990 review).
+    func testACopyThatCannotScanLeavesTheFolderToTheOther() async {
+        files = [memo("walk.m4a")]
+        let refused = intake()
+        refused.inboxProblem = { .unreadable }
+        let healthy = intake()
+        for _ in 0..<2 {
+            _ = await refused.scan()
+            _ = await healthy.scan()
+        }
+        XCTAssertEqual(captured.map(\.text), ["words of walk.m4a"])
     }
 
     func testAMemoStillGrowingOrStillInICloudWaits() async {
@@ -200,9 +280,12 @@ final class VoiceMemoIntakeTests: XCTestCase {
     func testAnUnreadableFolderIsReportedAndForgetsNothing() async throws {
         files = [memo("walk.m4a")]
         trashFails = true
-        let intake = intake()
-        _ = await intake.scan()
-        _ = await intake.scan()
+        do {
+            // The first launch, which quits and so lets go of the folder.
+            let intake = intake()
+            _ = await intake.scan()
+            _ = await intake.scan()
+        }
         XCTAssertEqual(captured.count, 1)
 
         var failures = 0
@@ -213,7 +296,83 @@ final class VoiceMemoIntakeTests: XCTestCase {
         refusing.onListFailure = { _ in failures += 1 }
         _ = await refusing.scan()
         XCTAssertEqual(failures, 1)
-        XCTAssertEqual(VoiceMemoLedger.load(from: ledgerURL).entries.keys.sorted(), ["walk.m4a"])
+        XCTAssertEqual(VoiceMemoLedger.load(from: ledgerURL).value?.entries.keys.sorted(), ["walk.m4a"])
+    }
+
+    /// A ledger this build cannot load is left as it is and no memo is
+    /// taken, since each would become a second capture (#989).
+    func testANewerLedgerKeepsItsBytesAndTakesNoMemo() async throws {
+        try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
+        let data = Data(#"{"version":\#(VoiceMemoLedger.currentVersion + 1),"entries":{}}"#.utf8)
+        try data.write(to: ledgerURL)
+        var statuses: [String] = []
+        let intake = intake()
+        intake.onStatus = { statuses.append($0) }
+        files = [memo("walk.m4a")]
+        _ = await intake.scan()
+        _ = await intake.scan()
+
+        XCTAssertEqual(intake.ledgerProblem, .newerVersion(VoiceMemoLedger.currentVersion + 1))
+        XCTAssertTrue(captured.isEmpty)
+        XCTAssertTrue(trashed.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: ledgerURL), data)
+        XCTAssertEqual(statuses, [VoiceMemoIntake.ledgerRefusedStatus], "said once")
+
+        let aside = try intake.moveLedgerAsideAndStartOver()
+        XCTAssertEqual(try Data(contentsOf: aside), data)
+        _ = await intake.scan()
+        _ = await intake.scan()
+        XCTAssertEqual(captured.map(\.text), ["words of walk.m4a"])
+    }
+
+    func testACorruptLedgerKeepsItsBytesAndTakesNoMemo() async throws {
+        try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
+        let data = Data(#"{"version":1,"entries":{"walk.m4a":"#.utf8)
+        try data.write(to: ledgerURL)
+        let intake = intake()
+        files = [memo("walk.m4a")]
+        _ = await intake.scan()
+        _ = await intake.scan()
+
+        XCTAssertEqual(intake.ledgerProblem, .unreadable)
+        XCTAssertTrue(captured.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: ledgerURL), data)
+    }
+
+    /// A memo that arrives while the Inbox refuses captures stays in the
+    /// folder, unmarked, and becomes a capture once the Inbox starts over
+    /// (#989, review of #997). Wired as the app wires it.
+    func testAMemoWaitsInTheFolderWhileTheInboxIsRefused() async throws {
+        try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
+        let inboxURL = workDirectory.appendingPathComponent("quick-captures.json")
+        try Data("{ not json".utf8).write(to: inboxURL)
+        let inbox = QuickCaptureFixture.model(
+            fileURL: inboxURL, answer: ["reach": 0.9], github: FakeQuickCaptureGitHub(),
+            runner: FakeQuickCaptureDraftRunner())
+        var statuses: [String] = []
+        let intake = VoiceMemoIntake(
+            directory: directory, ledgerURL: ledgerURL, transcriber: transcriber,
+            list: { [unowned self] _ in files },
+            removeTranscribed: { [unowned self] url in trashed.append(url.lastPathComponent) },
+            inboxHas: { id in inbox.items.contains { $0.id == id } },
+            capture: { id, text, recordedAt, _ in
+                _ = inbox.capture(text: text, historyRecordID: nil, id: id, capturedAt: recordedAt)
+            })
+        intake.inboxProblem = { inbox.storeProblem }
+        intake.onStatus = { statuses.append($0) }
+        files = [memo("walk.m4a")]
+        _ = await intake.scan()
+        _ = await intake.scan()
+
+        XCTAssertTrue(trashed.isEmpty, "the memo stays in the folder")
+        XCTAssertNil(VoiceMemoLedger.load(from: ledgerURL).value?.entries["walk.m4a"])
+        XCTAssertEqual(statuses, [VoiceMemoIntake.inboxRefusedStatus])
+
+        try inbox.moveAsideAndStartOver()
+        _ = await intake.scan()
+        _ = await intake.scan()
+        XCTAssertEqual(inbox.items.map(\.text), ["words of walk.m4a"])
+        XCTAssertEqual(trashed, ["walk.m4a"])
     }
 
     /// The real listing: audio files only, no hidden iCloud or Finder files,

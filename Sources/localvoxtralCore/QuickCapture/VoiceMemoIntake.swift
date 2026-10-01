@@ -45,6 +45,9 @@ package final class VoiceMemoIntake {
 
     /// False while a dictation runs: the memo waits rather than share the engine.
     package var canTranscribe: @MainActor () -> Bool = { true }
+    /// Set while the Inbox refuses captures (#989): a memo taken then would
+    /// be marked captured and moved to the Trash with no Inbox item.
+    package var inboxProblem: @MainActor () -> StoredFileProblem? = { nil }
     /// One short sentence for the menu bar popover.
     package var onStatus: (@MainActor (String) -> Void)?
     /// The folder could not be listed; the app decides whether that means
@@ -52,9 +55,17 @@ package final class VoiceMemoIntake {
     package var onListFailure: (@MainActor (Error) -> Void)?
 
     private var ledger: VoiceMemoLedger
+    /// Set, the ledger could not be loaded: it is left as it is and no memo
+    /// is taken, since each would be taken again (#989).
+    package private(set) var ledgerProblem: StoredFileProblem?
+    private var reportedLedgerProblem = false
+    private var reportedInboxProblem = false
     private var lastSeen: [String: VoiceMemoFile] = [:]
     private var isScanning = false
     private var lastListFailure: String?
+    /// Held while this copy of the app is the one that scans (#990).
+    private var folderLock: StoredFileLock?
+    private var reportedAnotherScanner = false
 
     package init(
         directory: URL,
@@ -80,7 +91,27 @@ package final class VoiceMemoIntake {
         self.removeTranscribed = removeTranscribed
         self.inboxHas = inboxHas
         self.capture = capture
-        ledger = ledgerURL.map(VoiceMemoLedger.load(from:)) ?? VoiceMemoLedger()
+        let load = ledgerURL.map(VoiceMemoLedger.load(from:)) ?? .absent
+        ledger = load.value ?? VoiceMemoLedger()
+        ledgerProblem = load.problem
+    }
+
+    /// The popover's sentence while the Inbox is refused.
+    package static let inboxRefusedStatus = "Voice memos paused: Inbox unreadable"
+
+    /// The popover's sentence while the ledger is refused.
+    package static let ledgerRefusedStatus = "Voice memos paused: list unreadable"
+
+    /// Settings' Start Over: moves the refused ledger aside
+    /// (`StoredFile.moveAside`) and starts an empty one. Every memo still in
+    /// the folder becomes a capture on the next scan.
+    @discardableResult
+    package func moveLedgerAsideAndStartOver() throws -> URL {
+        guard ledgerProblem != nil, let ledgerURL else { throw StoredFile.MoveAsideFailed() }
+        let aside = try StoredFile.moveAside(ledgerURL)
+        ledger = VoiceMemoLedger()
+        ledgerProblem = nil
+        return aside
     }
 
     /// Scans now and every `scanInterval` after, until the task is cancelled.
@@ -95,6 +126,28 @@ package final class VoiceMemoIntake {
     @discardableResult
     package func scan() async -> Int {
         guard !isScanning else { return 0 }
+        guard ledgerProblem == nil else {
+            // Another copy may be able to scan.
+            folderLock = nil
+            // Once, not every 30 s.
+            if !reportedLedgerProblem {
+                reportedLedgerProblem = true
+                Log.persistence.error("Voice memos: not scanning, the ledger could not be loaded")
+                onStatus?(Self.ledgerRefusedStatus)
+            }
+            return 0
+        }
+        guard inboxProblem() == nil else {
+            folderLock = nil
+            if !reportedInboxProblem {
+                reportedInboxProblem = true
+                Log.persistence.error("Voice memos: not scanning, the Inbox file could not be loaded")
+                onStatus?(Self.inboxRefusedStatus)
+            }
+            return 0
+        }
+        reportedInboxProblem = false
+        guard holdsTheFolder() else { return 0 }
         isScanning = true
         defer { isScanning = false }
 
@@ -138,6 +191,30 @@ package final class VoiceMemoIntake {
         return captured
     }
 
+    /// One running copy of the app scans the folder (#990): two would each
+    /// transcribe the same memo, and each would write a ledger the other
+    /// never read. The other copy waits, and takes over on a later scan once
+    /// this one quits.
+    private func holdsTheFolder() -> Bool {
+        guard let ledgerURL, folderLock == nil else { return true }
+        guard let lock = StoredFileLock.tryHolding(beside: ledgerURL) else {
+            if !reportedAnotherScanner {
+                reportedAnotherScanner = true
+                Log.backends.notice("Voice memos: another running copy of the app takes them")
+            }
+            return false
+        }
+        reportedAnotherScanner = false
+        // The copy that held the folder may have taken memos since this one
+        // loaded the ledger.
+        let load = VoiceMemoLedger.load(from: ledgerURL)
+        ledger = load.value ?? VoiceMemoLedger()
+        ledgerProblem = load.problem
+        guard ledgerProblem == nil else { return false }
+        folderLock = lock
+        return true
+    }
+
     /// True when the memo became a capture.
     private func take(_ file: VoiceMemoFile, at url: URL) async -> Bool {
         let itemID = UUID()
@@ -164,6 +241,15 @@ package final class VoiceMemoIntake {
             return false
         }
         capture(itemID, transcript.text, file.modifiedAt, transcript.pcm16)
+        guard inboxHas(itemID) else {
+            // The Inbox refused it since the scan began (another running copy
+            // left a file this build cannot read): the memo stays.
+            Log.persistence.error("Voice memos: the Inbox did not take a memo; left in the folder")
+            ledger.entries[file.name] = nil
+            saveLedger()
+            onStatus?(Self.inboxRefusedStatus)
+            return false
+        }
         record(file, .captured(itemID: itemID))
         Log.backends.info("Voice memos: \(transcript.text.count, privacy: .public) chars to the inbox")
         do {
@@ -181,7 +267,7 @@ package final class VoiceMemoIntake {
     }
 
     private func saveLedger() {
-        guard let ledgerURL else { return }
+        guard let ledgerURL, ledgerProblem == nil else { return }
         do {
             try ledger.save(to: ledgerURL)
         } catch {

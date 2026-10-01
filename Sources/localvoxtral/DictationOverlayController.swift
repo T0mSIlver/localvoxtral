@@ -159,6 +159,7 @@ final class DictationOverlayController {
     /// `OverlaySessionMetricsLock` — the panel's locked X origin assumes a
     /// constant width), so setting changes apply to the next dictation.
     private let metricsProvider: @MainActor () -> OverlayLayoutMetrics
+    private let polishColorProvider: @MainActor () -> OverlayPolishColor
     /// The position the user dragged to in an earlier session, if any.
     private let storedPlacementProvider: @MainActor () -> OverlayManualPlacement?
     /// Persists a dragged position, or clears it on a re-anchor.
@@ -207,6 +208,9 @@ final class DictationOverlayController {
     /// Where each destination pill or list row sits, top-left origin in the
     /// hosting view, as the view last reported it.
     private var destinationFrames: [OverlayDestinationTarget: CGRect] = [:]
+    /// The level bars read this directly, so a level never re-renders or
+    /// re-measures the panel.
+    private let micLevel = OverlayMicLevel()
 
     /// A click, not a drag, on a destination (#880). The panel keeps
     /// swallowing the click, so the target app keeps the focus.
@@ -216,6 +220,7 @@ final class DictationOverlayController {
         metricsProvider: @escaping @MainActor () -> OverlayLayoutMetrics = {
             OverlayLayoutMetrics(bodyFontSize: OverlayLayoutMetrics.defaultBodyFontSize)
         },
+        polishColorProvider: @escaping @MainActor () -> OverlayPolishColor = { .teal },
         storedPlacementProvider: @escaping @MainActor () -> OverlayManualPlacement? = { nil },
         placementWriter: @escaping @MainActor (OverlayManualPlacement?) -> Void = { _ in },
         screensProvider: @escaping @MainActor () -> [OverlayScreenSnapshot] = {
@@ -223,6 +228,7 @@ final class DictationOverlayController {
         }
     ) {
         self.metricsProvider = metricsProvider
+        self.polishColorProvider = polishColorProvider
         self.storedPlacementProvider = storedPlacementProvider
         self.placementWriter = placementWriter
         self.screensProvider = screensProvider
@@ -334,6 +340,10 @@ final class DictationOverlayController {
             secureInputActive: snapshot.secureInputActive,
             metrics: metrics,
             polished: snapshot.polished,
+            polishedFrom: snapshot.polishedFrom,
+            polishing: snapshot.polishing,
+            micLevel: micLevel,
+            polishColor: polishColorProvider().color,
             claudeJoin: snapshot.claudeJoin,
             destinations: snapshot.destinations,
             draftReview: snapshot.draftReview,
@@ -353,6 +363,9 @@ final class DictationOverlayController {
             height: min(contentHeight, metrics.maximumPanelHeight)
         )
 
+        // A polished panel is only held so its marks can be seen: the text
+        // is already in, so clicks reach the field under it (#1074).
+        panel.ignoresMouseEvents = snapshot.phase == .finalizing && snapshot.polished
         lastPositioning = (anchor: snapshot.anchor, contentSize: size)
         positionPanel(near: snapshot.anchor, contentSize: size)
         applyFrameViewMask()
@@ -374,7 +387,13 @@ final class DictationOverlayController {
         lastPositioning = nil
         destinationFrames = [:]
         metricsLock.unlock()
+        micLevel.reset()
+        panel.ignoresMouseEvents = false
         panel.orderOut(nil)
+    }
+
+    func updateMicLevel(_ level: Double) {
+        micLevel.push(level)
     }
 
     // MARK: - Dragging

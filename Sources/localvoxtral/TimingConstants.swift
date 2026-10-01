@@ -54,6 +54,11 @@ enum TimingConstants {
     /// visible overlay text update before committing/hiding.
     static let overlayFinalWordVisibilityMinimum: TimeInterval = 0.5
 
+    /// The same hold when polish changed words (#1074): the marks on them
+    /// need a moment to be seen. It runs after the insertion, so the text
+    /// reaches the focused field no later.
+    static let overlayPolishedVisibility: TimeInterval = 1.2
+
     /// How long the overlay's secure-input clipboard-fallback message stays
     /// readable before the panel dismisses itself (the text is already safe
     /// on the clipboard, so the panel must not persist like a real failure).

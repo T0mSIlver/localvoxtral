@@ -30,6 +30,7 @@ struct SpeechdMain {
             modelID: options.modelID,
             modelRevision: options.modelRevision,
             modelDirectory: options.modelDirectory,
+            engine: options.engine,
             port: options.port,
             transcriptionDelayMs: options.transcriptionDelayMs,
             cacheLimitMB: options.cacheLimitMB,

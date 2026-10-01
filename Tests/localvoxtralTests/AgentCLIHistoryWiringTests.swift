@@ -36,7 +36,7 @@ final class AgentCLIHistoryWiringTests: XCTestCase {
         viewModel.llmPolishingService = FakePolishingService()
         viewModel.stubCommitTarget { "com.apple.Terminal" }
         viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding(outcome: nil)
-        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
         viewModel.sessionStore = store
         viewModel.learnedTermStore = LearnedTermStore(fileURL: nil)
         retainForTestProcessLifetime(viewModel)

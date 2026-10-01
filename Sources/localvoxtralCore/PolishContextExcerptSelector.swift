@@ -220,19 +220,29 @@ package enum PolishContextExcerptSelector {
         for (index, line) in lines.prefix(maxConsideredLines).enumerated() {
             // See the scoring loop: batched cancellation check, same rationale.
             if index & 0x3FF == 0, Task.isCancelled { return [] }
-            // Reuse the clipboard sanitizer (drops control scalars), then also
-            // drop the newline/tab it deliberately keeps: a rendered context
-            // line must stay one line, and an embedded newline would let copied
-            // text forge extra lines inside the excerpt.
-            let sanitized = PolishContextClipboardReader
-                .sanitizeControlCharacters(line)
-                .replacingOccurrences(of: "\n", with: " ")
-                .replacingOccurrences(of: "\t", with: " ")
-            let trimmed = rightTrimmed(sanitized)
+            let trimmed = renderedLine(line)
             guard !trimmed.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
             result.append(Candidate(index: index, text: trimmed))
         }
         return result
+    }
+
+    /// One source line as a selected excerpt renders it. Reuses the clipboard
+    /// sanitizer (drops control scalars), then also drops the newline and tab
+    /// it deliberately keeps: a rendered context line must stay one line, and
+    /// an embedded newline would let copied text forge extra lines inside the
+    /// excerpt. Right-trimmed.
+    ///
+    /// The diagnostic record finds the agent prompt in an excerpt through
+    /// this same function (`DiagnosticRecordRedaction.withholdPrompt`), so
+    /// a change here changes what it looks for.
+    package static func renderedLine(_ line: String) -> String {
+        rightTrimmed(
+            PolishContextClipboardReader
+                .sanitizeControlCharacters(line)
+                .replacingOccurrences(of: "\n", with: " ")
+                .replacingOccurrences(of: "\t", with: " ")
+        )
     }
 
     private static func rightTrimmed(_ line: String) -> String {

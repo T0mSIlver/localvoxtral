@@ -49,6 +49,43 @@ final class UsageLedgerCoreTests: XCTestCase {
         XCTAssertEqual(UsageLedger(fileURL: ledger.fileURL).entries(), entries)
     }
 
+    /// Two running copies of the app append at once (#990): every entry of
+    /// both is on its own line, none written over another.
+    func testTwoCopiesAppendingAtOnceKeepEveryEntry() throws {
+        let fileURL = temporaryFile()
+        let copies = [UsageLedger(fileURL: fileURL), UsageLedger(fileURL: fileURL)]
+        let count = 400
+        let moment = moment
+        DispatchQueue.concurrentPerform(iterations: count) { index in
+            copies[index % 2].record(UsageEntry(
+                date: moment, feature: .polish, backend: .mistral, model: "m\(index)", costEUR: 0.001))
+        }
+
+        let entries = UsageLedger.entries(fromFileContents: try Data(contentsOf: fileURL))
+        XCTAssertEqual(entries.count, count)
+        XCTAssertEqual(Set(entries.map(\.model)).count, count)
+    }
+
+    /// A crash mid-append left a line with no end. The next entry starts a
+    /// line of its own instead of joining it and going unread (#990).
+    func testAnEntryAfterATornLastLineIsKept() throws {
+        let fileURL = temporaryFile()
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let whole = UsageEntry(date: moment, feature: .polish, backend: .mistral, model: "whole", costEUR: 0.001)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var torn = try encoder.encode(whole) + Data("\n".utf8)
+        torn += Data(#"{"costEUR":0.001,"date":"2027-01-"#.utf8)
+        try torn.write(to: fileURL)
+
+        let next = UsageEntry(date: moment, feature: .polish, backend: .mistral, model: "next", costEUR: 0.001)
+        UsageLedger(fileURL: fileURL).record(next)
+
+        let entries = UsageLedger.entries(fromFileContents: try Data(contentsOf: fileURL))
+        XCTAssertEqual(entries.map(\.model), ["whole", "next"])
+    }
+
     /// An older build reads `kind` alone. It must go on seeing the Mistral
     /// requests it always summed, chat features as polishes as before, and
     /// never mistake a free local call or an agent run for Mistral spend.
