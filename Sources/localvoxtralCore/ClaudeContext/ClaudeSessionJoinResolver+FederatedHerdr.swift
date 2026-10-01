@@ -178,6 +178,20 @@ extension ClaudeSessionJoinResolver {
             paneID: confirmed.pane.paneID
         ) {
         case .matched(let match):
+            if let lapse = remoteHerdrJoinLapse(
+                hostID: host.id,
+                sessionID: confirmed.snapshot.sessionID,
+                paneID: confirmed.pane.paneID
+            ) {
+                await HerdrPanelBindingProbe.clear(
+                    metadata: herdrPanelMetadata,
+                    socketPath: forward.localSocketPath,
+                    paneID: confirmed.pane.paneID
+                )
+                forward.close()
+                Self.abstainedFederatedHerdrJoin(outcome: lapse)
+                return nil
+            }
             Log.claudeContext.info(
                 "Terminal pane joined to a live Claude session via federated herdr agents-panel binding"
             )

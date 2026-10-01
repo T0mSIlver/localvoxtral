@@ -76,6 +76,8 @@ package struct ClaudeSessionJoinResolver {
     package let enrolledHosts: @MainActor (String) -> [ClaudeRemoteHost]
     package let canonicalizedEnrolledHosts: @MainActor (String) async -> [ClaudeRemoteHost]
     package let proxyJumpShape: @MainActor (String) async -> SSHProxyJumpShape?
+    /// Every host in the store, revoked ones included. The panel arm's
+    /// speculation and the post-await enrollment recheck filter it.
     package let speculativeHosts: @MainActor () -> [ClaudeRemoteHost]
     package let remoteHerdrForwards: (any ClaudeRemoteHerdrForwarding)?
     package let herdrPanelMetadata: (any HerdrPanelMetadataReporting)?

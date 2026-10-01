@@ -1911,4 +1911,110 @@ final class RemoteHerdrJoinTests: XCTestCase, RemoteHerdrJoinFixture {
         )
         XCTAssertTrue(registry.liveRemoteHerdrSessions(hostID: hostID).isEmpty)
     }
+
+    // MARK: - The world changing while the arm awaits (#1117)
+
+    private enum RemoteJoinExit: CaseIterable {
+        case sshArgv, panel, federated
+    }
+
+    private enum RemoteJoinLapse: CaseIterable {
+        case hostRevoked, sessionEnded
+    }
+
+    /// Each arm takes its host and its session before it opens the forward
+    /// and builds the join after the forward and the pane reads answer. A
+    /// revoke, or the session ending, while the forward opens must leave no
+    /// join, so no herdr route exists to write through, and the forward and
+    /// any panel token must be released.
+    func testAHostRevokedOrASessionEndedWhileTheForwardOpensJoinsNothing() async throws {
+        for exit in RemoteJoinExit.allCases {
+            for lapse in RemoteJoinLapse.allCases {
+                try await assertLapseWhileTheForwardOpensJoinsNothing(exit: exit, lapse: lapse)
+            }
+        }
+    }
+
+    private func assertLapseWhileTheForwardOpensJoinsNothing(
+        exit: RemoteJoinExit, lapse: RemoteJoinLapse
+    ) async throws {
+        let name = "\(exit) / \(lapse)"
+        let registry = makeRegistry()
+        let socketPath = exit == .federated ? federatedSocketPath : remoteSocketPath
+        let snapshot = try XCTUnwrap(ingestRemoteHerdrSession(into: registry, socketPath: socketPath), name)
+        let hosts = Mutex([enrolledHost()])
+        let (entered, enteredContinuation) = AsyncStream.makeStream(of: Void.self)
+        let (release, releaseContinuation) = AsyncStream.makeStream(of: Void.self)
+        let forwards = RecordingForwards(openGate: {
+            enteredContinuation.yield()
+            var iterator = release.makeAsyncIterator()
+            _ = await iterator.next()
+        })
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let token = HerdrPanelBindingProbe.token(randomBits: 23)
+        let resolver: ClaudeSessionJoinResolver
+        switch exit {
+        case .sshArgv:
+            resolver = self.resolver(
+                registry: registry, panes: panes, forwards: forwards,
+                liveHosts: { hosts.withLock { $0 } }
+            )
+        case .panel:
+            resolver = self.resolver(
+                registry: registry, panes: panes, forwards: forwards,
+                sshResult: .connection(.init(
+                    destination: "builder", hasCompetingHerdrClient: false, herdr: .notHerdr
+                )),
+                panelMetadata: panes, panelGrid: token, panelRandomBits: 23,
+                liveHosts: { hosts.withLock { $0 } }
+            )
+        case .federated:
+            resolver = self.resolver(
+                registry: registry, panes: panes, forwards: forwards,
+                panelMetadata: panes, panelGrid: "agents  \(token)", panelRandomBits: 23,
+                herdrClient: true, federation: .showingMachine(federatedProfile()), clientSurfaces: 1,
+                liveHosts: { hosts.withLock { $0 } }
+            )
+        }
+        let ghostty = ghostty
+
+        let resolving = Task { @MainActor in
+            await ClaudeJoinAbstentionTap.collecting { await resolver.resolve(target: ghostty) }
+        }
+        var enteredIterator = entered.makeAsyncIterator()
+        _ = await enteredIterator.next()
+        switch lapse {
+        case .hostRevoked:
+            hosts.withLock { $0 = [enrolledHost(revoked: true)] }
+        case .sessionEnded:
+            registry.ingest(
+                ClaudeHookRecord(
+                    event: .sessionEnd,
+                    sessionID: snapshot.sessionID,
+                    timestamp: epoch.timeIntervalSince1970,
+                    rawCwd: "/home/dev/work/service",
+                    process: ClaudeHookProcessInfo(hookPID: 11, claudePID: 12, tty: "/dev/pts/3")
+                ),
+                origin: .remote(channel: ClaudeRemoteSessionScope.channel(hostID: hostID))
+            )
+            XCTAssertNil(registry.snapshot(sessionID: snapshot.sessionID), "\(name): the session ended")
+        }
+        releaseContinuation.finish()
+        let (join, causes) = await resolving.value
+
+        XCTAssertNil(join, name)
+        XCTAssertEqual(forwards.openCount, 1, name)
+        XCTAssertEqual(forwards.closeCount, 1, "\(name): the forward is released")
+        let expected = lapse == .hostRevoked
+            ? "host is no longer enrolled" : "session is no longer live"
+        XCTAssertTrue(
+            causes.contains { $0.hasSuffix(expected) },
+            "\(name): \(causes)"
+        )
+        if exit != .sshArgv {
+            XCTAssertNil(
+                panes.panelReports.withLock { $0.last?.value }, "\(name): the panel token is cleared"
+            )
+        }
+    }
 }
