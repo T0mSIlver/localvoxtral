@@ -426,7 +426,7 @@ extension DiagnosticRecordBuilder {
             sources.append(source(SourceInputs(
                 source: .terminal,
                 harvest: textSourceHarvest(
-                    DiagnosticRecordRedaction.withholdingPrompt(inputs.withheldPrompt, in: screenText)),
+                    DiagnosticRecordRedaction.withholdingPrompt(inputs.withheldPrompt, in: screenText, softWrapped: true)),
                 outcome: inputs.screenOutcome,
                 renderedExcerpt: inputs.screenRenderedExcerpt
             )))
@@ -435,7 +435,7 @@ extension DiagnosticRecordBuilder {
             sources.append(source(SourceInputs(
                 source: .claude,
                 harvest: textSourceHarvest(
-                    DiagnosticRecordRedaction.withholdingPrompt(inputs.withheldPrompt, in: claudeText)),
+                    DiagnosticRecordRedaction.withholdingPrompt(inputs.withheldPrompt, in: claudeText, softWrapped: false)),
                 outcome: inputs.claudeSessionOutcome,
                 renderedExcerpt: inputs.claudeSessionRenderedExcerpt
             )))
@@ -444,7 +444,7 @@ extension DiagnosticRecordBuilder {
             sources.append(source(SourceInputs(
                 source: .clipboard,
                 harvest: textSourceHarvest(
-                    DiagnosticRecordRedaction.withholdingPrompt(inputs.withheldPrompt, in: clipboardText)),
+                    DiagnosticRecordRedaction.withholdingPrompt(inputs.withheldPrompt, in: clipboardText, softWrapped: false)),
                 outcome: inputs.clipboardOutcome,
                 renderedExcerpt: inputs.clipboardRenderedExcerpt
             )))

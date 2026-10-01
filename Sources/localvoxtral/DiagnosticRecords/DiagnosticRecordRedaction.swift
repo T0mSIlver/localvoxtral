@@ -159,12 +159,16 @@ enum DiagnosticRecordRedaction {
     }
 
     /// `text` with the prompt taken out as `withholdPrompt` takes it out of
-    /// the screen, the widest pass. A source's harvest is re-derived from
-    /// its text, so the builder harvests what this returns; harvested from
-    /// the text as captured, the harvest keeps the prompt's identifiers.
-    static func withholdingPrompt(_ prompt: String?, in text: String) -> String {
+    /// the record's fields. A source's harvest is re-derived from its text,
+    /// so the builder harvests what this returns; harvested from the text as
+    /// captured, the harvest keeps the prompt's identifiers.
+    ///
+    /// `softWrapped` adds the screen's pass (`withholdingWrapped`). It walks
+    /// the text once per prompt anchor, so only screen text, which is capped,
+    /// takes it; the clipboard can hold millions of characters.
+    static func withholdingPrompt(_ prompt: String?, in text: String, softWrapped: Bool) -> String {
         guard let prompt, !prompt.isEmpty else { return text }
-        return promptWithholder(prompt)(withholdingWrapped(prompt, in: text))
+        return promptWithholder(prompt)(softWrapped ? withholdingWrapped(prompt, in: text) : text)
     }
 
     /// The label, whole-line and cut-line passes `withholdPrompt` runs on
