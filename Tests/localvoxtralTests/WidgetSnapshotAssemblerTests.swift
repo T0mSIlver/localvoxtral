@@ -22,4 +22,22 @@ final class WidgetSnapshotAssemblerTests: XCTestCase {
         XCTAssertEqual(spend.polishTodayEUR, 0)
         XCTAssertEqual(spend.polishesToday, 0)
     }
+
+    /// A quick capture is polished in the Inbox after it was recorded: its
+    /// polish took none of the time spoken, as Insights counts it.
+    func testQuickCapturePolishDoesNotReduceSpeakingTime() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let now = Date(timeIntervalSince1970: 1_790_000_000)
+        let capture = DictationHistoryEntry(
+            id: UUID(), startedAt: now.addingTimeInterval(-60), finishedAt: now.addingTimeInterval(-40),
+            rawText: "buy milk", polishedText: "Buy milk.", polishingDurationSeconds: 9,
+            provider: "test", model: "test", outputMode: DictationSessionRecord.quickCaptureOutputMode,
+            targetAppBundleID: nil, status: .completed, commitSucceeded: true,
+            polishProfile: nil, polishContextSummary: nil)
+
+        let history = WidgetSnapshotAssembler.history(entries: [capture], terms: [], now: now, calendar: calendar)
+
+        XCTAssertEqual(history.dictation.days.map(\.dictatingSeconds), [20])
+    }
 }
