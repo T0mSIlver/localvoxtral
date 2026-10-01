@@ -586,6 +586,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The attribution step walks the PR's commits.
+          fetch-depth: 0
+
+      # No Claude co-author or session trailers on main (AGENTS.md). A PR is
+      # checked on its own commits, which a squash merge copies; a push to
+      # main on the commit itself, since GitHub adds a Co-authored-by trailer
+      # for each commit author at merge time.
+      - name: Commit attribution
+        env:
+          RANGE: >-
+            ${{ github.event_name == 'pull_request'
+                && format('{0}..{1}', github.event.pull_request.base.sha, github.event.pull_request.head.sha)
+                || format('{0}^!', github.sha) }}
+        run: ./scripts/ci/check-commit-attribution.sh "$RANGE"
 
       - name: Shell suites
         run: ./scripts/ci/run-shell-suites.sh scripts/ci/test-*.sh
