@@ -425,7 +425,8 @@ extension DiagnosticRecordBuilder {
         if let screenText = inputs.screenDecision.vocabularyGroundingText {
             sources.append(source(SourceInputs(
                 source: .terminal,
-                harvest: textSourceHarvest(screenText),
+                harvest: textSourceHarvest(
+                    DiagnosticRecordRedaction.withholdingPrompt(inputs.withheldPrompt, in: screenText)),
                 outcome: inputs.screenOutcome,
                 renderedExcerpt: inputs.screenRenderedExcerpt
             )))
@@ -433,7 +434,8 @@ extension DiagnosticRecordBuilder {
         if let claudeText = inputs.claudeSessionText, !claudeText.isEmpty {
             sources.append(source(SourceInputs(
                 source: .claude,
-                harvest: textSourceHarvest(claudeText),
+                harvest: textSourceHarvest(
+                    DiagnosticRecordRedaction.withholdingPrompt(inputs.withheldPrompt, in: claudeText)),
                 outcome: inputs.claudeSessionOutcome,
                 renderedExcerpt: inputs.claudeSessionRenderedExcerpt
             )))
@@ -441,7 +443,8 @@ extension DiagnosticRecordBuilder {
         if let clipboardText = inputs.clipboardRetainedText {
             sources.append(source(SourceInputs(
                 source: .clipboard,
-                harvest: textSourceHarvest(clipboardText),
+                harvest: textSourceHarvest(
+                    DiagnosticRecordRedaction.withholdingPrompt(inputs.withheldPrompt, in: clipboardText)),
                 outcome: inputs.clipboardOutcome,
                 renderedExcerpt: inputs.clipboardRenderedExcerpt
             )))
