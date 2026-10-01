@@ -272,6 +272,10 @@ final class TextMergingAlgorithmsTests: XCTestCase {
             ("trailingWhitespaceInFinalIsNotTyped_space", "sparisce. ", "sparisce", "."),
             ("trailingWhitespaceInFinalIsNotTyped_newline", "sparisce.\n", "sparisce", "."),
             ("whitespaceOnlyExtensionReturnsNil", "sparisce ", "sparisce", nil),
+            // A later segment's first delta keeps its leading space, which the
+            // trimmed final lacks (#1091).
+            ("leadingSpaceInLiveTextStillMatches", " Second part.", " Second part", "."),
+            ("whitespaceOnlyLiveReturnsNil", "sparisce.", "  ", nil),
         ]
         for (name, finalText, liveInsertedText, expected) in cases {
             XCTAssertEqual(
