@@ -242,6 +242,14 @@ $OUT"
   expect_line "running sessions still on older versions (version:pid): 1.21.0:$SLEEPER_PID" "old session"
   expect_state host claude-plugin warning "old session"
   pass "$SH_NAME: a live session on an older plugin is named"
+  # After `/reload-plugins` the same session also has a marker under the
+  # installed version.
+  : >"$CLAUDE_DIR/plugins/cache/localvoxtral/localvoxtral-remote/1.22.0/.in_use/$SLEEPER_PID"
+  run_doctor
+  expect_line "[ok  ] Claude Code plugin: 1.22.0 installed; 1 running session(s), none on an older version." "reloaded session"
+  expect_state host claude-plugin ok "reloaded session"
+  pass "$SH_NAME: a session reloaded onto the installed plugin is current"
+  rm -f "$CLAUDE_DIR/plugins/cache/localvoxtral/localvoxtral-remote/1.22.0/.in_use/"*
   kill "$SLEEPER_PID" 2>/dev/null || true
   wait "$SLEEPER_PID" 2>/dev/null || true
   SLEEPER_PID=""

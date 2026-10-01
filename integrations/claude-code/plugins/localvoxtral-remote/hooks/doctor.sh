@@ -20,7 +20,7 @@
 set -u
 umask 077
 
-DOCTOR_VERSION=1.29.0
+DOCTOR_VERSION=1.30.0
 JSON=0
 case "${1:-}" in
 --json) JSON=1 ;;
@@ -222,11 +222,15 @@ if [ -z "$INSTALLED" ]; then
   check claude-plugin skipped "Claude Code plugin" "Not installed on this host."
 elif LC_ALL=C grep -q "\"$PLUGIN_KEY\"[[:space:]]*:[[:space:]]*false" "$CLAUDE_DIR/settings.json" 2>/dev/null; then
   check claude-plugin failed "Claude Code plugin" "$INSTALLED is installed but turned off in $CLAUDE_DIR/settings.json." \
-    "Run \`claude plugin enable $PLUGIN_KEY\`, then restart Claude Code sessions."
+    "Run \`claude plugin enable $PLUGIN_KEY\`, then \`/reload-plugins\` in each Claude Code session."
 else
-  # Each running session leaves its pid under the version it loaded. A
-  # session keeps that version's hooks until it restarts.
+  # Each running session leaves its pid under the version it loaded. One
+  # that ran `/reload-plugins` can also keep a marker under the version it
+  # started with, so a pid with a marker under the installed version is
+  # current.
   OLD=""
+  CURRENT=" "
+  SEEN=" "
   LIVE=0
   for marker in "$CACHE"/*/.in_use/*; do
     [ -f "$marker" ] || continue
@@ -240,15 +244,24 @@ else
       have="$(awk '{ sub(/^.*\) /, ""); print $20 }' "/proc/$pid/stat" 2>/dev/null)"
       [ -z "$want" ] || [ "$want" = "$have" ] || continue
     fi
-    LIVE=$((LIVE + 1))
+    case "$SEEN" in *" $pid "*) ;; *) SEEN="$SEEN$pid " LIVE=$((LIVE + 1)) ;; esac
     version="${marker%/.in_use/*}"
     version="${version##*/}"
-    [ "$version" = "$INSTALLED" ] || OLD="$OLD $version:$pid"
+    if [ "$version" = "$INSTALLED" ]; then
+      CURRENT="$CURRENT$pid "
+    else
+      OLD="$OLD $version:$pid"
+    fi
   done
+  STALE=""
+  for entry in $OLD; do
+    case "$CURRENT" in *" ${entry##*:} "*) ;; *) STALE="$STALE $entry" ;; esac
+  done
+  OLD="$STALE"
   if [ -n "$OLD" ]; then
     check claude-plugin warning "Claude Code plugin" \
       "$INSTALLED installed; running sessions still on older versions (version:pid):$OLD." \
-      "Restart those Claude Code sessions: a session keeps the hooks it started with."
+      "Run \`/reload-plugins\` in those Claude Code sessions: a session keeps the hooks it loaded."
   else
     check claude-plugin ok "Claude Code plugin" "$INSTALLED installed; $LIVE running session(s), none on an older version."
   fi
