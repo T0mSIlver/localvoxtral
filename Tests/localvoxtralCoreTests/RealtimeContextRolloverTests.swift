@@ -131,9 +131,6 @@ final class RealtimeContextRolloverTests: XCTestCase {
         private var needsHandshake = false
         private var sockets: [URLSessionWebSocketTask] = []
 
-        /// Resolved when the session hears its socket go.
-        let dropped = BoundedWait()
-
         /// `dials`: a rollover dials a real socket (to a closed loopback
         /// port) instead of taking one from the harness.
         init(budget: RealtimeContextBudget? = RealtimeContextRolloverTests.budget, dials: Bool = false) {
@@ -214,7 +211,6 @@ final class RealtimeContextRolloverTests: XCTestCase {
                 sessionGeneration = next
                 rolledOver.resolve()
             }
-            if case .disconnected = event { dropped.resolve() }
             accepted.append(event)
         }
 
@@ -481,19 +477,26 @@ final class RealtimeContextRolloverTests: XCTestCase {
     }
 
     /// The rolled-over socket is really dialled, off the retiring socket's
-    /// receive path (swift-corelibs traps creating it there, #1147): here it
-    /// reaches a closed port, and the session, already on the new
-    /// connection, hears that socket fail.
-    func testTheNextSocketIsDialledAndReportsToTheSession() async {
+    /// receive path (swift-corelibs traps creating it there, #1147).
+    func testTheNextSocketIsDialledOffTheReceivePath() async {
         let harness = Harness(dials: true)
+        let dialled = BoundedWait()
+        let installed = LockedBox<Bool?>(nil)
+        harness.client.debugObserveRolloverDial { ok in
+            installed.set(ok)
+            dialled.resolve()
+        }
         harness.speak(seconds: 0.1)
         harness.client.sendCommit(final: false)
         harness.speak(seconds: 6.7)
         XCTAssertEqual(harness.rollovers, 1)
 
-        let dropped = await harness.dropped.value(failAfter: 10)
+        let didDial = await dialled.value(failAfter: 10)
 
-        XCTAssertTrue(dropped, "the next socket was never dialled")
+        XCTAssertTrue(didDial, "the next socket was never dialled")
+        XCTAssertEqual(installed.value, true)
+        harness.client.debugObserveRolloverDial(nil)
+        harness.client.disconnect()
     }
 
     /// The retiring socket closing before its `done` (vLLM's 1012) moves the

@@ -74,6 +74,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         var beforeHandshakeDrainForTesting: (@Sendable () -> Void)?
         var transmitObserverForTesting: (@Sendable (URLSessionWebSocketTask, String) -> Void)?
         var rolloverSocketForTesting: (@Sendable () -> URLSessionWebSocketTask)?
+        var rolloverDialObserverForTesting: (@Sendable (Bool) -> Void)?
         #endif
     }
 
@@ -506,6 +507,9 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             s.base.webSocketTask = task
             return true
         }
+        #if DEBUG
+        state.withLock { $0.rolloverDialObserverForTesting }?(installed)
+        #endif
         guard installed else {
             Log.backends.notice(
                 "realtime rollover: connection \(generation.description, privacy: .public) was given up before it was dialled"
@@ -1023,6 +1027,12 @@ extension RealtimeAPIWebSocketClient {
     /// dialling: the test then plays its handshake.
     package func debugSetRolloverSocket(_ opener: (@Sendable () -> URLSessionWebSocketTask)?) {
         state.withLock { $0.rolloverSocketForTesting = opener }
+    }
+
+    /// Hears each socket a rollover dials: true once it is installed,
+    /// false when the client had moved on.
+    package func debugObserveRolloverDial(_ observer: (@Sendable (Bool) -> Void)?) {
+        state.withLock { $0.rolloverDialObserverForTesting = observer }
     }
 
     /// Hears every frame as it is handed to a socket, in order.
