@@ -874,7 +874,14 @@ final class DictationSessionController {
         audio.audioDucking.restoreAfterSession()
         audio.flushBufferedAudio(to: activeRealtimeClient)
         isDictating = false
-        escapeCancelHandler.stop()
+        // An Overlay Buffer stop keeps Escape until its commit is done:
+        // the text waits there on the final and the polish, and Escape
+        // cancels it (`completeStoppedSessionCleanup` releases the key).
+        // Live Auto-Paste has typed its words, so Escape goes back to the
+        // focused app now.
+        if !isOverlayBufferModeEnabled {
+            escapeCancelHandler.stop()
+        }
         endDestinations()
 
         guard finalizeRemainingAudio else {

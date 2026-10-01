@@ -151,6 +151,7 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
         XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
         XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, true)
+        XCTAssertFalse(pipeline.viewModel.session.escapeCancelHandler.debugIsRegistered, "the commit releases Escape")
     }
 
     /// A settled sentence past 30 words, the first piece early polish takes.
@@ -234,6 +235,33 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
         XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
         XCTAssertFalse(pipeline.viewModel.isFinalizingStop)
+    }
+
+    /// Escape while the stopped text waits on its polish cancels the commit,
+    /// as it does while recording, and is released once the stop is done
+    /// (#1221).
+    func testEscapeDuringThePolishInsertsNothing() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish, earlyPolish: false)
+        await polish.holdNextRequest()
+        let escape = pipeline.viewModel.session.escapeCancelHandler
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
+        let polishing = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(polishing, "the polish never started")
+
+        escape.debugPressEscape()
+        await polish.releaseHeldRequest()
+        let recorded = await pipeline.records.waitForCount(1)
+        XCTAssertTrue(recorded)
+        await pipeline.viewModel.session.polishAndCommitTask?.value
+
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing is inserted after Escape")
+        XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
+        XCTAssertFalse(escape.debugIsRegistered, "Escape goes back to the focused app")
     }
 
     /// A 200 reply with no usable text, through the real client: the raw
