@@ -158,14 +158,14 @@ enum ClaudeSurfaceProbeCommand {
             sshDestinationProbe: { SSHDestinationTTYProbe.connection(onTTYDevicePath: $0) },
             enrolledHosts: { hosts?.hosts(matchingSSHDestination: $0) ?? [] },
             canonicalizedEnrolledHosts: { destination in
-                guard let enrolled = hosts?.hosts() else { return [] }
+                guard let enrolled = hosts?.activeHostsIfReadable() else { return [] }
                 return await canonicalizer.matchingHosts(
                     destination: destination,
                     enrolledHosts: enrolled
                 )
             },
             proxyJumpShape: { await canonicalizer.proxyJumpShape(for: $0) },
-            speculativeHosts: { hosts?.hosts() ?? [] }
+            speculativeHosts: { hosts?.activeHostsIfReadable() ?? [] }
         )
     }
 }
