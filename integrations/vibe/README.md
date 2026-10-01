@@ -54,8 +54,9 @@ The row then reads "hooks.toml needs a manual fix." or reports the failure.
 3. Start a new Vibe session.
 
 The block is valid at the end of a file whose hooks are `[[hooks]]` tables
-too. If yours are written as `hooks = [...]` or under `[hooks]`, rewrite them
-as `[[hooks]]` tables first, because TOML cannot mix the two.
+too. If yours are written as `hooks = [...]`, under `[hooks]` or `[hooks.x]`,
+or as dotted `hooks.x = ...` keys, rewrite them as `[[hooks]]` tables first,
+because TOML cannot mix the two.
 
 If you set `VIBE_HOME`, use that directory instead of `~/.vibe` in both steps
 and in the block's two command lines.
