@@ -500,9 +500,16 @@ final class WebSocketClientLifecycleTests: XCTestCase {
             )
 
             client.sendCommit(final: true)
+            // A generation in flight is a commit the server answers first (#1070).
+            if testCase.isGenerationInProgress {
+                client.debugHandleFrameForTesting(json: ["type": "transcription.done", "text": "earlier"])
+            }
             client.debugHandleFrameForTesting(json: ["type": "transcription.done", "text": "final text"])
 
-            let events = collector.snapshot()
+            let events = collector.snapshot().filter {
+                if case .finalTranscript("earlier") = $0 { return false }
+                return true
+            }
             XCTAssertEqual(events.count, 2, testCase.label)
             guard case .finalTranscript(let text) = events[0] else {
                 XCTFail("\(testCase.label): expected first event to be .finalTranscript")
@@ -514,6 +521,50 @@ final class WebSocketClientLifecycleTests: XCTestCase {
                 return
             }
         }
+    }
+
+    func testAPeriodicCommitsDoneInFlightAtStopDoesNotEndFinalizationBeforeTheTail() {
+        // #1070: the stop's final commit goes out while a periodic commit is
+        // still being transcribed. The first `done` answers the periodic
+        // commit; finalization must wait for the second, which carries the tail.
+        let client = RealtimeAPIWebSocketClient()
+        let collector = EventCollector()
+        client.setEventHandler { collector.append($0, from: $1) }
+
+        let (session, task) = makeWebSocketTask()
+        defer {
+            task.cancel()
+            session.invalidateAndCancel()
+        }
+
+        client.debugPrimeConnectedStateForTesting(task: task)
+        client.debugSetGenerationTrackingState(hasUncommittedAudio: true, isGenerationInProgress: false)
+        client.sendCommit(final: false)
+        client.sendAudioChunk(Data([0, 1, 2, 3]))
+        client.sendCommit(final: true)
+
+        client.debugHandleFrameForTesting(json: ["type": "transcription.done", "text": "periodic"])
+        XCTAssertFalse(
+            collector.snapshot().contains { if case .transcriptionFinalized = $0 { return true }
+                return false },
+            "the periodic commit's done must not end finalization"
+        )
+        XCTAssertTrue(client.debugStateSnapshot().isAwaitingFinalCommitDone)
+
+        client.debugHandleFrameForTesting(json: ["type": "transcription.done", "text": "tail"])
+
+        let events = collector.snapshot()
+        XCTAssertEqual(events.count, 3)
+        guard events.count == 3,
+            case .finalTranscript(let first) = events[0],
+            case .finalTranscript(let second) = events[1],
+            case .transcriptionFinalized = events[2]
+        else {
+            XCTFail("expected periodic final, tail final, then finalized; got \(events)")
+            return
+        }
+        XCTAssertEqual(first, "periodic")
+        XCTAssertEqual(second, "tail")
     }
 
     func testRealtimeDoneWithoutFinalCommitDoesNotEmitTranscriptionFinalized() {

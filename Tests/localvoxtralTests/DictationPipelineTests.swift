@@ -80,6 +80,31 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, true)
     }
 
+    /// A periodic commit still being transcribed when the stop sends the
+    /// final one: its `done` comes first, and the commit waits for the
+    /// tail's (#1070).
+    func testAPeriodicCommitAnsweredAfterTheStopDoesNotCutTheTail() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+
+        await startAndSpeak(pipeline)
+        pipeline.clock.advance(by: TimingConstants.commitInterval)
+        await pipeline.server.awaitFrame("the periodic commit") {
+            $0.type == "input_audio_buffer.commit" && !$0.isFinalCommit
+        }
+
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        // The tail is transcribed after the periodic commit's text is shown.
+        await sendSettledFinal(pipeline, "the periodic part")
+        pipeline.server.send(["type": "transcription.done", "text": "and the tail."])
+
+        let recorded = await pipeline.records.waitForCount(1)
+        XCTAssertTrue(recorded, "the session never finished and wrote its record")
+        await pipeline.server.awaitClose()
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["the periodic part and the tail."])
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), ["the periodic part and the tail."])
+    }
+
     /// A settled sentence past 30 words, the first piece early polish takes.
     private static let settledPiece =
         "the first part of this dictation is long enough to settle into a piece of its own "

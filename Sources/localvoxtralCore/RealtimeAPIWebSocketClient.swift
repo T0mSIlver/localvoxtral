@@ -11,7 +11,8 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         /// No stop-finalization completion tracking is active.
         case idle
         /// Final commit has been sent and we are waiting for its
-        /// `transcription.done` to emit `.transcriptionFinalized`.
+        /// `transcription.done` to emit `.transcriptionFinalized`: the one
+        /// that leaves no commit awaiting a `done` (#1070).
         case awaitingFinalCommitTranscriptionDone
     }
 
@@ -30,7 +31,11 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         var hasBypassedSessionCreatedGate = false
         var hasSentSessionUpdate = false
         var hasUncommittedAudio = false
-        var isGenerationInProgress = false
+        /// Commits sent that the server has not yet answered with a `done`
+        /// (or an `error`). A periodic commit can still be in flight when the
+        /// stop sends the final one, and the server answers them in order, so
+        /// the final commit's `done` is the one that brings this to zero.
+        var commitsAwaitingDone = 0
         var finalCommitCompletionGate: FinalCommitCompletionGate = .idle
         var pendingMessages: [PendingFrame] = []
         /// The handshake's replay of `pendingMessages` is under way: new
@@ -136,7 +141,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             s.hasBypassedSessionCreatedGate = false
             s.hasSentSessionUpdate = false
             s.hasUncommittedAudio = false
-            s.isGenerationInProgress = false
+            s.commitsAwaitingDone = 0
             s.finalCommitCompletionGate = .idle
             s.usageBackend = configuration.usageBackend
             s.usageModel = modelName
@@ -193,16 +198,16 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                 }
 
                 s.hasUncommittedAudio = false
-                s.isGenerationInProgress = true
+                s.commitsAwaitingDone += 1
                 s.finalCommitCompletionGate = .awaitingFinalCommitTranscriptionDone
                 return .sendCommitFrame(final: true)
             }
 
             guard s.finalCommitCompletionGate == .idle else { return .none }
             guard s.hasUncommittedAudio else { return .none }
-            guard !s.isGenerationInProgress else { return .none }
+            guard s.commitsAwaitingDone == 0 else { return .none }
             s.hasUncommittedAudio = false
-            s.isGenerationInProgress = true
+            s.commitsAwaitingDone += 1
             return .sendCommitFrame(final: false)
         }
 
@@ -275,12 +280,14 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                 // A `done` the retiring socket was read for must not clear the
                 // commit gate its replacement is still waiting on.
                 guard isCurrentConnectionLocked(s.base, generation) else { return .none }
-                s.isGenerationInProgress = false
+                s.commitsAwaitingDone = max(0, s.commitsAwaitingDone - 1)
 
                 switch s.finalCommitCompletionGate {
                 case .idle:
                     return .none
                 case .awaitingFinalCommitTranscriptionDone:
+                    // A periodic commit's `done`, ahead of the final one's.
+                    guard s.commitsAwaitingDone == 0 else { return .none }
                     s.finalCommitCompletionGate = .idle
                     return .emitTranscriptionFinalized
                 }
@@ -297,7 +304,8 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         case "error":
             state.withLock { s in
                 guard isCurrentConnectionLocked(s.base, generation) else { return }
-                s.isGenerationInProgress = false
+                // The commit it answers gets no `done`.
+                s.commitsAwaitingDone = max(0, s.commitsAwaitingDone - 1)
             }
             let message =
                 findString(in: json, matching: ["message", "error", "detail"])
@@ -595,7 +603,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         s.hasBypassedSessionCreatedGate = false
         s.hasSentSessionUpdate = false
         s.hasUncommittedAudio = false
-        s.isGenerationInProgress = false
+        s.commitsAwaitingDone = 0
         s.finalCommitCompletionGate = .idle
         s.pendingMessages.removeAll(keepingCapacity: false)
         s.isReplayingHandshakeQueue = false
@@ -698,7 +706,7 @@ extension RealtimeAPIWebSocketClient {
             s.sentAudioBytes = 0
             s.pendingMessages = [PendingFrame(text: "pending-message", audioBytes: 0)]
             s.hasUncommittedAudio = true
-            s.isGenerationInProgress = true
+            s.commitsAwaitingDone = 1
             startPingTimerLocked(&s)
             startSessionReadyTimerLocked(&s)
         }
@@ -722,7 +730,7 @@ extension RealtimeAPIWebSocketClient {
     ) {
         state.withLock { s in
             s.hasUncommittedAudio = hasUncommittedAudio
-            s.isGenerationInProgress = isGenerationInProgress
+            s.commitsAwaitingDone = isGenerationInProgress ? 1 : 0
             s.finalCommitCompletionGate = .idle
         }
     }
@@ -735,7 +743,7 @@ extension RealtimeAPIWebSocketClient {
                 hasSessionReadyTimer: s.sessionReadyTimer != nil,
                 pendingMessageCount: s.pendingMessages.count,
                 hasUncommittedAudio: s.hasUncommittedAudio,
-                isGenerationInProgress: s.isGenerationInProgress,
+                isGenerationInProgress: s.commitsAwaitingDone > 0,
                 hasReceivedSessionCreated: s.hasReceivedSessionCreated,
                 isAwaitingFinalCommitDone: s.finalCommitCompletionGate
                     == .awaitingFinalCommitTranscriptionDone
