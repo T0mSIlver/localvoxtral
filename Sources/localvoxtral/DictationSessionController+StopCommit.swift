@@ -206,10 +206,14 @@ extension DictationSessionController {
             let promptTemplates = StopCommitCoordinator.promptTemplates(
                 profile: polishProfile,
                 settings: settings,
-                appConfigStore: appConfigStore
+                appConfigStore: appConfigStore,
+                projectNames: polishProjectNames(),
+                skillNames: polishSkillNames()
             )
+            agentSkillStore?.refreshLocalIfStale()
 
             statusText = StatusStrings.polishing
+            overlayBufferCoordinator.markPolishing(true)
             debugLog("LLM polishing started for \(workingText.count) chars")
 
             // A value, not the join: the closure outlives the stop.
@@ -228,6 +232,7 @@ extension DictationSessionController {
                     commitSucceeded: false,
                     polishContextSummary: payloadProvenanceSummary,
                     clipboardPayload: clipboardPayload,
+                    audio: capturedAudio,
                     joined: historyJoin
                 )
             }
@@ -424,7 +429,8 @@ extension DictationSessionController {
 
         switch outcome.reply {
         case .notSent:
-            break
+            // Nothing to polish (blank text): end the sweep started above.
+            overlayBufferCoordinator.markPolishing(false)
         case .polished(let polished):
             polishingDuration = polished.durationSeconds
             polishPromptTokens = polished.promptTokens
@@ -443,6 +449,7 @@ extension DictationSessionController {
         case .failed(let failure):
             sessionStatus = .llmFailed
             llmConnectionFailure = failure
+            overlayBufferCoordinator.markPolishing(false)
         }
 
         guard !Task.isCancelled else { return }
@@ -601,8 +608,8 @@ extension DictationSessionController {
     }
 
     /// What the user sees of a polished reply before the commit: the text in
-    /// the overlay (payload substituted), the polished badge, and the raw
-    /// transcript "Copy raw transcript" offers.
+    /// the overlay (payload substituted), the marks on the words polish
+    /// changed, and the raw transcript "Copy raw transcript" offers.
     private func showPolishedText(
         _ polished: StopCommitCoordinator.PolishOutcome.Polished,
         preparation: StopCommitCoordinator.Preparation
@@ -618,7 +625,7 @@ extension DictationSessionController {
         // This intentionally counts an evidence-backed
         // deterministic spelling correction even when the
         // model otherwise returns its input unchanged.
-        // Drives the overlay badge (during hold) and the
+        // Drives the overlay's marks (during hold) and the
         // "Copy raw transcript" popover affordance.
         let polishChanged = committedText != workingText
         self.overlayBufferCoordinator.markPolished(polishChanged)
@@ -784,7 +791,11 @@ extension DictationSessionController {
             case .copiedToClipboard?:
                 dismissVisibility = TimingConstants.overlayClipboardFallbackVisibility
             default:
-                dismissVisibility = TimingConstants.overlayFinalWordVisibilityMinimum
+                // Held from the polished text's arrival, which is also the
+                // insertion's, so a longer hold never delays the text.
+                dismissVisibility = overlayBufferCoordinator.showsPolishChange
+                    ? TimingConstants.overlayPolishedVisibility
+                    : TimingConstants.overlayFinalWordVisibilityMinimum
             }
         }
         if let dismissVisibility {

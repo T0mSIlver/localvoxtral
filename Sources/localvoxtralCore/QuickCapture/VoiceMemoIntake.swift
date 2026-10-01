@@ -65,6 +65,9 @@ package final class VoiceMemoIntake {
     private var lastSeen: [String: VoiceMemoFile] = [:]
     private var isScanning = false
     private var lastListFailure: String?
+    /// Held while this copy of the app is the one that scans (#990).
+    private var folderLock: StoredFileLock?
+    private var reportedAnotherScanner = false
 
     package init(
         directory: URL,
@@ -131,6 +134,8 @@ package final class VoiceMemoIntake {
     package func scan() async -> Int {
         guard !isScanning else { return 0 }
         guard ledgerProblem == nil else {
+            // Another copy may be able to scan.
+            folderLock = nil
             // Once, not every 30 s.
             if !reportedLedgerProblem {
                 reportedLedgerProblem = true
@@ -140,6 +145,7 @@ package final class VoiceMemoIntake {
             return 0
         }
         guard inboxProblem() == nil else {
+            folderLock = nil
             if !reportedInboxProblem {
                 reportedInboxProblem = true
                 Log.persistence.error("Voice memos: not scanning, the Inbox file could not be loaded")
@@ -148,6 +154,7 @@ package final class VoiceMemoIntake {
             return 0
         }
         reportedInboxProblem = false
+        guard holdsTheFolder() else { return 0 }
         isScanning = true
         defer { isScanning = false }
 
@@ -197,6 +204,30 @@ package final class VoiceMemoIntake {
         return captured
     }
 
+    /// One running copy of the app scans the folder (#990): two would each
+    /// transcribe the same memo, and each would write a ledger the other
+    /// never read. The other copy waits, and takes over on a later scan once
+    /// this one quits.
+    private func holdsTheFolder() -> Bool {
+        guard let ledgerURL, folderLock == nil else { return true }
+        guard let lock = StoredFileLock.tryHolding(beside: ledgerURL) else {
+            if !reportedAnotherScanner {
+                reportedAnotherScanner = true
+                Log.backends.notice("Voice memos: another running copy of the app takes them")
+            }
+            return false
+        }
+        reportedAnotherScanner = false
+        // The copy that held the folder may have taken memos since this one
+        // loaded the ledger.
+        let load = VoiceMemoLedger.load(from: ledgerURL)
+        ledger = load.value ?? VoiceMemoLedger()
+        ledgerProblem = load.problem
+        guard ledgerProblem == nil else { return false }
+        folderLock = lock
+        return true
+    }
+
     private enum Outcome {
         case captured
         /// Left in the folder: unreadable or silent.
@@ -237,6 +268,15 @@ package final class VoiceMemoIntake {
             Log.persistence.error("Voice memos: capture not saved, the memo stays in the folder: \(error.localizedDescription, privacy: .public)")
             onStatus?("A voice memo could not be saved.")
             return .stopPass
+        }
+        guard inboxHas(itemID) else {
+            // The Inbox refused it since the scan began (another running copy
+            // left a file this build cannot read): the memo stays.
+            Log.persistence.error("Voice memos: the Inbox did not take a memo; left in the folder")
+            ledger.entries[file.name] = nil
+            saveLedger()
+            onStatus?(Self.inboxRefusedStatus)
+            return .left
         }
         Log.backends.info("Voice memos: \(transcript.text.count, privacy: .public) chars to the inbox")
         finish(file, itemID: itemID, at: url)

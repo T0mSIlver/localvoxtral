@@ -59,7 +59,8 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         limits: ClaudeRemoteListenerLimits? = nil,
         forwardProbes: ClaudeRemoteForwardProbeWitness = ClaudeRemoteForwardProbeWitness(),
         uptimeNanos: (@Sendable () -> UInt64)? = nil,
-        onRemoteHerdrActivity: @escaping @Sendable (String, String) -> Void = { _, _ in }
+        onRemoteHerdrActivity: @escaping @Sendable (String, String) -> Void = { _, _ in },
+        onRemoteSkills: @escaping @Sendable (String, [String]) -> Void = { _, _ in }
     ) throws {
         listener = ClaudeRemoteContextListener(
             registry: sessions,
@@ -67,7 +68,8 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
             limits: limits ?? ClaudeRemoteListenerLimits(port: port),
             forwardProbes: forwardProbes,
             uptimeNanos: uptimeNanos ?? { DispatchTime.now().uptimeNanoseconds },
-            onRemoteHerdrActivity: onRemoteHerdrActivity
+            onRemoteHerdrActivity: onRemoteHerdrActivity,
+            onRemoteSkills: onRemoteSkills
         )
         try listener.start()
     }
@@ -328,6 +330,25 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
             activities.withLock { $0 },
             [Activity(hostID: hostID, socketPath: "/run/user/1000/herdr/default.sock")]
         )
+    }
+
+    /// #1024: a host's skill names reach the store only from an accepted
+    /// hook, and a revoked host's never do.
+    func testSkillNamesAreKeptOnlyFromAnAuthenticatedHook() throws {
+        let reports = Mutex<[[String]]>([])
+        let expectedHost: String = hostID
+        try startListener(onRemoteSkills: { reportedHost, names in
+            XCTAssertEqual(reportedHost, expectedHost)
+            reports.withLock { $0.append(names) }
+        })
+
+        XCTAssertEqual(try send(hookRequest(token: token, extraHeaders: ["X-Lvx-Skills: unslop,bad name,gh-stack"]))?.status, 200)
+        XCTAssertEqual(try send(hookRequest(token: token))?.status, 200)
+        XCTAssertEqual(reports.withLock { $0 }, [["unslop", "gh-stack"]], "a hook without the header reports nothing")
+
+        try hosts.revoke(hostID: hostID)
+        XCTAssertEqual(try send(hookRequest(token: token, extraHeaders: ["X-Lvx-Skills: leaked"]))?.status, 401)
+        XCTAssertEqual(reports.withLock { $0 }.count, 1)
     }
 
     /// The property that makes the whole design safe.

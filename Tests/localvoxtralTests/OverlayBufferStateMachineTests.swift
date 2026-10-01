@@ -121,6 +121,41 @@ final class OverlayBufferStateMachineTests: XCTestCase {
         )
     }
 
+    /// #1074: the marks compare the polished text with what was on screen
+    /// when polish landed, and the sweep runs only while the request is out.
+    func testPolishingSweepsUntilTheReplyAndPolishedKeepsWhatWasShown() {
+        var machine = OverlayBufferStateMachine()
+        let anchor = OverlayAnchor(
+            targetRect: CGRect(x: 0, y: 0, width: 80, height: 24),
+            source: .windowCenter
+        )
+        machine.startSession(anchor: anchor, claudeJoin: .hidden)
+        machine.updateBuffer(text: "so um run the test", anchor: nil)
+        machine.setPolishing(true)
+        XCTAssertEqual(machine.snapshot?.polishing, false, "no polish before the stop")
+
+        machine.beginFinalizing(anchor: nil)
+        machine.setPolishing(true)
+        XCTAssertEqual(machine.snapshot?.polishing, true)
+
+        machine.setPolished(true)
+        machine.updateBuffer(text: "Run the tests.", anchor: nil)
+        XCTAssertEqual(machine.snapshot?.polishing, false, "the reply ends the sweep")
+        XCTAssertEqual(machine.snapshot?.polishedFrom, "so um run the test")
+
+        machine.setPolished(false)
+        XCTAssertNil(machine.snapshot?.polishedFrom, "an unchanged polish marks nothing")
+
+        machine.setPolishing(true)
+        machine.commitFailed(error: "Insert failed", anchor: nil)
+        XCTAssertEqual(machine.snapshot?.polishing, false, "a failed commit ends the sweep")
+
+        machine.reset()
+        machine.startSession(anchor: anchor, claudeJoin: .hidden)
+        XCTAssertEqual(machine.snapshot?.polishing, false)
+        XCTAssertNil(machine.snapshot?.polishedFrom)
+    }
+
     func testOverlayAssembler_partialAndFinalMergeWithoutDuplication() {
         let merged = OverlayBufferTextAssembler.displayText(
             committedText: "hello world",

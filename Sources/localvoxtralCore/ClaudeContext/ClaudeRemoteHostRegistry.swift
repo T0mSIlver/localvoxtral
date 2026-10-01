@@ -212,6 +212,16 @@ public protocol ClaudeRemoteHostStoreIO: Sendable {
     func read(from url: URL) throws -> Data?
     /// Replace the file's contents atomically, mode 0600.
     func write(_ data: Data, to url: URL) throws
+    /// Runs `body` as the only writer of `url` among the running copies of
+    /// the app (#990).
+    func withExclusiveAccess<T>(to url: URL, _ body: () throws -> T) throws -> T
+}
+
+extension ClaudeRemoteHostStoreIO {
+    /// A store no other process sees needs no lock.
+    public func withExclusiveAccess<T>(to url: URL, _ body: () throws -> T) throws -> T {
+        try body()
+    }
 }
 
 /// The on-disk implementation.
@@ -283,6 +293,15 @@ public struct ClaudeRemoteHostFileStoreIO: ClaudeRemoteHostStoreIO {
             return .permissive(path: path, mode: metadata.mode)
         }
         return nil
+    }
+
+    /// `StoredFileLock` beside the store, in the directory the write
+    /// validates first.
+    public func withExclusiveAccess<T>(to url: URL, _ body: () throws -> T) throws -> T {
+        #if canImport(Darwin) || canImport(Glibc)
+        try ClaudeSocketGuard.prepareDirectory(at: url.deletingLastPathComponent().path)
+        #endif
+        return try StoredFileLock.withLock(beside: url, body)
     }
 
     public func write(_ data: Data, to url: URL) throws {
@@ -550,8 +569,9 @@ public final class ClaudeRemoteHostRegistry: Sendable {
 
     private let state: Mutex<[StoredHost]>
     /// Serializes each mutate+write TRANSACTION. See `transact` for why `state`
-    /// alone is not enough to keep memory and disk coherent.
-    private let persistLock = Mutex<Int>(0)
+    /// alone is not enough to keep memory and disk coherent. Holds the file's
+    /// bytes as this process last read or wrote them (#990).
+    private let persistLock: Mutex<Data?>
     private let fileURL: URL
     private let io: any ClaudeRemoteHostStoreIO
     private let now: @Sendable () -> Date
@@ -577,6 +597,7 @@ public final class ClaudeRemoteHostRegistry: Sendable {
 
         guard let data = try io.read(from: fileURL) else {
             state = Mutex([])
+            persistLock = Mutex(nil)
             return
         }
         guard let file = try? JSONDecoder.claudeRemote.decode(StoredFile.self, from: data) else {
@@ -590,15 +611,11 @@ public final class ClaudeRemoteHostRegistry: Sendable {
             throw StoreError.unsupportedVersion(file.version)
         }
         state = Mutex(file.hosts)
+        persistLock = Mutex(data)
     }
 
     public static func defaultFileURL() -> URL {
-        let applicationSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        return applicationSupport
-            .appendingPathComponent("localvoxtral", isDirectory: true)
+        return LocalvoxtralDataDirectory.url()
             // The shared app-support directory already exists as 0755 on
             // normal installs. The hardened store requires a leaf it alone
             // owns at 0700; never try to tighten permissions on the shared
@@ -1042,15 +1059,50 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     /// committed state instead of blocking on disk. `noteActivity` does take
     /// `persistLock` (without doing I/O), so installing the candidate cannot
     /// overwrite a concurrent `lastSeenAt` update.
+    ///
+    /// Another running copy of the app may write the same file (#990). The
+    /// transaction holds their shared lock and re-reads the file: when it is
+    /// not what this process last read or wrote, `body` mutates the hosts on
+    /// disk instead, so an enrollment the other copy made survives this one.
     private func transact<Outcome>(_ body: (inout [StoredHost]) throws -> Outcome) throws -> Outcome {
-        try persistLock.withLock { _ -> Outcome in
-            var proposed = state.withLock { $0 }
-            let result = try body(&proposed)
-            let file = StoredFile(version: Self.fileVersion, hosts: proposed)
-            let data = try JSONEncoder.claudeRemote.encode(file)
-            try io.write(data, to: fileURL)
-            state.withLock { $0 = proposed }
-            return result
+        // The other copies' lock first, then this process's: nothing that
+        // holds `persistLock` ever waits on the file lock.
+        try io.withExclusiveAccess(to: fileURL) {
+            try persistLock.withLock { lastSeen -> Outcome in
+                var proposed = state.withLock { $0 }
+                if let onDisk = try io.read(from: fileURL), onDisk != lastSeen {
+                    guard let file = try? JSONDecoder.claudeRemote.decode(StoredFile.self, from: onDisk) else {
+                        throw StoreError.unreadable(path: fileURL.path)
+                    }
+                    guard file.version == Self.fileVersion else {
+                        throw StoreError.unsupportedVersion(file.version)
+                    }
+                    Log.persistence.notice("Remote hosts: another running copy changed the file, applying on top")
+                    proposed = Self.merging(file.hosts, into: proposed)
+                }
+                let result = try body(&proposed)
+                let file = StoredFile(version: Self.fileVersion, hosts: proposed)
+                let data = try JSONEncoder.claudeRemote.encode(file)
+                try io.write(data, to: fileURL)
+                lastSeen = data
+                state.withLock { $0 = proposed }
+                return result
+            }
+        }
+    }
+
+    /// The hosts another copy wrote, with what only this process knows about
+    /// each: when it last heard from it, and the versions its hooks reported.
+    private static func merging(_ onDisk: [StoredHost], into memory: [StoredHost]) -> [StoredHost] {
+        onDisk.map { host in
+            guard let known = memory.first(where: { $0.id == host.id }) else { return host }
+            var merged = host
+            if let seen = known.lastSeenAt, seen > (host.lastSeenAt ?? .distantPast) {
+                merged.lastSeenAt = seen
+            }
+            merged.pluginVersionReport = known.pluginVersionReport
+            merged.vibeHooksVersionReport = known.vibeHooksVersionReport
+            return merged
         }
     }
 

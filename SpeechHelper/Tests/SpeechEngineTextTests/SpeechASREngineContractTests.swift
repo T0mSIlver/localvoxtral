@@ -23,6 +23,28 @@ final class SpeechASREngineKindTests: XCTestCase {
         )
     }
 
+    /// The catalog's `--engine` decides, whatever the repo id is called.
+    func testANamedEngineWinsOverTheModelID() {
+        XCTAssertEqual(
+            SpeechASREngineKind.resolve(
+                named: .nemotron, modelID: "someone/custom-asr", modelDirectory: nil
+            ),
+            .nemotron
+        )
+        XCTAssertEqual(
+            SpeechASREngineKind.resolve(
+                named: .voxtral, modelID: "mlx-community/nemotron-3.5-asr", modelDirectory: nil
+            ),
+            .voxtral
+        )
+        XCTAssertEqual(
+            SpeechASREngineKind.resolve(
+                named: nil, modelID: "mlx-community/nemotron-3.5-asr", modelDirectory: nil
+            ),
+            .nemotron
+        )
+    }
+
     func testAnUnknownOrAbsentModelIDKeepsTheVoxtralDefault() {
         XCTAssertEqual(SpeechASREngineKind.infer(fromModelID: nil), .voxtral)
         XCTAssertEqual(SpeechASREngineKind.infer(fromModelID: "someone/custom-asr"), .voxtral)

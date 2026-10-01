@@ -37,7 +37,7 @@ final class CopyLastDictationTests: XCTestCase {
     /// did not land is still one menu click away for the rest of the run.
     func testWithHistoryOffTheLastDictationIsStillCopyable() async throws {
         let (viewModel, written) = makeViewModel(polishing: nil)
-        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
         viewModel.sessionStore = store
         viewModel.settings.dictationHistoryRetention = .off
 
@@ -70,7 +70,7 @@ final class CopyLastDictationTests: XCTestCase {
     /// swap the clipboard text for the placeholder that row holds.
     func testReadingHistoryBackKeepsTheClipboardText() async throws {
         let (viewModel, written) = makeViewModel(polishing: nil)
-        viewModel.sessionStore = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
         viewModel.dependencies.pasteboardReader = { PasteboardStub(string: "ValueError: boom") }
 
         finishOverlayDictation(viewModel, text: "here is the error paste clipboard")
@@ -155,7 +155,7 @@ final class CopyLastDictationTests: XCTestCase {
 
     func testTheLastDictationFollowsHistory() async throws {
         let (viewModel, _) = makeViewModel(polishing: nil)
-        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
         viewModel.sessionStore = store
         let startedAt = Date(timeIntervalSince1970: 1_800_000_000)
         store.save(
@@ -175,7 +175,7 @@ final class CopyLastDictationTests: XCTestCase {
     /// Turning History off deletes every dictation, the last one included.
     func testTurningHistoryOffDeletesTheLastDictationToo() async throws {
         let (viewModel, _) = makeViewModel(polishing: nil)
-        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
         viewModel.sessionStore = store
         finishOverlayDictation(viewModel, text: "saved while History was on")
         XCTAssertTrue(viewModel.canCopyLastDictation)
@@ -191,7 +191,7 @@ final class CopyLastDictationTests: XCTestCase {
     /// erase the dictation this run kept in memory.
     func testWithHistoryOffAnEmptyStoreKeepsTheDictationInMemory() async throws {
         let (viewModel, _) = makeViewModel(polishing: nil)
-        viewModel.sessionStore = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
         viewModel.settings.dictationHistoryRetention = .off
         finishOverlayDictation(viewModel, text: "only in memory")
 

@@ -429,6 +429,16 @@ struct DictationSettingsPane: View {
                     .labelsHidden()
                 }
 
+                SettingsFieldRow(title: "Color for polished words") {
+                    Picker("", selection: $settings.overlayBufferPolishColor) {
+                        ForEach(OverlayPolishColor.allCases) { choice in
+                            Text(choice.displayName).tag(choice)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                }
+
                 SettingsFieldRow(title: "Stop dictating after silence") {
                     Picker("", selection: $settings.overlayBufferSilenceAutoStop) {
                         ForEach(SilenceAutoStop.allCases) { choice in

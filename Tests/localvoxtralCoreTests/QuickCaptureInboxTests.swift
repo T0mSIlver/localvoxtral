@@ -55,6 +55,23 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.first?.title, "Dark mode")
     }
 
+    /// A try-pr build beside the installed app (#990): both opened the
+    /// Inbox before either captured, and neither loses the other's capture.
+    func testTwoRunningCopiesKeepEachOthersCaptures() async throws {
+        let installed = model(answer: ["reach": 0.9])
+        let tryBuild = model(answer: ["reach": 0.9])
+
+        await installed.capture(text: "Add a dark mode", historyRecordID: nil).value
+        await tryBuild.capture(text: "Fix the login", historyRecordID: nil).value
+        let first = try XCTUnwrap(installed.items.first { $0.text == "Add a dark mode" })
+        installed.setTitle("Dark mode, finally", for: first.id)
+
+        let onDisk = try XCTUnwrap(QuickCaptureInboxFile.load(from: fileURL).value)
+        XCTAssertEqual(Set(onDisk.items.map(\.text)), ["Add a dark mode", "Fix the login"])
+        XCTAssertEqual(onDisk.items.first { $0.id == first.id }?.title, "Dark mode, finally")
+        XCTAssertEqual(Set(installed.items.map(\.text)), ["Add a dark mode", "Fix the login"])
+    }
+
     func testTheCatchAllRunsNoAgentAndMovingItDraftsIt() async throws {
         let model = model(answer: ["inbox": 0.9])
         await model.capture(text: "An idea", historyRecordID: nil).value
@@ -105,6 +122,24 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(routed.last, "Filed in o/reach")
         XCTAssertTrue(github.created.withLock { $0.isEmpty }, "the app files nothing itself")
         XCTAssertEqual(model.markFiled(id, url: "https://github.com/o/reach/issues/13"), .failure(.notReady(.filed)))
+    }
+
+    /// Another running copy moved the capture to another repository after
+    /// this one loaded it (#990 review): marking it filed in the old one is
+    /// refused against the file, and History is not told it was filed.
+    func testMarkingFiledChecksWhatAnotherCopyChanged() async throws {
+        let model = model(answer: ["reach": 0.9])
+        await model.capture(text: "Add a dark mode", historyRecordID: UUID()).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        var onDisk = try XCTUnwrap(QuickCaptureInboxFile.load(from: fileURL).value)
+        onDisk.update(id) { $0.repository = "o/website" }
+        try PrivateFile.write(QuickCaptureInboxFile.encode(onDisk), to: fileURL)
+        routed = []
+
+        XCTAssertEqual(
+            model.markFiled(id, url: "https://github.com/o/reach/issues/12"), .failure(.otherRepository("o/website")))
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.first?.state, .ready)
+        XCTAssertEqual(routed, [])
     }
 
     /// #938: an unsure capture waits unplaced with the router's guess; no

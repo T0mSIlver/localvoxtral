@@ -167,7 +167,11 @@ from your issue and say so in your report. Don't ask whether to file it.
   builds (#87). App resources resolve through `Bundle.localvoxtralResources`.
 - The launch smoke copies the packaged app outside the workspace with
   `.build` hidden, because same-tree launches mask the #87 class of breakage.
-  Don't simplify it.
+  Don't simplify it. The runner runs as the owner, so any launch of the app
+  there gets data of its own, or it opens the owner's History (#985): the
+  smokes set `CFFIXED_USER_HOME` (`scripts/ci/launch-smoke.py`), and lanes
+  that need the owner's preferences export `LOCALVOXTRAL_DATA_HOME` for
+  `lv_open`.
 
 ## Code
 
@@ -185,10 +189,11 @@ from your issue and say so in your report. Don't ask whether to file it.
 - Prefer exit codes, typed errors and `--json` output to matching prose,
   ours or another tool's; match text only where the tool offers nothing
   structured (#1011).
-- GLM (`zai-glm-*`) on the Mistral API bills the Vibe plan key
-  (`VIBE_MISTRAL_API_KEY`, else `MISTRAL_API_KEY=` in `~/.vibe/.env`), never
-  `MISTRAL_API_KEY` or `~/.config/localvoxtral/mistral_api_key`: that is the
-  pay-per-call Studio key, for Voxtral and the other Mistral models.
+- Scripts and evals that call GLM (`zai-glm-*`) on the Mistral API bill the
+  Vibe plan key (`VIBE_MISTRAL_API_KEY`, else `MISTRAL_API_KEY=` in
+  `~/.vibe/.env`), never `MISTRAL_API_KEY` or
+  `~/.config/localvoxtral/mistral_api_key`: that is the pay-per-call Studio
+  key. The app itself uses the one key the user entered, for every model.
 - Backend and lifecycle paths log requests, completions and failures to
   `Log.backends`. Keep new paths loud; silent failures have cost hours of
   remote probing.

@@ -10,7 +10,7 @@ arm is not a difference.
 
     # once, on the Mac that dictated (the files hold dictated text: copy
     # them only into the gitignored local-notes/, delete them when done):
-    sqlite3 ~/Library/Application\\ Support/default.store ".backup default.store"
+    sqlite3 ~/Library/Application\\ Support/localvoxtral/history.store ".backup default.store"
     defaults read com.localvoxtral.app settings.polish_speaker_terms \\
         | plutil -convert json -r -o speaker-terms.json -
     defaults read com.localvoxtral.app settings.polish_dismissed_term_suggestions \\

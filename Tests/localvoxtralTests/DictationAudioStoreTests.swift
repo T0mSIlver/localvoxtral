@@ -13,7 +13,7 @@ final class DictationAudioStoreTests: XCTestCase {
             .appendingPathComponent("lv-audio-\(UUID().uuidString)", isDirectory: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let audio = DictationAudioStore(directoryURL: directory)
-        let store = try XCTUnwrap(DictationSessionStore(inMemory: true))
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
         store.audioStore = audio
         return (store, audio)
     }
@@ -92,6 +92,32 @@ final class DictationAudioStoreTests: XCTestCase {
 
         XCTAssertEqual(audio.storedIDs(), [kept.id])
         XCTAssertFalse(FileManager.default.fileExists(atPath: torn.path))
+    }
+
+    /// An empty store beside recordings lost its rows; it is not a user who
+    /// deleted everything, since Delete All removes the files itself. The
+    /// sweep that trusted it deleted every recording after #985's wipe.
+    func testTheLaunchSweepKeepsEveryRecordingWhenTheStoreIsEmpty() async throws {
+        let (store, audio) = try makeStores()
+        let ids = [UUID(), UUID()]
+        for id in ids { try audio.write(pcm16: pcm, for: id) }
+        await store.removeOrphanedAudio().value
+        await store.trim(olderThan: origin).value
+
+        XCTAssertEqual(audio.storedIDs(), Set(ids))
+    }
+
+    /// The guard above must not keep what retention deletes: a trim that
+    /// empties the store still deletes the audio of what it trimmed.
+    func testRetentionThatTrimsEveryDictationDeletesTheirAudio() async throws {
+        let (store, audio) = try makeStores()
+        store.save(record("old", daysAgo: 40), audio: pcm)
+        store.save(record("older", daysAgo: 50), audio: pcm)
+        await store.trim(olderThan: origin.addingTimeInterval(-30 * day)).value
+
+        XCTAssertEqual(audio.storedIDs(), [])
+        let count = await store.count()
+        XCTAssertEqual(count, 0)
     }
 
     func testDeleteAllAndTurningAudioOffDeleteEveryRecording() async throws {

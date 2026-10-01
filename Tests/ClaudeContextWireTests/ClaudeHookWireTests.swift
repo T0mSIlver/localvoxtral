@@ -284,12 +284,12 @@ final class ClaudeHookWireCodecTests: XCTestCase {
         XCTAssertThrowsError(
             try ClaudeHookWireCodec.decodeLine(line(validJSON(extra: #","agent":"aider""#)))
         ) { error in
-            XCTAssertEqual(error as? ClaudeHookWireError, .unknownAgent("aider"))
+            XCTAssertEqual(error as? ClaudeHookWireError, .unknownAgent)
         }
         XCTAssertThrowsError(
             try ClaudeHookWireCodec.decodeLine(line(validJSON(extra: #","agent":7"#)))
         ) { error in
-            XCTAssertEqual(error as? ClaudeHookWireError, .unknownAgent(nil))
+            XCTAssertEqual(error as? ClaudeHookWireError, .unknownAgent)
         }
     }
 
@@ -379,7 +379,7 @@ final class ClaudeHookWireCodecTests: XCTestCase {
 
     func testRejectsUnknownEventRatherThanThrowingGenericError() {
         XCTAssertThrowsError(try ClaudeHookWireCodec.decodeLine(line(validJSON(event: "PreCompact")))) { error in
-            XCTAssertEqual(error as? ClaudeHookWireError, .unknownEvent("PreCompact"))
+            XCTAssertEqual(error as? ClaudeHookWireError, .unknownEvent)
         }
     }
 

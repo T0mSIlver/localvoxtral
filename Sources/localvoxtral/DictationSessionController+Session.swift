@@ -442,11 +442,13 @@ extension DictationSessionController {
         let chunkBuffer = audio.audioChunkBuffer
         let recording = audio.sessionRecording
         let timeline = sessionCaptureTimeline
+        let micLevel = micLevelFeed()
         do {
             try audio.startSessionAudioCapture(preferredDeviceID: preferredInputID) { chunk in
                 timeline?.markFirstBuffer()
                 chunkBuffer.append(chunk)
                 recording.append(chunk)
+                micLevel(chunk)
             }
             timeline?.markMicStarted()
         } catch {
@@ -456,6 +458,19 @@ extension DictationSessionController {
             lastError = error.localizedDescription
             Log.dictation.error("Failed to start microphone at session start: \(error.localizedDescription, privacy: .public)")
             debugLog("startSessionMicrophone failed error=\(error.localizedDescription)")
+        }
+    }
+
+    /// Feeds the overlay's level bars (#1074) from the capture queue: the
+    /// meter smooths each chunk there and posts to the main actor at most
+    /// `MicLevelMeter.postsPerSecond` times a second of audio.
+    func micLevelFeed() -> @Sendable (Data) -> Void {
+        let meter = MicLevelMeter()
+        return { [weak self] chunk in
+            guard let level = meter.ingest(pcm16: chunk) else { return }
+            Task { @MainActor [weak self] in
+                self?.overlayBufferCoordinator.updateMicLevel(level)
+            }
         }
     }
 
@@ -544,7 +559,9 @@ extension DictationSessionController {
                 settings: settings
             ),
             settings: settings,
-            appConfigStore: appConfigStore
+            appConfigStore: appConfigStore,
+            projectNames: polishProjectNames(),
+            skillNames: polishSkillNames()
         )
     }
 
@@ -631,6 +648,7 @@ extension DictationSessionController {
         let chunkBuffer = audio.audioChunkBuffer
         let recording = audio.sessionRecording
         let mic = audio.microphone
+        let micLevel = micLevelFeed()
         return AudioCaptureHealthMonitor.Callbacks(
             refreshMicrophoneInputs: { [weak self] in
                 self?.refreshMicrophoneInputs()
@@ -661,10 +679,11 @@ extension DictationSessionController {
                     preferredDeviceID: preferredInputID,
                     preferredInputChannel: self?.selectedInputChannel ?? 0
                 ) { chunk in
-                    // The same two destinations as the first start: a
+                    // The same destinations as the first start: a
                     // recovered microphone keeps feeding the kept audio.
                     chunkBuffer.append(chunk)
                     recording.append(chunk)
+                    micLevel(chunk)
                 }
             }
         )

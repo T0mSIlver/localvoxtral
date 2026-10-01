@@ -159,35 +159,102 @@ final class DictationSessionStore {
     /// dictation, like the audio; nil keeps none and deletes none.
     var diagnosticRecordStore: DiagnosticRecordStore?
 
-    convenience init?() {
-        self.init(inMemory: false)
-    }
+    /// The last read or write that failed, in the words of its error; nil
+    /// once one succeeds. History and Insights show it instead of an empty
+    /// page (#985).
+    private(set) var accessFailure: String?
+    /// Called when `accessFailure` changes, so the popover and the panes
+    /// can say History is failing while it fails.
+    var onAccessFailureChange: (@MainActor (String?) -> Void)?
 
-    /// `inMemory` is for tests: the default configuration writes the user's
-    /// real `default.store`.
-    convenience init?(inMemory: Bool) {
-        let schema = Schema([DictationSessionRecord.self])
-        self.init(configuration: ModelConfiguration(schema: schema, isStoredInMemoryOnly: inMemory))
-    }
+    /// Whether the last read or write failed. Retention and the sweeps
+    /// wait while it does: a store that cannot answer is no authority for
+    /// deleting anything (#985).
+    var isFailing: Bool { accessFailure != nil }
 
-    /// A store file somewhere else: a copy of a user's history, for the replay
-    /// eval.
-    convenience init?(url: URL) {
-        let schema = Schema([DictationSessionRecord.self])
-        self.init(configuration: ModelConfiguration(schema: schema, url: url))
-    }
+    /// What the one-time copy from `default.store` did at this launch; nil
+    /// when it did not run.
+    private(set) var legacyImport: DictationHistoryStoreFile.LegacyImport?
 
-    private init?(configuration: ModelConfiguration) {
-        do {
-            let schema = Schema([DictationSessionRecord.self])
-            self.modelContainer = try ModelContainer(for: schema, configurations: [configuration])
-            Log.persistence.info("DictationSessionStore initialized")
-        } catch {
-            Log.persistence.error(
-                "Failed to initialize DictationSessionStore: \(error.localizedDescription, privacy: .public)"
-            )
-            return nil
+    /// The user's history: `history.store` in `directory`, which defaults to
+    /// the app's folder in Application Support. A `default.store` left by an
+    /// older build (`legacyStore`, the real one with the default folder) is
+    /// copied in first, once.
+    static func open(
+        directory: URL? = nil, legacyStore: URL? = nil
+    ) -> Result<DictationSessionStore, DictationHistoryOpenFailure> {
+        let folder = directory ?? DictationHistoryStoreFile.defaultDirectoryURL()
+        let url = folder.appendingPathComponent(DictationHistoryStoreFile.fileName)
+        // Core Data creates the file, not its folder: a first launch has none.
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        var legacyImport: DictationHistoryStoreFile.LegacyImport?
+        if let legacy = legacyStore ?? (directory == nil ? DictationHistoryStoreFile.legacyStoreURL() : nil) {
+            let outcome = DictationHistoryStoreFile.importLegacyStore(from: legacy, to: url)
+            legacyImport = outcome
+            switch outcome {
+            case .storeExists, .noLegacyStore:
+                break
+            case .imported:
+                Log.persistence.info(
+                    "History: copied \(legacy.path, privacy: .public) to \(url.path, privacy: .public); the old file stays"
+                )
+            case let .legacyHoldsNoHistory(tables):
+                Log.persistence.error(
+                    "History: \(legacy.path, privacy: .public) holds no dictations (entity tables: \(tables, privacy: .public)); copied nothing and left it in place; starting \(url.path, privacy: .public) empty. Restore it by hand if a backup has them."
+                )
+            case let .failed(reason):
+                Log.persistence.error(
+                    "History: copying \(legacy.path, privacy: .public) failed: \(reason, privacy: .public)"
+                )
+                return .failure(.unreadable("copying the history from default.store failed: \(reason)"))
+            }
         }
+        let result = open(url: url)
+        if case let .success(store) = result { store.legacyImport = legacyImport }
+        return result
+    }
+
+    /// A store file at `url`: the user's, or a copy for the replay eval.
+    /// Refuses a file holding data this build's model lacks, before SwiftData
+    /// could migrate it away.
+    static func open(url: URL) -> Result<DictationSessionStore, DictationHistoryOpenFailure> {
+        let schema = Schema([DictationSessionRecord.self])
+        let result: Result<DictationSessionStore, DictationHistoryOpenFailure>
+        do {
+            if let refusal = try DictationHistoryStoreFile.refusal(of: url, schema: schema) {
+                result = .failure(refusal)
+            } else {
+                result = .success(try DictationSessionStore(
+                    configuration: ModelConfiguration(schema: schema, url: url)))
+            }
+        } catch {
+            result = .failure(.unreadable(String(describing: error)))
+        }
+        switch result {
+        case .success:
+            Log.persistence.info("History: opened \(url.path, privacy: .public)")
+        case let .failure(failure):
+            Log.persistence.error(
+                "History: not opening \(url.path, privacy: .public): \(failure.logDescription, privacy: .public)"
+            )
+        }
+        return result
+    }
+
+    /// A store that lives in memory, for tests.
+    static func inMemory() -> DictationSessionStore? {
+        let schema = Schema([DictationSessionRecord.self])
+        return try? DictationSessionStore(
+            configuration: ModelConfiguration(schema: schema, isStoredInMemoryOnly: true))
+    }
+
+    private convenience init(configuration: ModelConfiguration) throws {
+        let schema = Schema([DictationSessionRecord.self])
+        self.init(container: try ModelContainer(for: schema, configurations: [configuration]))
+    }
+
+    private init(container: ModelContainer) {
+        modelContainer = container
     }
 
     // MARK: - Writes
@@ -261,7 +328,7 @@ final class DictationSessionStore {
             try context.save()
             audioStore?.remove([id])
             diagnosticRecordStore?.remove([id])
-            return deleted
+            return deleted.count
         }
     }
 
@@ -274,7 +341,7 @@ final class DictationSessionStore {
             try context.save()
             audioStore?.removeAll()
             diagnosticRecordStore?.removeAll()
-            return deleted
+            return deleted.count
         }
     }
 
@@ -285,12 +352,17 @@ final class DictationSessionStore {
     func trim(olderThan cutoff: Date) -> Task<Void, Never> {
         let audioStore = audioStore
         let diagnosticRecordStore = diagnosticRecordStore
+        guard !isFailing else { return skipWhileFailing("trim dictations") }
         return enqueueWrite("trim dictations") { context in
             let deleted = try Self.deleteRecords(
                 matching: #Predicate<DictationSessionRecord> { $0.startedAt < cutoff },
                 in: context)
-            if audioStore != nil || diagnosticRecordStore != nil {
-                if deleted > 0 { try context.save() }
+            if !deleted.isEmpty, audioStore != nil || diagnosticRecordStore != nil {
+                try context.save()
+                // By id: a trim that empties the store leaves the sweep
+                // below nothing to go on.
+                audioStore?.remove(Set(deleted))
+                diagnosticRecordStore?.remove(Set(deleted))
             }
             if let audioStore {
                 try Self.removeOrphanedAudio(audioStore, context: context)
@@ -298,7 +370,7 @@ final class DictationSessionStore {
             if let diagnosticRecordStore {
                 try Self.removeOrphanedDiagnosticRecords(diagnosticRecordStore, context: context)
             }
-            return deleted
+            return deleted.count
         }
     }
 
@@ -310,7 +382,15 @@ final class DictationSessionStore {
     func removeOrphanedAudio() -> Task<Void, Never> {
         let audioStore = audioStore
         let diagnosticRecordStore = diagnosticRecordStore
+        guard !isFailing else { return skipWhileFailing("sweep dictation audio") }
         return enqueueWrite("sweep dictation audio") { context in
+            // Before anything is deleted, strays and pruning included: an
+            // empty store beside files lost its rows.
+            let files = (audioStore?.storedIDs().count ?? 0)
+                + (diagnosticRecordStore?.storedIDs().count ?? 0)
+            if files > 0, try !Self.storeHoldsDictations(context, files: files, kind: "attachment") {
+                return 0
+            }
             if let audioStore {
                 audioStore.removeStrayFiles()
                 try Self.removeOrphanedAudio(audioStore, context: context)
@@ -328,7 +408,9 @@ final class DictationSessionStore {
         _ diagnosticRecordStore: DiagnosticRecordStore, context: ModelContext
     ) throws {
         let stored = Array(diagnosticRecordStore.storedIDs())
-        guard !stored.isEmpty else { return }
+        guard !stored.isEmpty,
+              try storeHoldsDictations(context, files: stored.count, kind: "diagnostic record")
+        else { return }
         let kept = try Set(context.fetch(FetchDescriptor<DictationSessionRecord>(
             predicate: #Predicate { stored.contains($0.id) })).map(\.id))
         let removed = diagnosticRecordStore.removeAll(except: kept)
@@ -339,13 +421,30 @@ final class DictationSessionStore {
         }
     }
 
+    /// An empty store beside files is a store that lost its rows, not a user
+    /// who deleted every dictation: Delete All removes the files itself. The
+    /// sweep that trusted it deleted every recording after the #985 wipe.
+    private nonisolated static func storeHoldsDictations(
+        _ context: ModelContext, files: Int, kind: String
+    ) throws -> Bool {
+        guard try context.fetchCount(FetchDescriptor<DictationSessionRecord>()) == 0 else {
+            return true
+        }
+        Log.persistence.error(
+            "History: the store holds no dictations but \(files, privacy: .public) \(kind, privacy: .public) file(s) exist; keeping them"
+        )
+        return false
+    }
+
     /// Only the recordings on disk are looked up: most users keep none, and
     /// this runs after every saved dictation.
     private nonisolated static func removeOrphanedAudio(
         _ audioStore: DictationAudioStore, context: ModelContext
     ) throws {
         let stored = Array(audioStore.storedIDs())
-        guard !stored.isEmpty else { return }
+        guard !stored.isEmpty,
+              try storeHoldsDictations(context, files: stored.count, kind: "recording")
+        else { return }
         let kept = try Set(context.fetch(FetchDescriptor<DictationSessionRecord>(
             predicate: #Predicate { stored.contains($0.id) })).map(\.id))
         let removed = audioStore.removeAll(except: kept)
@@ -424,10 +523,11 @@ final class DictationSessionStore {
     private nonisolated static func deleteRecords(
         matching predicate: Predicate<DictationSessionRecord>?,
         in context: ModelContext
-    ) throws -> Int {
+    ) throws -> [UUID] {
         let records = try context.fetch(FetchDescriptor<DictationSessionRecord>(predicate: predicate))
+        let ids = records.map(\.id)
         for record in records { context.delete(record) }
-        return records.count
+        return ids
     }
 
     private func enqueueWrite(
@@ -446,11 +546,13 @@ final class DictationSessionStore {
                 Log.persistence.info(
                     "History: \(label, privacy: .public) changed \(changed, privacy: .public) record(s)"
                 )
+                await self?.noteAccess(failure: nil)
             } catch {
                 changed = 0
                 Log.persistence.error(
-                    "History: \(label, privacy: .public) failed: \(error.localizedDescription, privacy: .public)"
+                    "History: \(label, privacy: .public) failed: \(String(describing: error), privacy: .public)"
                 )
+                await self?.noteAccess(failure: error.localizedDescription)
             }
             if changed > 0 {
                 await self?.onChange?()
@@ -550,16 +652,36 @@ final class DictationSessionStore {
     ) async -> Value? {
         let container = modelContainer
         let pendingWrite = lastWrite
-        return await Task.detached {
+        let result = await Task.detached { () -> Result<Value, any Error> in
             await pendingWrite?.value
-            do {
-                return try body(ModelContext(container))
-            } catch {
-                Log.persistence.error(
-                    "History: \(label, privacy: .public) failed: \(error.localizedDescription, privacy: .public)"
-                )
-                return nil
-            }
+            return Result { try body(ModelContext(container)) }
         }.value
+        switch result {
+        case let .success(value):
+            noteAccess(failure: nil)
+            return value
+        case let .failure(error):
+            Log.persistence.error(
+                "History: \(label, privacy: .public) failed: \(String(describing: error), privacy: .public)"
+            )
+            noteAccess(failure: error.localizedDescription)
+            return nil
+        }
     }
+
+    private func noteAccess(failure: String?) {
+        guard accessFailure != failure else { return }
+        accessFailure = failure
+        onAccessFailureChange?(failure)
+    }
+
+    private func skipWhileFailing(_ label: String) -> Task<Void, Never> {
+        Log.persistence.error(
+            "History: skipping \(label, privacy: .public): the store's last read or write failed"
+        )
+        return Task {}
+    }
+
+    /// The queued writes, for the quit path to wait on.
+    var pendingWrites: Task<Void, Never>? { lastWrite }
 }

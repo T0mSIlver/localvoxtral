@@ -492,6 +492,13 @@ if ! nc -z -w 3 "$endpoint_host" "$endpoint_port" >/dev/null 2>&1; then
 fi
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lv-e2e-dictation.XXXXXX")"
+# The app under test runs as the owner, with the owner's preferences; its
+# History, recordings and other stores go here instead of the owner's (#985).
+# lv_open hands this to the app.
+if ! lv_isolate_data lv-e2e-data; then
+  record_not_runnable "Could not make a data folder for the app under test; not launching it on the owner's data."
+  finish
+fi
 if ! build_target_app; then
   record_not_runnable "Could not compile the target app (scripts/e2e/target-app.swift)."
   finish

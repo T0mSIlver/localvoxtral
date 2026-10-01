@@ -40,14 +40,10 @@ package enum StoredFile {
         decoder: JSONDecoder = JSONDecoder()
     ) -> StoredFileLoad<Value> {
         let data: Data
-        do {
-            data = try Data(contentsOf: url)
-        } catch {
-            if !FileManager.default.fileExists(atPath: url.path) { return .absent }
-            Log.persistence.error(
-                "\(url.lastPathComponent, privacy: .public): could not be read, kept and not written: \(error.localizedDescription, privacy: .public)"
-            )
-            return .refused(.unreadable)
+        switch read(url) {
+        case .absent: return .absent
+        case .unreadable: return .refused(.unreadable)
+        case .bytes(let bytes): data = bytes
         }
         return decode(type, from: data, name: url.lastPathComponent, currentVersion: currentVersion, decoder: decoder)
     }
