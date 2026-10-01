@@ -179,7 +179,7 @@ extension ClaudeSessionJoinResolver {
         ) {
         case .matched(let match):
             if let lapse = remoteHerdrJoinLapse(
-                hostID: host.id,
+                host: host,
                 sessionID: confirmed.snapshot.sessionID,
                 paneID: confirmed.pane.paneID
             ) {

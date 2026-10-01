@@ -195,7 +195,7 @@ extension ClaudeSessionJoinResolver {
             herdrPanes: herdrPanes
         ) {
             if let lapse = remoteHerdrJoinLapse(
-                hostID: host.id,
+                host: host,
                 sessionID: join.snapshot.sessionID,
                 paneID: join.herdrPane?.paneID
             ) {
@@ -215,18 +215,24 @@ extension ClaudeSessionJoinResolver {
     /// Asked after an over-the-forward arm's last await, just before it
     /// returns its join (#1117). The arm took its host and session before
     /// opening the forward; a revoke, or the session ending, while the forward
-    /// opened and the pane reads ran would otherwise still yield a join. Nil
-    /// when the join may stand, else the content-free abstention outcome.
-    package func remoteHerdrJoinLapse(hostID: String, sessionID: String, paneID: String?) -> String? {
-        guard remoteHostIsEnrolled(hostID) else { return "host is no longer enrolled" }
-        let stillLive = registry.liveRemoteHerdrSessions(hostID: hostID).contains {
+    /// opened and the pane reads ran would otherwise still yield a join. The
+    /// host is re-asked through the exact-alias seam the arms match on, which
+    /// leaves out revoked hosts. Nil when the join may stand, else the
+    /// content-free abstention outcome.
+    package func remoteHerdrJoinLapse(host: ClaudeRemoteHost, sessionID: String, paneID: String?) -> String? {
+        let enrolled = host.sshHostAlias.map { alias in
+            enrolledHosts(alias).contains { $0.id == host.id && !$0.isRevoked }
+        } ?? false
+        guard enrolled else { return "host is no longer enrolled" }
+        let stillLive = registry.liveRemoteHerdrSessions(hostID: host.id).contains {
             $0.sessionID == sessionID && $0.remoteSessionEnvironment?.herdrPaneID == paneID
         }
         return stillLive ? nil : "session is no longer live"
     }
 
     /// Whether `hostID` names a host the user enrolled and has not revoked,
-    /// read from the full host list at the moment of asking.
+    /// read from the full host list at the moment of asking. For the herdr
+    /// pane route, which holds the session's host id but not its alias.
     package func remoteHostIsEnrolled(_ hostID: String) -> Bool {
         speculativeHosts().contains { $0.id == hostID && !$0.isRevoked }
     }
@@ -478,7 +484,7 @@ extension ClaudeSessionJoinResolver {
             foregroundProcesses: processes
         ) else { return await refuse("registered remote agent is not foreground") }
         if let lapse = remoteHerdrJoinLapse(
-            hostID: match.host.id, sessionID: snapshot.sessionID, paneID: pane.paneID
+            host: match.host, sessionID: snapshot.sessionID, paneID: pane.paneID
         ) {
             return await refuse(lapse)
         }
