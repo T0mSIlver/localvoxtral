@@ -732,7 +732,14 @@ there is not.
     *Typed only into the same pane:* a text herdr refused (its own error
     answer for that request, or a request that never reached the socket) is
     typed only while keys would land in the joined pane: its terminal is
-    frontmost and herdr's `pane.current` is that pane. Otherwise, and
+    frontmost, herdr's `pane.current` is that pane, and the terminal still
+    shows the surface the join saw (#1105, `HerdrJoinedSurface`): the same
+    focused tty, and on it the same machine, read as the arm read it
+    (herdr's machine selection, alone on screen once machines are saved, or
+    the tty's ssh session). A client switched to another saved machine
+    keeps its tty, and the server it left keeps a focused pane it no longer
+    shows, so the pane check alone would type into the other machine.
+    Otherwise, and
     whenever the request went out with no valid answer (it may have landed),
     the text stays in History (`keepInHistory`).
     *Enter only over the joined agent:* before each Enter the route asks the

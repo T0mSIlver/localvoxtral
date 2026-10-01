@@ -77,6 +77,29 @@ package struct ClaudeHerdrPaneBinding: Sendable, Equatable {
     }
 }
 
+/// What the terminal showed when a herdr join resolved: its focused tty and
+/// the machine on that tty. A text herdr refused is typed only while both
+/// still hold (#1105): a client switched to another saved machine keeps its
+/// tty, and the server it left keeps a focused pane it no longer shows.
+package struct HerdrJoinedSurface: Sendable, Equatable {
+    package enum Machine: Sendable, Equatable {
+        /// A local herdr client, with herdr's machine selection as the arm
+        /// read it: no machines saved, Local, or one saved machine.
+        case herdrClient(HerdrMachineFederation)
+        /// An ssh session into the enrolled host whose herdr the pane is on,
+        /// as the process table showed it.
+        case ssh(SSHDestinationTTYProbeResult)
+    }
+
+    package let tty: String
+    package let machine: Machine
+
+    package init(tty: String, machine: Machine) {
+        self.tty = tty
+        self.machine = machine
+    }
+}
+
 /// The Remote Control bridge session id a `.browserTab` join resolved on.
 /// Captured at resolution so commit-time liveness can ask whether the SAME
 /// binding still holds, rather than re-reading a tab the user may have changed.
@@ -155,6 +178,9 @@ package struct ClaudeSessionJoin: Sendable, Equatable {
     /// The agents-panel token lease for a panel-authorized remote join. The
     /// view model starts it after taking ownership and stops it on every exit.
     package let remoteHerdrIndicator: HerdrPanelMicIndicator?
+    /// Set on herdr joins by the arm that resolved them. Nil never lets a
+    /// refused text be typed.
+    package internal(set) var herdrSurface: HerdrJoinedSurface?
 
     package init(
         target: TerminalScreenTarget,
@@ -166,7 +192,8 @@ package struct ClaudeSessionJoin: Sendable, Equatable {
         desktopSession: ClaudeDesktopSessionBinding? = nil,
         cmuxSurface: ClaudeCmuxSurfaceBinding? = nil,
         remoteHerdrForward: ClaudeRemoteHerdrForwardHandle? = nil,
-        remoteHerdrIndicator: HerdrPanelMicIndicator? = nil
+        remoteHerdrIndicator: HerdrPanelMicIndicator? = nil,
+        herdrSurface: HerdrJoinedSurface? = nil
     ) {
         self.target = target
         self.snapshot = snapshot
@@ -178,6 +205,7 @@ package struct ClaudeSessionJoin: Sendable, Equatable {
         self.cmuxSurface = cmuxSurface
         self.remoteHerdrForward = remoteHerdrForward
         self.remoteHerdrIndicator = remoteHerdrIndicator
+        self.herdrSurface = herdrSurface
     }
 
     /// The per-pane socket route this join owns, if any: the herdr pane id or

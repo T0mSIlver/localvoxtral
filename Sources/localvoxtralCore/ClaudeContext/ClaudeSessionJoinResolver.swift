@@ -347,7 +347,8 @@ package struct ClaudeSessionJoinResolver {
             binding: ClaudeHerdrPaneBinding(paneID: found.pane.paneID, socketPath: found.socketPath),
             snapshot: found.snapshot,
             mechanism: .herdrPane,
-            terminalPID: target.pid,
+            terminal: target,
+            surface: HerdrJoinedSurface(tty: tty, machine: .herdrClient(found.selection)),
             frontmostPID: frontmostPID
         )
     }
@@ -361,9 +362,13 @@ package struct ClaudeSessionJoinResolver {
     /// forward opened on a context consent writing does not have.
     private func focusedLocalHerdrPane(
         surfaceTTY tty: String, purpose: String
-    ) async -> (pane: HerdrFocusedPane, snapshot: ClaudeSessionSnapshot, socketPath: String)? {
+    ) async -> (
+        pane: HerdrFocusedPane, snapshot: ClaudeSessionSnapshot, socketPath: String,
+        selection: HerdrMachineFederation
+    )? {
         guard herdrClientProbe(tty) else { return nil }
-        switch herdrFederation() {
+        let selection = herdrFederation()
+        switch selection {
         case .notFederated:
             break
         case .showingLocal:
@@ -373,9 +378,40 @@ package struct ClaudeSessionJoinResolver {
         case .showingMachine, .unreadable:
             return nil
         }
-        return await focusedLocalHerdrPaneSession { outcome in
+        guard let found = await focusedLocalHerdrPaneSession(abstain: { outcome in
             Log.claudeContext.info("\(purpose, privacy: .public): herdr pane not resolved (\(outcome, privacy: .public))")
+        }) else { return nil }
+        return (found.pane, found.snapshot, found.socketPath, selection)
+    }
+
+    /// Whether `terminal` still shows what the herdr join saw (#1105): the
+    /// same focused tty, and on it the same machine. A herdr client switched
+    /// to another saved machine keeps its tty, and the server it left keeps
+    /// a focused pane it no longer shows, so that pane's `pane.current`
+    /// alone cannot say where keys typed now would land. The machine is
+    /// read the way the arm read it: herdr's selection, alone on screen once
+    /// machines are saved, or the tty's ssh session as the process table
+    /// shows it.
+    func displaysJoinedSurface(
+        _ surface: HerdrJoinedSurface, terminal: TerminalScreenTarget
+    ) async -> Bool {
+        guard let tty = await focusedTerminalTTY(terminal.bundleID), tty == surface.tty else {
+            Log.backends.notice("herdr pane route: the terminal's focused tty changed since the join")
+            return false
         }
+        let shown: Bool
+        switch surface.machine {
+        case .herdrClient(let selection):
+            shown = herdrClientProbe(tty)
+                && herdrFederation() == selection
+                && (selection == .notFederated || herdrClientSurfaceCount() == 1)
+        case .ssh(let connection):
+            shown = sshDestinationProbe(tty) == connection
+        }
+        if !shown {
+            Log.backends.notice("herdr pane route: the surface no longer shows the joined machine")
+        }
+        return shown
     }
 
     private func resolveSurface(target: TerminalScreenTarget) async -> ClaudeSessionJoin? {
@@ -421,7 +457,7 @@ package struct ClaudeSessionJoinResolver {
             // pane, so only herdr can say which one: the arms below ask about
             // the outer surface and would answer about the wrong thing.
             if herdrClientProbe(tty) {
-                return await resolveViaHerdr(target: target)
+                return await resolveViaHerdr(target: target, tty: tty)
             }
 
             // The surface is not a local herdr client. It may still be an ssh
@@ -432,7 +468,8 @@ package struct ClaudeSessionJoinResolver {
             let sshResult = sshDestinationProbe(tty)
 
             switch await resolveViaRemoteHerdr(target: target, sshResult: sshResult) {
-            case .joined(let join):
+            case .joined(var join):
+                join.herdrSurface = HerdrJoinedSurface(tty: tty, machine: .ssh(sshResult))
                 return join
             case .declined:
                 break
