@@ -319,8 +319,10 @@ battery power (`scripts/ci/ac-power-guard.sh`, shared with eval-e2e.yml's
 weekly run) or the screen is locked (the check needs an unlocked GUI
 session). Branch dispatches and the label bypass the guard; fork PRs never
 reach this job. The script exits 3 when the Mac could not run it (locked, no
-STT server, no Accessibility grant), which the owner's dispatch on main
-reports as a warning and a branch dispatch or label reports as a failure.
+STT server), which the owner's dispatch on main reports as a warning and a
+branch dispatch or label reports as a failure. It exits 4 when the app under
+test has no Accessibility grant, which fails every run: the grant does not
+come back by itself.
 `e2e-dictation-log` is uploaded on every run.
 
 The GUI lanes on the self-hosted runner (`e2e-dictation` here,
