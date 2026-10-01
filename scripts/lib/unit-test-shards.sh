@@ -311,16 +311,17 @@ lv_shard_failed_only_on_lock() {
 # lv_shard_failed_only_on_lock says the lock was its only fault.
 #   $3  the number of tests the shard's filters select
 lv_run_one_unit_shard() {
-  local work="$1" index="$2" expected="$3" child shard_status shard_started=$SECONDS attempt signal
+  local work="$1" index="$2" expected="$3" child="" shard_status shard_started=$SECONDS attempt
   shift 3
   : >"$work/$index.log"
+  # Armed before the first swift process starts, so no signal finds the
+  # shard without them; the handler reads `child` at signal time.
+  trap 'lv_stop_unit_shard TERM' TERM
+  trap 'lv_stop_unit_shard INT' INT
+  trap 'lv_stop_unit_shard HUP' HUP
   for attempt in 1 2 3; do
     lv_shard_swift test --skip-build --ignore-lock "$@" >"$work/$index.attempt" 2>&1 &
     child=$!
-    # shellcheck disable=SC2064
-    for signal in TERM INT HUP; do
-      trap "pkill -TERM -P $child 2>/dev/null; kill $child 2>/dev/null; wait $child 2>/dev/null; cat '$work/$index.attempt' >>'$work/$index.log'; echo '==> Shard $index: stopped by SIG$signal' >>'$work/$index.log'; exit 143" "$signal"
-    done
     wait "$child"
     shard_status=$?
     cat "$work/$index.attempt" >>"$work/$index.log"
@@ -339,6 +340,27 @@ lv_run_one_unit_shard() {
     shard_status=0
   fi
   echo "$shard_status $((SECONDS - shard_started))" >"$work/$index.status"
+}
+
+# Signal handler of lv_run_one_unit_shard, run in its subshell with its
+# locals: stop the swift process, keep what it printed, say
+# which signal ended the shard. It writes no exit status, so the shard fails.
+#
+# `set +e` first: callers run with errexit, and `wait` on the swift process it
+# just killed returns 143, which would end the handler before it logs.
+lv_stop_unit_shard() {
+  set +e
+  local signal="$1"
+  if [[ -n "${child:-}" ]]; then
+    # Its swift process, then the subshell that runs it, which ends once that
+    # process does and has reaped it by then; the subshell itself only when
+    # it has no child to stop.
+    pkill -TERM -P "$child" 2>/dev/null || kill "$child" 2>/dev/null
+    wait "$child" 2>/dev/null
+    cat "$work/$index.attempt" >>"$work/$index.log" 2>/dev/null
+  fi
+  echo "==> Shard $index: stopped by SIG$signal" >>"$work/$index.log"
+  exit 143
 }
 
 # Signal handler of lv_run_unit_shards: stop the shards, log what they printed,
