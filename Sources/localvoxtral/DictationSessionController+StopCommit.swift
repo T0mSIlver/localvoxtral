@@ -232,6 +232,7 @@ extension DictationSessionController {
                     commitSucceeded: false,
                     polishContextSummary: payloadProvenanceSummary,
                     clipboardPayload: clipboardPayload,
+                    audio: capturedAudio,
                     joined: historyJoin
                 )
             }
