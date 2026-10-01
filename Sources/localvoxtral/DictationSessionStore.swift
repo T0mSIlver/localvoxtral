@@ -158,6 +158,13 @@ final class DictationSessionStore {
     /// Where each dictation's diagnostic record goes. Deleted with its
     /// dictation, like the audio; nil keeps none and deletes none.
     var diagnosticRecordStore: DiagnosticRecordStore?
+    /// Snapshots taken before a trim or a sweep deletes; nil takes none.
+    var backups: DictationHistoryBackups?
+    /// Where the sweeps move what they find; nil deletes it.
+    var quarantine: DictationHistoryQuarantine?
+    /// The store's file; nil in memory.
+    private(set) var storeURL: URL?
+    var now: @Sendable () -> Date = { Date() }
 
     /// The last read or write that failed, in the words of its error; nil
     /// once one succeeds. History and Insights show it instead of an empty
@@ -179,9 +186,11 @@ final class DictationSessionStore {
     /// The user's history: `history.store` in `directory`, which defaults to
     /// the app's folder in Application Support. A `default.store` left by an
     /// older build (`legacyStore`, the real one with the default folder) is
-    /// copied in first, once.
+    /// copied in first, once. Snapshots go to `backups/history` in the same
+    /// folder, and the sweeps move what they find to `quarantine`.
     static func open(
-        directory: URL? = nil, legacyStore: URL? = nil
+        directory: URL? = nil, legacyStore: URL? = nil,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) -> Result<DictationSessionStore, DictationHistoryOpenFailure> {
         let folder = directory ?? DictationHistoryStoreFile.defaultDirectoryURL()
         let url = folder.appendingPathComponent(DictationHistoryStoreFile.fileName)
@@ -209,23 +218,40 @@ final class DictationSessionStore {
                 return .failure(.unreadable("copying the history from default.store failed: \(reason)"))
             }
         }
-        let result = open(url: url)
-        if case let .success(store) = result { store.legacyImport = legacyImport }
+        let backups = DictationHistoryBackups(
+            directoryURL: DictationHistoryBackups.directory(inHistoryFolder: folder), now: now)
+        let result = open(url: url, backups: backups)
+        if case let .success(store) = result {
+            store.legacyImport = legacyImport
+            backups.snapshotIfDue(of: url)
+            store.backups = backups
+            store.quarantine = DictationHistoryQuarantine(
+                directoryURL: DictationHistoryQuarantine.directory(inHistoryFolder: folder), now: now)
+            store.now = now
+        }
         return result
     }
 
     /// A store file at `url`: the user's, or a copy for the replay eval.
     /// Refuses a file holding data this build's model lacks, before SwiftData
     /// could migrate it away.
-    static func open(url: URL) -> Result<DictationSessionStore, DictationHistoryOpenFailure> {
+    /// With `backups`, a file this build is about to migrate is copied first.
+    static func open(
+        url: URL, backups: DictationHistoryBackups? = nil
+    ) -> Result<DictationSessionStore, DictationHistoryOpenFailure> {
         let schema = Schema([DictationSessionRecord.self])
         let result: Result<DictationSessionStore, DictationHistoryOpenFailure>
         do {
             if let refusal = try DictationHistoryStoreFile.refusal(of: url, schema: schema) {
                 result = .failure(refusal)
             } else {
-                result = .success(try DictationSessionStore(
-                    configuration: ModelConfiguration(schema: schema, url: url)))
+                if let backups, try DictationHistoryStoreFile.needsUpgrade(url, schema: schema) {
+                    backups.snapshot(of: url, reason: .migration)
+                }
+                let store = try DictationSessionStore(
+                    configuration: ModelConfiguration(schema: schema, url: url))
+                store.storeURL = url
+                result = .success(store)
             }
         } catch {
             result = .failure(.unreadable(String(describing: error)))
@@ -268,9 +294,14 @@ final class DictationSessionStore {
     func save(_ record: DictationSessionRecord, audio: Data? = nil) -> Task<Void, Never> {
         let entry = DictationHistoryEntry(record)
         let audioStore = audio == nil ? nil : audioStore
+        let backups = backups
+        let storeURL = storeURL
         return enqueueWrite("save dictation \(entry.id)") { context in
             context.insert(entry.makeRecord())
             try context.save()
+            // The daily copy, for an app that runs for days: the one taken at
+            // launch would be the last. On the write queue, after the save.
+            if let backups, let storeURL { backups.snapshotIfDue(of: storeURL) }
             if let audio, let audioStore {
                 do {
                     try audioStore.write(pcm16: audio, for: entry.id)
@@ -346,113 +377,85 @@ final class DictationSessionStore {
     }
 
     /// Deletes every dictation that started before `cutoff`
-    /// (`DictationHistoryRetention.cutoff(now:)`), and the audio and
-    /// diagnostic record of every dictation no longer in the store.
+    /// (`DictationHistoryRetention.cutoff(now:)`) with its audio and
+    /// diagnostic record, then sweeps the attachments whose dictation is gone.
+    /// A snapshot of the store comes first when something will go.
     @discardableResult
     func trim(olderThan cutoff: Date) -> Task<Void, Never> {
-        let audioStore = audioStore
-        let diagnosticRecordStore = diagnosticRecordStore
         guard !isFailing else { return skipWhileFailing("trim dictations") }
+        let attachments = attachments
         return enqueueWrite("trim dictations") { context in
-            let deleted = try Self.deleteRecords(
-                matching: #Predicate<DictationSessionRecord> { $0.startedAt < cutoff },
-                in: context)
-            if !deleted.isEmpty, audioStore != nil || diagnosticRecordStore != nil {
+            let expired = #Predicate<DictationSessionRecord> { $0.startedAt < cutoff }
+            if try context.fetchCount(FetchDescriptor(predicate: expired)) > 0 {
+                attachments.snapshotBeforeDelete()
+            }
+            let deleted = try Self.deleteRecords(matching: expired, in: context)
+            if !deleted.isEmpty, attachments.audio != nil || attachments.diagnostics != nil {
                 try context.save()
-                // By id: a trim that empties the store leaves the sweep
-                // below nothing to go on.
-                audioStore?.remove(Set(deleted))
-                diagnosticRecordStore?.remove(Set(deleted))
+                // By id: the user's retention setting chose these, and a trim
+                // that empties the store leaves the sweep nothing to go on.
+                attachments.audio?.remove(deleted)
+                attachments.diagnostics?.remove(deleted)
             }
-            if let audioStore {
-                try Self.removeOrphanedAudio(audioStore, context: context)
-            }
-            if let diagnosticRecordStore {
-                try Self.removeOrphanedDiagnosticRecords(diagnosticRecordStore, context: context)
-            }
+            try attachments.sweepOrphans(context: context)
             return deleted.count
         }
     }
 
-    /// Deletes the recordings and diagnostic records whose dictation is
-    /// gone, and records past their own limit. Run at launch, where Forever
-    /// retention never trims: it is what retries a delete that failed and
-    /// clears a file a crash left behind.
+    /// Sweeps the recordings and diagnostic records whose dictation is gone,
+    /// the files a crash left behind, and diagnostic records past their own
+    /// limit. Run at launch, where Forever retention never trims: it is what
+    /// retries a delete that failed.
     @discardableResult
     func removeOrphanedAudio() -> Task<Void, Never> {
-        let audioStore = audioStore
-        let diagnosticRecordStore = diagnosticRecordStore
         guard !isFailing else { return skipWhileFailing("sweep dictation audio") }
+        let attachments = attachments
+        let strayCutoff = now().addingTimeInterval(-Self.strayFileAge)
         return enqueueWrite("sweep dictation audio") { context in
-            // Before anything is deleted, strays and pruning included: an
+            // Before anything is touched, strays and pruning included: an
             // empty store beside files lost its rows.
-            let files = (audioStore?.storedIDs().count ?? 0)
-                + (diagnosticRecordStore?.storedIDs().count ?? 0)
-            if files > 0, try !Self.storeHoldsDictations(context, files: files, kind: "attachment") {
+            let files = (attachments.audio?.storedIDs().count ?? 0)
+                + (attachments.diagnostics?.storedIDs().count ?? 0)
+            if files > 0, try !Self.storeHoldsDictations(context, files: files) {
                 return 0
             }
-            if let audioStore {
-                audioStore.removeStrayFiles()
-                try Self.removeOrphanedAudio(audioStore, context: context)
+            attachments.quarantine?.purge()
+            attachments.moveStrayAudio(writtenBefore: strayCutoff)
+            if let diagnostics = attachments.diagnostics {
+                diagnostics.removeStrayFiles()
+                diagnostics.prune()
             }
-            if let diagnosticRecordStore {
-                diagnosticRecordStore.removeStrayFiles()
-                diagnosticRecordStore.prune()
-                try Self.removeOrphanedDiagnosticRecords(diagnosticRecordStore, context: context)
-            }
+            try attachments.sweepOrphans(context: context)
             return 0
         }
     }
 
-    private nonisolated static func removeOrphanedDiagnosticRecords(
-        _ diagnosticRecordStore: DiagnosticRecordStore, context: ModelContext
-    ) throws {
-        let stored = Array(diagnosticRecordStore.storedIDs())
-        guard !stored.isEmpty,
-              try storeHoldsDictations(context, files: stored.count, kind: "diagnostic record")
-        else { return }
-        let kept = try Set(context.fetch(FetchDescriptor<DictationSessionRecord>(
-            predicate: #Predicate { stored.contains($0.id) })).map(\.id))
-        let removed = diagnosticRecordStore.removeAll(except: kept)
-        if removed > 0 {
-            Log.persistence.info(
-                "History: deleted \(removed, privacy: .public) diagnostic record(s) whose dictation is gone"
-            )
-        }
-    }
+    /// A stray file younger than this may be another copy of the app
+    /// writing it right now.
+    static let strayFileAge: TimeInterval = 3_600
+    /// More orphans than this in one sweep is not a failed delete or a
+    /// crash; it is a store that lost rows. Nothing moves, and the log says so.
+    nonisolated static let maximumOrphansPerSweep = 20
 
     /// An empty store beside files is a store that lost its rows, not a user
     /// who deleted every dictation: Delete All removes the files itself. The
     /// sweep that trusted it deleted every recording after the #985 wipe.
-    private nonisolated static func storeHoldsDictations(
-        _ context: ModelContext, files: Int, kind: String
+    fileprivate nonisolated static func storeHoldsDictations(
+        _ context: ModelContext, files: Int
     ) throws -> Bool {
         guard try context.fetchCount(FetchDescriptor<DictationSessionRecord>()) == 0 else {
             return true
         }
         Log.persistence.error(
-            "History: the store holds no dictations but \(files, privacy: .public) \(kind, privacy: .public) file(s) exist; keeping them"
+            "History: the store holds no dictations but \(files, privacy: .public) attachment file(s) exist; keeping them"
         )
         return false
     }
 
-    /// Only the recordings on disk are looked up: most users keep none, and
-    /// this runs after every saved dictation.
-    private nonisolated static func removeOrphanedAudio(
-        _ audioStore: DictationAudioStore, context: ModelContext
-    ) throws {
-        let stored = Array(audioStore.storedIDs())
-        guard !stored.isEmpty,
-              try storeHoldsDictations(context, files: stored.count, kind: "recording")
-        else { return }
-        let kept = try Set(context.fetch(FetchDescriptor<DictationSessionRecord>(
-            predicate: #Predicate { stored.contains($0.id) })).map(\.id))
-        let removed = audioStore.removeAll(except: kept)
-        if removed > 0 {
-            Log.persistence.info(
-                "History: deleted \(removed, privacy: .public) recording(s) whose dictation is gone"
-            )
-        }
+    private var attachments: SweptAttachments {
+        SweptAttachments(
+            audio: audioStore, diagnostics: diagnosticRecordStore, backups: backups,
+            quarantine: quarantine, storeURL: storeURL)
     }
 
     /// Deletes every recording and keeps the dictations: the audio setting
@@ -684,4 +687,67 @@ final class DictationSessionStore {
 
     /// The queued writes, for the quit path to wait on.
     var pendingWrites: Task<Void, Never>? { lastWrite }
+}
+
+/// What a trim or a sweep may touch besides the store, captured for the
+/// write queue.
+private struct SweptAttachments: Sendable {
+    let audio: DictationAudioStore?
+    let diagnostics: DiagnosticRecordStore?
+    let backups: DictationHistoryBackups?
+    let quarantine: DictationHistoryQuarantine?
+    let storeURL: URL?
+
+    func snapshotBeforeDelete() {
+        guard let backups, let storeURL else { return }
+        backups.snapshotBeforeDelete(of: storeURL)
+    }
+
+    func moveStrayAudio(writtenBefore cutoff: Date) {
+        guard let audio else { return }
+        audio.quarantineStrayFiles(
+            writtenBefore: cutoff,
+            into: quarantine?.folder(for: "dictation-audio")
+                ?? audio.directoryURL.deletingLastPathComponent()
+                    .appendingPathComponent("quarantine/unsorted", isDirectory: true))
+    }
+
+    /// The attachments whose dictation is gone. Only the ids listed once,
+    /// here, are looked up and moved: a file written after the listing is
+    /// not in the set, so it cannot be taken for an orphan.
+    func sweepOrphans(context: ModelContext) throws {
+        let audioIDs = audio?.storedIDs() ?? []
+        let diagnosticIDs = diagnostics?.storedIDs() ?? []
+        let candidates = audioIDs.union(diagnosticIDs)
+        guard !candidates.isEmpty,
+              try DictationSessionStore.storeHoldsDictations(context, files: candidates.count)
+        else { return }
+        let listed = Array(candidates)
+        let kept = try Set(context.fetch(FetchDescriptor<DictationSessionRecord>(
+            predicate: #Predicate { listed.contains($0.id) })).map(\.id))
+        let orphans = candidates.subtracting(kept)
+        guard !orphans.isEmpty else { return }
+        guard orphans.count <= DictationSessionStore.maximumOrphansPerSweep else {
+            Log.persistence.error(
+                "History: \(orphans.count, privacy: .public) attachment(s) have no dictation; more than one sweep may move, so keeping them all"
+            )
+            return
+        }
+        snapshotBeforeDelete()
+        let audioOrphans = orphans.intersection(audioIDs)
+        let diagnosticOrphans = orphans.intersection(diagnosticIDs)
+        let moved: Int
+        if let quarantine {
+            moved = (audio?.quarantine(audioOrphans, into: quarantine.folder(for: "dictation-audio")) ?? 0)
+                + (diagnostics?.quarantine(
+                    diagnosticOrphans, into: quarantine.folder(for: "diagnostic-records")) ?? 0)
+        } else {
+            moved = (audio?.remove(audioOrphans) ?? 0) + (diagnostics?.remove(diagnosticOrphans) ?? 0)
+        }
+        if moved > 0 {
+            Log.persistence.info(
+                "History: moved \(moved, privacy: .public) attachment(s) whose dictation is gone out of the store's folders"
+            )
+        }
+    }
 }
