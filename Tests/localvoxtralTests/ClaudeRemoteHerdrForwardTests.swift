@@ -1706,6 +1706,112 @@ final class ClaudeRemoteHerdrForwardEnrollmentRaceTests: XCTestCase, RemoteHerdr
         lease.close()
         finish(world)
     }
+
+    /// Lets a parked readiness poll run until `isDone` holds, releasing each
+    /// poll sleep it takes.
+    private func drive(
+        _ clock: HeldForwardTestClock,
+        until description: String,
+        _ isDone: @escaping @MainActor () -> Bool
+    ) async {
+        for _ in 0..<1_000 {
+            if isDone() { return }
+            clock.releaseOldestSleep(for: 0.025)
+            await Task.yield()
+        }
+        XCTFail("timed out waiting for \(description)")
+    }
+
+    /// Asserts that quitting signals every ssh the service ever spawned: one
+    /// left out of `entries` survives the quit and the next launch's reap.
+    private func assertQuitStopsEverySpawn(_ world: World, line: UInt = #line) {
+        world.service.stopAllForQuit()
+        for (index, process) in world.spawner.processes.withLock({ $0 }).enumerated() {
+            XCTAssertGreaterThanOrEqual(
+                process.terminations.withLock { $0 }, 1,
+                "ssh #\(index + 1) was never stopped", line: line
+            )
+        }
+    }
+
+    func testAPrepareDuringOpenReplacementTeardownIsReusedNotOrphaned() async throws {
+        let clock = HeldForwardTestClock()
+        let world = makeWorld(heldClock: clock)
+        let lease = try unwrapAsync(
+            await world.service.open(alias: "builder", remoteSocketPath: remoteSocketPath)
+        )
+        let firstProcess = world.spawner.process
+
+        world.switches.socketAnswers.withLock { $0 = false }
+        let finished = Mutex(false)
+        let replacement = Task { @MainActor in
+            defer { finished.withLock { $0 = true } }
+            return await world.service.open(alias: "builder", remoteSocketPath: remoteSocketPath)
+        }
+        await waitUntil("the replacement to wait on the old teardown") {
+            firstProcess.terminations.withLock { $0 } >= 1
+        }
+        world.switches.socketAnswers.withLock { $0 = true }
+
+        // Host activity for the same target lands while the slot is empty.
+        await world.service.prepare(
+            hostID: hostID, alias: "builder", remoteSocketPath: remoteSocketPath
+        )
+        await waitUntil("the prepared spawn") { world.spawner.spawnCount == 2 }
+        firstProcess.exit()
+        await drive(clock, until: "the replacement open to return") {
+            finished.withLock { $0 }
+        }
+        let replacementLease = await replacement.value
+
+        XCTAssertNotNil(replacementLease, "the prepared forward serves the dictation")
+        XCTAssertEqual(world.spawner.spawnCount, 2, "the open reuses the prepared ssh")
+        assertQuitStopsEverySpawn(world)
+        lease.close()
+        replacementLease?.close()
+        finish(world)
+        clock.releaseAllSleeps()
+    }
+
+    func testAnOpenDuringPrepareReplacementTeardownIsNotOrphaned() async throws {
+        let clock = HeldForwardTestClock()
+        let world = makeWorld(heldClock: clock)
+        await world.service.prepare(
+            hostID: hostID, alias: "builder", remoteSocketPath: remoteSocketPath
+        )
+        await waitUntil("the first spawn") { world.spawner.spawnCount == 1 }
+        let firstProcess = world.spawner.process
+
+        let replacement = Task { @MainActor in
+            await world.service.prepare(
+                hostID: hostID, alias: "builder",
+                remoteSocketPath: "/run/user/1000/herdr/replacement.sock"
+            )
+        }
+        await waitUntil("the replacement to wait on the old teardown") {
+            firstProcess.terminations.withLock { $0 } >= 1
+        }
+
+        // A dictation cold-opens into the empty slot and takes a lease.
+        let finished = Mutex(false)
+        let open = Task { @MainActor in
+            defer { finished.withLock { $0 = true } }
+            return await world.service.open(alias: "builder", remoteSocketPath: remoteSocketPath)
+        }
+        await drive(clock, until: "the cold open to return") { finished.withLock { $0 } }
+        let lease = try unwrapAsync(await open.value)
+        XCTAssertEqual(world.spawner.spawnCount, 2)
+
+        firstProcess.exit()
+        await replacement.value
+        for _ in 0..<20 { await Task.yield() }
+
+        XCTAssertEqual(world.spawner.spawnCount, 2, "the stale activity starts no third ssh")
+        assertQuitStopsEverySpawn(world)
+        lease.close()
+        finish(world)
+        clock.releaseAllSleeps()
+    }
 }
 
 private final class MemoryHostStore: ClaudeRemoteHostStoreIO, @unchecked Sendable {
