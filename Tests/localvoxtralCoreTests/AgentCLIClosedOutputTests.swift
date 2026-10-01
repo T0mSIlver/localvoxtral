@@ -1,6 +1,7 @@
 import ClaudeContextWire
 import ClaudeHookPublisherCore
 import Foundation
+import LocalvoxtralCLICore
 import XCTest
 @testable import localvoxtralCore
 
@@ -66,15 +67,23 @@ final class AgentCLIClosedOutputTests: XCTestCase {
     func testUsageErrorWithStderrClosedExitsWithTheUsageStatus() async throws {
         let ended = try runCommand(#"exec "$0" --no-such-flag 2>&-"#)
         XCTAssertEqual(ended.reason, .exit, "ended by signal \(ended.status)")
-        XCTAssertEqual(ended.status, 2)
+        XCTAssertEqual(ended.status, AgentCLIRunner.ExitCode.usage.rawValue)
     }
 
-    /// The documented status for a request with no app to answer it, with
-    /// both outputs closed.
-    func testStatusWithBothOutputsClosedExitsNotRunning() async throws {
+    /// `status` with no app to answer it answers "not running", status 0,
+    /// with both outputs closed.
+    func testStatusWithBothOutputsClosedExitsAnswered() async throws {
         let ended = try runCommand(#"exec "$0" status 1>&- 2>&-"#)
         XCTAssertEqual(ended.reason, .exit, "ended by signal \(ended.status)")
-        XCTAssertEqual(ended.status, 3)
+        XCTAssertEqual(ended.status, AgentCLIRunner.ExitCode.answered.rawValue)
+    }
+
+    /// Any other request with no app to answer it exits "not running", with
+    /// both outputs closed.
+    func testRequestWithBothOutputsClosedExitsNotRunning() async throws {
+        let ended = try runCommand(#"exec "$0" history last 1>&- 2>&-"#)
+        XCTAssertEqual(ended.reason, .exit, "ended by signal \(ended.status)")
+        XCTAssertEqual(ended.status, AgentCLIRunner.ExitCode.notRunning.rawValue)
     }
 
     /// A reader that has gone, with SIGPIPE ignored as a caller may leave it:
