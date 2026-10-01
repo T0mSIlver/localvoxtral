@@ -344,8 +344,9 @@ ties a row to one signature, the ad-hoc release and the harness took the
 grant from each other (#1198). The run writes only the harness's defaults
 domain and launches it from
 `~/Library/Application Support/localvoxtral-e2e/localvoxtral.app`. The owner
-grants it once: System Settings > Privacy & Security > Accessibility, +,
-Cmd-Shift-G, that path, Open, then make sure its switch is on. The row
+grants it once: System Settings > Privacy & Security > Accessibility
+(Device Control and Data Access on macOS 27), +, Cmd-Shift-G, that path,
+Open, then make sure its switch is on. The row
 survives rebuilds, since TCC keys it on the bundle id and the signing
 identity.
 

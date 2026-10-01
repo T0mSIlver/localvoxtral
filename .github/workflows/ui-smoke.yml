@@ -199,8 +199,7 @@ jobs:
           LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN: "1"
         run: |
           # From a fixed copy outside the workspace with .build hidden (#87).
-          # Fixed, so the owner can add it in System Settings > Privacy &
-          # Security > Accessibility once (docs/agent/test-tiers.md, "Proving
+          # Fixed, so the owner can grant it Accessibility once (docs/agent/test-tiers.md, "Proving
           # a change with the e2e dictation check").
           HARNESS_DIR="$HOME/Library/Application Support/localvoxtral-e2e"
           mkdir -p "$HARNESS_DIR"
