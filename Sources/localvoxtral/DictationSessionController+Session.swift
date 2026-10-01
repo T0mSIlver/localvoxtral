@@ -421,6 +421,7 @@ extension DictationSessionController {
             // opened cannot report in before the session knows its name.
             sessionConnectionGeneration = activeRealtimeClient.connectionGeneration
             scheduleConnectTimeout()
+            lookUpRealtimeContextLimit(for: configuration)
         } catch {
             abortConnectingSession(disconnectSocket: false)
             handleConnectFailure(reason: .connectThrew(rawError: error.localizedDescription))
@@ -428,6 +429,25 @@ extension DictationSessionController {
             return
         }
         startSessionMicrophone()
+    }
+
+    /// Gives the client the server's context budget (#1139). Every session
+    /// starts with none; an External URL session gets one once its server
+    /// answers, well before a take reaches the limit. speechd and Mistral
+    /// sessions never roll over.
+    private func lookUpRealtimeContextLimit(for configuration: RealtimeSessionConfiguration) {
+        realtimeContextLimitLookupID &+= 1
+        let lookupID = realtimeContextLimitLookupID
+        activeRealtimeClient.setContextBudget(nil)
+        guard configuration.usageBackend == .userServer,
+              let lookup = dependencies.realtimeContextLimit
+        else { return }
+        let client = activeRealtimeClient
+        Task { @MainActor [weak self] in
+            let budget = await lookup(configuration)
+            guard let self, self.realtimeContextLimitLookupID == lookupID, self.acceptsRealtimeEvents else { return }
+            client.setContextBudget(budget)
+        }
     }
 
     /// Opens the microphone while the socket opens, not after (#527): people

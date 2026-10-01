@@ -410,6 +410,11 @@ final class DictationViewModel {
         /// records. Nil is the app's folder in Application Support; a test
         /// that starts runtime services passes a temporary one.
         var historyDirectory: URL?
+        /// How much audio one External URL server session may take before
+        /// the client rolls it over (#1139). Nil is `GET /v1/models` on the
+        /// server when runtime services run, and no rollover in a unit test,
+        /// so no suite dials the endpoint in its settings.
+        var realtimeContextLimit: (@Sendable (RealtimeSessionConfiguration) async -> RealtimeContextBudget?)?
 
         init(
             microphone: (() -> any MicrophoneCapturing)? = nil,
@@ -433,7 +438,8 @@ final class DictationViewModel {
             onRealtimeDeltaLogRecord: ((DebugRealtimeDeltaLogRecord) -> Void)? = nil,
             clock: SessionClock = .live,
             batchTranscriber: any MistralBatchTranscribing = MistralBatchTranscriptionClient(),
-            historyDirectory: URL? = nil
+            historyDirectory: URL? = nil,
+            realtimeContextLimit: (@Sendable (RealtimeSessionConfiguration) async -> RealtimeContextBudget?)? = nil
         ) {
             self.microphone = microphone
             self.pasteboardReader = pasteboardReader
@@ -450,6 +456,7 @@ final class DictationViewModel {
             self.clock = clock
             self.batchTranscriber = batchTranscriber
             self.historyDirectory = historyDirectory
+            self.realtimeContextLimit = realtimeContextLimit
         }
     }
     /// Warms the managed polishing helper's prompt-prefix cache on every
@@ -519,6 +526,10 @@ final class DictationViewModel {
             DictationViewModel.startupPermissionPromptsSuppressed(),
         dependencies: Dependencies = Dependencies()
     ) {
+        var dependencies = dependencies
+        if dependencies.realtimeContextLimit == nil, startRuntimeServices {
+            dependencies.realtimeContextLimit = { await RealtimeContextLimitProbe.budget(for: $0) }
+        }
         self.settings = settings
         self.shortcuts = ShortcutController(settings: settings)
         self.backendManager =

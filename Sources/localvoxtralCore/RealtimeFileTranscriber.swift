@@ -57,9 +57,13 @@ package struct RealtimeFileTranscriber: Sendable {
             group.addTask {
                 var finals: [String] = []
                 var partials = ""
+                var sent = false
                 for await event in events {
                     switch event {
                     case .connected:
+                        // Once: a socket a rollover opens connects too (#1139).
+                        guard !sent else { break }
+                        sent = true
                         // The client holds these until the session is ready.
                         chunks.forEach(client.sendAudioChunk)
                         client.sendCommit(final: true)
@@ -75,7 +79,7 @@ package struct RealtimeFileTranscriber: Sendable {
                         throw Failure.backend(message)
                     case .disconnected:
                         throw Failure.disconnected
-                    case .status:
+                    case .status, .sessionRolledOver:
                         break
                     }
                 }

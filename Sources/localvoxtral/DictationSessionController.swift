@@ -194,8 +194,10 @@ final class DictationSessionController {
 
     @ObservationIgnored
     let networkMonitor = NetworkMonitor()
+    /// Reads the rollover's pause and sleeps its watchdog on the session
+    /// clock (#1139).
     @ObservationIgnored
-    let realtimeAPIClient = RealtimeAPIWebSocketClient()
+    let realtimeAPIClient: RealtimeAPIWebSocketClient
     @ObservationIgnored
     let mistralRealtimeClient = MistralRealtimeWebSocketClient()
     /// The client THIS session speaks to, latched at session start from
@@ -362,6 +364,10 @@ final class DictationSessionController {
     /// `handle(event:from:)` refuses it.
     @ObservationIgnored
     var sessionConnectionGeneration: RealtimeConnectionGeneration = .none
+    /// Bumped at every session's connect, so a context-limit lookup that
+    /// answers late cannot set its budget on a later session (#1139).
+    @ObservationIgnored
+    var realtimeContextLimitLookupID = 0
     @ObservationIgnored
     var reconnectTask: Task<Void, Never>?
     /// True from an unexpected drop until the reconnect run behind it either
@@ -574,6 +580,7 @@ final class DictationSessionController {
         self.audio = audio
         self.overlayBufferCoordinator = overlayBufferCoordinator
         self.dependencies = dependencies
+        self.realtimeAPIClient = RealtimeAPIWebSocketClient(clock: dependencies.clock)
     }
 
     func prepareLLMPolishingPromptAccessIfNeeded() {
