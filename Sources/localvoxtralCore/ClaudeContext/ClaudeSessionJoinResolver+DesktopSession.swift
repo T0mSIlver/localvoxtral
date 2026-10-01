@@ -31,6 +31,10 @@ extension ClaudeSessionJoinResolver {
             Self.abstainedDesktopSessionJoin(outcome: "focused web view address unavailable")
             return ClaudeJoinResolution(join: nil)
         }
+        if ClaudeProjectPageURL.isProjectPage(address) {
+            Self.abstainedDesktopSessionJoin(outcome: "focus is in a Claude project, whose page names no session")
+            return ClaudeJoinResolution(join: nil, focusedClaudeProject: true)
+        }
         guard let desktopSessionID = ClaudeDesktopSessionURL.sessionID(inWebAreaURL: address) else {
             // Never the address itself: it names what the user is looking at.
             Self.abstainedDesktopSessionJoin(outcome: "focus is not in a Claude Code session")

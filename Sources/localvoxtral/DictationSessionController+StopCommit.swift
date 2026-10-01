@@ -197,6 +197,7 @@ extension DictationSessionController {
             let polishProfile = StopCommitCoordinator.polishProfile(
                 forTargetBundleID: capturedTargetBundleID,
                 claudeJoin: capture.claudeJoin,
+                claudeProjectFocused: capture.claudeProjectFocused,
                 settings: settings
             )
             Log.polishing.info(

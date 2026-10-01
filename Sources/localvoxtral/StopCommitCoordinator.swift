@@ -30,6 +30,7 @@ enum StopCommitCoordinator {
         let clipboardContext: PolishClipboardContext?
         let screenDecision: TerminalScreenContextDecision
         let claudeJoin: ClaudeSessionJoin?
+        let claudeProjectFocused: Bool
         let socketPaneStart: SocketPaneScreenCapture?
     }
 
@@ -63,6 +64,7 @@ enum StopCommitCoordinator {
                 clipboardContext: nil,
                 screenDecision: .drop(reason: .noStartCapture),
                 claudeJoin: nil,
+                claudeProjectFocused: false,
                 socketPaneStart: nil
             )
         }
@@ -90,6 +92,7 @@ enum StopCommitCoordinator {
             clipboardContext: clipboardContext,
             screenDecision: screenDecision,
             claudeJoin: claudeJoin,
+            claudeProjectFocused: context.claudeProjectFocused,
             socketPaneStart: socketPaneStart
         )
     }
@@ -236,15 +239,17 @@ enum StopCommitCoordinator {
     /// Claude Desktop goes by the join, not its bundle ID: the same app hosts
     /// a plain chat, where the agent profile's backticks and joined paths
     /// would be wrong, and only the join proves focus was in a Code-tab
-    /// session.
+    /// session. A Claude project's page joins nothing but is agents too
+    /// (`claudeProjectFocused`).
     @MainActor
     static func polishProfile(
         forTargetBundleID bundleID: String?,
         claudeJoin: ClaudeSessionJoin?,
+        claudeProjectFocused: Bool = false,
         settings: SettingsStore
     ) -> PolishPromptProfile {
         guard settings.agentPolishProfileEnabled else { return .standard }
-        if claudeJoin?.mechanism == .desktopSession { return .agent }
+        if claudeJoin?.mechanism == .desktopSession || claudeProjectFocused { return .agent }
         guard let bundleID, !bundleID.isEmpty else { return .standard }
         if TerminalTargetDetector.isTerminalLikeBundleID(bundleID) { return .agent }
         if settings.userTerminalAppBundleIDs.contains(bundleID) { return .agent }
