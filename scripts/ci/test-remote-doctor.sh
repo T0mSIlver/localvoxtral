@@ -102,9 +102,33 @@ write_token() {
   printf '{"claudeAiOauth":{"accessToken":"not-ours"},"pluginSecrets":{"localvoxtral-remote@localvoxtral":{"token":"%s"}}}' \
     "$1" >"$CLAUDE_DIR/.credentials.json"
 }
-cat >"$CLAUDE_DIR/plugins/installed_plugins.json" <<'EOF'
-{"version":2,"plugins":{"localvoxtral-remote@localvoxtral":[{"scope":"user","version":"1.22.0","installPath":"x"}]}}
-EOF
+write_installed() {
+  printf '{"version":2,"plugins":{"localvoxtral-remote@localvoxtral":[{"scope":"user","version":"%s","installPath":"x"}]}}\n' \
+    "$1" >"$CLAUDE_DIR/plugins/installed_plugins.json"
+}
+write_installed 1.22.0
+HOOK_VERSION="$(sed -n 's/^PLUGIN_VERSION=//p' "$PLUGIN/hooks/post.sh")"
+[ -n "$HOOK_VERSION" ] || fail "post.sh has no PLUGIN_VERSION"
+SESSION_ID="0b5e7d1c-9a3f-4e2b-8c6d-1f2e3a4b5c6d"
+# write_session_record PID SESSION_ID [SKEW]: Claude Code's record of a live
+# session. On Linux it carries the process start time, off by SKEW ticks to
+# stand for a pid reused since.
+write_session_record() {
+  _start=""
+  if [ -r "/proc/$1/stat" ]; then
+    _start="$(awk '{ sub(/^.*\) /, ""); print $20 }' "/proc/$1/stat")"
+    _start=$((_start + ${3:-0}))
+  elif [ -n "${3:-}" ]; then
+    _start=1
+  fi
+  mkdir -p "$CLAUDE_DIR/sessions"
+  printf '{"pid":%s,"sessionId":"%s","cwd":"/tmp","startedAt":1,"procStart":"%s","version":"2.1.286","kind":"interactive"}\n' \
+    "$1" "$2" "$_start" >"$CLAUDE_DIR/sessions/$1.json"
+}
+# A stand-in for a running Claude Code: a copy of sleep named claude, since
+# without /proc the doctor takes only a claude command for a session.
+mkdir -p "$TMP_DIR/bin"
+cp "$(command -v sleep)" "$TMP_DIR/bin/claude"
 echo "ok $(date +%s)" >"$TMP_DIR/run/localvoxtral/hook-status"
 
 # A curl that logs its argv, then runs the real one.
@@ -235,7 +259,7 @@ $OUT"
   write_token "$TOKEN"
 
   # A session still on the old plugin, and the plugin turned off.
-  sleep 60 &
+  "$TMP_DIR/bin/claude" 60 &
   SLEEPER_PID=$!
   : >"$CLAUDE_DIR/plugins/cache/localvoxtral/localvoxtral-remote/1.21.0/.in_use/$SLEEPER_PID"
   run_doctor
@@ -250,10 +274,46 @@ $OUT"
   expect_state host claude-plugin ok "reloaded session"
   pass "$SH_NAME: a session reloaded onto the installed plugin is current"
   rm -f "$CLAUDE_DIR/plugins/cache/localvoxtral/localvoxtral-remote/1.22.0/.in_use/"*
+  rm -f "$CLAUDE_DIR/plugins/cache/localvoxtral/localvoxtral-remote/1.21.0/.in_use/"*
+
+  # Claude Code 2.1.280 and later write no marker (#1159): the session is
+  # in Claude Code's sessions/<pid>.json, and its version in the record the
+  # plugin's hook keeps under its session id.
+  write_session_record "$SLEEPER_PID" "$SESSION_ID"
+  run_doctor
+  expect_line "running sessions with no plugin version recorded (pid): $SLEEPER_PID." "unrecorded session"
+  expect_state host claude-plugin warning "unrecorded session"
+  pass "$SH_NAME: a live session that recorded no plugin version is named"
+  mkdir -p "$TMP_DIR/run/localvoxtral/plugin-version"
+  printf '1.21.0\n' >"$TMP_DIR/run/localvoxtral/plugin-version/$SESSION_ID"
+  run_doctor
+  expect_line "running sessions still on older versions (version:pid): 1.21.0:$SLEEPER_PID." "recorded old session"
+  expect_state host claude-plugin warning "recorded old session"
+  pass "$SH_NAME: a live session whose hook recorded an older plugin is named"
+  # The shipped hook records its own version; installed, that is current.
+  printf '{"hook_event_name":"SessionStart","session_id":"%s"}' "$SESSION_ID" \
+    | env -i PATH="$PATH" HOME="$HOME_DIR" XDG_RUNTIME_DIR="$TMP_DIR/run" "$SH" "$PLUGIN/hooks/post.sh" SessionStart
+  write_installed "$HOOK_VERSION"
+  run_doctor
+  expect_line "[ok  ] Claude Code plugin: $HOOK_VERSION installed; 1 running session(s), none on an older version." "recorded current session"
+  expect_state host claude-plugin ok "recorded current session"
+  pass "$SH_NAME: the hook's own record makes its session current"
+  write_installed 1.22.0
+  # A pid reused by another process is not the session: on Linux its start
+  # time differs, without /proc its command is not claude.
+  rm -f "$CLAUDE_DIR/sessions/"*
+  sleep 60 &
+  REUSED_PID=$!
+  write_session_record "$REUSED_PID" "$SESSION_ID" 1
+  run_doctor
+  kill "$REUSED_PID" 2>/dev/null || true
+  wait "$REUSED_PID" 2>/dev/null || true
+  expect_line "[ok  ] Claude Code plugin: 1.22.0 installed; 0 running session(s), none on an older version." "reused pid"
+  pass "$SH_NAME: a session record whose pid was reused counts nothing"
+  rm -f "$CLAUDE_DIR/sessions/"* "$TMP_DIR/run/localvoxtral/plugin-version/"*
   kill "$SLEEPER_PID" 2>/dev/null || true
   wait "$SLEEPER_PID" 2>/dev/null || true
   SLEEPER_PID=""
-  rm -f "$CLAUDE_DIR/plugins/cache/localvoxtral/localvoxtral-remote/1.21.0/.in_use/"*
   write_settings false
   run_doctor
   expect_line "[FAIL] Claude Code plugin: 1.22.0 is installed but turned off" "disabled"
