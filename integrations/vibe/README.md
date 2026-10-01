@@ -127,6 +127,12 @@ Vibe's environment. Sessions then expire after four idle hours.
 note in `~/.vibe/AGENTS.md` saying your prompts come from speech-to-text. See
 [Telling the agent you dictate](../../docs/coding-agents.md#telling-the-agent-you-dictate).
 
+## Teach Mistral Vibe to check dictation
+
+**Settings → Mistral Vibe → Teach Mistral Vibe to check dictation → Add** installs a
+skill in ~/.vibe/skills that names `localvoxtral doctor` and `localvoxtral logs`. See
+[Teaching the agent to check dictation](../../docs/coding-agents.md#teaching-the-agent-to-check-dictation).
+
 ## What it sends
 
 Everything stays on this machine. The hooks publish bounded records to

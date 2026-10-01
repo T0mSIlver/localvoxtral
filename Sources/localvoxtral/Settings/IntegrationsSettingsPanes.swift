@@ -149,6 +149,7 @@ struct ClaudeCodeSettingsPane: View {
                     ClaudePluginInstallRow(model: claude)
                     ClaudeStatuslineRow(model: claude)
                     DictationNoteRow(model: claude, agent: .claudeCode)
+                    DoctorSkillRow(model: claude, agent: .claudeCode)
                 }
             }
         }
@@ -166,6 +167,7 @@ struct OpencodeSettingsPane: View {
                 if let claude = viewModel.claudeIntegrationSettings {
                     OpencodePluginRow(model: claude)
                     DictationNoteRow(model: claude, agent: .opencode)
+                    DoctorSkillRow(model: claude, agent: .opencode)
                 }
             }
         }
@@ -183,6 +185,7 @@ struct VibeSettingsPane: View {
                 if let claude = viewModel.claudeIntegrationSettings {
                     VibeHooksRow(model: claude)
                     DictationNoteRow(model: claude, agent: .vibe)
+                    DoctorSkillRow(model: claude, agent: .vibe)
                 }
             }
         }
@@ -200,6 +203,7 @@ struct CodexSettingsPane: View {
                 if let claude = viewModel.claudeIntegrationSettings {
                     CodexPluginRow(model: claude)
                     DictationNoteRow(model: claude, agent: .codex)
+                    DoctorSkillRow(model: claude, agent: .codex)
                 }
             }
         }

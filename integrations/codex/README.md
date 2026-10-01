@@ -49,6 +49,12 @@ instructions file Codex reads. That file is `~/.codex/AGENTS.override.md`
 when it holds anything, else `~/.codex/AGENTS.md`. See
 [Telling the agent you dictate](../../docs/coding-agents.md#telling-the-agent-you-dictate).
 
+## Teach Codex to check dictation
+
+**Settings → Codex → Teach Codex to check dictation → Add** installs a
+skill in ~/.codex/skills that names `localvoxtral doctor` and `localvoxtral logs`. See
+[Teaching the agent to check dictation](../../docs/coding-agents.md#teaching-the-agent-to-check-dictation).
+
 ## What it sends
 
 Everything stays on this machine. The plugin's hooks publish bounded records

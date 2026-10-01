@@ -319,4 +319,6 @@ public protocol DictationNoteFileSystem: Sendable {
     func createParentDirectory(of relativePath: String, permissions: UInt16) throws
     func atomicWrite(_ data: Data, relativePath: String, permissions: UInt16) throws
     func delete(relativePath: String) throws
+    /// Removes the directory only when it holds nothing.
+    func removeDirectoryIfEmpty(relativePath: String)
 }

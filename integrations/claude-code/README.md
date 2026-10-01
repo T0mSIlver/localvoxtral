@@ -482,6 +482,12 @@ row offers only **Remove**.
 note in ~/.claude/CLAUDE.md saying your prompts come from speech-to-text. See
 [Telling the agent you dictate](../../docs/coding-agents.md#telling-the-agent-you-dictate).
 
+## Teach Claude Code to check dictation
+
+**Settings → Claude Code → Teach Claude Code to check dictation → Add** installs a
+skill in ~/.claude/skills that names `localvoxtral doctor` and `localvoxtral logs`. See
+[Teaching the agent to check dictation](../../docs/coding-agents.md#teaching-the-agent-to-check-dictation).
+
 ## Set up a remote host
 
 When you dictate into a Claude Code session running on another machine over
