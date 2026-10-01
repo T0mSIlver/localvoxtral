@@ -7,6 +7,10 @@ import localvoxtralCore
 /// all skip exits 0 with nothing measured (#1196).
 package struct SpokenAudioFailure: Error, CustomStringConvertible {
     package let description: String
+
+    package init(description: String) {
+        self.description = description
+    }
 }
 
 package enum IntegrationTestSupport {
