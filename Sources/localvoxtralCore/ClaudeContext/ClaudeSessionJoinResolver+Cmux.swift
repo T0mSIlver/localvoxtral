@@ -267,6 +267,7 @@ extension ClaudeSessionJoinResolver {
         let registry = registry
         let sessionID = join.snapshot.sessionID
         let surfaceID = binding.surfaceID
+        let ttyForegroundPIDs = ttyForegroundPIDs
         return CmuxSurfaceRoute(
             surfaceID: surfaceID,
             cmuxPID: join.target.pid,
@@ -276,11 +277,25 @@ extension ClaudeSessionJoinResolver {
             sessionHoldsSurface: {
                 // The join's own evidence, asked again: a live session
                 // still publishing this surface id.
-                [registry.resolve(cmuxSurfaceID: surfaceID), registry.resolveRemote(cmuxSurfaceID: surfaceID)]
-                    .contains { resolution in
-                        if case .resolved(let snapshot) = resolution { return snapshot.sessionID == sessionID }
+                if case .resolved(let snapshot) = registry.resolve(cmuxSurfaceID: surfaceID),
+                   snapshot.sessionID == sessionID {
+                    // A local agent must also hold its terminal's foreground,
+                    // as the herdr route asks of its pane: a suspended agent
+                    // is alive and registered while its shell reads the
+                    // text as a command.
+                    guard let tty = snapshot.process?.tty,
+                          let foreground = ttyForegroundPIDs(tty),
+                          Self.registeredAgentIsForeground(snapshot: snapshot, foregroundPIDs: foreground, abstain: { _ in })
+                    else {
+                        Log.backends.notice("cmux surface route: the joined agent does not own its terminal's foreground")
                         return false
                     }
+                    return true
+                }
+                if case .resolved(let snapshot) = registry.resolveRemote(cmuxSurfaceID: surfaceID) {
+                    return snapshot.sessionID == sessionID
+                }
+                return false
             },
             isRemoteJoin: !join.snapshot.origin.isLocalAuthenticated
         )

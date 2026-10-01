@@ -762,6 +762,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 reportCmuxStatus: { [weak viewModel] status in
                     viewModel?.claudeIntegrationSettings?.cmuxStatus = status
                 },
+                ttyForegroundPIDs: { TTYProcessTable.foregroundPIDs(onTTYDevicePath: $0) },
                 sshDestinationProbe: {
                     SSHDestinationTTYProbe.connection(onTTYDevicePath: $0)
                 },
