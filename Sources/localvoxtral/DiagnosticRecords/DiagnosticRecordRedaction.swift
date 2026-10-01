@@ -139,6 +139,41 @@ enum DiagnosticRecordRedaction {
     /// so a row there can hold any stretch of a line (#1121).
     static func withholdPrompt(_ prompt: String?, from record: inout DiagnosticRecord) {
         guard let prompt, !prompt.isEmpty else { return }
+        let withhold = promptWithholder(prompt)
+
+        func withholdOptional(_ text: inout String?) {
+            text = text.map(withhold)
+        }
+
+        withholdOptional(&record.text.systemPrompt)
+        record.text.userPrompts = record.text.userPrompts.map(withhold)
+        if var screen = record.screen {
+            screen.sanitizedText = screen.sanitizedText.map {
+                withhold(withholdingWrapped(prompt, in: $0))
+            }
+            record.screen = screen
+        }
+        for index in record.sources.indices {
+            withholdOptional(&record.sources[index].renderedExcerpt)
+        }
+    }
+
+    /// `text` with the prompt taken out as `withholdPrompt` takes it out of
+    /// the record's fields. A source's harvest is re-derived from its text,
+    /// so the builder harvests what this returns; harvested from the text as
+    /// captured, the harvest keeps the prompt's identifiers.
+    ///
+    /// `softWrapped` adds the screen's pass (`withholdingWrapped`). It walks
+    /// the text once per prompt anchor, so only screen text, which is capped,
+    /// takes it; the clipboard can hold millions of characters.
+    static func withholdingPrompt(_ prompt: String?, in text: String, softWrapped: Bool) -> String {
+        guard let prompt, !prompt.isEmpty else { return text }
+        return promptWithholder(prompt)(softWrapped ? withholdingWrapped(prompt, in: text) : text)
+    }
+
+    /// The label, whole-line and cut-line passes `withholdPrompt` runs on
+    /// every field.
+    private static func promptWithholder(_ prompt: String) -> (String) -> String {
         let label = ClaudeSessionContextText.priorPromptLabel
         let renderedPrompt = prompt.components(separatedBy: "\n")
             .map(PolishContextExcerptSelector.renderedLine)
@@ -188,21 +223,7 @@ enum DiagnosticRecordRedaction {
             return output
         }
 
-        func withholdOptional(_ text: inout String?) {
-            text = text.map(withhold)
-        }
-
-        withholdOptional(&record.text.systemPrompt)
-        record.text.userPrompts = record.text.userPrompts.map(withhold)
-        if var screen = record.screen {
-            screen.sanitizedText = screen.sanitizedText.map {
-                withhold(withholdingWrapped(prompt, in: $0))
-            }
-            record.screen = screen
-        }
-        for index in record.sources.indices {
-            withholdOptional(&record.sources[index].renderedExcerpt)
-        }
+        return withhold
     }
 
     /// Masks the stretches of `text` that spell a prompt line once whitespace
