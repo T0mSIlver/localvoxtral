@@ -241,8 +241,8 @@ say what that night has to run.
 | `waits:ci-red` | a known flake or a semantic conflict with main that someone is fixing | the worker or the scheduler | whoever gets it green |
 | `waits:external` | a key, account or decision from outside the repo | the worker | the worker |
 
-A hand check stays on `needs-human-review`, open or merged, until the owner
-reports it done; the owner's OK to merge comes in chat or through the merge
+A hand check never holds a merge: the owner tries its steps in the next
+daily release. The owner's OK to merge comes in chat or through the merge
 classes.
 
 `pr-waits-labels.yml` adds the lane and stack labels on every push, body or
