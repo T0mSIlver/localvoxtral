@@ -107,8 +107,10 @@ extension ClaudeIntegrationSettingsModel {
             forwards?.reconcile()
         } catch {
             // A listener that failed to bind must not leave forwards running
-            // into a dead port.
-            forwards?.stopAll()
+            // into a dead port. Reconcile rather than stopAll: with the
+            // listener unbound it stops every forward, and it still runs the
+            // launch orphan reap the herdr forwards wait on (#1368).
+            forwards?.reconcile()
             listenerStatus = Self.status(for: error, port: listener.boundPort)
             if presentAlert {
                 alert = DetailAlert(

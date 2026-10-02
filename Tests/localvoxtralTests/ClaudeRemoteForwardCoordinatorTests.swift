@@ -358,26 +358,33 @@ final class ClaudeRemoteForwardCoordinatorTests: XCTestCase {
         XCTAssertEqual(reapCount.withLock { $0 }, 1)
     }
 
-    func testNoReapWhileTheListenerIsUnbound() async throws {
-        // A copy that lost the listener runs no forwards, so it has nothing
-        // to reap. Another copy's forwards are safe from any reap by their
-        // recorded owner (ClaudeRemoteForwardOrphanReaperTests, #892).
+    func testTheReapRunsOnceWhileTheListenerIsUnbound() async throws {
+        // A copy that lost the listener runs no `-R` forwards, but its herdr
+        // `-L` forwards wait on this reap (#1368). Another copy's forwards are
+        // safe from it by their recorded owner (#892).
         let registry = try makeRegistry()
         let host = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
         try registry.setPersistentForwardEnabled(true, hostID: host.id)
 
         let spy = ForwardSpy()
+        let bound = Mutex(false)
         let reapCount = Mutex(0)
         let coordinator = makeCoordinator(
             registry: registry,
             spy: spy,
-            isListenerBound: { false },
+            isListenerBound: { bound.withLock { $0 } },
             reapOrphans: { reapCount.withLock { $0 += 1 } }
         )
         coordinator.reconcile()
         for _ in 0..<50 { await Task.yield() }
-        XCTAssertEqual(reapCount.withLock { $0 }, 0, "no listener, no reap")
-        XCTAssertTrue(spy.started.isEmpty)
+        XCTAssertEqual(reapCount.withLock { $0 }, 1)
+        XCTAssertTrue(spy.started.isEmpty, "no listener, no forward")
+
+        bound.withLock { $0 = true }
+        coordinator.reconcile()
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(spy.started, [host.id])
+        XCTAssertEqual(reapCount.withLock { $0 }, 1, "a later bind must not reap again")
     }
 }
 

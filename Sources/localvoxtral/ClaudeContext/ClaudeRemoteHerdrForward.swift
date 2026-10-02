@@ -136,7 +136,7 @@ final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
     func open(alias: String, remoteSocketPath: String) async -> ClaudeRemoteHerdrForwardHandle? {
         guard await orphanReapFinished(by: now().addingTimeInterval(max(0, readinessTimeout))) else {
             Log.claudeContext.info(
-                "Remote herdr forward abstained: the launch orphan reap has not run (listener not bound?)"
+                "Remote herdr forward abstained: the launch orphan reap has not finished"
             )
             return nil
         }
@@ -340,10 +340,9 @@ final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
         await withCheckedContinuation { orphanReapWaiters.append($0) }
     }
 
-    /// The dictation-start side of `waitForOrphanReap`, bounded (#1359): the
-    /// forward coordinator runs the reap only once the listener binds, so in
-    /// a copy that lost the port to another copy it never runs. False when
-    /// it has not run by `deadline`, or the start was cancelled.
+    /// The dictation-start side of `waitForOrphanReap`, bounded (#1359): a
+    /// dictation must start even if the reap never finishes. False when it
+    /// has not run by `deadline`, or the start was cancelled.
     private func orphanReapFinished(by deadline: Date) async -> Bool {
         while !orphanReapComplete {
             guard now() < deadline, !Task.isCancelled else { return false }
