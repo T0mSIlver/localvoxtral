@@ -614,7 +614,14 @@ public final class ClaudeContextBroker: Sendable {
         // The answer must be the connection's first line: a send that starts
         // the moment the hub has the channel waits for it on the lock.
         let token: UInt64? = descriptor.use { fd in
-            guard let token = modChannels.attach(sessionID: attach.sessionID, channel: channel) else {
+            // Admitted under the broker's lock, which `stop` takes to clear
+            // `isRunning` before it closes every channel: a channel registers
+            // before that sweep or not at all.
+            let token = state.withLock { state -> UInt64? in
+                guard state.isRunning else { return nil }
+                return modChannels.attach(sessionID: attach.sessionID, channel: channel)
+            }
+            guard let token else {
                 return nil
             }
             answerAttach(fd: fd, accepted: true)

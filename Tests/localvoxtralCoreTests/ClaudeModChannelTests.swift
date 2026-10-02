@@ -291,6 +291,41 @@ final class ClaudeModChannelSocketTests: XCTestCase {
         let ended = await outcome.value
         XCTAssertEqual(ended, ClaudeModAttachClient.Outcome.closed)
     }
+
+    /// A connection accepted before the stop and served after its sweep must
+    /// not register: nothing would close it, and its session could not
+    /// attach again after a restart.
+    func testAnAttachServedAfterTheStopIsRefused() async throws {
+        try announce("sess-1")
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        broker.debugConfigureServeHook {
+            entered.signal()
+            release.wait()
+        }
+        // Fulfilled by whichever comes first: the hub taking the channel,
+        // or the client hearing no.
+        let settled = expectation(description: "the attach was answered")
+        settled.assertForOverFulfill = false
+        hub.debugConfigureAttachHook { if $0 { settled.fulfill() } }
+        let alive = Flag(true)
+        let attach = client("sess-1", output: Received(), parentAlive: alive)
+        let outcome = Task.detached {
+            let outcome = attach.attachOnce()
+            settled.fulfill()
+            return outcome
+        }
+        await Task.detached { entered.wait() }.value
+
+        broker.stop()
+        release.signal()
+        await fulfillment(of: [settled], timeout: 5)
+
+        XCTAssertFalse(hub.isAttached("sess-1"), "no channel registers after the shutdown sweep")
+        alive.isSet = false
+        let ended = await outcome.value
+        XCTAssertEqual(ended, ClaudeModAttachClient.Outcome.refused)
+    }
 }
 
 #endif
