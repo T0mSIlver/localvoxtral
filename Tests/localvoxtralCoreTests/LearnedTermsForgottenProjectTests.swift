@@ -1,0 +1,100 @@
+import Foundation
+import XCTest
+
+@testable import localvoxtralCore
+
+/// Forget Project's tombstone (#1156): the agent-activity listing (#1027)
+/// does not bring a forgotten project back; a dictation or a hook does.
+final class LearnedTermsForgottenProjectTests: XCTestCase {
+    private static let start = Date(timeIntervalSince1970: 1_700_000_000)
+    private let quill = ProjectRemote("github.com/me/quill")!
+    private let mac = LearnedTermProjectIdentity(key: "/w/quill", name: "quill")
+
+    private func agentWorked(in project: LearnedTermProjectIdentity) -> [AgentWorkedRepository] {
+        [AgentWorkedRepository(project: project, remote: quill, lastActive: Self.start)]
+    }
+
+    private func makeFileURL() -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("forgotten-tests-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return directory.appendingPathComponent("learned-terms.json")
+    }
+
+    func testAForgottenProjectStaysOutOfTheAgentListingUntilADictation() throws {
+        let fileURL = makeFileURL()
+        let store = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        store.recordAgentActivity(agentWorked(in: mac), hostID: nil)
+        store.waitForPendingWrites()
+        let listed = store.snapshot()
+        XCTAssertEqual(listed.projects.map(\.key).sorted(), [mac.key, quill.key].sorted())
+
+        store.forgetProject(keys: [mac.key, quill.key])
+        store.recordAgentActivity(agentWorked(in: mac), hostID: nil)
+        // A new clone of the same repository, found through its `origin`.
+        let clone = LearnedTermProjectIdentity(key: "/w/quill-2", name: "quill-2")
+        store.recordAgentActivity(agentWorked(in: clone), hostID: nil)
+        store.waitForPendingWrites()
+        XCTAssertEqual(store.snapshot().projects, [], "the agent listing adds nothing back")
+
+        // The tombstone outlives a relaunch.
+        let reopened = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        reopened.recordAgentActivity(agentWorked(in: mac), hostID: nil)
+        reopened.waitForPendingWrites()
+        XCTAssertEqual(reopened.snapshot().projects, [])
+        let tombstones = try XCTUnwrap(
+            LearnedTermStore.forgotten(fromFileContents: Data(contentsOf: XCTUnwrap(reopened.forgottenFileURL))).value)
+        XCTAssertEqual(tombstones.projects.map(\.keys), [[mac.key, quill.key].sorted()])
+        XCTAssertEqual(tombstones.projects.first?.forgottenAt, Self.start)
+
+        reopened.record([LearnedTermObservation(term: "Kern", source: .repository)], project: mac)
+        reopened.waitForPendingWrites()
+        XCTAssertNotNil(reopened.snapshot().termRecord(mac.key), "a dictation brings it back")
+        XCTAssertEqual(reopened.snapshot().forgotten.projects, [])
+
+        reopened.recordAgentActivity(agentWorked(in: mac), hostID: nil)
+        reopened.waitForPendingWrites()
+        XCTAssertEqual(
+            reopened.snapshot().projects.first { $0.key == mac.key }?.agentActiveAt, Self.start,
+            "the next agent report stamps it")
+        let cleared = try XCTUnwrap(
+            LearnedTermStore.forgotten(fromFileContents: Data(contentsOf: XCTUnwrap(reopened.forgottenFileURL))).value)
+        XCTAssertEqual(cleared.projects, [], "the cleared tombstone is written")
+    }
+
+    func testAHookBringsAForgottenProjectBack() {
+        let store = LearnedTermStore(fileURL: nil, now: { Self.start })
+        let host = LearnedTermProjectIdentity(key: "remote:quill", name: "quill")
+        store.recordAgentActivity(agentWorked(in: host), hostID: "box")
+        store.forgetProject(keys: [host.key])
+        store.recordAgentActivity(agentWorked(in: host), hostID: "box")
+        store.waitForPendingWrites()
+        XCTAssertEqual(store.snapshot().projects, [])
+
+        store.recordRemoteReport(project: host, asRepository: true, repository: "me/quill", hostID: "box")
+        store.recordAgentActivity(agentWorked(in: host), hostID: "box")
+        store.waitForPendingWrites()
+        XCTAssertEqual(store.snapshot().forgotten.projects, [])
+        XCTAssertEqual(store.snapshot().projects.first { $0.key == host.key }?.agentActiveAt, Self.start)
+    }
+
+    /// A tombstone file this build cannot read is kept as it is, and only
+    /// the agent listing stops: any repo may be a forgotten one.
+    func testAnUnreadableTombstoneFileStopsOnlyTheAgentListing() throws {
+        let fileURL = makeFileURL()
+        let directory = fileURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let tombstoneURL = directory.appendingPathComponent(LearnedTermStore.forgottenFileName)
+        let newer = Data(#"{"version":99,"projects":[]}"#.utf8)
+        try newer.write(to: tombstoneURL)
+
+        let store = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        store.recordAgentActivity(agentWorked(in: mac), hostID: nil)
+        store.forgetProject(keys: ["/w/ink"])
+        store.record([LearnedTermObservation(term: "Kern", source: .repository)], project: mac)
+        store.waitForPendingWrites()
+
+        XCTAssertEqual(store.snapshot().projects.map(\.key), [mac.key], "the dictation, not the agent listing")
+        XCTAssertEqual(try Data(contentsOf: tombstoneURL), newer, "the file is left alone")
+    }
+}

@@ -342,6 +342,9 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// The repositories the user ignored (#1006). Kept in its own file by
     /// `LearnedTermStore`, never in this one's: see `IgnoredProjects`.
     package var ignored = IgnoredProjects()
+    /// The projects the user forgot (#1156), kept out of the agent-activity
+    /// listing. Kept in their own file too: see `ForgottenProjects`.
+    package var forgotten = ForgottenProjects()
 
     private enum CodingKeys: String, CodingKey {
         case version, projects
@@ -455,8 +458,9 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// reported by a host's shim (`remote:<name>`). Adds the project when it
     /// is missing, so it is listed before a dictation joins a session in it,
     /// and links it to its `origin`. Work older than
-    /// `agentActivityListedDays`, or in a folder a tool named, adds nothing.
-    /// Returns true when it added the project.
+    /// `agentActivityListedDays`, in a folder a tool named, or in a project
+    /// the user forgot (#1156), adds nothing. Returns true when it added the
+    /// project.
     @discardableResult
     package mutating func recordAgentActivity(
         project: LearnedTermProjectIdentity,
@@ -468,7 +472,8 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         let at = min(reported, now)
         guard now.timeIntervalSince(at) < Double(Self.agentActivityListedDays) * 86_400,
               project.key.hasPrefix("/") || project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix),
-              !project.name.isEmpty, !Self.isGeneratedLabel(project.name)
+              !project.name.isEmpty, !Self.isGeneratedLabel(project.name),
+              !isForgotten(projectKey: project.key, remote: remote)
         else { return false }
         let index: Int
         let added: Bool
