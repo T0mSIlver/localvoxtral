@@ -380,8 +380,6 @@ extension DictationSessionController {
         }
     }
 
-    /// The polish-and-commit task's body: polish, apply the reply, commit,
-    /// record. Returns early, changing nothing, when the commit is cancelled.
     /// What a delivered dictation taught, remembered for the next one in
     /// the same project. Recorded from the MERGED entries and nowhere else:
     /// a span the merge abstained on is not evidence of a spelling, and a
@@ -396,6 +394,8 @@ extension DictationSessionController {
         )
     }
 
+    /// The polish-and-commit task's body: polish, apply the reply, commit,
+    /// record. Returns early, changing nothing, when the commit is cancelled.
     private func polishAndCommitOverlayBuffer(
         sessionMode: DictationOutputMode,
         preparation: StopCommitCoordinator.Preparation,

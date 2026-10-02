@@ -12,8 +12,8 @@ import Foundation
 /// `PolishRequestGoldenTests` pins what those inputs produce.
 ///
 /// It touches nothing but what it is handed — `capture` clears the
-/// context's captures, `commit` inserts through the overlay, `polish`
-/// records learned terms — and it never reads or writes the view model, so
+/// context's captures, `commit` inserts through the overlay,
+/// `recordLearnedTerms` writes the store — and it never reads or writes the view model, so
 /// the ordering rules below hold wherever the commit is driven from.
 enum StopCommitCoordinator {
     // MARK: - Prologue
