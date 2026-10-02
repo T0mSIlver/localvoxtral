@@ -278,6 +278,10 @@ final class DictationSessionController {
                 guard let self else { return [] }
                 return self.polishProjectNames() + self.polishSkillNames()
             },
+            currentProjectTerms: { [weak self] in
+                guard let memory = self?.learnedTermStore?.snapshot() else { return [] }
+                return PolishProjectNames.currentProjectTerms(from: memory, now: Date())
+            },
             service: { [weak self] in self?.llmPolishingService ?? LLMPolishingService() },
             unavailableReason: { [weak self] in
                 guard let settings = self?.settings else { return nil }

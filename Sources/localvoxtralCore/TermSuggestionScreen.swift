@@ -60,6 +60,15 @@ package enum TermSuggestionScreen {
             .map(\.element.term)
     }
 
+    /// Drops a candidate the polish request already carries (#1442): a global
+    /// term, a term of the current project, a project or a skill name. A
+    /// suggestion would only repeat it, so nothing is left to clean up later.
+    /// Compared as `PolishProjectNames.key` compares names.
+    package static func unsent(_ candidates: [String], carried: [String]) -> [String] {
+        let known = Set(carried.map(PolishProjectNames.key))
+        return candidates.filter { !known.contains(PolishProjectNames.key($0)) }
+    }
+
     /// Case, spacing and punctuation ignored, as `SpeakerTermSuggestions.key`.
     private static func key(_ term: String) -> String {
         String(term.caseFoldedForMatching.unicodeScalars.filter {
