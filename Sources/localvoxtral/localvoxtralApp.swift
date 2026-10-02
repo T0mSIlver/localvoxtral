@@ -364,6 +364,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Queued here, so the History drain at the end of quit writes it.
+        viewModel.saveStoppedDictationForQuit()
         widgetSnapshotWriter?.writeAppQuit()
         widgetSnapshotWriter = nil
         #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
