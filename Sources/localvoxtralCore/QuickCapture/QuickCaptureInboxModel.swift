@@ -476,7 +476,14 @@ package final class QuickCaptureInboxModel {
                 await self.draft(id, text: item.words, destination: .project(project.key), projects: projects)
             } else if project.issueRepository == nil, project.key.hasPrefix("/") {
                 let repository = await self.github.repository(ofCheckout: project.key)
-                self.mutate { inbox in inbox.update(id) { if $0.repository == nil { $0.repository = repository } } }
+                // Moved again meanwhile: the answer is for a project the
+                // capture left.
+                self.mutate { inbox in
+                    inbox.update(id) {
+                        guard $0.projectKey == project.key, $0.state == .ready, $0.repository == nil else { return }
+                        $0.repository = repository
+                    }
+                }
             }
         }
     }
