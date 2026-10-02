@@ -10,6 +10,9 @@ package final class FakeSessionPaneFocuser: SessionPaneFocusing {
     package var outcome: SessionPaneFocusOutcome
     package private(set) var focusedSessionIDs: [String] = []
     package var onFocus: ((String) -> Void)?
+    /// Sessions whose focus was cancelled by the time `onFocus` returned:
+    /// a real focuser activates no terminal for those.
+    package private(set) var cancelledSessionIDs: [String] = []
 
     package init(outcome: SessionPaneFocusOutcome = .focused(bundleID: "com.mitchellh.ghostty")) {
         self.outcome = outcome
@@ -18,6 +21,7 @@ package final class FakeSessionPaneFocuser: SessionPaneFocusing {
     package func focusPane(of session: ClaudeSessionSnapshot) async -> SessionPaneFocusOutcome {
         focusedSessionIDs.append(session.sessionID)
         onFocus?(session.sessionID)
+        if Task.isCancelled { cancelledSessionIDs.append(session.sessionID) }
         return outcome
     }
 

@@ -784,6 +784,10 @@ final class DictationSessionController {
         outputMode: DictationOutputMode?, quickCapture: Bool, draftReview: QuickCaptureDraftSnapshot? = nil
     ) {
         guard !isDictating else { return }
+        // An answer whose pane is still coming forward would activate its
+        // terminal under this dictation and take its words there.
+        answerAgentTask?.cancel()
+        answerAgentTask = nil
         onDictationStartRequested?()
         guard !isConnectingRealtimeSession else {
             statusText = StatusStrings.connectingRealtimeBackend

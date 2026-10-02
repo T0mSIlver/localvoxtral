@@ -36,6 +36,22 @@ final class AnswerAgentTests: XCTestCase {
         XCTAssertEqual(h.startRequests.value, 2)
     }
 
+    func testALiveStartWhileTheAnswerPaneComesForwardCancelsTheFocus() async {
+        let h = makeHarness(sessions: ["pay": "/r/payments"])
+        h.tracker.receive(.notification, session: h.sessions["pay"]!)
+        h.focuser.onFocus = { _ in h.viewModel.session.startDictation(outputMode: .liveAutoPaste) }
+
+        h.viewModel.session.answerAgentThatNeedsYou()
+        let answer = h.viewModel.session.answerAgentTask
+        await answer?.value
+
+        XCTAssertEqual(
+            h.focuser.cancelledSessionIDs, ["pay"],
+            "the old answer must not bring its terminal in front of the new dictation"
+        )
+        XCTAssertEqual(h.startRequests.value, 1, "only the new dictation asked to start")
+    }
+
     func testAnUnconfirmedFocusStartsNoDictation() async {
         let h = makeHarness(sessions: ["pay": "/r/payments"], outcome: .unverified(bundleID: TerminalScreenAllowlist.ghosttyBundleID))
         h.tracker.receive(.notification, session: h.sessions["pay"]!)
