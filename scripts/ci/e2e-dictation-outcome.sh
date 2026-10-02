@@ -23,7 +23,7 @@ case "$status" in
     fi
     ;;
   4)
-    echo "::error::e2e dictation measured nothing: the app under test has no Accessibility grant. Allow the localvoxtral-dev-signed localvoxtral in System Settings > Privacy & Security > Accessibility, then dispatch again."
+    echo "::error::e2e dictation measured nothing: the app under test has no Accessibility grant. Allow the localvoxtral-dev-signed localvoxtral in System Settings > Privacy & Security > Accessibility (Device Control and Data Access on macOS 27), then dispatch again."
     ;;
 esac
 exit "$status"

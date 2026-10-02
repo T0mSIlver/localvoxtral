@@ -118,6 +118,8 @@ package struct AgentCLIDoctorFacts: Sendable, Equatable {
     package var commandLink: CommandLink?
     package var microphone: Permission
     package var accessibilityTrusted: Bool
+    /// Where the Accessibility grant lives on this Mac's macOS.
+    package var accessibilityPane: AccessibilitySettingsPane
     package var speech: Engine
     package var polish: Engine
     /// Nil when the app runs no integration model.
@@ -143,6 +145,7 @@ package struct AgentCLIDoctorFacts: Sendable, Equatable {
         commandLink: CommandLink? = nil,
         microphone: Permission,
         accessibilityTrusted: Bool,
+        accessibilityPane: AccessibilitySettingsPane = .current,
         speech: Engine,
         polish: Engine,
         claudePlugin: ClaudePluginStatus?,
@@ -160,6 +163,7 @@ package struct AgentCLIDoctorFacts: Sendable, Equatable {
         self.commandLink = commandLink
         self.microphone = microphone
         self.accessibilityTrusted = accessibilityTrusted
+        self.accessibilityPane = accessibilityPane
         self.speech = speech
         self.polish = polish
         self.claudePlugin = claudePlugin
@@ -181,7 +185,10 @@ package enum AgentCLIDoctorChecks {
     package static func checks(_ facts: AgentCLIDoctorFacts) -> [AgentCLICheck] {
         var checks = [app(facts, withPath: true)]
         if let link = facts.commandLink { checks.append(commandLink(link, appBundlePath: facts.appBundlePath)) }
-        checks += [microphone(facts.microphone), accessibility(facts.accessibilityTrusted)]
+        checks += [
+            microphone(facts.microphone),
+            accessibility(facts.accessibilityTrusted, pane: facts.accessibilityPane),
+        ]
         checks.append(engine(id: "speech", title: "Speech engine", facts.speech))
         checks.append(engine(id: "polish", title: "Polish engine", facts.polish))
         checks.append(claudePlugin(facts.claudePlugin))
@@ -201,7 +208,10 @@ package enum AgentCLIDoctorChecks {
     /// host whose token asked, nil when it is not in `facts`.
     package static func hostChecks(_ facts: AgentCLIDoctorFacts, hostIndex: Int?) -> [AgentCLICheck] {
         var checks = [app(facts, withPath: false)]
-        checks += [microphone(facts.microphone), accessibility(facts.accessibilityTrusted)]
+        checks += [
+            microphone(facts.microphone),
+            accessibility(facts.accessibilityTrusted, pane: facts.accessibilityPane),
+        ]
         checks.append(engine(id: "speech", title: "Speech engine", facts.speech, withSummary: false))
         checks.append(engine(id: "polish", title: "Polish engine", facts.polish, withSummary: false))
         if let hostIndex, facts.remoteHosts.indices.contains(hostIndex) {
@@ -272,13 +282,13 @@ package enum AgentCLIDoctorChecks {
         }
     }
 
-    static func accessibility(_ trusted: Bool) -> AgentCLICheck {
+    static func accessibility(_ trusted: Bool, pane: AccessibilitySettingsPane) -> AgentCLICheck {
         trusted
-            ? AgentCLICheck(id: "accessibility", title: "Accessibility", state: .ok, detail: "Allowed.")
+            ? AgentCLICheck(id: "accessibility", title: pane.name, state: .ok, detail: "Allowed.")
             : AgentCLICheck(
-                id: "accessibility", title: "Accessibility", state: .failed,
+                id: "accessibility", title: pane.name, state: .failed,
                 detail: "Not allowed, so text cannot be inserted.",
-                fix: "System Settings > Privacy & Security > Accessibility: turn localvoxtral off, then on. "
+                fix: "\(pane.path): turn localvoxtral off, then on. "
                     + "A copy with another signature loses the grant without saying so."
             )
     }

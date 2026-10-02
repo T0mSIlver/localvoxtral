@@ -88,7 +88,7 @@ cask "localvoxtral" do
     Releases are ad-hoc signed, so macOS may drop the Accessibility grant
     after an upgrade. If the dictation shortcut stops working, toggle
     localvoxtral off and on in System Settings > Privacy & Security >
-    Accessibility.
+    Accessibility (Device Control and Data Access on macOS 27).
   EOS
 end
 EOF

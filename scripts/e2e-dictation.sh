@@ -386,7 +386,7 @@ run_scenario() {
   reply="$(control "session start $mode")"
   printf '%s: session start -> %s\n' "$name" "$reply"
   if json_has "$reply" '"accessibilityTrusted":false'; then
-    record_needs_owner "$name: the app under test has no Accessibility grant. Allow the localvoxtral-dev-signed localvoxtral in System Settings > Privacy & Security > Accessibility (toggle it off and on if it is listed)."
+    record_needs_owner "$name: the app under test has no Accessibility grant. Allow the localvoxtral-dev-signed localvoxtral in System Settings > Privacy & Security > Accessibility (Device Control and Data Access on macOS 27); toggle it off and on if it is listed."
     return
   fi
   if json_has "$reply" '"secureInputActive":true'; then
