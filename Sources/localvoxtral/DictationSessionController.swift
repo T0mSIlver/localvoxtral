@@ -411,6 +411,10 @@ final class DictationSessionController {
     /// Gives up on a microphone prompt nobody answers.
     @ObservationIgnored
     var microphonePermissionTimeoutTask: Task<Void, Never>?
+    /// The start attempt the open microphone prompt belongs to. The timeout
+    /// clears it, so an answer that lands later starts nothing.
+    @ObservationIgnored
+    var microphonePermissionAttemptID: UUID?
     @ObservationIgnored
     var sessionOutputMode: DictationOutputMode?
     /// Resolves "go to <name>" (#723). Nil until the app installs it, and
@@ -838,9 +842,18 @@ final class DictationSessionController {
             isAwaitingMicrophonePermission = true
             statusText = StatusStrings.requestingMicrophonePermission
             debugLog("microphone permission prompt requested")
+            let attemptID = UUID()
+            microphonePermissionAttemptID = attemptID
             requestMicrophoneAccessForSessionStart { [weak self] granted in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
+                    // The prompt timed out (or a newer one replaced it): the
+                    // user has moved on, and a push-to-talk key is long released.
+                    guard self.microphonePermissionAttemptID == attemptID else {
+                        self.debugLog("microphone permission result granted=\(granted) for an expired attempt; ignored")
+                        return
+                    }
+                    self.microphonePermissionAttemptID = nil
                     self.isAwaitingMicrophonePermission = false
                     self.debugLog("microphone permission result granted=\(granted)")
                     guard granted else {
@@ -877,6 +890,7 @@ final class DictationSessionController {
                 // it must not clear the newer prompt's flag.
                 guard let self, !Task.isCancelled, self.isAwaitingMicrophonePermission else { return }
                 self.isAwaitingMicrophonePermission = false
+                self.microphonePermissionAttemptID = nil
                 self.statusText = StatusStrings.ready
                 if self.shortcuts.shouldCancelPushToTalkStartAfterConnect() {
                     self.shortcuts.clearPushToTalkShortcutSessionAttempt()
