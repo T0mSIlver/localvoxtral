@@ -455,7 +455,9 @@ final class LiveGoToSessionWiringTests: XCTestCase {
             repositoryRoot: { _ in .unknown },
             focuser: focuser,
             sleep: ManualSessionClock().sleep,
-            nicknames: nicknames
+            nicknames: nicknames,
+            // Each session's agent (claudePID 2) owns its terminal (#1249).
+            ttyForegroundPIDs: { _ in [2] }
         )
         viewModel.session.sessionOutputMode = .liveAutoPaste
         viewModel.isDictating = true
