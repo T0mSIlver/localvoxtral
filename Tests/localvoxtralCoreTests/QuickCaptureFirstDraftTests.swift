@@ -423,6 +423,41 @@ final class QuickCaptureTwoStageInboxTests: XCTestCase {
         XCTAssertFalse(item.canComment)
     }
 
+    /// A redraft's first draft that lands after "File issues here" changed
+    /// links no issue it found among the fork's.
+    func testARedraftFromBeforeAFilingChangeLinksNoIssueOfTheOldRepository() async throws {
+        let facts = GitHubRepositoryFacts(description: nil, topics: [], parent: "them/reach")
+        func reach(filingIn issueRepository: String) -> [QuickCaptureProject] {
+            [QuickCaptureProject(
+                key: "/w/reach", name: "reach", summary: nil, terms: [], userLine: nil,
+                repository: "me/reach", issueRepository: issueRepository, github: facts)]
+        }
+        let extending = QuickCaptureDraft.Draft(
+            kind: .issue, title: Self.first.title, body: Self.first.body, relation: .extends, issue: 7)
+        let first = FakeQuickCaptureFirstDrafter([.draft(extending, usage: nil)], gated: true)
+        let runner = FakeQuickCaptureCheckRunner([.failed(.agentError("down"))])
+        let list = Mutex(reach(filingIn: "me/reach"))
+        let model = model(runner: runner, first: first, projects: { list.withLock { $0 } })
+        let drafting = model.capture(text: "show drafting progress", historyRecordID: nil)
+        await first.gate!.waitForSleepers(1)
+        first.gate!.wakeAll()
+        await drafting.value
+        let id = try XCTUnwrap(model.items.first?.id)
+        XCTAssertEqual(model.items.first?.relatedIssue, 7)
+
+        let redrafting = try XCTUnwrap(model.redraft(id, change: "only the popover"))
+        await first.gate!.waitForSleepers(1)
+        list.withLock { $0 = reach(filingIn: "them/reach") }
+        model.adoptProjects()
+        first.gate!.wakeAll()
+        await redrafting.value
+
+        let item = try XCTUnwrap(model.items.first)
+        XCTAssertEqual(item.repository, "them/reach")
+        XCTAssertNil(item.relatedIssue)
+        XCTAssertFalse(item.canComment)
+    }
+
     func testEditsMadeDuringTheCheckAreKept() async throws {
         let runner = FakeQuickCaptureCheckRunner([.draft(Self.checked, usage: nil)], gated: true)
         let model = model(runner: runner, first: FakeQuickCaptureFirstDrafter([.draft(Self.first, usage: nil)]))

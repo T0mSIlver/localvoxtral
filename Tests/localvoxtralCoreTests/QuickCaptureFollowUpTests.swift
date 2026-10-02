@@ -27,11 +27,12 @@ final class QuickCaptureFollowUpTests: XCTestCase {
     }
 
     private func model(
-        classifier: ScriptedQuickCaptureClassifier, runner: any QuickCaptureDraftRunning
+        classifier: ScriptedQuickCaptureClassifier, runner: any QuickCaptureDraftRunning,
+        projects: (@MainActor () -> [QuickCaptureProject])? = nil
     ) -> QuickCaptureInboxModel {
         let model = QuickCaptureFixture.model(
-            fileURL: fileURL, answer: [:], github: github, runner: runner, classifier: classifier,
-            now: { [unowned self] in self.clock }
+            fileURL: fileURL, answer: [:], github: github, runner: runner, currentProjects: projects,
+            classifier: classifier, now: { [unowned self] in self.clock }
         )
         model.onStatus = { [weak self] in self?.statuses.append($0) }
         model.onRouted = { [weak self] _, destination in self?.routed.append(destination) }
@@ -220,6 +221,38 @@ final class QuickCaptureFollowUpTests: XCTestCase {
             classifier.calls.withLock { $0.last?.compactMap(\.captureID) }, [], "a split capture is never joined back"
         )
         XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.map(\.id), [followUp, id])
+    }
+
+    /// Split after "File issues here" changed: the draft it gives back
+    /// links no issue of the repository the capture no longer files in.
+    func testSplitAfterAFilingChangeGivesBackNoIssueOfTheOldRepository() async throws {
+        let facts = GitHubRepositoryFacts(description: nil, topics: [], parent: "them/reach")
+        func reach(filingIn issueRepository: String) -> [QuickCaptureProject] {
+            [QuickCaptureProject(
+                key: "/w/reach", name: "reach", summary: nil, terms: [], userLine: nil,
+                repository: "me/reach", issueRepository: issueRepository, github: facts)]
+        }
+        let list = Mutex(reach(filingIn: "me/reach"))
+        let runner = FakeQuickCaptureCheckRunner([
+            .draft(.init(title: "Dark mode", body: "b", relation: .extends, issue: 7), usage: nil),
+        ])
+        let model = model(
+            classifier: ScriptedQuickCaptureClassifier([["reach": 0.95], ["inbox": 0.9]]), runner: runner,
+            projects: { list.withLock { $0 } })
+        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        let followUp = UUID()
+        await model.capture(text: "Also a new logo", historyRecordID: nil, id: followUp).value
+
+        list.withLock { $0 = reach(filingIn: "them/reach") }
+        model.adoptProjects()
+        await model.split(followUp, from: id)?.value
+
+        let item = try XCTUnwrap(model.items.first { $0.id == id })
+        XCTAssertEqual(item.title, "Dark mode", "the draft from before the join")
+        XCTAssertEqual(item.repository, "them/reach")
+        XCTAssertNil(item.relatedIssue)
+        XCTAssertFalse(item.canComment)
     }
 
     func testSplittingAnEarlierFollowUpRedraftsFromTheRemainingWords() async throws {

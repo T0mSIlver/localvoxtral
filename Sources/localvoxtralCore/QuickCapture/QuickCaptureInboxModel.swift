@@ -389,6 +389,9 @@ package final class QuickCaptureInboxModel {
                       item.state == .drafting, item.projectKey == key
                 else { return false }
                 self.mutate { $0.applyFirstDraft(outcome, repository: repository, checking: !agents.isEmpty, to: id) }
+                // The repository was read when the run started: the
+                // capture files where the project files now.
+                self.adoptProjects()
                 guard let now = self.inbox.items.first(where: { $0.id == id }) else { return false }
                 if case .draft = outcome { shown.withLock { $0 = (now.title, now.body) } }
                 return now.state == .drafting || now.codeCheck?.state == .checking
@@ -415,6 +418,7 @@ package final class QuickCaptureInboxModel {
             return
         }
         mutate { $0.applyDraft(final, repository: repository, firstDraft: shown.withLock { $0 }, to: id) }
+        adoptProjects()
         if let after = inbox.items.first(where: { $0.id == id }), after.codeCheck?.keptEdits == true {
             Log.backends.notice("Quick capture draft: checked, the user's edits kept")
         }
