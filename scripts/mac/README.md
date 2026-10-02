@@ -55,18 +55,20 @@ their own socket and their own `XDG_CONFIG_HOME` / `XDG_STATE_HOME` under the
 run's temp dir, so your `~/.config/herdr/config.toml`, `session.json`, machine
 catalog and running panes are never touched.
 
-What the lane borrows while it runs, and gives back on teardown: three
-delimited blocks in the running account's `~/.ssh/config`. It refuses to start
-if your ssh config already defines one of its aliases (`lvx-herdr-fixture*`).
+Its ssh host aliases live in the run's own ssh config, which the app and the
+fixture's herdr get with `-F` (#1029), so your `~/.ssh/config` is never read
+or written in hermetic mode. A run against a destination includes it, read
+only.
 
-### If a run is killed before it gives them back
+### If a run is killed before it tears down
 
-Nothing runs on SIGKILL, so the pristine original does not live in the run's
-temp dir — they live at a stable path, `~/.localvoxtral-herdr-fixture-hold/`,
-with a manifest naming the run that took them. The next `up` restores a dead
-run's hold before doing anything else and refuses while a live run owns it, so
-a killed run heals itself and two runs never fight over one account. To do it
-by hand:
+Nothing runs on SIGKILL, so a run's teardown state does not live in the run's
+temp dir: it lives at a stable path, `~/.localvoxtral-herdr-fixture-hold/`,
+with a manifest naming the run. The next `up` releases a dead run's hold
+before doing anything else and refuses while a live run owns it, so a killed
+run heals itself and two runs never fight over one account. A hold left by a
+fixture from before #1029, which appended blocks to `~/.ssh/config`, gets
+those blocks stripped on release. To do it by hand:
 
 ```bash
 ./scripts/herdr-integration-fixture.sh status    # is anything held, and by whom

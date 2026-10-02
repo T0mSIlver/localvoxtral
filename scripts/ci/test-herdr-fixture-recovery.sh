@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # Regression test for the herdr fixture's crash recovery.
 #
-# The fixture borrows one of the account's real files (delimited blocks in
-# `~/.ssh/config`); its herdr runs on its own config and state homes, so the
-# account's herdr `config.toml` and `session.json` must come out of every
-# path below byte-identical. `down` gives the ssh config back — but a run can
-# be SIGKILLed, and nothing runs on SIGKILL. The pristine copy therefore lives
-# at a stable path, and the next `up` must restore it rather than back up the
-# ALREADY-MODIFIED file over it, which is the step that would destroy the
-# original permanently. A hold taken by a fixture from before #323 still
-# carries herdr copies, and recovering one must put those back too.
+# The fixture keeps its ssh aliases in a config of its own and its herdr on
+# its own config and state homes, so the account's `~/.ssh` and herdr files
+# must come out of every path below byte-identical (#1029). A fixture from
+# before #1029 appended delimited blocks to `~/.ssh/config` and held a
+# pristine copy at a stable path; a run of that fixture killed by SIGKILL
+# leaves such a hold, and the current script must still strip those blocks
+# rather than lose the original. A hold taken before #323 also carries herdr
+# copies, and recovering one must put those back too.
 #
 # This drives that logic directly against a fake HOME, so it runs anywhere —
 # no herdr, no ssh, no live server. Same sourced-mode pattern as
@@ -63,12 +62,33 @@ setup_home() {
   LOCALVOXTRAL_HERDR_FIXTURE_SOURCE_ONLY=1 source "$FIXTURE"
 }
 
-# Everything `up` does to the account's files, without herdr or ssh: take the
-# hold, then modify. A run "killed" after this leaves exactly this state.
+# What a pre-#1029 `up` did to the account's ssh config: hold a copy of it,
+# then append its blocks, terminating an unterminated last line first.
+legacy_hold() {
+  hold_account_files "$1"
+  if [[ -f "$SSH_CONFIG_FILE" ]]; then
+    cp "$SSH_CONFIG_FILE" "$HOLD_DIR/ssh-config.pristine"
+  else
+    : > "$HOLD_DIR/ssh-config.created"
+  fi
+}
+
+legacy_append() {
+  mkdir -p "$(dirname "$SSH_CONFIG_FILE")"
+  if [[ -f "$SSH_CONFIG_FILE" && -n "$(tail -c 1 "$SSH_CONFIG_FILE")" ]]; then
+    printf '\n' >> "$SSH_CONFIG_FILE"
+    : > "$HOLD_DIR/ssh-config.newline-added"
+  fi
+  cat >> "$SSH_CONFIG_FILE"
+}
+
+# Everything a pre-#1029 `up` did to the account's files, without herdr or
+# ssh: take the hold, then modify. A run "killed" after this leaves exactly
+# this state.
 simulate_up_then_kill() {
   local dir="$1"
   mkdir -p "$dir"
-  hold_account_files "$dir"
+  legacy_hold "$dir"
   {
     printf '%s\n' "$SSH_CONFIG_BEGIN"
     printf 'Host lvx-herdr-fixture\n  HostName 127.0.0.1\n  Port 24601\n'
@@ -99,7 +119,45 @@ $(cat "$SSH_CONFIG_FILE" 2>&1)"
   [[ ! -e "$HOLD_DIR" ]] || fail "$what: the hold directory survived the restore"
 }
 
-# --- 1. A killed run is detected and restored by the next `up` -------------
+# --- 0. A current run leaves the account's ssh config alone ---------------
+# The run's aliases go in its own file, which the wrapper herdr runs hands to
+# ssh. Holding and releasing never opens ~/.ssh: an unreadable config and a
+# 755 folder come out exactly as they went in.
+
+setup_home
+chmod 755 "$HOME/.ssh"
+chmod 000 "$HOME/.ssh/config"
+RUN_DIR="$TMP_DIR/lvx-herdr-fixture-own-config"
+mkdir -p "$RUN_DIR"
+( hold_account_files "$RUN_DIR" ) 2>/dev/null \
+  || fail "holding a run failed on an unreadable ~/.ssh/config"
+printf 'Host lvx-herdr-fixture\n  HostName 127.0.0.1\n  Port 24601\n' | append_fixture_ssh_config "$RUN_DIR"
+write_fixture_ssh_wrapper "$RUN_DIR"
+for held in "$HOLD_DIR"/ssh-config.*; do
+  [[ -e "$held" ]] && fail "the hold took a copy of the account's ssh config: $held"
+done
+[[ "$(stat -c %a "$HOME/.ssh" 2>/dev/null || stat -f %Lp "$HOME/.ssh")" == 755 ]] \
+  || fail "holding changed the mode of the account's ~/.ssh"
+release_account_files 2>/dev/null || fail "releasing a current hold failed on an unreadable ~/.ssh/config"
+chmod 600 "$HOME/.ssh/config"
+assert_account_is_pristine "after a current run"
+port="$("$RUN_DIR/bin/ssh" -G -- lvx-herdr-fixture 2>/dev/null | awk '$1 == "port" { print $2 }')"
+[[ "$port" == 24601 ]] || fail "the wrapper did not resolve the alias through the run's config (port '$port')"
+printf '%s\n' /bin/true > "$RUN_DIR/herdr.bin"
+[[ "$(load_context "$RUN_DIR"; command -v ssh)" == "$RUN_DIR/bin/ssh" ]] \
+  || fail "herdr started by the fixture would not find the run's ssh wrapper first"
+
+export HOME="$TMP_DIR/home-no-ssh"
+rm -rf "$HOME"
+mkdir -p "$HOME"
+# shellcheck source=/dev/null
+LOCALVOXTRAL_HERDR_FIXTURE_SOURCE_ONLY=1 source "$FIXTURE"
+hold_account_files "$TMP_DIR/lvx-herdr-fixture-no-ssh" 2>/dev/null
+release_account_files 2>/dev/null
+[[ ! -e "$HOME/.ssh" ]] || fail "a current run created ~/.ssh for an account that had none"
+pass "a current run keeps its aliases in its own config and never opens ~/.ssh"
+
+# --- 1. A killed pre-#1029 run is detected and restored by the next `up` ---
 
 setup_home
 simulate_up_then_kill "$TMP_DIR/lvx-herdr-fixture-run1"
@@ -192,8 +250,8 @@ mkdir -p "$HOME"
 # shellcheck source=/dev/null
 LOCALVOXTRAL_HERDR_FIXTURE_SOURCE_ONLY=1 source "$FIXTURE"
 mkdir -p "$TMP_DIR/lvx-herdr-fixture-empty"
-hold_account_files "$TMP_DIR/lvx-herdr-fixture-empty" 2>/dev/null
-printf '%s\nHost x\n%s\n' "$SSH_CONFIG_BEGIN" "$SSH_CONFIG_END" >> "$SSH_CONFIG_FILE"
+legacy_hold "$TMP_DIR/lvx-herdr-fixture-empty" 2>/dev/null
+printf '%s\nHost x\n%s\n' "$SSH_CONFIG_BEGIN" "$SSH_CONFIG_END" | legacy_append
 release_account_files 2>/dev/null
 [[ ! -e "$HOME/.config/herdr" ]] \
   || fail "releasing a current hold created herdr files the account never had"
@@ -327,24 +385,22 @@ setup_home
 printf 'Host prod\n  HostName prod.example' > "$HOME/.ssh/config"
 cp "$HOME/.ssh/config" "$GOLDEN/ssh_config"
 mkdir -p "$TMP_DIR/lvx-herdr-fixture-noeol"
-hold_account_files "$TMP_DIR/lvx-herdr-fixture-noeol" 2>/dev/null
-printf '%s\nHost lvx-herdr-fixture\n%s\n' "$SSH_CONFIG_BEGIN" "$SSH_CONFIG_END" | append_ssh_config_block
-printf '%s\nHost lvx-herdr-fixture-fed\n%s\n' "$SSH_CONFIG_FED_BEGIN" "$SSH_CONFIG_FED_END" | append_ssh_config_block
-grep -qx "$SSH_CONFIG_BEGIN" "$SSH_CONFIG_FILE" \
-  || fail "the begin marker was glued onto the account's unterminated last line"
+legacy_hold "$TMP_DIR/lvx-herdr-fixture-noeol" 2>/dev/null
+printf '%s\nHost lvx-herdr-fixture\n%s\n' "$SSH_CONFIG_BEGIN" "$SSH_CONFIG_END" | legacy_append
+printf '%s\nHost lvx-herdr-fixture-fed\n%s\n' "$SSH_CONFIG_FED_BEGIN" "$SSH_CONFIG_FED_END" | legacy_append
 release_account_files 2>/dev/null
 assert_account_is_pristine "after a run on a config without a final newline"
 
 # The account adds an unterminated line after the fixture's blocks: it stays.
 setup_home
 mkdir -p "$TMP_DIR/lvx-herdr-fixture-noeol2"
-hold_account_files "$TMP_DIR/lvx-herdr-fixture-noeol2" 2>/dev/null
-printf '%s\nHost lvx-herdr-fixture\n%s\n' "$SSH_CONFIG_BEGIN" "$SSH_CONFIG_END" | append_ssh_config_block
+legacy_hold "$TMP_DIR/lvx-herdr-fixture-noeol2" 2>/dev/null
+printf '%s\nHost lvx-herdr-fixture\n%s\n' "$SSH_CONFIG_BEGIN" "$SSH_CONFIG_END" | legacy_append
 printf 'Host later\n  HostName later.example' >> "$SSH_CONFIG_FILE"
 release_account_files 2>/dev/null
 printf '%sHost later\n  HostName later.example' "$PRISTINE_SSH" > "$GOLDEN/ssh_config"
 assert_account_is_pristine "after the account added an unterminated line mid-run"
-pass "a missing final newline survives the fixture's append and strip"
+pass "a missing final newline survives a pre-#1029 run's append and the strip"
 
 # --- 6h. A symlinked config stays a symlink --------------------------------
 
@@ -353,10 +409,8 @@ mkdir -p "$HOME/dotfiles"
 /bin/mv "$HOME/.ssh/config" "$HOME/dotfiles/ssh_config"
 ln -s ../dotfiles/ssh_config "$HOME/.ssh/config"
 mkdir -p "$TMP_DIR/lvx-herdr-fixture-link"
-hold_account_files "$TMP_DIR/lvx-herdr-fixture-link" 2>/dev/null
-printf '%s\nHost lvx-herdr-fixture\n%s\n' "$SSH_CONFIG_BEGIN" "$SSH_CONFIG_END" | append_ssh_config_block
-[[ -L "$HOME/.ssh/config" ]] || fail "the append replaced the symlinked config with a file"
-grep -qx "$SSH_CONFIG_BEGIN" "$HOME/dotfiles/ssh_config" || fail "the append did not reach the link's target"
+legacy_hold "$TMP_DIR/lvx-herdr-fixture-link" 2>/dev/null
+printf '%s\nHost lvx-herdr-fixture\n%s\n' "$SSH_CONFIG_BEGIN" "$SSH_CONFIG_END" | legacy_append
 release_account_files 2>/dev/null
 [[ -L "$HOME/.ssh/config" ]] || fail "the restore replaced the symlinked config with a file"
 assert_account_is_pristine "after a run on a symlinked config"
@@ -377,8 +431,8 @@ strip_failure_keeps_config() {
   # shellcheck source=/dev/null
   LOCALVOXTRAL_HERDR_FIXTURE_SOURCE_ONLY=1 source "$FIXTURE"
   mkdir -p "$TMP_DIR/lvx-herdr-fixture-stripfail"
-  hold_account_files "$TMP_DIR/lvx-herdr-fixture-stripfail" 2>/dev/null
-  printf '%s\nHost lvx-herdr-fixture\n%s\n' "$SSH_CONFIG_BEGIN" "$SSH_CONFIG_END" | append_ssh_config_block
+  legacy_hold "$TMP_DIR/lvx-herdr-fixture-stripfail" 2>/dev/null
+  printf '%s\nHost lvx-herdr-fixture\n%s\n' "$SSH_CONFIG_BEGIN" "$SSH_CONFIG_END" | legacy_append
   printf 'Host added-during-the-run\n  HostName later.example\n' >> "$SSH_CONFIG_FILE"
   cp "$SSH_CONFIG_FILE" "$TMP_DIR/stripfail-before"
   sed -e 's/^pid=.*/pid=999999/' "$HOLD_MANIFEST" > "$HOLD_MANIFEST.tmp"

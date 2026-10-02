@@ -296,8 +296,9 @@ against the Mac fixture):
 - A starting client honors the selection file; a RUNNING client never re-reads
   it (only the profile list is polled, every 1 s) — so the fixture writes the
   file before starting a surface, mirroring what a UI switch persists.
-- `machine add` needs the alias in the REAL ssh config (the federated bridges
-  spawn plain `ssh`), daemon-starts the remote server itself (a
+- `machine add` needs the alias in the config plain `ssh` reads (the
+  federated bridges spawn it; the fixture puts a `-F` wrapper first on their
+  PATH, #1029), daemon-starts the remote server itself (a
   directly-started server is refused as not ready), and must run with stdin
   closed (an open stdin parked it past 120 s on an approval prompt). The lane
   federates the DEFAULT remote session at an explicit short socket: a named

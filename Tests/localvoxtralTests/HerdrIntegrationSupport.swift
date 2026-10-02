@@ -1,6 +1,7 @@
 import Foundation
 import Synchronization
 import XCTest
+import localvoxtralCore
 
 #if canImport(Darwin)
 
@@ -422,6 +423,10 @@ final class HerdrLiveFixture {
         let paneID: String
         let primarySurfaceLog: String
         let provisionedSSH: Bool
+        /// The run's own ssh config. The lane hands it to the app's ssh as
+        /// `LOCALVOXTRAL_SSH_CONFIG`, so nothing reads or writes the
+        /// account's `~/.ssh/config` (#1029).
+        let sshConfig: String
         let workdir: String
     }
 
@@ -488,6 +493,10 @@ final class HerdrLiveFixture {
                 "`up` printed no fixture description\n\(result.standardOutput)\(result.standardError)"
             )
         }
+        // Every live constructor the lane uses reads it per spawn, or at
+        // init after this line.
+        setenv(SSHConfigOverride.environmentKey, info.sshConfig, 1)
+        print("[herdr-fixture] ssh.config=\(info.sshConfig)")
         return HerdrLiveFixture(
             info: info,
             scriptURL: scriptURL,
@@ -505,10 +514,12 @@ final class HerdrLiveFixture {
             arguments: [scriptURL.path, "down", info.workdir],
             currentDirectory: repoRoot
         )
-        // The account's own herdr after the run, next to the `before` line in
-        // environment.txt: the evidence the lane left it alone.
+        unsetenv(SSHConfigOverride.environmentKey)
+        // The account's own herdr and ssh config after the run, next to the
+        // `before` lines in environment.txt: the evidence the lane left them
+        // alone.
         for line in (result?.standardError ?? "").split(separator: "\n")
-        where line.contains("herdr.account.after") {
+        where line.contains("herdr.account.after") || line.contains("ssh.account.after") {
             print(line)
         }
     }
