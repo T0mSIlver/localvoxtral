@@ -601,6 +601,17 @@ final class DictationSessionController {
             }
         } else {
             debugLog("network lost")
+            // A loopback socket, such as the bundled speech server's, does not
+            // ride the network path: stopping would only drop the final commit
+            // that flushes the server's tail (#1238). Remote sockets can sit
+            // half-dead after the path goes, so those sessions still stop.
+            if (isDictating || isFinalizingStop || isConnectingRealtimeSession),
+               let endpoint = realtimeEndpointForNetworkLoss,
+               PolishContextClipboardReader.isLoopbackEndpoint(endpoint)
+            {
+                Log.backends.info("network lost; loopback realtime session kept")
+                return
+            }
             if isConnectingRealtimeSession {
                 abortConnectingSession()
                 handleConnectFailure(reason: .networkLost)
@@ -617,6 +628,14 @@ final class DictationSessionController {
                 statusText = StatusStrings.noNetworkConnection
             }
         }
+    }
+
+    /// The endpoint the running or starting session dials: the latched
+    /// connect snapshot once the socket was asked to open, else what Settings
+    /// resolves to while the start is still preparing.
+    private var realtimeEndpointForNetworkLoss: URL? {
+        sessionRealtimeConfiguration?.endpoint
+            ?? settings.resolvedWebSocketURL(for: sessionProvider ?? settings.realtimeProvider)
     }
 
     // MARK: - Public API
