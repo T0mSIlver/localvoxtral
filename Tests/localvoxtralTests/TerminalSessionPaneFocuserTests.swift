@@ -59,6 +59,16 @@ final class TerminalSessionPaneFocuserTests: XCTestCase {
         XCTAssertEqual(outcome, .unverified(bundleID: Self.ghostty))
     }
 
+    /// What the herdr focuser re-reads after herdr's awaits: no tty once
+    /// another app came forward during the read.
+    func testTheFrontmostTTYIsNilOnceAnotherAppCameForward() async {
+        let fake = FakeTerminals(running: [Self.ghostty], holding: Self.ghostty, switchesAppDuringReadBack: true)
+        _ = await fake.focuser.focusPane(of: session(termProgram: "ghostty"))
+
+        let tty = await fake.focuser.frontmostTTY(bundleID: Self.ghostty)
+        XCTAssertNil(tty)
+    }
+
     func testATerminalThatFailsOrLacksThePaneHandsOverToTheNext() async {
         let fake = FakeTerminals(
             running: [Self.ghostty, Self.iterm, Self.terminal],

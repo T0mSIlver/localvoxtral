@@ -815,8 +815,8 @@ there is not.
     tab, workspace or pane creation, no `agent.focus`, no machine switch.
     *Confirmed by reading back:* `.focused`, the only outcome that starts a
     dictation, needs herdr's `pane.current` to name that pane AND the
-    terminal's focused tty, read again after herdr answered (#1465), to be
-    the window raised; the answer to
+    terminal's focused tty, read again after herdr answered with the
+    terminal still frontmost (#1465), to be the window raised; the answer to
     `pane.focus` alone never is. *Window first* (#1033): `pane.focus` is sent
     only after the window reads back in front, so a window that does not
     come up leaves herdr's pane as it was, and a failure after the raise is

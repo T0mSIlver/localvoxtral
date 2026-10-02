@@ -136,11 +136,7 @@ final class TerminalSessionPaneFocuser: SessionPaneFocusing {
                 // frontmost app changed under it.
                 guard !Task.isCancelled else { return .paneNotFound }
                 let activated = activate(bundleID)
-                let readBack = await focusedTTY(bundleID)
-                // The read answers for the terminal's front window even when
-                // the user switched apps meanwhile; a dictation started then
-                // would go to that app.
-                let verified = readBack == tty && frontmostBundleID() == bundleID
+                let verified = await frontmostTTY(bundleID: bundleID) == tty
                 Log.claudeContext.info(
                     "go to session: \(bundleID, privacy: .public) selected the pane; activated=\(activated, privacy: .public) verified=\(verified, privacy: .public)"
                 )
@@ -151,6 +147,15 @@ final class TerminalSessionPaneFocuser: SessionPaneFocusing {
         }
         Log.claudeContext.info("go to session: no running terminal holds the session's tty")
         return .paneNotFound
+    }
+
+    /// The terminal's focused-pane tty, or nil when the terminal is not
+    /// frontmost once the read returns: the read answers for its front
+    /// window whatever app the user switched to meanwhile. The herdr
+    /// focuser checks its window through this after herdr's awaits.
+    func frontmostTTY(bundleID: String) async -> String? {
+        let tty = await focusedTTY(bundleID)
+        return frontmostBundleID() == bundleID ? tty : nil
     }
 
     func focusedPaneShows(_ session: ClaudeSessionSnapshot, bundleID: String) async -> Bool {
