@@ -34,7 +34,8 @@ export type Outcome = { ok: boolean; reason?: string; text?: string; usage?: Cha
 export const SHORTEST_LIFE_MS = 5000
 export const RESTART_DELAY_MS = 30000
 // A band nobody updated for this long belongs to a dictation whose end never
-// arrived (the app quit mid-dictation): it clears itself.
+// arrived (the app quit mid-dictation): it clears itself. The app sends an
+// unchanged band again every 10 s, so a pause or a long polish keeps it.
 export const BAND_STALE_MS = 30000
 
 /** The band a `state` message asks for; null clears it. */

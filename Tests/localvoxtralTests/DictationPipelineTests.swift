@@ -1213,6 +1213,35 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(phases.filter { $0 == .done }.count, 1)
     }
 
+    /// The band says the same thing for longer than the mod keeps a band it
+    /// has not heard about (30 s): the user paused, or a polish runs long.
+    /// The app sends it again in time, so the band goes only when the app
+    /// does.
+    func testAnUnchangedBandIsSentAgainBeforeTheModWouldClearIt() async throws {
+        let (pipeline, _, recorder) = try await modChannelPipeline(answers: [.fill])
+        let shown = BoundedWait()
+        pipeline.overlay.onRefresh = { call in
+            if call.displayText == Self.phrase { shown.resolve() }
+        }
+
+        await startAndSpeak(pipeline)
+        sendPartials(pipeline)
+        let shownWhileDictating = await shown.value(failAfter: 10)
+        XCTAssertTrue(shownWhileDictating)
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
+        let resent = BoundedWait()
+        recorder.onState = { resent.resolve() }
+        pipeline.clock.advance(by: 10)
+        let repeated = await resent.value(failAfter: 10)
+        recorder.onState = nil
+
+        XCTAssertTrue(repeated, "the unchanged band was sent again")
+        XCTAssertEqual(recorder.states.last?.phase, .listening)
+        XCTAssertEqual(recorder.states.last?.text, Self.phrase)
+        await stopAndFinalize(pipeline)
+        XCTAssertEqual(recorder.states.last?.phase, .done)
+    }
+
     /// The mod could not fill (a dialog held the keys): the words go in by
     /// keyboard, once.
     func testAFillTheModRefusesIsTypedInstead() async throws {
@@ -3779,8 +3808,17 @@ private final class FillRecorder: @unchecked Sendable {
     func append(_ text: String) { lock.withLock { recorded.append(text) } }
     var texts: [String] { lock.withLock { recorded } }
 
+    private var stateObserver: (@Sendable () -> Void)?
+
+    /// Runs after each band state arrives.
+    var onState: (@Sendable () -> Void)? {
+        get { lock.withLock { stateObserver } }
+        set { lock.withLock { stateObserver = newValue } }
+    }
+
     func appendState(_ phase: ClaudeModChannelWire.Phase?, _ text: String?) {
         lock.withLock { recordedStates.append((phase, text)) }
+        onState?()
     }
 
     var states: [(phase: ClaudeModChannelWire.Phase?, text: String?)] { lock.withLock { recordedStates } }
