@@ -83,6 +83,12 @@ the instructions file opencode reads. That file is
 does not exist. See
 [Telling the agent you dictate](../../docs/coding-agents.md#telling-the-agent-you-dictate).
 
+## Teach opencode to check dictation
+
+**Settings → opencode → Teach opencode to check dictation → Add** installs a
+skill in ~/.config/opencode/skills that names `localvoxtral doctor` and `localvoxtral logs`. See
+[Teaching the agent to check dictation](../../docs/coding-agents.md#teaching-the-agent-to-check-dictation).
+
 ## What it sends
 
 Everything stays on this machine, and there is no telemetry. The plugin

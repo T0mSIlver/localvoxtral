@@ -1266,6 +1266,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             dictationNoteService: { agent in
                 DictationNoteInstallService(agent: agent, fileSystem: LiveDictationNoteFileSystem())
             },
+            doctorSkillService: { agent in
+                AgentSkillInstallService(
+                    agent: agent,
+                    bundledSkill: { ClaudePluginAssets.doctorSkill() },
+                    fileSystem: LiveDictationNoteFileSystem()
+                )
+            },
             vibeRemoteFiles: { VibeRemoteHooksFiles.bundled() },
             codexService: { CodexPluginInstallService.live() },
             codexBundledVersion: CodexPluginAssets.bundledPluginVersion(),

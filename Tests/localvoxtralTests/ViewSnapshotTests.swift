@@ -728,6 +728,15 @@ final class ViewSnapshotTests: XCTestCase {
                 ]
                 : [:])
 
+        // Set up: Claude Code has the doctor skill.
+        let doctorSkill = Data("---\nname: localvoxtral-doctor\n---\n".utf8)
+        let doctorSkills = MemoryDictationNoteFileSystem()
+        if setUp {
+            doctorSkills.set(
+                ".claude/skills/localvoxtral-doctor/SKILL.md",
+                DictationNoteFile(exists: true, data: doctorSkill, permissions: 0o644))
+        }
+
         let herdrConfig = StubLocalHerdrConfigFileSystem(
             state: ClaudeLocalHerdrConfigState(
                 directoryExists: setUp,
@@ -761,6 +770,9 @@ final class ViewSnapshotTests: XCTestCase {
             opencodeService: { opencode },
             vibeService: { vibe },
             dictationNoteService: { DictationNoteInstallService(agent: $0, fileSystem: dictationNotes) },
+            doctorSkillService: {
+                AgentSkillInstallService(agent: $0, bundledSkill: { doctorSkill }, fileSystem: doctorSkills)
+            },
             herdrBinaryAvailable: { setUp },
             herdrPresenceReport: { setUp },
             herdrMachineCatalogReading: { herdrMachines },

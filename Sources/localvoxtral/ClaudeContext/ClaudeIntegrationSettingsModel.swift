@@ -109,6 +109,11 @@ public final class ClaudeIntegrationSettingsModel {
     /// success needs no line, the status says where the note is.
     public internal(set) var dictationNoteResults: [DictationNoteAgent: String] = [:]
     public internal(set) var isPerformingDictationNoteAction = false
+    /// Each agent's doctor skill, refreshed with the rest of the pane.
+    public internal(set) var doctorSkillStatuses: [DictationNoteAgent: AgentSkillInstallService.Status] = [:]
+    /// "Could not add." or "Could not remove." after a failed skill action.
+    public internal(set) var doctorSkillResults: [DictationNoteAgent: String] = [:]
+    public internal(set) var isPerformingDoctorSkillAction = false
     /// The Codex plugin's state from `codex plugin list`, refreshed with the
     /// rest of the pane.
     public internal(set) var codexStatus: CodexPluginInstallService.Status = .unknown
@@ -208,6 +213,9 @@ public final class ClaudeIntegrationSettingsModel {
     /// Adds and removes the dictation note in an agent's instructions file.
     /// Nil disables the row's actions.
     let dictationNoteService: @Sendable (DictationNoteAgent) -> DictationNoteInstallService?
+    /// Adds and removes the doctor skill in an agent's skills directory. Nil
+    /// disables the row's actions.
+    let doctorSkillService: @Sendable (DictationNoteAgent) -> AgentSkillInstallService?
     /// The files the setup run writes onto a host that has Vibe. Nil skips
     /// that step, which is what a test that injects nothing gets.
     let vibeRemoteFiles: @Sendable () -> VibeRemoteHooksFiles?
@@ -350,6 +358,7 @@ public final class ClaudeIntegrationSettingsModel {
         opencodeService: @escaping @Sendable () -> OpencodePluginInstallService? = { nil },
         vibeService: @escaping @Sendable () -> VibeHooksInstallService? = { nil },
         dictationNoteService: @escaping @Sendable (DictationNoteAgent) -> DictationNoteInstallService? = { _ in nil },
+        doctorSkillService: @escaping @Sendable (DictationNoteAgent) -> AgentSkillInstallService? = { _ in nil },
         vibeRemoteFiles: @escaping @Sendable () -> VibeRemoteHooksFiles? = { nil },
         codexService: @escaping @Sendable () -> CodexPluginInstallService? = { nil },
         codexBundledVersion: String? = nil,
@@ -379,6 +388,7 @@ public final class ClaudeIntegrationSettingsModel {
         self.opencodeService = opencodeService
         self.vibeService = vibeService
         self.dictationNoteService = dictationNoteService
+        self.doctorSkillService = doctorSkillService
         self.vibeRemoteFiles = vibeRemoteFiles
         self.codexService = codexService
         self.codexBundledVersion = codexBundledVersion

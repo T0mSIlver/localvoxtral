@@ -118,7 +118,7 @@ esac
 # its next hook. Written when the recorded version differs, and refreshed on
 # SessionStart and UserPromptSubmit so that a live session's record outlasts
 # the age-out below.
-PLUGIN_VERSION=1.35.0
+PLUGIN_VERSION=1.36.0
 VERSION_DIR="$STAMP_DIR/plugin-version"
 if [ -n "$STAMP_DIR" ] && [ -n "$SESSION_ID" ]; then
   if [ "$EVENT" = "SessionEnd" ]; then
@@ -302,7 +302,7 @@ fi
 # the app validates the shape and trusts nothing else about it.
 cat 2>/dev/null >"$WORK/header" <<EOF || fail_open
 Authorization: Bearer $TOKEN
-X-Lvx-Plugin-Version: 1.35.0
+X-Lvx-Plugin-Version: 1.36.0
 EOF
 
 # --- Allowlisted environment enrichment --------------------------------------

@@ -317,6 +317,30 @@ alone, and the row then says so. The app does not see `VIBE_HOME`,
 `CODEX_HOME` or `CLAUDE_CONFIG_DIR`. If you moved one of those directories,
 copy the note by hand.
 
+## Teaching the agent to check dictation
+
+Each agent's pane also has a **Teach … to check dictation** row. **Add**
+installs a skill named `localvoxtral-doctor` in that agent's skills
+directory. A skill is a file the agent loads only when a task needs it; until
+then, only its one-line description sits in the agent's context. This one
+names `localvoxtral doctor` and `localvoxtral logs` and says what each
+reports, so an agent asked why a dictation did not join runs them without
+being told.
+
+| Agent | Skill |
+|---|---|
+| Claude Code | `~/.claude/skills/localvoxtral-doctor/SKILL.md` |
+| opencode | `~/.config/opencode/skills/localvoxtral-doctor/SKILL.md` |
+| Mistral Vibe | `~/.vibe/skills/localvoxtral-doctor/SKILL.md` |
+| Codex | `~/.codex/skills/localvoxtral-doctor/SKILL.md` |
+
+opencode also loads Claude Code's skills, so with only Claude Code's row set
+up, opencode has the skill too. **Remove** deletes the file, and its
+directory unless you put another file there. A skill you edited, or one from
+an older version, reads as another version, with an **Update** button that
+replaces it. The remote Claude Code plugin ships the same skill, so a
+session on an enrolled host has it without this row.
+
 ## The localvoxtral command
 
 A coding agent can read your dictation history, your terms and your quick

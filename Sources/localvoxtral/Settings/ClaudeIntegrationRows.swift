@@ -279,6 +279,39 @@ struct DictationNoteRow: View {
     }
 }
 
+/// Add or remove the doctor skill in one agent's skills directory, with the
+/// same buttons as the dictation note.
+struct DoctorSkillRow: View {
+    @Bindable var model: ClaudeIntegrationSettingsModel
+    let agent: DictationNoteAgent
+
+    var body: some View {
+        SettingsFieldRow(
+            title: "Teach \(agent.displayName) to check dictation",
+            status: model.doctorSkillSentence(for: agent),
+            statusAccessibilityIdentifier: "integrations.\(agent.rawValue).doctorSkill.status"
+        ) {
+            HStack(spacing: 8) {
+                let status = model.doctorSkillStatus(for: agent)
+                if let title = DictationNoteInstallService.addButtonTitle(for: status) {
+                    Button(title) { Task { await model.addDoctorSkill(for: agent) } }
+                        .disabled(model.isPerformingDoctorSkillAction)
+                        .accessibilityIdentifier("integrations.\(agent.rawValue).doctorSkill.add")
+                }
+                if DictationNoteInstallService.offersRemove(for: status) {
+                    Button("Remove") { Task { await model.removeDoctorSkill(for: agent) } }
+                        .disabled(model.isPerformingDoctorSkillAction)
+                        .accessibilityIdentifier("integrations.\(agent.rawValue).doctorSkill.remove")
+                }
+                if model.isPerformingDoctorSkillAction {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            .controlSize(.small)
+        }
+    }
+}
+
 /// The cmux automation-socket password, stored in the Keychain.
 ///
 /// A write-only field on purpose: the stored secret is never read back into the

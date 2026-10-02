@@ -15,6 +15,7 @@ extension ClaudeIntegrationSettingsModel {
         refreshOpencodeStatus()
         refreshVibeStatus()
         refreshDictationNoteStatuses()
+        refreshDoctorSkillStatuses()
         await refreshCodexStatus()
         isHerdrDetected = herdrBinaryAvailable() || herdrPresenceReport()
         hasEnabledHerdrMachine = hasEnabledHerdrMachineReport()
