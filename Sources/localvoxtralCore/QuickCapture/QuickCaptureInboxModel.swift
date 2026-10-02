@@ -603,8 +603,9 @@ package final class QuickCaptureInboxModel {
     /// it as claimed. Nil when another running copy filed it, or changed it
     /// so it no longer passes `eligible`, since this copy last read the file
     /// (#990): what File or Comment sends is the claimed item, never this
-    /// copy's older one.
-    private func claim(_ id: UUID, when eligible: (QuickCaptureItem) -> Bool) -> QuickCaptureItem? {
+    /// copy's older one. Run again on another copy's write after a failed
+    /// save, the change checks `eligible` again before it claims.
+    private func claim(_ id: UUID, when eligible: @escaping (QuickCaptureItem) -> Bool) -> QuickCaptureItem? {
         var claimed: QuickCaptureItem?
         mutate { inbox in
             inbox.update(id) { item in
