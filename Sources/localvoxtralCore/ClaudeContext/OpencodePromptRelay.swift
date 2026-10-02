@@ -108,7 +108,7 @@ package struct OpencodePromptRelayClient: Sendable {
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.timeoutIntervalForRequest = Self.timeout
         configuration.timeoutIntervalForResource = Self.timeout
-        session = URLSession(configuration: configuration)
+        session = SameOriginHTTP.session(configuration: configuration)
     }
 
     package func post(_ call: AgentPromptCall, to relay: OpencodePromptRelay) async -> OpencodeRelayAnswer {

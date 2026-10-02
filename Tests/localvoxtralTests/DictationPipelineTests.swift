@@ -407,11 +407,9 @@ final class DictationPipelineTests: XCTestCase {
         _ body: String, file: StaticString = #filePath, line: UInt = #line
     ) async throws {
         StubHTTPProtocol.reply.withLock { $0 = .http(200, body) }
-        URLProtocol.registerClass(StubHTTPProtocol.self)
-        defer { URLProtocol.unregisterClass(StubHTTPProtocol.self) }
         let pipeline = try await makePipeline(
             outputMode: .overlayBuffer,
-            polish: LLMPolishingService(),
+            polish: LLMPolishingService(session: StubHTTPProtocol.session()),
             polishEndpoint: "http://\(StubHTTPProtocol.host)/v1/chat/completions",
             earlyPolish: false
         )
@@ -437,11 +435,9 @@ final class DictationPipelineTests: XCTestCase {
         StubHTTPProtocol.reply.withLock {
             $0 = .http(200, #"{"choices":[{"index":0,"message":{"role":"assistant","content":"Hello from"},"finish_reason":"length"}]}"#)
         }
-        URLProtocol.registerClass(StubHTTPProtocol.self)
-        addTeardownBlock { URLProtocol.unregisterClass(StubHTTPProtocol.self) }
         let endpoint = "https://\(StubHTTPProtocol.host)/v1/chat/completions"
         let pipeline = try await makePipeline(
-            outputMode: .overlayBuffer, polish: LLMPolishingService(), polishEndpoint: endpoint, earlyPolish: false)
+            outputMode: .overlayBuffer, polish: LLMPolishingService(session: StubHTTPProtocol.session()), polishEndpoint: endpoint, earlyPolish: false)
 
         await startAndSpeak(pipeline)
         let notice = "The polish reached the model's output limit, so the transcript was not polished."
