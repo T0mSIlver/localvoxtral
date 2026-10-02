@@ -1529,6 +1529,70 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         XCTAssertNotNil(savedRecord?.polishContextSummary)
     }
 
+    /// Consent withdrawn while the stop is still gathering — trust in the
+    /// remote endpoint revoked, or clipboard context switched off — reaches
+    /// the request: the clipboard read at stop is neither attached nor used to
+    /// pre-apply its spellings. The repo-vocabulary seam stands in for the
+    /// up-to-3 s index the user can toggle Settings during.
+    func testConsentWithdrawnDuringGatherKeepsTheClipboardOutOfTheRequest() async throws {
+        let withdrawals: [(label: String, withdraw: @MainActor (SettingsStore) -> Void)] = [
+            ("trust revoked", { $0.polishContextTrustedEndpointEnabled = false }),
+            ("clipboard context off", { $0.polishClipboardContextEnabled = false }),
+        ]
+        for withdrawal in withdrawals {
+            let settings = makeSettings(outputMode: .overlayBuffer)
+            settings.llmPolishingEnabled = true
+            settings.agentPolishProfileEnabled = false
+            settings.polishingBackendMode = .externalURL
+            settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
+            settings.polishContextTrustedEndpointEnabled = true
+            settings.polishClipboardContextEnabled = true
+            settings.repoVocabularyEnabled = true
+
+            let template = LLMPromptTemplates(
+                systemContent: "system",
+                userContent: "Clean this up.\n{{replacement_dictionary}}\nWorking text:\n{{input_text}}"
+            )
+            let service = FakePolishingService()
+            let viewModel = DictationViewModel(
+                settings: settings,
+                overlayBufferCoordinator: MockOverlayCoordinator(),
+                startRuntimeServices: false
+            )
+            viewModel.appConfigStore = MockAppConfigStore(
+                promptTemplates: template,
+                agentPromptTemplates: template
+            )
+            viewModel.llmPolishingService = service
+            viewModel.stubCommitTarget { "com.acme.notes" }
+            let pasteboard = PasteboardStub(string: "UserSessionManager.swift ZebraSentinel42")
+            viewModel.dependencies.pasteboardReader = { pasteboard }
+            var gathered = false
+            viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding { _ in
+                gathered = true
+                withdrawal.withdraw(settings)
+                return nil
+            }
+            retainForTestProcessLifetime(viewModel)
+
+            viewModel.session.sessionOutputMode = .overlayBuffer
+            viewModel.isFinalizingStop = true
+            viewModel.transcript.currentDictationEventText = "look at usersessionmanager.swift"
+
+            viewModel.session.finishStoppedSession(promotePendingSegment: false)
+            await awaitStoppedSessionCommit(viewModel)
+
+            XCTAssertTrue(gathered, "\(withdrawal.label): the stop gathered after reading the clipboard")
+            XCTAssertEqual(pasteboard.stringCallCount, 1, "\(withdrawal.label): the clipboard was read at stop")
+            let capturedRequest = await service.lastRequest
+            let request = try XCTUnwrap(capturedRequest, withdrawal.label)
+            let sent = ([request.systemPrompt, request.inputText] + request.userPrompts).joined(separator: "\n")
+            XCTAssertFalse(sent.contains("ZebraSentinel42"), "\(withdrawal.label): clipboard excerpt sent")
+            XCTAssertFalse(sent.contains("UserSessionManager"), "\(withdrawal.label): clipboard spelling sent")
+            XCTAssertEqual(request.inputText, "look at usersessionmanager.swift", withdrawal.label)
+        }
+    }
+
     /// The full vocabulary path end to end: exact repo bytes are placed before
     /// the model call, so even an identity model commits `useAuth.ts` rather
     /// than depending on the model to reproduce the prompt hint.

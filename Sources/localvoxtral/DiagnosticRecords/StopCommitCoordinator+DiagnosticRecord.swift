@@ -54,7 +54,7 @@ extension StopCommitCoordinator {
                 .repository: material.repoRenderDemand,
                 .terminal: material.screenRenderDemand,
                 .claude: material.claudeSessionText.count,
-                .clipboard: capture.clipboardContext?.retainedCharacterCount ?? 0,
+                .clipboard: material.clipboardContext?.retainedCharacterCount ?? 0,
             ],
             grants: material.allocation,
             rendered: [
@@ -78,7 +78,7 @@ extension StopCommitCoordinator {
             claudeSessionOutcome: material.claudeSessionOutcome,
             claudeSessionRenderedExcerpt: assembly.claudeBlock != nil
                 ? material.claudeSessionPreparation.excerpt : nil,
-            clipboardRetainedText: capture.clipboardContext?.retainedText,
+            clipboardRetainedText: material.clipboardContext?.retainedText,
             clipboardOutcome: material.clipboardVocabularyOutcome,
             clipboardRenderedExcerpt: assembly.clipboardBlock != nil
                 ? material.clipboardPreparation.excerpt : nil,
