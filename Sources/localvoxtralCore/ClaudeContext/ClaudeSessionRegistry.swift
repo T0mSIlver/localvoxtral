@@ -256,6 +256,7 @@ public final class ClaudeSessionRegistry: Sendable {
         )
         var capEvictions = CapEvictions()
         var sequence: UInt64 = 0
+        var repeatedSubmit = false
         let ingested = state.withLock { state -> ClaudeSessionSnapshot? in
             let before = state.sessions
             defer {
@@ -323,6 +324,7 @@ public final class ClaudeSessionRegistry: Sendable {
                 )
             }
 
+            repeatedSubmit = ClaudeSessionReducer.isRepeatedSubmit(record, of: snapshot)
             ClaudeSessionReducer.reduce(
                 &snapshot,
                 record: record,
@@ -360,8 +362,10 @@ public final class ClaudeSessionRegistry: Sendable {
         }
         // The record's own prompt, never the snapshot's: a submit without
         // one leaves the PREVIOUS prompt in the snapshot, and announcing that
-        // would compare a new dictation with an old prompt.
+        // would compare a new dictation with an old prompt. A Vibe prompt
+        // read again by a later hook is not announced again (#1285).
         if record.event == .userPromptSubmit,
+           !repeatedSubmit,
            let ingested,
            let prompt = record.prompt,
            !prompt.isEmpty,

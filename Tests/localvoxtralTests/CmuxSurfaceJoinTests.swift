@@ -596,7 +596,7 @@ final class CmuxSurfaceJoinTests: XCTestCase {
             resolver: resolver, currentJoin: { join }
         )
         XCTAssertFalse(
-            authorizer.isAuthorized(target: cmux, windowID: 101),
+            authorizer.isAuthorized(target: cmux, windowID: 101, paneTTY: nil),
             "there is no accessible cmux text, and a future composite one must not become attachable"
         )
     }

@@ -162,7 +162,8 @@ public struct VibeHooksInstallService: Sendable {
                 return "~/.vibe/hooks.toml has a key right after the localvoxtral block. It belongs to "
                     + "the block's last hook; move it above the block or under its own [[hooks]] table."
             case .hooksIsNotAnArrayOfTables:
-                return "~/.vibe/hooks.toml defines hooks as `hooks = [...]` or `[hooks]`. TOML cannot add "
+                return "~/.vibe/hooks.toml defines hooks as `hooks = [...]`, `[hooks]`, `[hooks.x]` or "
+                    + "`hooks.x = ...`. TOML cannot add "
                     + "[[hooks]] tables to that. Rewrite those hooks as [[hooks]] tables first."
             }
         }

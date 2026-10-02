@@ -685,6 +685,150 @@ final class ClaudeRepoCollectorTests: XCTestCase {
         XCTAssertTrue(quoted.text.contains("+diff --git a/.env b/.env"))
     }
 
+    // Real `git diff` framing, not hand-written headers: a name with a space
+    // ends in a tab on its `---`/`+++` lines, a non-ASCII name is C-quoted
+    // unless `core.quotePath` is off, and a conflicted path gets a combined
+    // `diff --cc` section. Each one carries a secret past the filter if its
+    // path is misread.
+    func testSecretDiffsAreWithheldWhateverFramingGitGivesTheirPath() async throws {
+        let repo = FileManager.default.temporaryDirectory
+            .appendingPathComponent("repo-filter-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: repo) }
+        func write(_ path: String, _ text: String) throws {
+            let url = repo.appendingPathComponent(path)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            try Data(text.utf8).write(to: url)
+        }
+        func git(_ arguments: [String]) async -> String {
+            let output = await RepoGitRunner.run(
+                arguments: ["-c", "user.name=t", "-c", "user.email=t@t"] + arguments,
+                root: repo.path, timeoutSeconds: 60
+            )
+            return String(decoding: output?.data ?? Data(), as: UTF8.self)
+        }
+        func filtered(_ arguments: [String]) async -> ClaudeRepoContentFilter.FilteredDiff {
+            ClaudeRepoContentFilter.withholdingSensitiveDiffSections(
+                await git(arguments + ["diff", "--no-color", "--no-ext-diff"])
+            )
+        }
+
+        _ = await git(["init", "-q", "-b", "main"])
+        for path in [
+            "my project/.env", "staged dir/.env", "café/.env", "café/notes.md",
+            "my project/notes.md", "conflict/.env",
+        ] {
+            try write(path, "A=1\n")
+        }
+        _ = await git(["add", "-A"])
+        _ = await git(["commit", "-qm", "init"])
+        try write("my project/.env", "A=space-secret\n")
+        try write("café/.env", "A=accent-secret\n")
+        try write("café/notes.md", "accented edit\n")
+        try write("my project/notes.md", "ordinary edit\n")
+        try write("staged dir/.env", "A=staged-secret\n")
+        _ = await git(["add", "staged dir/.env"])
+
+        let unstaged = await filtered([])
+        XCTAssertTrue(unstaged.text.contains("+ordinary edit"), "an ordinary file in the same folder survives")
+        XCTAssertTrue(unstaged.text.contains("+accented edit"), "a quoted ordinary path is decoded, not dropped")
+        XCTAssertFalse(unstaged.text.contains("space-secret"))
+        XCTAssertFalse(unstaged.text.contains("accent-secret"))
+        XCTAssertEqual(unstaged.withheldFileCount, 2)
+
+        let rawUTF8 = await filtered(["-c", "core.quotePath=false"])
+        XCTAssertTrue(rawUTF8.text.contains("+accented edit"))
+        XCTAssertFalse(rawUTF8.text.contains("accent-secret"))
+        XCTAssertFalse(rawUTF8.text.contains("space-secret"))
+
+        let staged = ClaudeRepoContentFilter.withholdingSensitiveDiffSections(
+            await git(["diff", "--cached", "--no-color", "--no-ext-diff"])
+        )
+        XCTAssertFalse(staged.text.contains("staged-secret"))
+        XCTAssertEqual(staged.withheldFileCount, 1)
+
+        // A merge conflict on a secret: `git diff` shows it as `diff --cc`.
+        _ = await git(["reset", "-q", "--hard"])
+        _ = await git(["checkout", "-qb", "other"])
+        try write("conflict/.env", "A=theirs-secret\n")
+        _ = await git(["commit", "-qam", "theirs"])
+        _ = await git(["checkout", "-q", "main"])
+        try write("conflict/.env", "A=ours-secret\n")
+        _ = await git(["commit", "-qam", "ours"])
+        _ = await git(["merge", "other"])
+        let raw = await git(["diff", "--no-color", "--no-ext-diff"])
+        XCTAssertTrue(raw.contains("diff --cc"), "the fixture must produce a combined diff")
+        let conflicted = ClaudeRepoContentFilter.withholdingSensitiveDiffSections(raw)
+        XCTAssertFalse(conflicted.text.contains("theirs-secret"))
+        XCTAssertFalse(conflicted.text.contains("ours-secret"))
+        XCTAssertEqual(conflicted.withheldFileCount, 1)
+    }
+
+    // Swift reads CRLF as one Character, so a split on "\n" misses the LF that
+    // ends an ordinary file's CRLF line. The next section's header then joins
+    // that content line and goes unseen, and the secret hunk rides along in
+    // the ordinary section.
+    func testSecretSectionAfterAnOrdinaryCRLFLineIsWithheld() async throws {
+        let repo = FileManager.default.temporaryDirectory
+            .appendingPathComponent("repo-crlf-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: repo) }
+        func write(_ path: String, _ text: String) throws {
+            let url = repo.appendingPathComponent(path)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            try Data(text.utf8).write(to: url)
+        }
+        func git(_ arguments: [String]) async -> String {
+            let output = await RepoGitRunner.run(
+                arguments: ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.autocrlf=false"]
+                    + arguments,
+                root: repo.path, timeoutSeconds: 60
+            )
+            return String(decoding: output?.data ?? Data(), as: UTF8.self)
+        }
+
+        _ = await git(["init", "-q", "-b", "main"])
+        try write("a.txt", "old\r\n")
+        try write("b/.env", "A=1\n")
+        _ = await git(["add", "-A"])
+        _ = await git(["commit", "-qm", "init"])
+        try write("a.txt", "windows edit\r\n")
+        try write("b/.env", "A=crlf-secret\n")
+
+        let raw = await git(["diff", "--no-color", "--no-ext-diff"])
+        XCTAssertTrue(raw.contains("windows edit\r\ndiff --git a/b/.env"), "the fixture must end a hunk in CRLF before the secret")
+        let filtered = ClaudeRepoContentFilter.withholdingSensitiveDiffSections(raw)
+        XCTAssertFalse(filtered.text.contains("crlf-secret"))
+        XCTAssertEqual(filtered.withheldFileCount, 1)
+        XCTAssertTrue(filtered.text.contains("+windows edit\r"), "the ordinary hunk survives byte for byte")
+    }
+
+    // A path line git could not have written is a parse failure: the section
+    // is withheld rather than matched against a half-decoded name.
+    func testDiffSectionWithAnUndecodablePathIsWithheld() {
+        for path in [
+            #""a/dir/\q.env""#,  // not a C escape git emits
+            #""a/dir/\377.env""#,  // not UTF-8
+            #""a/dir/.env"#,  // unterminated
+        ] {
+            let filtered = ClaudeRepoContentFilter.withholdingSensitiveDiffSections(
+                """
+                diff --git a/x b/x
+                --- \(path)
+                +++ b/x
+                @@ -1 +1 @@
+                +TOKEN=leak
+                """
+            )
+            XCTAssertEqual(filtered.withheldFileCount, 1, path)
+            XCTAssertFalse(filtered.text.contains("leak"), path)
+        }
+    }
+
     // MARK: - Transcript-matched snippets
 
     func testTranscriptMatchedTrackedFilesAreRead() async throws {

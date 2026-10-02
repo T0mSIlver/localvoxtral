@@ -143,13 +143,15 @@ public struct VibeHookInput: Sendable, Equatable {
     ///
     /// A non-empty prompt goes first as `UserPromptSubmit`, so the event record
     /// after it leaves the session's activity correct: `Stop` ends the turn,
-    /// `PostToolUse` keeps it working.
+    /// `PostToolUse` keeps it working. Every hook sends the newest prompt
+    /// again; `promptID` is what lets the registry count it once.
     ///
     /// - Parameter processSessionID: the id a payload without one is published
     ///   under. With neither there is nothing to attribute the records to, and
     ///   none are produced.
     public func records(
         prompt: String?,
+        promptID: String? = nil,
         timestamp: Double,
         processSessionID: String? = nil,
         limits: ClaudeHookLimits = .default
@@ -163,7 +165,8 @@ public struct VibeHookInput: Sendable, Equatable {
                 sessionID: sessionID,
                 timestamp: timestamp,
                 rawCwd: cwd,
-                prompt: prompt
+                prompt: prompt,
+                promptID: promptID
             ))
         }
         switch kind {

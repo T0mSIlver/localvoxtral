@@ -155,9 +155,11 @@ struct LLMPolishingService: LLMPolishingServicing {
     /// Receives one entry per request that carries a usage feature, on every
     /// backend; only Mistral's are priced. Nil records nothing.
     var usageRecorder: (any UsageRecording)?
+    let session: URLSession
 
-    init(usageRecorder: (any UsageRecording)? = nil) {
+    init(usageRecorder: (any UsageRecording)? = nil, session: URLSession = SameOriginHTTP.shared) {
         self.usageRecorder = usageRecorder
+        self.session = session
     }
 
     /// One rule for every backend. The timeout is only the client's cap: a
@@ -201,7 +203,7 @@ struct LLMPolishingService: LLMPolishingServicing {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await URLSession.shared.data(for: urlRequest)
+            (data, response) = try await session.data(for: urlRequest)
         } catch {
             let polishingError = Self.polishingError(
                 forTransportError: error,

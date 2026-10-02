@@ -34,14 +34,14 @@ extension ClaudeHookPublisher {
     public struct VibeEnvironment: Sendable {
         public var ownSession: @Sendable () -> Int32
         public var processFacts: @Sendable (Int32) -> ProcessFacts?
-        public var lastUserPrompt: @Sendable (String?, ClaudeHookLimits) -> String?
+        public var lastUserPrompt: @Sendable (String?, ClaudeHookLimits) -> VibeUserPrompt?
 
         public init(
             ownSession: @escaping @Sendable () -> Int32 = { getsid(0) },
             processFacts: @escaping @Sendable (Int32) -> ProcessFacts? = {
                 ClaudeHookPublisher.processFacts(forProcess: $0)
             },
-            lastUserPrompt: @escaping @Sendable (String?, ClaudeHookLimits) -> String? = {
+            lastUserPrompt: @escaping @Sendable (String?, ClaudeHookLimits) -> VibeUserPrompt? = {
                 VibeTranscriptPrompt.lastUserPrompt(atPath: $0, limits: $1, deadline: 0.25)
             }
         ) {
@@ -75,7 +75,8 @@ extension ClaudeHookPublisher {
         let process = processInfo(agentPID: vibePID, agentStartMicros: startMicros)
         let prompt = vibe.lastUserPrompt(input.transcriptPath, limits)
         let records = input.records(
-            prompt: prompt,
+            prompt: prompt?.text,
+            promptID: prompt?.messageID,
             timestamp: environment.now(),
             processSessionID: Self.vibeProcessSessionID(pid: vibePID, startMicros: startMicros),
             limits: limits

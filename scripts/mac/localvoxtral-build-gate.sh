@@ -742,8 +742,13 @@ run_payload_with_cleanup() {
 
   # Monitor mode gives each background job a distinct process group even in
   # this non-interactive Bash 3.2 shell. The PGID is the first child's PID.
+  #
+  # NSUnbufferedIO: xctest's stdout is the ssh pipe, which it block-buffers
+  # in 16 KiB chunks. A hung run then shows nothing past the last full chunk,
+  # often dozens of tests before the one that hung: #1387 blamed a test whose
+  # own "passed" line was cut at the boundary. CI sets the same variable.
   set -m
-  /bin/bash -c "$payload" &
+  NSUnbufferedIO=YES /bin/bash -c "$payload" &
   LV_GATE_PAYLOAD_PID=$!
   LV_GATE_PAYLOAD_PGID=$LV_GATE_PAYLOAD_PID
   (( monitor_was_enabled == 1 )) || set +m

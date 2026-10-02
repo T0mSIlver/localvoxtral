@@ -122,12 +122,13 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         }
     }
 
-    func testPluginShipsExactlySixExecutablesAllPOSIXSh() throws {
+    func testPluginShipsExactlySevenExecutablesAllPOSIXSh() throws {
         // The premise, updated for the command-hook shape: nothing to install
-        // on the remote but the manifests and SIX POSIX-sh scripts — the curl
+        // on the remote but the manifests and SEVEN POSIX-sh scripts — the curl
         // shim every hook runs, the status-line renderer the user may point
         // their own `statusLine` setting at, the project-terms (#641) and
-        // quick capture (#745) runners the shim starts when the Mac asks, and
+        // quick capture (#745) runners the shim starts when the Mac asks, the
+        // agent projects scan (#1027) it starts on SessionStart, and
         // `localvoxtral doctor` (#910) with the `bin/` entry Claude Code puts
         // on the agent's PATH. No
         // Python, no jq, no nc,
@@ -135,7 +136,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         // appears here, the premise is gone.
         let shellScripts: Set<String> = [
             "hooks/post.sh", "hooks/statusline.sh", "hooks/terms.sh", "hooks/capture.sh", "hooks/doctor.sh",
-            "bin/localvoxtral",
+            "hooks/agent-projects.sh", "bin/localvoxtral",
         ]
         let contents = try FileManager.default.subpathsOfDirectory(atPath: pluginRoot.path)
         for path in contents {
@@ -160,11 +161,11 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             }
             XCTAssertFalse(
                 FileManager.default.isExecutableFile(atPath: full.path),
-                "the remote plugin must ship no executable but its six sh scripts, found \(path)"
+                "the remote plugin must ship no executable but its seven sh scripts, found \(path)"
             )
             XCTAssertTrue(
                 path.hasSuffix(".json"),
-                "the remote plugin must ship JSON manifests and its six sh scripts only, found \(path)"
+                "the remote plugin must ship JSON manifests and its seven sh scripts only, found \(path)"
             )
         }
         for script in shellScripts {
@@ -372,13 +373,14 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
 
     // MARK: Plugin version advertisement
     //
-    // One version stated three ways — the manifest Claude Code installs and
-    // updates against, the header constant the shim sends on every post, and
-    // the Swift constant the app compares reports to. Field finding
-    // 2026-09-17: a host ran 1.8.0 for weeks while the app expected 1.9.0 and
-    // nothing anywhere said so. Any two of the three drifting apart is either
-    // a user told to update an already-current plugin or — the failure that
-    // actually happened — an outdated host read as current.
+    // One version stated four ways — the manifest Claude Code installs and
+    // updates against, the header constant the shim sends on every post, the
+    // version the shim records for the host's doctor, and the Swift constant
+    // the app compares reports to. Field finding 2026-09-17: a host ran 1.8.0
+    // for weeks while the app expected 1.9.0 and nothing anywhere said so.
+    // Any two of them drifting apart is either a user told to update an
+    // already-current plugin or — the failure that actually happened — an
+    // outdated host read as current.
 
     func testTheManifestTheShimAndTheAppAgreeOnOnePluginVersion() throws {
         let expected = ClaudeRemoteEnrollmentService.remotePluginVersion
@@ -389,6 +391,10 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         XCTAssertTrue(
             try shimSource().contains("X-Lvx-Plugin-Version: \(expected)\n"),
             "the shim must advertise that same version as a header CONSTANT"
+        )
+        XCTAssertTrue(
+            try shimSource().contains("\nPLUGIN_VERSION=\(expected)\n"),
+            "the shim must record that same version for the host's doctor (#1159)"
         )
     }
 

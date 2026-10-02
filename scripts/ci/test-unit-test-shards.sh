@@ -148,6 +148,15 @@ lv_shard_swift() {
   echo "Test Suite 'Selected tests' passed at 2026-09-23 10:00:00.000."
   echo "	 Executed $total tests, with $failures failures (0 unexpected) in 0.1 (0.1) seconds"
   [[ -n "${STUB_ERROR:-}" ]] && echo "$STUB_ERROR"
+  if [[ -n "${STUB_KILL_RUNNER:-}" && " $* " == *" Mod.$STUB_KILL_RUNNER/ "* ]]; then
+    # This function runs as the shard runner's background child; TERM its
+    # parent, the runner, the way an outside kill would.
+    # bash 3.2 has no BASHPID: a child names this subshell as its parent.
+    # shellcheck disable=SC2016  # $PPID is the child's
+    sh -c 'echo $PPID' >"$TMP_DIR/stub-pid"
+    kill -TERM "$(ps -o ppid= -p "$(cat "$TMP_DIR/stub-pid")" | tr -d ' ')"
+    sleep 1
+  fi
   [[ -n "${STUB_LOCK:-}" ]] && status=1
   return "$status"
 }
@@ -168,6 +177,11 @@ grep -q "^==> Unit shards: 3 of 3 tests ran in 2 shards" "$log" || fail "summary
 grep -q "Test Suite 'Alpha'" "$log" && grep -q "Test Suite 'Beta'" "$log" \
   && grep -q "Test Suite 'Gamma'" "$log" || fail "merged log misses a shard's output"
 [[ "$(grep -c '^==> Shard [12]/2: exit 0' "$log")" == "2" ]] || fail "per-shard lines"
+# Every shard's exit again on one line, above the summary: a failed step
+# prints only the log's tail, which holds none of the earlier shards (#1084).
+grep -qE '^==> Shard exits: 1/2 exit 0, [0-9]+ tests, [0-9]+ s; 2/2 exit 0, [0-9]+ tests, [0-9]+ s$' "$log" \
+  || fail "shard exits recap: $(cat "$log")"
+[[ "$(tail -n 2 "$log" | head -n 1)" == "==> Shard exits: "* ]] || fail "recap not above the summary: $(tail -n 3 "$log")"
 grep -q "^swift test --skip-build --ignore-lock --skip Skipped --filter Mod.Beta/ --enable-code-coverage$" \
   "$TMP_DIR/calls" || fail "shard command: $(cat "$TMP_DIR/calls")"
 if grep -q "Mod.Skipped/" "$TMP_DIR/calls"; then fail "a skipped class got a filter"; fi
@@ -194,6 +208,16 @@ if STUB_FAIL=Gamma lv_run_unit_shards 2 "$log" Skipped >/dev/null; then
   fail "a red shard must fail the run"
 fi
 grep -q "^==> Shard [12]/2: exit 1" "$log" || fail "red shard's exit status missing"
+
+# A shard runner that a signal ends after its tests ran writes no exit
+# status: the shard fails, says so, and the recap names it (#1084).
+if STUB_KILL_RUNNER=Gamma lv_run_unit_shards 2 "$log" Skipped >/dev/null; then
+  fail "a shard whose runner was killed must fail the run"
+fi
+grep -q "^==> Shard [12]: stopped by SIGTERM$" "$log" || fail "the runner's signal is not logged: $(cat "$log")"
+grep -q "^==> Shard [12]: its runner ended with status 143 and wrote no exit status$" "$log" \
+  || fail "the missing exit status is not logged: $(cat "$log")"
+grep -qE '^==> Shard exits: .*[12]/2 exit 1, [0-9]+ tests, \? s' "$log" || fail "recap of the killed shard: $(cat "$log")"
 
 if STUB_DROP=Beta lv_run_unit_shards 2 "$log" Skipped >/dev/null; then
   fail "a class that no shard ran must fail the run"
@@ -279,5 +303,7 @@ done <"$TMP_DIR/swift-pids"
 [[ "$(grep -c '^==> Shard [12]/2: INTERRUPTED' "$TMP_DIR/term.log")" == "2" ]] \
   || fail "interrupted shards missing from the log: $(cat "$TMP_DIR/term.log")"
 grep -q "shard output before the hang" "$TMP_DIR/term.log" || fail "partial shard output lost"
+[[ "$(grep -c '^==> Shard [12]: stopped by SIGTERM$' "$TMP_DIR/term.log")" == "2" ]] \
+  || fail "the shards' signal is not logged: $(cat "$TMP_DIR/term.log")"
 
 echo "PASS: unit test shards"

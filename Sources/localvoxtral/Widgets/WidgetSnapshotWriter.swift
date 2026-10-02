@@ -13,12 +13,17 @@ final class WidgetSnapshotWriter {
     private let fileURL: URL
     private let reloadTimelines: @MainActor () -> Void
     private let sleep: @Sendable (Duration) async -> Void
+    private let countHistory: HistoryCounter
+    private let now: @MainActor () -> Date
     private var pending: Task<Void, Never>?
     private var memoryRefresh: Task<Void, Never>?
     private var lastWritten: WidgetSnapshot?
     /// Set once the quit snapshot is written: a write still in flight must
     /// not replace it with running engines.
     private var hasQuit = false
+    /// Bumped by every write as it starts. A write that finishes counting
+    /// after a newer one started is stale and is dropped.
+    private var latestWrite = 0
     private var turnOffPolishToken: Int32 = NOTIFY_TOKEN_INVALID
 
     /// Between two writes; a model download's progress waits longer.
@@ -28,16 +33,31 @@ final class WidgetSnapshotWriter {
     /// would rewrite the snapshot while the Mac sits idle.
     static let memoryRefreshInterval: Duration = .seconds(600)
 
+    typealias HistoryCounter = @Sendable (
+        _ entries: [DictationHistoryEntry], _ terms: [String], _ now: Date, _ calendar: Calendar
+    ) async -> WidgetSnapshotAssembler.History
+
+    /// Weeks of word diffs: off the main actor.
+    nonisolated static let countHistoryDetached: HistoryCounter = { entries, terms, now, calendar in
+        await Task.detached {
+            WidgetSnapshotAssembler.history(entries: entries, terms: terms, now: now, calendar: calendar)
+        }.value
+    }
+
     init(
         viewModel: DictationViewModel,
         fileURL: URL = WidgetShared.fileURL(home: FileManager.default.homeDirectoryForCurrentUser),
         reloadTimelines: @escaping @MainActor () -> Void = { WidgetCenter.shared.reloadAllTimelines() },
-        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
+        countHistory: @escaping HistoryCounter = WidgetSnapshotWriter.countHistoryDetached,
+        now: @escaping @MainActor () -> Date = { Date() }
     ) {
         self.viewModel = viewModel
         self.fileURL = fileURL
         self.reloadTimelines = reloadTimelines
         self.sleep = sleep
+        self.countHistory = countHistory
+        self.now = now
     }
 
     func start() {
@@ -64,7 +84,7 @@ final class WidgetSnapshotWriter {
             turnOffPolishToken = NOTIFY_TOKEN_INVALID
         }
         guard var snapshot = lastWritten else { return }
-        snapshot.writtenAt = Date()
+        snapshot.writtenAt = now()
         snapshot.engines.appRunning = false
         for role in WidgetSnapshot.EngineRole.allCases {
             var engine = snapshot.engines.engine(role)
@@ -149,7 +169,9 @@ final class WidgetSnapshotWriter {
     // MARK: Writing
 
     func write() async {
-        let now = Date()
+        latestWrite += 1
+        let generation = latestWrite
+        let now = self.now()
         let calendar = Calendar.current
         let settings = viewModel.settings
         let historyKept = settings.dictationHistoryRetention.savesDictations
@@ -160,10 +182,7 @@ final class WidgetSnapshotWriter {
             let entries = await store.entries(since: WidgetSnapshotAssembler.historyStart(now: now))
             let terms = settings.polishSpeakerTerms
                 + (viewModel.learnedTermStore?.snapshot().confirmedEverywhere().map(\.term) ?? [])
-            // Weeks of word diffs: off the main actor.
-            let counted = await Task.detached {
-                WidgetSnapshotAssembler.history(entries: entries, terms: terms, now: now, calendar: calendar)
-            }.value
+            let counted = await countHistory(entries, terms, now, calendar)
             var names: [String: String] = [:]
             for id in counted.bundleIDs {
                 names[id] = DictationHistoryModel.installedAppName(bundleID: id) ?? id
@@ -185,6 +204,16 @@ final class WidgetSnapshotWriter {
             lastDictation: history.lastDictation
         )
         guard !hasQuit else { return }
+        // Counting awaits, and History may have been turned off meanwhile:
+        // a stale write must not put the dictation text back (#1233).
+        guard generation == latestWrite else {
+            Log.widgets.info("dropped a widget snapshot a newer write replaces")
+            return
+        }
+        guard !historyKept || settings.dictationHistoryRetention.savesDictations else {
+            Log.widgets.info("dropped a widget snapshot counted before History was turned off")
+            return
+        }
         persist(snapshot)
     }
 

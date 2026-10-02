@@ -215,6 +215,10 @@ public protocol ClaudeRemoteHostStoreIO: Sendable {
     /// Runs `body` as the only writer of `url` among the running copies of
     /// the app (#990).
     func withExclusiveAccess<T>(to url: URL, _ body: () throws -> T) throws -> T
+    /// What `url` is now, from one `lstat`: equal stamps mean the bytes have
+    /// not been replaced since. Nil means it cannot tell, and the caller
+    /// reads the file instead (#1046).
+    func stamp(of url: URL) -> StoredFileStamp?
     /// Renames a file this build refused to `<name>.incompatible-<time>`,
     /// for diagnosis, so a fresh one can be written without losing it (#1041).
     func moveAside(_ url: URL) throws -> URL
@@ -229,6 +233,8 @@ extension ClaudeRemoteHostStoreIO {
     public func moveAside(_ url: URL) throws -> URL {
         try StoredFile.moveAside(url, label: "incompatible", id: String(Int(Date().timeIntervalSince1970)))
     }
+
+    public func stamp(of url: URL) -> StoredFileStamp? { nil }
 }
 
 /// The on-disk implementation.
@@ -311,6 +317,10 @@ public struct ClaudeRemoteHostFileStoreIO: ClaudeRemoteHostStoreIO {
         return try StoredFileLock.withLock(beside: url, body)
     }
 
+    public func stamp(of url: URL) -> StoredFileStamp? {
+        StoredFileStamp.of(url)
+    }
+
     public func write(_ data: Data, to url: URL) throws {
         #if canImport(Darwin) || canImport(Glibc)
         let directory = url.deletingLastPathComponent()
@@ -346,7 +356,8 @@ public struct ClaudeRemoteHostFileStoreIO: ClaudeRemoteHostStoreIO {
 /// * **Authentication is constant-time and does not short-circuit across
 ///   hosts**, so neither the token nor which host owns it leaks through timing.
 /// * **Revocation is immediate** — `authenticate` consults `revokedAt` on every
-///   call rather than pruning lazily.
+///   call rather than pruning lazily, after taking in what another running copy
+///   of the app wrote to the file (#1046).
 /// * **Every mutation is transactional with the file** — see `transact`. A
 ///   write that fails leaves memory exactly as it was, so the registry never
 ///   authenticates against a state the next launch will not read back.
@@ -515,16 +526,28 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     /// read on every listener start.
     public static let maxHosts = 32
 
+    /// The file as this process last read or wrote it.
+    private struct FileSnapshot {
+        /// Its bytes (#990).
+        var bytes: Data?
+        /// Its stamp when those bytes were read; nil after a write, so the
+        /// next query reads once to learn it (#1046).
+        var stamp: StoredFileStamp?
+        /// The last reload failed, so the next failure is not logged again.
+        var reloadFailed = false
+    }
+
     private let state: Mutex<[StoredHost]>
-    /// Serializes each mutate+write TRANSACTION. See `transact` for why `state`
-    /// alone is not enough to keep memory and disk coherent. Holds the file's
-    /// bytes as this process last read or wrote them (#990).
-    private let persistLock: Mutex<Data?>
+    /// Serializes each mutate+write TRANSACTION and each reload. See
+    /// `transact` for why `state` alone is not enough to keep memory and disk
+    /// coherent.
+    private let persistLock: Mutex<FileSnapshot>
     private let fileURL: URL
     private let io: any ClaudeRemoteHostStoreIO
     private let now: @Sendable () -> Date
     private let makeToken: @Sendable () -> String
     private let makeHostID: @Sendable () -> String
+    private let hostsDroppedElsewhereHandler = Mutex<(@Sendable () -> Void)?>(nil)
 
     /// - Parameters:
     ///   - now: injected clock (AGENTS: no wall-clock in tests).
@@ -545,7 +568,7 @@ public final class ClaudeRemoteHostRegistry: Sendable {
 
         guard let data = try io.read(from: fileURL) else {
             state = Mutex([])
-            persistLock = Mutex(nil)
+            persistLock = Mutex(FileSnapshot())
             return
         }
         guard let file = try? JSONDecoder.claudeRemote.decode(StoredFile.self, from: data) else {
@@ -559,7 +582,7 @@ public final class ClaudeRemoteHostRegistry: Sendable {
             throw StoreError.unsupportedVersion(file.version)
         }
         state = Mutex(file.hosts)
-        persistLock = Mutex(data)
+        persistLock = Mutex(FileSnapshot(bytes: data))
     }
 
     public static func defaultFileURL() -> URL {
@@ -572,14 +595,39 @@ public final class ClaudeRemoteHostRegistry: Sendable {
             .appendingPathComponent("claude-remote-hosts.json")
     }
 
+    /// Called when this copy takes in a file where another running copy
+    /// revoked, removed or rotated a host that was active here, so the app
+    /// can run the reconciliation an in-app revoke runs (#1125). Called on
+    /// the thread that read the file, usually a listener thread, after the
+    /// new hosts are installed and outside the registry's locks.
+    public func setHostsDroppedElsewhereHandler(_ handler: (@Sendable () -> Void)?) {
+        hostsDroppedElsewhereHandler.withLock { $0 = handler }
+    }
+
+    private func notifyHostsDroppedElsewhere() {
+        hostsDroppedElsewhereHandler.withLock { $0 }?()
+    }
+
+    /// Whether a host active in `before` is not active with the same token in
+    /// `after`: revoked, removed or rotated.
+    private static func dropsActiveHost(from before: [StoredHost], to after: [StoredHost]) -> Bool {
+        before.contains { old in
+            guard old.revokedAt == nil else { return false }
+            guard let new = after.first(where: { $0.id == old.id }), new.revokedAt == nil else { return true }
+            return new.tokenHash != old.tokenHash || new.tokenSalt != old.tokenSalt
+        }
+    }
+
     // MARK: - Queries
 
     public func hosts() -> [ClaudeRemoteHost] {
-        state.withLock { $0.map(\.publicView) }.sorted { $0.createdAt < $1.createdAt }
+        reloadIfChanged()
+        return state.withLock { $0.map(\.publicView) }.sorted { $0.createdAt < $1.createdAt }
     }
 
     public func host(id: String) -> ClaudeRemoteHost? {
-        state.withLock { $0.first { $0.id == id }?.publicView }
+        reloadIfChanged()
+        return state.withLock { $0.first { $0.id == id }?.publicView }
     }
 
     /// Active hosts whose enrolled ssh alias IS this destination.
@@ -599,13 +647,26 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     /// Returns the STORED alias, not the destination the user typed: that is
     /// the string `ClaudeRemoteEnrollmentService.isValidHostAlias` vetted at
     /// enrollment, and it is the one allowed to reach an argv.
+    ///
+    /// Empty while the file cannot be read back: it may hold a revocation.
     public func hosts(matchingSSHDestination destination: String) -> [ClaudeRemoteHost] {
         let needle = destination.lowercased()
         guard !needle.isEmpty else { return [] }
-        return hosts().filter { host in
-            guard !host.isRevoked, let alias = host.sshHostAlias else { return false }
+        return activeHostsIfReadable().filter { host in
+            guard let alias = host.sshHostAlias else { return false }
             return alias.lowercased() == needle
         }
+    }
+
+    /// The hosts that may take part in a join: active ones, and none while
+    /// the file changed and cannot be read back, since it may hold a
+    /// revocation another copy wrote (#1046). `hosts()` answers from memory
+    /// then, for Settings; anything that selects a host goes through here.
+    public func activeHostsIfReadable() -> [ClaudeRemoteHost] {
+        guard reloadIfChanged() else { return [] }
+        return state.withLock { $0.map(\.publicView) }
+            .filter { !$0.isRevoked }
+            .sorted { $0.createdAt < $1.createdAt }
     }
 
     /// Whether binding the listener is worth doing at all.
@@ -613,7 +674,8 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     /// No enrolled host means no port is opened. A feature nobody has set up
     /// should not be listening on one.
     public var hasActiveHosts: Bool {
-        state.withLock { hosts in hosts.contains { $0.revokedAt == nil } }
+        reloadIfChanged()
+        return state.withLock { hosts in hosts.contains { $0.revokedAt == nil } }
     }
 
     // MARK: - Authentication
@@ -625,8 +687,12 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     /// list it was). The well-formedness pre-check DOES short-circuit, and that
     /// is deliberate: it discriminates on the token's shape, which an attacker
     /// supplied and already knows.
+    ///
+    /// Answers from the file as it is now, so a host another running copy
+    /// revoked or rotated is refused here at once (#1046), and nothing
+    /// authenticates while the file cannot be read back.
     public func authenticate(token: String) -> ClaudeRemoteHost? {
-        guard ClaudeRemoteTokenDigest.isWellFormed(token) else { return nil }
+        guard ClaudeRemoteTokenDigest.isWellFormed(token), reloadIfChanged() else { return nil }
         return state.withLock { hosts in
             authenticatedHostLocked(token: token, hosts: hosts)?.publicView
         }
@@ -642,7 +708,7 @@ public final class ClaudeRemoteHostRegistry: Sendable {
         expectedHostID: String,
         _ body: (ClaudeRemoteHost) -> Outcome
     ) -> Outcome? {
-        guard ClaudeRemoteTokenDigest.isWellFormed(token) else { return nil }
+        guard ClaudeRemoteTokenDigest.isWellFormed(token), reloadIfChanged() else { return nil }
         return state.withLock { hosts in
             guard let host = authenticatedHostLocked(token: token, hosts: hosts),
                   host.id == expectedHostID
@@ -804,6 +870,7 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     public func prepareCredential(
         hostID: String, purpose: ClaudeRemoteCredentialPurpose
     ) throws -> PendingCredential {
+        reloadIfChanged()
         guard let host = state.withLock({ hosts in hosts.first { $0.id == hostID } }) else {
             throw StoreError.unknownHost(hostID)
         }
@@ -1015,10 +1082,13 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     private func transact<Outcome>(_ body: (inout [StoredHost]) throws -> Outcome) throws -> Outcome {
         // The other copies' lock first, then this process's: nothing that
         // holds `persistLock` ever waits on the file lock.
-        try io.withExclusiveAccess(to: fileURL) {
-            try persistLock.withLock { lastSeen -> Outcome in
+        var droppedElsewhere = false
+        defer { if droppedElsewhere { notifyHostsDroppedElsewhere() } }
+        return try io.withExclusiveAccess(to: fileURL) {
+            try persistLock.withLock { snapshot -> Outcome in
                 var proposed = state.withLock { $0 }
-                if let onDisk = try io.read(from: fileURL), onDisk != lastSeen {
+                var mergedFromDisk = false
+                if let onDisk = try io.read(from: fileURL), onDisk != snapshot.bytes {
                     guard let file = try? JSONDecoder.claudeRemote.decode(StoredFile.self, from: onDisk) else {
                         throw StoreError.unreadable(path: fileURL.path)
                     }
@@ -1026,16 +1096,68 @@ public final class ClaudeRemoteHostRegistry: Sendable {
                         throw StoreError.unsupportedVersion(file.version)
                     }
                     Log.persistence.notice("Remote hosts: another running copy changed the file, applying on top")
+                    let before = proposed
                     proposed = Self.merging(file.hosts, into: proposed)
+                    mergedFromDisk = Self.dropsActiveHost(from: before, to: proposed)
                 }
                 let result = try body(&proposed)
                 let file = StoredFile(version: Self.fileVersion, hosts: proposed)
                 let data = try JSONEncoder.claudeRemote.encode(file)
                 try io.write(data, to: fileURL)
-                lastSeen = data
+                snapshot = FileSnapshot(bytes: data)
                 state.withLock { $0 = proposed }
+                droppedElsewhere = mergedFromDisk
                 return result
             }
+        }
+    }
+
+    /// Take in what another running copy wrote since this process last read
+    /// or wrote the file (#1046). One `lstat` when nothing changed. Holds
+    /// `persistLock` across the read so a transaction cannot install newer
+    /// hosts between the read and the install.
+    ///
+    /// - Returns: false when the file cannot be read back. It may hold a
+    ///   revocation, so the callers that grant trust refuse instead of
+    ///   answering from memory.
+    @discardableResult
+    private func reloadIfChanged() -> Bool {
+        var droppedElsewhere = false
+        defer { if droppedElsewhere { notifyHostsDroppedElsewhere() } }
+        return persistLock.withLock { snapshot in
+            let stamp = io.stamp(of: fileURL)
+            if let stamp, stamp == snapshot.stamp { return true }
+            var hostsOnDisk: [StoredHost] = []
+            let data: Data?
+            do {
+                data = try io.read(from: fileURL)
+                if let data, data != snapshot.bytes {
+                    let file = try JSONDecoder.claudeRemote.decode(StoredFile.self, from: data)
+                    guard file.version == Self.fileVersion else {
+                        throw StoreError.unsupportedVersion(file.version)
+                    }
+                    hostsOnDisk = file.hosts
+                }
+            } catch {
+                if !snapshot.reloadFailed {
+                    Log.persistence.error(
+                        "Remote hosts: the file changed and cannot be read back; refusing every host until it can"
+                    )
+                }
+                snapshot.reloadFailed = true
+                return false
+            }
+            if data != snapshot.bytes {
+                // An absent file is what a relaunch would read as no hosts.
+                Log.persistence.notice("Remote hosts: another running copy changed the file, reloading")
+                state.withLock { hosts in
+                    let merged = Self.merging(hostsOnDisk, into: hosts)
+                    droppedElsewhere = Self.dropsActiveHost(from: hosts, to: merged)
+                    hosts = merged
+                }
+            }
+            snapshot = FileSnapshot(bytes: data, stamp: stamp)
+            return true
         }
     }
 

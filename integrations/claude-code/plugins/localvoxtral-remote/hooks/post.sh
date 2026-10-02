@@ -109,6 +109,37 @@ case "$SESSION_ID" in
 *) [ "${#SESSION_ID}" -le 64 ] || SESSION_ID="" ;;
 esac
 
+# --- The plugin version this session runs (#1159) -----------------------------
+# `localvoxtral doctor` on this host names the sessions still running an older
+# plugin. Claude Code stopped writing the `.in_use/<pid>` markers it read
+# (none on 2.1.280 to 2.1.286), so every hook records its own version under the
+# session's id, and the doctor joins that to Claude Code's live sessions in
+# ~/.claude/sessions/<pid>.json. A reloaded session records its new version at
+# its next hook. Written when the recorded version differs, and refreshed on
+# SessionStart and UserPromptSubmit so that a live session's record outlasts
+# the age-out below.
+PLUGIN_VERSION=1.35.0
+VERSION_DIR="$STAMP_DIR/plugin-version"
+if [ -n "$STAMP_DIR" ] && [ -n "$SESSION_ID" ]; then
+  if [ "$EVENT" = "SessionEnd" ]; then
+    rm -f "$VERSION_DIR/$SESSION_ID" 2>/dev/null || :
+  else
+    RECORDED=""
+    { IFS= read -r RECORDED <"$VERSION_DIR/$SESSION_ID"; } 2>/dev/null || :
+    if [ "$RECORDED" != "$PLUGIN_VERSION" ] || [ "$EVENT" = "SessionStart" ] \
+      || [ "$EVENT" = "UserPromptSubmit" ]; then
+      {
+        mkdir -p "$VERSION_DIR" && chmod 700 "$STAMP_DIR" "$VERSION_DIR" \
+          && echo "$PLUGIN_VERSION" >"$VERSION_DIR/$SESSION_ID.$$" \
+          && mv -f "$VERSION_DIR/$SESSION_ID.$$" "$VERSION_DIR/$SESSION_ID"
+      } 2>/dev/null || { rm -f "$VERSION_DIR/$SESSION_ID.$$"; } 2>/dev/null || :
+    fi
+  fi
+  if [ "$EVENT" = "SessionStart" ] && [ -d "$VERSION_DIR" ]; then
+    find "$VERSION_DIR" -type f -mtime +6 -exec rm -f {} \; 2>/dev/null || :
+  fi
+fi
+
 # --- Notification: the type and nothing else (#717) ---------------------------
 # A Notification's `message` and `title` quote tool names and command text, so
 # its body is REBUILT here instead of posted as-is: the session id checked
@@ -271,7 +302,7 @@ fi
 # the app validates the shape and trusts nothing else about it.
 cat 2>/dev/null >"$WORK/header" <<EOF || fail_open
 Authorization: Bearer $TOKEN
-X-Lvx-Plugin-Version: 1.29.0
+X-Lvx-Plugin-Version: 1.35.0
 EOF
 
 # --- Allowlisted environment enrichment --------------------------------------
@@ -576,6 +607,73 @@ if [ "$EVENT" = SessionStart ]; then
   ) 2>/dev/null || :
 fi
 
+# --- Agent projects (#1027) ---------------------------------------------------
+# The repositories a coding agent ran in on this host in the last 30 days, so
+# the Mac's polishing can spell their names. agent-projects.sh, next to this
+# file, builds the value from Claude Code's transcripts; it reads only their
+# `cwd` key, and its header lists names and origins, never a path. The scan
+# takes seconds, more than a hook may spend, so this sends the value cached in
+# $STAMP_DIR/agent-projects (`<scan epoch>` then the value, one line each) and,
+# when that is missing or six hours old, starts a rescan DETACHED for the next
+# session, as lvx_terms_start starts terms.sh, without the token. An atomic
+# mkdir lock keeps it to one scan at a time; a lock 10 minutes old is a scan
+# that died and is taken over. A damaged cache sends nothing and is rescanned.
+lvx_agent_projects_header() {
+  _lvx_cache="$STAMP_DIR/agent-projects"
+  _lvx_scanned=""
+  _lvx_value=""
+  if [ -r "$_lvx_cache" ]; then
+    { IFS= read -r _lvx_scanned && IFS= read -r _lvx_value; } 2>/dev/null <"$_lvx_cache"
+  fi
+  case "$_lvx_value" in
+  "" | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/:,-]*) ;;
+  *)
+    if [ "${#_lvx_value}" -le 2000 ]; then
+      cat 2>/dev/null >>"$WORK/header" <<EOF || :
+X-Lvx-Agent-Projects: $_lvx_value
+EOF
+    fi
+    ;;
+  esac
+  [ -n "$NOW" ] && [ -n "${HOME:-}" ] || return 0
+  case "$_lvx_scanned" in
+  "" | *[!0-9]* | ?????????????*) ;;
+  *)
+    if [ "$_lvx_scanned" -le "$NOW" ] && [ $((NOW - _lvx_scanned)) -lt 21600 ]; then
+      return 0
+    fi
+    ;;
+  esac
+  _lvx_runner="${0%/*}/agent-projects.sh"
+  [ -r "$_lvx_runner" ] || return 0
+  { mkdir -p "$STAMP_DIR" && chmod 700 "$STAMP_DIR"; } 2>/dev/null || return 0
+  _lvx_lock="$_lvx_cache-running"
+  if ! mkdir "$_lvx_lock" 2>/dev/null; then
+    [ -n "$(find "$_lvx_lock" -prune -mmin +10 2>/dev/null)" ] || return 0
+    mv "$_lvx_lock" "$_lvx_lock.$$" 2>/dev/null || return 0
+    rm -rf "$_lvx_lock.$$" 2>/dev/null
+    mkdir "$_lvx_lock" 2>/dev/null || return 0
+  fi
+  if command -v setsid >/dev/null 2>&1; then
+    setsid env -i HOME="$HOME" PATH="${PATH:-}" LANG="${LANG:-}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" \
+      sh "$_lvx_runner" refresh "$_lvx_cache" "$_lvx_lock" </dev/null >/dev/null 2>&1 &
+  else
+    (
+      trap '' HUP
+      exec env -i HOME="$HOME" PATH="${PATH:-}" LANG="${LANG:-}" USER="${USER:-}" LOGNAME="${LOGNAME:-}" \
+        sh "$_lvx_runner" refresh "$_lvx_cache" "$_lvx_lock"
+    ) </dev/null >/dev/null 2>&1 &
+  fi
+  return 0
+}
+if [ "$EVENT" = SessionStart ] && [ -n "$STAMP_DIR" ]; then
+  (
+    LC_ALL=C
+    export LC_ALL
+    lvx_agent_projects_header
+  ) 2>/dev/null || :
+fi
+
 # --- Project terms (#641) ----------------------------------------------------
 # `X-Lvx-Terms: wanted` on a 200 reply is the Mac asking for this session's
 # project terms, once, after a dictation joined the session. The Mac cannot
@@ -750,8 +848,11 @@ lvx_capture_asks() {
 # --max-time 1 mirrors the old http hooks' one-second fail-open ceiling: a
 # host whose forward silently failed must not stall every turn. --max-filesize
 # (recognized since curl 7.10.8) belts the body the stdout gate below already
-# rejects; when it trips, curl fails and STATUS goes empty.
-STATUS="$(curl --silent --output "$WORK/body" --write-out '%{http_code}' \
+# rejects; when it trips, curl fails and STATUS goes empty. -q (first, or
+# curl ignores it) skips ~/.curlrc and --noproxy '*' any inherited http_proxy
+# or ALL_PROXY: curl proxies even 127.0.0.1, and a proxy would get the token
+# and the prompt outside the tunnel (#1281). Every loopback curl here does both.
+STATUS="$(curl -q --noproxy '*' --silent --output "$WORK/body" --write-out '%{http_code}' \
   --dump-header "$WORK/response-headers" \
   --max-time 1 --max-filesize 1024 --request POST \
   --header 'Content-Type: application/json' \

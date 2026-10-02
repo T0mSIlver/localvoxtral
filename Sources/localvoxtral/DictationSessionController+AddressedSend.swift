@@ -200,6 +200,11 @@ extension DictationSessionController {
             Log.dictation.notice("send to session: Secure Keyboard Entry is on; nothing typed")
             return .notSent(AddressedSendStatus.notSent)
         }
+        // A suspended agent's tab reads back as the session's while its
+        // shell owns the terminal (#1249).
+        guard navigator.agentHoldsItsTerminal(sessionID: session.sessionID) else {
+            return .notSent(AddressedSendStatus.notSent)
+        }
         let commit = StopCommitCoordinator.commit(
             overlay: overlayBufferCoordinator,
             textInsertion: PinnedAppOverlayCommitter(textInsertion: textInsertion, pid: pid),
@@ -209,7 +214,10 @@ extension DictationSessionController {
             Log.dictation.notice("send to session: the text did not land in the pane; no Return")
             return AddressedCommit(outcome: commit.outcome, inserted: false, status: nil)
         }
-        let stillThere = await navigator.focuser.focusedPaneShows(session, bundleID: bundleID)
+        // Through the navigator: the registry is asked again after the
+        // read-back, so an agent that exited meanwhile (#1219) or was
+        // suspended meanwhile (#1249) gets no Return.
+        let stillThere = await navigator.focusedPaneShows(sessionID: session.sessionID, bundleID: bundleID)
         // A new dictation took over during the read-back: its target is not
         // this pane. The typed text is still recorded.
         guard !Task.isCancelled else {

@@ -351,7 +351,9 @@ enum TerminalDescendantProcessResolver {
 // MARK: - TTL cache
 
 /// Root-keyed cache of harvested vocabularies. TTL-bounded and invalidated when
-/// the `.git/HEAD` or `.github/dictation.md` mtime changes. `Mutex`-guarded per
+/// the `.git/HEAD` or `.github/dictation.md` mtime changes. Expired entries are
+/// dropped, and past `capacity` roots the oldest stored one goes, so dictating
+/// across many repos in one app run does not keep every vocabulary. `Mutex`-guarded per
 /// repo conventions (no actors). The clock is injected at every call so tests
 /// never touch wall-clock.
 final class RepoVocabularyCache: Sendable {
@@ -363,10 +365,12 @@ final class RepoVocabularyCache: Sendable {
     }
 
     private let ttl: TimeInterval
+    private let capacity: Int
     private let storage = Mutex<[String: Cached]>([:])
 
-    init(ttl: TimeInterval = 300) {
+    init(ttl: TimeInterval = 300, capacity: Int = 8) {
         self.ttl = ttl
+        self.capacity = capacity
     }
 
     /// The cached vocabulary for `root` when still within TTL AND both mtimes
@@ -379,7 +383,10 @@ final class RepoVocabularyCache: Sendable {
     ) -> RepoVocabulary? {
         storage.withLock { store in
             guard let cached = store[root] else { return nil }
-            if now.timeIntervalSince(cached.cachedAt) > ttl { return nil }
+            if now.timeIntervalSince(cached.cachedAt) > ttl {
+                store[root] = nil
+                return nil
+            }
             if cached.headModificationDate != currentHeadModificationDate { return nil }
             if cached.dictationFileModificationDate != currentDictationFileModificationDate { return nil }
             return cached.vocabulary
@@ -400,6 +407,11 @@ final class RepoVocabularyCache: Sendable {
                 dictationFileModificationDate: dictationFileModificationDate,
                 cachedAt: now
             )
+            store = store.filter { now.timeIntervalSince($0.value.cachedAt) <= ttl }
+            while store.count > capacity,
+                  let oldest = store.min(by: { $0.value.cachedAt < $1.value.cachedAt })?.key {
+                store[oldest] = nil
+            }
         }
     }
 }

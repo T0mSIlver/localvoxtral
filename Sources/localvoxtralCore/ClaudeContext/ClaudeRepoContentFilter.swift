@@ -252,22 +252,32 @@ package enum ClaudeRepoContentFilter {
     /// applied here, per section rather than to the whole diff, because one
     /// secret file must not cost the prompt every ordinary hunk beside it.
     ///
+    /// A section starts at `diff --git ` or, for a path with unresolved merge
+    /// conflicts, at the combined-diff header `diff --cc ` / `diff --combined `.
     /// Candidate paths come from the `---`/`+++`/`rename`/`copy` lines plus
-    /// the `diff --git` header, and ANY sensitive candidate withholds the
-    /// section. Two asymmetries are deliberate and both fail safe:
+    /// that header, and ANY sensitive candidate withholds the section. Every
+    /// doubt fails safe:
     ///
     /// * A section whose paths cannot be parsed at all (exotic quoting with no
     ///   body lines) is withheld, never trusted.
-    /// * File CONTENT can mimic `---`/`+++` lines (a deleted line reading
-    ///   `-- a/.env` renders as `--- a/.env`) and at worst over-withholds.
-    ///   It cannot forge a section BOUNDARY: content lines always carry a
-    ///   `+`/`-`/space prefix, so `diff --git ` at column zero is git's own.
+    /// * A path line that does not decode (bad C-quoting, non-UTF-8 bytes)
+    ///   withholds the section too.
+    /// * File CONTENT cannot pose as a path line, because only the lines
+    ///   before the first `@@` are read for paths, nor forge a section
+    ///   BOUNDARY: content lines always carry a `+`/`-`/space prefix, so a
+    ///   header at column zero is git's own.
     ///
     /// Anything before the first header (rare git-level notices, e.g. unmerged
     /// paths) is kept: it is git's prose, not file content.
     package static func withholdingSensitiveDiffSections(_ diff: String) -> FilteredDiff {
         guard !diff.isEmpty else { return FilteredDiff(text: diff, withheldFileCount: 0) }
-        let lines = diff.split(separator: "\n", omittingEmptySubsequences: false)
+        // Split on the LF scalar, not the "\n" Character: Swift reads CRLF as
+        // one Character, so a content line ending in CRLF would swallow the
+        // next section's header. Each line keeps its CR and the join restores
+        // the text byte for byte.
+        let lines = diff.unicodeScalars
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { Substring($0) }
         var kept: [Substring] = []
         var section: [Substring] = []
         var inSection = false
@@ -284,7 +294,7 @@ package enum ClaudeRepoContentFilter {
         }
 
         for line in lines {
-            if line.hasPrefix("diff --git ") {
+            if sectionHeaderPrefixes.contains(where: { line.hasPrefix($0) }) {
                 flushSection()
                 inSection = true
             }
@@ -301,26 +311,27 @@ package enum ClaudeRepoContentFilter {
         )
     }
 
+    private static let combinedHeaderPrefixes = ["diff --cc ", "diff --combined "]
+    private static let sectionHeaderPrefixes = ["diff --git "] + combinedHeaderPrefixes
+
     private static func shouldWithholdDiffSection(_ lines: [Substring]) -> Bool {
-        let paths = diffSectionCandidatePaths(lines)
-        // No parseable path is not a license, it is a parse failure.
-        guard !paths.isEmpty else { return true }
+        // No parseable path is not a license, it is a parse failure; nor is a
+        // path that names something we could not decode.
+        guard let paths = diffSectionCandidatePaths(lines), !paths.isEmpty else { return true }
         return paths.contains { isSecretLike($0) || isLogLike($0) }
     }
 
-    /// Every repo-relative path a diff section names. Over-collection is fine
-    /// (a bogus candidate can only withhold more); under-collection is what
-    /// the fail-closed guard above exists for.
-    private static func diffSectionCandidatePaths(_ lines: [Substring]) -> [String] {
+    /// Every repo-relative path a diff section names, or nil when one of its
+    /// path lines cannot be decoded. Over-collection is fine (a bogus
+    /// candidate can only withhold more); under-collection is what the
+    /// fail-closed guard above exists for.
+    private static func diffSectionCandidatePaths(_ lines: [Substring]) -> [String]? {
         var paths: [String] = []
+        var undecodable = false
         func add(_ raw: Substring) {
-            var path = String(raw)
-            // `--- "a/path with specials"` — strip the quotes; any C-escapes
-            // left inside only make the name unmatchable, never secret-blind:
-            // git quotes for non-ASCII/controls, not for plain ASCII names
-            // like `.env`.
-            if path.hasPrefix("\""), path.hasSuffix("\""), path.count >= 2 {
-                path = String(path.dropFirst().dropLast())
+            guard var path = decodedGitPath(raw) else {
+                undecodable = true
+                return
             }
             if path.hasPrefix("a/") || path.hasPrefix("b/") {
                 path = String(path.dropFirst(2))
@@ -329,8 +340,14 @@ package enum ClaudeRepoContentFilter {
             paths.append(path)
         }
 
-        for line in lines {
-            if line.hasPrefix("--- ") || line.hasPrefix("+++ ") {
+        // Path lines live in the section's header, before its first hunk.
+        // Past `@@` every line is file content, which may well read
+        // `--- "anything` and must not be parsed as a name.
+        for line in lines.prefix(while: { !$0.hasPrefix("@@") }) {
+            if let prefix = combinedHeaderPrefixes.first(where: { line.hasPrefix($0) }) {
+                // A combined diff names one path, so its header is unambiguous.
+                add(line.dropFirst(prefix.count))
+            } else if line.hasPrefix("--- ") || line.hasPrefix("+++ ") {
                 add(line.dropFirst(4))
             } else if line.hasPrefix("rename from ") {
                 add(line.dropFirst("rename from ".count))
@@ -342,12 +359,12 @@ package enum ClaudeRepoContentFilter {
                 add(line.dropFirst("copy to ".count))
             }
         }
+        if undecodable { return nil }
         // Body lines settle it for any section that has them. The header is
         // the fallback for body-less sections (mode-only changes): unquoted
         // `diff --git a/X b/X` splits unambiguously at the LAST ` b/`; a
         // quoted header is left unparsed on purpose — those sections carry no
-        // content lines to lose, and guessing at C-quoting is how a filter
-        // grows a bypass.
+        // content lines to lose, so withholding them costs nothing.
         if paths.isEmpty, let header = lines.first, header.hasPrefix("diff --git ") {
             let content = header.dropFirst("diff --git ".count)
             if !content.hasPrefix("\""),
@@ -356,7 +373,65 @@ package enum ClaudeRepoContentFilter {
                 add(content[content.index(after: split.lowerBound)...])
             }
         }
-        return paths
+        return undecodable ? nil : paths
+    }
+
+    /// One path as git frames it on a `---`/`+++`/`rename`/`copy` line, or
+    /// nil when it cannot be decoded.
+    ///
+    /// Two framings, both git's own:
+    ///
+    /// * Unquoted, a name containing a space is followed by a TAB on the
+    ///   `---`/`+++` lines (`--- a/my project/.env\t`), so a diff tool can find
+    ///   where the name ends. Git quotes any name that itself holds a tab, so
+    ///   everything from the first tab on is framing. Kept, that tab turned
+    ///   `.env` into `.env\t` and the secret's hunk reached the prompt.
+    /// * Quoted (`"a/caf\303\251/.env"`): names with `"`, `\\`, control
+    ///   bytes or, under the default `core.quotePath`, non-ASCII bytes. The
+    ///   C escapes are decoded to bytes and the bytes must be UTF-8;
+    ///   anything else is nil, and the caller withholds the section.
+    package static func decodedGitPath(_ raw: Substring) -> String? {
+        guard raw.hasPrefix("\"") else {
+            guard let tab = raw.firstIndex(of: "\t") else { return String(raw) }
+            return String(raw[..<tab])
+        }
+        var bytes: [UInt8] = []
+        var iterator = Array(raw.utf8).dropFirst().makeIterator()
+        while let byte = iterator.next() {
+            switch byte {
+            case UInt8(ascii: "\""):
+                // The closing quote: the name ends here, or at a framing tab.
+                if let rest = iterator.next(), rest != UInt8(ascii: "\t") { return nil }
+                return String(validating: bytes, as: UTF8.self)
+            case UInt8(ascii: "\\"):
+                guard let escaped = iterator.next() else { return nil }
+                switch escaped {
+                case UInt8(ascii: "a"): bytes.append(0x07)
+                case UInt8(ascii: "b"): bytes.append(0x08)
+                case UInt8(ascii: "t"): bytes.append(0x09)
+                case UInt8(ascii: "n"): bytes.append(0x0A)
+                case UInt8(ascii: "v"): bytes.append(0x0B)
+                case UInt8(ascii: "f"): bytes.append(0x0C)
+                case UInt8(ascii: "r"): bytes.append(0x0D)
+                case UInt8(ascii: "\""), UInt8(ascii: "\\"): bytes.append(escaped)
+                case UInt8(ascii: "0")...UInt8(ascii: "3"):
+                    var value = Int(escaped - UInt8(ascii: "0"))
+                    for _ in 0..<2 {
+                        guard let digit = iterator.next(),
+                              (UInt8(ascii: "0")...UInt8(ascii: "7")).contains(digit)
+                        else { return nil }
+                        value = value * 8 + Int(digit - UInt8(ascii: "0"))
+                    }
+                    bytes.append(UInt8(value))
+                default:
+                    return nil
+                }
+            default:
+                bytes.append(byte)
+            }
+        }
+        // No closing quote.
+        return nil
     }
 
     /// Binary heuristic: a NUL byte in the head.

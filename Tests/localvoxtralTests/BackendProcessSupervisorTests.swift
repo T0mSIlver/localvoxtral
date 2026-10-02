@@ -312,6 +312,87 @@ final class BackendProcessSupervisorTests: XCTestCase {
         await supervisor.stop()
     }
 
+    /// #1306: a helper that crashes soon after every ready transition (the
+    /// prompt warmup crashing it, say) used to have its count reset by each
+    /// readiness, so it restarted forever on the first backoff step.
+    func testRepeatedCrashesAfterReadinessReachFailureLimit() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let countFile = directory.appendingPathComponent("count")
+        let release = try FifoGate(at: directory.appendingPathComponent("release"))
+        let script = try writeCrashAfterReleaseScript(in: directory, countFile: countFile, release: release)
+        let sleeps = RecordingSleep()
+        let supervisor = makeSupervisor(
+            executableURL: script,
+            maxConsecutiveRestartFailures: 3,
+            probe: Self.readyOnceSpawned(),
+            sleepFor: { duration in try await sleeps.sleep(duration) }
+        )
+        let watcher = StateWatcher(stream: supervisor.stateUpdates)
+        defer { watcher.cancel() }
+        let runs = RunGate(stream: supervisor.stateUpdates) { _ in release.releaseOne() }
+        defer { runs.cancel() }
+
+        await supervisor.start()
+        let state: BackendProcessSupervisor.State
+        do {
+            state = try await watcher.waitForState { state in
+                if case .failed = state { return true }
+                return false
+            }
+        } catch {
+            await supervisor.stop()
+            throw error
+        }
+
+        guard case let .failed(summary, _) = state else {
+            return XCTFail("expected failed state, got \(state)")
+        }
+        XCTAssertEqual(summary, "test-backend exited 3 consecutive times.")
+        XCTAssertEqual(runs.runningCount, 3)
+        XCTAssertEqual(try readCount(from: countFile), 3)
+        XCTAssertEqual(sleeps.recordedDurations, [.milliseconds(500), .seconds(1)])
+    }
+
+    /// A helper that stayed ready for the healthy-run duration before it
+    /// crashed starts a new count: it restarts on the first backoff step
+    /// instead of failing.
+    func testACrashAfterALongHealthyRunRestartsFromTheFirstAttempt() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let countFile = directory.appendingPathComponent("count")
+        let release = try FifoGate(at: directory.appendingPathComponent("release"))
+        let script = try writeCrashAfterReleaseScript(in: directory, countFile: countFile, release: release)
+        let clock = ManualSessionClock()
+        let supervisor = makeSupervisor(
+            executableURL: script,
+            maxConsecutiveRestartFailures: 2,
+            healthyRunDuration: .seconds(60),
+            probe: Self.readyOnceSpawned(),
+            sleepFor: { _ in await Task.yield() },
+            now: clock.clock.now
+        )
+        let runs = RunGate(stream: supervisor.stateUpdates) { run in
+            // The first run crashes at once and the second after a minute
+            // ready; the third is left running.
+            if run == 2 { clock.advance(by: 60) }
+            if run < 3 { release.releaseOne() }
+        }
+        defer { runs.cancel() }
+
+        await supervisor.start()
+        let reachedThirdRun = await runs.waitForRun(3)
+        await supervisor.stop()
+
+        XCTAssertTrue(reachedThirdRun, "the helper did not restart after its healthy run; it went through \(runs.states)")
+        XCTAssertEqual(
+            runs.states.filter { if case .restarting = $0 { true } else { false } },
+            [.restarting(attempt: 1), .restarting(attempt: 1)]
+        )
+    }
+
     func testStopHonorsTERMWithoutRestarting() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -390,13 +471,21 @@ final class BackendProcessSupervisorTests: XCTestCase {
         let sleeps = ControlledSleep()
         let supervisor = makeSupervisor(
             executableURL: script,
-            readinessPollInterval: .milliseconds(10),
+            readinessPollInterval: .milliseconds(20),
             readinessTimeout: .seconds(600),
             terminationGracePeriod: .milliseconds(2),
             probe: { _ in probe.value && FileManager.default.fileExists(atPath: pidFile.path) },
             sleepFor: { duration in
-                if duration == .milliseconds(10) {
+                if duration == .milliseconds(20) {
                     await TerminationAwareSleep.waitForFile(pidFile)
+                    return
+                }
+                // The 10 ms slices after SIGKILL wait for Foundation to reap
+                // the shell, which only real time brings: returned at once,
+                // their hundred iterations ran out before the reap on a
+                // loaded runner and `stop()` came back with the shell alive.
+                if duration == .milliseconds(10) {
+                    try await Task.sleep(for: duration)
                     return
                 }
                 try await sleeps.sleep(duration)
@@ -426,8 +515,10 @@ final class BackendProcessSupervisorTests: XCTestCase {
         readinessTimeout: Duration = .seconds(5),
         terminationGracePeriod: Duration = .milliseconds(100),
         maxConsecutiveRestartFailures: Int = 5,
+        healthyRunDuration: Duration = .seconds(60),
         probe: @escaping @Sendable (URL) async -> Bool,
-        sleepFor: @escaping @Sendable (Duration) async throws -> Void
+        sleepFor: @escaping @Sendable (Duration) async throws -> Void,
+        now: @escaping @Sendable () -> Date = ManualSessionClock().clock.now
     ) -> BackendProcessSupervisor {
         BackendProcessSupervisor(
             configuration: BackendProcessConfiguration(
@@ -439,11 +530,46 @@ final class BackendProcessSupervisorTests: XCTestCase {
                 readinessPollInterval: readinessPollInterval,
                 readinessTimeout: readinessTimeout,
                 terminationGracePeriod: terminationGracePeriod,
-                maxConsecutiveRestartFailures: maxConsecutiveRestartFailures
+                maxConsecutiveRestartFailures: maxConsecutiveRestartFailures,
+                healthyRunDuration: healthyRunDuration
             ),
             probe: probe,
-            sleepFor: sleepFor
+            sleepFor: sleepFor,
+            now: now
         )
+    }
+
+    /// A child that counts its launch, waits for one release from the
+    /// test, then crashes.
+    private func writeCrashAfterReleaseScript(in directory: URL, countFile: URL, release: FifoGate) throws -> URL {
+        try writeScript(
+            in: directory,
+            name: "backend.sh",
+            body: """
+            #!/bin/sh
+            count=0
+            if [ -f "\(countFile.path)" ]; then
+              count=$(cat "\(countFile.path)")
+            fi
+            count=$((count + 1))
+            echo "$count" > "\(countFile.path)"
+            read _ < "\(release.url.path)"
+            echo "crashed after readiness $count" >&2
+            exit 7
+            """
+        )
+    }
+
+    /// Not ready before the first spawn (the supervisor's port check), ready
+    /// at every readiness poll after it.
+    private static func readyOnceSpawned() -> @Sendable (URL) async -> Bool {
+        let calls = LockedValue(0)
+        return { _ in
+            calls.withLock { count in
+                count += 1
+                return count > 1
+            }
+        }
     }
 
     private func makeTemporaryDirectory() throws -> URL {
@@ -600,6 +726,51 @@ private final class StateWatcher: @unchecked Sendable {
     private struct Storage: Sendable {
         var states: [BackendProcessSupervisor.State] = []
         var waiters: [Waiter] = []
+    }
+}
+
+/// Calls `onRunning` with the run's number each time the supervisor reports
+/// `.running`, so a test decides when each ready child exits.
+@MainActor
+private final class RunGate {
+    private(set) var states: [BackendProcessSupervisor.State] = []
+    private(set) var runningCount = 0
+    private var task: Task<Void, Never>?
+    private var runWaiters: [(run: Int, wait: BoundedWait)] = []
+
+    init(
+        stream: AsyncStream<BackendProcessSupervisor.State>,
+        onRunning: @escaping @MainActor (Int) -> Void
+    ) {
+        task = Task { @MainActor [weak self] in
+            for await state in stream {
+                guard let self else { return }
+                self.states.append(state)
+                guard state == .running else { continue }
+                self.runningCount += 1
+                onRunning(self.runningCount)
+                let count = self.runningCount
+                let reached = self.runWaiters.filter { $0.run <= count }
+                self.runWaiters.removeAll { $0.run <= count }
+                reached.forEach { $0.wait.resolve() }
+            }
+        }
+    }
+
+    /// True once the `run`th `.running` arrived; false after the failure bound.
+    func waitForRun(_ run: Int) async -> Bool {
+        let wait = BoundedWait()
+        if runningCount >= run {
+            wait.resolve()
+        } else {
+            runWaiters.append((run, wait))
+        }
+        return await wait.value(failAfter: 10)
+    }
+
+    func cancel() {
+        task?.cancel()
+        task = nil
     }
 }
 

@@ -364,6 +364,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Queued here, so the History drain at the end of quit writes it.
+        viewModel.saveStoppedDictationForQuit()
         widgetSnapshotWriter?.writeAppQuit()
         widgetSnapshotWriter = nil
         #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
@@ -398,6 +400,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // launch finds its own port taken. The wait is bounded and short; a
         // quit must never hang on a wedged network.
         drainRemoteForwardTeardowns(within: 3.0)
+        // A drafting or project-terms agent still running would outlive the
+        // app, reparented to launchd and still spending tokens (#1225).
+        BoundedProcessChildren.shared.terminateAll(grace: 1.0, within: 2.0)
         claudeRemoteForwards = nil
         claudeRemoteListenerCoordinator?.shutdown()
         claudeRemoteListenerCoordinator = nil
@@ -572,7 +577,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.claudeRemoteHosts?.hosts(matchingSSHDestination: destination) ?? []
             },
             canonicalizedEnrolledHosts: { [weak self] destination in
-                guard let hosts = self?.claudeRemoteHosts?.hosts() else { return [] }
+                guard let hosts = self?.claudeRemoteHosts?.activeHostsIfReadable() else { return [] }
                 return await canonicalizer.matchingHosts(destination: destination, enrolledHosts: hosts)
             }
         )
@@ -762,6 +767,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 reportCmuxStatus: { [weak viewModel] status in
                     viewModel?.claudeIntegrationSettings?.cmuxStatus = status
                 },
+                ttyForegroundPIDs: { TTYProcessTable.foregroundPIDs(onTTYDevicePath: $0) },
                 sshDestinationProbe: {
                     SSHDestinationTTYProbe.connection(onTTYDevicePath: $0)
                 },
@@ -774,7 +780,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self?.claudeRemoteHosts?.hosts(matchingSSHDestination: destination) ?? []
                 },
                 canonicalizedEnrolledHosts: { [weak self] destination in
-                    guard let hosts = self?.claudeRemoteHosts?.hosts() else { return [] }
+                    guard let hosts = self?.claudeRemoteHosts?.activeHostsIfReadable() else { return [] }
                     return await sshDestinationCanonicalizer.matchingHosts(
                         destination: destination,
                         enrolledHosts: hosts
@@ -784,7 +790,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     await sshDestinationCanonicalizer.proxyJumpShape(for: destination)
                 },
                 speculativeHosts: { [weak self] in
-                    self?.claudeRemoteHosts?.hosts() ?? []
+                    self?.claudeRemoteHosts?.activeHostsIfReadable() ?? []
                 },
                 remoteHerdrForwards: claudeRemoteHerdrForwards,
                 herdrPanelMetadata: herdrClient,
@@ -818,7 +824,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 sleep: viewModel.session.dependencies.clock.sleep,
                 nicknames: nicknames,
                 branch: { RepoIndexing.branch(root: $0) },
-                title: desktopTitles.title(of:)
+                title: desktopTitles.title(of:),
+                ttyForegroundPIDs: { TTYProcessTable.foregroundPIDs(onTTYDevicePath: $0) }
             )
             installAgentAttention(
                 ttyReader: ttyReader,
@@ -1071,7 +1078,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         viewModel.quickCapture?.attachRemote(quickCapture)
         viewModel.quickCapture?.enrolledHosts = {
-            registry?.hosts().filter { $0.revokedAt == nil }.map { (id: $0.id, name: $0.label) } ?? []
+            registry?.activeHostsIfReadable().map { (id: $0.id, name: $0.label) } ?? []
         }
         viewModel.quickCapture?.liveSessions = { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() }
 

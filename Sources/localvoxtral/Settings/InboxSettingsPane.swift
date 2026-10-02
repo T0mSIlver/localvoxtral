@@ -29,6 +29,8 @@ struct InboxSettingsPane: View {
                 }
             }
         }
+        // Another running copy may have changed the captures (#1126).
+        .onAppear { inbox?.model.reloadIfChanged() }
     }
 }
 
