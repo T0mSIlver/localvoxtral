@@ -98,6 +98,10 @@ struct RealtimeDeltaLog {
             Log.deltas.notice(
                 "[delta-log seq=\(sequence)] transcription finalized")
             emit(.transcriptionFinalized, payload: nil)
+        case .sessionRolledOver(let next):
+            Log.deltas.notice(
+                "[delta-log seq=\(sequence)] session boundary: rolled over to \(next.description, privacy: .public)")
+            emit(.status, payload: "rolled over to \(next.description)")
         }
     }
 }

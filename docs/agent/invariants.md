@@ -100,6 +100,11 @@ there is not.
   refuses everything that socket SAYS, but a WebSocket left in `connecting`
   still transmits the audio the stop flushed into its pending queue, and only
   closing it stops that.
+  A context rollover (#1139) is the one socket swap the client makes on its
+  own. The retiring socket raises `.sessionRolledOver(to:)` after its last
+  transcript and before the new socket is resumed, so the FIFO hands the
+  session its new name before that socket can say anything; from there the
+  retiring socket is refused like any other retired one.
 - **Live Auto-Paste holds back the tail of the transcript.** Replacements are
   applied before typing (nothing is ever un-typed — there are no backspaces in
   the insertion path, and terminals can't support them: field bug 2026-07-06),
@@ -250,10 +255,13 @@ there is not.
   focused app. **The Return exception** (owner ruling): in a terminal tab,
   and only there, Return may be pressed in an app the app itself brought
   forward. The pane must first read back `.focused` (its tty through the
-  join's reader, never a window title); only then is the text typed, into
+  join's reader, never a window title) and the registry still list the
+  session after the focus, since the shell left by an agent that exited
+  holds the same tty (#1219); only then is the text typed, into
   the terminal pid that is frontmost and carries the focused bundle ID.
   After the typing the tty is read back again, and Return is pressed only
-  if it still matches, that pid is frontmost and on `ReturnSubmitsAppList`,
+  if it still matches, the registry still lists the session after that
+  read-back, that pid is frontmost and on `ReturnSubmitsAppList`,
   and Secure Keyboard Entry is off. A failed check before the typing types
   nothing and keeps the text in History; one after it leaves the text
   unsubmitted, and the popover says so. Correction learning and term
@@ -770,11 +778,12 @@ there is not.
     Otherwise, and
     whenever the request went out with no valid answer (it may have landed),
     the text stays in History (`keepInHistory`).
-    *Enter only over the joined agent:* before each Enter the route asks the
-    pane's foreground processes again, with the test its arm joined on (the
-    registered pid for a local pane, the parent pid or agent name for a
-    remote one). A pane back at its shell gets no Enter: it would run the
-    prompt as a command.
+    *Text and Enter only over the joined agent:* before each append and
+    each Enter the route asks the pane's foreground processes again, with
+    the test its arm joined on (the registered pid for a local pane, the
+    parent pid or agent name for a remote one). A pane back at its shell, or
+    running another agent, gets neither: the text would land in that prompt
+    and an Enter would run it. The text stays in History, never typed.
     *Resolution:* only when opencode's relay did not resolve, so an opencode
     pane with a relay keeps it; from the context join's herdr binding when
     the join resolved one, and, when no join ran (polishing off), from a
@@ -2128,7 +2137,7 @@ there is not.
     Desktop reader read it back from its prompt 0.2 s after the open. The
     sidebar exposes no session id to Accessibility (rows are titles), so
     clicking a row cannot be tied to a session. `.focused` requires Desktop
-    frontmost and `sessionShown` to resolve the focused view to this
+    frontmost before and after the read, and `sessionShown` to resolve the focused view to this
     registry session: focus in the primary pane's prompt, and the id
     reported by this session alone. An ambiguous id, focus left in the
     sidebar or a second pane, or no answer within 2 s is `.unverified`, and

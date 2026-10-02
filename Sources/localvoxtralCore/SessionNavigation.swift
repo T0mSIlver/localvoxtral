@@ -667,19 +667,26 @@ package final class SessionNavigator {
     }
 
     /// Whether `bundleID`'s focused pane, read back the way the join reads
-    /// it, shows the live session `sessionID`; false once it is not live.
+    /// it, shows the live session `sessionID`; false once it is not live,
+    /// before or after the read-back. An agent that exits leaves a shell on
+    /// its tty, which reads back the same (#1219).
     package func focusedPaneShows(sessionID: String, bundleID: String) async -> Bool {
-        guard let session = liveSessions().first(where: { $0.sessionID == sessionID }) else { return false }
-        return await focuser.focusedPaneShows(session, bundleID: bundleID)
+        guard let session = liveSession(sessionID) else { return false }
+        let shows = await focuser.focusedPaneShows(session, bundleID: bundleID)
+        return shows && liveSession(sessionID) != nil
     }
 
     /// Brings a live session's pane forward by registry id; nil when the
-    /// session is no longer live.
+    /// session is no longer live, before or after the focus (#1219).
     package func focusPane(sessionID: String) async -> SessionPaneFocusOutcome? {
-        guard let session = liveSessions().first(where: { $0.sessionID == sessionID }) else {
-            return nil
-        }
-        return await focuser.focusPane(of: session)
+        guard let session = liveSession(sessionID) else { return nil }
+        let outcome = await focuser.focusPane(of: session)
+        guard liveSession(sessionID) != nil else { return nil }
+        return outcome
+    }
+
+    private func liveSession(_ sessionID: String) -> ClaudeSessionSnapshot? {
+        liveSessions().first { $0.sessionID == sessionID }
     }
 
     private static func candidates(

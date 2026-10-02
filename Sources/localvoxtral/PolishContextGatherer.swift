@@ -9,10 +9,15 @@ import Foundation
 /// each other. Off-actor work runs where it did (under its own deadlines);
 /// the result is one value the assembler and the capture read.
 struct PolishContextMaterial {
-    let screenDecision: TerminalScreenContextDecision
-    let repoVocabularyOutcome: RepoVocabularyMatcher.GroundingOutcome
-    let claudeRepoSnapshot: ClaudeRepoSnapshot?
-    let claudeSessionText: String
+    var screenDecision: TerminalScreenContextDecision
+    /// The screen decision as gathered, before any consent withdrawal: the
+    /// diagnostic record's socket-pane swap signal compares against it.
+    let gatheredScreenDecision: TerminalScreenContextDecision
+    /// The clipboard read at stop, nil once its consent is withdrawn.
+    var clipboardContext: PolishClipboardContext?
+    var repoVocabularyOutcome: RepoVocabularyMatcher.GroundingOutcome
+    var claudeRepoSnapshot: ClaudeRepoSnapshot?
+    var claudeSessionText: String
     let screenRenderDemand: Int
     let repoRenderDemand: Int
     let allocation: [PolishContextSource: Int]
@@ -20,16 +25,16 @@ struct PolishContextMaterial {
     let screenRenderBudget: Int
     let repoRenderBudget: Int
     let claudeRenderBudget: Int
-    let claudeRepoPreparation: ClaudeRepoContextPreparation
-    let claudeSessionPreparation: PolishContextPreparation
-    let clipboardPreparation: PolishContextPreparation
-    let screenPreparation: PolishContextPreparation
+    var claudeRepoPreparation: ClaudeRepoContextPreparation
+    var claudeSessionPreparation: PolishContextPreparation
+    var clipboardPreparation: PolishContextPreparation
+    var screenPreparation: PolishContextPreparation
     let learnedProject: LearnedTermProjectResolver.Identity?
-    let learnedVocabularyOutcome: RepoVocabularyMatcher.GroundingOutcome
+    var learnedVocabularyOutcome: RepoVocabularyMatcher.GroundingOutcome
     /// The agent proposals (#609) that took part in matching: pre-applied
     /// like any learned entry, never listed as the speaker's vocabulary.
-    let learnedProposals: Set<String>
-    let merged: PolishContextGrounding.Merged
+    var learnedProposals: Set<String>
+    var merged: PolishContextGrounding.Merged
 
     var claudeRepoOutcome: RepoVocabularyMatcher.GroundingOutcome { claudeRepoPreparation.grounding }
     var claudeSessionOutcome: RepoVocabularyMatcher.GroundingOutcome { claudeSessionPreparation.grounding }
@@ -379,55 +384,20 @@ enum PolishContextGatherer {
         // vocabulary and the joined session's repo are both "the repo
         // the speaker is working in", and they render under one
         // header.
-        let merged = PolishContextGrounding.merge([
-            PolishContextGrounding.Candidate(
-                source: .repository,
-                entries: repoVocabularyOutcome.entries,
-                isFallbackOnly: repoVocabularyOutcome.isFallbackOnly,
-                phoneticEntries: repoVocabularyOutcome.phoneticEntries,
-                verificationEntries: repoVocabularyOutcome.verificationCandidates
-            ),
-            PolishContextGrounding.Candidate(
-                source: .repository,
-                entries: claudeRepoOutcome.entries,
-                isFallbackOnly: claudeRepoOutcome.isFallbackOnly,
-                phoneticEntries: claudeRepoOutcome.phoneticEntries,
-                verificationEntries: claudeRepoOutcome.verificationCandidates
-            ),
-            PolishContextGrounding.Candidate(
-                source: .terminal,
-                entries: screenVocabularyOutcome.entries,
-                isFallbackOnly: screenVocabularyOutcome.isFallbackOnly,
-                phoneticEntries: screenVocabularyOutcome.phoneticEntries,
-                verificationEntries: screenVocabularyOutcome.verificationCandidates
-            ),
-            PolishContextGrounding.Candidate(
-                source: .claude,
-                entries: claudeSessionOutcome.entries,
-                isFallbackOnly: claudeSessionOutcome.isFallbackOnly,
-                phoneticEntries: claudeSessionOutcome.phoneticEntries,
-                verificationEntries: claudeSessionOutcome.verificationCandidates
-            ),
-            PolishContextGrounding.Candidate(
-                source: .clipboard,
-                entries: clipboardVocabularyOutcome.entries,
-                isFallbackOnly: clipboardVocabularyOutcome.isFallbackOnly,
-                phoneticEntries: clipboardVocabularyOutcome.phoneticEntries,
-                verificationEntries: clipboardVocabularyOutcome.verificationCandidates
-            ),
-            PolishContextGrounding.Candidate(
-                source: .learned,
-                entries: learnedVocabularyOutcome.entries,
-                isFallbackOnly: learnedVocabularyOutcome.isFallbackOnly,
-                phoneticEntries: learnedVocabularyOutcome.phoneticEntries,
-                verificationEntries: learnedVocabularyOutcome.verificationCandidates
-            ),
-        ], maxVerificationPairs: RepoVocabularyMatcher.nominationCap(
-            forTranscript: workingText
-        ))
+        let merged = Self.merge(
+            repository: repoVocabularyOutcome,
+            claudeRepository: claudeRepoOutcome,
+            terminal: screenVocabularyOutcome,
+            claude: claudeSessionOutcome,
+            clipboard: clipboardVocabularyOutcome,
+            learned: learnedVocabularyOutcome,
+            workingText: workingText
+        )
 
         return PolishContextMaterial(
             screenDecision: screenDecision,
+            gatheredScreenDecision: screenDecision,
+            clipboardContext: capturedClipboardContext,
             repoVocabularyOutcome: repoVocabularyOutcome,
             claudeRepoSnapshot: claudeRepoSnapshot,
             claudeSessionText: claudeSessionText,
@@ -446,6 +416,38 @@ enum PolishContextGatherer {
             learnedVocabularyOutcome: learnedVocabularyOutcome,
             learnedProposals: Set(learnedProposals),
             merged: merged
+        )
+    }
+
+    /// The single cross-source merge, one candidate per source.
+    static func merge(
+        repository: RepoVocabularyMatcher.GroundingOutcome,
+        claudeRepository: RepoVocabularyMatcher.GroundingOutcome,
+        terminal: RepoVocabularyMatcher.GroundingOutcome,
+        claude: RepoVocabularyMatcher.GroundingOutcome,
+        clipboard: RepoVocabularyMatcher.GroundingOutcome,
+        learned: RepoVocabularyMatcher.GroundingOutcome,
+        workingText: String
+    ) -> PolishContextGrounding.Merged {
+        let sources: [(PolishContextSource, RepoVocabularyMatcher.GroundingOutcome)] = [
+            (.repository, repository),
+            (.repository, claudeRepository),
+            (.terminal, terminal),
+            (.claude, claude),
+            (.clipboard, clipboard),
+            (.learned, learned),
+        ]
+        return PolishContextGrounding.merge(
+            sources.map { source, outcome in
+                PolishContextGrounding.Candidate(
+                    source: source,
+                    entries: outcome.entries,
+                    isFallbackOnly: outcome.isFallbackOnly,
+                    phoneticEntries: outcome.phoneticEntries,
+                    verificationEntries: outcome.verificationCandidates
+                )
+            },
+            maxVerificationPairs: RepoVocabularyMatcher.nominationCap(forTranscript: workingText)
         )
     }
 
@@ -486,5 +488,84 @@ enum PolishContextGatherer {
             endpointURL,
             trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
         )
+    }
+}
+
+extension PolishContextMaterial {
+    /// This material without the sources whose consent no longer holds, or
+    /// nil when every source it carries is still consented to.
+    ///
+    /// Settings stay live while a stop awaits (the repository index alone can
+    /// take 3 s), and the clipboard and screen were read before that await
+    /// under the consent of the moment. Turning a source off, or revoking
+    /// trust in a remote endpoint, is a withdrawal that must land before the
+    /// request leaves: the source loses its excerpt and its grounding, and the
+    /// merge is redone so none of its spellings are pre-applied. Learned terms
+    /// have no gate beyond polishing (`learnedTermGrounding`), so they stay.
+    @MainActor
+    func withdrawingRevokedConsent(
+        settings: SettingsStore,
+        endpointURL: URL?,
+        workingText: String
+    ) -> PolishContextMaterial? {
+        let endpointPermitted = endpointURL.map {
+            PolishContextClipboardReader.isPermittedContextEndpoint(
+                $0,
+                trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
+            )
+        } ?? false
+        var material = self
+        var withdrawn: [String] = []
+        if clipboardContext != nil,
+           !(settings.polishClipboardContextEnabled && endpointPermitted) {
+            material.clipboardContext = nil
+            material.clipboardPreparation = .empty
+            withdrawn.append("clipboard")
+        }
+        if screenDecision.vocabularyGroundingText != nil,
+           !(settings.terminalScreenContextEnabled && endpointPermitted) {
+            material.screenDecision = .drop(reason: .policyRejected)
+            material.screenPreparation = .empty
+            withdrawn.append("screen")
+        }
+        if repoVocabularyOutcome != .empty || !learnedProposals.isEmpty,
+           !(settings.repoVocabularyEnabled && endpointPermitted) {
+            material.repoVocabularyOutcome = .empty
+            // Agent proposals (#609) are admitted only where repo vocabulary
+            // may go, so they leave with it.
+            let proposals = learnedProposals
+            let keep = { (entry: ReplacementEntry) in !proposals.contains(entry.replaceWith) }
+            let learned = learnedVocabularyOutcome
+            material.learnedVocabularyOutcome = RepoVocabularyMatcher.GroundingOutcome(
+                entries: learned.entries.filter(keep),
+                isFallbackOnly: learned.isFallbackOnly,
+                phoneticEntries: learned.phoneticEntries.filter(keep),
+                verificationCandidates: learned.verificationCandidates.filter(keep)
+            )
+            material.learnedProposals = []
+            withdrawn.append("repo-vocabulary")
+        }
+        if claudeRepoSnapshot != nil || !claudeSessionText.isEmpty,
+           !(settings.claudeRepoContextEnabled && endpointPermitted) {
+            material.claudeRepoSnapshot = nil
+            material.claudeRepoPreparation = .empty
+            material.claudeSessionText = ""
+            material.claudeSessionPreparation = .empty
+            withdrawn.append("claude")
+        }
+        guard !withdrawn.isEmpty else { return nil }
+        Log.polishing.notice(
+            "Polish context withdrawn during the stop, consent no longer holds: \(withdrawn.joined(separator: ","), privacy: .public)"
+        )
+        material.merged = PolishContextGatherer.merge(
+            repository: material.repoVocabularyOutcome,
+            claudeRepository: material.claudeRepoOutcome,
+            terminal: material.screenVocabularyOutcome,
+            claude: material.claudeSessionOutcome,
+            clipboard: material.clipboardVocabularyOutcome,
+            learned: material.learnedVocabularyOutcome,
+            workingText: workingText
+        )
+        return material
     }
 }

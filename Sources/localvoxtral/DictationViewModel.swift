@@ -379,12 +379,16 @@ final class DictationViewModel {
         /// Brings an app back to the front: ⇧Tab to the focused app after a
         /// session pane came forward. False when it is gone.
         var activateApp: @MainActor (pid_t) -> Bool
-        /// The center the sleep and terminate observers register on. Nil is
-        /// the default center, registered only when runtime services run; a
+        /// The center the terminate observer registers on. Nil is the
+        /// default center, registered only when runtime services run; a
         /// private center is registered on regardless, so a test posts
         /// through the real wiring without reaching every retained view
         /// model in the process.
         var lifecycleNotificationCenter: NotificationCenter?
+        /// The center the sleep observer registers on, under the same rule.
+        /// Nil is `NSWorkspace.shared.notificationCenter`: AppKit posts
+        /// `willSleepNotification` there and nowhere else.
+        var workspaceNotificationCenter: NotificationCenter?
         /// The clock a mid-dictation reconnect run (#380) sleeps on.
         var reconnectSleep: @MainActor (TimeInterval) async -> Void
         /// Where a connection failure the popover cannot carry is shown.
@@ -410,6 +414,11 @@ final class DictationViewModel {
         /// records. Nil is the app's folder in Application Support; a test
         /// that starts runtime services passes a temporary one.
         var historyDirectory: URL?
+        /// How much audio one External URL server session may take before
+        /// the client rolls it over (#1139). Nil is `GET /v1/models` on the
+        /// server when runtime services run, and no rollover in a unit test,
+        /// so no suite dials the endpoint in its settings.
+        var realtimeContextLimit: (@Sendable (RealtimeSessionConfiguration) async -> RealtimeContextBudget?)?
 
         init(
             microphone: (() -> any MicrophoneCapturing)? = nil,
@@ -425,6 +434,7 @@ final class DictationViewModel {
                 NSRunningApplication(processIdentifier: $0)?.activate(options: []) ?? false
             },
             lifecycleNotificationCenter: NotificationCenter? = nil,
+            workspaceNotificationCenter: NotificationCenter? = nil,
             reconnectSleep: @escaping @MainActor (TimeInterval) async -> Void =
                 DictationSessionController.sleepForReconnect,
             connectionFailurePresenter: any ConnectionFailurePresenting = ModalConnectionFailurePresenter(),
@@ -433,7 +443,8 @@ final class DictationViewModel {
             onRealtimeDeltaLogRecord: ((DebugRealtimeDeltaLogRecord) -> Void)? = nil,
             clock: SessionClock = .live,
             batchTranscriber: any MistralBatchTranscribing = MistralBatchTranscriptionClient(),
-            historyDirectory: URL? = nil
+            historyDirectory: URL? = nil,
+            realtimeContextLimit: (@Sendable (RealtimeSessionConfiguration) async -> RealtimeContextBudget?)? = nil
         ) {
             self.microphone = microphone
             self.pasteboardReader = pasteboardReader
@@ -442,6 +453,7 @@ final class DictationViewModel {
             self.applicationName = applicationName
             self.activateApp = activateApp
             self.lifecycleNotificationCenter = lifecycleNotificationCenter
+            self.workspaceNotificationCenter = workspaceNotificationCenter
             self.reconnectSleep = reconnectSleep
             self.connectionFailurePresenter = connectionFailurePresenter
             self.onSessionRecord = onSessionRecord
@@ -450,6 +462,7 @@ final class DictationViewModel {
             self.clock = clock
             self.batchTranscriber = batchTranscriber
             self.historyDirectory = historyDirectory
+            self.realtimeContextLimit = realtimeContextLimit
         }
     }
     /// Warms the managed polishing helper's prompt-prefix cache on every
@@ -479,12 +492,10 @@ final class DictationViewModel {
 
 
 
+    /// Each lifecycle observer with the center it was registered on, so
+    /// deinit removes it from the same one.
     @ObservationIgnored
-    private var lifecycleObservers: [NSObjectProtocol] = []
-    /// The center `lifecycleObservers` were registered on, so deinit removes
-    /// them from the same one.
-    @ObservationIgnored
-    private var lifecycleNotificationCenter: NotificationCenter = .default
+    private var lifecycleObservers: [(NotificationCenter, NSObjectProtocol)] = []
     @ObservationIgnored
     let managesRuntimeServices: Bool
     /// When true, the startup permission-prompt pass (microphone +
@@ -519,6 +530,10 @@ final class DictationViewModel {
             DictationViewModel.startupPermissionPromptsSuppressed(),
         dependencies: Dependencies = Dependencies()
     ) {
+        var dependencies = dependencies
+        if dependencies.realtimeContextLimit == nil, startRuntimeServices {
+            dependencies.realtimeContextLimit = { await RealtimeContextLimitProbe.budget(for: $0) }
+        }
         self.settings = settings
         self.shortcuts = ShortcutController(settings: settings)
         self.backendManager =
@@ -794,7 +809,11 @@ final class DictationViewModel {
             installUsageLedger(usageLedger)
             installVoiceMemos(usageLedger: usageLedger)
             refreshMicrophoneInputs()
-            registerLifecycleObservers(on: dependencies.lifecycleNotificationCenter ?? .default)
+            registerLifecycleObservers(
+                application: dependencies.lifecycleNotificationCenter ?? .default,
+                workspace: dependencies.workspaceNotificationCenter
+                    ?? NSWorkspace.shared.notificationCenter
+            )
             permissions.requestStartupPermissionsIfNeeded()
             importSpeakerTermsFromReplacementDictionaryIfNeeded()
             // Subscribe BEFORE the launch warmup below so the very first
@@ -821,8 +840,11 @@ final class DictationViewModel {
                 promptWarmup?.ensureWarm(reason: "dictation start")
             }
             engines.warmUpManagedBackendsAtLaunchIfNeeded()
-        } else if let center = dependencies.lifecycleNotificationCenter {
-            registerLifecycleObservers(on: center)
+        } else {
+            registerLifecycleObservers(
+                application: dependencies.lifecycleNotificationCenter,
+                workspace: dependencies.workspaceNotificationCenter
+            )
         }
     }
 
@@ -839,8 +861,8 @@ final class DictationViewModel {
 
     @MainActor
     deinit {
-        for observer in lifecycleObservers {
-            lifecycleNotificationCenter.removeObserver(observer)
+        for (center, observer) in lifecycleObservers {
+            center.removeObserver(observer)
         }
         lifecycleObservers.removeAll()
         audio.commitTask?.cancel()
@@ -872,22 +894,33 @@ final class DictationViewModel {
         }
     }
 
+    /// A stopped dictation still owed its commit is saved to History as not
+    /// inserted. Quit calls this before it drains the History writes.
+    func saveStoppedDictationForQuit() {
+        session.saveStoppedDictationForQuit()
+    }
+
     // MARK: - Lifecycle Observers
 
-    private func registerLifecycleObservers(on nc: NotificationCenter) {
-
-        let sleepObserver = nc.addObserver(
-            forName: NSWorkspace.willSleepNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self, self.isDictating else { return }
-                self.stopDictation(reason: "system sleep", finalizeRemainingAudio: false)
+    private func registerLifecycleObservers(
+        application: NotificationCenter?, workspace: NotificationCenter?
+    ) {
+        if let workspace {
+            let sleepObserver = workspace.addObserver(
+                forName: NSWorkspace.willSleepNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, self.isDictating else { return }
+                    self.stopDictation(reason: "system sleep", finalizeRemainingAudio: false)
+                }
             }
+            lifecycleObservers.append((workspace, sleepObserver))
         }
 
-        let terminateObserver = nc.addObserver(
+        guard let application else { return }
+        let terminateObserver = application.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
@@ -919,8 +952,7 @@ final class DictationViewModel {
             }
         }
 
-        lifecycleObservers = [sleepObserver, terminateObserver]
-        lifecycleNotificationCenter = nc
+        lifecycleObservers.append((application, terminateObserver))
     }
 
     /// True when `LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS=1` — the
@@ -1079,10 +1111,12 @@ extension DictationViewModel {
     }
 
     /// What a dictation would dial now, on a socket of its own so a memo never
-    /// touches the session's client. The bundled helper is started first.
+    /// touches the session's client. The bundled helper is started first. An
+    /// External URL server's context budget comes along, as a dictation's
+    /// does (#1148).
     private func voiceMemoEngine(
         usageLedger: UsageLedger
-    ) async throws -> (RealtimeSessionConfiguration, @Sendable () -> any RealtimeClient) {
+    ) async throws -> (RealtimeSessionConfiguration, RealtimeContextBudget?, @Sendable () -> any RealtimeClient) {
         let mode = settings.dictationBackendMode
         if mode == .managedLocal {
             try await backendManager.ensureReady(dictation: true, polishing: false)
@@ -1098,13 +1132,17 @@ extension DictationViewModel {
             usageBackend: DictationSessionController.usageBackend(for: mode)
         )
         if mode == .mistralAPI {
-            return (configuration, {
+            return (configuration, nil, {
                 let client = MistralRealtimeWebSocketClient()
                 client.setUsageRecorder(usageLedger)
                 return client
             })
         }
-        return (configuration, {
+        var contextBudget: RealtimeContextBudget?
+        if configuration.usageBackend == .userServer, let lookup = dependencies.realtimeContextLimit {
+            contextBudget = await lookup(configuration)
+        }
+        return (configuration, contextBudget, {
             let client = RealtimeAPIWebSocketClient()
             client.setUsageRecorder(usageLedger)
             return client

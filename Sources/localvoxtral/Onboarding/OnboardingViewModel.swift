@@ -59,6 +59,12 @@ final class OnboardingViewModel {
     /// lazy-bootstrap invariant.
     private(set) var downloadsStarted = false
 
+    /// Polishing as it stood before this run's first Mistral choice, which
+    /// turns hosted polishing on. Picking Local afterwards and declining
+    /// polishing puts it back; otherwise every overlay commit would keep
+    /// sending text to Mistral.
+    @ObservationIgnored private var polishingBeforeMistralChoice: (mode: BackendMode, enabled: Bool)?
+
     let settings: SettingsStore
     let viewModel: DictationViewModel
     let driver: any OnboardingBootstrapDriving
@@ -141,6 +147,9 @@ final class OnboardingViewModel {
         // → Finish reads "runs on this Mac" while both engines are still on
         // Mistral (GLM review, 2026-09-16).
         downloadsStarted = false
+        if polishingBeforeMistralChoice == nil {
+            polishingBeforeMistralChoice = (settings.polishingBackendMode, settings.llmPolishingEnabled)
+        }
         viewModel.engines.applyMistralQuickSetup(apiKey: mistralAPIKeyDraft)
     }
 
@@ -175,6 +184,9 @@ final class OnboardingViewModel {
         if polishingConsent {
             viewModel.engines.applyPolishingBackendModeChange(.managedLocal)
             settings.llmPolishingEnabled = true
+        } else if let previous = polishingBeforeMistralChoice {
+            viewModel.engines.applyPolishingBackendModeChange(previous.mode)
+            settings.llmPolishingEnabled = previous.enabled
         }
         driver.start(dictation: true, polishing: polishingConsent)
     }

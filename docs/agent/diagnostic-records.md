@@ -99,7 +99,8 @@ for Backspace/forward delete or ⌘A, and nothing else.
 - A global `NSEvent` keyDown observer, which needs only the Accessibility
   trust insertion already has, installed only while a window is open. It runs
   only when a record is written, and patches that record in place when the
-  window closes; a record deleted meanwhile is not recreated.
+  window closes; a record deleted meanwhile, by this copy or another one
+  sharing the data folder, is not recreated.
 
 ## Analyzing records
 

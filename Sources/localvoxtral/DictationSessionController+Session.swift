@@ -350,17 +350,13 @@ extension DictationSessionController {
         // overlay takes focus once the socket connects, and screen context must
         // record what the user could see as they chose their words.
         let ownerTaskID = managedStartupTaskID
+        sessionStartGeneration &+= 1
+        let startGeneration = sessionStartGeneration
         isConnectingRealtimeSession = true
-        await captureTerminalScreenContextForSession()
-        // Both spawn paths register their managedStartupTaskID before this
-        // method runs, so a changed (non-nil) ID means a NEWER session start
-        // owns the shared capture/metadata now — a cancelled predecessor must
-        // not wipe the successor's state, and must not proceed either. A nil
-        // ID means the canceller merely cleared the slot: cleanup is ours, and
-        // resetting the connecting flag here also heals any cancel path that
-        // never called abortConnectingSession.
-        let ownsSharedSessionState =
-            managedStartupTaskID == ownerTaskID || managedStartupTaskID == nil
+        await captureTerminalScreenContextForSession(isCurrent: {
+            !Task.isCancelled && self.ownsSessionStart(generation: startGeneration, ownerTaskID: ownerTaskID)
+        })
+        let ownsSharedSessionState = ownsSessionStart(generation: startGeneration, ownerTaskID: ownerTaskID)
         guard !Task.isCancelled, isConnectingRealtimeSession, ownsSharedSessionState else {
             if ownsSharedSessionState {
                 context.discardTerminalScreenCapture()
@@ -396,6 +392,19 @@ extension DictationSessionController {
         )
     }
 
+    /// Whether the start that took `generation` and `ownerTaskID` before its
+    /// capture still owns the shared capture and session metadata. A later
+    /// start that reached `prepareDictationSession` took a new generation; one
+    /// still waiting for its backend holds a different startup task ID. A nil
+    /// ID with an unchanged generation means a canceller only cleared the
+    /// slot: cleanup is the start's own, and resetting the connecting flag
+    /// there also heals a cancel path that never called
+    /// `abortConnectingSession`.
+    private func ownsSessionStart(generation: UInt64, ownerTaskID: UUID?) -> Bool {
+        sessionStartGeneration == generation
+            && (managedStartupTaskID == ownerTaskID || managedStartupTaskID == nil)
+    }
+
     /// Who the usage ledger charges a dictation in `mode` to. The Mistral
     /// client files its own sockets under `.mistral`.
     static func usageBackend(for mode: BackendMode) -> UsageEntry.Backend {
@@ -421,6 +430,7 @@ extension DictationSessionController {
             // opened cannot report in before the session knows its name.
             sessionConnectionGeneration = activeRealtimeClient.connectionGeneration
             scheduleConnectTimeout()
+            lookUpRealtimeContextLimit(for: configuration)
         } catch {
             abortConnectingSession(disconnectSocket: false)
             handleConnectFailure(reason: .connectThrew(rawError: error.localizedDescription))
@@ -428,6 +438,28 @@ extension DictationSessionController {
             return
         }
         startSessionMicrophone()
+    }
+
+    /// Gives the client the server's context budget (#1139). Every session
+    /// starts with none; an External URL session gets one once its server
+    /// answers, well before a take reaches the limit. speechd and Mistral
+    /// sessions never roll over.
+    private func lookUpRealtimeContextLimit(for configuration: RealtimeSessionConfiguration) {
+        realtimeContextLimitLookupID &+= 1
+        let lookupID = realtimeContextLimitLookupID
+        activeRealtimeClient.setContextBudget(nil)
+        guard configuration.usageBackend == .userServer,
+              let lookup = dependencies.realtimeContextLimit
+        else { return }
+        let client = activeRealtimeClient
+        Task { @MainActor [weak self] in
+            let budget = await lookup(configuration)
+            // The lookup id alone: the answer often lands while the socket
+            // is still opening, before the session counts as dictating. A
+            // budget left on an idle client is reset by the next connect.
+            guard let self, self.realtimeContextLimitLookupID == lookupID else { return }
+            client.setContextBudget(budget)
+        }
     }
 
     /// Opens the microphone while the socket opens, not after (#527): people

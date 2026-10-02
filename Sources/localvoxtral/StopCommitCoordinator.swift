@@ -511,7 +511,7 @@ enum StopCommitCoordinator {
         // Everything the request is built from, gathered in one
         // step with the same off-actor hops and checkpoints; nil
         // means the commit was cancelled at one of them.
-        guard let material = await PolishContextGatherer.gather(PolishContextGatherer.Input(
+        guard let gathered = await PolishContextGatherer.gather(PolishContextGatherer.Input(
             settings: input.settings,
             textInsertion: input.textInsertion,
             context: input.context,
@@ -529,6 +529,13 @@ enum StopCommitCoordinator {
 
         guard !Task.isCancelled else { return nil }
 
+        // Consent withdrawn while the gather awaited lands here, before
+        // anything is learned or sent; again after the early-polish await.
+        let endpointURL = input.configuration.endpointURL
+        var material = gathered.withdrawingRevokedConsent(
+            settings: input.settings, endpointURL: endpointURL, workingText: workingText
+        ) ?? gathered
+
         // What this dictation taught, remembered for the next one
         // in the same project. Recorded from the MERGED entries
         // and nowhere else: a span the merge abstained on is not
@@ -543,27 +550,30 @@ enum StopCommitCoordinator {
         // Sections, pre-application, prompts, blocks and provenance
         // are one pure step over the merged material; the request
         // it builds is pinned by PolishRequestGoldenTests.
-        let assembly = PolishRequestAssembler.assemble(PolishRequestAssembler.Input(
-            merged: material.merged,
-            templateCarriesDictionarySlot: templateCarriesDictionarySlot,
-            replacementDictionaryPrompt: replacementDictionaryPrompt,
-            workingText: workingText,
-            clipboardPayload: clipboardPayload,
-            promptTemplates: input.promptTemplates,
-            screenDecision: material.screenDecision,
-            claudeRepoSnapshot: material.claudeRepoSnapshot,
-            claudeRepoPreparation: material.claudeRepoPreparation,
-            claudeSessionPreparation: material.claudeSessionPreparation,
-            clipboardPreparation: material.clipboardPreparation,
-            screenPreparation: material.screenPreparation,
-            capturedClaudeJoin: capture.claudeJoin,
-            capturedClipboardContext: capture.clipboardContext,
-            repoRenderBudget: material.repoRenderBudget,
-            screenRenderBudget: material.screenRenderBudget,
-            claudeRenderBudget: material.claudeRenderBudget,
-            clipboardRenderBudget: material.clipboardRenderBudget,
-            learnedProposals: material.learnedProposals
-        ))
+        func assemble(_ material: PolishContextMaterial) -> PolishRequestAssembler.Assembly {
+            PolishRequestAssembler.assemble(PolishRequestAssembler.Input(
+                merged: material.merged,
+                templateCarriesDictionarySlot: templateCarriesDictionarySlot,
+                replacementDictionaryPrompt: replacementDictionaryPrompt,
+                workingText: workingText,
+                clipboardPayload: clipboardPayload,
+                promptTemplates: input.promptTemplates,
+                screenDecision: material.screenDecision,
+                claudeRepoSnapshot: material.claudeRepoSnapshot,
+                claudeRepoPreparation: material.claudeRepoPreparation,
+                claudeSessionPreparation: material.claudeSessionPreparation,
+                clipboardPreparation: material.clipboardPreparation,
+                screenPreparation: material.screenPreparation,
+                capturedClaudeJoin: capture.claudeJoin,
+                capturedClipboardContext: material.clipboardContext,
+                repoRenderBudget: material.repoRenderBudget,
+                screenRenderBudget: material.screenRenderBudget,
+                claudeRenderBudget: material.claudeRenderBudget,
+                clipboardRenderBudget: material.clipboardRenderBudget,
+                learnedProposals: material.learnedProposals
+            ))
+        }
+        var assembly = assemble(material)
 
         guard !workingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             input.earlyPolish?.cancel()
@@ -574,6 +584,12 @@ enum StopCommitCoordinator {
         // early polish the path below is the pre-#709 one, unchanged.
         let earlyHandoff = await input.earlyPolish?.finish()
         if input.earlyPolish != nil, Task.isCancelled { return nil }
+        if let regated = material.withdrawingRevokedConsent(
+            settings: input.settings, endpointURL: endpointURL, workingText: workingText
+        ) {
+            material = regated
+            assembly = assemble(material)
+        }
         let early = earlyHandoff.flatMap {
             earlyPolishTail($0, assembly: assembly, workingText: workingText, input: input)
         }

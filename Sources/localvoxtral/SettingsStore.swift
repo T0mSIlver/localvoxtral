@@ -1324,7 +1324,9 @@ final class SettingsStore {
         } else {
             overlayBufferShortcutKeyCode = Self.defaultDictationShortcut.keyCode
             overlayBufferShortcutCarbonModifierFlags = Self.defaultDictationShortcut.carbonModifierFlags
-            overlayBufferShortcutEnabled = true
+            // Clearing the untouched default stores only this flag (#1269).
+            overlayBufferShortcutEnabled = Self.loadBool(
+                defaults: defaults, key: Keys.overlayBufferShortcutEnabled, fallback: true)
         }
 
         let hasExistingLivePasteKeys = defaults.object(forKey: Keys.livePasteShortcutKeyCode) != nil

@@ -127,6 +127,24 @@ final class LiveGoToSessionWiringTests: XCTestCase {
         XCTAssertEqual(harness.records.value.count, 1, "the dictation is saved once the go-to is done")
     }
 
+    /// A cancel during a go-to drops the words that ended behind it; the
+    /// go-to itself still lands (#1251).
+    func testACancelDuringAGoToTypesNothingThatFollowed() async {
+        let harness = makeHarness()
+        harness.focuser.onFocus = { _ in harness.frontmost.value = Self.otherTerminalPID }
+
+        harness.partial("go to payments")
+        harness.final("go to payments")
+        harness.partial("fix the build")
+        harness.final("fix the build")
+        harness.viewModel.cancelDictation()
+        await awaitStoppedSessionCommit(harness.viewModel)
+
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, ["pay"])
+        XCTAssertEqual(harness.typedText, "", "nothing the user cancelled is typed")
+        XCTAssertEqual(harness.records.value.count, 1)
+    }
+
     /// Review of #773 (P2): the stop waited only for the first go-to, and
     /// the cleanup cancelled the one queued behind it.
     func testAStopWaitsForAGoToQueuedBehindAnother() async {

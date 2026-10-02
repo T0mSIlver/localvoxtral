@@ -211,6 +211,32 @@ final class QuickCaptureContextTests: XCTestCase {
         let named = await gatherer.gather(root: root.path, repository: "me/fork", capture: "x")
         XCTAssertNil(named.openIssues, "the project's repository wins over the checkout's")
     }
+
+    /// README, AGENTS.md and CLAUDE.md symlinked to a file outside the
+    /// checkout stay out of the first draft's request.
+    func testTheGathererReadsNoSymlinkedReadmeOrGuide() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("qc-context-link-\(UUID().uuidString)")
+        let root = base.appendingPathComponent("checkout")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let secret = base.appendingPathComponent("secret.md")
+        try "# OUTSIDE-SENTINEL\n\nOUTSIDE-SENTINEL prose.\n\n## Proof\nOUTSIDE-SENTINEL".write(
+            to: secret, atomically: true, encoding: .utf8
+        )
+        for name in ["README.md", "AGENTS.md", "CLAUDE.md"] {
+            try FileManager.default.createSymbolicLink(
+                atPath: root.appendingPathComponent(name).path, withDestinationPath: secret.path
+            )
+        }
+        let gatherer = QuickCaptureContextGatherer(
+            run: { _, _, _ in nil },
+            openIssues: { _, _ in nil },
+            checkoutRepository: { _ in nil }
+        )
+        let context = await gatherer.gather(root: root.path, repository: nil, capture: "kerning")
+        XCTAssertNil(context.readme)
+        XCTAssertNil(context.issueRules)
+    }
 }
 
 /// #918's two stages in the drafter: the first draft, then the agent's
@@ -308,13 +334,16 @@ final class QuickCaptureTwoStageInboxTests: XCTestCase {
         try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent())
     }
 
-    private func model(runner: FakeQuickCaptureCheckRunner, first: FakeQuickCaptureFirstDrafter?) -> QuickCaptureInboxModel {
+    private func model(
+        runner: FakeQuickCaptureCheckRunner, first: FakeQuickCaptureFirstDrafter?,
+        projects: (@MainActor () -> [QuickCaptureProject])? = nil
+    ) -> QuickCaptureInboxModel {
         let github = github
-        let projects = [QuickCaptureProject(key: "/w/reach", name: "reach", summary: nil, terms: [], userLine: nil)]
+        let reach = [QuickCaptureProject(key: "/w/reach", name: "reach", summary: nil, terms: [], userLine: nil)]
         return QuickCaptureInboxModel(
             fileURL: fileURL,
             makeRouter: { QuickCaptureRouter(classifiers: [FixedQuickCaptureClassifier(["reach": 0.95])]) },
-            projects: { projects },
+            projects: projects ?? { reach },
             agents: { [.claude] },
             drafter: {
                 QuickCaptureDrafter(
@@ -359,6 +388,39 @@ final class QuickCaptureTwoStageInboxTests: XCTestCase {
             item.codeCheck,
             QuickCaptureCodeCheck(state: .checked, filesRead: ["Sources/Drafter.swift", "Gone.swift"], agent: "claude")
         )
+    }
+
+    /// "File issues here" changed while the check ran (#1277): the issue
+    /// the check found among the fork's is not linked to the upstream.
+    func testACheckFromBeforeAFilingChangeLinksNoIssueOfTheOldRepository() async throws {
+        let facts = GitHubRepositoryFacts(description: nil, topics: [], parent: "them/reach")
+        func reach(filingIn issueRepository: String) -> [QuickCaptureProject] {
+            [QuickCaptureProject(
+                key: "/w/reach", name: "reach", summary: nil, terms: [], userLine: nil,
+                repository: "me/reach", issueRepository: issueRepository, github: facts)]
+        }
+        let extending = QuickCaptureDraft.Draft(
+            title: Self.checked.title, body: Self.checked.body, relation: .extends, issue: 7, filesRead: ["Sources/Drafter.swift"]
+        )
+        let runner = FakeQuickCaptureCheckRunner([.draft(extending, usage: nil)], gated: true)
+        let list = Mutex(reach(filingIn: "me/reach"))
+        let model = model(
+            runner: runner, first: FakeQuickCaptureFirstDrafter([.draft(Self.first, usage: nil)]),
+            projects: { list.withLock { $0 } })
+        let task = model.capture(text: "show drafting progress", historyRecordID: nil)
+        await runner.gate!.waitForSleepers(1)
+        XCTAssertEqual(model.items.first?.repository, "me/reach")
+
+        list.withLock { $0 = reach(filingIn: "them/reach") }
+        model.adoptProjects()
+        runner.gate!.wakeAll()
+        await task.value
+
+        let item = try XCTUnwrap(model.items.first)
+        XCTAssertEqual(item.title, Self.checked.title)
+        XCTAssertEqual(item.repository, "them/reach")
+        XCTAssertNil(item.relatedIssue)
+        XCTAssertFalse(item.canComment)
     }
 
     func testEditsMadeDuringTheCheckAreKept() async throws {

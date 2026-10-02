@@ -178,7 +178,8 @@ final class DictationSessionController {
     lazy var repoVocabularyPipeline = RepoVocabularyPipeline(
         settings: settings,
         commitTargetAppPID: { [weak self] in self?.overlayBufferCoordinator.commitTargetAppPID },
-        targetBundleID: { [weak self] in self?.resolveTargetAppBundleID() }
+        targetBundleID: { [weak self] in self?.resolveTargetAppBundleID() },
+        clock: { [weak self] in self?.dependencies.clock ?? .live }
     )
     var repoVocabularyGrounding: any RepoVocabularyGrounding {
         dependencies.repoVocabularyGrounding ?? repoVocabularyPipeline
@@ -194,8 +195,10 @@ final class DictationSessionController {
 
     @ObservationIgnored
     let networkMonitor = NetworkMonitor()
+    /// Reads the rollover's pause and sleeps its watchdog on the session
+    /// clock (#1139).
     @ObservationIgnored
-    let realtimeAPIClient = RealtimeAPIWebSocketClient()
+    let realtimeAPIClient: RealtimeAPIWebSocketClient
     @ObservationIgnored
     let mistralRealtimeClient = MistralRealtimeWebSocketClient()
     /// The client THIS session speaks to, latched at session start from
@@ -324,6 +327,11 @@ final class DictationSessionController {
     var managedStartupTask: Task<Void, Never>?
     @ObservationIgnored
     var managedStartupTaskID: UUID?
+    /// Counts session starts that reached `prepareDictationSession`. A start
+    /// still capturing context when this moves on has been replaced, even
+    /// once the replacement's startup task has cleared `managedStartupTaskID`.
+    @ObservationIgnored
+    var sessionStartGeneration: UInt64 = 0
     @ObservationIgnored
     var stopFinalizationTask: Task<Void, Never>?
     @ObservationIgnored
@@ -366,6 +374,10 @@ final class DictationSessionController {
     /// `handle(event:from:)` refuses it.
     @ObservationIgnored
     var sessionConnectionGeneration: RealtimeConnectionGeneration = .none
+    /// Bumped at every session's connect, so a context-limit lookup that
+    /// answers late cannot set its budget on a later session (#1139).
+    @ObservationIgnored
+    var realtimeContextLimitLookupID = 0
     @ObservationIgnored
     var reconnectTask: Task<Void, Never>?
     /// True from an unexpected drop until the reconnect run behind it either
@@ -578,6 +590,7 @@ final class DictationSessionController {
         self.audio = audio
         self.overlayBufferCoordinator = overlayBufferCoordinator
         self.dependencies = dependencies
+        self.realtimeAPIClient = RealtimeAPIWebSocketClient(clock: dependencies.clock)
     }
 
     func prepareLLMPolishingPromptAccessIfNeeded() {
@@ -601,6 +614,16 @@ final class DictationSessionController {
             }
         } else {
             debugLog("network lost")
+            // A loopback socket, such as the bundled speech server's, does not
+            // ride the network path: stopping would only drop the final commit
+            // that flushes the server's tail (#1238), and an idle status saying
+            // the network is gone would be wrong about it (#1242). Remote
+            // sockets can sit half-dead after the path goes, so those sessions
+            // still stop.
+            guard realtimeEndpointNeedsNetwork else {
+                Log.backends.info("network lost; loopback realtime endpoint unaffected")
+                return
+            }
             if isConnectingRealtimeSession {
                 abortConnectingSession()
                 handleConnectFailure(reason: .networkLost)
@@ -617,6 +640,21 @@ final class DictationSessionController {
                 statusText = StatusStrings.noNetworkConnection
             }
         }
+    }
+
+    /// False when the realtime endpoint is loopback, which a lost network path
+    /// leaves untouched. A running or starting session judges the endpoint it
+    /// dials: the latched connect snapshot once the socket was asked to open,
+    /// else what Settings resolves to for its provider. An idle one judges
+    /// what the next start would dial. No endpoint counts as needing one.
+    private var realtimeEndpointNeedsNetwork: Bool {
+        let sessionActive = isDictating || isFinalizingStop || isConnectingRealtimeSession
+        let endpoint = (sessionActive ? sessionRealtimeConfiguration?.endpoint : nil)
+            ?? settings.resolvedWebSocketURL(
+                for: (sessionActive ? sessionProvider : nil) ?? settings.realtimeProvider
+            )
+        guard let endpoint else { return true }
+        return !PolishContextClipboardReader.isLoopbackEndpoint(endpoint)
     }
 
     // MARK: - Public API
@@ -761,7 +799,7 @@ final class DictationSessionController {
             statusText = StatusStrings.awaitingMicrophonePermission
             return
         }
-        guard networkMonitor.isConnected else {
+        guard networkMonitor.isConnected || !realtimeEndpointNeedsNetwork else {
             statusText = StatusStrings.noNetworkConnection
             lastError = "Connect to a network before starting dictation."
             return
@@ -1112,13 +1150,19 @@ extension DictationSessionController {
     /// Start-of-session capture, through the resolver; the badge it returns
     /// describes the one resolved join, so the overlay cannot disagree with
     /// the context that ships.
-    func captureTerminalScreenContextForSession() async {
+    ///
+    /// `isCurrent` is asked after every suspension: once it answers false,
+    /// this start was cancelled or replaced, and nothing it resolved is
+    /// written over the state a newer start owns.
+    func captureTerminalScreenContextForSession(isCurrent: @MainActor () -> Bool = { true }) async {
         // The previous dictation's post-commit edit watch closes here rather
         // than reading this session's keys. It still flushes its own record,
         // as `superseded`.
         editSignalWatcher.supersede()
-        sessionClaudeJoinBadge = await context.captureAtStart()
+        let badge = await context.captureAtStart(isCurrent: isCurrent)
+        guard isCurrent() else { return }
+        sessionClaudeJoinBadge = badge
         noteDictationJoinedAgentSession(context.claudeSessionJoin?.snapshot.sessionID)
-        await context.resolveAgentPromptRoute()
+        await context.resolveAgentPromptRoute(isCurrent: isCurrent)
     }
 }

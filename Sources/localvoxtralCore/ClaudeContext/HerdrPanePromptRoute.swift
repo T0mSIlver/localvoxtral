@@ -13,8 +13,9 @@ package struct HerdrPanePromptRoute: AgentPromptRoute {
     package let binding: ClaudeHerdrPaneBinding
     private let writer: any HerdrPaneWriting
     /// Whether the pane still runs the joined session's agent in the
-    /// foreground. Asked before every Enter: a pane back at its shell would
-    /// run the prompt as a command.
+    /// foreground. Asked before every call: a pane back at its shell, or
+    /// running another agent, would take the text into its own prompt, and
+    /// an Enter there would run it.
     private let agentIsForeground: @Sendable () async -> Bool
     /// Whether a key typed now would land in this pane: its terminal is
     /// frontmost, focused on the tty the join saw and showing the same
@@ -50,6 +51,11 @@ package struct HerdrPanePromptRoute: AgentPromptRoute {
         let outcome: HerdrWriteOutcome
         switch call {
         case .append(let text):
+            guard await agentIsForeground() else {
+                // Neither sent nor typed: both would land in what replaced the agent.
+                Log.backends.notice("herdr pane route: joined agent is no longer foreground in the pane; text not sent")
+                return .keepInHistory
+            }
             guard Self.isSendable(text) else {
                 Log.backends.notice("herdr pane route: text holds a control character or is too long; not sent")
                 return await refused()

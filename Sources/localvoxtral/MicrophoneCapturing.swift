@@ -20,6 +20,8 @@ protocol MicrophoneCapturing: AnyObject, Sendable {
         preferredInputChannel: Int,
         chunkHandler: @escaping MicrophoneCaptureService.ChunkHandler
     ) throws
+    /// Returns once every chunk captured before it has reached the handler;
+    /// none reaches it afterwards.
     func stop()
 
     func isCapturing() -> Bool

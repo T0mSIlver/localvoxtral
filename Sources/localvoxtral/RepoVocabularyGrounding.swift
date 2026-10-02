@@ -33,7 +33,7 @@ protocol RepoVocabularyGrounding: AnyObject {
 }
 
 /// The production pipeline, with the two points a test holds still: the
-/// detached body and the deadline clock. The setting and endpoint gates sit
+/// detached body and the deadline's clock. The setting and endpoint gates sit
 /// above it, in `PolishContextGatherer.repoVocabularyGroundingIfEnabled`, so
 /// an injected grounding is consulted only after they pass.
 @MainActor
@@ -65,20 +65,20 @@ final class RepoVocabularyPipeline: RepoVocabularyGrounding {
     /// Replaces only the detached body of `repositoryRoot`, keeping its bound
     /// in play.
     var rootLookup: (@Sendable () async -> LearnedTermProjectResolver.RepositoryRoot)?
-    /// The deadline clock of the race; an immediately-returning closure makes
-    /// the deadline expire at once.
-    var deadlineSleep: @Sendable () async -> Void = {
-        try? await Task.sleep(for: RepoVocabularyPipeline.deadline)
-    }
+    /// The clock the deadline sleeps on: the session's, read at each
+    /// grounding, so a test's manual clock holds it too.
+    private let clock: () -> SessionClock
 
     init(
         settings: SettingsStore,
         commitTargetAppPID: @escaping () -> pid_t?,
-        targetBundleID: @escaping () -> String?
+        targetBundleID: @escaping () -> String?,
+        clock: @escaping () -> SessionClock = { .live }
     ) {
         self.settings = settings
         self.commitTargetAppPID = commitTargetAppPID
         self.targetBundleID = targetBundleID
+        self.clock = clock
     }
 
     /// Repo-vocabulary grounding: harvests file names / path components /
@@ -131,7 +131,11 @@ final class RepoVocabularyPipeline: RepoVocabularyGrounding {
             return nil
         }
 
-        let deadlineSleep = deadlineSleep
+        let sleep = clock().sleep
+        let deadline = Self.deadline
+        // Cancelled once the race is decided, so a pipeline that wins leaves
+        // no timer armed on the session clock.
+        var deadlineTask: Task<Void, Never>?
         // Race via a resume-once continuation, NOT a task group: a group
         // awaits ALL its children before returning, and the pipeline child —
         // awaiting a possibly-forever-blocked task's value, which is not
@@ -163,11 +167,12 @@ final class RepoVocabularyPipeline: RepoVocabularyGrounding {
                 gate.release()
                 resumeOnce(.pipeline(entries))
             }
-            Task.detached(priority: .userInitiated) {
-                await deadlineSleep()
+            deadlineTask = Task.detached(priority: .userInitiated) {
+                await sleep(deadline)
                 resumeOnce(.deadlineExpired)
             }
         }
+        deadlineTask?.cancel()
 
         switch raceOutcome {
         case .pipeline(let entries):

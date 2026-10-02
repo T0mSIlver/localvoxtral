@@ -333,6 +333,9 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
         send(event: ["type": "input_audio.end"])
     }
 
+    /// Mistral's sessions have no context limit the client tracks (#1139).
+    package func setContextBudget(_ budget: RealtimeContextBudget?) {}
+
     // MARK: - JSON Event Handling
 
     override func handle(json: [String: Any], from generation: RealtimeConnectionGeneration) {
