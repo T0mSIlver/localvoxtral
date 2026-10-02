@@ -1960,6 +1960,48 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), original)
     }
 
+    /// A config whose last line has no newline gets the panel table on a line
+    /// of its own: gluing `[ui.sidebar.agents]` onto `name = "dark"` makes the
+    /// whole file invalid TOML, and the appended `rows` key then makes every
+    /// retry take the refusal path.
+    func testRemoteHerdrSetupSeparatesAnUnterminatedConfig() throws {
+        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
+            calls.withLock { $0.append(invocation) }
+            return .init(exitCode: 0, message: "captured")
+        })
+        _ = try? service.setupRemoteHerdr(sshHostAlias: "builder")
+        let invocation = try XCTUnwrap(calls.withLock { $0.first })
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lvx-herdr-unterminated-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let configURL = directory.appendingPathComponent("config.toml")
+        let original = "[theme]\nname = \"dark\""
+        try Data(original.utf8).write(to: configURL)
+        let herdr = directory.appendingPathComponent("herdr")
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: herdr)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: herdr.path)
+        let environment = [
+            "HERDR_CONFIG_PATH": configURL.path,
+            "PATH": "\(directory.path):/usr/bin:/bin",
+        ]
+
+        let first = try runShellScript(invocation.standardInput, environment: environment)
+        XCTAssertEqual(first.status, 0, first.output)
+        XCTAssertTrue(first.output.contains("LVX_HERDR_CONFIGURED"))
+        let configured = try String(contentsOf: configURL, encoding: .utf8)
+        XCTAssertEqual(
+            configured,
+            original + "\n\n" + ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet + "\n"
+        )
+
+        let second = try runShellScript(invocation.standardInput, environment: environment)
+        XCTAssertEqual(second.status, 42)
+        XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), configured)
+    }
+
     /// 42 is the refusal exit only with the refusal frame beside it; a reload
     /// that dies with the same code is a failure. A timeout keeps its category.
     func testHerdrSetupTreatsAnUnmarkedExit42AndATimeoutAsFailures() {
