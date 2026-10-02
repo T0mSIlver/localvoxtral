@@ -2250,6 +2250,11 @@ final class DictationPipelineTests: XCTestCase {
         await pipeline.server.awaitFrame("the captured audio", file: file, line: line) {
             $0.audio == spoken
         }
+        // The send loop runs off the main actor and can reach the server
+        // before it sleeps again. Once it does, every timer the session armed
+        // is asleep, and a test that counts or reads the clock's deadlines
+        // from here sees only the timers it starts itself (#1231).
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers, file: file, line: line)
     }
 
     /// Sends a segment's final and returns once the overlay shows it. A
