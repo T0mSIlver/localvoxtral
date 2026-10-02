@@ -591,7 +591,9 @@ final class DictationViewModel {
             overlay = OverlayBufferSessionCoordinator(
                 stateMachine: OverlayBufferStateMachine(),
                 renderer: panel,
-                anchorResolver: anchorResolver
+                anchorResolver: anchorResolver,
+                now: dependencies.clock.now,
+                sleepFor: dependencies.clock.sleep
             )
         }
         let session = DictationSessionController(
