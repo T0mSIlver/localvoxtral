@@ -50,6 +50,8 @@ package struct QuickCaptureCodeCheck: Codable, Equatable, Sendable {
 ///   the first capture's words, and `words` is all of them.
 /// - `commentedOn` (#965): the issue a comment was posted on instead of
 ///   filing; `filedURL` is then the comment's URL.
+/// - `filingClaim` (#1288): the running copy whose File or Comment set
+///   `state` to filing.
 /// A draft is final once `state == .ready`, `title` is set and
 /// `codeCheck?.state != .checking`.
 package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
@@ -113,6 +115,20 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
     package var followUps: [FollowUp]?
     /// The issue Comment on #N posted to (#965); nil when filed as an issue.
     package var commentedOn: Int?
+    /// Which running copy set it filing (#1288). A copy that loads a
+    /// capture another live copy is filing leaves it filing; nil in files
+    /// written before, read as left by a quit.
+    package var filingClaim: FilingClaim?
+
+    package struct FilingClaim: Codable, Equatable, Sendable {
+        package let id: UUID
+        package let processID: Int32
+
+        package init(id: UUID = UUID(), processID: Int32) {
+            self.id = id
+            self.processID = processID
+        }
+    }
 
     /// A later capture joined to this one (#965): it began "also", or the
     /// router matched it here. Its words, History record and audio id stay
@@ -641,13 +657,21 @@ package enum QuickCaptureInboxFile {
 
     /// A capture interrupted mid-route or mid-draft by a quit waits for the
     /// user with its words.
-    package static func resumingInterrupted(_ inbox: QuickCaptureInbox) -> QuickCaptureInbox {
+    ///
+    /// A capture filing for another running copy (`filingElsewhere`) stays
+    /// filing: that copy's `gh` may still answer (#1288).
+    package static func resumingInterrupted(
+        _ inbox: QuickCaptureInbox,
+        filingElsewhere: (QuickCaptureItem.FilingClaim) -> Bool = { _ in false }
+    ) -> QuickCaptureInbox {
         var result = inbox
         for index in result.items.indices where result.items[index].codeCheck?.state == .checking {
             result.items[index].codeCheck?.state = .failed
             result.items[index].note = "Interrupted before the check against the code."
         }
         for index in result.items.indices where [.routing, .drafting, .filing].contains(result.items[index].state) {
+            let item = result.items[index]
+            if item.state == .filing, let claim = item.filingClaim, filingElsewhere(claim) { continue }
             result.items[index].state = .ready
             if result.items[index].title.isEmpty,
                [nil, QuickCaptureInbox.waitingForHostNote].contains(result.items[index].note)
