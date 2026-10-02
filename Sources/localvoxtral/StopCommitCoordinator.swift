@@ -529,8 +529,9 @@ enum StopCommitCoordinator {
 
         guard !Task.isCancelled else { return nil }
 
-        // Consent withdrawn while the gather awaited lands here, before
-        // anything is learned or sent; again after the early-polish await.
+        // Consent withdrawn while the gather awaited lands here; again after
+        // the early-polish await, before the request is sent. The outcome
+        // carries the final material, which is what delivery learns from.
         let endpointURL = input.configuration.endpointURL
         var material = gathered.withdrawingRevokedConsent(
             settings: input.settings, endpointURL: endpointURL, workingText: workingText
