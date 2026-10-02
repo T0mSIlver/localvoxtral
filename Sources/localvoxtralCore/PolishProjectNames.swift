@@ -23,9 +23,7 @@ package enum PolishProjectNames {
         var names: [String] = []
         for project in projects {
             let repositoryName = project.repository?.split(separator: "/").last.map(String.init)
-            for name in [project.name, repositoryName].compactMap({ $0 }) where !isGeneratedLabel(name) {
-                names.append(name)
-            }
+            names += [project.name, repositoryName].compactMap { $0 }
         }
         // Sorted before the dedupe, so the spelling kept for two that differ
         // only in case does not depend on which project was used last.
@@ -52,15 +50,5 @@ package enum PolishProjectNames {
     /// "Working Set" are one name.
     package static func key(_ name: String) -> String {
         String(name.caseFoldedForMatching.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
-    }
-
-    /// A label a tool generated rather than a name anyone says: a remote
-    /// session with no project header is named after its folder, and Claude
-    /// Desktop and agent worktree folders end in a hex hash
-    /// (`ci-speed-optimizations-7ffef0`, `agent-add526d17c28bb610`).
-    static func isGeneratedLabel(_ name: String) -> Bool {
-        guard let dash = name.lastIndex(of: "-") else { return false }
-        let tail = name[name.index(after: dash)...]
-        return tail.count >= 6 && tail.allSatisfy(\.isHexDigit) && tail.contains(where: \.isNumber)
     }
 }

@@ -468,7 +468,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         let at = min(reported, now)
         guard now.timeIntervalSince(at) < Double(Self.agentActivityListedDays) * 86_400,
               project.key.hasPrefix("/") || project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix),
-              !project.name.isEmpty, !PolishProjectNames.isGeneratedLabel(project.name)
+              !project.name.isEmpty, !Self.isGeneratedLabel(project.name)
         else { return false }
         let index: Int
         let added: Bool
@@ -588,10 +588,11 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// checkout; a remote project a hook named as a repository, or whose
     /// host sent its README in the last 90 days (only a 1.17.0 shim does,
     /// and it names the repository); an old shim's working-directory name within
-    /// `remoteLabelListedDays` of its last hook (#819); a remote project a
-    /// coding agent worked in within `agentActivityListedDays` (#1027). A remote name no
-    /// hook has named, such as a worktree's from before #652, is no project,
-    /// and neither is the shared bucket; their terms still apply.
+    /// `remoteLabelListedDays` of its last hook (#819), unless a tool
+    /// generated it (`isGeneratedLabel`, #1026); a remote project a coding
+    /// agent worked in within `agentActivityListedDays` (#1027). A remote
+    /// name no hook has named, such as a worktree's from before #652, is no
+    /// project, and neither is the shared bucket; their terms still apply.
     package func listedCheckouts(now: Date) -> [LearnedTermProject] {
         projects
             .filter { !$0.key.isEmpty && !$0.name.isEmpty && Self.isListed($0, now: now) }
@@ -612,8 +613,19 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         {
             return true
         }
-        guard let reported = project.reportedAt else { return false }
+        guard let reported = project.reportedAt, !isGeneratedLabel(project.name) else { return false }
         return now.timeIntervalSince(reported) < Double(remoteLabelListedDays) * 86_400
+    }
+
+    /// A folder name a tool generated rather than a name anyone says: Claude
+    /// Desktop and agent worktree folders end in a hex hash
+    /// (`ci-speed-optimizations-7ffef0`, `agent-add526d17c28bb610`). A host
+    /// whose shim predates #652 names a session after its folder, and an
+    /// app from before #912 kept that name for a worktree's session.
+    static func isGeneratedLabel(_ name: String) -> Bool {
+        guard let dash = name.lastIndex(of: "-") else { return false }
+        let tail = name[name.index(after: dash)...]
+        return tail.count >= 6 && tail.allSatisfy(\.isHexDigit) && tail.contains(where: \.isNumber)
     }
 
     package func needsProposal(projectKey: String, now: Date, revision: Int = 1) -> Bool {
