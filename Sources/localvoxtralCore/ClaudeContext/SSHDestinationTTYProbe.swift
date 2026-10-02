@@ -1067,6 +1067,14 @@ package enum TTYProcessTable {
         #endif
     }
 
+    /// The pids in the foreground process group of the tty at `path`: the
+    /// job the terminal gives its input to. Nil when the device or the
+    /// process table cannot be read.
+    package static func foregroundPIDs(onTTYDevicePath path: String) -> [Int32]? {
+        guard let device = liveDeviceID(path), let entries = entries(onDevice: device) else { return nil }
+        return entries.filter { $0.processGroupID == $0.terminalForegroundGroupID }.map(\.pid)
+    }
+
     /// Every process on the machine. Nil without `sysctl(KERN_PROC)`, which
     /// Linux does not have: the probes then abstain.
     package static func allProcesses() -> [Entry]? {

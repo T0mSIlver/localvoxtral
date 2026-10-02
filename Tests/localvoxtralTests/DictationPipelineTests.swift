@@ -2265,7 +2265,8 @@ final class DictationPipelineTests: XCTestCase {
             origin: .localAuthenticated(peerUID: 501)
         ))
         pipeline.viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
-            registry: registry, cmuxSurfaces: cmux.client(), cmuxJoinEnabled: { true }
+            registry: registry, cmuxSurfaces: cmux.client(), cmuxJoinEnabled: { true },
+            ttyForegroundPIDs: { _ in [9001] }
         )
         let target = TerminalScreenTarget(pid: FakeCmuxSocket.pid, bundleID: TerminalScreenAllowlist.cmuxBundleID)
         TerminalScreenContextSource.debugFrontmostTargetOverride = { target }
