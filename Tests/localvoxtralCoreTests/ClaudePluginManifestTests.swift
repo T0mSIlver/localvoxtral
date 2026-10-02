@@ -68,7 +68,7 @@ final class ClaudePluginManifestTests: XCTestCase {
         let plugins = try XCTUnwrap(manifest["plugins"] as? [[String: Any]])
         XCTAssertEqual(
             plugins.compactMap { $0["name"] as? String },
-            [ClaudePluginAssets.pluginName, ClaudePluginAssets.remotePluginName]
+            [ClaudePluginAssets.pluginName, ClaudePluginAssets.remotePluginName, ClaudePluginAssets.modPluginName]
         )
     }
 
