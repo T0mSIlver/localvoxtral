@@ -536,17 +536,6 @@ enum StopCommitCoordinator {
             settings: input.settings, endpointURL: endpointURL, workingText: workingText
         ) ?? gathered
 
-        // What this dictation taught, remembered for the next one
-        // in the same project. Recorded from the MERGED entries
-        // and nowhere else: a span the merge abstained on is not
-        // evidence of a spelling, and a verification pair is a
-        // question put to the model, not an answer.
-        recordLearnedTerms(
-            merged: material.merged,
-            project: material.learnedProject,
-            store: input.learnedTermStore
-        )
-
         // Sections, pre-application, prompts, blocks and provenance
         // are one pure step over the merged material; the request
         // it builds is pinned by PolishRequestGoldenTests.
