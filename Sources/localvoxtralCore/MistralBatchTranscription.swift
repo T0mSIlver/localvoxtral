@@ -184,7 +184,7 @@ package struct MistralBatchTranscriptionClient: MistralBatchTranscribing {
 
     private let session: URLSession
 
-    package init(session: URLSession = .shared) {
+    package init(session: URLSession = SameOriginHTTP.shared) {
         self.session = session
     }
 
