@@ -92,7 +92,10 @@ package final class ClaudeSessionStoreWriter: @unchecked Sendable {
     }
 
     private struct State {
-        var pending: Operation?
+        /// A clear is kept apart from the save after it: replaced by that
+        /// save, it would leave the rows another copy wrote.
+        var pendingClear = false
+        var pendingSave: StoredClaudeSessions?
         var scheduled = false
         /// Set when the restore refused the file: nothing is saved or
         /// cleared until it has been moved aside.
@@ -113,7 +116,12 @@ package final class ClaudeSessionStoreWriter: @unchecked Sendable {
 
     package func submit(_ operation: Operation) {
         let shouldSchedule = state.withLock { state in
-            state.pending = operation
+            switch operation {
+            case .save(let file): state.pendingSave = file
+            case .clear:
+                state.pendingClear = true
+                state.pendingSave = nil
+            }
             guard !state.scheduled else { return false }
             state.scheduled = true
             return true
@@ -140,14 +148,17 @@ package final class ClaudeSessionStoreWriter: @unchecked Sendable {
 
     private func drain() {
         while true {
-            guard let (operation, fileRefused, ownSessionIDs) = state.withLock({
-                state -> (Operation, Bool, Set<String>)? in
-                guard let pending = state.pending else {
+            guard let (clear, save, fileRefused, ownSessionIDs) = state.withLock({
+                state -> (Bool, StoredClaudeSessions?, Bool, Set<String>)? in
+                guard state.pendingClear || state.pendingSave != nil else {
                     state.scheduled = false
                     return nil
                 }
-                state.pending = nil
-                return (pending, state.fileRefused, state.ownSessionIDs)
+                defer {
+                    state.pendingClear = false
+                    state.pendingSave = nil
+                }
+                return (state.pendingClear, state.pendingSave, state.fileRefused, state.ownSessionIDs)
             }) else { return }
 
             if fileRefused {
@@ -162,15 +173,17 @@ package final class ClaudeSessionStoreWriter: @unchecked Sendable {
                 }
             }
             do {
-                switch operation {
-                case .save(let file):
-                    try store.update { onDisk in
-                        try Self.merging(file, onto: onDisk, ownSessionIDs: ownSessionIDs)
-                    }
-                    state.withLock { $0.ownSessionIDs = Set(file.sessions.map(\.sessionID)) }
-                case .clear:
+                var ownSessionIDs = ownSessionIDs
+                if clear {
                     try store.clear()
+                    ownSessionIDs = []
                     state.withLock { $0.ownSessionIDs = [] }
+                }
+                if let save {
+                    try store.update { onDisk in
+                        try Self.merging(save, onto: onDisk, ownSessionIDs: ownSessionIDs)
+                    }
+                    state.withLock { $0.ownSessionIDs = Set(save.sessions.map(\.sessionID)) }
                 }
             } catch {
                 Log.claudeContext.error(
