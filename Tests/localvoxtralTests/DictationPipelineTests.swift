@@ -1090,7 +1090,7 @@ final class DictationPipelineTests: XCTestCase {
     /// commit asks the mod to fill the prompt and posts no key. A second
     /// dictation into the same unsent prompt fills with its leading space.
     func testAnOverlayCommitIntoAClaudeSessionWithAModFillsItsPromptAndTypesNothing() async throws {
-        let (pipeline, typed, fills) = try await modChannelPipeline(replyOK: true)
+        let (pipeline, typed, fills) = try await modChannelPipeline(answer: .fill)
         let settled = FillSettled()
         ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
         addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
@@ -1107,10 +1107,29 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded), [true, true])
     }
 
+    /// The mod got the fill and never answered: it may have filled the box,
+    /// so the words stay in History instead of going in twice.
+    func testAFillTheModNeverAnswersIsKeptNotTyped() async throws {
+        let (pipeline, typed, fills) = try await modChannelPipeline(answer: .silent)
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "run the tests.")
+        let done = await settled.wait(for: 1)
+
+        XCTAssertTrue(done)
+        XCTAssertEqual(settled.outcomes, [false])
+        XCTAssertEqual(fills.texts, ["run the tests."])
+        XCTAssertEqual(typed.text, "", "nothing typed over a fill that may have landed")
+        XCTAssertEqual(pipeline.viewModel.lastError, DictationViewModel.StatusStrings.agentPromptTextKeptInHistory)
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), ["run the tests."])
+    }
+
     /// The mod could not fill (a dialog held the keys): the words go in by
     /// keyboard, once.
     func testAFillTheModRefusesIsTypedInstead() async throws {
-        let (pipeline, typed, fills) = try await modChannelPipeline(replyOK: false)
+        let (pipeline, typed, fills) = try await modChannelPipeline(answer: .refuse)
 
         await dictate(pipeline, "run the tests.")
         let typedAll = await typed.waitFor("run the tests.")
@@ -1119,10 +1138,13 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(fills.texts, ["run the tests."])
     }
 
+    /// How the fake mod answers a fill.
+    private enum FakeModAnswer { case fill, refuse, silent }
+
     /// A dictation joined to Claude Code session `s1` in a terminal, whose
-    /// mod answers every fill with `replyOK`.
+    /// mod answers every fill with `answer`.
     private func modChannelPipeline(
-        replyOK: Bool
+        answer: FakeModAnswer
     ) async throws -> (Pipeline, TypedText, FillRecorder) {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
         pipeline.overlay.insertsThroughCommitter = true
@@ -1131,7 +1153,12 @@ final class DictationPipelineTests: XCTestCase {
         _ = joinClaudeCodeTerminal(pipeline)
         let typed = recordTypedText(pipeline)
 
-        let hub = ClaudeModChannelHub()
+        // A silent mod's fill times out at once; the others' timer never
+        // fires before their reply cancels it.
+        let sleep: @Sendable (Duration) async -> Void = answer == .silent
+            ? { @Sendable _ in }
+            : { @Sendable _ in try? await Task.sleep(for: .seconds(3600)) }
+        let hub = ClaudeModChannelHub(sleep: sleep)
         let fills = FillRecorder()
         _ = hub.attach(sessionID: "s1", channel: .init(
             write: { line in
@@ -1139,9 +1166,11 @@ final class DictationPipelineTests: XCTestCase {
                     ClaudeModChannelWire.Message.self, from: line.dropLast()
                 ), message.kind == .fill else { return false }
                 fills.append(message.text ?? "")
-                hub.deliver(.init(
-                    sessionID: "s1", id: message.id, ok: replyOK, reason: replyOK ? nil : "dialog"
-                ))
+                if answer != .silent {
+                    hub.deliver(.init(
+                        sessionID: "s1", id: message.id, ok: answer == .fill, reason: answer == .fill ? nil : "dialog"
+                    ))
+                }
                 return true
             },
             close: {}

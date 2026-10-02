@@ -37,7 +37,7 @@ public final class ClaudeModChannelHub: Sendable {
 
     private struct Pending {
         var sessionID: String
-        var continuation: CheckedContinuation<ClaudeModChannelWire.Reply?, Never>
+        var continuation: CheckedContinuation<Exchange, Never>
         /// The reply timeout; cancelled by whichever answer comes first.
         var timer: Task<Void, Never>?
     }
@@ -82,6 +82,22 @@ public final class ClaudeModChannelHub: Sendable {
         state.withLock { $0.channels[sessionID] != nil }
     }
 
+    /// How a request ended, told apart where it matters: a request the mod
+    /// never got can go another way, while one it got and did not answer may
+    /// still have done its work.
+    public enum Exchange: Equatable, Sendable {
+        case replied(ClaudeModChannelWire.Reply)
+        /// No channel, an encoding over the cap, or a failed write.
+        case notDelivered
+        /// Written, then no reply in time or the channel closed.
+        case unanswered
+
+        public var reply: ClaudeModChannelWire.Reply? {
+            if case .replied(let reply) = self { return reply }
+            return nil
+        }
+    }
+
     /// Sends `message` to the mod of `sessionID` and waits for its reply.
     ///
     /// - Returns: the reply, or nil when the session has no channel, the
@@ -91,22 +107,31 @@ public final class ClaudeModChannelHub: Sendable {
         to sessionID: String,
         timeout: Duration
     ) async -> ClaudeModChannelWire.Reply? {
+        await exchange(message, with: sessionID, timeout: timeout).reply
+    }
+
+    /// `send`, saying whether a request without a reply ever reached the mod.
+    public func exchange(
+        _ message: ClaudeModChannelWire.Message,
+        with sessionID: String,
+        timeout: Duration
+    ) async -> Exchange {
         var message = message
         message.id = makeID()
         let id = message.id
         let kind = message.kind.rawValue
         guard let line = ClaudeModChannelWire.encodeLine(message) else {
             Log.claudeContext.error("Mod channel: \(message.kind.rawValue, privacy: .public) is over the line cap")
-            return nil
+            return .notDelivered
         }
-        guard let channel = state.withLock({ $0.channels[sessionID]?.channel }) else { return nil }
+        guard let channel = state.withLock({ $0.channels[sessionID]?.channel }) else { return .notDelivered }
 
         return await withCheckedContinuation { continuation in
             state.withLock { $0.pending[id] = Pending(sessionID: sessionID, continuation: continuation) }
             let timer = Task { [sleep] in
                 await sleep(timeout)
                 guard !Task.isCancelled else { return }
-                if self.resume(id: id, with: nil) {
+                if self.resume(id: id, with: .unanswered) {
                     Log.claudeContext.error("Mod channel: no reply to \(kind, privacy: .public) in time")
                 }
             }
@@ -118,7 +143,7 @@ public final class ClaudeModChannelHub: Sendable {
             if !isWaiting { timer.cancel() }
             if !channel.write(line) {
                 Log.claudeContext.error("Mod channel: write failed; detaching")
-                _ = resume(id: id, with: nil)
+                _ = resume(id: id, with: .notDelivered)
                 channel.close()
             }
         }
@@ -174,7 +199,7 @@ public final class ClaudeModChannelHub: Sendable {
         #endif
         for pending in orphaned {
             pending.timer?.cancel()
-            pending.continuation.resume(returning: nil)
+            pending.continuation.resume(returning: .unanswered)
         }
     }
 
@@ -190,7 +215,7 @@ public final class ClaudeModChannelHub: Sendable {
             return
         }
         pending.timer?.cancel()
-        pending.continuation.resume(returning: reply)
+        pending.continuation.resume(returning: .replied(reply))
     }
 
     /// Closes every channel; the broker calls it on stop.
@@ -200,7 +225,7 @@ public final class ClaudeModChannelHub: Sendable {
     }
 
     /// Resumes `id` once. False when something else already did.
-    private func resume(id: String, with reply: ClaudeModChannelWire.Reply?) -> Bool {
+    private func resume(id: String, with reply: Exchange) -> Bool {
         guard let pending = state.withLock({ $0.pending.removeValue(forKey: id) }) else { return false }
         pending.timer?.cancel()
         pending.continuation.resume(returning: reply)
