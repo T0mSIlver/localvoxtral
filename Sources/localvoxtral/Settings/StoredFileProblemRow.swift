@@ -6,6 +6,8 @@ import SwiftUI
 struct StoredFileProblemRow: View {
     let problem: StoredFileProblem
     let fileName: String
+    /// What stops while the file is refused.
+    var effect = "nothing new is saved"
     /// Said in the confirmation, after the rename.
     var consequence: String?
     let startOver: @MainActor () async throws -> Void
@@ -16,7 +18,7 @@ struct StoredFileProblemRow: View {
     var body: some View {
         SettingsGroupRow {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(Self.sentence(for: problem, fileName: fileName))
+                Text(Self.sentence(for: problem, fileName: fileName, effect: effect))
                     .foregroundStyle(.orange)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Button("Start Over…") { isConfirming = true }
@@ -40,12 +42,12 @@ struct StoredFileProblemRow: View {
         }
     }
 
-    static func sentence(for problem: StoredFileProblem, fileName: String) -> String {
+    static func sentence(for problem: StoredFileProblem, fileName: String, effect: String) -> String {
         switch problem {
         case .unreadable:
-            "\(fileName) could not be read. It is left as it is, and nothing new is saved."
+            "\(fileName) could not be read. It is left as it is, and \(effect)."
         case .newerVersion:
-            "\(fileName) is from a newer localvoxtral. It is left as it is, and nothing new is saved."
+            "\(fileName) is from a newer localvoxtral. It is left as it is, and \(effect)."
         }
     }
 }

@@ -172,6 +172,17 @@ final class ViewSnapshotTests: XCTestCase {
                 store.waitForPendingWrites()
                 viewModel.learnedTermStore = store
             }
+            // forgotten-projects.json from a newer build (#1425).
+            try await recordSettings(
+                pane: .projects, name: "settings-projects-forgotten-list-problem-\(theme)", setUp: false,
+                appearance: appearance
+            ) { viewModel in
+                viewModel.installQuickCaptureInbox(try self.projectsInbox(viewModel.settings))
+                let store = try self.newerForgottenListStore()
+                store.importProjects(self.projectsLearnedTerms().projects) { _ in }
+                store.waitForPendingWrites()
+                viewModel.learnedTermStore = store
+            }
             try record(
                 IgnoredProjectsGroup(store: ignoringStore(), revision: 0, expanded: true)
                     .padding(20)
@@ -217,6 +228,19 @@ final class ViewSnapshotTests: XCTestCase {
         let store = LearnedTermStore(fileURL: nil)
         store.ignoreProject(key: "repo:github.com/example/side-project", name: "side-project", keys: [])
         store.ignoreProject(key: "/work/diary", name: "diary", keys: [])
+        store.waitForPendingWrites()
+        return store
+    }
+
+    /// A store beside a `forgotten-projects.json` a newer build wrote.
+    private func newerForgottenListStore() throws -> LearnedTermStore {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ViewSnapshotTests-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(#"{"version":99,"projects":[]}"#.utf8)
+            .write(to: directory.appendingPathComponent(LearnedTermStore.forgottenFileName))
+        let store = LearnedTermStore(fileURL: directory.appendingPathComponent("learned-terms.json"))
         store.waitForPendingWrites()
         return store
     }

@@ -47,6 +47,9 @@ struct ProjectsSettingsPane: View {
         let unlisted = inbox?.unlistedTerms()
         SettingsPage(tab: .projects) {
             SettingsGroup(title: "Projects", learnMoreURL: ProjectsLearnMore.projects) {
+                if let store = viewModel.learnedTermStore, store.problem == nil {
+                    ForgottenListProblemRow(store: store, revision: viewModel.learnedTermRevision)
+                }
                 if let store = viewModel.learnedTermStore, let problem = store.problem {
                     // The file also holds the projects: nothing else here
                     // means anything until it loads (#989).
@@ -779,6 +782,28 @@ struct ProjectTermsGroup: View {
         let parts = ProjectsPane.detail(for: term)
         guard let lastApplied = parts.lastApplied else { return Text(parts.text) }
         return Text("\(parts.text) \(lastApplied, format: .relative(presentation: .named))")
+    }
+}
+
+/// `forgotten-projects.json` could not be read (#1425): agents list no
+/// project until Start Over moves it aside. A row in the Projects group, so
+/// the problem adds no group.
+struct ForgottenListProblemRow: View {
+    let store: LearnedTermStore
+    /// Read so the row redraws when the store changes.
+    let revision: Int
+
+    var body: some View {
+        if let problem = store.forgottenListProblem {
+            StoredFileProblemRow(
+                problem: problem, fileName: LearnedTermStore.forgottenFileName,
+                effect: "agent activity adds no project",
+                consequence: "Projects you forgot can come back when an agent works in them."
+            ) {
+                _ = try await store.moveForgottenListAsideAndStartOver()
+            }
+            .accessibilityIdentifier("projects.forgottenListProblem")
+        }
     }
 }
 

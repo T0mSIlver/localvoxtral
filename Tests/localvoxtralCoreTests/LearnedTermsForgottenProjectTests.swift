@@ -166,4 +166,31 @@ final class LearnedTermsForgottenProjectTests: XCTestCase {
         XCTAssertEqual(store.snapshot().projects.map(\.key), [mac.key], "the dictation, not the agent listing")
         XCTAssertEqual(try Data(contentsOf: tombstoneURL), newer, "the file is left alone")
     }
+
+    /// Settings' Start Over (#1425): the problem shows until the file is
+    /// moved aside, with its bytes, and then agents list projects again.
+    func testStartOverMovesANewerTombstoneFileAsideAndAgentsListProjectsAgain() async throws {
+        let fileURL = makeFileURL()
+        let directory = fileURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let tombstoneURL = directory.appendingPathComponent(LearnedTermStore.forgottenFileName)
+        let newer = Data(#"{"version":99,"projects":[]}"#.utf8)
+        try newer.write(to: tombstoneURL)
+
+        let store = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        store.recordAgentActivity(agentWorked(in: mac), hostID: nil)
+        store.waitForPendingWrites()
+        XCTAssertEqual(store.forgottenListProblem, .newerVersion(99))
+        XCTAssertEqual(store.snapshot().projects, [])
+
+        let aside = try await store.moveForgottenListAsideAndStartOver()
+        XCTAssertEqual(try Data(contentsOf: aside), newer, "moved aside with its bytes")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tombstoneURL.path))
+        XCTAssertNil(store.forgottenListProblem)
+
+        store.recordAgentActivity(agentWorked(in: mac), hostID: nil)
+        store.waitForPendingWrites()
+        XCTAssertEqual(store.snapshot().projects.map(\.key).sorted(), [mac.key, quill.key].sorted())
+        XCTAssertNil(store.forgottenListProblem)
+    }
 }
