@@ -961,8 +961,13 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
                         state.terms?.forgotten = kept
                     }
                     if !kept.projects.isEmpty || !pendingForgottenChanges.isEmpty {
-                        // A failed write waits in `pendingForgottenChanges`.
-                        _ = updateForgottenList(forgottenFileURL, memory: kept, change: { _ in })
+                        // A failed write waits in `pendingForgottenChanges`,
+                        // so the tombstones go in as a change: a retry adds
+                        // them to whatever file another copy wrote meanwhile.
+                        let restored = kept.projects
+                        _ = updateForgottenList(
+                            forgottenFileURL, memory: kept,
+                            change: restored.isEmpty ? nil : { list in for project in restored { list.add(project) } })
                     }
                     Log.polishing.info("Learned terms: forgotten-projects.json moved aside, agents list projects again")
                     onChange?()
