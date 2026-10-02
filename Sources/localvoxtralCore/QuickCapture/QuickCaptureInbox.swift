@@ -343,6 +343,18 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
         item.repository = target
         item.relation = .none
         item.relatedIssue = nil
+        // Split gives back a draft saved at a join: its link goes too.
+        for index in (item.followUps ?? []).indices {
+            item.followUps?[index].draftBefore?.relation = .none
+            item.followUps?[index].draftBefore?.relatedIssue = nil
+        }
+    }
+
+    /// A draft's issue link holds only for the repository whose open issues
+    /// its run listed: "File issues here" may have changed while it ran.
+    static func linksIssues(of listed: String?, for item: QuickCaptureItem) -> Bool {
+        guard let current = item.repository, let listed else { return true }
+        return current.caseInsensitiveCompare(listed) == .orderedSame
     }
 
     package mutating func discard(_ id: UUID) {
@@ -386,8 +398,9 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
                 item.kind = draft.kind
                 item.title = draft.title
                 item.body = draft.body
-                item.relation = draft.relation
-                item.relatedIssue = draft.issue
+                let links = Self.linksIssues(of: repository, for: item)
+                item.relation = links ? draft.relation : .none
+                item.relatedIssue = links ? draft.issue : nil
                 item.note = nil
                 item.codeCheck = draft.kind == .issue && checking ? QuickCaptureCodeCheck(state: .checking) : nil
             case .failed(let failure):
@@ -424,8 +437,9 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
                 item.kind = .issue
                 item.title = draft.title
                 item.body = draft.body
-                item.relation = draft.relation
-                item.relatedIssue = draft.issue
+                let links = Self.linksIssues(of: repository, for: item)
+                item.relation = links ? draft.relation : .none
+                item.relatedIssue = links ? draft.issue : nil
                 item.note = nil
                 // The agent read the code to draft it.
                 item.codeCheck = QuickCaptureCodeCheck(
@@ -454,10 +468,7 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
             guard untouched else { return }
             item.title = draft.title
             item.body = draft.body
-            var sameRepository = true
-            if let current = item.repository, let repository {
-                sameRepository = current.caseInsensitiveCompare(repository) == .orderedSame
-            }
+            let sameRepository = linksIssues(of: repository, for: item)
             item.relation = sameRepository ? draft.relation : .none
             item.relatedIssue = sameRepository ? draft.issue : nil
             item.note = nil

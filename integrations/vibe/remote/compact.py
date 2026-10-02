@@ -42,6 +42,7 @@ EXCERPT_CHARS = 2048  # the Mac keeps 512 bytes of each; this only bounds the re
 MAX_PAYLOAD_BYTES = 8 * 1024 * 1024
 MAX_PROMPT_BYTES = 8 * 1024
 MAX_ID_BYTES = 4 * 1024
+MAX_PROMPT_ID_BYTES = 128  # ClaudeHookWireCodec.maxPromptIDBytes
 TAIL_BYTES = 512 * 1024
 TRANSCRIPT_NAME = "messages.jsonl"
 TRANSCRIPT_DEADLINE_SECONDS = 0.25
@@ -87,11 +88,13 @@ def read_tail(path):
 
 
 def last_user_prompt(path):
-    """The newest message the user typed, or None.
+    """The newest message the user typed, as (text, message id), or None.
 
     Only a line Vibe wrote with the user role and `"injected": false` counts,
-    and only its `content` string is kept. A line without the user-role marker
-    is not parsed at all.
+    and only its `content` and `message_id` strings are kept. A line without
+    the user-role marker is not parsed at all. Every hook reads the same
+    message until the user sends another; the id is what lets the Mac count it
+    once (#1285).
     """
     if not isinstance(path, str) or not path.startswith("/"):
         return None
@@ -111,7 +114,10 @@ def last_user_prompt(path):
         content = message.get("content")
         if not isinstance(content, str) or not content.strip():
             continue
-        return truncate_utf8(content.strip(), MAX_PROMPT_BYTES)
+        message_id = message.get("message_id")
+        if not isinstance(message_id, str) or not message_id or len(message_id.encode("utf-8")) > MAX_PROMPT_ID_BYTES:
+            message_id = None
+        return truncate_utf8(content.strip(), MAX_PROMPT_BYTES), message_id
     return None
 
 
@@ -278,7 +284,11 @@ def events_for(payload, process_id=None):
     events = []
     prompt = last_user_prompt_within_deadline(payload.get("transcript_path"))
     if prompt:
-        events.append(event("UserPromptSubmit", prompt=prompt))
+        text, message_id = prompt
+        if message_id:
+            events.append(event("UserPromptSubmit", prompt=text, prompt_id=message_id))
+        else:
+            events.append(event("UserPromptSubmit", prompt=text))
 
     if kind == "post_agent":
         events.append(event("Stop"))
