@@ -77,6 +77,42 @@ final class SessionClockTests: XCTestCase {
         XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.ready)
     }
 
+    /// Push-to-talk held on first use, released while the prompt is up, and
+    /// the prompt left unanswered past its timeout: the attempt is over, so
+    /// a grant that lands afterwards must not start a session the user is
+    /// no longer holding the key for.
+    func testAGrantAfterThePromptTimedOutStartsNothing() async {
+        let clock = ManualSessionClock()
+        let microphone = FakeMicrophoneCaptureService()
+        microphone.authorization = .notDetermined
+        let viewModel = makeViewModel(clock: clock, microphone: microphone)
+        viewModel.settings.dictationShortcutMode = .pushToTalk
+
+        viewModel.shortcuts.handleDictationShortcutPress()
+        viewModel.shortcuts.handleDictationShortcutRelease()
+        XCTAssertTrue(viewModel.isAwaitingMicrophonePermission)
+        let promptTimeout = viewModel.session.microphonePermissionTimeoutTask
+
+        await clock.waitForSleepers(1)
+        clock.advance(by: TimingConstants.microphonePermissionPromptTimeout)
+        await promptTimeout?.value
+        XCTAssertFalse(viewModel.isAwaitingMicrophonePermission, "the prompt timed out")
+
+        microphone.resolvePendingAccess(granted: true)
+        // The grant hops to the main actor; drain the hop without the wall clock.
+        var spins = 0
+        while !viewModel.isConnectingRealtimeSession, spins < 1_000 {
+            spins += 1
+            await Task.yield()
+        }
+
+        XCTAssertFalse(viewModel.isConnectingRealtimeSession, "the expired attempt must not connect")
+        XCTAssertNil(viewModel.session.managedStartupTask, "nor begin startup")
+        XCTAssertFalse(viewModel.isDictating)
+        XCTAssertEqual(microphone.startCount, 0, "nor capture audio")
+        XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.ready)
+    }
+
     /// A second prompt cancels the first prompt's timeout, and a cancelled
     /// sleep returns at once: that timeout must not then clear the second
     /// prompt's flag (GLM's review of this step).
