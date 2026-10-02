@@ -140,7 +140,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         let details = presenter.presented.last?.technicalDetails
         XCTAssertEqual(presenter.presented.count, 1, "the failure reaches the presenter once")
         XCTAssertFalse(
-            details?.contains("Accessibility") == true,
+            details?.contains(DictationViewModel.liveAutoPasteAccessibilityWarningMessage) == true,
             "failure details must not embed the AX warning, got: \(details ?? "nil")"
         )
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)

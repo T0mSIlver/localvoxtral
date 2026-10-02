@@ -319,7 +319,8 @@ codesign -d --requirements - "$APP" 2>&1 | sed 's/^/  /' || true
 if (( IS_ADHOC )); then
   echo "NOTE: ad-hoc signed build — if text insertion fails, remove and re-add"
   echo "      localvoxtral in System Settings > Privacy & Security > Accessibility"
-  echo "      (TCC grants don't survive ad-hoc signature changes)."
+  echo "      (Device Control and Data Access on macOS 27)."
+  echo "      TCC grants don't survive ad-hoc signature changes."
   echo "      For a SAME-REPO PR this is unexpected: CI should identity-sign it."
   echo "      An ad-hoc same-repo artifact means the self-hosted runner user lost"
   echo "      the localvoxtral-dev cert (check: security find-identity -v -p codesigning)."

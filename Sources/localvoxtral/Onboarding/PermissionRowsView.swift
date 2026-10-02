@@ -8,6 +8,7 @@ import SwiftUI
 /// mirroring the popover's refresh pattern.
 struct PermissionRowsView: View {
     var viewModel: DictationViewModel
+    var accessibilityPane: AccessibilitySettingsPane = .current
 
     private static let accessibilitySettingsURL =
         "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
@@ -44,7 +45,7 @@ struct PermissionRowsView: View {
 
     private var accessibilityRow: some View {
         PermissionRow(
-            title: "Accessibility",
+            title: accessibilityPane.name,
             subtitle: "Lets localvoxtral type transcribed text into other apps.",
             isGranted: viewModel.isAccessibilityTrusted,
             statusText: viewModel.isAccessibilityTrusted ? "Granted" : "Not granted",

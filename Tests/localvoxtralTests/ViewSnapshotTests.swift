@@ -414,6 +414,26 @@ final class ViewSnapshotTests: XCTestCase {
         }
     }
 
+    /// Live Auto-Paste without the Accessibility grant: the popover and the
+    /// permission rows, under the pane name macOS 26 and macOS 27 show (#1206).
+    func testAccessibilityNotGranted() throws {
+        for version in [26, 27] {
+            let (settings, viewModel) = makeViewModel()
+            settings.dictationOutputMode = .liveAutoPaste
+            viewModel.textInsertion.debugSetAccessibilityTrusted(false)
+            let pane = AccessibilitySettingsPane(macOSMajorVersion: version)
+            let popover = StatusPopoverView(viewModel: viewModel, navigator: SettingsNavigator(), accessibilityPane: pane)
+                .padding(12)
+                .background(Color(nsColor: .windowBackgroundColor))
+            try record(popover, name: "popover-accessibility-off-macos\(version)", width: 304, height: 460, growToFit: false)
+            let rows = PermissionRowsView(viewModel: viewModel, accessibilityPane: pane)
+                .padding(20)
+                .frame(width: 560, height: 170, alignment: .top)
+                .background(Color(nsColor: .windowBackgroundColor))
+            try record(rows, name: "permissions-accessibility-off-macos\(version)", width: 560, height: 200, growToFit: false)
+        }
+    }
+
     // MARK: - Failure log
 
     /// The failure alert's Show Log window after a polish timeout, and when

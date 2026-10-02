@@ -223,8 +223,8 @@ Next steps (once):
   1. Run the first pass BY HAND in this GUI terminal so the keychain
      "Always Allow" prompt for the signing key lands on you, not the agent:
        "$HOME/Library/Application Support/localvoxtral/bin/runner-node-resign.sh" run
-  2. System Settings > Privacy & Security: in BOTH Accessibility and
-     Screen Recording, REMOVE the existing node rows and re-add BOTH
+  2. System Settings > Privacy & Security: in BOTH Accessibility (Device
+     Control and Data Access on macOS 27) and Screen Recording, REMOVE the existing node rows and re-add BOTH
      ~/actions-runner/externals/node*/bin/node binaries (4 entries total).
      The old rows are keyed to the pre-signing hashes and never match again.
   3. Verify: dispatch ui-smoke.yml — its TCC preflight is the live probe.
