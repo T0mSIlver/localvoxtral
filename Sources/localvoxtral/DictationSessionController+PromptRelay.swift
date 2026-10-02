@@ -12,10 +12,11 @@ extension DictationSessionController {
     /// Connect time, once per dictation: hands the relay resolved at start to
     /// the insertion service, or disarms the previous one.
     func armPromptRelayForSession() {
-        promptRelaySessionID = context.agentPromptRoute == nil ? nil : context.claudeSessionJoin?.snapshot.sessionID
+        let sessionID = context.agentPromptRoute == nil ? nil : context.claudeSessionJoin?.snapshot.sessionID
+        promptRelaySessionID = sessionID
         textInsertion.beginPromptRelay(context.agentPromptRoute, kept: { [weak self] _ in
             self?.lastError = StatusStrings.agentPromptTextKeptInHistory
-            self?.forgetLandingThePromptRelayDidNotFill()
+            self?.forgetLanding(ofSession: sessionID)
         })
     }
 
@@ -25,8 +26,11 @@ extension DictationSessionController {
         guard textInsertion.promptRelayTakesText, let sink = textInsertion.promptRelaySink else {
             return textInsertion
         }
+        // Read now: an answer that comes after the next dictation armed its
+        // own relay still belongs to this one.
+        let sessionID = promptRelaySessionID
         return PromptRelayOverlayCommitter(sink: sink) { [weak self] text, pid in
-            self?.commitOverlayTextThePromptRelayRefused(text, preferredAppPID: pid)
+            self?.commitOverlayTextThePromptRelayRefused(text, preferredAppPID: pid, sessionID: sessionID)
         }
     }
 
@@ -36,7 +40,9 @@ extension DictationSessionController {
     /// since). Under Secure Keyboard Entry, or when no key lands, the text
     /// goes on the clipboard: the panel is gone, and it may exist nowhere
     /// else.
-    private func commitOverlayTextThePromptRelayRefused(_ text: String, preferredAppPID pid: pid_t?) {
+    private func commitOverlayTextThePromptRelayRefused(
+        _ text: String, preferredAppPID pid: pid_t?, sessionID: String?
+    ) {
         if !TerminalTargetDetector.isSecureKeyboardEntryEnabled(),
            textInsertion.insertTextPrioritizingKeyboard(text, preferredAppPID: pid).isSuccess
             || textInsertion.pasteUsingCommandV(text, preferredAppPID: pid) {
@@ -44,7 +50,7 @@ extension DictationSessionController {
             return
         }
         Log.overlay.error("overlay commit: relay refused and keyboard insertion unavailable; text copied")
-        forgetLandingThePromptRelayDidNotFill()
+        forgetLanding(ofSession: sessionID)
         #if DEBUG
         // A test must never write the host's clipboard.
         if TerminalTargetDetector.isRunningUnderXCTest {
@@ -65,9 +71,8 @@ extension DictationSessionController {
     /// turn `/compact` into text (docs/agent/invariants.md, "An Overlay
     /// Buffer commit starts with a space only when it continues the unsent
     /// prompt").
-    private func forgetLandingThePromptRelayDidNotFill() {
-        guard let sessionID = promptRelaySessionID,
-              lastOverlayCommitLanding?.sessionID == sessionID
+    private func forgetLanding(ofSession sessionID: String?) {
+        guard let sessionID, lastOverlayCommitLanding?.sessionID == sessionID
         else { return }
         Log.overlay.notice("overlay commit: relay text not in the prompt; next commit adds no space")
         lastOverlayCommitLanding = nil
