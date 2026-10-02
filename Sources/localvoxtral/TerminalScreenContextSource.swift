@@ -82,6 +82,43 @@ enum TerminalScreenContextSource {
         isAccessibilityTrusted: Bool,
         trustedEndpointEnabled: Bool = false
     ) -> TerminalScreenCapture? {
+        guard let target = gatedStartTarget(
+            settingEnabled: settingEnabled,
+            endpointURL: endpointURL,
+            isAccessibilityTrusted: isAccessibilityTrusted,
+            trustedEndpointEnabled: trustedEndpointEnabled
+        ) else { return nil }
+        return capture(target: target, paneTTY: nil)
+    }
+
+    /// The start capture bound to its pane: `readPaneTTY` reads the focused
+    /// pane's tty just before the screen, and the join's own tty read just
+    /// after it closes the bracket. A tab switch between the capture and
+    /// the join then shows as two different ttys, and raw attachment is
+    /// refused (#1226). The tty is read only once the gate has cleared.
+    static func captureAtStart(
+        settingEnabled: Bool,
+        endpointURL: URL,
+        isAccessibilityTrusted: Bool,
+        trustedEndpointEnabled: Bool = false,
+        readPaneTTY: (TerminalScreenTarget) async -> String?
+    ) async -> TerminalScreenCapture? {
+        guard let target = gatedStartTarget(
+            settingEnabled: settingEnabled,
+            endpointURL: endpointURL,
+            isAccessibilityTrusted: isAccessibilityTrusted,
+            trustedEndpointEnabled: trustedEndpointEnabled
+        ) else { return nil }
+        let paneTTY = await readPaneTTY(target)
+        return capture(target: target, paneTTY: paneTTY)
+    }
+
+    private static func gatedStartTarget(
+        settingEnabled: Bool,
+        endpointURL: URL,
+        isAccessibilityTrusted: Bool,
+        trustedEndpointEnabled: Bool
+    ) -> TerminalScreenTarget? {
         guard let target = frontmostTarget() else { return nil }
         guard TerminalScreenContext.shouldAttemptRead(
             settingEnabled: settingEnabled,
@@ -92,6 +129,10 @@ enum TerminalScreenContextSource {
         ) else {
             return nil
         }
+        return target
+    }
+
+    private static func capture(target: TerminalScreenTarget, paneTTY: String?) -> TerminalScreenCapture? {
         guard let read = readVisibleScreen(target: target) else {
             return nil
         }
@@ -99,7 +140,9 @@ enum TerminalScreenContextSource {
         Log.target.info(
             "Terminal screen context captured at start: \(read.text.count, privacy: .public)ch"
         )
-        return TerminalScreenCapture(text: read.text, target: target, windowID: read.windowID)
+        return TerminalScreenCapture(
+            text: read.text, target: target, windowID: read.windowID, paneTTY: paneTTY
+        )
     }
 
     /// Stop-time reconciliation for a start capture. Re-reads ONLY the start
@@ -148,7 +191,7 @@ enum TerminalScreenContextSource {
         var rawAuthorized = false
         if case .read = sample, let start {
             rawAuthorized = TerminalScreenRawAttachmentPolicy.isAuthorized(
-                target: start.target, windowID: start.windowID
+                target: start.target, windowID: start.windowID, paneTTY: start.paneTTY
             )
         }
         let decision = TerminalScreenContext.reconcile(

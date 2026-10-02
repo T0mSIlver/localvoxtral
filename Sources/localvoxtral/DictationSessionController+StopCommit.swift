@@ -47,6 +47,11 @@ extension DictationSessionController {
             return
         }
 
+        // A cancel drops the segments that ended behind a go-to: they are
+        // words the user threw away. The go-to itself still lands (#1251).
+        if wasCancelled {
+            liveGoToQueuedSegments = []
+        }
         // A go-to still bringing a pane forward: the segments behind it land
         // before the session ends.
         guard !finishLiveAutoPasteSessionAfterGoTo(sessionMode: sessionMode, finish: { [weak self] sessionAudio in
@@ -211,6 +216,7 @@ extension DictationSessionController {
                 skillNames: polishSkillNames()
             )
             agentSkillStore?.refreshLocalIfStale()
+            agentProjectScanner?.refreshIfStale()
 
             statusText = StatusStrings.polishing
             overlayBufferCoordinator.markPolishing(true)
@@ -333,7 +339,10 @@ extension DictationSessionController {
         }
         if overlayCommit.succeeded {
             // Read before the cleanup below discards the join.
-            expectCorrection(of: displayWorkingText, join: context.claudeSessionJoin, project: nil)
+            expectCorrection(
+                of: displayWorkingText, join: context.claudeSessionJoin, project: nil,
+                startedAt: capturedSessionStartedAt
+            )
             proposeProjectTermsIfNew(join: context.claudeSessionJoin, inserted: displayWorkingText)
         }
         sendOverlaySpokenSendIfNeeded(spokenSend, commit: overlayCommit)
@@ -369,6 +378,20 @@ extension DictationSessionController {
                 technicalDetails: llmConfigurationFailure.technicalDetails
             )
         }
+    }
+
+    /// What a delivered dictation taught, remembered for the next one in
+    /// the same project. Recorded from the MERGED entries and nowhere else:
+    /// a span the merge abstained on is not evidence of a spelling, and a
+    /// verification pair is a question put to the model, not an answer.
+    /// Only once the text reached its target: a commit cancelled while it
+    /// polished, or one the target refused, taught nothing (#1372).
+    private func recordLearnedTerms(of outcome: StopCommitCoordinator.PolishOutcome) {
+        StopCommitCoordinator.recordLearnedTerms(
+            merged: outcome.material.merged,
+            project: outcome.material.learnedProject,
+            store: learnedTermStore
+        )
     }
 
     /// The polish-and-commit task's body: polish, apply the reply, commit,
@@ -477,6 +500,9 @@ extension DictationSessionController {
             // Clears the interrupted-save once the text is handed over.
             guard let addressed = await self.commitOverlayAddressed(to: addressedTo) else { return }
             self.finishAddressedCommit(addressed, sessionMode: sessionMode)
+            if addressed.inserted {
+                self.recordLearnedTerms(of: outcome)
+            }
             let historyID = self.saveSessionRecord(
                 startedAt: capturedSessionStartedAt,
                 rawText: originalText,
@@ -540,10 +566,12 @@ extension DictationSessionController {
             self.lastError = failureMessage
         }
         if overlayCommit.succeeded {
+            self.recordLearnedTerms(of: outcome)
             self.expectCorrection(
                 of: insertedText,
                 join: capture.claudeJoin,
-                project: outcome.material.learnedProject
+                project: outcome.material.learnedProject,
+                startedAt: capturedSessionStartedAt
             )
             self.proposeProjectTermsIfNew(join: capture.claudeJoin, inserted: insertedText)
         }
@@ -655,13 +683,19 @@ extension DictationSessionController {
         let capturedOutputMode = sessionMode.rawValue
         let sessionAudio = finishedAudio ?? audio.sessionRecording.finish()
         let capturedAudio = sessionStoresAudio ? sessionAudio : nil
-        textInsertion.flushFinalLiveReplacementCorrections()
+        // A cancel types nothing more; the cleanup drops what is held (#1222).
+        if !wasCancelled {
+            textInsertion.flushFinalLiveReplacementCorrections()
+        }
         // Typed text may sit after the last commit, ending in a space.
         lastOverlayCommitLanding = nil
         let historyJoin = context.claudeSessionJoin.map(AgentCLIJoin.init)
         // Read before the cleanup below discards the join.
         if liveDictationCanTeachACorrection {
-            expectCorrection(of: liveTypedText(), join: context.claudeSessionJoin, project: nil)
+            expectCorrection(
+                of: liveTypedText(), join: context.claudeSessionJoin, project: nil,
+                startedAt: capturedSessionStartedAt
+            )
         }
         // Read before the cleanup below drops text the field refused (#1176).
         let allTextInserted = !textInsertion.hasPendingInsertionText
@@ -732,6 +766,7 @@ extension DictationSessionController {
         overlayCommitOutcome: OverlayBufferCommitOutcome?,
         shouldCommitOverlay: Bool
     ) {
+        let cancelled = wasCancelled
         wasCancelled = false
         isFinalizingStop = false
         isConnectingRealtimeSession = false
@@ -768,6 +803,11 @@ extension DictationSessionController {
 
         textInsertion.stopInsertionRetryTask()
         textInsertion.logDiagnostics()
+        // Ending the session flushes the words the stream holds back; a
+        // cancelled one drops them instead, on every cancel path (#1222).
+        if cancelled {
+            textInsertion.discardLiveReplacementSession()
+        }
         textInsertion.endLiveReplacementSession()
         // After the last flush and any submit: calls already handed to the
         // relay still land, in order.

@@ -269,17 +269,22 @@ package struct WidgetSnapshot: Codable, Equatable, Sendable {
         package var today: PeriodDetail
         package var last7Days: PeriodDetail
         package var last30Days: PeriodDetail
+        /// Start of the local day the period details were counted on. Nil in
+        /// a snapshot from before #1244, read as counted today.
+        package var detailDay: Date?
 
         package init(
             days: [Day] = [],
             today: PeriodDetail = PeriodDetail(),
             last7Days: PeriodDetail = PeriodDetail(),
-            last30Days: PeriodDetail = PeriodDetail()
+            last30Days: PeriodDetail = PeriodDetail(),
+            detailDay: Date? = nil
         ) {
             self.days = days
             self.today = today
             self.last7Days = last7Days
             self.last30Days = last30Days
+            self.detailDay = detailDay
         }
     }
 

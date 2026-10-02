@@ -25,7 +25,7 @@ import os
 /// write re-reads it under their shared lock and applies its change to what
 /// the other copy wrote (`StoredFile.update`), and Settings' Projects pane
 /// reads it again when it appears (`reloadIfChanged`, #1126).
-package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectSummaryStoring, QuickCaptureProjectLinkStoring, @unchecked Sendable {
+package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposalStoring, RemoteProjectSummaryStoring, QuickCaptureProjectLinkStoring, @unchecked Sendable {
     private struct State {
         var terms: LearnedTerms?
         /// Set, the file on disk is left alone.
@@ -50,9 +50,9 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     private let onChange: (@Sendable () -> Void)?
     /// The file as this copy last read or wrote it. Write queue only.
     private var seen = StoredFileSeen()
-    /// The last write failed, so memory holds a change the file does not.
-    /// Write queue only.
-    private var hasUnsavedChanges = false
+    /// Changes in memory that no write has landed yet, in order: the last
+    /// write failed (`StoredFile.update`). Write queue only.
+    private var unsaved: [(inout LearnedTerms) -> Void] = []
     /// The same as `seen`, for `ignored-projects.json`. Write queue only.
     private var seenIgnored = StoredFileSeen()
     /// Ignore-list changes whose write failed, replayed by the next one.
@@ -275,15 +275,18 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         excluding: [String]
     ) async -> [String] {
         let moment = now()
+        let firstRun = FirstRun()
         return await withCheckedContinuation { continuation in
             mutate(
                 { memory in
                     let added = memory.recordCommandProposal(
                         terms, proposer: proposer, project: project, excluding: excluding, now: moment)
-                    Log.polishing.info(
-                        "Learned terms: \(added.count, privacy: .public) proposed by \(proposer, privacy: .public) through the command"
-                    )
-                    continuation.resume(returning: added)
+                    firstRun {
+                        Log.polishing.info(
+                            "Learned terms: \(added.count, privacy: .public) proposed by \(proposer, privacy: .public) through the command"
+                        )
+                        continuation.resume(returning: added)
+                    }
                 },
                 refused: { continuation.resume(returning: []) }
             )
@@ -314,6 +317,24 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
             ) {
                 Log.polishing.info("Learned terms: a remote hook named a new repository")
             }
+        }
+    }
+
+    /// The repositories coding agents worked in (#1027): the Mac's own
+    /// transcripts (`hostID` nil) or a host's report.
+    package func recordAgentActivity(_ repositories: [AgentWorkedRepository], hostID: String?) {
+        let moment = now()
+        mutate { memory in
+            var added = 0
+            for repository in repositories where memory.recordAgentActivity(
+                project: repository.project, remote: repository.remote, hostID: hostID,
+                at: repository.lastActive, now: moment
+            ) {
+                added += 1
+            }
+            Log.polishing.info(
+                "Learned terms: agents worked in \(repositories.count, privacy: .public) repositories, \(added, privacy: .public) new"
+            )
         }
     }
 
@@ -436,6 +457,7 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         completion: @escaping @Sendable (LearnedTermsExport.ImportSummary) -> Void
     ) {
         let moment = now()
+        let firstRun = FirstRun()
         mutate(
             { terms in
                 // An ignored repo's records are not imported, nor counted.
@@ -443,10 +465,12 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
                 // Terms imported onto a linked checkout belong to its repository.
                 terms.linkCheckoutsToRepositories(now: moment)
                 let kept = terms.termCount
-                Log.polishing.info(
-                    "Learned terms imported: \(summary.terms, privacy: .public) terms in \(summary.projects, privacy: .public) projects, \(kept, privacy: .public) kept"
-                )
-                completion(summary)
+                firstRun {
+                    Log.polishing.info(
+                        "Learned terms imported: \(summary.terms, privacy: .public) terms in \(summary.projects, privacy: .public) projects, \(kept, privacy: .public) kept"
+                    )
+                    completion(summary)
+                }
             },
             refused: { completion(LearnedTermsExport.ImportSummary(terms: 0, projects: 0)) }
         )
@@ -455,6 +479,8 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     /// Folds `change` in on the write queue, behind the launch load and every
     /// earlier write, so an Undo can never land before the term it undoes.
     /// While the file is refused, `change` never runs and `refused` does.
+    /// After a failed write `change` can run again (`StoredFile.update`): a
+    /// result it reports goes through `FirstRun`.
     private func mutate(
         _ change: @escaping @Sendable (inout LearnedTerms) -> Void,
         ignoring ignoredChange: (@Sendable (LearnedTerms, inout IgnoredProjects) -> Void)? = nil,
@@ -478,7 +504,7 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
     /// records inside the same transaction, so it also applies to what
     /// another copy wrote.
     private func commit(
-        _ change: (inout LearnedTerms) -> Void,
+        _ change: @escaping @Sendable (inout LearnedTerms) -> Void,
         ignoring ignoredChange: ((LearnedTerms, inout IgnoredProjects) -> Void)? = nil,
         refused: () -> Void = {}
     ) {
@@ -509,7 +535,7 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
 
     private func commitHoldingTheListLock(
         _ fileURL: URL, _ ignoredFileURL: URL, memory: LearnedTerms,
-        change: (inout LearnedTerms) -> Void,
+        change: @escaping (inout LearnedTerms) -> Void,
         ignoredChange: ((LearnedTerms, inout IgnoredProjects) -> Void)?,
         refused: () -> Void
     ) {
@@ -519,17 +545,23 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
             return
         }
         if !pendingListChanges.isEmpty {
+            let held = { (terms: inout LearnedTerms) in
+                terms.ignored = ignored
+                change(&terms)
+                terms.removeIgnoredProjects()
+            }
             var terms = memory
-            terms.ignored = ignored
-            change(&terms)
-            terms.removeIgnoredProjects()
+            held(&terms)
+            // Unsaved like a failed write's change, so the next write keeps
+            // it on top of another copy's (#1260).
+            unsaved.append(held)
             state.withLock { $0.terms = terms }
             return
         }
         beforeTermsUpdate?()
         var swept = ignored
         let update = StoredFile.update(
-            fileURL, memory: memory, seen: &seen,
+            fileURL, memory: memory, seen: &seen, unsaved: &unsaved,
             decode: Self.terms(fromFileContents:),
             encode: { try Self.encoder.encode($0) },
             write: Self.writeFile,
@@ -544,13 +576,12 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         switch update {
         case .written(let terms):
             state.withLock { $0.terms = terms }
-            hasUnsavedChanges = false
         case .failed(let terms, let error):
             state.withLock { $0.terms = terms }
-            hasUnsavedChanges = true
             Log.persistence.error("learned terms: write failed: \(error.localizedDescription, privacy: .public)")
         case .refused(let problem):
             // Another copy left a file this build cannot read: keep it.
+            unsaved = []
             state.withLock { state in
                 state.terms = LearnedTerms()
                 state.terms?.ignored = ignored
@@ -588,8 +619,10 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
             if probe == current { return current }
         }
         let changes = pendingListChanges + (change.map { [$0] } ?? [])
+        // `changes` already replays the failed ones.
+        var replayed: [(inout IgnoredProjects) -> Void] = []
         let update = StoredFile.updateHoldingTheLock(
-            url, memory: current, seen: &seenIgnored,
+            url, memory: current, seen: &seenIgnored, unsaved: &replayed,
             decode: Self.ignored(fromFileContents:),
             encode: { try Self.encoder.encode($0) },
             write: writeIgnoredList,
@@ -741,7 +774,7 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
 
     /// `reloadIfChanged`'s body, on the write queue.
     private func reloadFromDisk() {
-        guard let fileURL, state.withLock({ $0.problem }) == nil, !hasUnsavedChanges else { return }
+        guard let fileURL, state.withLock({ $0.problem }) == nil, unsaved.isEmpty else { return }
         switch StoredFile.reloadIfChanged(fileURL, seen: &seen, decode: Self.terms(fromFileContents:)) {
         case nil, .absent?:
             return
@@ -832,5 +865,20 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try DurableFile.write(data, to: url)
+    }
+}
+
+/// Runs its body the first time only. A store's change runs again when its
+/// write failed and another copy wrote the file (#1260); what it reports to a
+/// caller must not.
+private final class FirstRun: Sendable {
+    private let ran = Mutex(false)
+
+    func callAsFunction(_ body: () -> Void) {
+        let first = ran.withLock { ran in
+            defer { ran = true }
+            return !ran
+        }
+        if first { body() }
     }
 }

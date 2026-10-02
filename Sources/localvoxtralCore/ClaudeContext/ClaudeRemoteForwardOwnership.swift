@@ -225,7 +225,7 @@ package enum ClaudeRemoteForwardOwnershipCheck {
         """
         exec >/dev/null 2>&1
         command -v curl >/dev/null 2>&1 || exit 3
-        curl -s -o /dev/null --max-time 5 -X POST \
+        curl -q --noproxy '*' -s -o /dev/null --max-time 5 -X POST \
           -H 'Content-Type: application/json' \
           -H '\(ClaudeRemoteForwardProbeWitness.headerName): \(nonce)' \
           -d '{}' \

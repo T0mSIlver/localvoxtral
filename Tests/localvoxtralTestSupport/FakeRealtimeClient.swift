@@ -12,6 +12,7 @@ package final class FakeRealtimeClient: RealtimeClient, @unchecked Sendable {
         var connectConfigurations: [RealtimeSessionConfiguration] = []
         var commits: [Bool] = []
         var sentAudioBytes = 0
+        var contextBudgets: [RealtimeContextBudget?] = []
         var connectionGeneration: RealtimeConnectionGeneration = .none
         var handler: (@Sendable (RealtimeEvent, RealtimeConnectionGeneration) -> Void)?
         var onConnect: (@Sendable () -> Void)?
@@ -31,6 +32,8 @@ package final class FakeRealtimeClient: RealtimeClient, @unchecked Sendable {
     package var disconnectCount: Int { state.withLock { $0.disconnectCount } }
     package var commits: [Bool] { state.withLock { $0.commits } }
     package var sentAudioBytes: Int { state.withLock { $0.sentAudioBytes } }
+    /// Every budget the session set, in order.
+    package var contextBudgets: [RealtimeContextBudget?] { state.withLock { $0.contextBudgets } }
     package var connectConfigurations: [RealtimeSessionConfiguration] {
         state.withLock { $0.connectConfigurations }
     }
@@ -91,6 +94,10 @@ package final class FakeRealtimeClient: RealtimeClient, @unchecked Sendable {
 
     package func sendAudioChunk(_ pcm16Data: Data) {
         state.withLock { $0.sentAudioBytes += pcm16Data.count }
+    }
+
+    package func setContextBudget(_ budget: RealtimeContextBudget?) {
+        state.withLock { $0.contextBudgets.append(budget) }
     }
 
     package func sendCommit(final: Bool) {

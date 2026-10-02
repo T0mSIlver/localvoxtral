@@ -43,7 +43,7 @@ struct MistralAPIKeyVerifier: MistralAPIKeyVerifying {
 
         let response: URLResponse
         do {
-            (_, response) = try await URLSession.shared.data(for: request)
+            (_, response) = try await SameOriginHTTP.shared.data(for: request)
         } catch {
             Log.backends.error(
                 "mistral api key check failed: \(error.localizedDescription, privacy: .public)"

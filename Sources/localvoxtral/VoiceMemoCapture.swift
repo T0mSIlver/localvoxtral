@@ -76,14 +76,17 @@ enum VoiceMemoAudioDecoder {
 /// helper, started if it is not running, or the server or Mistral model the
 /// user dictates with. A realtime socket, never a batch model.
 struct VoiceMemoEngineTranscriber: VoiceMemoTranscribing {
-    /// What a dictation would dial now, with its engine ready.
-    let prepare: @MainActor @Sendable () async throws -> (RealtimeSessionConfiguration, @Sendable () -> any RealtimeClient)
+    /// What a dictation would dial now, with its engine ready, and the
+    /// server's context budget when it has one.
+    let prepare: @MainActor @Sendable () async throws -> (
+        RealtimeSessionConfiguration, RealtimeContextBudget?, @Sendable () -> any RealtimeClient
+    )
 
     func transcribe(_ url: URL) async throws -> VoiceMemoTranscript {
         let pcm = try VoiceMemoAudioDecoder.pcm16(from: url)
-        let (configuration, makeClient) = try await prepare()
+        let (configuration, contextBudget, makeClient) = try await prepare()
         let text = try await RealtimeFileTranscriber(makeClient: makeClient)
-            .transcribe(pcm16: pcm, configuration: configuration)
+            .transcribe(pcm16: pcm, configuration: configuration, contextBudget: contextBudget)
         return VoiceMemoTranscript(text: text, pcm16: pcm)
     }
 }
@@ -104,6 +107,8 @@ final class VoiceMemoController {
     private let isDictationActive: @MainActor () -> Bool
     private let saveHistory: @MainActor (_ text: String, _ recordedAt: Date) -> UUID?
     private var intake: VoiceMemoIntake?
+    /// Turned off with a memo in flight: kept until that memo is done.
+    private var finishingIntake: VoiceMemoIntake?
     private var runTask: Task<Void, Never>?
     private var startTask: Task<Void, Never>?
     /// Lives as long as the app, like this controller.
@@ -112,6 +117,9 @@ final class VoiceMemoController {
     var onStatus: (@MainActor (String) -> Void)?
     /// The ledger was refused, or no longer is (#989).
     var onLedgerProblem: (@MainActor (StoredFileProblem?) -> Void)?
+    var isTranscribing: Bool {
+        intake?.isTranscribing == true || finishingIntake?.isTranscribing == true
+    }
 
     init(
         settings: SettingsStore,
@@ -164,7 +172,19 @@ final class VoiceMemoController {
             if intake != nil { Log.backends.info("Voice memos: off") }
             startTask?.cancel()
             startTask = nil
-            runTask?.cancel()
+            if let intake, intake.isTranscribing {
+                // The memo in flight finishes, whichever scan runs it: the
+                // helper decodes its queued audio whether or not its socket
+                // stays open (#1313).
+                intake.stopAfterCurrentMemo()
+                finishingIntake = intake
+                intake.onTranscriptionEnded = { [weak self, weak intake] in
+                    guard let self, let intake, self.finishingIntake === intake else { return }
+                    self.finishingIntake = nil
+                }
+            } else {
+                runTask?.cancel()
+            }
             runTask = nil
             intake = nil
             onLedgerProblem?(nil)

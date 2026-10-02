@@ -100,6 +100,11 @@ there is not.
   refuses everything that socket SAYS, but a WebSocket left in `connecting`
   still transmits the audio the stop flushed into its pending queue, and only
   closing it stops that.
+  A context rollover (#1139) is the one socket swap the client makes on its
+  own. The retiring socket raises `.sessionRolledOver(to:)` after its last
+  transcript and before the new socket is resumed, so the FIFO hands the
+  session its new name before that socket can say anything; from there the
+  retiring socket is refused like any other retired one.
 - **Live Auto-Paste holds back the tail of the transcript.** Replacements are
   applied before typing (nothing is ever un-typed — there are no backspaces in
   the insertion path, and terminals can't support them: field bug 2026-07-06),
@@ -250,13 +255,22 @@ there is not.
   focused app. **The Return exception** (owner ruling): in a terminal tab,
   and only there, Return may be pressed in an app the app itself brought
   forward. The pane must first read back `.focused` (its tty through the
-  join's reader, never a window title); only then is the text typed, into
+  join's reader, never a window title) and the registry still list the
+  session after the focus, since the shell left by an agent that exited
+  holds the same tty (#1219); only then is the text typed, into
   the terminal pid that is frontmost and carries the focused bundle ID.
   After the typing the tty is read back again, and Return is pressed only
-  if it still matches, that pid is frontmost and on `ReturnSubmitsAppList`,
+  if it still matches, the registry still lists the session after that
+  read-back, that pid is frontmost and on `ReturnSubmitsAppList`,
   and Secure Keyboard Entry is off. A failed check before the typing types
   nothing and keeps the text in History; one after it leaves the text
-  unsubmitted, and the popover says so. Correction learning and term
+  unsubmitted, and the popover says so. Right before the typing and
+  again before the Return, the session's agent pid must be in its tty's
+  foreground process group (the process table, the herdr route's
+  foreground test), and the destination list's picked pane must pass the
+  same test before its words go in: a suspended agent stays alive and
+  registered, and its tab reads back as the session's, while its shell
+  owns the terminal (#1249). Correction learning and term
   proposals skip an addressed dictation: they key on the join of the pane
   it started in. Live Auto-Paste has no addressed send: its words are
   typed before the phrase at the end is heard.
@@ -495,6 +509,25 @@ there is not.
   eval found no cost in sending 43 names where 11 were used (no control got
   a name written into it). Built-in commands that exist on no disk are not
   listed.
+
+- **A host's agent projects leave as name and origin only** (#1027). The
+  Claude Code remote shim sends `X-Lvx-Agent-Projects` on SessionStart:
+  `<epoch>:<name>:<repository>` entries, newest first, for each repository
+  Claude Code ran in on that host in the last 30 days. `hooks/agent-projects.sh`
+  reads only the first top-level `cwd` key of each transcript folder's newest
+  `.jsonl`, never anything else in a transcript, and never decodes a folder
+  name into a path. It names the repository as the shim names a session's
+  project (the main checkout's basename, the origin from `capture.sh
+  repository`); a cwd outside git or without an origin is not listed, so no
+  path ever leaves. The scan takes seconds, so the hook sends the value cached
+  in its state folder and rescans detached when the cache is six hours old.
+  Each field is checked against an enumerated charset before it is cached and
+  the whole value again before it is sent; at most 30 entries and 2000 bytes.
+  The Mac reads its own `~/.claude/projects` the same way
+  (`AgentTranscripts`), at launch and at most hourly after, and takes a
+  checkout's `origin` from its git config file, never from git. A project
+  only agents' work listed (`LearnedTermProject.agentActiveAt`) goes 30 days
+  after that work unless a dictation, hook or proposal touched it since.
 
 - **A learned term does not rewrite ordinary words** (#522). The exact tier
   pre-applies any span that normalizes to a term, so a learned `useAuth`
@@ -751,11 +784,12 @@ there is not.
     Otherwise, and
     whenever the request went out with no valid answer (it may have landed),
     the text stays in History (`keepInHistory`).
-    *Enter only over the joined agent:* before each Enter the route asks the
-    pane's foreground processes again, with the test its arm joined on (the
-    registered pid for a local pane, the parent pid or agent name for a
-    remote one). A pane back at its shell gets no Enter: it would run the
-    prompt as a command.
+    *Text and Enter only over the joined agent:* before each append and
+    each Enter the route asks the pane's foreground processes again, with
+    the test its arm joined on (the registered pid for a local pane, the
+    parent pid or agent name for a remote one). A pane back at its shell, or
+    running another agent, gets neither: the text would land in that prompt
+    and an Enter would run it. The text stays in History, never typed.
     *Resolution:* only when opencode's relay did not resolve, so an opencode
     pane with a relay keeps it; from the context join's herdr binding when
     the join resolved one, and, when no join ran (polishing off), from a
@@ -813,8 +847,12 @@ there is not.
     the cmux process the join was about, with the join's password, one
     connection per call. Before every call it re-reads the opt-in
     (`cmuxSurfaceJoinEnabled`) and whether the joined session still holds
-    the surface in the registry: once the agent exits, the surface is a
-    shell, and an Enter there runs the dictation as a command.
+    the surface in the registry, and asks again right before the write:
+    once the agent exits, the surface is a shell, and an Enter there runs
+    the dictation as a command. A local agent must also be in its tty's
+    foreground process group (the process table, the herdr route's
+    foreground test): a suspended agent stays alive and registered while
+    its shell owns the terminal.
     *Only the dictation in progress:* armed at start, dropped at stop.
     *No control characters:* cmux turns `\n` and `\r` into Return and Tab,
     Escape and Backspace into keys, so text with any C0 or C1 control is
@@ -1503,7 +1541,13 @@ there is not.
     reconcile, vocab-always / raw-excerpt-only-after-authorized-join). A TTY
     join in iTerm2/Terminal.app authorizes attaching that focused pane's
     contents; herdr and cmux joins never attach AX surface text on any
-    terminal.
+    terminal. A TTY join authorizes only the pane it matched: the start
+    capture carries the focused pane's tty, read just before its text, and
+    the join's own tty read just after it closes the bracket. The two must
+    be equal, because a window's tabs share its window identity and a tab
+    switch between the capture and the join would otherwise pair one tab's
+    screen with another tab's session (#1226). This is the one extra surface
+    read per dictation; it selects nothing, it only binds the capture.
   - **The local-tty echo arm (`.remoteLocalTTY`, 2026-09-06).** The tty arm,
     with the identifier taking one extra trip — and the arm that actually
     serves the configs people have. `resolve(tty:)` compares the focused
@@ -2103,7 +2147,7 @@ there is not.
     Desktop reader read it back from its prompt 0.2 s after the open. The
     sidebar exposes no session id to Accessibility (rows are titles), so
     clicking a row cannot be tied to a session. `.focused` requires Desktop
-    frontmost and `sessionShown` to resolve the focused view to this
+    frontmost before and after the read, and `sessionShown` to resolve the focused view to this
     registry session: focus in the primary pane's prompt, and the id
     reported by this session alone. An ambiguous id, focus left in the
     sidebar or a second pane, or no answer within 2 s is `.unverified`, and

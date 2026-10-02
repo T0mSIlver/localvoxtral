@@ -15,7 +15,7 @@ struct PolishPromptTokenCounter: Sendable {
     let ratio: PolishPromptTokenRatio
     /// Set when the bundled helper polishes.
     let helperTokenizeURL: URL?
-    var session: URLSession = .shared
+    var session: URLSession = SameOriginHTTP.shared
 
     @MainActor
     init(settings: SettingsStore, ledger: UsageLedger?) {
@@ -29,7 +29,7 @@ struct PolishPromptTokenCounter: Sendable {
             ? URL(string: "http://127.0.0.1:\(ManagedBackendEndpoints.polishdPort)/v1/tokenize") : nil
     }
 
-    init(ratio: PolishPromptTokenRatio, helperTokenizeURL: URL?, session: URLSession = .shared) {
+    init(ratio: PolishPromptTokenRatio, helperTokenizeURL: URL?, session: URLSession = SameOriginHTTP.shared) {
         self.ratio = ratio
         self.helperTokenizeURL = helperTokenizeURL
         self.session = session
