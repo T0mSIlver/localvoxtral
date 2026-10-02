@@ -464,8 +464,16 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         // If the AUHAL is already running on the same device, skip
         // teardown + rebuild. This avoids a visible mic-indicator flicker
         // when the health monitor restarts capture on the same device
-        // (common during BT SCO codec renegotiation delays).
-        if isCapturing(), withState({ $0.activeDeviceID }) == deviceID {
+        // (common during BT SCO codec renegotiation delays). A unit that
+        // captured and then went silent is rebuilt: keeping it would make
+        // the monitor's recovery a no-op.
+        if MicrophoneRestartPolicy.keepsRunningUnit(
+            isCapturing: isCapturing(),
+            onSameDevice: withState({ $0.activeDeviceID }) == deviceID,
+            hasCapturedAudioInRun: hasCapturedAudioInCurrentRun(),
+            hasRecentAudio: hasRecentCapturedAudio(
+                within: MicrophoneRestartPolicy.stalledAfterSeconds)
+        ) {
             debugLog("start: already capturing on device \(deviceID), skipping restart")
             return
         }
