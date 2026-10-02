@@ -1084,6 +1084,72 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(relay.calls.map(\.path), [], "the start session's prompt gets nothing")
     }
 
+    // MARK: - The session's mod fills the prompt box (#1409)
+
+    /// A Claude Code session joined by tty, with a mod attached: the overlay
+    /// commit asks the mod to fill the prompt and posts no key. A second
+    /// dictation into the same unsent prompt fills with its leading space.
+    func testAnOverlayCommitIntoAClaudeSessionWithAModFillsItsPromptAndTypesNothing() async throws {
+        let (pipeline, typed, fills) = try await modChannelPipeline(replyOK: true)
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "that's what I was doing.")
+        let first = await settled.wait(for: 1)
+        await dictate(pipeline, "Usually it works.")
+        let second = await settled.wait(for: 2)
+
+        XCTAssertEqual(first && second, true, "both fills settled")
+        XCTAssertEqual(settled.outcomes, [true, true])
+        XCTAssertEqual(fills.texts, ["that's what I was doing.", " Usually it works."])
+        XCTAssertEqual(typed.text, "", "no key went to the terminal")
+        XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded), [true, true])
+    }
+
+    /// The mod could not fill (a dialog held the keys): the words go in by
+    /// keyboard, once.
+    func testAFillTheModRefusesIsTypedInstead() async throws {
+        let (pipeline, typed, fills) = try await modChannelPipeline(replyOK: false)
+
+        await dictate(pipeline, "run the tests.")
+        let typedAll = await typed.waitFor("run the tests.")
+
+        XCTAssertTrue(typedAll, "typed: \(typed.text.debugDescription)")
+        XCTAssertEqual(fills.texts, ["run the tests."])
+    }
+
+    /// A dictation joined to Claude Code session `s1` in a terminal, whose
+    /// mod answers every fill with `replyOK`.
+    private func modChannelPipeline(
+        replyOK: Bool
+    ) async throws -> (Pipeline, TypedText, FillRecorder) {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.overlay.insertsThroughCommitter = true
+        pipeline.overlay.commitTargetAppPID = 4343
+        pipeline.overlay.passesTargetPIDToCommitter = false
+        _ = joinClaudeCodeTerminal(pipeline)
+        let typed = recordTypedText(pipeline)
+
+        let hub = ClaudeModChannelHub()
+        let fills = FillRecorder()
+        _ = hub.attach(sessionID: "s1", channel: .init(
+            write: { line in
+                guard let message = ClaudeModChannelWire.decode(
+                    ClaudeModChannelWire.Message.self, from: line.dropLast()
+                ), message.kind == .fill else { return false }
+                fills.append(message.text ?? "")
+                hub.deliver(.init(
+                    sessionID: "s1", id: message.id, ok: replyOK, reason: replyOK ? nil : "dialog"
+                ))
+                return true
+            },
+            close: {}
+        ))
+        pipeline.viewModel.context.claudeModChannels = hub
+        return (pipeline, typed, fills)
+    }
+
     /// Two sessions in two tabs of one terminal share its app. The user
     /// switched tabs between the pick and the stop: the focused pane no
     /// longer shows the picked session, so the words stay in History.
@@ -3119,6 +3185,38 @@ final class DictationPipelineTests: XCTestCase {
     private static func speech(seed: UInt8) -> Data {
         Data((0..<3_200).map { UInt8(truncatingIfNeeded: $0 &* 7 &+ Int(seed)) })
     }
+}
+
+/// How the mod's fills settled, in order.
+@MainActor
+private final class FillSettled {
+    private(set) var outcomes: [Bool] = []
+    private var watches: [(count: Int, wait: BoundedWait)] = []
+
+    func note(_ filled: Bool) {
+        outcomes.append(filled)
+        for watch in watches where watch.count == outcomes.count {
+            watch.wait.resolve()
+        }
+    }
+
+    /// True once `count` fills settled; false if not within `failAfter`
+    /// seconds of wall time.
+    func wait(for count: Int, failAfter: TimeInterval = 10) async -> Bool {
+        if outcomes.count >= count { return true }
+        let wait = BoundedWait()
+        watches.append((count, wait))
+        return await wait.value(failAfter: failAfter)
+    }
+}
+
+/// The texts a fake mod was asked to fill, from any thread.
+private final class FillRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [String] = []
+
+    func append(_ text: String) { lock.withLock { recorded.append(text) } }
+    var texts: [String] { lock.withLock { recorded } }
 }
 
 /// What the insertion hooks would have typed, in order.

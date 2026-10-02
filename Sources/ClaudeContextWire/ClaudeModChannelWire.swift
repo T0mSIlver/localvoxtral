@@ -59,6 +59,9 @@ public enum ClaudeModChannelWire {
     public enum Kind: String, Codable, Sendable {
         /// Answer `ok`; nothing else. Proves the channel end to end.
         case ping
+        /// Put `text` in the session's prompt box at the cursor (#1409).
+        /// `ok` only once the box holds it.
+        case fill
     }
 
     /// One request from the app to the mod.
@@ -67,17 +70,21 @@ public enum ClaudeModChannelWire {
         public var kind: Kind
         /// Matches the `Reply`. The hub assigns it.
         public var id: String
+        /// What `fill` puts in the box.
+        public var text: String?
 
-        public init(kind: Kind, id: String = "", version: Int = ClaudeModChannelWire.version) {
+        public init(kind: Kind, id: String = "", text: String? = nil, version: Int = ClaudeModChannelWire.version) {
             self.modMessage = version
             self.kind = kind
             self.id = id
+            self.text = text
         }
 
         enum CodingKeys: String, CodingKey {
             case modMessage = "mod_message"
             case kind
             case id
+            case text
         }
     }
 

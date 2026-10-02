@@ -6,7 +6,7 @@
 
 export const WIRE_VERSION = 1
 
-export type ChannelMessage = { mod_message: number; kind: string; id: string }
+export type ChannelMessage = { mod_message: number; kind: string; id: string; text?: string }
 
 export type ChannelReply = {
   mod_reply: number
@@ -29,9 +29,9 @@ export function parseMessage(line: string): ChannelMessage | null {
   try {
     const value: unknown = JSON.parse(line)
     if (typeof value !== 'object' || value === null) return null
-    const { mod_message, kind, id } = value as Record<string, unknown>
+    const { mod_message, kind, id, text } = value as Record<string, unknown>
     if (mod_message !== WIRE_VERSION || typeof kind !== 'string' || typeof id !== 'string') return null
-    return { mod_message, kind, id }
+    return typeof text === 'string' ? { mod_message, kind, id, text } : { mod_message, kind, id }
   } catch {
     return null
   }

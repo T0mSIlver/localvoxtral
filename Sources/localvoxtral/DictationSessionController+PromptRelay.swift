@@ -39,8 +39,8 @@ extension DictationSessionController {
     /// commit named when it handed the text off (the overlay may have reset
     /// since). Under Secure Keyboard Entry, or when no key lands, the text
     /// goes on the clipboard: the panel is gone, and it may exist nowhere
-    /// else.
-    private func commitOverlayTextThePromptRelayRefused(
+    /// else. The session's mod (#1409) gives its refusals back here too.
+    func commitOverlayTextThePromptRelayRefused(
         _ text: String, preferredAppPID pid: pid_t?, sessionID: String?
     ) {
         if !TerminalTargetDetector.isSecureKeyboardEntryEnabled(),

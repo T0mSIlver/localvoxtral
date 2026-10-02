@@ -23,6 +23,11 @@ public final class ClaudeModChannelHub: Sendable {
         var write: @Sendable (Data) -> Bool
         /// Ends the connection, which ends the broker's hold on it.
         var close: @Sendable () -> Void
+
+        package init(write: @escaping @Sendable (Data) -> Bool, close: @escaping @Sendable () -> Void) {
+            self.write = write
+            self.close = close
+        }
     }
 
     private struct Attached {
