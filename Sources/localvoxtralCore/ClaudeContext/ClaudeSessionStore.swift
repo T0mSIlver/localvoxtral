@@ -12,7 +12,10 @@ import Glibc
 
 public protocol ClaudeSessionStore: Sendable {
     func load() throws -> Data?
-    func save(_ data: Data) throws
+    /// Replaces the file with what `transform` makes of the bytes on disk,
+    /// as the only writer among the running copies of the app; nil removes
+    /// the file (#1455).
+    func update(_ transform: (Data?) throws -> Data?) throws
     func clear() throws
     /// Moves a file this build refused out of the way, keeping its bytes
     /// (#1041). Called before the first save or clear after a refused load.
@@ -35,8 +38,14 @@ public struct ClaudeSessionFileStore: ClaudeSessionStore {
         try io.read(from: fileURL)
     }
 
-    public func save(_ data: Data) throws {
-        try io.withExclusiveAccess(to: fileURL) { try io.write(data, to: fileURL) }
+    public func update(_ transform: (Data?) throws -> Data?) throws {
+        try io.withExclusiveAccess(to: fileURL) {
+            if let data = try transform(try io.read(from: fileURL)) {
+                try io.write(data, to: fileURL)
+            } else {
+                try removeFile()
+            }
+        }
     }
 
     /// Under the lock the writes take, or not at all: a write another copy
@@ -70,9 +79,15 @@ public struct ClaudeSessionFileStore: ClaudeSessionStore {
     }
 }
 
+/// Writes this copy's sessions on top of the ones another running copy of
+/// the app wrote (#1455). Only the copy holding the hook sockets learns of
+/// new sessions, so a second copy (a `try-pr.sh` build) that rewrote the file
+/// from its own list would drop every session the other copy started since.
 package final class ClaudeSessionStoreWriter: @unchecked Sendable {
     package enum Operation: Sendable {
-        case save(Data)
+        /// This copy's sessions. Rows another copy wrote stay in the file.
+        case save(StoredClaudeSessions)
+        /// Removes the file, whoever wrote its rows.
         case clear
     }
 
@@ -82,6 +97,10 @@ package final class ClaudeSessionStoreWriter: @unchecked Sendable {
         /// Set when the restore refused the file: nothing is saved or
         /// cleared until it has been moved aside.
         var fileRefused = false
+        /// The rows this copy restored or last wrote. A row in the file with
+        /// another id was written by another copy and is kept; one with these
+        /// ids that this copy no longer holds was removed here, and goes.
+        var ownSessionIDs: Set<String> = []
     }
 
     private let store: any ClaudeSessionStore
@@ -109,19 +128,26 @@ package final class ClaudeSessionStoreWriter: @unchecked Sendable {
         state.withLock { $0.fileRefused = true }
     }
 
+    /// The rows the restore read, kept or dropped: they are this copy's to
+    /// write back or remove.
+    package func adoptRestoredRows(_ sessionIDs: some Sequence<String>) {
+        state.withLock { $0.ownSessionIDs.formUnion(sessionIDs) }
+    }
+
     package func flush() {
         queue.sync {}
     }
 
     private func drain() {
         while true {
-            guard let (operation, fileRefused) = state.withLock({ state -> (Operation, Bool)? in
+            guard let (operation, fileRefused, ownSessionIDs) = state.withLock({
+                state -> (Operation, Bool, Set<String>)? in
                 guard let pending = state.pending else {
                     state.scheduled = false
                     return nil
                 }
                 state.pending = nil
-                return (pending, state.fileRefused)
+                return (pending, state.fileRefused, state.ownSessionIDs)
             }) else { return }
 
             if fileRefused {
@@ -137,17 +163,63 @@ package final class ClaudeSessionStoreWriter: @unchecked Sendable {
             }
             do {
                 switch operation {
-                case .save(let data): try store.save(data)
-                case .clear: try store.clear()
+                case .save(let file):
+                    try store.update { onDisk in
+                        try Self.merging(file, onto: onDisk, ownSessionIDs: ownSessionIDs)
+                    }
+                    state.withLock { $0.ownSessionIDs = Set(file.sessions.map(\.sessionID)) }
+                case .clear:
+                    try store.clear()
+                    state.withLock { $0.ownSessionIDs = [] }
                 }
             } catch {
-                Log.claudeContext.error("Claude session store write failed")
+                Log.claudeContext.error(
+                    "Claude session store write failed: \(String(describing: error), privacy: .public)"
+                )
             }
         }
     }
+
+    private struct FileChangedUnreadable: Error {}
+
+    /// `file`'s rows plus the rows on disk another copy wrote. Nil when no
+    /// row is left. A file that no longer reads (a newer build's, written
+    /// since the restore) is never replaced: this throws instead (#989).
+    private static func merging(
+        _ file: StoredClaudeSessions,
+        onto onDisk: Data?,
+        ownSessionIDs: Set<String>
+    ) throws -> Data? {
+        var merged = file
+        if let onDisk {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .millisecondsSince1970
+            guard let disk = try? decoder.decode(StoredClaudeSessions.self, from: onDisk),
+                  disk.version == StoredClaudeSessions.currentVersion
+            else { throw FileChangedUnreadable() }
+            let written = Set(file.sessions.map(\.sessionID))
+            // A local row is only good for the boot that wrote it, which the
+            // file records once for all its rows.
+            let sameBoot = disk.bootIdentity != nil && disk.bootIdentity == file.bootIdentity
+            let theirs = disk.sessions.filter { row in
+                !ownSessionIDs.contains(row.sessionID) && !written.contains(row.sessionID)
+                    && (row.origin.kind != "local" || sameBoot)
+            }
+            if !theirs.isEmpty {
+                Log.claudeContext.notice(
+                    "Claude session store kept \(theirs.count, privacy: .public) session(s) another running copy wrote"
+                )
+            }
+            merged.sessions = (file.sessions + theirs).sorted { $0.sessionID < $1.sessionID }
+        }
+        guard !merged.sessions.isEmpty else { return nil }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        return try encoder.encode(merged)
+    }
 }
 
-package struct StoredClaudeSessions: Codable {
+package struct StoredClaudeSessions: Codable, Sendable {
     package static let currentVersion = 1
 
     package var version: Int
@@ -160,7 +232,7 @@ package struct StoredClaudeSessions: Codable {
         case sessions
     }
 
-    package struct Session: Codable {
+    package struct Session: Codable, Sendable {
         package var sessionID: String
         package var origin: Origin
         package var agent: ClaudeHookAgent
@@ -206,7 +278,7 @@ package struct StoredClaudeSessions: Codable {
         }
     }
 
-    package struct Origin: Codable {
+    package struct Origin: Codable, Sendable {
         package var kind: String
         package var peerUID: UInt32?
         package var channel: String?
@@ -224,7 +296,7 @@ package struct StoredClaudeSessions: Codable {
         }
     }
 
-    package struct RemoteEnvironment: Codable {
+    package struct RemoteEnvironment: Codable, Sendable {
         package var herdrPaneID: String?
         package var herdrSocketPath: String?
         package var herdrSession: String?

@@ -852,7 +852,9 @@ private final class MemoryClaudeSessionStore: ClaudeSessionStore, @unchecked Sen
     }
 
     func load() throws -> Data? { bytes.withLock { $0 } }
-    func save(_ data: Data) throws { bytes.withLock { $0 = data } }
+    func update(_ transform: (Data?) throws -> Data?) throws {
+        try bytes.withLock { $0 = try transform($0) }
+    }
     func clear() throws {
         bytes.withLock { $0 = nil }
         clearCount.withLock { $0 += 1 }
@@ -899,12 +901,13 @@ final class ClaudeSessionPersistenceTests: XCTestCase {
 
     private func localRecord(
         _ event: ClaudeHookEvent,
+        sessionID: String = "local-session",
         prompt: String? = nil,
         claudePID: Int32 = 42
     ) -> ClaudeHookRecord {
         ClaudeHookRecord(
             event: event,
-            sessionID: "local-session",
+            sessionID: sessionID,
             timestamp: epoch.timeIntervalSince1970,
             rawCwd: "/work/local",
             prompt: prompt,
@@ -1120,6 +1123,63 @@ final class ClaudeSessionPersistenceTests: XCTestCase {
             try FileManager.default.contentsOfDirectory(atPath: directory.path)
                 .contains { $0.hasPrefix("claude-sessions.json.incompatible-") }
         )
+    }
+
+    /// A file in a directory of its own, removed after the test.
+    private func sessionFileURL() throws -> URL {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("lvx-sessions-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return directory.appendingPathComponent("claude-sessions.json")
+    }
+
+    private func fileRegistry(_ fileURL: URL) -> ClaudeSessionRegistry {
+        let timestamp = epoch
+        return ClaudeSessionRegistry(
+            store: ClaudeSessionFileStore(fileURL: fileURL),
+            now: { timestamp },
+            isProcessAlive: { _ in true },
+            bootIdentity: { "boot-a" },
+            localPeerUID: { 501 }
+        )
+    }
+
+    /// Two running copies of the app share the file (#1455).
+    func testEachCopyKeepsTheOthersSessionsAndRemovesOnlyItsOwn() throws {
+        let fileURL = try sessionFileURL()
+        let installed = fileRegistry(fileURL)
+        let trial = fileRegistry(fileURL)
+        let local = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
+
+        installed.ingest(localRecord(.sessionStart, sessionID: "installed-session"), origin: local)
+        installed.flushPersistence()
+        trial.ingest(localRecord(.sessionStart, sessionID: "trial-session"), origin: local)
+        trial.flushPersistence()
+        XCTAssertEqual(
+            Set(fileRegistry(fileURL).liveSessions().map(\.sessionID)),
+            ["installed-session", "trial-session"]
+        )
+
+        installed.ingest(localRecord(.sessionEnd, sessionID: "installed-session"), origin: local)
+        installed.flushPersistence()
+        XCTAssertEqual(fileRegistry(fileURL).liveSessions().map(\.sessionID), ["trial-session"])
+    }
+
+    func testANewerFileWrittenAfterTheRestoreIsNeverReplaced() throws {
+        let fileURL = try sessionFileURL()
+        let registry = fileRegistry(fileURL)
+        let newer = Data(#"{"v":2,"sessions":[],"from":"a later build"}"#.utf8)
+        XCTAssertTrue(FileManager.default.createFile(atPath: fileURL.path, contents: newer))
+
+        registry.ingest(localRecord(.sessionStart), origin: .localAuthenticated(peerUID: 501))
+        registry.flushPersistence()
+
+        XCTAssertEqual(try Data(contentsOf: fileURL), newer)
     }
 
     func testUnknownRemoteChannelsKeepRemoteSessionsInTheFile() throws {
