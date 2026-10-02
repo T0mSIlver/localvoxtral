@@ -39,9 +39,9 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
     private let onChange: (@Sendable () -> Void)?
     /// The file as this copy last read or wrote it. Write queue only.
     private var seen = StoredFileSeen()
-    /// The last write failed, so memory holds a change the file does not.
-    /// Write queue only.
-    private var hasUnsavedChanges = false
+    /// Changes in memory that no write has landed yet, in order: the last
+    /// write failed (`StoredFile.update`). Write queue only.
+    private var unsaved: [(inout LearnedTerms) -> Void] = []
 
     /// `fileURL` nil keeps everything in memory (tests, previews). The file is
     /// read on the write queue right away, and every later read and write is
@@ -217,15 +217,18 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
         excluding: [String]
     ) async -> [String] {
         let moment = now()
+        let firstRun = FirstRun()
         return await withCheckedContinuation { continuation in
             mutate(
                 { memory in
                     let added = memory.recordCommandProposal(
                         terms, proposer: proposer, project: project, excluding: excluding, now: moment)
-                    Log.polishing.info(
-                        "Learned terms: \(added.count, privacy: .public) proposed by \(proposer, privacy: .public) through the command"
-                    )
-                    continuation.resume(returning: added)
+                    firstRun {
+                        Log.polishing.info(
+                            "Learned terms: \(added.count, privacy: .public) proposed by \(proposer, privacy: .public) through the command"
+                        )
+                        continuation.resume(returning: added)
+                    }
                 },
                 refused: { continuation.resume(returning: []) }
             )
@@ -356,16 +359,19 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
         completion: @escaping @Sendable (LearnedTermsExport.ImportSummary) -> Void
     ) {
         let moment = now()
+        let firstRun = FirstRun()
         mutate(
             { terms in
                 let summary = terms.merge(importing: projects, now: moment)
                 // Terms imported onto a linked checkout belong to its repository.
                 terms.linkCheckoutsToRepositories(now: moment)
                 let kept = terms.termCount
-                Log.polishing.info(
-                    "Learned terms imported: \(summary.terms, privacy: .public) terms in \(summary.projects, privacy: .public) projects, \(kept, privacy: .public) kept"
-                )
-                completion(summary)
+                firstRun {
+                    Log.polishing.info(
+                        "Learned terms imported: \(summary.terms, privacy: .public) terms in \(summary.projects, privacy: .public) projects, \(kept, privacy: .public) kept"
+                    )
+                    completion(summary)
+                }
             },
             refused: { completion(LearnedTermsExport.ImportSummary(terms: 0, projects: 0)) }
         )
@@ -374,6 +380,8 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
     /// Folds `change` in on the write queue, behind the launch load and every
     /// earlier write, so an Undo can never land before the term it undoes.
     /// While the file is refused, `change` never runs and `refused` does.
+    /// After a failed write `change` can run again (`StoredFile.update`): a
+    /// result it reports goes through `FirstRun`.
     private func mutate(
         _ change: @escaping @Sendable (inout LearnedTerms) -> Void,
         refused: @escaping @Sendable () -> Void = {}
@@ -384,7 +392,7 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
     /// `mutate`'s body, on the write queue. The launch load ran first on this
     /// queue; a store with no file starts empty.
     private func commit(
-        _ change: (inout LearnedTerms) -> Void,
+        _ change: @escaping @Sendable (inout LearnedTerms) -> Void,
         refused: () -> Void = {}
     ) {
         let (memory, problem) = state.withLock { ($0.terms ?? LearnedTerms(), $0.problem) }
@@ -401,7 +409,7 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
             return
         }
         let update = StoredFile.update(
-            fileURL, memory: memory, seen: &seen,
+            fileURL, memory: memory, seen: &seen, unsaved: &unsaved,
             decode: Self.terms(fromFileContents:),
             encode: { try Self.encoder.encode($0) },
             write: { data, url in
@@ -413,13 +421,12 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
         switch update {
         case .written(let terms):
             state.withLock { $0.terms = terms }
-            hasUnsavedChanges = false
         case .failed(let terms, let error):
             state.withLock { $0.terms = terms }
-            hasUnsavedChanges = true
             Log.persistence.error("learned terms: write failed: \(error.localizedDescription, privacy: .public)")
         case .refused(let problem):
             // Another copy left a file this build cannot read: keep it.
+            unsaved = []
             state.withLock { state in
                 state.terms = LearnedTerms()
                 state.problem = problem
@@ -478,7 +485,7 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
 
     /// `reloadIfChanged`'s body, on the write queue.
     private func reloadFromDisk() {
-        guard let fileURL, state.withLock({ $0.problem }) == nil, !hasUnsavedChanges else { return }
+        guard let fileURL, state.withLock({ $0.problem }) == nil, unsaved.isEmpty else { return }
         switch StoredFile.reloadIfChanged(fileURL, seen: &seen, decode: Self.terms(fromFileContents:)) {
         case nil, .absent?:
             return
@@ -537,5 +544,20 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
         // grounding today's dictation.
         terms.prune(now: now())
         return .loaded(terms)
+    }
+}
+
+/// Runs its body the first time only. A store's change runs again when its
+/// write failed and another copy wrote the file (#1260); what it reports to a
+/// caller must not.
+private final class FirstRun: Sendable {
+    private let ran = Mutex(false)
+
+    func callAsFunction(_ body: () -> Void) {
+        let first = ran.withLock { ran in
+            defer { ran = true }
+            return !ran
+        }
+        if first { body() }
     }
 }

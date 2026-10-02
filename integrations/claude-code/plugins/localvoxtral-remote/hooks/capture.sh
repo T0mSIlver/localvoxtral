@@ -165,7 +165,7 @@ fi
 
 # post <path> <body-file> <reply-file>: prints the HTTP status.
 post() {
-  curl --silent --output "$3" --write-out '%{http_code}' \
+  curl -q --noproxy '*' --silent --output "$3" --write-out '%{http_code}' \
     --max-time 10 --max-filesize 65536 --request POST \
     --header 'Content-Type: application/octet-stream' \
     --header @"$WORK/header" \

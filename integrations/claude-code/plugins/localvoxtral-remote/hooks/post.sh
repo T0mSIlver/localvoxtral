@@ -118,7 +118,7 @@ esac
 # its next hook. Written when the recorded version differs, and refreshed on
 # SessionStart and UserPromptSubmit so that a live session's record outlasts
 # the age-out below.
-PLUGIN_VERSION=1.33.0
+PLUGIN_VERSION=1.35.0
 VERSION_DIR="$STAMP_DIR/plugin-version"
 if [ -n "$STAMP_DIR" ] && [ -n "$SESSION_ID" ]; then
   if [ "$EVENT" = "SessionEnd" ]; then
@@ -302,7 +302,7 @@ fi
 # the app validates the shape and trusts nothing else about it.
 cat 2>/dev/null >"$WORK/header" <<EOF || fail_open
 Authorization: Bearer $TOKEN
-X-Lvx-Plugin-Version: 1.33.0
+X-Lvx-Plugin-Version: 1.35.0
 EOF
 
 # --- Allowlisted environment enrichment --------------------------------------
@@ -848,8 +848,11 @@ lvx_capture_asks() {
 # --max-time 1 mirrors the old http hooks' one-second fail-open ceiling: a
 # host whose forward silently failed must not stall every turn. --max-filesize
 # (recognized since curl 7.10.8) belts the body the stdout gate below already
-# rejects; when it trips, curl fails and STATUS goes empty.
-STATUS="$(curl --silent --output "$WORK/body" --write-out '%{http_code}' \
+# rejects; when it trips, curl fails and STATUS goes empty. -q (first, or
+# curl ignores it) skips ~/.curlrc and --noproxy '*' any inherited http_proxy
+# or ALL_PROXY: curl proxies even 127.0.0.1, and a proxy would get the token
+# and the prompt outside the tunnel (#1281). Every loopback curl here does both.
+STATUS="$(curl -q --noproxy '*' --silent --output "$WORK/body" --write-out '%{http_code}' \
   --dump-header "$WORK/response-headers" \
   --max-time 1 --max-filesize 1024 --request POST \
   --header 'Content-Type: application/json' \

@@ -61,7 +61,21 @@ package struct LiveClaudeRemoteSSHConfigFileSystem: ClaudeRemoteSSHConfigFileSys
         )
     }
 
-    package func atomicWriteConfig(_ data: Data, permissions: UInt16) throws {
+    /// `StoredFileLock` beside the config, as the app's own stores take it
+    /// (#990): another running copy's setup waits for this one. An editor
+    /// takes no lock; `atomicWriteConfig` catches its save instead. A
+    /// `~/.ssh` the write would refuse (a symlink, another owner's, group or
+    /// world writable) gets no lock file: the app leaves it unchanged.
+    package func withExclusiveAccess<T>(_ body: () throws -> T) throws -> T {
+        if let directory = ClaudeSocketGuard.metadata(ofPath: sshDirectoryURL.path),
+           directory.isSymlink || !directory.isDirectory
+            || directory.ownerUID != UInt32(geteuid()) || directory.mode & 0o022 != 0 {
+            return try body()
+        }
+        return try StoredFileLock.withLock(beside: configURL, body)
+    }
+
+    package func atomicWriteConfig(_ data: Data, permissions: UInt16, replacing expected: Data?) throws {
         let temporaryURL = sshDirectoryURL.appendingPathComponent(
             ".config.localvoxtral.\(UUID().uuidString)",
             isDirectory: false
@@ -96,6 +110,9 @@ package struct LiveClaudeRemoteSSHConfigFileSystem: ClaudeRemoteSSHConfigFileSys
             }
         }
         guard fsync(descriptor) == 0 else { throw POSIXFailure(operation: "fsync", code: errno) }
+        // Last look before the rename: a save since the caller's read (an
+        // editor, which takes no lock) would be lost under it (#1345).
+        guard currentConfigBytes() == .some(expected) else { throw ClaudeRemoteSSHConfigChangedOnDisk() }
         let moved = temporaryURL.path.withCString { source in
             configURL.path.withCString { destination in rename(source, destination) }
         }
@@ -103,6 +120,14 @@ package struct LiveClaudeRemoteSSHConfigFileSystem: ClaudeRemoteSSHConfigFileSys
             throw POSIXFailure(operation: "rename", code: errno)
         }
         renamed = true
+    }
+
+    /// The config's bytes, `.some(nil)` when there is no file, and nil when
+    /// what is there cannot be compared: a symlink or a failed read.
+    private func currentConfigBytes() -> Data?? {
+        guard let metadata = ClaudeSocketGuard.metadata(ofPath: configURL.path) else { return .some(nil) }
+        guard !metadata.isSymlink, let data = try? Data(contentsOf: configURL) else { return nil }
+        return .some(data)
     }
 
     private struct POSIXFailure: Error, CustomStringConvertible {

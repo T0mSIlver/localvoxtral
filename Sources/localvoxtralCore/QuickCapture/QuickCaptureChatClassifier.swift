@@ -137,7 +137,7 @@ package struct QuickCaptureChatClassifier: QuickCaptureClassifying {
         apiKey: String,
         model: String,
         extraBody: [String: any Sendable] = [:],
-        session: URLSession = .shared,
+        session: URLSession = SameOriginHTTP.shared,
         usageBackend: UsageEntry.Backend = .userServer,
         usageRecorder: (any UsageRecording)? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
