@@ -35,8 +35,9 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
 
     private struct State {
         var base = BaseState()
-        var pingTimer: DispatchSourceTimer?
-        var sessionReadyTimer: DispatchSourceTimer?
+        /// Both sleep on `clock` and are cancelled when the socket closes.
+        var pingTimer: Task<Void, Never>?
+        var sessionReadyTimer: Task<Void, Never>?
         var hasReceivedSessionCreated = false
         var hasBypassedSessionCreatedGate = false
         var hasSentSessionUpdate = false
@@ -87,8 +88,12 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     /// The date a closing socket's usage is filed under; injected so tests
     /// read no wall clock.
     private let usageDate: @Sendable () -> Date
-    /// What the rollover's pause is read on and its watchdog sleeps on.
+    /// What the rollover's pause is read on and what its watchdog, the
+    /// handshake fallback and the keepalive ping sleep on.
     private let clock: SessionClock
+    /// How long the client waits for `session.created` before it opens the
+    /// send gate itself (compatibility mode).
+    package static let sessionCreatedFallbackDelay: Duration = .seconds(3)
     package let supportsPeriodicCommit = true
     package var isConnected: Bool {
         state.withLock { s in
@@ -781,25 +786,29 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     private func startPingTimerLocked(_ s: inout State) {
         stopPingTimerLocked(&s)
 
-        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
-        timer.schedule(deadline: .now() + 30, repeating: 30)
-        timer.setEventHandler { [weak self] in
-            guard let self else { return }
-            let task: URLSessionWebSocketTask? = self.state.withLock { s in
-                guard s.base.socketState == .connected else { return nil }
-                return s.base.webSocketTask
-            }
-            guard let task else { return }
-            task.sendPing { [weak self] error in
-                guard let self, let error else { return }
-                self.handleTerminalSocketError(
-                    for: task,
-                    errorMessage: "Connection lost: \(self.describeSocketError(error))"
-                )
+        let clock = clock
+        s.pingTimer = Task { [weak self] in
+            while true {
+                await clock.sleep(Self.keepalivePingInterval)
+                guard !Task.isCancelled, let self else { return }
+                self.sendKeepalivePing()
             }
         }
-        s.pingTimer = timer
-        timer.resume()
+    }
+
+    private func sendKeepalivePing() {
+        let task: URLSessionWebSocketTask? = state.withLock { s in
+            guard s.base.socketState == .connected else { return nil }
+            return s.base.webSocketTask
+        }
+        guard let task else { return }
+        task.sendPing { [weak self] error in
+            guard let self, let error else { return }
+            self.handleTerminalSocketError(
+                for: task,
+                errorMessage: "Connection lost: \(self.describeSocketError(error))"
+            )
+        }
     }
 
     private func startSessionReadyTimerLocked(_ s: inout State) {
@@ -809,23 +818,22 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         // handler already in flight would otherwise announce compatibility mode
         // under whatever name the client had picked up by then.
         let generation = s.base.connectionGeneration
-        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
-        timer.schedule(deadline: .now() + 3)
-        timer.setEventHandler { [weak self] in
+        let clock = clock
+        s.sessionReadyTimer = Task { [weak self] in
+            await clock.sleep(Self.sessionCreatedFallbackDelay)
+            guard !Task.isCancelled else { return }
             self?.bypassSessionCreatedGate(for: generation)
         }
-        s.sessionReadyTimer = timer
-        timer.resume()
     }
 
     /// No `session.created` within the timer: compatibility mode opens the
     /// gate itself.
     private func bypassSessionCreatedGate(for generation: RealtimeConnectionGeneration) {
         let opened: Bool = state.withLock { s in
-            // Cancelling a DispatchSourceTimer does not unqueue a
-            // handler already on its way: without this, a timer
-            // armed for the previous socket puts the NEW one into
-            // compatibility mode and flushes its queue early.
+            // A cancelled wait can already be past its cancellation
+            // check: without this, a timer armed for the previous socket
+            // puts the NEW one into compatibility mode and flushes its
+            // queue early.
             guard isCurrentConnectionLocked(s.base, generation) else { return false }
             guard s.base.socketState == .connected else { return false }
             guard !s.hasReceivedSessionCreated else { return false }
