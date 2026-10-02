@@ -466,7 +466,8 @@ final class RealtimeContextRolloverTests: XCTestCase {
         harness.speak(seconds: 0.1)
         harness.client.sendCommit(final: false)
         harness.speak(seconds: 6.7)
-        await harness.clock.waitForSleepers(1)
+        // The open socket's keepalive ping, and the rollover's watchdog.
+        await harness.clock.waitForSleepers(2)
 
         harness.clock.advance(by: 5)
         let rolledOver = await harness.rolledOver.value(failAfter: 10)

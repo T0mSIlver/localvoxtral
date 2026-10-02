@@ -195,12 +195,13 @@ final class DictationSessionController {
 
     @ObservationIgnored
     let networkMonitor = NetworkMonitor()
-    /// Reads the rollover's pause and sleeps its watchdog on the session
-    /// clock (#1139).
+    /// Reads the rollover's pause and sleeps its watchdog (#1139), its
+    /// handshake fallback and its keepalive ping (#1366) on the session clock.
     @ObservationIgnored
     let realtimeAPIClient: RealtimeAPIWebSocketClient
+    /// Sleeps its keepalive ping on the session clock (#1366).
     @ObservationIgnored
-    let mistralRealtimeClient = MistralRealtimeWebSocketClient()
+    let mistralRealtimeClient: MistralRealtimeWebSocketClient
     /// The client THIS session speaks to, latched at session start from
     /// `settings.dictationBackendMode` (`latchActiveRealtimeClient`). A stored
     /// latch rather than a lookup on every call: flipping the mode in Settings
@@ -406,6 +407,16 @@ final class DictationSessionController {
     var isShowingConnectionFailureAlert = false
     @ObservationIgnored
     var realtimeFinalizationLastActivityAt: Date?
+    /// True while a voice memo streams through the bundled helper this
+    /// dictation also uses.
+    @ObservationIgnored
+    var voiceMemoHoldsTheEngine: @MainActor () -> Bool = { false }
+    /// When this session started, on the session clock, if a voice memo was
+    /// streaming then. The bundled helper runs one inference queue, so this
+    /// session's audio is decoded only after the memo's, and its final can
+    /// come long after the stop.
+    @ObservationIgnored
+    var sessionStartedBehindVoiceMemoAt: Date?
     @ObservationIgnored
     var isAwaitingMicrophonePermission = false
     /// Gives up on a microphone prompt nobody answers.
@@ -595,6 +606,7 @@ final class DictationSessionController {
         self.overlayBufferCoordinator = overlayBufferCoordinator
         self.dependencies = dependencies
         self.realtimeAPIClient = RealtimeAPIWebSocketClient(clock: dependencies.clock)
+        self.mistralRealtimeClient = MistralRealtimeWebSocketClient(clock: dependencies.clock)
     }
 
     func prepareLLMPolishingPromptAccessIfNeeded() {

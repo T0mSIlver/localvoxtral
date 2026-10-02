@@ -208,7 +208,8 @@ final class AnswerAgentTests: XCTestCase {
             liveSessions: { Array(live.values) },
             repositoryRoot: { _ in .unknown },
             focuser: focuser,
-            sleep: ManualSessionClock().sleep
+            sleep: ManualSessionClock().sleep,
+            ttyForegroundPIDs: { _ in [2] }
         )
         var tick = 0.0
         let tracker = AgentAttentionTracker(

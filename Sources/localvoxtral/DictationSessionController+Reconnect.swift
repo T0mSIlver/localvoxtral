@@ -63,6 +63,11 @@ extension DictationSessionController {
             // hole in it for the rest of the dictation.
             transcript.appendToTranscript(promoted)
         }
+        // The new server session's first word must not run into the last one
+        // typed (#1364).
+        if !transcript.currentDictationEventText.isEmpty {
+            firstChunkPreprocessor.markReconnect()
+        }
         refreshOverlayBufferSession()
 
         // The socket error that preceded the drop is the reconnect's business,

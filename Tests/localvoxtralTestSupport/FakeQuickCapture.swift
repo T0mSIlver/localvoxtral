@@ -171,7 +171,10 @@ package enum QuickCaptureFixture {
         classifier: (any QuickCaptureClassifying)? = nil,
         polisher: (any QuickCapturePolishing)? = nil,
         polishVocabulary: @escaping @MainActor ([QuickCaptureProject]) -> [String] = { _ in [] },
-        now: @escaping @MainActor () -> Date = { Date(timeIntervalSince1970: 1_000_000) }
+        now: @escaping @MainActor () -> Date = { Date(timeIntervalSince1970: 1_000_000) },
+        processID: Int32 = 1,
+        isProcessRunning: @escaping (Int32) -> Bool = { _ in true },
+        write: @escaping (Data, URL) throws -> Void = PrivateFile.write
     ) -> QuickCaptureInboxModel {
         let classifier = classifier ?? FixedQuickCaptureClassifier(answer)
         return QuickCaptureInboxModel(
@@ -191,7 +194,10 @@ package enum QuickCaptureFixture {
             github: github,
             polisher: { polisher },
             polishVocabulary: polishVocabulary,
-            now: now
+            now: now,
+            processID: processID,
+            isProcessRunning: isProcessRunning,
+            write: write
         )
     }
 }

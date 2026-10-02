@@ -7,13 +7,17 @@ extension DictationSessionController {
     /// session whose submitted prompt holds the user's fix, and without one
     /// no prompt belongs to this text.
     ///
-    /// - Parameter project: the project the polish pipeline resolved, which
-    ///   widens a session in a subdirectory to its repository. Without
-    ///   polish, the joined session's own workspace decides.
+    /// - Parameters:
+    ///   - project: the project the polish pipeline resolved, which widens a
+    ///     session in a subdirectory to its repository. Without polish, the
+    ///     joined session's own workspace decides.
+    ///   - startedAt: when this dictation began; a prompt sent before it is
+    ///     not its fix.
     func expectCorrection(
         of inserted: @autoclosure () -> String,
         join: ClaudeSessionJoin?,
-        project: LearnedTermProjectResolver.Identity?
+        project: LearnedTermProjectResolver.Identity?,
+        startedAt: Date
     ) {
         guard let correctionLearning, let join else { return }
         guard let project = project ?? LearnedTermProjectResolver.resolve(
@@ -23,7 +27,8 @@ extension DictationSessionController {
         correctionLearning.expect(
             inserted: inserted(),
             sessionID: join.snapshot.sessionID,
-            project: project
+            project: project,
+            dictationStartedAt: startedAt
         )
     }
 
