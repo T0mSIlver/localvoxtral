@@ -255,6 +255,34 @@ final class QuickCaptureFollowUpTests: XCTestCase {
         XCTAssertFalse(item.canComment)
     }
 
+    /// Split after a move: the draft it gives back links no issue of the
+    /// project the capture left.
+    func testSplitAfterAMoveGivesBackNoIssueOfTheOldProject() async throws {
+        let projects = QuickCaptureFixture.projects + [
+            QuickCaptureProject(
+                key: "/w/tool", name: "tool", summary: nil, terms: [], userLine: nil, repository: "me/tool"),
+        ]
+        let runner = FakeQuickCaptureCheckRunner([
+            .draft(.init(title: "Dark mode", body: "b", relation: .extends, issue: 7), usage: nil),
+        ])
+        let model = model(
+            classifier: ScriptedQuickCaptureClassifier([["reach": 0.95], ["inbox": 0.9]]), runner: runner,
+            projects: { projects })
+        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        let followUp = UUID()
+        await model.capture(text: "Also a new logo", historyRecordID: nil, id: followUp).value
+
+        await model.move(id, toProjectKey: "/w/tool")?.value
+        await model.split(followUp, from: id)?.value
+
+        let item = try XCTUnwrap(model.items.first { $0.id == id })
+        XCTAssertEqual(item.title, "Dark mode", "the draft from before the join")
+        XCTAssertEqual(item.repository, "me/tool")
+        XCTAssertNil(item.relatedIssue)
+        XCTAssertFalse(item.canComment)
+    }
+
     func testSplittingAnEarlierFollowUpRedraftsFromTheRemainingWords() async throws {
         let runner = FakeQuickCaptureDraftRunner()
         let model = model(classifier: ScriptedQuickCaptureClassifier([["reach": 0.95], ["inbox": 0.9]]), runner: runner)
