@@ -190,6 +190,14 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
     /// on the repository's record (`repo:<remote>`), which every checkout
     /// of it shares. The repository's record carries it too.
     package var remote: String? = nil
+    /// The user's Work or Personal choice (#1005); nil in no group. Set on
+    /// each of a Projects row's records, read by `LearnedTerms.group`.
+    package var group: ProjectGroup? = nil
+    /// When a coding agent last worked in this checkout (#1027): its newest
+    /// Claude Code transcript, read on the Mac or reported by a host's shim.
+    /// It lists the project before a dictation joins a session in it, for
+    /// `LearnedTerms.agentActivityListedDays`.
+    package var agentActiveAt: Date? = nil
 
     package init(
         key: String,
@@ -226,14 +234,23 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
         return proposalRevision ?? (agentLineAt != nil ? 2 : 1)
     }
 
-    /// Kept with no terms: a proposal stamp, or a hook that named it. A
-    /// project holding neither is dropped once its last term goes.
-    var isKeptWithoutTerms: Bool { hasProposalStamp || reportedAt != nil || isLinkedCheckout }
+    /// Kept with no terms: a proposal stamp, a hook that named it, an
+    /// agent's work in it, or the user's group. A project holding none is
+    /// dropped once its last term goes.
+    var isKeptWithoutTerms: Bool {
+        hasProposalStamp || reportedAt != nil || agentActiveAt != nil || isLinkedCheckout || group != nil
+    }
+
+    /// The latest of a dictation, a hook's report and an agent's work: the
+    /// order projects are listed in.
+    package var lastActivity: Date {
+        max(lastSeen, reportedAt ?? lastSeen, agentActiveAt ?? lastSeen)
+    }
 
     /// The user made a choice here: a pinned term, a typed repository, the
-    /// fork's filing choice. The caps never evict it (#989).
+    /// fork's filing choice, a group (#1005). The caps never evict it (#989).
     package var isExplicit: Bool {
-        terms.contains(where: \.isPinned) || repositoryTyped == true || filesUpstream != nil
+        terms.contains(where: \.isPinned) || repositoryTyped == true || filesUpstream != nil || group != nil
     }
 
     /// A checkout whose terms live on its repository's record.
@@ -299,10 +316,12 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// remembered list worth having at all.
     package static let maxTermsPerProject = 200
 
-    /// Projects kept, least-recently-dictated evicted first. Forty is more
-    /// repos than anyone touches in a decay window; the cap exists so an
-    /// agent walking a tree of checkouts cannot grow the file without bound.
-    package static let maxProjects = 40
+    /// Records kept, least-recently-dictated evicted first. A repository
+    /// with a remote takes two, its checkout's and its own (#971), and the
+    /// repositories agents worked in are listed up to 30 per machine
+    /// (#1027); the cap exists so an agent walking a tree of checkouts
+    /// cannot grow the file without bound.
+    package static let maxProjects = 100
 
     /// A term not resolved again within this many days is forgotten. Speech
     /// vocabulary follows the work: a name from a project finished last
@@ -320,6 +339,13 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
 
     package var version: Int = LearnedTerms.currentVersion
     package var projects: [LearnedTermProject] = []
+    /// The repositories the user ignored (#1006). Kept in its own file by
+    /// `LearnedTermStore`, never in this one's: see `IgnoredProjects`.
+    package var ignored = IgnoredProjects()
+
+    private enum CodingKeys: String, CodingKey {
+        case version, projects
+    }
 
     package init(version: Int = LearnedTerms.currentVersion, projects: [LearnedTermProject] = []) {
         self.version = version
@@ -424,6 +450,48 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         return added
     }
 
+    /// A coding agent worked in `project` at `at` (#1027): the newest Claude
+    /// Code transcript there, read on the Mac (a main checkout's path) or
+    /// reported by a host's shim (`remote:<name>`). Adds the project when it
+    /// is missing, so it is listed before a dictation joins a session in it,
+    /// and links it to its `origin`. Work older than
+    /// `agentActivityListedDays`, or in a folder a tool named, adds nothing.
+    /// Returns true when it added the project.
+    @discardableResult
+    package mutating func recordAgentActivity(
+        project: LearnedTermProjectIdentity,
+        remote: ProjectRemote,
+        hostID: String? = nil,
+        at reported: Date,
+        now: Date
+    ) -> Bool {
+        let at = min(reported, now)
+        guard now.timeIntervalSince(at) < Double(Self.agentActivityListedDays) * 86_400,
+              project.key.hasPrefix("/") || project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix),
+              !project.name.isEmpty, !PolishProjectNames.isGeneratedLabel(project.name)
+        else { return false }
+        let index: Int
+        let added: Bool
+        if let existing = projects.firstIndex(where: { $0.key == project.key }) {
+            index = existing
+            added = false
+        } else {
+            projects.append(LearnedTermProject(key: project.key, name: project.name, terms: [], lastSeen: at))
+            index = projects.count - 1
+            added = true
+        }
+        projects[index].agentActiveAt = max(projects[index].agentActiveAt ?? at, at)
+        if let hostID, !(projects[index].hostIDs ?? []).contains(hostID) {
+            projects[index].hostIDs = (projects[index].hostIDs ?? []) + [hostID]
+        }
+        if projects[index].projectRemote != remote {
+            if let github = remote.githubRepository { setOriginRepository(github, at: index) }
+            link(checkoutAt: index, to: remote)
+        }
+        prune(now: now)
+        return added
+    }
+
     /// A local checkout's `origin` names `repository`. Returns false when
     /// the project is gone or the value is no `owner/name`.
     @discardableResult
@@ -511,27 +579,34 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// listed while its sessions run, gone a week after.
     package static let remoteLabelListedDays = 7
 
+    /// A repository a coding agent worked in is listed this long after that
+    /// work, with no dictation in it (#1027).
+    package static let agentActivityListedDays = 30
+
     /// The checkouts, most recent first (#891; `listedProjects` groups them
     /// by repository, #971). A local main
     /// checkout; a remote project a hook named as a repository, or whose
     /// host sent its README in the last 90 days (only a 1.17.0 shim does,
     /// and it names the repository); an old shim's working-directory name within
-    /// `remoteLabelListedDays` of its last hook (#819). A remote name no
+    /// `remoteLabelListedDays` of its last hook (#819); a remote project a
+    /// coding agent worked in within `agentActivityListedDays` (#1027). A remote name no
     /// hook has named, such as a worktree's from before #652, is no project,
     /// and neither is the shared bucket; their terms still apply.
     package func listedCheckouts(now: Date) -> [LearnedTermProject] {
-        func recency(_ project: LearnedTermProject) -> Date {
-            max(project.lastSeen, project.reportedAt ?? project.lastSeen)
-        }
-        return projects
+        projects
             .filter { !$0.key.isEmpty && !$0.name.isEmpty && Self.isListed($0, now: now) }
-            .sorted { recency($0) != recency($1) ? recency($0) > recency($1) : $0.key < $1.key }
+            .sorted { $0.lastActivity != $1.lastActivity ? $0.lastActivity > $1.lastActivity : $0.key < $1.key }
     }
 
     private static func isListed(_ project: LearnedTermProject, now: Date) -> Bool {
         if project.key.hasPrefix("/") { return true }
         guard project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix) else { return false }
         if project.reportedAsRepository == true { return true }
+        if let active = project.agentActiveAt,
+           now.timeIntervalSince(active) < Double(agentActivityListedDays) * 86_400
+        {
+            return true
+        }
         if let summaryAt = project.summaryAt,
            now.timeIntervalSince(summaryAt) < Double(staleAfterDays) * 86_400
         {
@@ -542,6 +617,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     }
 
     package func needsProposal(projectKey: String, now: Date, revision: Int = 1) -> Bool {
+        guard !isIgnored(projectKey: projectKey) else { return false }
         guard let project = termRecord(projectKey) else { return true }
         if let answered = project.answeredRevision, answered >= revision { return false }
         guard let attempted = project.proposalAttemptedAt else { return true }
@@ -741,6 +817,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         excluding: [String] = [],
         now: Date
     ) -> [String] {
+        guard !isIgnored(projectKey: project.key) else { return [] }
         let index = projectIndex(for: project, now: now)
         var known = Set(projects[index].terms.map(\.term.caseFoldedForMatching))
         known.formUnion(excluding.map(\.caseFoldedForMatching))
@@ -857,6 +934,10 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// that has sat on disk for a season must not come back larger than the
     /// caps allow just because nothing has been dictated since.
     package mutating func prune(now: Date) {
+        // An ignored repo's record takes no room: the sweep after the write
+        // drops it, but would not bring back a project the cap evicted for
+        // it (#1006).
+        removeIgnoredProjects()
         let cutoff = now.addingTimeInterval(-Double(LearnedTerms.staleAfterDays) * 86_400)
         for index in projects.indices {
             projects[index].terms.removeAll { !$0.isPinned && $0.lastSeen < cutoff }
@@ -874,6 +955,25 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
                     .sorted(by: LearnedTerms.isStrongerEvidence)
             }
         }
+        // A project listed only for an agent's work (#1027) goes once that
+        // work is `agentActivityListedDays` old, unless a dictation, a hook
+        // or an answer has touched it since.
+        let agentCutoff = now.addingTimeInterval(-Double(LearnedTerms.agentActivityListedDays) * 86_400)
+        var expired = Set<String>()
+        for index in projects.indices {
+            guard let active = projects[index].agentActiveAt, active < agentCutoff else { continue }
+            projects[index].agentActiveAt = nil
+            expired.insert(projects[index].key)
+        }
+        let agentOnly = Set(projects.filter { project in
+            guard expired.contains(project.key), project.terms.isEmpty, !project.hasProposalStamp,
+                  project.reportedAt == nil, project.summaryAt == nil, !project.isExplicit,
+                  project.lastSeen < agentCutoff
+            else { return false }
+            guard let record = termRecord(project.key), record.key != project.key else { return true }
+            return record.terms.isEmpty && !record.hasProposalStamp && !record.isExplicit
+        }.map(\.key))
+        projects.removeAll { agentOnly.contains($0.key) }
         // A linked checkout no dictation or hook has touched for as long as a
         // term lasts goes once its repository has no terms left either:
         // while it has, the checkout must keep pointing there, or its next

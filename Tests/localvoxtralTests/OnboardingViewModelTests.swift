@@ -270,6 +270,29 @@ final class OnboardingViewModelTests: XCTestCase {
         )
     }
 
+    /// Mistral → Continue → back → Local → decline polishing → Begin download
+    /// must leave no hosted polishing behind: the Mistral choice turned it on,
+    /// and the Local path only touches polishing when the user consents.
+    func testReturningFromMistralToLocalWithoutPolishingDisablesHostedRequests() {
+        let (model, settings, _, _, _) = makeModel()
+        model.advance()  // permissions
+        model.advance()  // engine
+        model.engineChoice = .mistralAPI
+        model.mistralAPIKeyDraft = "mk-mistral"
+        model.advance()  // finish (Mistral path)
+        XCTAssertTrue(settings.llmPolishingEnabled)
+
+        model.goBack()  // engine
+        model.engineChoice = .local
+        model.advance()  // downloads
+        model.polishingConsent = false
+        model.startDownloads()
+
+        XCTAssertEqual(settings.dictationBackendMode, .managedLocal)
+        XCTAssertFalse(settings.llmPolishingEnabled, "declined polishing must not keep Mistral's")
+        XCTAssertNotEqual(settings.polishingBackendMode, .mistralAPI)
+    }
+
     func testEnginePage_localPathIsUnchanged() {
         let (model, settings, driver, _, _) = makeModel()
         model.advance()  // permissions

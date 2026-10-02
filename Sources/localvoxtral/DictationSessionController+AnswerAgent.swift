@@ -10,7 +10,9 @@ import os
 /// (#840); pressed on it, or with nobody waiting, it stops the dictation. The pane comes forward through the go-to
 /// primitive (`SessionNavigator`), and the dictation starts only when the
 /// terminal confirmed that pane is the focused one (`.focused`): an
-/// unconfirmed focus could put your answer in another session.
+/// unconfirmed focus could put your answer in another session. Any other
+/// dictation start cancels a focus still pending, so the pane never comes
+/// forward under it.
 extension DictationSessionController {
     enum AnswerAgentStatus {
         static let nobodyWaiting = "No agent needs you"
@@ -57,6 +59,8 @@ extension DictationSessionController {
             case .focused?:
                 // A dictation started while the pane came forward keeps it.
                 guard !self.isDictating, !self.isConnectingRealtimeSession, !self.isFinalizingStop else { return }
+                // The focus is done: the start below must not cancel it.
+                self.answerAgentTask = nil
                 self.startDictation(outputMode: .overlayBuffer)
             case .unverified?:
                 self.statusText = AnswerAgentStatus.unconfirmed

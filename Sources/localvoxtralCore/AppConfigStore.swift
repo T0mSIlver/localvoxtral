@@ -182,7 +182,8 @@ package struct ReplacementDictionary: Equatable, Sendable {
             .map { NSRegularExpression.escapedPattern(for: String($0)) }
         guard !parts.isEmpty else { return nil }
 
-        let pattern = "(?<![\\p{L}\\p{N}])" + parts.joined(separator: "\\s+") + "(?![\\p{L}\\p{N}])"
+        // `_` joins an identifier: `vllm_server` holds no word `vllm` (#1358).
+        let pattern = "(?<![\\p{L}\\p{N}_])" + parts.joined(separator: "\\s+") + "(?![\\p{L}\\p{N}_])"
         return try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
     }
 }

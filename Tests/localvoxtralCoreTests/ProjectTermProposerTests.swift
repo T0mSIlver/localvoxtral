@@ -44,6 +44,14 @@ final class ProjectTermProposerTests: XCTestCase {
             let moment = now()
             memory.withLock { $0.recordProposalFailure(project: project, now: moment) }
         }
+
+        func recordOrigin(_ remote: ProjectRemote, projectKey: String) {
+            memory.withLock {
+                $0.recordOrigin(remote, projectKey: projectKey)
+                $0.ignored.addCheckout(projectKey, ofEntryHolding: remote.key)
+                $0.removeIgnoredProjects()
+            }
+        }
     }
 
     private final class Clock: @unchecked Sendable {
@@ -98,6 +106,7 @@ final class ProjectTermProposerTests: XCTestCase {
         _ runner: FakeRunner,
         store: FakeStore? = nil,
         files: [String] = ["README.md", "src/PageComposer.swift"],
+        origin: ProjectRemote? = nil,
         usage: UsageLedger? = nil
     ) -> (ProjectTermProposer, FakeStore) {
         let store = store ?? FakeStore(now: clock.now)
@@ -106,6 +115,7 @@ final class ProjectTermProposerTests: XCTestCase {
             runner: runner,
             now: clock.now,
             trackedFiles: { _ in files },
+            origin: { _ in origin },
             usageRecorder: usage
         )
         return (proposer, store)
@@ -140,6 +150,81 @@ final class ProjectTermProposerTests: XCTestCase {
         XCTAssertEqual(memory.projects.map(\.key), [repo])
         XCTAssertEqual(memory.unconfirmedProposals(projectKey: repo), ["inkwell"])
         XCTAssertFalse(memory.needsProposal(projectKey: repo, now: clock.now()))
+    }
+
+    /// A new clone of an ignored repository has no record to say so; its
+    /// `origin` does, and its agent is never asked (#1006).
+    func testANewCloneOfAnIgnoredRepositoryAsksNoAgent() async throws {
+        let repo = try checkout("quillmark")
+        let runner = FakeRunner(.terms(["inkwell"]))
+        let quill = try XCTUnwrap(ProjectRemote("github.com/me/quillmark"))
+        let store = FakeStore(now: clock.now)
+        store.memory.withLock {
+            $0.ignoreProject(key: quill.key, name: "quillmark", keys: [], now: clock.now())
+            // The dictation that joined recorded the clone before its origin was known.
+            $0.record(
+                [LearnedTermObservation(term: "Inkwell", source: .repository)],
+                project: .init(key: repo, name: "quillmark"), now: clock.now())
+        }
+        let (proposer, _) = proposer(runner, store: store, origin: quill)
+
+        await commit(proposer, join(repo + "/src"))
+
+        XCTAssertEqual(runner.count, 0)
+        XCTAssertTrue(store.snapshot().projects.isEmpty, "what the clone learned went")
+        XCTAssertTrue(store.snapshot().ignored.contains(key: repo), "and its key is known from now on")
+    }
+
+    /// A first dictation in a new clone of an ignored repo that learned
+    /// nothing, so it has no record (review, 2026-10-01): its key still joins
+    /// the entry, and the clone learns nothing afterwards.
+    func testANewCloneWithNoRecordJoinsItsIgnoredEntry() async throws {
+        let repo = try checkout("quillmark")
+        let runner = FakeRunner(.terms(["inkwell"]))
+        let quill = try XCTUnwrap(ProjectRemote("github.com/me/quillmark"))
+        let store = LearnedTermStore(fileURL: nil, now: clock.now)
+        store.ignoreProject(key: quill.key, name: "quillmark", keys: [])
+        // The ignore lands on the store's queue; the proposer reads the
+        // snapshot from its own task and could otherwise run first.
+        store.waitForPendingWrites()
+        let proposer = ProjectTermProposer(
+            store: store, runner: runner, now: clock.now, trackedFiles: { _ in [] }, origin: { _ in quill },
+            usageRecorder: nil)
+
+        await commit(proposer, join(repo + "/src"))
+        store.waitForPendingWrites()
+
+        XCTAssertEqual(runner.count, 0)
+        XCTAssertTrue(store.snapshot().ignored.contains(key: repo), "its key is known from now on")
+        store.record(
+            [LearnedTermObservation(term: "Inkwell", source: .repository)],
+            project: .init(key: repo, name: "quillmark"))
+        store.waitForPendingWrites()
+        XCTAssertTrue(store.snapshot().projects.isEmpty, "the clone learns nothing")
+    }
+
+    /// Until the launch load lands, the store cannot tell which repos are
+    /// ignored; a dictation then asks no agent (review, 2026-09-29).
+    func testADictationBeforeTheLaunchLoadAsksNoAgent() async throws {
+        let repo = try checkout("quillmark")
+        let fileURL = root.appendingPathComponent("support/learned-terms.json")
+        let seeded = LearnedTermStore(fileURL: fileURL, now: clock.now)
+        seeded.ignoreProject(key: repo, name: "quillmark", keys: [])
+        seeded.waitForPendingWrites()
+        let launch = DispatchSemaphore(value: 0)
+        let store = LearnedTermStore(fileURL: fileURL, now: clock.now, beforeLaunchLoad: { launch.wait() })
+        let runner = FakeRunner(.terms(["inkwell"]))
+        let proposer = ProjectTermProposer(
+            store: store, runner: runner, now: clock.now, trackedFiles: { _ in [] }, origin: { _ in nil },
+            usageRecorder: nil)
+
+        await commit(proposer, join(repo))
+        launch.signal()
+        store.waitForPendingWrites()
+        XCTAssertEqual(runner.count, 0)
+
+        await commit(proposer, join(try checkout("inkwell")))
+        XCTAssertEqual(runner.count, 1, "once loaded, a repo nobody ignored is asked")
     }
 
     func testASecondDictationDoesNotRunAgain() async throws {

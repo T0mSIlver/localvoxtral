@@ -60,6 +60,13 @@ package final class VoiceMemoIntake {
     /// Set, the ledger could not be loaded: it is left as it is and no memo
     /// is taken, since each would be taken again (#989).
     package private(set) var ledgerProblem: StoredFileProblem?
+    /// A memo is streaming through the engine. The bundled helper decodes
+    /// one connection's queued audio at a time, so a dictation started now
+    /// waits behind the memo for its text.
+    package private(set) var isTranscribing = false
+    /// Called each time `isTranscribing` turns false.
+    package var onTranscriptionEnded: (@MainActor () -> Void)?
+    private var isStopping = false
     private var reportedLedgerProblem = false
     private var reportedInboxProblem = false
     private var lastSeen: [String: VoiceMemoFile] = [:]
@@ -126,12 +133,22 @@ package final class VoiceMemoIntake {
         return aside
     }
 
-    /// Scans now and every `scanInterval` after, until the task is cancelled.
+    /// Scans now and every `scanInterval` after, until the task is cancelled
+    /// or `stopAfterCurrentMemo()`.
     package func run() async {
-        while !Task.isCancelled {
+        while !Task.isCancelled, !isStopping {
             await scan()
+            guard !isStopping else { return }
             await clock.sleep(Self.scanInterval)
         }
+    }
+
+    /// Takes no further memo and lets `run` return once the memo in flight
+    /// is done. Cancelling would close the memo's socket, but the bundled
+    /// helper still decodes the audio it queued, and a dictation waiting
+    /// behind it would stop waiting too early.
+    package func stopAfterCurrentMemo() {
+        isStopping = true
     }
 
     /// One pass over the folder. Returns how many memos became captures.
@@ -206,7 +223,7 @@ package final class VoiceMemoIntake {
                 continue
             }
             guard file.size > 0, previous[file.name] == file else { continue }
-            guard canTranscribe() else { break }
+            guard canTranscribe(), !isStopping else { break }
             let outcome = await take(file, at: url)
             if outcome == .captured { captured += 1 }
             // The engine or the disk failed; the rest would fail the same way.
@@ -253,6 +270,11 @@ package final class VoiceMemoIntake {
         Log.backends.info("Voice memos: transcribing a \(file.size, privacy: .public)-byte memo")
         let transcript: VoiceMemoTranscript
         do {
+            isTranscribing = true
+            defer {
+                isTranscribing = false
+                onTranscriptionEnded?()
+            }
             transcript = try await transcriber.transcribe(url)
         } catch is VoiceMemoUnreadable {
             Log.backends.error("Voice memos: a memo is not audio this Mac can decode; left in the folder")

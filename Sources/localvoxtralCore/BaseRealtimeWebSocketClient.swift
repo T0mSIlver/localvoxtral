@@ -37,6 +37,9 @@ package class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate
         var connectionGeneration: RealtimeConnectionGeneration = .none
     }
 
+    /// How often an open socket is pinged to keep it alive.
+    static let keepalivePingInterval: Duration = .seconds(30)
+
     let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
 
     // MARK: - Abstract interface (override in subclasses)

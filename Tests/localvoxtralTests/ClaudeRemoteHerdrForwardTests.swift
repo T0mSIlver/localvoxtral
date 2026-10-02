@@ -298,7 +298,8 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         spawner: ForwardTestSpawner,
         workspaces: ForwardTestWorkspaces,
         clock: HeldForwardTestClock,
-        dialable: @escaping @Sendable (String) -> Bool
+        dialable: @escaping @Sendable (String) -> Bool,
+        orphanReapInitiallyComplete: Bool = true
     ) -> ClaudeRemoteHerdrForwardService {
         ClaudeRemoteHerdrForwardService(
             spawner: spawner,
@@ -309,6 +310,7 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
             readinessTimeout: 2.0,
             pollInterval: 0.025,
             idleTimeout: 5 * 60,
+            orphanReapInitiallyComplete: orphanReapInitiallyComplete,
             hostIDForAlias: { _ in "host" }
         )
     }
@@ -624,28 +626,56 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
 
     func testOpenParksUntilTheLaunchOrphanReapCompletes() async throws {
         let spawner = ForwardTestSpawner()
+        let clock = HeldForwardTestClock()
         let service = service(
             spawner: spawner,
             workspaces: ForwardTestWorkspaces(),
-            clock: ForwardTestClock(),
+            clock: clock,
             dialable: { _ in true },
             orphanReapInitiallyComplete: false
         )
-        let attempted = Mutex(false)
         let open = Task { @MainActor in
-            attempted.withLock { $0 = true }
-            return await service.open(alias: "builder", remoteSocketPath: remoteSocketPath)
+            await service.open(alias: "builder", remoteSocketPath: remoteSocketPath)
         }
 
-        await waitUntil("open attempt to reach the orphan-reap gate") {
-            attempted.withLock { $0 }
+        await waitUntil("open attempt to park at the orphan-reap gate") {
+            clock.pendingCount(for: 0.025) == 1
         }
         XCTAssertEqual(spawner.spawnCount, 0, "no ssh may launch ahead of orphan cleanup")
 
         service.markOrphanReapComplete()
+        clock.releaseOldestSleep(for: 0.025)
         let handle = try unwrapAsync(await open.value)
         XCTAssertEqual(spawner.spawnCount, 1)
         handle.close()
+    }
+
+    /// Another running copy holds the listener port, so this copy's forward
+    /// coordinator never runs the launch reap and never marks it complete.
+    /// A dictation into a remote herdr pane must still start: open() gives
+    /// up within its readiness budget and spawns nothing.
+    func testListenerConflictDoesNotHangOpen() async {
+        let spawner = ForwardTestSpawner()
+        let clock = ForwardTestClock()
+        let service = service(
+            spawner: spawner,
+            workspaces: ForwardTestWorkspaces(),
+            clock: clock,
+            dialable: { _ in true },
+            orphanReapInitiallyComplete: false
+        )
+        let abstained = Mutex<Bool?>(nil)
+        Task { @MainActor in
+            let handle = await service.open(alias: "builder", remoteSocketPath: remoteSocketPath)
+            abstained.withLock { $0 = handle == nil }
+        }
+
+        await waitUntil("open to give up on a reap that never runs") {
+            abstained.withLock { $0 } != nil
+        }
+        XCTAssertEqual(abstained.withLock { $0 }, true)
+        XCTAssertEqual(spawner.spawnCount, 0, "no ssh may launch ahead of orphan cleanup")
+        XCTAssertEqual(clock.sleeps.withLock { $0.reduce(0, +) }, 2.0, accuracy: 0.05)
     }
 
     func testPrepareRefusesAnAliasThatDoesNotUniquelyNameItsHostID() async {

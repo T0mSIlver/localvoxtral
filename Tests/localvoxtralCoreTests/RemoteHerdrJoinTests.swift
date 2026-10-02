@@ -1328,7 +1328,7 @@ final class RemoteHerdrJoinTests: XCTestCase, RemoteHerdrJoinFixture {
         )
         // Same window, same target, live session — and still refused, because
         // the AX grid is the composite herdr TUI (here, of another machine).
-        XCTAssertFalse(authorizer.isAuthorized(target: ghostty, windowID: 101))
+        XCTAssertFalse(authorizer.isAuthorized(target: ghostty, windowID: 101, paneTTY: nil))
     }
 
     func testARemoteHerdrJoinHasNoLocalWorkspaceToCollectARepoFrom() async throws {

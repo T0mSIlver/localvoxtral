@@ -264,25 +264,62 @@ final class DogfoodControlService {
         // THEIR dictation mid-thought at T+120. The socket verbs cannot see a
         // hotkey stop, so the identity has to be carried rather than observed.
         let armedGeneration = DiagnosticCaptureTap.shared.currentGeneration
+        // The generation only advances once a session goes live, so a start
+        // still connecting is told apart by its startup task instead. Nil when
+        // armed under the microphone prompt: that start has no task yet.
+        let armedStartID = viewModel?.session.managedStartupTaskID
         autoStopTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            await self.sleepFor(self.autoStopAfter)
-            guard !Task.isCancelled else { return }
-            self.autoStopTask = nil
-            guard let viewModel = self.viewModel else { return }
-            guard viewModel.isDictating || viewModel.isConnectingRealtimeSession else { return }
-            let running = DiagnosticCaptureTap.shared.currentGeneration
-            guard running <= armedGeneration &+ 1 else {
-                Log.claudeContext.info(
-                    "Dogfood control: cap expired on a session that already ended; the dictation running now is not ours"
-                )
+            while let self {
+                await self.sleepFor(self.autoStopAfter)
+                guard !Task.isCancelled else { return }
+                guard self.autoStopExpired(armedGeneration: armedGeneration, armedStartID: armedStartID)
+                else { continue }
+                self.autoStopTask = nil
                 return
             }
-            Log.claudeContext.error(
-                "Dogfood control: auto-stopping a session that outlived the control-socket cap"
-            )
-            viewModel.dogfoodHandleModifierOnlyTap(mode: viewModel.settings.dictationOutputMode)
         }
+    }
+
+    /// One expiry of the cap. False while the session is still on its way
+    /// up and nothing could stop it: the tap cannot abort a connect, and
+    /// only the user can answer the microphone prompt. The cap then waits
+    /// another window instead of disarming, or that session goes live
+    /// unbounded.
+    private func autoStopExpired(armedGeneration: UInt64, armedStartID: UUID?) -> Bool {
+        guard let viewModel else { return true }
+        let phase = phase(of: viewModel)
+        guard phase == .dictating || phase == .connecting || phase == .awaitingMicrophonePermission
+        else { return true }
+        let running = DiagnosticCaptureTap.shared.currentGeneration
+        guard running <= armedGeneration &+ 1 else {
+            Log.claudeContext.info(
+                "Dogfood control: cap expired on a session that already ended; the dictation running now is not ours"
+            )
+            return true
+        }
+        if phase == .connecting {
+            // Armed under the prompt: this connect may be ours or one the
+            // owner started after ours failed, so neither cancel nor disarm.
+            guard let armedStartID else { return false }
+            guard viewModel.session.managedStartupTaskID == armedStartID else {
+                Log.claudeContext.info(
+                    "Dogfood control: cap expired on a start that already ended; the one connecting now is not ours"
+                )
+                return true
+            }
+        }
+        guard phase == .dictating else {
+            Log.claudeContext.error(
+                "Dogfood control: cancelling a session still \(phase.rawValue, privacy: .public) when the control-socket cap expired"
+            )
+            viewModel.cancelDictation()
+            return self.phase(of: viewModel) == .idle
+        }
+        Log.claudeContext.error(
+            "Dogfood control: auto-stopping a session that outlived the control-socket cap"
+        )
+        viewModel.dogfoodHandleModifierOnlyTap(mode: viewModel.settings.dictationOutputMode)
+        return true
     }
 
     private func releaseAutoStop() {

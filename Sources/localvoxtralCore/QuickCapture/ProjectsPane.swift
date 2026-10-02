@@ -56,6 +56,8 @@ package struct ProjectsPaneRow: Equatable, Sendable, Identifiable {
     package let terms: [LearnedTerm]
     package let sessions: Sessions
     package let dictationsThisWeek: Int
+    /// Work, Personal, or nil for no group (#1005).
+    package var group: ProjectGroup? = nil
 
     /// "Mac · devbox", as the table shows it; "This Mac · devbox" in the
     /// project's sheet.
@@ -108,7 +110,7 @@ package enum ProjectsPane {
             let sessions = ProjectsPaneRow.Sessions(
                 running: running.count, agents: ClaudeHookAgent.allCases.filter(running.contains)
             )
-            let lastUsed: Date = members.map { max($0.lastSeen, $0.reportedAt ?? $0.lastSeen) }.max() ?? .distantPast
+            let lastUsed: Date = members.map(\.lastActivity).max() ?? .distantPast
             let dictations = dictationProjectKeys.filter { $0.map(keys.contains) ?? false }.count
             return ProjectsPaneRow(
                 key: project.key,
@@ -129,7 +131,8 @@ package enum ProjectsPane {
                 descriptionSource: descriptionSource(of: project),
                 terms: terms(of: members),
                 sessions: sessions,
-                dictationsThisWeek: dictations
+                dictationsThisWeek: dictations,
+                group: project.group
             )
         }
         return rows.sorted { lhs, rhs in

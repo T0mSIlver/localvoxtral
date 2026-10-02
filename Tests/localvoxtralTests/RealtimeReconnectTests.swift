@@ -165,6 +165,46 @@ final class RealtimeReconnectTests: XCTestCase {
         XCTAssertEqual(viewModel.transcript.currentDictationEventText, "hello world again")
     }
 
+    /// The reconnected backend starts a fresh transcript, whose first word
+    /// carries no space: typed as is, it would run into the last one (#1364).
+    func testReconnectAddsBoundaryBeforeUnprefixedNewSentence() async {
+        let (viewModel, client) = makeDictatingViewModel(outputMode: .liveAutoPaste)
+        recordInsertions(into: viewModel)
+
+        viewModel.session.handle(event: .partialTranscript("First sentence."))
+        viewModel.session.handle(event: .finalTranscript("First sentence."))
+
+        viewModel.dependencies.reconnectSleep = { _ in client.setConnected(true) }
+        viewModel.session.handle(event: .disconnected)
+        await viewModel.session.reconnectTask?.value
+
+        viewModel.session.handle(event: .partialTranscript("Second"))
+        viewModel.session.handle(event: .partialTranscript(" sentence."))
+        viewModel.session.handle(event: .finalTranscript("Second sentence."))
+
+        XCTAssertEqual(insertedChunks, ["First sentence.", " Second", " sentence."])
+        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "First sentence. Second sentence.")
+    }
+
+    /// The same boundary when the new session's first text is a final with
+    /// no partial before it (#1218).
+    func testReconnectAddsBoundaryBeforeAFinalOnlyNewSentence() async {
+        let (viewModel, client) = makeDictatingViewModel(outputMode: .liveAutoPaste)
+        recordInsertions(into: viewModel)
+
+        viewModel.session.handle(event: .partialTranscript("First sentence."))
+        viewModel.session.handle(event: .finalTranscript("First sentence."))
+
+        viewModel.dependencies.reconnectSleep = { _ in client.setConnected(true) }
+        viewModel.session.handle(event: .disconnected)
+        await viewModel.session.reconnectTask?.value
+
+        viewModel.session.handle(event: .finalTranscript("Second sentence."))
+
+        XCTAssertEqual(insertedChunks, ["First sentence.", " Second sentence."])
+        XCTAssertEqual(viewModel.transcript.currentDictationEventText, "First sentence. Second sentence.")
+    }
+
     func testAttemptsRetryUntilOneConnects() async {
         let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
         // Fail the first two attempts the way a refused socket does, then let
@@ -497,7 +537,8 @@ final class RealtimeReconnectTests: XCTestCase {
         // And the socket the session IS on is still heard.
         viewModel.session.handle(
             event: .partialTranscript("and on"), from: viewModel.session.sessionConnectionGeneration)
-        XCTAssertEqual(insertedChunks, ["hello world", "and on"])
+        // Its first word gets the space the fresh transcript lacks (#1364).
+        XCTAssertEqual(insertedChunks, ["hello world", " and on"])
     }
 
     func testADropReportedByARetiredSocketLeavesALiveSessionAlone() {

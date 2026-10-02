@@ -64,10 +64,13 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
     func testSystemSleepRestoresTheVolume() async {
         // Also through the real observer. The Mac going to sleep with the
         // volume down is the version of this a user finds the next morning.
-        let center = NotificationCenter()
-        let (viewModel, volume) = await makeDuckedSession(lifecycleCenter: center)
+        // AppKit posts sleep on the workspace center only, so the session
+        // gets a separate one and the notification goes there.
+        let workspaceCenter = NotificationCenter()
+        let (viewModel, volume) = await makeDuckedSession(
+            lifecycleCenter: NotificationCenter(), workspaceCenter: workspaceCenter)
 
-        center.post(name: NSWorkspace.willSleepNotification, object: nil)
+        workspaceCenter.post(name: NSWorkspace.willSleepNotification, object: nil)
         await Task.yield()
         await viewModel.audio.audioDucking.debugFadeTask?.value
 
@@ -102,9 +105,11 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
     /// A view model whose ducking controller is already ducked, with fades
     /// collapsed to a single write so the assertions are about routing.
     private func makeDuckedSession(
-        lifecycleCenter: NotificationCenter? = nil
+        lifecycleCenter: NotificationCenter? = nil,
+        workspaceCenter: NotificationCenter? = nil
     ) async -> (DictationViewModel, FakeOutputVolumeControl) {
-        let (viewModel, volume) = makeSession(duckingEnabled: true, lifecycleCenter: lifecycleCenter)
+        let (viewModel, volume) = makeSession(
+            duckingEnabled: true, lifecycleCenter: lifecycleCenter, workspaceCenter: workspaceCenter)
         viewModel.isDictating = true
         viewModel.audio.audioDucking.duckForSessionStart()
         await viewModel.audio.audioDucking.debugFadeTask?.value
@@ -115,7 +120,8 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
 
     private func makeSession(
         duckingEnabled: Bool,
-        lifecycleCenter: NotificationCenter? = nil
+        lifecycleCenter: NotificationCenter? = nil,
+        workspaceCenter: NotificationCenter? = nil
     ) -> (DictationViewModel, FakeOutputVolumeControl) {
         let suiteName = "localvoxtral.DictationViewModelAudioDuckingTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -132,7 +138,10 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
             settings: settings,
             overlayBufferCoordinator: MockOverlayCoordinator(),
             startRuntimeServices: false,
-            dependencies: .init(lifecycleNotificationCenter: lifecycleCenter)
+            dependencies: .init(
+                lifecycleNotificationCenter: lifecycleCenter,
+                workspaceNotificationCenter: workspaceCenter
+            )
         )
         retainForTestProcessLifetime(viewModel)
 

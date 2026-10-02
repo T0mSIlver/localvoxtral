@@ -10,9 +10,15 @@ package final class FakeQuickCaptureGitHub: QuickCaptureGitHub, @unchecked Senda
     /// Set, `gh issue create` waits on it before it answers.
     package var createGate: ManualSleeper?
 
+    /// Set, reading a checkout's `origin` waits on it before it answers.
+    package var repositoryGate: ManualSleeper?
+
     package init() {}
 
-    package func repository(ofCheckout path: String) async -> String? { path == "/w/reach" ? "o/reach" : nil }
+    package func repository(ofCheckout path: String) async -> String? {
+        if let repositoryGate { await repositoryGate.sleep(0) }
+        return path == "/w/reach" ? "o/reach" : nil
+    }
     package let issuesListed = Mutex<[String?]>([])
 
     package func openIssues(ofCheckout path: String, repository: String?) async -> [QuickCaptureDraft.OpenIssue]? {
@@ -151,7 +157,8 @@ package enum QuickCaptureFixture {
     ]
 
     /// An Inbox that routes by `answer` and drafts with `runner`. A checkout
-    /// is any `/w/` path or a real directory.
+    /// is any `/w/` path or a real directory. `currentProjects`, when set,
+    /// is the project list as it is at each read, in place of `projects`.
     @MainActor
     package static func model(
         fileURL: URL?,
@@ -159,17 +166,21 @@ package enum QuickCaptureFixture {
         github: any QuickCaptureGitHub,
         runner: any QuickCaptureDraftRunning,
         projects: [QuickCaptureProject] = projects,
+        currentProjects: (@MainActor () -> [QuickCaptureProject])? = nil,
         remote: QuickCaptureDrafter.Remote? = nil,
         classifier: (any QuickCaptureClassifying)? = nil,
         polisher: (any QuickCapturePolishing)? = nil,
         polishVocabulary: @escaping @MainActor ([QuickCaptureProject]) -> [String] = { _ in [] },
-        now: @escaping @MainActor () -> Date = { Date(timeIntervalSince1970: 1_000_000) }
+        now: @escaping @MainActor () -> Date = { Date(timeIntervalSince1970: 1_000_000) },
+        processID: Int32 = 1,
+        isProcessRunning: @escaping (Int32) -> Bool = { _ in true },
+        write: @escaping (Data, URL) throws -> Void = PrivateFile.write
     ) -> QuickCaptureInboxModel {
         let classifier = classifier ?? FixedQuickCaptureClassifier(answer)
         return QuickCaptureInboxModel(
             fileURL: fileURL,
             makeRouter: { QuickCaptureRouter(classifiers: [classifier]) },
-            projects: { projects },
+            projects: currentProjects ?? { projects },
             agents: { [.claude] },
             drafter: {
                 QuickCaptureDrafter(
@@ -183,7 +194,10 @@ package enum QuickCaptureFixture {
             github: github,
             polisher: { polisher },
             polishVocabulary: polishVocabulary,
-            now: now
+            now: now,
+            processID: processID,
+            isProcessRunning: isProcessRunning,
+            write: write
         )
     }
 }

@@ -6,6 +6,22 @@ import XCTest
 
 @MainActor
 final class BackendManagerTests: XCTestCase {
+    /// The helpers load weights from the cache the downloader wrote them to,
+    /// however the app's environment names it.
+    func testHelpersLookForModelsInTheCacheTheDownloaderFilled() {
+        let home = URL(fileURLWithPath: "/Users/tester", isDirectory: true)
+        for inherited in [
+            ["HF_HUB_CACHE": "/custom/hub", "HF_HOME": "/ignored"],
+            ["HF_HOME": "/custom/hf"],
+            [:],
+        ] {
+            let downloadedTo = HFModelDownloader.defaultCacheRoot(environment: inherited, home: home).path
+            let helper = BackendManager.helperEnvironment(inherited: inherited, home: home)
+            XCTAssertEqual(helper["HF_HUB_CACHE"], downloadedTo, "app environment: \(inherited)")
+            XCTAssertNil(helper["HF_HOME"], "HF_HUB_CACHE alone names the cache")
+        }
+    }
+
     func testSpeechdConfigurationUsesBundlePathPinnedModelRevisionAndHFFileSet() async throws {
         let modelPreparer = FakeModelPreparer()
         let supervisorFactory = FakeSupervisorFactory()
@@ -560,6 +576,42 @@ final class BackendManagerTests: XCTestCase {
 
         XCTAssertEqual(supervisor.startCallCount, 2)
         XCTAssertEqual(manager.speechdStatus, .ready)
+    }
+
+    /// #1305: the retry found the helper restarting, and it became ready while
+    /// the retry was checking the model. The supervisor reports only later
+    /// transitions and ignores `start()` while active, so a retry that waits
+    /// for the next state event waits until the helper changes state again.
+    func testHelperBecomingReadyWhileItsModelIsCheckedDoesNotHangTheRetry() async throws {
+        let modelPreparer = FakeModelPreparer()
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
+        let manager = makeManager(
+            modelPreparer: modelPreparer,
+            supervisorFactory: supervisorFactory
+        )
+        try await manager.ensureReady(dictation: false, polishing: true)
+        let supervisor = try XCTUnwrap(supervisorFactory.supervisors[BackendCatalog.polishd.displayName])
+
+        supervisor.emit(.restarting(attempt: 1))
+        modelPreparer.holdNextPrepare()
+        let finished = BoundedWait()
+        let retry = Task { @MainActor in
+            defer { finished.resolve() }
+            try await manager.ensureReady(dictation: false, polishing: true)
+        }
+        await modelPreparer.waitUntilPrepareStarted(calls: 2)
+        supervisor.emit(.running)
+        modelPreparer.resumePrepare()
+
+        let completed = await finished.value(failAfter: 10)
+        if !completed {
+            // Unblocks the hung retry so the failure is reported, not a hang.
+            await manager.stopPolishing()
+        }
+        XCTAssertTrue(completed, "the retry kept waiting for a state event after the helper was ready")
+        try await retry.value
+        XCTAssertEqual(manager.polishdStatus, .ready)
     }
 
     func testBundledBackendConfigurationsUseModelLoadReadinessTimeouts() async throws {
@@ -1135,8 +1187,11 @@ private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
         var terminatedBackendIDs: [String] = []
         var discardedRepoIDs: [String] = []
         var alreadySuspendedBackendIDs: Set<String> = []
-        var prepareStartedContinuation: CheckedContinuation<Void, Never>?
+        var prepareStartedWaiter: (calls: Int, continuation: CheckedContinuation<Void, Never>)?
         var prepareResumeContinuation: CheckedContinuation<Void, Error>?
+        var holdNextPrepare = false
+        /// A `resumePrepare` that came before the held prepare parked.
+        var resumeRequested = false
     }
 
     private let scriptedProgress: [String: [ModelDownloadProgress]]
@@ -1162,13 +1217,30 @@ private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
         _ request: ModelPreparationRequest,
         progress: @MainActor @Sendable @escaping (ModelDownloadProgress) -> Void
     ) async throws {
-        let started: CheckedContinuation<Void, Never>? = state.withLock {
+        let (started, held): (CheckedContinuation<Void, Never>?, Bool) = state.withLock {
             $0.prepareCalls.append(request)
-            let continuation = $0.prepareStartedContinuation
-            $0.prepareStartedContinuation = nil
-            return continuation
+            let held = $0.holdNextPrepare
+            $0.holdNextPrepare = false
+            guard let waiter = $0.prepareStartedWaiter, $0.prepareCalls.count >= waiter.calls else {
+                return (nil, held)
+            }
+            $0.prepareStartedWaiter = nil
+            return (waiter.continuation, held)
         }
         started?.resume()
+        if held {
+            try await withCheckedThrowingContinuation { continuation in
+                let released: Bool = state.withLock {
+                    if $0.resumeRequested {
+                        $0.resumeRequested = false
+                        return true
+                    }
+                    $0.prepareResumeContinuation = continuation
+                    return false
+                }
+                if released { continuation.resume() }
+            }
+        }
 
         for event in scriptedProgress[request.backendID] ?? [] {
             await progress(event)
@@ -1217,11 +1289,17 @@ private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
         state.withLock { $0.discardedRepoIDs.append(request.repoID) }
     }
 
-    func waitUntilPrepareStarted() async {
+    /// Holds the next `prepare` until `resumePrepare`, whichever call it is.
+    func holdNextPrepare() {
+        state.withLock { $0.holdNextPrepare = true }
+    }
+
+    /// Returns once `calls` prepares have started.
+    func waitUntilPrepareStarted(calls: Int = 1) async {
         await withCheckedContinuation { continuation in
             let alreadyStarted: Bool = state.withLock {
-                if $0.prepareCalls.isEmpty {
-                    $0.prepareStartedContinuation = continuation
+                if $0.prepareCalls.count < calls {
+                    $0.prepareStartedWaiter = (calls, continuation)
                     return false
                 }
                 return true
@@ -1236,6 +1314,7 @@ private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
         let continuation: CheckedContinuation<Void, Error>? = state.withLock {
             let continuation = $0.prepareResumeContinuation
             $0.prepareResumeContinuation = nil
+            if continuation == nil { $0.resumeRequested = true }
             return continuation
         }
         continuation?.resume()
@@ -1285,6 +1364,13 @@ private final class FakeBackendSupervisor: ManagedBackendSupervising {
 
     func start() async {
         startCallCount += 1
+        // As the real supervisor: an active one ignores a second start.
+        switch state {
+        case .launching, .waitingForReady, .running, .restarting:
+            return
+        case .idle, .stopped, .failed:
+            break
+        }
         for state in statesOnStart {
             emit(state)
         }

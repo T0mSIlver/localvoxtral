@@ -221,6 +221,10 @@ extension ClaudeRemoteEnrollmentService {
         /// user's lines between the orphan and our next end (#1163), so the
         /// app leaves the file unchanged. Report, never repair.
         case sshConfigBlockDamaged
+        /// Another program saved `~/.ssh/config` between every read and
+        /// write the app tried (#1345). Writing anyway would discard that
+        /// save, so the app leaves the file as the other program left it.
+        case sshConfigChangedDuringWrite
         /// `command` and `message` are REDACTED (`ClaudeRemoteTokenRedaction`)
         /// before they reach this case. An `Error` is the single most-copied
         /// string in any app: it lands in alerts, in `Log`, in the user's bug
