@@ -993,7 +993,7 @@ final class SettingsStore {
     }
 
     init(
-        defaults: UserDefaults = .standard,
+        defaults: UserDefaults = AppDefaults.shared,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         secretStore: (any SecretStoring)? = nil
     ) {

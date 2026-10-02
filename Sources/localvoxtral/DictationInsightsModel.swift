@@ -40,7 +40,7 @@ final class DictationInsightsModel {
     @ObservationIgnored private let usage: @MainActor () -> [UsageEntry]
 
     init(
-        defaults: UserDefaults = .standard,
+        defaults: UserDefaults = AppDefaults.shared,
         store: @escaping @MainActor () -> DictationSessionStore?,
         unavailable: @escaping @MainActor () -> String? = { nil },
         terms: @escaping @MainActor () -> [String],

@@ -1,8 +1,13 @@
 # Shared by the lanes that borrow the owner's localvoxtral on the GUI Mac
 # (ui-smoke.sh, e2e-dictation.sh), and by capture-readme-assets.sh and
-# record-demo.sh on backup paths of their own: snapshot
-# and restore the app's defaults domain, quit the owner's running instance and
-# bring it back afterwards.
+# record-demo.sh: quit the owner's running instance and bring it back
+# afterwards, and keep the lane's settings out of the owner's defaults.
+#
+# UI Smoke and e2e run the app on a defaults suite of their own (#1029) and
+# never write the owner's domain. capture-readme-assets.sh and record-demo.sh
+# still snapshot and restore it, on backup paths of their own, through the
+# backup functions below. Every lane restores a backup a killed run left
+# before it starts.
 #
 # Source it after setting:
 #   APP_PROCESS, BUNDLE_ID, OWNER_APP_BUNDLE (empty), OSASCRIPT_TIMEOUT_BIN,
@@ -165,6 +170,44 @@ snapshot_defaults() {
   return 1
 }
 
+# The suite UI Smoke and e2e write their settings into, and the app reads
+# instead of $BUNDLE_ID when LOCALVOXTRAL_DEFAULTS_SUITE names it. Emptied
+# before and after a run, so a killed run's settings never reach the next.
+HARNESS_DEFAULTS_SUITE="com.localvoxtral.harness"
+
+use_harness_defaults() {
+  defaults delete "$HARNESS_DEFAULTS_SUITE" >/dev/null 2>&1 || true
+  LOCALVOXTRAL_DEFAULTS_SUITE="$HARNESS_DEFAULTS_SUITE"
+  export LOCALVOXTRAL_DEFAULTS_SUITE
+}
+
+# A no-op for a run that never got to use_harness_defaults: it touches nothing.
+drop_harness_defaults() {
+  [[ -n "${LOCALVOXTRAL_DEFAULTS_SUITE:-}" ]] || return 0
+  defaults delete "$HARNESS_DEFAULTS_SUITE" >/dev/null 2>&1 || true
+}
+
+# A read-only digest of the owner's domain. A lane logs it before it launches
+# the app and again after the app quits, before the owner's app comes back.
+owner_defaults_digest() {
+  local exported
+  exported="$(defaults export "$BUNDLE_ID" - 2>/dev/null)" || exported="<absent>"
+  printf '%s' "$exported" | cksum | awk '{ print $1 }'
+}
+
+# Prints whether the owner's domain moved since OWNER_DEFAULTS_BEFORE. Silent
+# when the lane never got that far.
+report_owner_defaults() {
+  [[ -n "${OWNER_DEFAULTS_BEFORE:-}" ]] || return 0
+  local after
+  after="$(owner_defaults_digest)"
+  if [[ "$after" == "$OWNER_DEFAULTS_BEFORE" ]]; then
+    printf 'Owner defaults unchanged (%s digest %s).\n' "$BUNDLE_ID" "$after"
+  else
+    printf 'WARNING: owner defaults changed during the run (%s digest %s before, %s after).\n' "$BUNDLE_ID" "$OWNER_DEFAULTS_BEFORE" "$after" >&2
+  fi
+}
+
 run_osascript() {
   if [[ -n "$OSASCRIPT_TIMEOUT_BIN" ]]; then
     "$OSASCRIPT_TIMEOUT_BIN" "${OSASCRIPT_TIMEOUT_SECONDS}s" osascript "$@"
@@ -227,8 +270,9 @@ relaunch_owner_app() {
   fi
   # LOCALVOXTRAL_DATA_HOME too: the owner's app must reopen on the owner's
   # History, not on the lane's folder that is deleted after the run (#985).
+  # LOCALVOXTRAL_DEFAULTS_SUITE: and on the owner's preferences (#1029).
   if env -u RUNNER_TRACKING_ID -u LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN -u LOCALVOXTRAL_DOGFOOD_AUDIO_FILE \
-    -u LOCALVOXTRAL_DATA_HOME open "$OWNER_APP_BUNDLE"; then
+    -u LOCALVOXTRAL_DATA_HOME -u LOCALVOXTRAL_DEFAULTS_SUITE open "$OWNER_APP_BUNDLE"; then
     printf "Relaunched the owner's app at %s.\n" "$OWNER_APP_BUNDLE"
   else
     printf 'WARNING: failed to relaunch the owner app at %s.\n' "$OWNER_APP_BUNDLE" >&2

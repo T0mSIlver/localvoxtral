@@ -13,7 +13,7 @@ extension ClaudeIntegrationSettingsModel {
     public static let enrollmentSheetPreviewDefaultsKey = "debug.enrollment_sheet_preview"
 
     public static func isEnrollmentSheetPreviewArmed(
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = AppDefaults.shared
     ) -> Bool {
         defaults.bool(forKey: Self.enrollmentSheetPreviewDefaultsKey)
     }

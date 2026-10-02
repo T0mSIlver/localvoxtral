@@ -168,11 +168,9 @@ cleanup() {
   if ((DRILL_LAUNCHED)) || [[ -n "$OWNER_APP_BUNDLE" ]]; then
     quit_app
   fi
-  if restore_defaults; then
-    relaunch_owner_app
-  else
-    printf 'WARNING: failed to restore defaults backup at %s; leaving it in place for the next run and NOT relaunching the owner app at %s.\n' "$PERSISTENT_DEFAULTS_BACKUP" "$OWNER_APP_BUNDLE" >&2
-  fi
+  drop_harness_defaults
+  report_owner_defaults
+  relaunch_owner_app
   [[ -n "$WORK_DIR" ]] && rm -rf "$WORK_DIR"
   if ((ANNOUNCED)); then
     announce "localvoxtral end to end check finished."
@@ -502,7 +500,7 @@ if ! nc -z -w 3 "$endpoint_host" "$endpoint_port" >/dev/null 2>&1; then
 fi
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lv-e2e-dictation.XXXXXX")"
-# The app under test runs as the owner, with the owner's preferences; its
+# The app under test runs as the owner, on the harness defaults suite; its
 # History, recordings and other stores go here instead of the owner's (#985).
 # lv_open hands this to the app.
 if ! lv_isolate_data lv-e2e-data; then
@@ -539,32 +537,31 @@ announce "localvoxtral end to end check starting. It takes the keyboard for abou
 ANNOUNCED=1
 sleep 3
 
-# Quit the owner's instance before touching defaults: a running app would see
-# the forced modes live and could write its own values back on quit.
+# Quit the owner's instance before launching: two copies share the global
+# hotkey.
 quit_owner_app
 if pgrep -x "$APP_PROCESS" >/dev/null 2>&1; then
   record_fail "Existing app instance did not quit; cannot launch a fresh instance."
   finish
 fi
 
-if ! snapshot_defaults; then
-  record_fail "Could not create persistent defaults backup at $PERSISTENT_DEFAULTS_BACKUP; refusing to mutate owner defaults."
-  finish
-fi
+# The app runs on the harness suite, never the owner's domain (#1029).
+OWNER_DEFAULTS_BEFORE="$(owner_defaults_digest)"
+use_harness_defaults
 # External dictation so the app talks to the STT test service and spawns no
 # helper of its own; polishing off so the inserted text is the transcript.
-if ! defaults write "$BUNDLE_ID" settings.dictation_backend_mode -string external_url \
-  || ! defaults write "$BUNDLE_ID" settings.polishing_backend_mode -string external_url \
-  || ! defaults write "$BUNDLE_ID" settings.realtime_provider -string realtime_api \
-  || ! defaults write "$BUNDLE_ID" settings.realtime_api_endpoint_url -string "$REALTIME_ENDPOINT" \
-  || ! defaults write "$BUNDLE_ID" settings.realtime_api_model_name -string "$REALTIME_MODEL" \
-  || ! defaults write "$BUNDLE_ID" settings.llm_polishing_enabled -bool false \
-  || ! defaults write "$BUNDLE_ID" settings.onboarding_completed -bool true \
-  || ! defaults write "$BUNDLE_ID" debug.dogfood_control_socket_enabled -bool true; then
+if ! defaults write "$HARNESS_DEFAULTS_SUITE" settings.dictation_backend_mode -string external_url \
+  || ! defaults write "$HARNESS_DEFAULTS_SUITE" settings.polishing_backend_mode -string external_url \
+  || ! defaults write "$HARNESS_DEFAULTS_SUITE" settings.realtime_provider -string realtime_api \
+  || ! defaults write "$HARNESS_DEFAULTS_SUITE" settings.realtime_api_endpoint_url -string "$REALTIME_ENDPOINT" \
+  || ! defaults write "$HARNESS_DEFAULTS_SUITE" settings.realtime_api_model_name -string "$REALTIME_MODEL" \
+  || ! defaults write "$HARNESS_DEFAULTS_SUITE" settings.llm_polishing_enabled -bool false \
+  || ! defaults write "$HARNESS_DEFAULTS_SUITE" settings.onboarding_completed -bool true \
+  || ! defaults write "$HARNESS_DEFAULTS_SUITE" debug.dogfood_control_socket_enabled -bool true; then
   record_fail "Could not write the lane's defaults."
   finish
 fi
-record_pass "Defaults snapshot captured; external STT, polishing off, control socket on."
+record_pass "Harness defaults suite $HARNESS_DEFAULTS_SUITE: external STT, polishing off, control socket on."
 
 for scenario in "${SCENARIOS[@]}"; do
   run_scenario "$scenario"

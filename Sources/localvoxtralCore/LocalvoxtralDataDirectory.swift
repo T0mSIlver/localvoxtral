@@ -6,8 +6,8 @@ import Foundation
 /// `LOCALVOXTRAL_DATA_HOME` when set.
 ///
 /// The override is for launches on the owner's Mac that are not the owner:
-/// the e2e dictation, the UI smoke and the demo recording run as the owner,
-/// with the owner's preferences, and must not open the owner's data (#985).
+/// the e2e dictation, the UI smoke and the demo recording run as the owner
+/// and must not open the owner's data (#985).
 /// Sockets, plugin links, the widget folder and downloaded backends stay put:
 /// other programs find them by their fixed path.
 package enum LocalvoxtralDataDirectory {

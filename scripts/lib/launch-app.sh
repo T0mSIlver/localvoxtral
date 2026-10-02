@@ -9,7 +9,8 @@
 # goes for LOCALVOXTRAL_DOGFOOD_AUDIO_FILE, the WAV a harness build dictates
 # from in place of the microphone (docs/test-harness.md), and for
 # LOCALVOXTRAL_DATA_HOME, the data folder that keeps a lane off the owner's
-# History and other stores (#985).
+# History and other stores (#985), and for LOCALVOXTRAL_DEFAULTS_SUITE, the
+# defaults suite that keeps it off the owner's preferences (#1029).
 #
 # Written for the runner's bash 3.2: no arrays, no `${x[@]}` under `set -u`.
 # Points LOCALVOXTRAL_DATA_HOME at a new temporary folder named after $1,
@@ -38,6 +39,9 @@ lv_open() {
   fi
   if [ -n "${LOCALVOXTRAL_DATA_HOME:-}" ]; then
     set -- --env "LOCALVOXTRAL_DATA_HOME=$LOCALVOXTRAL_DATA_HOME" "$@"
+  fi
+  if [ -n "${LOCALVOXTRAL_DEFAULTS_SUITE:-}" ]; then
+    set -- --env "LOCALVOXTRAL_DEFAULTS_SUITE=$LOCALVOXTRAL_DEFAULTS_SUITE" "$@"
   fi
   if [ "${LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN:-}" = "1" ]; then
     set -- --env LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN=1 "$@"
