@@ -75,15 +75,11 @@ SETTINGS_WINDOW_TITLE="localvoxtral"
 [[ -d "$APP_PATH" ]] || { echo "App bundle not found: $APP_PATH (build with ./scripts/package_app.sh)" >&2; exit 1; }
 [[ -d "$ASSETS_DIR" ]] || { echo "Run from the repo root ($ASSETS_DIR/ not found)." >&2; exit 1; }
 
-# Defaults isolation:
-# localvoxtral uses UserDefaults.standard under bundle id com.localvoxtral.app.
-# This script snapshots that domain, writes only settings.onboarding_completed
-# so the first-launch wizard does not cover Settings, and restores on exit.
-# The lanes' snapshot and restore, on a backup path of this script's own.
+# Defaults isolation: the captured app runs on the harness defaults suite, and
+# the owner's com.localvoxtral.app domain is only read (#1450).
 # shellcheck source=scripts/lib/owner-app-session.sh
 source "${SCRIPT_DIR}/lib/owner-app-session.sh"
-PERSISTENT_DEFAULTS_BACKUP="${HOME}/.localvoxtral-capture-assets.defaults-backup"
-LEGACY_DEFAULTS_BACKUP="${HOME}/.localvoxtral-capture-assets.pre.plist"
+record_fail() { echo "$*" >&2; }
 
 # --- permission preflight ----------------------------------------------------
 # System Events needs Accessibility; screencapture -l needs Screen Recording.
@@ -127,9 +123,8 @@ cleanup() {
     sleep 1
     pkill -x "$APP_PROCESS" >/dev/null 2>&1 || true
   fi
-  if ! restore_defaults; then
-    echo "WARNING: failed to restore defaults backup at $PERSISTENT_DEFAULTS_BACKUP; leaving it in place." >&2
-  fi
+  drop_harness_defaults
+  report_owner_defaults
   if [[ -n "${ORIGINAL_DARK_MODE:-}" ]]; then
     osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to ${ORIGINAL_DARK_MODE}" >/dev/null 2>&1 || true
   fi
@@ -214,20 +209,14 @@ if pgrep -xq "$APP_PROCESS"; then
   echo "A previous $APP_PROCESS instance refuses to quit; captures would show stale state. Aborting." >&2
   exit 1
 fi
-remove_defaults_backup_scratch
-restore_defaults || { echo "Could not restore the defaults backup an interrupted run left at $PERSISTENT_DEFAULTS_BACKUP; refusing to mutate owner defaults." >&2; exit 1; }
-snapshot_defaults || { echo "Could not snapshot $BUNDLE_ID defaults; refusing to mutate owner defaults." >&2; exit 1; }
+recover_previous_defaults_backup || exit 1
+OWNER_DEFAULTS_BEFORE="$(owner_defaults_digest)"
 # Capture the app as a NEW USER sees it, not as this Mac happens to be set up:
-# clearing the domain drops personal and demo-staged values (record-demo leaves
-# a 22 pt overlay; opt-in features may be switched on), so the shots show real
-# defaults. AppleLanguages pins the app's language and AppleLocale its region
-# — the region is what byte/number formatting follows, so a French Mac renders
-# "3,3 GB" without it; this README is English and wants "3.3 GB". All these
-# keys live in the snapshotted domain and are restored on exit.
-defaults delete "$BUNDLE_ID" >/dev/null 2>&1 || true
-defaults write "$BUNDLE_ID" AppleLanguages -array en-US
-defaults write "$BUNDLE_ID" AppleLocale -string en_US
-defaults write "$BUNDLE_ID" "settings.onboarding_completed" -bool true
+# the suite starts empty, without personal or opt-in values, so the shots
+# show real defaults. onboarding_completed keeps the first-launch wizard off
+# Settings.
+use_harness_defaults
+defaults write "$HARNESS_DEFAULTS_SUITE" "settings.onboarding_completed" -bool true
 
 # The two settings a real first-time user ends up with, which marking onboarding
 # complete above would otherwise hide — so the shots depict a state that exists:
@@ -237,13 +226,19 @@ defaults write "$BUNDLE_ID" "settings.onboarding_completed" -bool true
 #     the model, and we skip the wizard.
 # Keep in step with SettingsStore.seedFreshInstallDefaults and
 # OnboardingViewModel.startDownloads.
-defaults write "$BUNDLE_ID" "settings.modifier_only_hotkey_enabled" -bool true
-defaults write "$BUNDLE_ID" "settings.llm_polishing_enabled" -bool true
+defaults write "$HARNESS_DEFAULTS_SUITE" "settings.modifier_only_hotkey_enabled" -bool true
+defaults write "$HARNESS_DEFAULTS_SUITE" "settings.llm_polishing_enabled" -bool true
+# AppleLanguages pins the app's language and AppleLocale its region: the
+# region is what byte and number formatting follows, so a French Mac renders
+# "3,3 GB" without it, and this README is English and wants "3.3 GB". AppKit
+# reads both from the argument domain or the app's own domain, never from a
+# suite, so they go on the command line.
+LOCALE_ARGS=(--args -AppleLanguages "(en-US)" -AppleLocale en_US)
 LAUNCHED_APP=1
 # The captured app keeps its History and other stores out of the owner's (#985).
 lv_isolate_data lv-readme-assets-data \
   || { echo "Could not make a data folder for the captured app; not launching it on the owner's data." >&2; exit 1; }
-lv_open "$APP_PATH"
+lv_open "$APP_PATH" "${LOCALE_ARGS[@]}"
 for _ in $(seq 1 20); do pgrep -xq "$APP_PROCESS" && break; sleep 0.5; done
 APP_PID="$(pgrep -xn "$APP_PROCESS")"
 sleep 2 # let the status item settle
@@ -321,11 +316,10 @@ sleep 1
 
 # The sample sheet: a host that is not in the registry, a visibly fake token,
 # and a presentation the model refuses to act on. It cannot write
-# ~/.ssh/config, spawn ssh, or enroll anything. The key lives in the
-# snapshotted domain (restored on exit); deleted here as well so a run that
-# ends between here and cleanup cannot leave it armed.
-defaults write "$BUNDLE_ID" "debug.enrollment_sheet_preview" -bool true
-lv_open "$APP_PATH"
+# ~/.ssh/config, spawn ssh, or enroll anything. The key lives in the harness
+# suite, which cleanup empties.
+defaults write "$HARNESS_DEFAULTS_SUITE" "debug.enrollment_sheet_preview" -bool true
+lv_open "$APP_PATH" "${LOCALE_ARGS[@]}"
 for _ in $(seq 1 20); do pgrep -xq "$APP_PROCESS" && break; sleep 0.5; done
 APP_PID="$(pgrep -xn "$APP_PROCESS")"
 sleep 2
@@ -356,7 +350,6 @@ if SETTINGS_ID="$(wait_for_window "$APP_PID" 0 10)"; then
 else
   echo "ERROR: Settings never reopened for the enrollment sheet." >&2
 fi
-defaults delete "$BUNDLE_ID" "debug.enrollment_sheet_preview" >/dev/null 2>&1 || true
 
 # Fail LOUDLY rather than leaving a stale (or absent) asset behind. A capture
 # script that warns and exits 0 is how a run "succeeds" with nothing to show

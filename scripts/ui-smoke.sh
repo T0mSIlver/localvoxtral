@@ -8,12 +8,9 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/launch-app.sh"
 # AX-driven packaged-app smoke drill. Run on a macOS GUI session:
 #   ./scripts/ui-smoke.sh [dist/localvoxtral.app]
 #
-# Defaults isolation:
-# localvoxtral uses UserDefaults.standard under bundle id com.localvoxtral.app.
-# There is no app-code hook for a separate suite/domain, and NSUserDefaults
-# command-line overrides do not move standard defaults to an isolated suite.
-# This script therefore snapshots that defaults domain, forces only the smoke
-# test's required external-mode setting, and restores the snapshot on exit.
+# Defaults isolation: the app runs on the harness defaults suite
+# (LOCALVOXTRAL_DEFAULTS_SUITE), which holds only the drill's forced settings;
+# the owner's com.localvoxtral.app domain is only read (#1029).
 
 APP_PATH="${1:-dist/localvoxtral.app}"
 APP_PROCESS="localvoxtral"
