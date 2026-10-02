@@ -609,13 +609,12 @@ final class DictationSessionController {
             debugLog("network lost")
             // A loopback socket, such as the bundled speech server's, does not
             // ride the network path: stopping would only drop the final commit
-            // that flushes the server's tail (#1238). Remote sockets can sit
-            // half-dead after the path goes, so those sessions still stop.
-            if (isDictating || isFinalizingStop || isConnectingRealtimeSession),
-               let endpoint = realtimeEndpointForNetworkLoss,
-               PolishContextClipboardReader.isLoopbackEndpoint(endpoint)
-            {
-                Log.backends.info("network lost; loopback realtime session kept")
+            // that flushes the server's tail (#1238), and an idle status saying
+            // the network is gone would be wrong about it (#1242). Remote
+            // sockets can sit half-dead after the path goes, so those sessions
+            // still stop.
+            guard realtimeEndpointNeedsNetwork else {
+                Log.backends.info("network lost; loopback realtime endpoint unaffected")
                 return
             }
             if isConnectingRealtimeSession {
@@ -636,12 +635,19 @@ final class DictationSessionController {
         }
     }
 
-    /// The endpoint the running or starting session dials: the latched
-    /// connect snapshot once the socket was asked to open, else what Settings
-    /// resolves to while the start is still preparing.
-    private var realtimeEndpointForNetworkLoss: URL? {
-        sessionRealtimeConfiguration?.endpoint
-            ?? settings.resolvedWebSocketURL(for: sessionProvider ?? settings.realtimeProvider)
+    /// False when the realtime endpoint is loopback, which a lost network path
+    /// leaves untouched. A running or starting session judges the endpoint it
+    /// dials: the latched connect snapshot once the socket was asked to open,
+    /// else what Settings resolves to for its provider. An idle one judges
+    /// what the next start would dial. No endpoint counts as needing one.
+    private var realtimeEndpointNeedsNetwork: Bool {
+        let sessionActive = isDictating || isFinalizingStop || isConnectingRealtimeSession
+        let endpoint = (sessionActive ? sessionRealtimeConfiguration?.endpoint : nil)
+            ?? settings.resolvedWebSocketURL(
+                for: (sessionActive ? sessionProvider : nil) ?? settings.realtimeProvider
+            )
+        guard let endpoint else { return true }
+        return !PolishContextClipboardReader.isLoopbackEndpoint(endpoint)
     }
 
     // MARK: - Public API
@@ -786,7 +792,7 @@ final class DictationSessionController {
             statusText = StatusStrings.awaitingMicrophonePermission
             return
         }
-        guard networkMonitor.isConnected else {
+        guard networkMonitor.isConnected || !realtimeEndpointNeedsNetwork else {
             statusText = StatusStrings.noNetworkConnection
             lastError = "Connect to a network before starting dictation."
             return

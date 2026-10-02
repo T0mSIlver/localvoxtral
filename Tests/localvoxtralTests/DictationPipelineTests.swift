@@ -173,6 +173,48 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
     }
 
+    /// Without a network, a dictation to a loopback speech server needs none:
+    /// the idle status does not report the loss, and the start goes ahead.
+    func testWithoutANetworkADictationToALoopbackServerStarts() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let idleStatus = pipeline.viewModel.statusText
+        reportNetworkLoss(pipeline)
+
+        XCTAssertEqual(pipeline.viewModel.statusText, idleStatus)
+
+        await startAndSpeak(pipeline)
+        await stopAndFinalize(pipeline)
+
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
+    }
+
+    /// Without a network, a dictation to a server on another host is still
+    /// refused before the microphone opens.
+    func testWithoutANetworkADictationToARemoteServerIsRefused() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.settings.realtimeAPIEndpointURL = "ws://192.0.2.1:8000/v1/realtime"
+        reportNetworkLoss(pipeline)
+
+        XCTAssertEqual(pipeline.viewModel.statusText, DictationViewModel.StatusStrings.noNetworkConnection)
+
+        pipeline.viewModel.startDictation()
+
+        XCTAssertFalse(pipeline.viewModel.isDictating)
+        XCTAssertFalse(pipeline.viewModel.session.isConnectingRealtimeSession)
+        XCTAssertEqual(pipeline.viewModel.statusText, DictationViewModel.StatusStrings.noNetworkConnection)
+        XCTAssertEqual(pipeline.viewModel.lastError, "Connect to a network before starting dictation.")
+        XCTAssertFalse(pipeline.microphone.deliver(Self.speech(seed: 1)), "the microphone stays off")
+    }
+
+    /// The path goes unsatisfied, handled in line rather than through the
+    /// monitor's hop to the main actor.
+    private func reportNetworkLoss(_ pipeline: Pipeline) {
+        let monitor = pipeline.viewModel.session.networkMonitor
+        monitor.onChange = nil
+        monitor.debugReportPath(connected: false)
+        pipeline.viewModel.session.handleNetworkChange(connected: false)
+    }
+
     /// A settled sentence past 30 words, the first piece early polish takes.
     private static let settledPiece =
         "the first part of this dictation is long enough to settle into a piece of its own "
