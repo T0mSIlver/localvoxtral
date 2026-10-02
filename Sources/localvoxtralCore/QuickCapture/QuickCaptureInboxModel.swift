@@ -650,7 +650,7 @@ package final class QuickCaptureInboxModel {
                 inbox.update(id) {
                     guard $0.state == .filing, $0.filingClaim == token else { return }
                     $0.state = .ready
-                    $0.note = "Not filed: the Inbox could not be saved."
+                    $0.note = "Not sent: the Inbox could not be saved."
                 }
             }
             return nil
