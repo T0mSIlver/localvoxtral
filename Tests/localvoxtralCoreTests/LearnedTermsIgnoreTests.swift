@@ -102,6 +102,9 @@ final class LearnedTermsIgnoreTests: XCTestCase {
             store.importProjects(seeded.projects) { continuation.resume(returning: $0) }
         }
         XCTAssertGreaterThan(importSummary.terms, 0)
+        // The summary arrives from inside the change, before the store
+        // holds its result.
+        store.waitForPendingWrites()
         let before = store.snapshot()
         let others = before.projects.filter { !$0.key.contains("quill") }
 
