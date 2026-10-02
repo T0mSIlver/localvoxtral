@@ -139,7 +139,15 @@ there is not.
   whole. The
   record is cleared only by a Return sent or a new session, never by a
   refusal: once text landed elsewhere, the trigger does nothing for the rest
-  of that dictation. Only a non-empty backend final can trigger; an empty
+  of that dictation. A pid cannot tell two tabs of one terminal apart, nor
+  two Claude Desktop sessions (#1354), so when the words are for a known
+  session (the one a go-to brought forward with `.focused`, else the joined
+  one) whose pane can be read back, the Return also waits for that read-back,
+  later segments queued behind it as behind a go-to; a pane that no longer
+  shows the session types the final whole and ends the trigger for the
+  dictation. After an `.unverified` go-to there is no Return. With no such
+  session (no join, or a plain ssh or cmux one), the pid is the only check
+  and a same-terminal tab switch goes unseen. Only a non-empty backend final can trigger; an empty
   final or a promotion types the merged text as text. The accumulator's
   merge is never parsed: it keeps partial words the final dropped and glues
   a disagreeing partial onto it, and either can read as a trigger the final
