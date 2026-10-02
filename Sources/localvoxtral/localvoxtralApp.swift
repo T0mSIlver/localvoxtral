@@ -400,6 +400,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // launch finds its own port taken. The wait is bounded and short; a
         // quit must never hang on a wedged network.
         drainRemoteForwardTeardowns(within: 3.0)
+        // A drafting or project-terms agent still running would outlive the
+        // app, reparented to launchd and still spending tokens (#1225).
+        BoundedProcessChildren.shared.terminateAll(grace: 1.0, within: 2.0)
         claudeRemoteForwards = nil
         claudeRemoteListenerCoordinator?.shutdown()
         claudeRemoteListenerCoordinator = nil
