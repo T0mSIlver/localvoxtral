@@ -771,6 +771,7 @@ extension DictationSessionController {
         isFinalizingStop = false
         isConnectingRealtimeSession = false
         isCompletingStoppedSession = false
+        escapeCancelHandler.stop()
         realtimeFinalizationLastActivityAt = nil
         polishAndCommitTask = nil
         saveInterruptedPolishCommit = nil

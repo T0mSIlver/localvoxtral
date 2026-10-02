@@ -48,6 +48,15 @@ final class EscapeCancelHandler {
         debugRegisterStatus = status
     }
 
+    /// A press of Escape as the Carbon hotkey delivers it: only while the
+    /// hotkey is registered. Unregistered, the key goes to the focused app.
+    func debugPressEscape() {
+        guard isRegistered else { return }
+        handleEscapePressed()
+    }
+
+    var debugIsRegistered: Bool { isRegistered }
+
     @inline(__always) private static func record(_ outcome: EscapeCancelStartOutcome) {
         lastStartOutcome = outcome
     }
