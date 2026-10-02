@@ -612,7 +612,7 @@ final class DictationPipelineTests: XCTestCase {
     func testQuitBeforeTheFinalTranscriptFilesAQuickCapture() async throws {
         let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
         let captured = QuickCaptures()
-        pipeline.viewModel.session.onQuickCapture = { text, _ in
+        pipeline.viewModel.session.onQuickCapture = { text, _, _ in
             captured.all.append((text, pipeline.records.all.count))
         }
 
@@ -1166,7 +1166,7 @@ final class DictationPipelineTests: XCTestCase {
         let waiting = installWaitingSessions(pipeline, ["pay": "/r/payments"])
         waiting.focuser.holdsFocus = true
         let captured = QuickCaptures()
-        pipeline.viewModel.session.onQuickCapture = { text, _ in captured.all.append((text, 0)) }
+        pipeline.viewModel.session.onQuickCapture = { text, _, _ in captured.all.append((text, 0)) }
         // Were the pane picked, the words would go into it.
         let terminalPID: pid_t = 5151
         pipeline.overlay.commitTargetAppPID = terminalPID
