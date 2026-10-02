@@ -163,6 +163,21 @@ final class LearnedTermsExportTests: XCTestCase {
         XCTAssertEqual(target.projects.map(\.key).sorted(), ["/home/me/src/app", "repo:gitlab.com/group/app"])
     }
 
+    /// A file from before #971 holds terms on the checkout. Imported onto a
+    /// checkout linked here, they go to its repository's record and count.
+    func testOldFileOntoALinkedCheckoutFillsItsRepository() {
+        var target = LearnedTerms(projects: [project("/Users/tom/work/app", "app", [])])
+        target.recordOrigin(ProjectRemote(remoteURL: "git@gitlab.com:group/app.git")!, projectKey: "/Users/tom/work/app")
+
+        let summary = target.merge(importing: [
+            project("/Users/tom/work/app", "app", [term("speechd", dictations: 3)]),
+        ], now: now)
+
+        XCTAssertEqual(summary, .init(terms: 1, projects: 1))
+        XCTAssertEqual(target.confirmedTerms(projectKey: "/Users/tom/work/app"), ["speechd"])
+        XCTAssertEqual(target.projects.first { $0.key == "/Users/tom/work/app" }?.terms, [])
+    }
+
     func testImportNeverConfirmsATermStillBeingLearned() {
         var local = LearnedTerms()
         local.merge(importing: [

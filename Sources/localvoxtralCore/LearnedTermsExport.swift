@@ -92,7 +92,22 @@ extension LearnedTerms {
             guard !key.isEmpty else { continue }
             let index = importTarget(for: project, key: key, localNames: localNames)
             projects[index].lastSeen = max(projects[index].lastSeen, project.lastSeen)
-            projects[index].carryProposalStamp(from: project)
+            // A checkout the file links to its repository (#971) keeps the
+            // link, or its terms, already on the `repo:` record, would be
+            // out of its reach. A link this memory already has stays.
+            if let remote = project.projectRemote, !projects[index].isRepositoryRecord,
+               projects[index].remote == nil
+            {
+                link(checkoutAt: index, to: remote)
+            }
+            // A linked checkout's terms and answer go to its repository's
+            // record, as a dictation's do (`projectIndex`).
+            var record = index
+            if projects[index].isLinkedCheckout, let remote = projects[index].projectRemote {
+                record = repositoryRecordIndex(for: remote, lastSeen: project.lastSeen)
+            }
+            projects[record].lastSeen = max(projects[record].lastSeen, project.lastSeen)
+            projects[record].carryProposalStamp(from: project)
             for raw in project.terms {
                 let term = LearnedTerms.sanitized(raw.term)
                 guard !term.isEmpty else { continue }
@@ -101,24 +116,16 @@ extension LearnedTerms {
                 clean.dictations = max(0, raw.dictations)
                 clean.applied = raw.applied.map { max(0, $0) }
                 let match = term.caseFoldedForMatching
-                if let existing = projects[index].terms.firstIndex(where: {
+                if let existing = projects[record].terms.firstIndex(where: {
                     $0.term.caseFoldedForMatching == match
                 }) {
-                    projects[index].terms[existing] = LearnedTerms.merged(
-                        projects[index].terms[existing], clean
+                    projects[record].terms[existing] = LearnedTerms.merged(
+                        projects[record].terms[existing], clean
                     )
                 } else {
-                    projects[index].terms.append(clean)
+                    projects[record].terms.append(clean)
                 }
-                imported.append((projects[index].key, match))
-            }
-            // A checkout the file links to its repository (#971) keeps the
-            // link, or its terms, already on the `repo:` record, would be
-            // out of its reach. A link this memory already has stays.
-            if let remote = project.projectRemote, !projects[index].isRepositoryRecord,
-               projects[index].remote == nil
-            {
-                link(checkoutAt: index, to: remote)
+                imported.append((projects[record].key, match))
             }
         }
         prune(now: now)
