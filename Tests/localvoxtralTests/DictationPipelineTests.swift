@@ -153,6 +153,26 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, true)
     }
 
+    /// The Mac loses its network while dictating to a speech server on
+    /// loopback, as the bundled one is: the socket is unaffected, so the
+    /// dictation keeps listening and its stop still sends the final commit
+    /// that flushes the server's tail.
+    func testNetworkLossKeepsALoopbackDictationAndItsFinalCommit() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.session.handleNetworkChange(connected: false)
+
+        XCTAssertTrue(pipeline.viewModel.isDictating, "a loopback socket outlives the network")
+        XCTAssertEqual(pipeline.viewModel.statusText, "Listening...")
+        XCTAssertNil(pipeline.viewModel.lastError)
+
+        await stopAndFinalize(pipeline)
+
+        XCTAssertEqual(pipeline.server.frames.filter(\.isFinalCommit).count, 1)
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
+    }
+
     /// A settled sentence past 30 words, the first piece early polish takes.
     private static let settledPiece =
         "the first part of this dictation is long enough to settle into a piece of its own "
