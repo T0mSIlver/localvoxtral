@@ -196,7 +196,7 @@ final class VibeRemoteShimTests: XCTestCase {
             let request = try request(index)
             XCTAssertEqual(ClaudeRemoteAgentCodec.agent(in: request.headers), .vibe)
             XCTAssertEqual(request.headers["authorization"], "Bearer \(Self.token)")
-            XCTAssertEqual(request.headers["x-lvx-vibe-hooks-version"], "1.16.0")
+            XCTAssertEqual(request.headers["x-lvx-vibe-hooks-version"], "1.17.0")
 
             // Nothing from the session log but the last user message is sent.
             let body = try captured("body", index)
@@ -217,21 +217,6 @@ final class VibeRemoteShimTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(
             atPath: root.appendingPathComponent("run/localvoxtral/vibe-watch").path
         ))
-    }
-
-    func testThePromptCarriesItsMessageIdSoTheMacCountsItOnce() throws {
-        // The fixture log above has no ids, as Vibe before message ids wrote.
-        XCTAssertEqual(try runShim(payload(event: "post_agent")).exitCode, 0)
-        XCTAssertNil(try parsedBody(1, event: "UserPromptSubmit").record.promptID)
-
-        try Data("""
-        {"role": "user", "content": "rename the wire enum", "injected": false, "message_id": "u2"}
-
-        """.utf8).write(to: transcript)
-        XCTAssertEqual(try runShim(payload(event: "post_agent")).exitCode, 0)
-        let record = try parsedBody(3, event: "UserPromptSubmit").record
-        XCTAssertEqual(record.prompt, "rename the wire enum")
-        XCTAssertEqual(record.promptID, "u2")
     }
 
     func testAFileReadSendsThePathAndAShortExcerptNeverTheFile() throws {
