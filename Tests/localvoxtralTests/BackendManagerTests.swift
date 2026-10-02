@@ -6,6 +6,22 @@ import XCTest
 
 @MainActor
 final class BackendManagerTests: XCTestCase {
+    /// The helpers load weights from the cache the downloader wrote them to,
+    /// however the app's environment names it.
+    func testHelpersLookForModelsInTheCacheTheDownloaderFilled() {
+        let home = URL(fileURLWithPath: "/Users/tester", isDirectory: true)
+        for inherited in [
+            ["HF_HUB_CACHE": "/custom/hub", "HF_HOME": "/ignored"],
+            ["HF_HOME": "/custom/hf"],
+            [:],
+        ] {
+            let downloadedTo = HFModelDownloader.defaultCacheRoot(environment: inherited, home: home).path
+            let helper = BackendManager.helperEnvironment(inherited: inherited, home: home)
+            XCTAssertEqual(helper["HF_HUB_CACHE"], downloadedTo, "app environment: \(inherited)")
+            XCTAssertNil(helper["HF_HOME"], "HF_HUB_CACHE alone names the cache")
+        }
+    }
+
     func testSpeechdConfigurationUsesBundlePathPinnedModelRevisionAndHFFileSet() async throws {
         let modelPreparer = FakeModelPreparer()
         let supervisorFactory = FakeSupervisorFactory()

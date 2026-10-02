@@ -718,15 +718,23 @@ final class BackendManager: ManagedBackendManaging {
     }
 
     private func processEnvironment() -> [String: String] {
-        let inherited = ProcessInfo.processInfo.environment
+        Self.helperEnvironment(inherited: ProcessInfo.processInfo.environment)
+    }
+
+    static func helperEnvironment(
+        inherited: [String: String],
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> [String: String] {
         var environment: [String: String] = [:]
         for key in ["PATH", "HOME"] {
             if let value = inherited[key] {
                 environment[key] = value
             }
         }
-        // Deliberately leave Hugging Face cache variables unset: both helpers
-        // resolve the same default shared cache populated by HFModelDownloader.
+        // The cache HFModelDownloader filled, which honours HF_HUB_CACHE and
+        // HF_HOME. Both helpers read HF_HUB_CACHE first; without it they would
+        // look in the default cache whatever the app downloaded to.
+        environment["HF_HUB_CACHE"] = HFModelDownloader.defaultCacheRoot(environment: inherited, home: home).path
         return environment
     }
 
