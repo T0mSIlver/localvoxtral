@@ -297,10 +297,10 @@ final class ClaudeModChannelSocketTests: XCTestCase {
     /// attach again after a restart.
     func testAnAttachServedAfterTheStopIsRefused() async throws {
         try announce("sess-1")
-        let entered = DispatchSemaphore(value: 0)
+        let entered = expectation(description: "the connection is being served")
         let release = DispatchSemaphore(value: 0)
         broker.debugConfigureServeHook {
-            entered.signal()
+            entered.fulfill()
             release.wait()
         }
         // Fulfilled by whichever comes first: the hub taking the channel,
@@ -315,7 +315,7 @@ final class ClaudeModChannelSocketTests: XCTestCase {
             settled.fulfill()
             return outcome
         }
-        await Task.detached { entered.wait() }.value
+        await fulfillment(of: [entered], timeout: 5)
 
         broker.stop()
         release.signal()
