@@ -97,6 +97,25 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
     }
 
+    /// A cancel while the stream still holds the last word back (a speaker
+    /// term gives it rules) types nothing more (#1222).
+    func testACancelTypesNothingTheLiveStreamStillHolds() async throws {
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        pipeline.viewModel.settings.polishSpeakerTerms = ["macOS"]
+        let typed = recordTypedText(pipeline)
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.delta", "delta": "hello there"])
+        let typedHello = await typed.waitFor("hello ")
+        XCTAssertTrue(typedHello, "typed so far: \(typed.text.debugDescription)")
+
+        pipeline.viewModel.cancelDictation()
+
+        XCTAssertFalse(pipeline.viewModel.isDictating)
+        XCTAssertFalse(pipeline.viewModel.isFinalizingStop)
+        XCTAssertEqual(typed.text, "hello ", "the held word is not typed by the cancel")
+    }
+
     /// A later segment's first delta keeps its leading space, and its period
     /// arrives only in the final: the period is still typed (#1091).
     func testLiveAutoPasteTypesALaterSegmentsFinalOnlyPeriod() async throws {
