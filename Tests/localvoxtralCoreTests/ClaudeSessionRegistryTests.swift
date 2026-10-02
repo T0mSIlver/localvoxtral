@@ -872,6 +872,34 @@ private final class MemoryClaudeSessionStore: ClaudeSessionStore, @unchecked Sen
     var clears: Int { clearCount.withLock { $0 } }
 }
 
+/// Holds its first update until `release()`, so operations submitted
+/// meanwhile reach the writer together.
+private final class HeldClaudeSessionStore: ClaudeSessionStore, @unchecked Sendable {
+    private let bytes: Mutex<Data?>
+    private let entered = DispatchSemaphore(value: 0)
+    private let gate = DispatchSemaphore(value: 0)
+    private let held = Mutex(true)
+
+    init(_ data: Data?) { bytes = Mutex(data) }
+
+    func load() throws -> Data? { bytes.withLock { $0 } }
+    func update(_ transform: (Data?) throws -> Data?) throws {
+        if held.withLock({ held in defer { held = false }; return held }) {
+            entered.signal()
+            gate.wait()
+        }
+        let current = bytes.withLock { $0 }
+        let next = try transform(current)
+        bytes.withLock { $0 = next }
+    }
+    func clear() throws { bytes.withLock { $0 = nil } }
+    func moveAside() throws {}
+
+    func waitUntilHeld() { entered.wait() }
+    func release() { gate.signal() }
+    var data: Data? { bytes.withLock { $0 } }
+}
+
 final class ClaudeSessionPersistenceTests: XCTestCase {
     private let epoch = Date(timeIntervalSince1970: 2_000_000)
     private let hostID = "h12345678"
@@ -1168,6 +1196,41 @@ final class ClaudeSessionPersistenceTests: XCTestCase {
         installed.ingest(localRecord(.sessionEnd, sessionID: "installed-session"), origin: local)
         installed.flushPersistence()
         XCTAssertEqual(fileRegistry(fileURL).liveSessions().map(\.sessionID), ["trial-session"])
+    }
+
+    func testAClearQueuedBehindASaveStillRemovesTheOtherCopysRows() throws {
+        func file(_ ids: [String]) -> StoredClaudeSessions {
+            StoredClaudeSessions(
+                version: StoredClaudeSessions.currentVersion,
+                bootIdentity: "boot-a",
+                sessions: ids.map {
+                    StoredClaudeSessions.Session(
+                        sessionID: $0,
+                        origin: .init(kind: "remote", channel: channel),
+                        agent: .claude,
+                        activity: "idle",
+                        firstSeen: epoch,
+                        lastActivity: epoch
+                    )
+                }
+            )
+        }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+        let store = HeldClaudeSessionStore(try encoder.encode(file(["other-copy"])))
+        let writer = ClaudeSessionStoreWriter(store: store)
+
+        writer.submit(.save(file(["mine"])))
+        store.waitUntilHeld()
+        writer.submit(.clear)
+        writer.submit(.save(file(["mine-after-clear"])))
+        store.release()
+        writer.flush()
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .millisecondsSince1970
+        let saved = try decoder.decode(StoredClaudeSessions.self, from: XCTUnwrap(store.data))
+        XCTAssertEqual(saved.sessions.map(\.sessionID), ["mine-after-clear"])
     }
 
     func testANewerFileWrittenAfterTheRestoreIsNeverReplaced() throws {

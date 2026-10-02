@@ -148,7 +148,7 @@ package final class ClaudeSessionStoreWriter: @unchecked Sendable {
 
     private func drain() {
         while true {
-            guard let (clear, save, fileRefused, ownSessionIDs) = state.withLock({
+            guard let (clear, save, fileRefused, ownBeforeDrain) = state.withLock({
                 state -> (Bool, StoredClaudeSessions?, Bool, Set<String>)? in
                 guard state.pendingClear || state.pendingSave != nil else {
                     state.scheduled = false
@@ -172,23 +172,29 @@ package final class ClaudeSessionStoreWriter: @unchecked Sendable {
                     continue
                 }
             }
-            do {
-                var ownSessionIDs = ownSessionIDs
-                if clear {
+            var ownSessionIDs = ownBeforeDrain
+            if clear {
+                do {
                     try store.clear()
                     ownSessionIDs = []
                     state.withLock { $0.ownSessionIDs = [] }
+                } catch {
+                    Log.claudeContext.error(
+                        "Claude session store clear failed: \(String(describing: error), privacy: .public)"
+                    )
                 }
-                if let save {
+            }
+            if let save {
+                do {
                     try store.update { onDisk in
                         try Self.merging(save, onto: onDisk, ownSessionIDs: ownSessionIDs)
                     }
                     state.withLock { $0.ownSessionIDs = Set(save.sessions.map(\.sessionID)) }
+                } catch {
+                    Log.claudeContext.error(
+                        "Claude session store write failed: \(String(describing: error), privacy: .public)"
+                    )
                 }
-            } catch {
-                Log.claudeContext.error(
-                    "Claude session store write failed: \(String(describing: error), privacy: .public)"
-                )
             }
         }
     }
