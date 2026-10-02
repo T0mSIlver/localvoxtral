@@ -439,6 +439,31 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertFalse(pipeline.viewModel.isFinalizingStop, "the stop is over")
     }
 
+    /// The same quit during a quick capture files the words so far as the
+    /// stop would: in History as a capture, then in the Inbox (#1296).
+    func testQuitBeforeTheFinalTranscriptFilesAQuickCapture() async throws {
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        let captured = QuickCaptures()
+        pipeline.viewModel.session.onQuickCapture = { text, _ in
+            captured.all.append((text, pipeline.records.all.count))
+        }
+
+        await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
+        await sendSettledFinal(pipeline, Self.settledPiece)
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+
+        pipeline.viewModel.saveStoppedDictationForQuit()
+
+        XCTAssertEqual(captured.all.map { $0.text.trimmingCharacters(in: .whitespaces) }, [Self.settledPiece])
+        XCTAssertEqual(captured.all.first?.recordsWritten, 1, "saved in History before the Inbox gets it")
+        let record = try XCTUnwrap(pipeline.records.all.first)
+        XCTAssertEqual(record.outputMode, DictationSessionRecord.quickCaptureOutputMode)
+        XCTAssertEqual(record.quickCaptureDestination, "Inbox")
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing reaches the focused app")
+        XCTAssertFalse(pipeline.viewModel.isFinalizingStop, "the stop is over")
+    }
+
     /// With Polish while you speak off, nothing is polished while the user
     /// speaks: the stop sends the whole text in one request, as before #709.
     func testOverlayBufferWithEarlyPolishOffPolishesOnlyTheWholeTextAtStop() async throws {
