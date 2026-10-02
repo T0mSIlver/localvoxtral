@@ -884,7 +884,7 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
                     return
                 }
                 do {
-                    let aside = try StoredFile.moveAside(fileURL)
+                    let aside = try StoredFile.moveAside(fileURL, lockedBeside: fileURL)
                     seen = StoredFileSeen()
                     state.withLock { state in
                         // The ignore list has its own file, which still
@@ -918,7 +918,7 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
                     return
                 }
                 do {
-                    let aside = try StoredFile.moveAside(ignoredFileURL)
+                    let aside = try StoredFile.moveAside(ignoredFileURL, lockedBeside: ignoredFileURL)
                     seenIgnored = StoredFileSeen()
                     pendingListChanges = []
                     state.withLock { state in
