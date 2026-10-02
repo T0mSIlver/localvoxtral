@@ -120,6 +120,9 @@ final class CoalescingStepFeedTests: XCTestCase {
         XCTAssertEqual(batches.map(\.count).max(), feed.maximumSamples)
         XCTAssertEqual(batches.flatMap { $0 }, samples(count: sent, startingAt: 0))
         XCTAssertEqual(feed.takeLargestStepSamples(), feed.maximumSamples)
+        XCTAssertEqual(
+            CoalescingStepFeed(minimumMilliseconds: 2_500).maximumSamples, 40_000,
+            "a minimum step above the cap raises the cap")
     }
 
     /// A closed connection's queued appends step nothing, and its commit flushes

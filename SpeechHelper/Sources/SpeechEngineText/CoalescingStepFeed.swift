@@ -45,10 +45,11 @@ public final class CoalescingStepFeed: Sendable {
         sampleRate: Int = 16_000
     ) {
         precondition(minimumMilliseconds > 0, "minimumMilliseconds must be positive")
-        precondition(maximumMilliseconds >= minimumMilliseconds, "maximumMilliseconds must not be below the minimum")
         precondition(sampleRate > 0, "sampleRate must be positive")
         let (minimum, overflow) = sampleRate.multipliedReportingOverflow(by: minimumMilliseconds)
-        let (maximum, maximumOverflow) = sampleRate.multipliedReportingOverflow(by: maximumMilliseconds)
+        // A `--step-ms` above the cap raises the cap to it.
+        let (maximum, maximumOverflow) = sampleRate.multipliedReportingOverflow(
+            by: max(minimumMilliseconds, maximumMilliseconds))
         precondition(!overflow && !maximumOverflow, "step is too large")
         self.minimumSamples = max(1, minimum / 1_000)
         self.maximumSamples = max(minimumSamples, maximum / 1_000)

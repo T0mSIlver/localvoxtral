@@ -303,6 +303,7 @@ package final class VoiceMemoIntake {
             onStatus?("A voice memo could not be read.")
             return .left
         } catch where yieldedToDictation {
+            Log.backends.info("Voice memos: the memo stopped for the dictation (\(String(describing: error), privacy: .public)); retrying on the next scan")
             ledger.entries[file.name] = nil
             saveLedger()
             return .stopPass
