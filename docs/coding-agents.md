@@ -564,6 +564,26 @@ learned terms ([Terms learned from polishing](dictation.md#terms-learned-from-po
 and its joined sessions, captures and dictations this week. **Open Inbox**
 goes to its drafts.
 
+**Forget Project…** in a project's sheet deletes its records and learned
+terms, on every checkout of its repository. It comes back the next time you
+dictate there. **Ignore Project…** also forgets it, then keeps it out:
+localvoxtral learns nothing there, its coding agent is never asked for its
+terms, and quick capture no longer lists it. Dictation there works as
+before. Both ask first and offer **Export Terms…** when the project has
+terms. Ignored projects are listed under **Ignored**, at the bottom of
+**Settings → Projects**, each with **Un-ignore**. The list is kept in
+`ignored-projects.json`, beside `learned-terms.json`.
+
+#### Keep work and personal projects apart
+
+The **Group** column puts a project in **Work** or **Personal**. A dictation
+joined to a project in a group then reads only that group's projects
+wherever it reads more than its own: the project names every polish
+carries, the confirmed terms the second pass sends, and a quick capture's
+polish, routing and follow-ups. A dictation with no join, or joined to a
+project in no group, reads every project, as before. You can still move a
+capture to any project by hand.
+
 ### Each project's repository
 
 A project's repository is the GitHub repository its `origin` remote points

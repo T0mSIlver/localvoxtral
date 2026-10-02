@@ -140,4 +140,21 @@ final class QuickCaptureProjectsTests: XCTestCase {
         try "Hello".write(to: root.appendingPathComponent("README"), atomically: true, encoding: .utf8)
         XCTAssertEqual(QuickCaptureProjects.readme(atRoot: root.path), "Hello")
     }
+
+    /// A checkout's README symlinked to a private file outside it is not
+    /// read: its text would reach the router's model.
+    func testASymlinkedReadmeIsNotRead() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("qc-readme-link-\(UUID().uuidString)")
+        let root = base.appendingPathComponent("checkout")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let secret = base.appendingPathComponent("secret.txt")
+        try "OUTSIDE-SENTINEL".write(to: secret, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(
+            atPath: root.appendingPathComponent("README.md").path, withDestinationPath: secret.path
+        )
+        XCTAssertNil(QuickCaptureProjects.readme(atRoot: root.path))
+        try "Hello".write(to: root.appendingPathComponent("README"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(QuickCaptureProjects.readme(atRoot: root.path), "Hello", "the next name that is a regular file")
+    }
 }

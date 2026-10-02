@@ -364,6 +364,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Queued here, so the History drain at the end of quit writes it.
+        viewModel.saveStoppedDictationForQuit()
         widgetSnapshotWriter?.writeAppQuit()
         widgetSnapshotWriter = nil
         #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
@@ -398,6 +400,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // launch finds its own port taken. The wait is bounded and short; a
         // quit must never hang on a wedged network.
         drainRemoteForwardTeardowns(within: 3.0)
+        // A drafting or project-terms agent still running would outlive the
+        // app, reparented to launchd and still spending tokens (#1225).
+        BoundedProcessChildren.shared.terminateAll(grace: 1.0, within: 2.0)
         claudeRemoteForwards = nil
         claudeRemoteListenerCoordinator?.shutdown()
         claudeRemoteListenerCoordinator = nil
@@ -762,6 +767,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 reportCmuxStatus: { [weak viewModel] status in
                     viewModel?.claudeIntegrationSettings?.cmuxStatus = status
                 },
+                ttyForegroundPIDs: { TTYProcessTable.foregroundPIDs(onTTYDevicePath: $0) },
                 sshDestinationProbe: {
                     SSHDestinationTTYProbe.connection(onTTYDevicePath: $0)
                 },
@@ -818,7 +824,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 sleep: viewModel.session.dependencies.clock.sleep,
                 nicknames: nicknames,
                 branch: { RepoIndexing.branch(root: $0) },
-                title: desktopTitles.title(of:)
+                title: desktopTitles.title(of:),
+                ttyForegroundPIDs: { TTYProcessTable.foregroundPIDs(onTTYDevicePath: $0) }
             )
             installAgentAttention(
                 ttyReader: ttyReader,

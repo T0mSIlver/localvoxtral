@@ -608,20 +608,37 @@ final class DictationSessionStore {
         } ?? []
     }
 
-    /// Recordings on disk and their size, for the Settings row.
-    func diagnosticRecordSummary() async -> (records: Int, bytes: Int) {
+    /// Diagnostic records on disk and their size, for the Settings row. Nil
+    /// when their folder would not list: the History pane must not read that
+    /// as nothing to delete (#1166). The folder failed, not the store, so
+    /// History is not marked as failing.
+    func diagnosticRecordSummary() async -> (records: Int, bytes: Int)? {
         guard let diagnosticRecordStore else { return (0, 0) }
         return await read("summarize diagnostic records") { _ in
-            diagnosticRecordStore.summary()
-        } ?? (0, 0)
+            Self.summarize("diagnostic records") { try diagnosticRecordStore.summary() }
+        } ?? nil
     }
 
 
-    func audioSummary() async -> (recordings: Int, bytes: Int) {
+    /// Nil when the audio folder would not list, like the records'.
+    func audioSummary() async -> (recordings: Int, bytes: Int)? {
         guard let audioStore else { return (0, 0) }
         return await read("summarize dictation audio") { _ in
-            (audioStore.storedIDs().count, audioStore.totalBytes())
-        } ?? (0, 0)
+            Self.summarize("dictation audio") { try audioStore.summary() }
+        } ?? nil
+    }
+
+    private nonisolated static func summarize<Summary>(
+        _ label: String, _ body: () throws -> Summary
+    ) -> Summary? {
+        do {
+            return try body()
+        } catch {
+            Log.persistence.error(
+                "History: listing \(label, privacy: .public) failed: \(String(describing: error), privacy: .public)"
+            )
+            return nil
+        }
     }
 
     func count() async -> Int {

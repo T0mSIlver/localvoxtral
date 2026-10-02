@@ -11,7 +11,9 @@ the pure-shell gate/process-cleanup suites, the installer-resolution test,
 advisory format lint (`.swift-format`; flips to `--strict` after the one-shot
 tree reformat), the unit suite with a coverage summary (`llvm-cov report` over
 Sources — visibility for the PR Proof section, not a gate), and the complete
-unit-test log as an artifact. Same-repo PRs run here too, not just forks: the
+unit-test log as an artifact. When the unit step fails, the job log also gets
+the exception and crashed-thread frames of any xctest crash report
+(`scripts/ci/xctest-crash-summary.py`, #1162). Same-repo PRs run here too, not just forks: the
 single self-hosted runner was 89 % busy during a four-agent burst and 3.4 h of
 work produced 8.95 h of queue, while a measured hosted run executed the
 identical 2769 test cases in the same wall-clock with an 8 s queue — and
@@ -317,8 +319,10 @@ battery power (`scripts/ci/ac-power-guard.sh`, shared with eval-e2e.yml's
 weekly run) or the screen is locked (the check needs an unlocked GUI
 session). Branch dispatches and the label bypass the guard; fork PRs never
 reach this job. The script exits 3 when the Mac could not run it (locked, no
-STT server, no Accessibility grant), which the owner's dispatch on main
-reports as a warning and a branch dispatch or label reports as a failure.
+STT server), which the owner's dispatch on main reports as a warning and a
+branch dispatch or label reports as a failure. It exits 4 when the app under
+test has no Accessibility grant, which fails every run: the grant does not
+come back by itself.
 `e2e-dictation-log` is uploaded on every run.
 
 The GUI lanes on the self-hosted runner (`e2e-dictation` here,

@@ -3,10 +3,13 @@ import Foundation
 /// Hands a committed, joined dictation to `ProjectTermProposer` (#609).
 extension DictationSessionController {
     /// The project names every polish carries (#1024), from the learned
-    /// terms' project list. Empty without a store.
-    func polishProjectNames() -> [String] {
+    /// terms' project list: with `join`, only its project's group's (#1005).
+    /// Empty without a store.
+    func polishProjectNames(join: ClaudeSessionJoin? = nil) -> [String] {
         guard let learnedTermStore else { return [] }
-        return PolishProjectNames.names(from: learnedTermStore.snapshot(), now: Date())
+        let memory = learnedTermStore.snapshot()
+        let group = memory.group(ofJoinedWorkspace: join?.snapshot.learnedTermWorkspace)
+        return PolishProjectNames.names(from: memory.inGroup(group), now: Date())
     }
 
     /// The skill names every polish carries (#1024): this Mac's and every

@@ -44,4 +44,26 @@ final class FirstChunkPreprocessorTests: XCTestCase {
 
         XCTAssertEqual(afterReset, "two")
     }
+
+    func testPreprocess_reconnectSpacesTheNextChunkOnceUnlessItLeadsWithOne() {
+        var preprocessor = FirstChunkPreprocessor()
+        _ = preprocessor.preprocess("First.")
+
+        preprocessor.markReconnect()
+        XCTAssertEqual(preprocessor.preprocess("Second"), " Second")
+        XCTAssertEqual(preprocessor.preprocess("word"), "word")
+
+        preprocessor.markReconnect()
+        XCTAssertEqual(preprocessor.preprocess(" "), " ")
+        XCTAssertEqual(preprocessor.preprocess("Third"), "Third", "the space already arrived")
+    }
+
+    func testPreprocess_reconnectBeforeAnyTextStillTrimsTheFirstChunk() {
+        var preprocessor = FirstChunkPreprocessor()
+
+        preprocessor.markReconnect()
+
+        XCTAssertEqual(preprocessor.preprocess(" hello"), "hello")
+        XCTAssertEqual(preprocessor.preprocess("there"), "there")
+    }
 }

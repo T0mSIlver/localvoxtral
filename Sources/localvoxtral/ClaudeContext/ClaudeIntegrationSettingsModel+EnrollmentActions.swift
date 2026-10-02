@@ -168,6 +168,13 @@ extension ClaudeIntegrationSettingsModel {
             return "~/.ssh is not exclusively writable by you (wrong owner or group/world-"
                 + "writable), so localvoxtral left it unchanged. Open Details for the "
                 + "manual remedy."
+        case .sshConfigBlockDamaged:
+            return "~/.ssh/config has a localvoxtral begin or end marker for this host "
+                + "without its partner, so localvoxtral left it unchanged. Delete the "
+                + "leftover marker line by hand."
+        case .sshConfigChangedDuringWrite:
+            return "Another program kept saving ~/.ssh/config while localvoxtral "
+                + "updated it, so localvoxtral left it unchanged. Try again."
         case .sshConfigEditingNotConfigured:
             return "Editing ~/.ssh/config is not available in this build."
         case .executionNotConfigured:

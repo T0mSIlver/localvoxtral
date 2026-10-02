@@ -212,6 +212,78 @@ final class DogfoodControlServiceTests: XCTestCase {
         )
     }
 
+    /// A start still connecting when the cap expires: the tap cannot abort a
+    /// connect, so the cap used to log a stop, do nothing and disarm, and the
+    /// session went live unbounded once the backend was ready.
+    func testTheCapAbortsASessionStillConnectingWhenItExpires() async {
+        let viewModel = makeViewModel()
+        viewModel.isConnectingRealtimeSession = true
+        viewModel.session.managedStartupTaskID = UUID()
+        let sleeps = ParkedCapSleeps()
+        let service = makeService(viewModel: viewModel, sleepFor: sleeps.sleep)
+
+        _ = await expectSuccess(service, .sessionStart(.overlayBuffer))
+        guard let cap = service.autoStopTaskForTesting else {
+            return XCTFail("the cap must be armed before its window expires")
+        }
+        await sleeps.waitForEntries(1)
+        sleeps.releaseOne()
+        await cap.value
+
+        XCTAssertFalse(viewModel.isConnectingRealtimeSession, "the connect must be aborted")
+        XCTAssertFalse(service.isAutoStopArmed)
+    }
+
+    /// The socket's start failed and the owner started their own, still
+    /// connecting at expiry: no generation tells the two apart, the startup
+    /// task does.
+    func testTheCapLeavesAnotherStartsConnectAlone() async {
+        let viewModel = makeViewModel()
+        viewModel.isConnectingRealtimeSession = true
+        viewModel.session.managedStartupTaskID = UUID()
+        let sleeps = ParkedCapSleeps()
+        let service = makeService(viewModel: viewModel, sleepFor: sleeps.sleep)
+
+        _ = await expectSuccess(service, .sessionStart(.overlayBuffer))
+        guard let cap = service.autoStopTaskForTesting else {
+            return XCTFail("the cap must be armed before its window expires")
+        }
+        viewModel.session.managedStartupTaskID = UUID()
+        await sleeps.waitForEntries(1)
+        sleeps.releaseOne()
+        await cap.value
+
+        XCTAssertTrue(viewModel.isConnectingRealtimeSession, "the owner's connect must go on")
+        XCTAssertFalse(service.isAutoStopArmed)
+    }
+
+    /// A start still waiting on the microphone prompt: nothing but the user
+    /// can end that, so the cap must stay armed and stop the session once
+    /// it goes live.
+    func testTheCapOutlastsAnUnansweredMicrophonePrompt() async {
+        let viewModel = makeViewModel()
+        viewModel.isAwaitingMicrophonePermission = true
+        let sleeps = ParkedCapSleeps()
+        let service = makeService(viewModel: viewModel, sleepFor: sleeps.sleep)
+
+        _ = await expectSuccess(service, .sessionStart(.overlayBuffer))
+        guard let cap = service.autoStopTaskForTesting else {
+            return XCTFail("the cap must be armed before its window expires")
+        }
+        await sleeps.waitForEntries(1)
+        sleeps.releaseOne()
+        await sleeps.waitForEntries(2, orUntil: { !service.isAutoStopArmed })
+        XCTAssertTrue(service.isAutoStopArmed, "the prompt is still up, so the cap must not disarm")
+
+        // The user answers; the session goes live and is still ours.
+        viewModel.isAwaitingMicrophonePermission = false
+        viewModel.isDictating = true
+        sleeps.releaseOne()
+        await cap.value
+
+        XCTAssertFalse(viewModel.isDictating, "the cap must end the session the prompt let through")
+    }
+
     func testShutdownReleasesTheCapSoAQuitDoesNotLeaveItWaiting() async {
         let viewModel = makeViewModel()
         viewModel.isConnectingRealtimeSession = true
@@ -651,6 +723,37 @@ final class DogfoodControlServiceTests: XCTestCase {
         case .failure(let refusal):
             return refusal
         }
+    }
+}
+
+/// Cap sleeps parked on the main actor, released one at a time, so a test
+/// can tell a cap that went back to sleep from one that ended.
+@MainActor
+private final class ParkedCapSleeps {
+    private var parked: [CheckedContinuation<Void, Never>] = []
+    private(set) var entries = 0
+
+    nonisolated var sleep: DogfoodControlService.SleepClosure {
+        { [self] _ in await self.park() }
+    }
+
+    private func park() async {
+        entries += 1
+        await withCheckedContinuation { parked.append($0) }
+    }
+
+    func releaseOne() {
+        guard !parked.isEmpty else { return }
+        parked.removeFirst().resume()
+    }
+
+    /// Returns once `count` sleeps were entered, or once `gaveUp` holds.
+    func waitForEntries(_ count: Int, orUntil gaveUp: @MainActor () -> Bool = { false }) async {
+        for _ in 0..<1_000 {
+            if entries >= count || gaveUp() { return }
+            await Task.yield()
+        }
+        XCTFail("the cap never went back to sleep")
     }
 }
 

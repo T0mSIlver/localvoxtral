@@ -76,13 +76,17 @@ public struct MarkedTextBlock: Sendable, Equatable {
         case .damaged:
             return nil
         case .absent:
-            var prefix = existing
-            if !prefix.isEmpty, !prefix.hasSuffix(terminator) { prefix += terminator }
-            if !prefix.isEmpty, !prefix.hasSuffix(terminator + terminator) {
-                prefix += terminator
-            }
             let body = snippet.components(separatedBy: "\n").joined(separator: terminator)
-            return prefix + body + terminator
+            if existing.isEmpty { return body + terminator }
+            // ALWAYS our own blank separator line, even when the file already
+            // ends with a blank line: `remove` takes one back, and a blank
+            // line the user wrote is not ours to take (#1178). A file with no
+            // final newline gets none after the block either, so `remove`
+            // gives it back without one.
+            if existing.unicodeScalars.last == "\n" {
+                return existing + terminator + body + terminator
+            }
+            return existing + terminator + terminator + body
         case .present(let ranges):
             // Replace the FIRST block in place and drop the rest, so a file
             // that was hand-duplicated converges to one.
@@ -118,7 +122,10 @@ public struct MarkedTextBlock: Sendable, Equatable {
                 // Take back the blank line `apply` inserted as a separator, so
                 // apply-then-remove is byte-identical to the original rather
                 // than leaving a growing gap behind (review finding m1). Only
-                // ONE, and only when it is a blank line we would have added.
+                // ONE: `apply` always adds exactly one. Older builds added
+                // none after a user's trailing blank line, and those files
+                // still lose that line here; nothing in the file tells them
+                // apart.
                 if start > cursor, lines[start - 1].isEmpty { start -= 1 }
                 result.append(contentsOf: lines[cursor..<start])
                 cursor = range.upperBound + 1

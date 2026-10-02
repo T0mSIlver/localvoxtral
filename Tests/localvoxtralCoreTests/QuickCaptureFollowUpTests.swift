@@ -27,11 +27,12 @@ final class QuickCaptureFollowUpTests: XCTestCase {
     }
 
     private func model(
-        classifier: ScriptedQuickCaptureClassifier, runner: any QuickCaptureDraftRunning
+        classifier: ScriptedQuickCaptureClassifier, runner: any QuickCaptureDraftRunning,
+        projects: (@MainActor () -> [QuickCaptureProject])? = nil
     ) -> QuickCaptureInboxModel {
         let model = QuickCaptureFixture.model(
-            fileURL: fileURL, answer: [:], github: github, runner: runner, classifier: classifier,
-            now: { [unowned self] in self.clock }
+            fileURL: fileURL, answer: [:], github: github, runner: runner, currentProjects: projects,
+            classifier: classifier, now: { [unowned self] in self.clock }
         )
         model.onStatus = { [weak self] in self?.statuses.append($0) }
         model.onRouted = { [weak self] _, destination in self?.routed.append(destination) }
@@ -222,6 +223,66 @@ final class QuickCaptureFollowUpTests: XCTestCase {
         XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.map(\.id), [followUp, id])
     }
 
+    /// Split after "File issues here" changed: the draft it gives back
+    /// links no issue of the repository the capture no longer files in.
+    func testSplitAfterAFilingChangeGivesBackNoIssueOfTheOldRepository() async throws {
+        let facts = GitHubRepositoryFacts(description: nil, topics: [], parent: "them/reach")
+        func reach(filingIn issueRepository: String) -> [QuickCaptureProject] {
+            [QuickCaptureProject(
+                key: "/w/reach", name: "reach", summary: nil, terms: [], userLine: nil,
+                repository: "me/reach", issueRepository: issueRepository, github: facts)]
+        }
+        let list = Mutex(reach(filingIn: "me/reach"))
+        let runner = FakeQuickCaptureCheckRunner([
+            .draft(.init(title: "Dark mode", body: "b", relation: .extends, issue: 7), usage: nil),
+        ])
+        let model = model(
+            classifier: ScriptedQuickCaptureClassifier([["reach": 0.95], ["inbox": 0.9]]), runner: runner,
+            projects: { list.withLock { $0 } })
+        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        let followUp = UUID()
+        await model.capture(text: "Also a new logo", historyRecordID: nil, id: followUp).value
+
+        list.withLock { $0 = reach(filingIn: "them/reach") }
+        model.adoptProjects()
+        await model.split(followUp, from: id)?.value
+
+        let item = try XCTUnwrap(model.items.first { $0.id == id })
+        XCTAssertEqual(item.title, "Dark mode", "the draft from before the join")
+        XCTAssertEqual(item.repository, "them/reach")
+        XCTAssertNil(item.relatedIssue)
+        XCTAssertFalse(item.canComment)
+    }
+
+    /// Split after a move: the draft it gives back links no issue of the
+    /// project the capture left.
+    func testSplitAfterAMoveGivesBackNoIssueOfTheOldProject() async throws {
+        let projects = QuickCaptureFixture.projects + [
+            QuickCaptureProject(
+                key: "/w/tool", name: "tool", summary: nil, terms: [], userLine: nil, repository: "me/tool"),
+        ]
+        let runner = FakeQuickCaptureCheckRunner([
+            .draft(.init(title: "Dark mode", body: "b", relation: .extends, issue: 7), usage: nil),
+        ])
+        let model = model(
+            classifier: ScriptedQuickCaptureClassifier([["reach": 0.95], ["inbox": 0.9]]), runner: runner,
+            projects: { projects })
+        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        let followUp = UUID()
+        await model.capture(text: "Also a new logo", historyRecordID: nil, id: followUp).value
+
+        await model.move(id, toProjectKey: "/w/tool")?.value
+        await model.split(followUp, from: id)?.value
+
+        let item = try XCTUnwrap(model.items.first { $0.id == id })
+        XCTAssertEqual(item.title, "Dark mode", "the draft from before the join")
+        XCTAssertEqual(item.repository, "me/tool")
+        XCTAssertNil(item.relatedIssue)
+        XCTAssertFalse(item.canComment)
+    }
+
     func testSplittingAnEarlierFollowUpRedraftsFromTheRemainingWords() async throws {
         let runner = FakeQuickCaptureDraftRunner()
         let model = model(classifier: ScriptedQuickCaptureClassifier([["reach": 0.95], ["inbox": 0.9]]), runner: runner)
@@ -237,6 +298,61 @@ final class QuickCaptureFollowUpTests: XCTestCase {
         let redraft = try XCTUnwrap(prompts(runner).last)
         XCTAssertTrue(redraft.contains("Also for the popover"))
         XCTAssertFalse(redraft.contains("new logo"))
+    }
+
+    // MARK: Filed by a coding agent
+
+    /// #1177: a capture a coding agent filed is done like one filed on a
+    /// click: the audio of the capture and its follow-up goes once the
+    /// Inbox saved it, and both History records say where it went. A
+    /// failed save keeps the audio, and a refused Inbox changes nothing.
+    func testAnAgentFilingACaptureWithAFollowUpReleasesBothAndRoutesBothRecords() async throws {
+        for outcome in ["saved", "save failed", "refused"] {
+            try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent())
+            let runner = FakeQuickCaptureDraftRunner()
+            runner.nextTitles.withLock { $0 = ["Dark mode", "Dark mode, settings too"] }
+            let model = model(classifier: ScriptedQuickCaptureClassifier([["reach": 0.95]]), runner: runner)
+            var done: [UUID] = []
+            var routedRecords: [UUID: String] = [:]
+            model.onDone = { done.append($0) }
+            let id = UUID(), followUp = UUID(), record = UUID(), followUpRecord = UUID()
+            await model.capture(text: "Add a dark mode", historyRecordID: record, id: id).value
+            await model.capture(text: "Also, the settings window", historyRecordID: followUpRecord, id: followUp).value
+            XCTAssertEqual(model.items.first?.followUps?.map(\.id), [followUp], outcome)
+            model.onRouted = { routedRecords[$0] = $1 }
+
+            switch outcome {
+            case "save failed":
+                // A file where the Inbox's folder goes: the Inbox reads as
+                // absent and every save fails, even as root (as in
+                // VoiceMemoIntakeTests; a folder at the file's path would
+                // refuse the Inbox instead).
+                let folder = fileURL.deletingLastPathComponent()
+                try FileManager.default.removeItem(at: folder)
+                try Data().write(to: folder)
+            case "refused":
+                try Data(#"{"version":1,"items":[{"text":"half"#.utf8).write(to: fileURL)
+            default:
+                break
+            }
+            let result = model.markFiled(id, url: "https://github.com/o/reach/issues/12")
+
+            switch outcome {
+            case "saved":
+                XCTAssertEqual(try result.get().state, .filed)
+                XCTAssertEqual(done, [id, followUp])
+                XCTAssertEqual(routedRecords, [record: "Filed in o/reach", followUpRecord: "Filed in o/reach"])
+            case "save failed":
+                XCTAssertEqual(try result.get().state, .filed)
+                XCTAssertTrue(model.hasUnsavedChanges)
+                XCTAssertEqual(done, [], "a relaunch brings the capture back, so its audio stays")
+                XCTAssertEqual(routedRecords, [record: "Filed in o/reach", followUpRecord: "Filed in o/reach"])
+            default:
+                XCTAssertEqual(result, .failure(.notFound))
+                XCTAssertEqual(done, [])
+                XCTAssertEqual(routedRecords, [:])
+            }
+        }
     }
 
     // MARK: Comment on #N
@@ -269,6 +385,25 @@ final class QuickCaptureFollowUpTests: XCTestCase {
         XCTAssertEqual(done, [id, followUp])
         XCTAssertEqual(Array(routed.suffix(2)), ["Commented on o/reach#7", "Commented on o/reach#7"])
         XCTAssertNil(model.comment(id), "never twice")
+    }
+
+    /// Two running copies both show the draft (#990): once one commented,
+    /// Comment in the other, which has not read the file since, posts
+    /// nothing.
+    func testACopyThatHasNotSeenACommentDoesNotPostAgain() async throws {
+        let runner = FakeQuickCaptureCheckRunner([
+            .draft(.init(title: "Dark mode", body: "b", relation: .extends, issue: 7), usage: nil),
+        ])
+        let installed = model(classifier: ScriptedQuickCaptureClassifier([["reach": 0.95]]), runner: runner)
+        await installed.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(installed.items.first?.id)
+        let tryBuild = model(classifier: ScriptedQuickCaptureClassifier([["reach": 0.95]]), runner: runner)
+        await installed.comment(id)?.value
+
+        await tryBuild.comment(id)?.value
+
+        XCTAssertEqual(github.comments.withLock { $0.count }, 1)
+        XCTAssertEqual(tryBuild.items.first?.state, .filed)
     }
 
     func testCommentNeedsAnExtendsRelationAndAFailureKeepsTheCapture() async throws {

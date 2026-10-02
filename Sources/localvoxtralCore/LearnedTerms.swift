@@ -190,6 +190,9 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
     /// on the repository's record (`repo:<remote>`), which every checkout
     /// of it shares. The repository's record carries it too.
     package var remote: String? = nil
+    /// The user's Work or Personal choice (#1005); nil in no group. Set on
+    /// each of a Projects row's records, read by `LearnedTerms.group`.
+    package var group: ProjectGroup? = nil
     /// When a coding agent last worked in this checkout (#1027): its newest
     /// Claude Code transcript, read on the Mac or reported by a host's shim.
     /// It lists the project before a dictation joins a session in it, for
@@ -231,10 +234,11 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
         return proposalRevision ?? (agentLineAt != nil ? 2 : 1)
     }
 
-    /// Kept with no terms: a proposal stamp, or a hook that named it. A
-    /// project holding neither is dropped once its last term goes.
+    /// Kept with no terms: a proposal stamp, a hook that named it, an
+    /// agent's work in it, or the user's group. A project holding none is
+    /// dropped once its last term goes.
     var isKeptWithoutTerms: Bool {
-        hasProposalStamp || reportedAt != nil || agentActiveAt != nil || isLinkedCheckout
+        hasProposalStamp || reportedAt != nil || agentActiveAt != nil || isLinkedCheckout || group != nil
     }
 
     /// The latest of a dictation, a hook's report and an agent's work: the
@@ -244,9 +248,9 @@ package struct LearnedTermProject: Codable, Equatable, Sendable {
     }
 
     /// The user made a choice here: a pinned term, a typed repository, the
-    /// fork's filing choice. The caps never evict it (#989).
+    /// fork's filing choice, a group (#1005). The caps never evict it (#989).
     package var isExplicit: Bool {
-        terms.contains(where: \.isPinned) || repositoryTyped == true || filesUpstream != nil
+        terms.contains(where: \.isPinned) || repositoryTyped == true || filesUpstream != nil || group != nil
     }
 
     /// A checkout whose terms live on its repository's record.
@@ -335,6 +339,13 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
 
     package var version: Int = LearnedTerms.currentVersion
     package var projects: [LearnedTermProject] = []
+    /// The repositories the user ignored (#1006). Kept in its own file by
+    /// `LearnedTermStore`, never in this one's: see `IgnoredProjects`.
+    package var ignored = IgnoredProjects()
+
+    private enum CodingKeys: String, CodingKey {
+        case version, projects
+    }
 
     package init(version: Int = LearnedTerms.currentVersion, projects: [LearnedTermProject] = []) {
         self.version = version
@@ -606,6 +617,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     }
 
     package func needsProposal(projectKey: String, now: Date, revision: Int = 1) -> Bool {
+        guard !isIgnored(projectKey: projectKey) else { return false }
         guard let project = termRecord(projectKey) else { return true }
         if let answered = project.answeredRevision, answered >= revision { return false }
         guard let attempted = project.proposalAttemptedAt else { return true }
@@ -805,6 +817,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         excluding: [String] = [],
         now: Date
     ) -> [String] {
+        guard !isIgnored(projectKey: project.key) else { return [] }
         let index = projectIndex(for: project, now: now)
         var known = Set(projects[index].terms.map(\.term.caseFoldedForMatching))
         known.formUnion(excluding.map(\.caseFoldedForMatching))
@@ -921,6 +934,10 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// that has sat on disk for a season must not come back larger than the
     /// caps allow just because nothing has been dictated since.
     package mutating func prune(now: Date) {
+        // An ignored repo's record takes no room: the sweep after the write
+        // drops it, but would not bring back a project the cap evicted for
+        // it (#1006).
+        removeIgnoredProjects()
         let cutoff = now.addingTimeInterval(-Double(LearnedTerms.staleAfterDays) * 86_400)
         for index in projects.indices {
             projects[index].terms.removeAll { !$0.isPinned && $0.lastSeen < cutoff }

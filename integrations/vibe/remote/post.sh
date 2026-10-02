@@ -182,7 +182,7 @@ write_header() {
   cat 2>/dev/null >"$1" <<HEADERS
 Authorization: Bearer $2
 X-Lvx-Agent: vibe
-X-Lvx-Vibe-Hooks-Version: 1.13.0
+X-Lvx-Vibe-Hooks-Version: 1.17.0
 HEADERS
 }
 write_header "$WORK/header" "$TOKEN" || exit 0
@@ -548,12 +548,14 @@ lvx_capture_asks() {
 # One request per plan line, in order: the prompt before the event that ends or
 # continues the turn. The event name is matched against the three this shim can
 # send before it is spliced into a URL. The first transport failure arms the
-# backoff and stops; any completed exchange clears it.
+# backoff and stops; any completed exchange clears it. -q and --noproxy '*'
+# keep ~/.curlrc and an inherited http_proxy or ALL_PROXY from sending the
+# token and the prompt to a proxy instead of the tunnel (#1281).
 while IFS=' ' read -r INDEX NAME; do
   case "$INDEX" in 1 | 2) ;; *) break ;; esac
   case "$NAME" in UserPromptSubmit | PostToolUse | Stop) ;; *) break ;; esac
   [ -r "$WORK/event-$INDEX.json" ] || break
-  STATUS="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  STATUS="$(curl -q --noproxy '*' --silent --output /dev/null --write-out '%{http_code}' \
     --dump-header "$WORK/response-headers-$INDEX" \
     --max-time 1 --request POST \
     --header 'Content-Type: application/json' \
@@ -670,7 +672,7 @@ send_session_end() {
   cat >"$_work/body" 2>/dev/null <<BODY
 {"hook_event_name":"SessionEnd","session_id":"$SESSION_ID"}
 BODY
-  _status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  _status="$(curl -q --noproxy '*' --silent --output /dev/null --write-out '%{http_code}' \
     --max-time 2 --request POST \
     --header 'Content-Type: application/json' \
     --header @"$_work/header" \

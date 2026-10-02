@@ -228,8 +228,6 @@ final class UsageLedgerTests: XCTestCase {
         async rethrows -> T
     {
         StubHTTPProtocol.reply.withLock { $0 = reply }
-        URLProtocol.registerClass(StubHTTPProtocol.self)
-        defer { URLProtocol.unregisterClass(StubHTTPProtocol.self) }
         return try await body()
     }
 
@@ -241,7 +239,7 @@ final class UsageLedgerTests: XCTestCase {
 
     func testMistralPolishRecordsTheUsageTheResponseReports() async throws {
         let ledger = UsageLedger(fileURL: nil)
-        let service = LLMPolishingService(usageRecorder: ledger)
+        let service = LLMPolishingService(usageRecorder: ledger, session: StubHTTPProtocol.session())
 
         let result = try await withStub(.http(200, Self.successBody)) {
             try await service.polish(request: polishRequest, configuration: polishConfiguration())
@@ -262,7 +260,7 @@ final class UsageLedgerTests: XCTestCase {
 
     func testMistralPolishWithUnusableContentIsStillRecorded() async throws {
         let ledger = UsageLedger(fileURL: nil)
-        let service = LLMPolishingService(usageRecorder: ledger)
+        let service = LLMPolishingService(usageRecorder: ledger, session: StubHTTPProtocol.session())
         let body = #"{"choices":[{"message":{"content":"  "}}],"usage":{"prompt_tokens":10,"completion_tokens":1}}"#
 
         await withStub(.http(200, body)) {
@@ -279,7 +277,7 @@ final class UsageLedgerTests: XCTestCase {
 
     func testMistralPolishTimeoutIsRecordedUnpriced() async throws {
         let ledger = UsageLedger(fileURL: nil)
-        let service = LLMPolishingService(usageRecorder: ledger)
+        let service = LLMPolishingService(usageRecorder: ledger, session: StubHTTPProtocol.session())
 
         await withStub(.failure(URLError(.timedOut))) {
             do {
@@ -301,7 +299,7 @@ final class UsageLedgerTests: XCTestCase {
     /// already be billed: it is counted, unpriced.
     func testAbandonedMistralPolishIsRecordedUnpriced() async {
         let ledger = UsageLedger(fileURL: nil)
-        let service = LLMPolishingService(usageRecorder: ledger)
+        let service = LLMPolishingService(usageRecorder: ledger, session: StubHTTPProtocol.session())
 
         for code in [URLError.Code.cancelled, .networkConnectionLost] {
             await withStub(.failure(URLError(code))) {
@@ -326,7 +324,7 @@ final class UsageLedgerTests: XCTestCase {
 
     func testRejectedAndUnreachablePolishesAreNotRecorded() async {
         let ledger = UsageLedger(fileURL: nil)
-        let service = LLMPolishingService(usageRecorder: ledger)
+        let service = LLMPolishingService(usageRecorder: ledger, session: StubHTTPProtocol.session())
 
         for reply in [
             StubHTTPProtocol.Reply.http(401, #"{"message":"Unauthorized"}"#),
@@ -343,7 +341,7 @@ final class UsageLedgerTests: XCTestCase {
 
     func testSelfHostedPolishIsRecordedUnpricedAndOutsideTheMistralSummary() async throws {
         let ledger = UsageLedger(fileURL: nil)
-        let service = LLMPolishingService(usageRecorder: ledger)
+        let service = LLMPolishingService(usageRecorder: ledger, session: StubHTTPProtocol.session())
 
         _ = try await withStub(.http(200, Self.successBody)) {
             try await service.polish(
@@ -363,7 +361,7 @@ final class UsageLedgerTests: XCTestCase {
 
     func testEachRequestIsChargedToItsFeatureAndBackend() async throws {
         let ledger = UsageLedger(fileURL: nil)
-        let service = LLMPolishingService(usageRecorder: ledger)
+        let service = LLMPolishingService(usageRecorder: ledger, session: StubHTTPProtocol.session())
         let bundled = LLMPolishingConfiguration(
             endpointURL: URL(string: "https://\(StubHTTPProtocol.host)")!,
             apiKey: "", model: "m", usageBackend: .bundledHelper)

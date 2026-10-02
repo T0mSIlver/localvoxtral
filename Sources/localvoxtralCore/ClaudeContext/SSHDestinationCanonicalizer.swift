@@ -354,25 +354,28 @@ package final class SSHDestinationCanonicalizer: Sendable {
             guard !address.isEmpty,
                   address.allSatisfy({ $0.isHexDigit || $0 == ":" || $0 == "." })
             else { return false }
-            authority = authority[authority.index(after: close)...]
-            guard authority.isEmpty || authority.hasPrefix(":") else { return false }
-            if authority.isEmpty { return true }
+            let rest = authority[authority.index(after: close)...]
+            if rest.isEmpty { return true }
+            guard rest.hasPrefix(":") else { return false }
+            return Self.isURIPort(rest.dropFirst())
         } else {
             // A bare host swallows at most one `:port`; a second `:` is a
             // shape ssh would not resolve as intended.
-            let parts = authority.split(separator: ":", maxSplits: 1)
-            let host = parts[0]
-            guard Self.isURIHostname(host) else { return false }
-            if parts.count == 1 { return true }
-            authority = parts[1]
-            guard !authority.isEmpty else { return false }
+            guard let colon = authority.firstIndex(of: ":") else {
+                return Self.isURIHostname(authority)
+            }
+            return Self.isURIHostname(authority[..<colon])
+                && Self.isURIPort(authority[authority.index(after: colon)...])
         }
+    }
 
-        let port = authority.dropFirst()
-        // Numeric compare, not string shape: `ssh -G` parses `:00022` as 22,
-        // so a leading zero is an accepted spelling, while `0` is no port.
-        guard port.count <= 5,
-              port.allSatisfy(\.isNumber),
+    /// The port an `ssh://` machine target spells after its `:`: ASCII
+    /// digits only, 1-65535. Numeric compare, not string shape: `ssh -G`
+    /// parses `:00022` as 22, so leading zeros are an accepted spelling (as in
+    /// herdr's `SavedSshEndpoint::validate`), while `0` is no port.
+    private static func isURIPort(_ port: Substring) -> Bool {
+        guard !port.isEmpty,
+              port.allSatisfy({ $0.isASCII && $0.isNumber }),
               let value = UInt16(port),
               value > 0
         else { return false }

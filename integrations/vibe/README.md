@@ -54,8 +54,9 @@ The row then reads "hooks.toml needs a manual fix." or reports the failure.
 3. Start a new Vibe session.
 
 The block is valid at the end of a file whose hooks are `[[hooks]]` tables
-too. If yours are written as `hooks = [...]` or under `[hooks]`, rewrite them
-as `[[hooks]]` tables first, because TOML cannot mix the two.
+too. If yours are written as `hooks = [...]`, under `[hooks]` or `[hooks.x]`,
+or as dotted `hooks.x = ...` keys, rewrite them as `[[hooks]]` tables first,
+because TOML cannot mix the two.
 
 If you set `VIBE_HOME`, use that directory instead of `~/.vibe` in both steps
 and in the block's two command lines.
@@ -174,10 +175,11 @@ reads it from the session's message log, whose path Vibe passes to every
 hook.
 
 It reads the last 512 KiB of that file and keeps one thing: the newest
-message you typed (role user, not injected by Vibe), cut to 8 KiB. It does
-not parse lines that lack the user-role marker, which covers assistant
-messages, reasoning, tool calls and tool results. It never sends the file
-path.
+message you typed (role user, not injected by Vibe), cut to 8 KiB, with
+Vibe's id for that message. Every hook reads that message again until you
+send the next one; the id lets the app count it once. It does not parse
+lines that lack the user-role marker, which covers assistant messages,
+reasoning, tool calls and tool results. It never sends the file path.
 
 If the read takes longer than 250 ms, the hook publishes without a prompt.
 

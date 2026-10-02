@@ -72,6 +72,7 @@ package struct ClaudeSessionJoinResolver {
     package let cmuxSurfaces: CmuxSurfaceQuerying?
     package let cmuxJoinEnabled: @MainActor () -> Bool
     package let reportCmuxStatus: @MainActor (CmuxSocketStatus) -> Void
+    package let ttyForegroundPIDs: @Sendable (String) -> [Int32]?
     private let sshDestinationProbe: @Sendable (String) -> SSHDestinationTTYProbeResult
     package let enrolledHosts: @MainActor (String) -> [ClaudeRemoteHost]
     package let canonicalizedEnrolledHosts: @MainActor (String) async -> [ClaudeRemoteHost]
@@ -145,6 +146,11 @@ package struct ClaudeSessionJoinResolver {
     ///     that socket.
     ///   - reportCmuxStatus: one short sentence for the Settings row when the
     ///     socket refuses us (details go to the log, never the popover).
+    ///   - ttyForegroundPIDs: the pids in a tty's foreground process group,
+    ///     from the local process table. The cmux route asks it before every
+    ///     write: a suspended agent is alive and registered, but its shell
+    ///     owns the terminal. DEFAULTS TO ABSTAIN (nil), which refuses every
+    ///     local cmux write; the app wires the live table.
     ///   - sshDestinationProbe: reads the local process table for an ssh client
     ///     on the focused surface's TTY and reports where it is going. Defaults
     ///     to `.undeterminable`, which disables the remote herdr arm entirely
@@ -174,6 +180,7 @@ package struct ClaudeSessionJoinResolver {
         cmuxSurfaces: CmuxSurfaceQuerying? = nil,
         cmuxJoinEnabled: @escaping @MainActor () -> Bool = { false },
         reportCmuxStatus: @escaping @MainActor (CmuxSocketStatus) -> Void = { _ in },
+        ttyForegroundPIDs: @escaping @Sendable (String) -> [Int32]? = { _ in nil },
         sshDestinationProbe: @escaping @Sendable (String) -> SSHDestinationTTYProbeResult = { _ in
             .undeterminable(.probeUnavailable)
         },
@@ -211,6 +218,7 @@ package struct ClaudeSessionJoinResolver {
         self.cmuxSurfaces = cmuxSurfaces
         self.cmuxJoinEnabled = cmuxJoinEnabled
         self.reportCmuxStatus = reportCmuxStatus
+        self.ttyForegroundPIDs = ttyForegroundPIDs
         self.sshDestinationProbe = sshDestinationProbe
         self.enrolledHosts = enrolledHosts
         self.canonicalizedEnrolledHosts = canonicalizedEnrolledHosts
@@ -416,6 +424,14 @@ package struct ClaudeSessionJoinResolver {
         return shown
     }
 
+    /// The focused pane's tty, read the way the tty arm reads it, so a
+    /// screen capture taken next to it names its pane (#1226). Nil for an
+    /// app off the terminal allowlist or an unreadable surface.
+    package func focusedPaneTTY(of target: TerminalScreenTarget) async -> String? {
+        guard TerminalScreenAllowlist.isSupported(target.bundleID) else { return nil }
+        return await focusedTerminalTTY(target.bundleID)
+    }
+
     private func resolveSurface(target: TerminalScreenTarget) async -> ClaudeSessionJoin? {
         // A browser is a different kind of target with a different capability:
         // one short URL string, no screen, no pane. The two allowlists are
@@ -445,7 +461,8 @@ package struct ClaudeSessionJoinResolver {
                     target: target,
                     snapshot: snapshot,
                     windowID: focusedWindowID(target.pid),
-                    mechanism: .ttyDevice
+                    mechanism: .ttyDevice,
+                    paneTTY: tty
                 )
             case .unknown:
                 abstainedTTYJoin(outcome: "no live session on this device")

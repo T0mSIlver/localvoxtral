@@ -33,7 +33,8 @@ final class DictationAudioStoreTests: XCTestCase {
 
         let wav = try Data(contentsOf: audio.fileURL(for: saved.id))
         XCTAssertEqual(wav, DictationAudioRecording.wav(fromPCM16: pcm))
-        let summary = await store.audioSummary()
+        let fetched = await store.audioSummary()
+        let summary = try XCTUnwrap(fetched)
         XCTAssertEqual(summary.recordings, 1)
         XCTAssertEqual(summary.bytes, 44 + pcm.count)
     }

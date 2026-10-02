@@ -139,6 +139,19 @@ public enum ClaudeRemoteHookPayloadParser {
             limits: limits
         ) else { return nil }
 
+        // The remote Vibe shim names the log message a submit carries, so the
+        // registry counts it once however many hooks re-read it (#1285). The
+        // registry reads it on Vibe records only.
+        if record.event == .userPromptSubmit {
+            var record = record
+            if data.count <= limits.maxLineBytes,
+               let object = try? JSONSerialization.jsonObject(with: data),
+               let payload = object as? [String: Any] {
+                record.promptID = ClaudeHookWireCodec.cleanPromptID(payload["prompt_id"] as? String)
+            }
+            return Payload(record: record, snippets: [])
+        }
+
         // Only tool events carry content worth excerpting. Re-decoding is cheap
         // next to a network round trip, and it keeps the local parser — which
         // must never learn to extract content — untouched.

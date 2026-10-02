@@ -64,8 +64,15 @@ package final class CorrectionLearning {
 
     /// Called after a commit put `inserted` into the joined session's prompt.
     /// Two dictations before one send are one prompt, so a second one within
-    /// the window appends rather than replaces.
-    package func expect(inserted: String, sessionID: String, project: LearnedTermProjectResolver.Identity) {
+    /// the window appends rather than replaces. `dictationStartedAt` is when
+    /// this dictation began: a prompt submitted before then is the user's own
+    /// earlier work, never a fix of this text.
+    package func expect(
+        inserted: String,
+        sessionID: String,
+        project: LearnedTermProjectResolver.Identity,
+        dictationStartedAt: Date
+    ) {
         let text = inserted.trimmed
         guard !text.isEmpty, !sessionID.isEmpty else { return }
         let moment = now()
@@ -81,7 +88,7 @@ package final class CorrectionLearning {
            let oldest = pending.min(by: { $0.value.insertedAt < $1.value.insertedAt })?.key {
             pending.removeValue(forKey: oldest)
         }
-        if let early = earlyPrompts.removeValue(forKey: sessionID) {
+        if let early = earlyPrompts.removeValue(forKey: sessionID), early.at >= dictationStartedAt {
             promptSubmitted(sessionID: sessionID, prompt: early.prompt)
         }
     }
@@ -96,8 +103,8 @@ package final class CorrectionLearning {
             return
         }
 
-        let remembered = store.snapshot().projects
-            .first { $0.key == entry.project.key }?.terms ?? []
+        // A linked checkout's terms are on its repository's record (#971).
+        let remembered = store.snapshot().termRecord(entry.project.key)?.terms ?? []
         let speakerTerms = knownTerms()
         let verdict = CorrectionDiffClassifier.classify(
             inserted: entry.inserted,

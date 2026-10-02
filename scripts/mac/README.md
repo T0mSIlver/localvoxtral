@@ -536,6 +536,9 @@ gate sends TERM to any remaining group members, waits a bounded grace period,
 then sends KILL. `remote-build.sh` also requests an explicit scoped reap when
 the SSH payload fails. Both boundaries are one invocation/workdir: neither
 uses a global `pkill`, so parallel worktrees and unrelated tests survive.
+Payloads also run with `NSUnbufferedIO=YES`, as CI's unit step does: without
+it xctest block-buffers its output into the ssh pipe, and a hung run's log
+stops up to 16 KiB before the test that hung (#1387).
 
 ### Installing / upgrading the gate
 

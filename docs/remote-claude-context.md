@@ -180,8 +180,11 @@ same.
 **When the app will not write it.** The app inserts the block after the
 one-sentence consent. It refuses to write when `~/.ssh/config` or `~/.ssh` is a
 symlink (a dotfiles setup, where an atomic rename would replace your link), or
-when `~/.ssh` is not exclusively yours to write. In those cases, edit the real
-file yourself using the block above.
+when `~/.ssh` is not exclusively yours to write. It also refuses, for both
+writing and Remove Host, when the file holds this host's `# BEGIN` line without
+its `# END` line or the other way round: writing past a lone marker would add a
+second block OpenSSH ignores, and a later update would delete your lines between
+the two. In those cases, edit the real file yourself using the block above.
 
 ### 2. The plugin on the host
 
@@ -267,7 +270,7 @@ Press **Check Setup** in the enrollment sheet. It runs two read-only checks
 and explains the results. The checks below run them by hand.
 
 Or run `localvoxtral doctor` in a Claude Code session on the host, or ask
-the agent why a dictation did not join: plugin 1.33.0 ships a skill that
+the agent why a dictation did not join: plugin 1.36.0 ships a skill that
 tells it about the command. It runs
 them all from there: the forward port, the 401 without the token and the 200
 with it, the plugin version each running session loaded, the Vibe hooks and
@@ -631,7 +634,9 @@ detached, at most once per project per 24 hours.
 
 The capture script posts the first 16 KiB of the project's README.md to the
 listener. The Mac keeps the first two prose paragraphs, 400 characters at
-most, on the project.
+most, on the project. From localvoxtral-remote 1.35.0 and Vibe hooks 1.17.0,
+the script skips a README, AGENTS.md or CLAUDE.md that is a symlink, so a
+committed link cannot send a file from elsewhere on the host.
 
 **Draft.** The capture waits up to 10 minutes for a hook from a live session in
 its project. The reply to that hook asks for a draft. With no such session, or

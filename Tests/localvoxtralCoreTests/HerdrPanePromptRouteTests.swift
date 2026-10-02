@@ -306,6 +306,23 @@ final class HerdrPanePromptRouteTests: XCTestCase {
         XCTAssertEqual(herdr.writes, [])
     }
 
+    /// The joined agent exited mid-dictation and the pane now runs its shell
+    /// or another agent: words sent there would land in that prompt, so the
+    /// text stays in History and nothing is written.
+    func testNoTextOnceTheJoinedAgentLeftTheForeground() async throws {
+        let foreground = Box<Processes>(claude)
+        let herdr = try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane("w1:p2") { foreground.get() })
+        defer { herdr.stop() }
+        let route = try await joinedRoute(herdr).route
+
+        for replacement: Processes in [[(8123, "zsh")], [(9555, "claude")]] {
+            foreground.set(replacement)
+            let appended = await route.deliver(.append("run the tests"))
+            XCTAssertEqual(appended, .keepInHistory, "\(replacement)")
+        }
+        XCTAssertEqual(herdr.writes, [])
+    }
+
     /// Through the sink: a refused append ends the route. Its text and the
     /// ones after it are typed in order, and the submit is dropped.
     func testThroughTheSinkARefusalTypesTheRestInOrderAndDropsTheSubmit() async throws {

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import XCTest
 
 @testable import localvoxtralCore
@@ -83,4 +84,68 @@ final class RealtimeFileTranscriberTests: XCTestCase {
         }
         XCTAssertEqual(client.disconnectCount, 1)
     }
+    // MARK: - Past a vLLM server's context limit (#1148)
+
+    /// 100 tokens: 8 s of audio fit, and a cut falls between 4.8 s and 6.8 s.
+    private let budget = RealtimeContextBudget(maxModelLen: 100)
+
+    /// `seconds` of audio at `level`, with silence over `quiet` seconds.
+    private func memo(seconds: Int, level: Int16 = 1_000, quiet: Range<Double>? = nil) -> Data {
+        let rate = AudioChunkBuffer.bytesPerSecond / 2
+        var samples = [Int16](repeating: level, count: seconds * rate)
+        if let quiet {
+            for index in Int(quiet.lowerBound * Double(rate)) ..< Int(quiet.upperBound * Double(rate)) {
+                samples[index] = 0
+            }
+        }
+        return samples.withUnsafeBytes { Data($0) }
+    }
+
+    func testAMemoLongerThanTheContextLimitComesBackWhole() async throws {
+        let pcm = memo(seconds: 20)
+        let limit = budget.capacityBytes
+        let clients = MadeClients()
+        // vLLM past max_model_len: nothing more is transcribed. Each session
+        // answers with the bytes it transcribed.
+        let transcriber = RealtimeFileTranscriber(makeClient: {
+            let client = FakeRealtimeClient()
+            client.setOnConnect { client.emit(.connected) }
+            client.setOnCommit { final in
+                guard final else { return }
+                client.emit(.finalTranscript("\(min(client.sentAudioBytes, limit))"))
+                client.emit(.transcriptionFinalized)
+            }
+            clients.list.withLock { $0.append(client) }
+            return client
+        })
+        let text = try await transcriber.transcribe(pcm16: pcm, configuration: configuration, contextBudget: budget)
+        let transcribed = text.split(separator: " ").compactMap { Int($0) }
+        let sent = clients.list.withLock { $0.map(\.sentAudioBytes) }
+        XCTAssertEqual(transcribed.reduce(0, +), pcm.count, "sessions: \(sent)")
+        XCTAssertTrue(sent.allSatisfy { $0 <= budget.forceBytes }, "a session ran past the margin: \(sent)")
+        XCTAssertEqual(clients.list.withLock { $0.map(\.disconnectCount) }, Array(repeating: 1, count: sent.count))
+    }
+
+    func testTheMemoIsCutInItsQuietestStretch() {
+        let pcm = memo(seconds: 20, quiet: 6.0 ..< 7.0)
+        let segments = RealtimeFileTranscriber.segments(ofPCM16: pcm, budget: budget)
+        let cut = Double(segments[0].upperBound) / Double(AudioChunkBuffer.bytesPerSecond)
+        XCTAssertGreaterThanOrEqual(cut, 6.0 + RealtimeContextBudget.pauseQuietSeconds / 2)
+        XCTAssertLessThanOrEqual(cut, 7.0 - RealtimeContextBudget.pauseQuietSeconds / 2)
+        XCTAssertEqual(segments.first?.lowerBound, 0)
+        XCTAssertEqual(segments.last?.upperBound, pcm.count)
+        for (left, right) in zip(segments, segments.dropFirst()) {
+            XCTAssertEqual(left.upperBound, right.lowerBound, "no audio lost or doubled at a seam")
+        }
+    }
+
+    func testAMemoWithinTheLimitIsOneSession() {
+        let pcm = memo(seconds: 6)
+        XCTAssertEqual(RealtimeFileTranscriber.segments(ofPCM16: pcm, budget: budget), [0 ..< pcm.count])
+        XCTAssertEqual(RealtimeFileTranscriber.segments(ofPCM16: memo(seconds: 20), budget: nil).count, 1)
+    }
+}
+
+private final class MadeClients: Sendable {
+    let list = Mutex<[FakeRealtimeClient]>([])
 }
