@@ -291,6 +291,9 @@ final class DictationViewModel {
     private(set) var quickCapture: QuickCaptureInboxViewModel?
     /// Voice memos from iCloud Drive (#925); nil in a view model that runs no services.
     private(set) var voiceMemos: VoiceMemoController?
+    /// The backend the memo in flight went to.
+    @ObservationIgnored
+    private var voiceMemoBackendMode: BackendMode?
     /// Set while the voice memo ledger is refused (#989).
     fileprivate(set) var voiceMemoLedgerProblem: StoredFileProblem?
 
@@ -1108,8 +1111,19 @@ extension DictationViewModel {
             self.statusText = sentence
         }
         controller.onLedgerProblem = { [weak self] in self?.voiceMemoLedgerProblem = $0 }
+        session.voiceMemoHoldsTheEngine = { [weak self, weak controller] in
+            guard let self, controller?.isTranscribing == true else { return false }
+            return Self.voiceMemoSharesTheEngine(
+                memo: self.voiceMemoBackendMode, dictation: self.settings.dictationBackendMode)
+        }
         voiceMemos = controller
         controller.apply()
+    }
+
+    /// Only the bundled helper decodes one connection at a time. A server of
+    /// the user's own or Mistral serves a memo beside a dictation.
+    static func voiceMemoSharesTheEngine(memo: BackendMode?, dictation: BackendMode) -> Bool {
+        memo == .managedLocal && dictation == .managedLocal
     }
 
     /// What a dictation would dial now, on a socket of its own so a memo never
@@ -1120,6 +1134,7 @@ extension DictationViewModel {
         usageLedger: UsageLedger
     ) async throws -> (RealtimeSessionConfiguration, RealtimeContextBudget?, @Sendable () -> any RealtimeClient) {
         let mode = settings.dictationBackendMode
+        voiceMemoBackendMode = mode
         if mode == .managedLocal {
             try await backendManager.ensureReady(dictation: true, polishing: false)
         }

@@ -221,6 +221,44 @@ final class SessionClockTests: XCTestCase {
         XCTAssertFalse(viewModel.isFinalizingStop)
     }
 
+    /// A 20 s dictation that started behind a voice memo (#1313): once the
+    /// memo is done, the helper still has those 20 s to decode, so the stop
+    /// waits 7 s more than that, then closes a socket that never answered.
+    func testAStopBehindAVoiceMemoWaitsTheDictationsLengthMoreThenCloses() async {
+        let clock = ManualSessionClock()
+        let viewModel = makeViewModel(clock: clock)
+        let client = FakeRealtimeClient()
+        client.setConnected(true)
+        viewModel.session.activeRealtimeClient = client
+        viewModel.session.sessionStartedBehindVoiceMemoAt = clock.now.addingTimeInterval(-20)
+        viewModel.isFinalizingStop = true
+        viewModel.session.sessionOutputMode = .liveAutoPaste
+
+        viewModel.session.scheduleStopFinalization()
+        let finalization = viewModel.session.stopFinalizationTask
+
+        await clock.waitForSleepers(1)
+        clock.advance(by: TimingConstants.stopFinalizationTimeout + 20 - 1)
+        await clock.waitForSleepers(1)
+        XCTAssertEqual(client.disconnectCount, 0, "a second short of the limit, silence is not the end")
+        XCTAssertTrue(viewModel.isFinalizingStop)
+
+        clock.advance(by: 1.1)
+        await finalization?.value
+
+        XCTAssertEqual(client.disconnectCount, 1)
+        XCTAssertFalse(viewModel.isFinalizingStop)
+    }
+
+    /// Only the bundled helper serves one connection at a time.
+    func testOnlyAMemoOnTheBundledHelperHoldsUpADictationThere() {
+        XCTAssertTrue(DictationViewModel.voiceMemoSharesTheEngine(memo: .managedLocal, dictation: .managedLocal))
+        XCTAssertFalse(DictationViewModel.voiceMemoSharesTheEngine(memo: .managedLocal, dictation: .mistralAPI))
+        XCTAssertFalse(DictationViewModel.voiceMemoSharesTheEngine(memo: .externalURL, dictation: .managedLocal))
+        XCTAssertFalse(DictationViewModel.voiceMemoSharesTheEngine(memo: .externalURL, dictation: .externalURL))
+        XCTAssertFalse(DictationViewModel.voiceMemoSharesTheEngine(memo: nil, dictation: .managedLocal))
+    }
+
     func testAudioSendLoopDrainsTheBufferOnTheClock() async {
         let clock = ManualSessionClock()
         let viewModel = makeViewModel(clock: clock)
