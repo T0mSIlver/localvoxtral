@@ -19,3 +19,26 @@ final class LocalvoxtralDataDirectoryTests: XCTestCase {
         }
     }
 }
+
+/// The widget reads the snapshot from the real home. A lane's app writes its
+/// own under its data folder, so it never replaces what the owner's widget
+/// shows (#1029).
+final class WidgetSnapshotLocationTests: XCTestCase {
+    private let home = URL(fileURLWithPath: "/Users/someone", isDirectory: true)
+
+    func testTheAppWritesWhereTheWidgetReadsWithoutAnOverride() {
+        for environment in [[:], [LocalvoxtralDataDirectory.environmentKey: "lane-data"]] {
+            XCTAssertEqual(
+                WidgetShared.writerFileURL(environment: environment, home: home),
+                WidgetShared.fileURL(home: home)
+            )
+        }
+    }
+
+    func testALaneWritesUnderItsDataFolder() {
+        let environment = [LocalvoxtralDataDirectory.environmentKey: "/tmp/lv-lane-data"]
+        let written = WidgetShared.writerFileURL(environment: environment, home: home)
+        XCTAssertEqual(written.path, "/tmp/lv-lane-data/widgets/snapshot.json")
+        XCTAssertNotEqual(written, WidgetShared.fileURL(home: home))
+    }
+}

@@ -46,7 +46,7 @@ final class WidgetSnapshotWriter {
 
     init(
         viewModel: DictationViewModel,
-        fileURL: URL = WidgetShared.fileURL(home: FileManager.default.homeDirectoryForCurrentUser),
+        fileURL: URL = WidgetShared.writerFileURL(),
         reloadTimelines: @escaping @MainActor () -> Void = { WidgetCenter.shared.reloadAllTimelines() },
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
         countHistory: @escaping HistoryCounter = WidgetSnapshotWriter.countHistoryDetached,
