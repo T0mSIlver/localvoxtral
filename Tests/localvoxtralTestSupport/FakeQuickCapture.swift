@@ -151,7 +151,8 @@ package enum QuickCaptureFixture {
     ]
 
     /// An Inbox that routes by `answer` and drafts with `runner`. A checkout
-    /// is any `/w/` path or a real directory.
+    /// is any `/w/` path or a real directory. `currentProjects`, when set,
+    /// is the project list as it is at each read, in place of `projects`.
     @MainActor
     package static func model(
         fileURL: URL?,
@@ -159,6 +160,7 @@ package enum QuickCaptureFixture {
         github: any QuickCaptureGitHub,
         runner: any QuickCaptureDraftRunning,
         projects: [QuickCaptureProject] = projects,
+        currentProjects: (@MainActor () -> [QuickCaptureProject])? = nil,
         remote: QuickCaptureDrafter.Remote? = nil,
         classifier: (any QuickCaptureClassifying)? = nil,
         polisher: (any QuickCapturePolishing)? = nil,
@@ -169,7 +171,7 @@ package enum QuickCaptureFixture {
         return QuickCaptureInboxModel(
             fileURL: fileURL,
             makeRouter: { QuickCaptureRouter(classifiers: [classifier]) },
-            projects: { projects },
+            projects: currentProjects ?? { projects },
             agents: { [.claude] },
             drafter: {
                 QuickCaptureDrafter(
