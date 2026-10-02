@@ -716,7 +716,7 @@ final class ClaudeRepoCollectorTests: XCTestCase {
         }
 
         _ = await git(["init", "-q", "-b", "main"])
-        for path in ["my project/.env", "my project/.env.local", "café/.env", "my project/notes.md", "conflict/.env"] {
+        for path in ["my project/.env", "staged dir/.env", "café/.env", "my project/notes.md", "conflict/.env"] {
             try write(path, "A=1\n")
         }
         _ = await git(["add", "-A"])
@@ -724,8 +724,8 @@ final class ClaudeRepoCollectorTests: XCTestCase {
         try write("my project/.env", "A=space-secret\n")
         try write("café/.env", "A=accent-secret\n")
         try write("my project/notes.md", "ordinary edit\n")
-        try write("my project/.env.local", "A=staged-secret\n")
-        _ = await git(["add", "my project/.env.local"])
+        try write("staged dir/.env", "A=staged-secret\n")
+        _ = await git(["add", "staged dir/.env"])
 
         let unstaged = await filtered([])
         XCTAssertTrue(unstaged.text.contains("+ordinary edit"), "an ordinary file in the same folder survives")
