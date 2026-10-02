@@ -824,7 +824,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 sleep: viewModel.session.dependencies.clock.sleep,
                 nicknames: nicknames,
                 branch: { RepoIndexing.branch(root: $0) },
-                title: desktopTitles.title(of:)
+                title: desktopTitles.title(of:),
+                ttyForegroundPIDs: { TTYProcessTable.foregroundPIDs(onTTYDevicePath: $0) }
             )
             installAgentAttention(
                 ttyReader: ttyReader,
