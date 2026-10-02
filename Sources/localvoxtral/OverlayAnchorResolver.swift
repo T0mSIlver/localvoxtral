@@ -10,8 +10,29 @@ import Foundation
 /// actual input element is fragile across apps and frameworks. Window-center
 /// placement keeps the overlay predictably visible regardless of input field
 /// position. Falls back to the mouse location when no window is available.
+///
+/// Start and stop call this on the main actor, so every AX element it queries
+/// gets `TerminalScreenAXReader.messagingTimeoutSeconds`: a wedged frontmost
+/// app then costs at most three short timeouts instead of the system default
+/// (about 6 s per message), and the anchor falls back to the mouse.
 @MainActor
 final class OverlayAnchorResolver {
+    private let ax: OverlayAnchorAXReading
+    private let frontmostPID: @MainActor () -> pid_t?
+
+    init(
+        ax: OverlayAnchorAXReading = SystemOverlayAnchorAX(),
+        frontmostPID: (@MainActor () -> pid_t?)? = nil
+    ) {
+        self.ax = ax
+        self.frontmostPID = frontmostPID ?? {
+            guard let frontmostApp = NSWorkspace.shared.frontmostApplication,
+                  frontmostApp.processIdentifier != getpid()
+            else { return nil }
+            return frontmostApp.processIdentifier
+        }
+    }
+
     func resolveAnchor() -> OverlayAnchor {
         if let center = frontmostWindowCenter() {
             return OverlayAnchor(targetRect: center, source: .windowCenter)
@@ -28,29 +49,15 @@ final class OverlayAnchorResolver {
     }
 
     func resolveFrontmostAppPID() -> pid_t? {
-        guard let frontmostApp = NSWorkspace.shared.frontmostApplication,
-              frontmostApp.processIdentifier != getpid()
-        else {
-            return nil
-        }
-        return frontmostApp.processIdentifier
+        frontmostPID()
     }
 
     private func frontmostWindowCenter() -> CGRect? {
-        guard let frontmostApp = NSWorkspace.shared.frontmostApplication,
-              frontmostApp.processIdentifier != getpid()
-        else {
-            return nil
-        }
+        guard let pid = frontmostPID() else { return nil }
 
-        let pid = frontmostApp.processIdentifier
-        let appElement = AXUIElementCreateApplication(pid)
-        var windowObject: AnyObject?
-        let status = AXUIElementCopyAttributeValue(
-            appElement,
-            kAXFocusedWindowAttribute as CFString,
-            &windowObject
-        )
+        let appElement = ax.applicationElement(pid: pid)
+        ax.setMessagingTimeout(appElement, seconds: TerminalScreenAXReader.messagingTimeoutSeconds)
+        let (status, windowObject) = ax.copyAttribute(appElement, kAXFocusedWindowAttribute)
         guard status == .success,
               let windowObject,
               CFGetTypeID(windowObject) == AXUIElementGetTypeID()
@@ -59,6 +66,9 @@ final class OverlayAnchorResolver {
         }
 
         let windowElement = unsafeDowncast(windowObject, to: AXUIElement.self)
+        // The timeout is per element: the window copied out of the app element
+        // does not inherit it.
+        ax.setMessagingTimeout(windowElement, seconds: TerminalScreenAXReader.messagingTimeoutSeconds)
         guard let frame = elementFrame(of: windowElement) else { return nil }
         let converted = axToAppKit(frame)
         guard converted.width > 0, converted.height > 0 else { return nil }
@@ -66,10 +76,7 @@ final class OverlayAnchorResolver {
     }
 
     private func elementFrame(of element: AXUIElement) -> CGRect? {
-        var positionObject: AnyObject?
-        let posStatus = AXUIElementCopyAttributeValue(
-            element, kAXPositionAttribute as CFString, &positionObject
-        )
+        let (posStatus, positionObject) = ax.copyAttribute(element, kAXPositionAttribute)
         guard posStatus == .success,
               let positionObject,
               CFGetTypeID(positionObject) == AXValueGetTypeID()
@@ -79,10 +86,7 @@ final class OverlayAnchorResolver {
         var point = CGPoint.zero
         guard AXValueGetValue(posValue, .cgPoint, &point) else { return nil }
 
-        var sizeObject: AnyObject?
-        let sizeStatus = AXUIElementCopyAttributeValue(
-            element, kAXSizeAttribute as CFString, &sizeObject
-        )
+        let (sizeStatus, sizeObject) = ax.copyAttribute(element, kAXSizeAttribute)
         guard sizeStatus == .success,
               let sizeObject,
               CFGetTypeID(sizeObject) == AXValueGetTypeID()
@@ -143,5 +147,30 @@ final class OverlayAnchorResolver {
             return mainScreen.frame.maxY
         }
         return NSScreen.screens.first?.frame.maxY
+    }
+}
+
+/// The AX calls `OverlayAnchorResolver` makes, so a test can stand in for a
+/// wedged app.
+@MainActor
+protocol OverlayAnchorAXReading {
+    func applicationElement(pid: pid_t) -> AXUIElement
+    func setMessagingTimeout(_ element: AXUIElement, seconds: Float)
+    func copyAttribute(_ element: AXUIElement, _ attribute: String) -> (AXError, AnyObject?)
+}
+
+struct SystemOverlayAnchorAX: OverlayAnchorAXReading {
+    func applicationElement(pid: pid_t) -> AXUIElement {
+        AXUIElementCreateApplication(pid)
+    }
+
+    func setMessagingTimeout(_ element: AXUIElement, seconds: Float) {
+        _ = AXUIElementSetMessagingTimeout(element, seconds)
+    }
+
+    func copyAttribute(_ element: AXUIElement, _ attribute: String) -> (AXError, AnyObject?) {
+        var value: AnyObject?
+        let status = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+        return (status, value)
     }
 }

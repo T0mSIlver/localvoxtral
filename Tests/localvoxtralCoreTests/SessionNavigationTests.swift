@@ -305,6 +305,52 @@ final class SessionNavigationTests: XCTestCase {
         XCTAssertEqual(focuser.focusedSessionIDs, ["s"])
     }
 
+    /// The agent exits while its pane comes forward or is read back: the
+    /// shell left in its tty must not count as the session (Codex audit
+    /// 2026-10-02, #1219).
+    @MainActor
+    func testASessionThatEndsDuringTheFocusOrReadBackIsNotThere() async {
+        let session = localSession("s", cwd: "/r/payments", tty: "/dev/ttys002")
+        let live = LiveSessions([session])
+        let focuser = FakeSessionPaneFocuser(outcome: .focused(bundleID: "com.mitchellh.ghostty"))
+        focuser.onFocus = { _ in live.sessions = [] }
+        focuser.onReadBack = { _ in live.sessions = [] }
+        let navigator = SessionNavigator(
+            liveSessions: { live.sessions },
+            repositoryRoot: { _ in .unknown },
+            focuser: focuser,
+            sleep: ManualSessionClock().sleep
+        )
+
+        let focus = await navigator.focusPane(sessionID: "s")
+        XCTAssertNil(focus, "focused, but the session ended meanwhile")
+
+        live.sessions = [session]
+        let shows = await navigator.focusedPaneShows(sessionID: "s", bundleID: "com.mitchellh.ghostty")
+        XCTAssertFalse(shows, "read back, but the session ended meanwhile")
+        XCTAssertEqual(focuser.readBackSessionIDs, ["s"])
+    }
+
+    /// A suspended agent's tab reads back as the session's, but its shell
+    /// owns the terminal: no pane route may type there (#1249). An
+    /// unreadable process table refuses too.
+    @MainActor
+    func testAPaneWhoseAgentIsNotInTheForegroundDoesNotShowTheSession() async {
+        let session = localSession("s", cwd: "/r/payments", tty: "/dev/ttys002")
+        let cases: [(foreground: [Int32]?, shows: Bool)] = [([1, 2], true), ([1], false), (nil, false)]
+        for (foreground, expected) in cases {
+            let navigator = SessionNavigator(
+                liveSessions: { [session] },
+                repositoryRoot: { _ in .unknown },
+                focuser: FakeSessionPaneFocuser(),
+                sleep: ManualSessionClock().sleep,
+                ttyForegroundPIDs: { $0 == "/dev/ttys002" ? foreground : [2] }
+            )
+            let shows = await navigator.focusedPaneShows(sessionID: "s", bundleID: "com.mitchellh.ghostty")
+            XCTAssertEqual(shows, expected, "foreground \(String(describing: foreground))")
+        }
+    }
+
     // MARK: - Helpers
 
     private func localSession(
@@ -338,5 +384,20 @@ final class SessionNavigationTests: XCTestCase {
         guard case .resolved(let snapshot) = SessionNameResolver.resolve(spokenName: spoken, candidates: candidates)
         else { return nil }
         return snapshot.sessionID
+    }
+}
+
+/// The registry's answer, changed by a test while the navigator awaits.
+private final class LiveSessions: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: [ClaudeSessionSnapshot]
+
+    init(_ sessions: [ClaudeSessionSnapshot]) {
+        value = sessions
+    }
+
+    var sessions: [ClaudeSessionSnapshot] {
+        get { lock.withLock { value } }
+        set { lock.withLock { value = newValue } }
     }
 }

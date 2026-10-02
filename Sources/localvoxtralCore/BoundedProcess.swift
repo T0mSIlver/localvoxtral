@@ -45,7 +45,8 @@ package enum BoundedProcess {
         currentDirectory: String? = nil,
         timeoutSeconds: TimeInterval,
         maxBytes: Int,
-        label: String
+        label: String,
+        children: BoundedProcessChildren = .shared
     ) async -> Output? {
         await withCheckedContinuation { (continuation: CheckedContinuation<Output?, Never>) in
             DispatchQueue.global(qos: .utility).async {
@@ -57,7 +58,8 @@ package enum BoundedProcess {
                         currentDirectory: currentDirectory,
                         timeoutSeconds: timeoutSeconds,
                         maxBytes: maxBytes,
-                        label: label
+                        label: label,
+                        children: children
                     )
                 )
             }
@@ -71,7 +73,8 @@ package enum BoundedProcess {
         currentDirectory: String?,
         timeoutSeconds: TimeInterval,
         maxBytes: Int,
-        label: String
+        label: String,
+        children: BoundedProcessChildren
     ) -> Output? {
         let process = Process()
         process.executableURL = executableURL
@@ -90,12 +93,27 @@ package enum BoundedProcess {
         // wait can be BOUNDED (see below). Set before run() so the signal can
         // never be missed, even for a process that exits instantly.
         let exited = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in exited.signal() }
+        process.terminationHandler = { process in
+            children.unregister(process.processIdentifier)
+            exited.signal()
+        }
         do {
             try process.run()
         } catch {
             Log.polishing.info("\(label, privacy: .public): failed to launch")
             return nil
+        }
+        // The app owns the child until it is reaped (#1225): quit kills it,
+        // and a child launched while the app quits is killed at once.
+        let pid = process.processIdentifier
+        defer { children.unregister(pid) }
+        if !children.register(pid), process.isRunning {
+            Log.polishing.info("\(label, privacy: .public): launched while quitting; killing")
+            kill(pid, SIGKILL)
+        } else if !process.isRunning {
+            // Reaped before it was registered: its termination handler's
+            // unregister already ran, so drop the pid the kernel may reuse.
+            children.unregister(pid)
         }
 
         // The reader thread owns the pipe fd and only mutates the mutex-guarded

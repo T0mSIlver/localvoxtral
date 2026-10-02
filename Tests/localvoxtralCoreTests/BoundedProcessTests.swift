@@ -48,4 +48,52 @@ final class BoundedProcessTests: XCTestCase {
         XCTAssertTrue(capped.capped)
         XCTAssertFalse(capped.timedOut)
     }
+
+    /// Quit kills an agent run in flight, even one that ignores SIGTERM, and
+    /// the run returns. Its own deadline is far off: only the owner ends it.
+    func testQuitTerminatesARunningChildThatIgnoresSIGTERM() async throws {
+        let (registered, continuation) = AsyncStream.makeStream(of: pid_t.self)
+        let children = BoundedProcessChildren(onRegister: { continuation.yield($0) })
+        async let output = BoundedProcess.run(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "trap '' TERM; exec sleep 600"],
+            environment: ["PATH": "/usr/bin:/bin"],
+            timeoutSeconds: Self.deadline,
+            maxBytes: 1024,
+            label: "test",
+            children: children
+        )
+        var iterator = registered.makeAsyncIterator()
+        let next = await iterator.next()
+        let pid = try XCTUnwrap(next)
+
+        children.terminateAll(grace: 0.2, within: 2)
+
+        let finished = await output
+        let result = try XCTUnwrap(finished, "the run abandoned the child")
+        XCTAssertFalse(result.timedOut, "the deadline ended the run, not quit")
+        XCTAssertNotEqual(kill(pid, 0), 0, "the child outlived quit")
+    }
+
+    /// A run that starts while the app quits does not outlive it.
+    func testAChildLaunchedAfterQuitIsKilledAtOnce() async throws {
+        let children = BoundedProcessChildren()
+        children.terminateAll(grace: 0.2, within: 2)
+
+        let result = await BoundedProcess.run(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "exec sleep 600"],
+            environment: ["PATH": "/usr/bin:/bin"],
+            timeoutSeconds: Self.deadline,
+            maxBytes: 1024,
+            label: "test",
+            children: children
+        )
+
+        XCTAssertFalse(try XCTUnwrap(result).timedOut, "the deadline ended the run, not quit")
+    }
+
+    /// Far enough off that only the owner can end a run first; near enough
+    /// that a broken owner fails the test instead of hanging it.
+    private static let deadline: TimeInterval = 10
 }

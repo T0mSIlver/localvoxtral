@@ -295,15 +295,75 @@ final class AgentCLIInstallStateTests: XCTestCase {
     func testCommandsQuoteAPathWithSpacesAndQuotes() {
         let path = "/Users/me/My Apps/Tom's localvoxtral.app/Contents/MacOS/localvoxtral-cli"
         let install = AgentCLIInstallState.installCommand(bundledBinary: path)
-        XCTAssertEqual(
-            install,
-            #"mkdir -p '/usr/local/bin' && ln -sfn '/Users/me/My Apps/Tom'\''s localvoxtral.app/Contents/MacOS/localvoxtral-cli' '/usr/local/bin/localvoxtral'"#
+        XCTAssertTrue(
+            install.hasSuffix(
+                #"ln -sfn '/Users/me/My Apps/Tom'\''s localvoxtral.app/Contents/MacOS/localvoxtral-cli' '/usr/local/bin/localvoxtral'"#
+            ),
+            install
         )
-        XCTAssertEqual(AgentCLIInstallState.removeCommand(), "rm -f '/usr/local/bin/localvoxtral'")
         XCTAssertEqual(
             AgentCLIInstallState.privilegedAppleScript(#"echo "a\b""#),
             #"do shell script "echo \"a\\b\"" with administrator privileges"#
         )
+    }
+
+    private func runShell(_ command: String) throws -> Int32 {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus
+    }
+
+    /// Settings decides from the state it last read, so the file may have
+    /// changed by the time Remove or Update runs (another installer, an open
+    /// password prompt). Both mutators, the direct one and the privileged
+    /// command, re-check and leave a file that is not our link alone.
+    func testRemovalPreservesForeignReplacement() throws {
+        let sentinel = Data("#!/bin/sh\necho someone else's tool\n".utf8)
+        let commands = [
+            AgentCLIInstallState.removeCommand(bundledBinary: bundled, linkPath: link),
+            AgentCLIInstallState.installCommand(bundledBinary: bundled, linkPath: link),
+        ]
+        for command in commands {
+            try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: bundled)
+            XCTAssertEqual(state(), .installed)
+            try FileManager.default.removeItem(atPath: link)
+            try sentinel.write(to: URL(fileURLWithPath: link))
+
+            XCTAssertNotEqual(try runShell(command), 0, command)
+            XCTAssertEqual(FileManager.default.contents(atPath: link), sentinel, command)
+            try FileManager.default.removeItem(atPath: link)
+        }
+
+        try sentinel.write(to: URL(fileURLWithPath: link))
+        XCTAssertThrowsError(try AgentCLIInstallState.removeLink(linkPath: link, bundledBinary: bundled))
+        XCTAssertThrowsError(try AgentCLIInstallState.installLink(linkPath: link, bundledBinary: bundled))
+        XCTAssertEqual(FileManager.default.contents(atPath: link), sentinel)
+
+        // A link elsewhere is someone else's too.
+        try FileManager.default.removeItem(atPath: link)
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: "/opt/homebrew/bin/localvoxtral")
+        XCTAssertNotEqual(try runShell(commands[0]), 0)
+        XCTAssertThrowsError(try AgentCLIInstallState.removeLink(linkPath: link, bundledBinary: bundled))
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: link), "/opt/homebrew/bin/localvoxtral")
+    }
+
+    /// Our own link, this copy's or another copy's, still goes.
+    func testRemovalTakesOurLinkInBothMutators() throws {
+        let otherCopy = "/Users/me/Downloads/localvoxtral.app/Contents/MacOS/localvoxtral-cli"
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: otherCopy)
+        XCTAssertEqual(try runShell(AgentCLIInstallState.removeCommand(bundledBinary: bundled, linkPath: link)), 0)
+        XCTAssertEqual(state(), .notInstalled)
+
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: bundled)
+        try AgentCLIInstallState.removeLink(linkPath: link, bundledBinary: bundled)
+        XCTAssertEqual(state(), .notInstalled)
+
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: otherCopy)
+        try AgentCLIInstallState.installLink(linkPath: link, bundledBinary: bundled)
+        XCTAssertEqual(state(), .installed)
     }
 
     /// The command really runs in `sh`: the quoted path arrives as one

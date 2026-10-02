@@ -100,6 +100,33 @@ final class LearnedTermWiringTests: XCTestCase {
         )
     }
 
+    /// A dictation cancelled while it polishes never reaches the target, so it
+    /// is no evidence of a spelling: three of them would confirm a term the
+    /// user never received.
+    func testCancelledPolishDoesNotConfirmTerms() async {
+        let polishing = BlockingMockLLMPolishingService()
+        let (viewModel, store) = makeViewModel(
+            outcome: RepoVocabularyMatcher.GroundingOutcome(
+                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["useauth.ts"])],
+                isFallbackOnly: false
+            ),
+            service: polishing
+        )
+        viewModel.session.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.transcript.currentDictationEventText = "open useauth.ts please"
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        let commitTask = viewModel.session.polishAndCommitTask
+        await polishing.waitUntilFirstRequestArrives()
+
+        viewModel.cancelDictation()
+        await polishing.resumePendingRequest()
+        await commitTask?.value
+        store.waitForPendingWrites()
+
+        XCTAssertEqual(store.snapshot().termCount, 0)
+    }
+
     /// A sound-alike offered to the model for verification is a question, not
     /// an answer. Remembering one would let a guess harden into vocabulary.
     func testVerificationCandidateIsNotRemembered() async {

@@ -132,6 +132,10 @@ extension ClaudeRemoteEnrollmentService {
         }
     }
 
+    /// How many times a write reads the config again after another program
+    /// saved it between the read and the write, before it gives up.
+    package static let sshConfigWriteAttempts = 3
+
     private func writeSSHConfig(
         operation: String,
         hostID: String,
@@ -144,38 +148,20 @@ extension ClaudeRemoteEnrollmentService {
             throw ServiceError.sshConfigEditingNotConfigured
         }
         do {
-            let state = try sshConfigFileSystem.readState()
-            // Trust gate before any write decision: never write through a
-            // symlink, and never into a directory another principal can also
-            // write. The copy path stays available for such setups.
-            guard !state.configIsSymlink, !state.directoryIsSymlink else {
-                throw ServiceError.sshConfigIsSymlink
-            }
-            if state.directoryExists {
-                guard state.directoryOwnedByCurrentUser,
-                      (state.directoryPermissions ?? 0) & 0o022 == 0
-                else { throw ServiceError.sshDirectoryNotTrusted }
-            }
-            let existing: String
-            if let data = state.configData {
-                guard let decoded = String(data: data, encoding: .utf8) else {
-                    throw ServiceError.invalidSSHConfigEncoding
+            try sshConfigFileSystem.withExclusiveAccess {
+                for _ in 1...Self.sshConfigWriteAttempts {
+                    do {
+                        try writeSSHConfigOnce(sshConfigFileSystem, hostID: hostID, transform: transform)
+                        return
+                    } catch is ClaudeRemoteSSHConfigChangedOnDisk {
+                        // Read again and apply to what the other program saved.
+                        Log.claudeContext.notice(
+                            "Claude remote ssh config \(operation, privacy: .public): changed on disk since read, reading again"
+                        )
+                    }
                 }
-                existing = decoded
-            } else {
-                existing = ""
+                throw ServiceError.sshConfigChangedDuringWrite
             }
-            guard !Self.sshConfigLineReader(hostID: hostID).hasDamagedBlock(existing) else {
-                throw ServiceError.sshConfigBlockDamaged
-            }
-            let updated = transform(existing)
-            if !state.directoryExists {
-                try sshConfigFileSystem.createSSHDirectory(permissions: 0o700)
-            }
-            try sshConfigFileSystem.atomicWriteConfig(
-                Data(updated.utf8),
-                permissions: state.configPermissions ?? 0o600
-            )
             Log.claudeContext.info(
                 "Claude remote ssh config \(operation, privacy: .public) completed"
             )
@@ -185,6 +171,49 @@ extension ClaudeRemoteEnrollmentService {
             )
             throw error
         }
+    }
+
+    /// One read, transform and write. The write refuses with
+    /// `ClaudeRemoteSSHConfigChangedOnDisk` when the file is no longer the one
+    /// read here (#1345).
+    private func writeSSHConfigOnce(
+        _ sshConfigFileSystem: any ClaudeRemoteSSHConfigFileSystem,
+        hostID: String,
+        transform: (String) -> String
+    ) throws {
+        let state = try sshConfigFileSystem.readState()
+        // Trust gate before any write decision: never write through a
+        // symlink, and never into a directory another principal can also
+        // write. The copy path stays available for such setups.
+        guard !state.configIsSymlink, !state.directoryIsSymlink else {
+            throw ServiceError.sshConfigIsSymlink
+        }
+        if state.directoryExists {
+            guard state.directoryOwnedByCurrentUser,
+                  (state.directoryPermissions ?? 0) & 0o022 == 0
+            else { throw ServiceError.sshDirectoryNotTrusted }
+        }
+        let existing: String
+        if let data = state.configData {
+            guard let decoded = String(data: data, encoding: .utf8) else {
+                throw ServiceError.invalidSSHConfigEncoding
+            }
+            existing = decoded
+        } else {
+            existing = ""
+        }
+        guard !Self.sshConfigLineReader(hostID: hostID).hasDamagedBlock(existing) else {
+            throw ServiceError.sshConfigBlockDamaged
+        }
+        let updated = transform(existing)
+        if !state.directoryExists {
+            try sshConfigFileSystem.createSSHDirectory(permissions: 0o700)
+        }
+        try sshConfigFileSystem.atomicWriteConfig(
+            Data(updated.utf8),
+            permissions: state.configPermissions ?? 0o600,
+            replacing: state.configData
+        )
     }
 
     /// Is this host's marked block exactly `snippet`, the block this build

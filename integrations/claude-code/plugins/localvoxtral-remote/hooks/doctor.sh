@@ -20,7 +20,7 @@
 set -u
 umask 077
 
-DOCTOR_VERSION=1.32.0
+DOCTOR_VERSION=1.34.0
 JSON=0
 case "${1:-}" in
 --json) JSON=1 ;;
@@ -157,7 +157,7 @@ if ! command -v curl >/dev/null 2>&1; then
   check tunnel failed "Tunnel" "curl is not installed, and the hooks need it." \
     "Install curl on this host."
 else
-  CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 -X POST -H 'Content-Length: 0' "$URL" 2>/dev/null)"
+  CODE="$(curl -q --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 5 -X POST -H 'Content-Length: 0' "$URL" 2>/dev/null)"
   CURL_EXIT=$?
   if [ "$CURL_EXIT" -eq 7 ]; then
     check tunnel failed "Tunnel" "Nothing listens on 127.0.0.1:$PORT (port from $PORT_FROM)." \
@@ -186,7 +186,7 @@ EOF
 Accept: application/json
 EOF
       fi
-      CODE="$(curl -sS -o "$WORK/mac" -D "$WORK/mac-head" -w '%{http_code}' --max-time 12 -X POST \
+      CODE="$(curl -q --noproxy '*' -sS -o "$WORK/mac" -D "$WORK/mac-head" -w '%{http_code}' --max-time 12 -X POST \
         -H 'Content-Length: 0' --header "@$WORK/header" "$URL" 2>/dev/null)" || CODE="000"
       case "$CODE" in
       200)

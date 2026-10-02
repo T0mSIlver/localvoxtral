@@ -213,15 +213,11 @@ package enum QuickCaptureProjects {
 
     /// The README at a checkout's root: `README.md`, `README`, `readme.md`,
     /// `README.markdown`, the first one that reads. Capped at 64 KB, since
-    /// only its opening is used.
+    /// only its opening is used. A symlink is skipped (#1271).
     package static func readme(atRoot root: String, fileManager: FileManager = .default) -> String? {
         for name in ["README.md", "README", "readme.md", "README.markdown", "Readme.md"] {
             let path = (root as NSString).appendingPathComponent(name)
-            guard let handle = FileHandle(forReadingAtPath: path) else { continue }
-            defer { try? handle.close() }
-            // Lenient decoding: the cut can split a multibyte character.
-            guard let data = try? handle.read(upToCount: 65_536) else { continue }
-            return String(decoding: data, as: UTF8.self)
+            if let text = QuickCaptureContextGatherer.readPrefix(path, 65_536) { return text }
         }
         return nil
     }

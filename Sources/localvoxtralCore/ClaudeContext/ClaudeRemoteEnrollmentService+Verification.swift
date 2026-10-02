@@ -329,7 +329,7 @@ extension ClaudeRemoteEnrollmentService {
         Data("""
         set -u
         command -v curl >/dev/null 2>&1 || { printf '%s\\n' '\(missingCurlSentinel)'; exit 0; }
-        code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:\(remoteForwardPort)/v1/hook/SessionStart 2>/dev/null) || code=000
+        code=$(curl -q --noproxy '*' -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:\(remoteForwardPort)/v1/hook/SessionStart 2>/dev/null) || code=000
         [ -n "$code" ] || code=000
         printf '\(httpFramePrefix)%s\\n' "$code"
 
