@@ -175,41 +175,42 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         send(event: payload, audioBytes: pcm16Data.count)
     }
 
+    /// A final commit with no run going goes out behind a non-final one
+    /// (#1135). vLLM's `/v1/realtime` starts a run only on a non-final commit;
+    /// a final one just marks the end of the audio, so on its own it is never
+    /// answered: a voice memo, or a stop under `commitInterval` after the
+    /// start, waited for its timeout. The run the non-final commit starts reads
+    /// up to that mark and sends the one `done` the final commit waits for.
+    /// speechd ignores a non-final commit (`RealtimeSpeechServer`), so the
+    /// bundled helper still answers only the final one.
     package func sendCommit(final: Bool) {
-        enum CommitAction {
-            case none
-            case sendCommitFrame(final: Bool)
-        }
-
-        let action: CommitAction = state.withLock { s in
-            guard s.base.socketState != .disconnected else { return .none }
+        let frames: [Bool] = state.withLock { s in
+            guard s.base.socketState != .disconnected else { return [] }
 
             if final {
                 switch s.finalCommitCompletionGate {
                 case .idle:
                     break
                 case .awaitingFinalCommitTranscriptionDone:
-                    return .none
+                    return []
                 }
 
+                let startsRun = !s.isGenerationInProgress
                 s.hasUncommittedAudio = false
                 s.isGenerationInProgress = true
                 s.finalCommitCompletionGate = .awaitingFinalCommitTranscriptionDone
-                return .sendCommitFrame(final: true)
+                return startsRun ? [false, true] : [true]
             }
 
-            guard s.finalCommitCompletionGate == .idle else { return .none }
-            guard s.hasUncommittedAudio else { return .none }
-            guard !s.isGenerationInProgress else { return .none }
+            guard s.finalCommitCompletionGate == .idle else { return [] }
+            guard s.hasUncommittedAudio else { return [] }
+            guard !s.isGenerationInProgress else { return [] }
             s.hasUncommittedAudio = false
             s.isGenerationInProgress = true
-            return .sendCommitFrame(final: false)
+            return [false]
         }
 
-        switch action {
-        case .none:
-            return
-        case .sendCommitFrame(let shouldMarkFinal):
+        for shouldMarkFinal in frames {
             var payload: [String: Any] = ["type": "input_audio_buffer.commit"]
             if shouldMarkFinal {
                 payload["final"] = true
