@@ -1,5 +1,15 @@
 import type { EngineInterface, Register } from 'claude-code'
 
+import {
+  type ChannelMessage,
+  type ChannelReply,
+  type Outcome,
+  parseMessage,
+  RESTART_DELAY_MS,
+  SHORTEST_LIFE_MS,
+  WIRE_VERSION,
+} from './channel'
+
 // The connection indicator the publisher draws for the settings status line
 // (../../../README.md, "Connection indicator"), pinned as this plugin's own
 // status line: no edit to ~/.claude/settings.json, and the person's own
@@ -40,12 +50,81 @@ async function settingsShowIndicator($: EngineInterface): Promise<boolean> {
   return typeof command === 'string' && SETTINGS_INDICATOR.test(command)
 }
 
+/**
+ * Keeps `--attach` running for the session's life and answers each message
+ * with what `handle` did.
+ * Never throws into the session.
+ */
+async function runChannel(
+  $: EngineInterface,
+  publisher: string,
+): Promise<void> {
+  const sessionID = await $.session.id()
+  for (;;) {
+    const startedAt = await $.clock.now()
+    try {
+      let buffered = ''
+      const child = $.process.spawn({ argv: [publisher, '--attach', '--session', sessionID] })
+      for await (const { stream, text } of child) {
+        if (stream !== 'stdout') continue
+        buffered += text
+        let newline = buffered.indexOf('\n')
+        while (newline >= 0) {
+          const message = parseMessage(buffered.slice(0, newline))
+          buffered = buffered.slice(newline + 1)
+          if (message !== null) void answer($, publisher, sessionID, message)
+          newline = buffered.indexOf('\n')
+        }
+      }
+    } catch {
+      // The child could not start; the restart below decides what is next.
+    }
+    if ((await $.clock.now()) - startedAt < SHORTEST_LIFE_MS) return
+    await $.clock.sleep(RESTART_DELAY_MS)
+  }
+}
+
+async function answer(
+  $: EngineInterface,
+  publisher: string,
+  sessionID: string,
+  message: ChannelMessage,
+): Promise<void> {
+  let outcome: Outcome
+  try {
+    outcome = await handle(message)
+  } catch {
+    outcome = { ok: false, reason: 'failed' }
+  }
+  const reply: ChannelReply = { mod_reply: WIRE_VERSION, session_id: sessionID, id: message.id, ...outcome }
+  try {
+    await $.process.run([publisher, '--mod-reply'], { stdin: `${JSON.stringify(reply)}\n`, timeoutMs: 3000 })
+  } catch {
+    // The app waits out its own timeout.
+  }
+}
+
+/** Does what one message asks. A kind this build does not know is not done. */
+async function handle(message: ChannelMessage): Promise<Outcome> {
+  switch (message.kind) {
+    case 'ping':
+      return { ok: true }
+    default:
+      return { ok: false, reason: 'unknown_kind' }
+  }
+}
+
+// Not gated on `isInteractive`, which is false for an SDK host and may be
+// for a Claude Desktop session, where the indicator and the channel matter
+// most.
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    if (!e.isInteractive || (await settingsShowIndicator($))) return started
     const publisher = await findPublisher($, String(options.publisher_path ?? ''))
     if (publisher === undefined) return started
+    // A module reload or the session's end can cut the loop mid-call.
+    runChannel($, publisher).catch(() => {})
+    if (await settingsShowIndicator($)) return started
 
     const refresh = async () => {
       try {

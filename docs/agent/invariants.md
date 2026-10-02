@@ -282,6 +282,19 @@ there is not.
   proposals skip an addressed dictation: they key on the join of the pane
   it started in. Live Auto-Paste has no addressed send: its words are
   typed before the phrase at the end is heard.
+- **A mod channel opens only for a session a local hook named, and a send
+  names its session exactly** (#1408). The localvoxtral-mod plugin's
+  `--attach` process asks the broker for a channel to one session id; the
+  broker refuses unless the registry already holds that session from a
+  locally authenticated hook, so a channel can never be the first word about
+  a session. `ClaudeModChannelHub.send` writes only to the channel of the id
+  it is given: no channel, a failed write or no reply in time answers nil,
+  never another session, and the caller keeps its own path. The attach
+  carries the Claude pid the process runs under, but it is not checked
+  against the hook's: both come from the same user, the residual threat the
+  hook path already accepts below, and a mismatch would only silently turn
+  the channel off. Mod replies ride one-shot connections and carry only a
+  short reason code, never text.
 - **The Mistral second pass holds the text back, never the world** (#317).
   An Overlay Buffer dictation in Mistral API mode is sent whole to the batch
   endpoint on stop (`DictationSessionController+StopCommit.swift`,

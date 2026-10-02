@@ -46,6 +46,37 @@ if arguments.contains("--statusline") {
     exit(0)
 }
 
+// Mod channel (#1408): `--attach --session <id>` runs for the session's life
+// under the localvoxtral-mod plugin and prints the app's messages to it, one
+// JSON line each; `--mod-reply` sends the mod's answer back. Neither runs as
+// a Claude Code hook, so neither prints anywhere Claude reads.
+if arguments.contains("--attach") {
+    guard let index = arguments.firstIndex(of: "--session"), index + 1 < arguments.count,
+          let socketPath = ClaudeHookSocketPath.resolve()
+    else { exit(0) }
+    let parent = getppid()
+    ClaudeModAttachClient(
+        socketPath: socketPath,
+        sessionID: arguments[index + 1],
+        claudePID: parent,
+        output: { ClaudeHookPublisher.writeStdout($0) },
+        isParentAlive: { getppid() == parent },
+        sleep: { Thread.sleep(forTimeInterval: $0) }
+    ).run()
+    exit(0)
+}
+if arguments.contains("--mod-reply") {
+    if let socketPath = ClaudeHookSocketPath.resolve() {
+        ClaudeModAttachClient.sendReply(
+            ClaudeHookPublisher.readBoundedStdin(
+                limits: ClaudeHookLimits(maxLineBytes: ClaudeModChannelWire.maxLineBytes)
+            ),
+            to: socketPath
+        )
+    }
+    exit(0)
+}
+
 // Vibe mode: `localvoxtral-claude-hook --agent vibe`, run by the shim that
 // `~/.vibe/hooks.toml` names. Vibe's payload carries its own event name, so
 // there is no `--event`. Same contract as below: exit 0, print nothing — Vibe
