@@ -271,20 +271,55 @@ final class ClaudeShellRCSetupTests: XCTestCase {
         XCTAssertTrue(removed.contains("export EDITOR=vim"))
     }
 
-    func testACRLFFileKeepsCRLFThroughTheSplice() throws {
-        // Splicing LF into a CRLF file leaves it mixed, which the user sees in
-        // their editor (review finding m3). Asserted on BYTES.
+    func testACRLFFileKeepsItsLinesAndGetsAnLFBlock() throws {
+        // A shell reads `then\r` as a word: a CRLF block is a syntax error at
+        // every shell start. The user's own lines keep their CRLF. Asserted
+        // on BYTES.
         let crlf = "export EDITOR=vim\r\n"
             + ClaudeShellRCSetup.markerBegin + "\r\n"
             + "old body\r\n"
             + ClaudeShellRCSetup.markerEnd + "\r\n"
+            + "alias ll='ls -l'\r\n"
         let result = try XCTUnwrap(ClaudeShellRCSetup.apply(to: crlf, snippet: snippet(.zsh)))
-        XCTAssertFalse(
-            result.replacingOccurrences(of: "\r\n", with: "").contains("\n"),
-            "no bare LF may survive in a CRLF file: \(Array(result.utf8.prefix(80)))"
+        XCTAssertEqual(
+            result,
+            "export EDITOR=vim\r\n" + snippet(.zsh) + "\n" + "alias ll='ls -l'\r\n"
         )
-        XCTAssertTrue(result.contains("export EDITOR=vim\r\n"))
-        XCTAssertFalse(result.contains("old body"))
+    }
+
+    /// A valid startup file with one CRLF comment line stays valid through
+    /// apply, and remove gives back its exact bytes. Any CR used to make the
+    /// whole block CRLF and rejoin every user line with CRLF on remove.
+    func testMixedLineEndingsRemainExecutableAndRoundTrip() throws {
+        let original = "# synced from a Windows checkout\r\n"
+            + "if [ -n \"$PS1\" ]; then\n"
+            + "  export EDITOR=vim\n"
+            + "fi\n"
+        XCTAssertEqual(try bashSyntaxStatus(original), 0)
+
+        for shell in [ClaudeShellKind.bash, .zsh] {
+            let applied = try XCTUnwrap(ClaudeShellRCSetup.apply(to: original, snippet: snippet(shell)))
+            XCTAssertEqual(try bashSyntaxStatus(applied), 0, "\(shell): \(applied.debugDescription)")
+            XCTAssertTrue(ClaudeShellRCSetup.containsCurrentBlock(applied, snippet: snippet(shell)))
+            let reapplied = try XCTUnwrap(ClaudeShellRCSetup.apply(to: applied, snippet: snippet(shell)))
+            XCTAssertEqual(reapplied, applied, "\(shell)")
+            XCTAssertEqual(try XCTUnwrap(ClaudeShellRCSetup.remove(from: applied)), original, "\(shell)")
+        }
+    }
+
+    /// `bash -n` over the text: 0 when it parses.
+    private func bashSyntaxStatus(_ text: String) throws -> Int32 {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-n"]
+        let input = Pipe()
+        process.standardInput = input
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        input.fileHandleForWriting.write(Data(text.utf8))
+        try input.fileHandleForWriting.close()
+        process.waitUntilExit()
+        return process.terminationStatus
     }
 
     func testTheWriterRefusesAFileWhoseMarkersDoNotPair() throws {
@@ -397,10 +432,11 @@ final class ClaudeShellRCSetupTests: XCTestCase {
         XCTAssertEqual(writer.isCurrent(shell: .zsh), true)
         XCTAssertEqual(writer.isCurrent(shell: .fish), false, "another shell's block is not current")
 
-        // CRLF is still current: apply writes the file's own terminator.
+        // A CRLF block, as older builds wrote into a CRLF file, does not run:
+        // it needs the rewrite.
         let crlf = current.replacingOccurrences(of: "\n", with: "\r\n") + "\r\n"
         fileSystem.state.data = Data(crlf.utf8)
-        XCTAssertEqual(writer.isCurrent(shell: .zsh), true)
+        XCTAssertEqual(writer.isCurrent(shell: .zsh), false)
 
         // Two matching copies are not current: apply would still collapse them.
         fileSystem.state.data = Data("\(current)\n\(current)\n".utf8)
