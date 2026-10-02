@@ -112,4 +112,17 @@ final class ClaudeRemoteSSHConfigConcurrentEditTests: XCTestCase {
         XCTAssertEqual(written.components(separatedBy: "Host editor").count - 1, Service.sshConfigWriteAttempts)
         XCTAssertFalse(written.contains("Host builder"), written)
     }
+
+    /// A group-writable `~/.ssh` is refused, and the lock leaves no file in it.
+    func testAnUntrustedSSHDirectoryGetsNoLockFile() throws {
+        let directory = home.appendingPathComponent(".ssh")
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o775)], ofItemAtPath: directory.path
+        )
+
+        XCTAssertThrowsError(try service(editorSaves: 0).insertSSHConfig(snippet: snippet, hostID: host.id)) {
+            XCTAssertEqual($0 as? Service.ServiceError, .sshDirectoryNotTrusted)
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), ["config"])
+    }
 }

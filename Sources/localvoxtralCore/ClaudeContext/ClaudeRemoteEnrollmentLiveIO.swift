@@ -64,9 +64,12 @@ package struct LiveClaudeRemoteSSHConfigFileSystem: ClaudeRemoteSSHConfigFileSys
     /// `StoredFileLock` beside the config, as the app's own stores take it
     /// (#990): another running copy's setup waits for this one. An editor
     /// takes no lock; `atomicWriteConfig` catches its save instead. A
-    /// symlinked `~/.ssh` gets no lock file: the write refuses it anyway.
+    /// `~/.ssh` the write would refuse (a symlink, another owner's, group or
+    /// world writable) gets no lock file: the app leaves it unchanged.
     package func withExclusiveAccess<T>(_ body: () throws -> T) throws -> T {
-        if ClaudeSocketGuard.metadata(ofPath: sshDirectoryURL.path)?.isSymlink == true {
+        if let directory = ClaudeSocketGuard.metadata(ofPath: sshDirectoryURL.path),
+           directory.isSymlink || !directory.isDirectory
+            || directory.ownerUID != UInt32(geteuid()) || directory.mode & 0o022 != 0 {
             return try body()
         }
         return try StoredFileLock.withLock(beside: configURL, body)
