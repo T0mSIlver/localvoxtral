@@ -178,7 +178,8 @@ final class DictationSessionController {
     lazy var repoVocabularyPipeline = RepoVocabularyPipeline(
         settings: settings,
         commitTargetAppPID: { [weak self] in self?.overlayBufferCoordinator.commitTargetAppPID },
-        targetBundleID: { [weak self] in self?.resolveTargetAppBundleID() }
+        targetBundleID: { [weak self] in self?.resolveTargetAppBundleID() },
+        clock: { [weak self] in self?.dependencies.clock ?? .live }
     )
     var repoVocabularyGrounding: any RepoVocabularyGrounding {
         dependencies.repoVocabularyGrounding ?? repoVocabularyPipeline
@@ -236,6 +237,10 @@ final class DictationSessionController {
     /// services, so a unit test never reads the user's folders.
     @ObservationIgnored
     var agentSkillStore: AgentSkillStore?
+    /// Lists the repositories this Mac's coding agents worked in (#1027).
+    /// Nil without runtime services, like `agentSkillStore`.
+    @ObservationIgnored
+    var agentProjectScanner: AgentProjectActivityScanner?
     @ObservationIgnored
     var correctionLearning: CorrectionLearning?
     /// Where the last Overlay Buffer commit landed while its prompt may
@@ -604,6 +609,17 @@ final class DictationSessionController {
             }
         } else {
             debugLog("network lost")
+            // A loopback socket, such as the bundled speech server's, does not
+            // ride the network path: stopping would only drop the final commit
+            // that flushes the server's tail (#1238). Remote sockets can sit
+            // half-dead after the path goes, so those sessions still stop.
+            if (isDictating || isFinalizingStop || isConnectingRealtimeSession),
+               let endpoint = realtimeEndpointForNetworkLoss,
+               PolishContextClipboardReader.isLoopbackEndpoint(endpoint)
+            {
+                Log.backends.info("network lost; loopback realtime session kept")
+                return
+            }
             if isConnectingRealtimeSession {
                 abortConnectingSession()
                 handleConnectFailure(reason: .networkLost)
@@ -620,6 +636,14 @@ final class DictationSessionController {
                 statusText = StatusStrings.noNetworkConnection
             }
         }
+    }
+
+    /// The endpoint the running or starting session dials: the latched
+    /// connect snapshot once the socket was asked to open, else what Settings
+    /// resolves to while the start is still preparing.
+    private var realtimeEndpointForNetworkLoss: URL? {
+        sessionRealtimeConfiguration?.endpoint
+            ?? settings.resolvedWebSocketURL(for: sessionProvider ?? settings.realtimeProvider)
     }
 
     // MARK: - Public API

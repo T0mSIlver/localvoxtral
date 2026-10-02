@@ -117,12 +117,7 @@ package struct DictationWidgetContent: Equatable, Sendable {
         dayFormat.timeZone = calendar.timeZone
         chartStartLabel = chartStart.formatted(dayFormat)
 
-        let detail: WidgetSnapshot.PeriodDetail
-        switch period {
-        case .today: detail = dictation.today
-        case .last7Days: detail = dictation.last7Days
-        case .last30Days: detail = dictation.last30Days
-        }
+        let detail = Self.detail(dictation, period: period, periodStart: periodStart, calendar: calendar)
         let topCount = max(detail.topApps.first?.dictations ?? 0, 1)
         apps = detail.topApps.prefix(Self.maxApps).map {
             App(name: $0.name, dictations: WidgetFormat.count($0.dictations, locale: locale), share: Double($0.dictations) / Double(topCount))
@@ -139,5 +134,29 @@ package struct DictationWidgetContent: Equatable, Sendable {
         fixes = detail.recurringFixes.prefix(Self.maxFixes).map {
             Fix(heard: $0.heard, written: $0.written, times: "×\($0.dictations)")
         }
+    }
+
+    /// The period's lists, if they still describe it. They were counted on
+    /// `detailDay`, and the timeline renders the same snapshot after
+    /// midnight. They hold no per-day split, so once a day with dictations
+    /// has left the period they are dropped whole.
+    private static func detail(
+        _ dictation: WidgetSnapshot.Dictation,
+        period: DictationWidgetPeriod,
+        periodStart: Date,
+        calendar: Calendar
+    ) -> WidgetSnapshot.PeriodDetail {
+        let detail: WidgetSnapshot.PeriodDetail
+        switch period {
+        case .today: detail = dictation.today
+        case .last7Days: detail = dictation.last7Days
+        case .last30Days: detail = dictation.last30Days
+        }
+        guard let counted = dictation.detailDay,
+              let countedStart = calendar.date(byAdding: .day, value: -(period.dayCount - 1), to: counted),
+              countedStart < periodStart
+        else { return detail }
+        let dictationLeft = dictation.days.contains { $0.start >= countedStart && $0.start < periodStart }
+        return dictationLeft ? WidgetSnapshot.PeriodDetail() : detail
     }
 }

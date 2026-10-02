@@ -22,13 +22,15 @@ extension AppConfigStore {
     init(
         configDirectoryOverride: URL? = nil,
         knownDefaultHashes: [String: Set<String>] = BundledConfigDefaultHistory.knownDefaultHashes,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        durableFileSystem: DurableFileSystem = .live
     ) {
         self.init(
             bundledResourceURL: BundledConfigSources.url(for:),
             configDirectoryOverride: configDirectoryOverride,
             knownDefaultHashes: knownDefaultHashes,
-            now: now
+            now: now,
+            durableFileSystem: durableFileSystem
         )
     }
 }

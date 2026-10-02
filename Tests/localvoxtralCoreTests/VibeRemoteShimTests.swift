@@ -196,7 +196,7 @@ final class VibeRemoteShimTests: XCTestCase {
             let request = try request(index)
             XCTAssertEqual(ClaudeRemoteAgentCodec.agent(in: request.headers), .vibe)
             XCTAssertEqual(request.headers["authorization"], "Bearer \(Self.token)")
-            XCTAssertEqual(request.headers["x-lvx-vibe-hooks-version"], "1.12.0")
+            XCTAssertEqual(request.headers["x-lvx-vibe-hooks-version"], "1.15.0")
 
             // Nothing from the session log but the last user message is sent.
             let body = try captured("body", index)

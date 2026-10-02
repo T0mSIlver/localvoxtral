@@ -66,7 +66,7 @@ var targets: [Target] = [
     ),
     .executableTarget(
         name: "localvoxtral-cli",
-        dependencies: ["LocalvoxtralCLICore", "ClaudeContextWire"]
+        dependencies: ["LocalvoxtralCLICore", "ClaudeContextWire", "ClaudeHookPublisherCore"]
     ),
     // What the app computes without AppKit: the transcript merge, the text
     // merging algorithms, the polish token guard, the payload macro, the

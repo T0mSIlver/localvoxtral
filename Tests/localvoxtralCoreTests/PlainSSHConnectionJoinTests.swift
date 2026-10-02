@@ -197,7 +197,7 @@ final class PlainSSHConnectionJoinTests: XCTestCase {
         let authorizer = TerminalScreenClaudeJoinAuthorizer(
             resolver: joinResolver, currentJoin: { join }
         )
-        XCTAssertFalse(authorizer.isAuthorized(target: ghostty, windowID: 101))
+        XCTAssertFalse(authorizer.isAuthorized(target: ghostty, windowID: 101, paneTTY: nil))
     }
 
     func testAnIPv4MappedPeerMatchesThePlainIPv4TheServerReports() async throws {

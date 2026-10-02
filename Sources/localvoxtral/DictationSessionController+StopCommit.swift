@@ -47,6 +47,11 @@ extension DictationSessionController {
             return
         }
 
+        // A cancel drops the segments that ended behind a go-to: they are
+        // words the user threw away. The go-to itself still lands (#1251).
+        if wasCancelled {
+            liveGoToQueuedSegments = []
+        }
         // A go-to still bringing a pane forward: the segments behind it land
         // before the session ends.
         guard !finishLiveAutoPasteSessionAfterGoTo(sessionMode: sessionMode, finish: { [weak self] sessionAudio in
@@ -211,6 +216,7 @@ extension DictationSessionController {
                 skillNames: polishSkillNames()
             )
             agentSkillStore?.refreshLocalIfStale()
+            agentProjectScanner?.refreshIfStale()
 
             statusText = StatusStrings.polishing
             overlayBufferCoordinator.markPolishing(true)
@@ -663,7 +669,9 @@ extension DictationSessionController {
         if liveDictationCanTeachACorrection {
             expectCorrection(of: liveTypedText(), join: context.claudeSessionJoin, project: nil)
         }
-        if !textInsertion.hasPendingInsertionText {
+        // Read before the cleanup below drops text the field refused (#1176).
+        let allTextInserted = !textInsertion.hasPendingInsertionText
+        if allTextInserted {
             proposeProjectTermsIfNew(join: context.claudeSessionJoin, inserted: liveTypedText())
         }
         completeStoppedSessionCleanup(
@@ -682,7 +690,7 @@ extension DictationSessionController {
             outputMode: capturedOutputMode,
             targetAppBundleID: nil,
             status: .sttCompleted,
-            commitSucceeded: true,
+            commitSucceeded: allTextInserted,
             audio: capturedAudio,
             joined: historyJoin
         )

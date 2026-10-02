@@ -108,11 +108,13 @@ final class SessionContextResolver {
             noteJoinOutcome(.gated(.noPolishingEndpoint), causes: [])
             return .hidden
         }
-        terminalScreenStartCapture = TerminalScreenContextSource.captureAtStart(
+        let joinResolver = claudeSessionJoinResolver
+        terminalScreenStartCapture = await TerminalScreenContextSource.captureAtStart(
             settingEnabled: settings.terminalScreenContextEnabled,
             endpointURL: endpointURL,
             isAccessibilityTrusted: textInsertion.isAccessibilityTrusted,
-            trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
+            trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled,
+            readPaneTTY: { target in await joinResolver?.focusedPaneTTY(of: target) }
         )
         // The resolver's abstention causes are collected HERE, around the one
         // resolution, because it reduces each of them to a log line and a nil;

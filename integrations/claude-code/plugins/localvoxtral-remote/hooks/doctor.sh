@@ -20,7 +20,7 @@
 set -u
 umask 077
 
-DOCTOR_VERSION=1.28.0
+DOCTOR_VERSION=1.34.0
 JSON=0
 case "${1:-}" in
 --json) JSON=1 ;;
@@ -157,7 +157,7 @@ if ! command -v curl >/dev/null 2>&1; then
   check tunnel failed "Tunnel" "curl is not installed, and the hooks need it." \
     "Install curl on this host."
 else
-  CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 -X POST -H 'Content-Length: 0' "$URL" 2>/dev/null)"
+  CODE="$(curl -q --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 5 -X POST -H 'Content-Length: 0' "$URL" 2>/dev/null)"
   CURL_EXIT=$?
   if [ "$CURL_EXIT" -eq 7 ]; then
     check tunnel failed "Tunnel" "Nothing listens on 127.0.0.1:$PORT (port from $PORT_FROM)." \
@@ -186,7 +186,7 @@ EOF
 Accept: application/json
 EOF
       fi
-      CODE="$(curl -sS -o "$WORK/mac" -D "$WORK/mac-head" -w '%{http_code}' --max-time 12 -X POST \
+      CODE="$(curl -q --noproxy '*' -sS -o "$WORK/mac" -D "$WORK/mac-head" -w '%{http_code}' --max-time 12 -X POST \
         -H 'Content-Length: 0' --header "@$WORK/header" "$URL" 2>/dev/null)" || CODE="000"
       case "$CODE" in
       200)
@@ -216,39 +216,91 @@ EOF
 fi
 
 # --- The Claude Code plugin ----------------------------------------------------
+# is_session PID FILE: PID runs and is the process Claude Code wrote FILE for.
+# FILE records the process start time (field 22 of /proc/<pid>/stat), so a
+# pid reused since then is another process. Without /proc (macOS) the pid
+# must at least run a command named claude.
+is_session() {
+  kill -0 "$1" 2>/dev/null || return 1
+  if [ -r "/proc/$1/stat" ]; then
+    _want="$(sed -n 's/.*"procStart"[[:space:]]*:[[:space:]]*"\([0-9]*\)".*/\1/p' "$2" 2>/dev/null)"
+    _have="$(awk '{ sub(/^.*\) /, ""); print $20 }' "/proc/$1/stat" 2>/dev/null)"
+    [ -z "$_want" ] || [ "$_want" = "$_have" ]
+    return
+  fi
+  case "$(ps -p "$1" -o command= 2>/dev/null)" in *claude*) return 0 ;; esac
+  return 1
+}
+
 INSTALLED="$(json_value_after "$CLAUDE_DIR/plugins/installed_plugins.json" "$PLUGIN_KEY" version)"
 CACHE="$CLAUDE_DIR/plugins/cache/localvoxtral/localvoxtral-remote"
 if [ -z "$INSTALLED" ]; then
   check claude-plugin skipped "Claude Code plugin" "Not installed on this host."
 elif LC_ALL=C grep -q "\"$PLUGIN_KEY\"[[:space:]]*:[[:space:]]*false" "$CLAUDE_DIR/settings.json" 2>/dev/null; then
   check claude-plugin failed "Claude Code plugin" "$INSTALLED is installed but turned off in $CLAUDE_DIR/settings.json." \
-    "Run \`claude plugin enable $PLUGIN_KEY\`, then restart Claude Code sessions."
+    "Run \`claude plugin enable $PLUGIN_KEY\`, then \`/reload-plugins\` in each Claude Code session."
 else
-  # Each running session leaves its pid under the version it loaded. A
-  # session keeps that version's hooks until it restarts.
+  # Running sessions and the plugin version each loaded, by pid. Claude Code
+  # used to leave a session's pid under `.in_use` in the cache directory of
+  # each version it loaded; one that ran `/reload-plugins` can keep a marker
+  # under the version it started with too, so a pid with a marker under the
+  # installed version is current. Claude Code 2.1.280 to 2.1.286 write none
+  # (#1159): the live sessions then come from Claude Code's own
+  # sessions/<pid>.json, and each one's version from the record the plugin's
+  # hook keeps under its session id (post.sh). A session with neither runs a
+  # plugin older than 1.31.0, or none.
   OLD=""
+  UNKNOWN=""
+  CURRENT=" "
+  SEEN=" "
   LIVE=0
   for marker in "$CACHE"/*/.in_use/*; do
     [ -f "$marker" ] || continue
     pid="${marker##*/}"
     case "$pid" in "" | *[!0-9]*) continue ;; esac
-    kill -0 "$pid" 2>/dev/null || continue
-    # The marker records the process start time (field 22 of
-    # /proc/<pid>/stat); a pid reused since then is another process.
-    if [ -r "/proc/$pid/stat" ]; then
-      want="$(sed -n 's/.*"procStart":"\([0-9]*\)".*/\1/p' "$marker" 2>/dev/null)"
-      have="$(awk '{ sub(/^.*\) /, ""); print $20 }' "/proc/$pid/stat" 2>/dev/null)"
-      [ -z "$want" ] || [ "$want" = "$have" ] || continue
-    fi
-    LIVE=$((LIVE + 1))
+    is_session "$pid" "$marker" || continue
+    case "$SEEN" in *" $pid "*) ;; *) SEEN="$SEEN$pid " LIVE=$((LIVE + 1)) ;; esac
     version="${marker%/.in_use/*}"
     version="${version##*/}"
-    [ "$version" = "$INSTALLED" ] || OLD="$OLD $version:$pid"
+    if [ "$version" = "$INSTALLED" ]; then
+      CURRENT="$CURRENT$pid "
+    else
+      OLD="$OLD $version:$pid"
+    fi
   done
-  if [ -n "$OLD" ]; then
-    check claude-plugin warning "Claude Code plugin" \
-      "$INSTALLED installed; running sessions still on older versions (version:pid):$OLD." \
-      "Restart those Claude Code sessions: a session keeps the hooks it started with."
+  for record in "$CLAUDE_DIR"/sessions/*.json; do
+    [ -f "$record" ] || continue
+    pid="${record##*/}"
+    pid="${pid%.json}"
+    case "$pid" in "" | *[!0-9]*) continue ;; esac
+    is_session "$pid" "$record" || continue
+    case "$SEEN" in *" $pid "*) ;; *) SEEN="$SEEN$pid " LIVE=$((LIVE + 1)) ;; esac
+    sid="$(sed -n 's/.*"sessionId"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9-]*\)".*/\1/p' "$record" 2>/dev/null | head -n 1)"
+    version=""
+    [ -z "$sid" ] || { IFS= read -r version <"$STAMP_DIR/plugin-version/$sid"; } 2>/dev/null || :
+    case "$version" in *[!0-9.]*) version="" ;; esac
+    if [ "$version" = "$INSTALLED" ]; then
+      CURRENT="$CURRENT$pid "
+    elif [ -n "$version" ]; then
+      case "$OLD " in *" $version:$pid "*) ;; *) OLD="$OLD $version:$pid" ;; esac
+    else
+      UNKNOWN="$UNKNOWN $pid"
+    fi
+  done
+  STALE=""
+  for entry in $OLD; do
+    case "$CURRENT" in *" ${entry##*:} "*) ;; *) STALE="$STALE $entry" ;; esac
+  done
+  NONE=""
+  for pid in $UNKNOWN; do
+    case "$CURRENT$OLD " in *" $pid "* | *":$pid "*) ;; *) NONE="$NONE $pid" ;; esac
+  done
+  if [ -n "$STALE$NONE" ]; then
+    DETAIL="$INSTALLED installed"
+    [ -z "$STALE" ] || DETAIL="$DETAIL; running sessions still on older versions (version:pid):$STALE"
+    [ -z "$NONE" ] || DETAIL="$DETAIL; running sessions with no plugin version recorded (pid):$NONE"
+    check claude-plugin warning "Claude Code plugin" "$DETAIL." \
+      "Run \`/reload-plugins\` in those Claude Code sessions: a session keeps the hooks it loaded, and one older than 1.31.0 records no version."
   else
     check claude-plugin ok "Claude Code plugin" "$INSTALLED installed; $LIVE running session(s), none on an older version."
   fi

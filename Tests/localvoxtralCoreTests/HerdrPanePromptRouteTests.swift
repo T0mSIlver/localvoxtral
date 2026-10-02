@@ -41,10 +41,35 @@ final class HerdrPanePromptRouteTests: XCTestCase {
         return registry
     }
 
+    private static let hostID = "h1a2b3c4"
+
+    private static func host(revoked: Bool = false) -> ClaudeRemoteHost {
+        ClaudeRemoteHost(
+            id: hostID, label: "builder", sshHostAlias: "builder",
+            createdAt: epoch, lastSeenAt: nil, revokedAt: revoked ? epoch : nil
+        )
+    }
+
+    /// A session on the enrolled host `hostID`, in the same pane id, for a
+    /// route over a remote or federated join.
+    private func remoteSnapshot(in registry: ClaudeSessionRegistry) throws -> ClaudeSessionSnapshot {
+        try XCTUnwrap(registry.ingest(
+            ClaudeHookRecord(
+                event: .sessionStart,
+                sessionID: ClaudeRemoteSessionScope.scopedSessionID(hostID: Self.hostID, sessionID: "r1"),
+                timestamp: 0, rawCwd: "/repo",
+                process: ClaudeHookProcessInfo(hookPID: 11, claudePID: 12, tty: "/dev/pts/3")
+            ),
+            origin: .remote(channel: ClaudeRemoteSessionScope.channel(hostID: Self.hostID)),
+            environment: ClaudeRemoteSessionEnvironment(herdrPaneID: "w1:p2", herdrSocketPath: "/run/herdr.sock")
+        ))
+    }
+
     private func resolver(
         _ registry: ClaudeSessionRegistry,
         focusedTTY: String = "/dev/ttys-outer",
-        federation: Box<HerdrMachineFederation> = Box(.notFederated)
+        federation: Box<HerdrMachineFederation> = Box(.notFederated),
+        hosts: Box<[ClaudeRemoteHost]> = Box([host()])
     ) -> ClaudeSessionJoinResolver {
         ClaudeSessionJoinResolver(
             registry: registry,
@@ -53,7 +78,8 @@ final class HerdrPanePromptRouteTests: XCTestCase {
             herdrFederation: { federation.get() },
             herdrClientSurfaceCount: { 1 },
             herdrPanes: client,
-            herdrPaneWriter: client
+            herdrPaneWriter: client,
+            speculativeHosts: { hosts.get() }
         )
     }
 
@@ -182,21 +208,24 @@ final class HerdrPanePromptRouteTests: XCTestCase {
         let focusedTTY = Box("/dev/ttys-outer")
         let federation = Box<HerdrMachineFederation>(.notFederated)
         let ssh = Box(builder)
+        let registry = registry(herdrSocket: herdr.socketPath)
         let resolver = ClaudeSessionJoinResolver(
-            registry: registry(herdrSocket: herdr.socketPath),
+            registry: registry,
             focusedTerminalTTY: { _ in focusedTTY.get() },
             herdrClientProbe: { _ in true },
             herdrFederation: { federation.get() },
             herdrClientSurfaceCount: { 1 },
             herdrPanes: client,
             herdrPaneWriter: client,
-            sshDestinationProbe: { _ in ssh.get() }
+            sshDestinationProbe: { _ in ssh.get() },
+            speculativeHosts: { [Self.host()] }
         )
         let resolved = await resolver.resolve(target: ghostty)
         let local = try XCTUnwrap(resolved)
+        let remoteSnapshot = try remoteSnapshot(in: registry)
         func route(_ mechanism: ClaudeSessionJoinMechanism, _ machine: HerdrJoinedSurface.Machine) throws -> HerdrPanePromptRoute {
             let join = ClaudeSessionJoin(
-                target: local.target, snapshot: local.snapshot, windowID: nil, mechanism: mechanism,
+                target: local.target, snapshot: remoteSnapshot, windowID: nil, mechanism: mechanism,
                 herdrPane: local.herdrPane, herdrSurface: HerdrJoinedSurface(tty: "/dev/ttys-outer", machine: machine)
             )
             return try XCTUnwrap(resolver.herdrPromptRoute(for: join) { 4343 })
@@ -274,6 +303,23 @@ final class HerdrPanePromptRouteTests: XCTestCase {
         let submitted = await route.deliver(.submit)
 
         XCTAssertEqual(submitted, .keepInHistory)
+        XCTAssertEqual(herdr.writes, [])
+    }
+
+    /// The joined agent exited mid-dictation and the pane now runs its shell
+    /// or another agent: words sent there would land in that prompt, so the
+    /// text stays in History and nothing is written.
+    func testNoTextOnceTheJoinedAgentLeftTheForeground() async throws {
+        let foreground = Box<Processes>(claude)
+        let herdr = try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane("w1:p2") { foreground.get() })
+        defer { herdr.stop() }
+        let route = try await joinedRoute(herdr).route
+
+        for replacement: Processes in [[(8123, "zsh")], [(9555, "claude")]] {
+            foreground.set(replacement)
+            let appended = await route.deliver(.append("run the tests"))
+            XCTAssertEqual(appended, .keepInHistory, "\(replacement)")
+        }
         XCTAssertEqual(herdr.writes, [])
     }
 
@@ -415,7 +461,7 @@ final class HerdrPanePromptRouteTests: XCTestCase {
         let (local, _, resolver) = try await joinedRoute(herdr)
         let remote = ClaudeSessionJoin(
             target: local.target,
-            snapshot: local.snapshot,
+            snapshot: try remoteSnapshot(in: resolver.registry),
             windowID: nil,
             mechanism: .remoteHerdrPane,
             herdrPane: local.herdrPane
@@ -430,5 +476,33 @@ final class HerdrPanePromptRouteTests: XCTestCase {
         XCTAssertEqual(submittedWhileNamed, .delivered)
         XCTAssertEqual(submittedAtTheShell, .keepInHistory, "the local pid means nothing for a remote pane")
         XCTAssertEqual(herdr.writes.count, 1)
+    }
+
+    /// A host revoked after the join (#1117): the forward may still answer,
+    /// so the route itself refuses, and keys would land in that host's pane,
+    /// so nothing is typed either.
+    func testARemotePaneWhoseHostWasRevokedGetsNothingMore() async throws {
+        let claude = claude
+        let herdr = try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane("w1:p2") { claude })
+        defer { herdr.stop() }
+        let hosts = Box([Self.host()])
+        let registry = registry(herdrSocket: herdr.socketPath)
+        let resolver = resolver(registry, hosts: hosts)
+        let join = ClaudeSessionJoin(
+            target: ghostty, snapshot: try remoteSnapshot(in: registry), windowID: nil,
+            mechanism: .remoteHerdrPane,
+            herdrPane: ClaudeHerdrPaneBinding(paneID: "w1:p2", socketPath: herdr.socketPath)
+        )
+        let route = try XCTUnwrap(resolver.herdrPromptRoute(for: join) { 4343 })
+
+        let appendedWhileEnrolled = await route.deliver(.append("one"))
+        hosts.set([Self.host(revoked: true)])
+        let appendedAfterRevoke = await route.deliver(.append("two"))
+        let submittedAfterRevoke = await route.deliver(.submit)
+
+        XCTAssertEqual(appendedWhileEnrolled, .delivered)
+        XCTAssertEqual(appendedAfterRevoke, .keepInHistory)
+        XCTAssertEqual(submittedAfterRevoke, .keepInHistory)
+        XCTAssertEqual(herdr.writes.map(\.text), ["one"])
     }
 }

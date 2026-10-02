@@ -730,10 +730,18 @@ extension UsageEntry.Feature {
 
 /// The local record of every model request: an append-only JSON-lines file
 /// under Application Support, one line per request. Kept in memory as well so
-/// Settings can sum any window without touching the disk.
+/// Settings can sum any window without touching the disk. Another running
+/// copy may append to the same file (#990); the usage views read it again
+/// when they appear (`reloadIfChanged`, #1126).
 package final class UsageLedger: UsageRecording, @unchecked Sendable {
     private struct State {
         var entries: [UsageEntry]?
+        /// The file's stamp when `entries` last matched it, nil when they may
+        /// not.
+        var stamp: StoredFileStamp?
+        /// Entries whose append failed: memory keeps them until relaunch,
+        /// and a reload keeps them too.
+        var unsaved: [UsageEntry] = []
     }
 
     package let fileURL: URL?
@@ -768,19 +776,25 @@ package final class UsageLedger: UsageRecording, @unchecked Sendable {
                 "usage: encode failed: \(error.localizedDescription, privacy: .public)")
             line = nil
         }
-        state.withLock { s in
-            if s.entries == nil { s.entries = loadEntries() }
-            s.entries?.append(entry)
-        }
         Log.persistence.info(
             "usage: \(entry.feature.rawValue, privacy: .public) backend=\(entry.backend.rawValue, privacy: .public) model=\(entry.model, privacy: .public) audioSeconds=\(entry.audioSeconds ?? 0, privacy: .public) promptTokens=\(entry.promptTokens ?? -1, privacy: .public) completionTokens=\(entry.completionTokens ?? -1, privacy: .public) costEUR=\(entry.costEUR ?? -1, privacy: .public) agentCostUSD=\(entry.agentCostUSD ?? -1, privacy: .public)"
         )
         // Synchronous: one short append, and a line still queued when the app
         // quits would be lost. Callers are socket, network and process
-        // threads, never the main thread.
-        if let fileURL, let line {
-            writeQueue.sync {
-                Self.append(line, to: fileURL)
+        // threads, never the main thread. Memory and file change together on
+        // the write queue, so a reload never reads the file between them.
+        writeQueue.sync {
+            state.withLock { s in
+                if s.entries == nil { s.entries = loadEntries(stamp: &s.stamp) }
+                s.entries?.append(entry)
+            }
+            guard let fileURL, let line else { return }
+            let stamps = Self.append(line, to: fileURL)
+            state.withLock { s in
+                // Only this copy's line went in since memory matched the
+                // file; otherwise the next reload reads another copy's.
+                s.stamp = stamps != nil && stamps?.before == s.stamp ? stamps?.after : nil
+                if stamps == nil { s.unsaved.append(entry) }
             }
         }
         onChange?()
@@ -788,9 +802,39 @@ package final class UsageLedger: UsageRecording, @unchecked Sendable {
 
     package func entries() -> [UsageEntry] {
         state.withLock { s in
-            if s.entries == nil { s.entries = loadEntries() }
+            if s.entries == nil { s.entries = loadEntries(stamp: &s.stamp) }
             return s.entries ?? []
         }
+    }
+
+    /// A usage view appeared: when another running copy appended since
+    /// memory last matched the file, memory takes the file as it is now, and
+    /// `onChange` runs. One `lstat` when nothing changed. On the write
+    /// queue, off the caller's thread; returns once done.
+    package func reloadIfChanged() async {
+        guard let fileURL else { return }
+        let changed = await withCheckedContinuation { continuation in
+            writeQueue.async { [self] in
+                // This copy appends only on this queue, so the file read
+                // outside the mutex is not racing this copy's own lines, and
+                // a Settings render reading `entries()` does not wait on it.
+                let (loaded, current) = state.withLock { ($0.entries != nil, $0.stamp) }
+                guard loaded, StoredFileStamp.of(fileURL) != current else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                var stamp: StoredFileStamp?
+                let onDisk = loadEntries(stamp: &stamp)
+                state.withLock { s in
+                    s.entries = onDisk + s.unsaved
+                    s.stamp = stamp
+                }
+                continuation.resume(returning: true)
+            }
+        }
+        guard changed else { return }
+        Log.persistence.notice("usage: the ledger changed on disk, read again")
+        onChange?()
     }
 
     package func summary(for period: MistralUsagePeriod, now: Date = Date()) -> MistralUsageSummary {
@@ -821,30 +865,38 @@ package final class UsageLedger: UsageRecording, @unchecked Sendable {
         }
     }
 
-    private func loadEntries() -> [UsageEntry] {
-        guard let fileURL, let data = try? Data(contentsOf: fileURL) else { return [] }
+    /// `stamp` is taken before the read, so a line appended during it is
+    /// read again on the next reload rather than missed.
+    private func loadEntries(stamp: inout StoredFileStamp?) -> [UsageEntry] {
+        guard let fileURL else { return [] }
+        stamp = StoredFileStamp.of(fileURL)
+        guard let data = try? Data(contentsOf: fileURL) else { return [] }
         return Self.entries(fromFileContents: data)
     }
 
     /// Appends with `O_APPEND` under the lock other running copies share
     /// (#990), so two copies never write at the same offset. A last line that
     /// a crash left without its newline gets one first; otherwise it would
-    /// swallow this entry too.
-    private static func append(_ line: Data, to fileURL: URL) {
+    /// swallow this entry too. Returns the file's stamps around the append,
+    /// nil when it failed.
+    private static func append(
+        _ line: Data, to fileURL: URL
+    ) -> (before: StoredFileStamp?, after: StoredFileStamp?)? {
         do {
             try FileManager.default.createDirectory(
                 at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         } catch {
             Log.persistence.error("usage: append failed: \(error.localizedDescription, privacy: .public)")
-            return
+            return nil
         }
-        StoredFileLock.withLock(beside: fileURL) {
+        return StoredFileLock.withLock(beside: fileURL) {
+            let before = StoredFileStamp.of(fileURL)
             let descriptor = fileURL.path.withCString {
                 open($0, O_RDWR | O_APPEND | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
             }
             guard descriptor >= 0 else {
                 Log.persistence.error("usage: could not open the ledger: errno \(errno, privacy: .public)")
-                return
+                return nil
             }
             defer { close(descriptor) }
             var bytes = line
@@ -869,7 +921,9 @@ package final class UsageLedger: UsageRecording, @unchecked Sendable {
             }
             if !written {
                 Log.persistence.error("usage: append failed: errno \(errno, privacy: .public)")
+                return nil
             }
+            return (before, StoredFileStamp.of(fileURL))
         }
     }
 }

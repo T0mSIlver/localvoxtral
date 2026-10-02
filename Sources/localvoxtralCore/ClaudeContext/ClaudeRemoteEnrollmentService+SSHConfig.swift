@@ -22,12 +22,16 @@ extension ClaudeRemoteEnrollmentService {
     /// CRLF, as the rc and hooks writers leave it. This
     /// function is the whole reason a UI could ever offer to make the edit —
     /// but it is still the caller's decision to write the result anywhere.
+    ///
+    /// A config whose markers for this host do not pair comes back unchanged
+    /// (#1163); `insertSSHConfig` refuses it with `sshConfigBlockDamaged`.
     public static func applySSHConfigSnippet(
         to existing: String,
         snippet: String,
         hostID: String
     ) -> String {
         let lineReader = sshConfigLineReader(hostID: hostID)
+        guard !lineReader.hasDamagedBlock(existing) else { return existing }
         // The file's own terminator: a CRLF config spliced with LF comes back
         // mixed, and a CRLF block appended to it is one the next read can find.
         let terminator = lineReader.lineTerminator(of: existing)
@@ -55,8 +59,11 @@ extension ClaudeRemoteEnrollmentService {
     }
 
     /// Remove this host's block, leaving everything else untouched.
+    /// A config whose markers for this host do not pair comes back unchanged,
+    /// like `applySSHConfigSnippet`.
     public static func removeSSHConfigSnippet(from existing: String, hostID: String) -> String {
         let lineReader = sshConfigLineReader(hostID: hostID)
+        guard !lineReader.hasDamagedBlock(existing) else { return existing }
         let lines = lineReader.splitLines(existing)
         guard let block = markedBlockRange(in: lines, hostID: hostID) else { return existing }
         var result = Array(lines[..<block.lowerBound])
@@ -70,9 +77,16 @@ extension ClaudeRemoteEnrollmentService {
     /// the line, and on Linux the split found no LF at all, because `"\r\n"`
     /// is one `Character`. Either way apply appended a second block.
     ///
-    /// Only the line handling is shared. This writer keeps its own finding
-    /// rule (first begin, first end after it) and its own remove, which
-    /// leaves the separator blank line in place.
+    /// Only the line handling and the damage rule are shared. This writer
+    /// keeps its own finding rule (first begin, first end after it) and its
+    /// own remove, which leaves the separator blank line in place.
+    ///
+    /// Damage is `MarkedTextBlock.locateBlock`'s: a begin with no end, an end
+    /// with no begin, or a begin inside an open block. With a lone begin, the
+    /// finding rule saw no block, so apply appended a second one; OpenSSH
+    /// kept the stale first `Host` stanza, and the next apply replaced
+    /// everything from the orphan to the new end, the user's lines between
+    /// them included (#1163). Neither writer touches such a file.
     private static func sshConfigLineReader(hostID: String) -> MarkedTextBlock {
         MarkedTextBlock(markerBegin: blockBegin(hostID: hostID), markerEnd: blockEnd(hostID: hostID))
     }
@@ -104,7 +118,7 @@ extension ClaudeRemoteEnrollmentService {
     /// immediately before calling this method.
     public func insertSSHConfig(snippet: String, hostID: String) throws {
         Log.claudeContext.info("Claude remote ssh config insertion requested")
-        try writeSSHConfig(operation: "insertion") {
+        try writeSSHConfig(operation: "insertion", hostID: hostID) {
             Self.applySSHConfigSnippet(to: $0, snippet: snippet, hostID: hostID)
         }
     }
@@ -113,13 +127,14 @@ extension ClaudeRemoteEnrollmentService {
     /// writer used for enrollment.
     public func removeSSHConfig(hostID: String) throws {
         Log.claudeContext.info("Claude remote ssh config removal requested")
-        try writeSSHConfig(operation: "removal") {
+        try writeSSHConfig(operation: "removal", hostID: hostID) {
             Self.removeSSHConfigSnippet(from: $0, hostID: hostID)
         }
     }
 
     private func writeSSHConfig(
         operation: String,
+        hostID: String,
         transform: (String) -> String
     ) throws {
         guard let sshConfigFileSystem else {
@@ -149,6 +164,9 @@ extension ClaudeRemoteEnrollmentService {
                 existing = decoded
             } else {
                 existing = ""
+            }
+            guard !Self.sshConfigLineReader(hostID: hostID).hasDamagedBlock(existing) else {
+                throw ServiceError.sshConfigBlockDamaged
             }
             let updated = transform(existing)
             if !state.directoryExists {

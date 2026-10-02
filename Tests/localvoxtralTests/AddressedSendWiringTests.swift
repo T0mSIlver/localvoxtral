@@ -116,6 +116,44 @@ final class AddressedSendWiringTests: XCTestCase {
         )
     }
 
+    /// The named agent exits while its pane comes forward: the shell left
+    /// in its tty reads back the same, so liveness is asked again before
+    /// any key (Codex audit 2026-10-02, #1219).
+    func testNamedSessionEndingDuringFocusGetsNoTextOrReturn() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments")]
+        )
+        harness.focuser.onFocus = { _ in harness.live.value = [] }
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, ["pay"])
+        XCTAssertEqual(harness.inserted.value.count, 0, "no text into the shell")
+        XCTAssertEqual(harness.returns.value, [])
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false])
+        XCTAssertEqual(harness.viewModel.statusText, DictationSessionController.AddressedSendStatus.notSent)
+    }
+
+    /// The named agent exits during the read-back after the typing: the
+    /// text is in its old pane, but no Return goes to the shell.
+    func testNamedSessionEndingDuringTheReadBackGetsNoReturn() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments")]
+        )
+        harness.focuser.onReadBack = { _ in harness.live.value = [] }
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.inserted.value.map(\.text), ["Run the tests"])
+        XCTAssertEqual(harness.returns.value, [], "no Return into the shell")
+        XCTAssertEqual(
+            harness.viewModel.statusText,
+            DictationSessionController.AddressedSendStatus.typedNotSubmitted
+        )
+    }
+
     /// A new dictation that starts between the typing and the Return: no
     /// Return, the typed text is still in History, and the new dictation's
     /// state is not cleaned up a second time.
@@ -295,6 +333,8 @@ final class AddressedSendWiringTests: XCTestCase {
         let returns: Box<[pid_t]>
         let frontmost: Box<pid_t?>
         let records: Box<[DictationSessionRecord]>
+        /// The registry's live sessions, which a test can end mid-send.
+        let live: Box<[ClaudeSessionSnapshot]>
 
         @MainActor
         func stop() async {
@@ -387,8 +427,9 @@ final class AddressedSendWiringTests: XCTestCase {
         TerminalTargetDetector.debugSecureEventInputOverride = { false }
 
         let focuser = FakeSessionPaneFocuser(outcome: outcome)
+        let live = Box(sessions)
         viewModel.session.sessionNavigator = SessionNavigator(
-            liveSessions: { sessions },
+            liveSessions: { live.value },
             repositoryRoot: { _ in .unknown },
             focuser: focuser,
             sleep: ManualSessionClock().sleep,
@@ -422,7 +463,8 @@ final class AddressedSendWiringTests: XCTestCase {
             inserted: inserted,
             returns: returns,
             frontmost: frontmost,
-            records: records
+            records: records,
+            live: live
         )
     }
 }

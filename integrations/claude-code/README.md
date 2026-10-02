@@ -965,6 +965,8 @@ Only what this allowlist names:
 * your prompt text, from the prompt event only
 * what a waiting notification waits for: its type, one of the four above. Its
   message and title stay behind, since they quote tool names and command text
+* the session's title, which Claude Code sends when a session starts, so the
+  app can show the session by it
 * absolute file paths from the file tools above
 * safe process metadata: pid, parent pid, controlling tty, the terminal
   program's name, and the multiplexer and bridge handles that say which pane
@@ -1088,12 +1090,14 @@ The environment values are herdr's pane id, socket path and session name;
 cmux's surface id and socket path; the Remote Control bridge session id; the
 Claude Desktop session id; the tmux socket and pane; the screen session; the
 zellij session; the ssh tty; the ssh connection; LC_LVX_TTY; the hook
-script's own parent pid; and the name of the session's repository. The
+script's own parent pid; the name of the session's repository; and the
+branch checked out. The
 [hook script](plugins/localvoxtral-remote/hooks/post.sh) holds the exact
 list.
 
 The repository name is the basename of its main checkout, as git reports it,
-so every worktree of one repository keeps one set of learned terms.
+so every worktree of one repository keeps one set of learned terms. The
+branch names a session in a linked worktree, as it does for a local one.
 
 The hook script sends each value only if it is non-empty, at most 200
 characters, and made purely of ASCII letters and digits plus

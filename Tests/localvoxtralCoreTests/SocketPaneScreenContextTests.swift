@@ -227,7 +227,7 @@ final class SocketPaneScreenContextTests: XCTestCase {
             resolver: resolver, currentJoin: { join }
         )
         XCTAssertFalse(
-            gate.isAuthorized(target: ghostty, windowID: 101),
+            gate.isAuthorized(target: ghostty, windowID: 101, paneTTY: nil),
             "the herdr join must keep refusing composite raw screen attachment"
         )
     }

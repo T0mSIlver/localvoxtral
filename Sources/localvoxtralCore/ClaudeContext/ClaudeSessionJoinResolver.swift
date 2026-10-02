@@ -76,6 +76,8 @@ package struct ClaudeSessionJoinResolver {
     package let enrolledHosts: @MainActor (String) -> [ClaudeRemoteHost]
     package let canonicalizedEnrolledHosts: @MainActor (String) async -> [ClaudeRemoteHost]
     package let proxyJumpShape: @MainActor (String) async -> SSHProxyJumpShape?
+    /// Every host in the store, revoked ones included. The panel arm's
+    /// speculation and the herdr pane route's enrollment check filter it.
     package let speculativeHosts: @MainActor () -> [ClaudeRemoteHost]
     package let remoteHerdrForwards: (any ClaudeRemoteHerdrForwarding)?
     package let herdrPanelMetadata: (any HerdrPanelMetadataReporting)?
@@ -414,6 +416,14 @@ package struct ClaudeSessionJoinResolver {
         return shown
     }
 
+    /// The focused pane's tty, read the way the tty arm reads it, so a
+    /// screen capture taken next to it names its pane (#1226). Nil for an
+    /// app off the terminal allowlist or an unreadable surface.
+    package func focusedPaneTTY(of target: TerminalScreenTarget) async -> String? {
+        guard TerminalScreenAllowlist.isSupported(target.bundleID) else { return nil }
+        return await focusedTerminalTTY(target.bundleID)
+    }
+
     private func resolveSurface(target: TerminalScreenTarget) async -> ClaudeSessionJoin? {
         // A browser is a different kind of target with a different capability:
         // one short URL string, no screen, no pane. The two allowlists are
@@ -443,7 +453,8 @@ package struct ClaudeSessionJoinResolver {
                     target: target,
                     snapshot: snapshot,
                     windowID: focusedWindowID(target.pid),
-                    mechanism: .ttyDevice
+                    mechanism: .ttyDevice,
+                    paneTTY: tty
                 )
             case .unknown:
                 abstainedTTYJoin(outcome: "no live session on this device")

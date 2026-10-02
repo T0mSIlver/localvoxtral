@@ -111,9 +111,8 @@ public final class ClaudeRemoteForwardCoordinator {
     /// guessable — the label is a different field and can name a different
     /// machine (PR #197) — so it cannot be forwarded, only re-enrolled.
     private func eligibleHosts() -> [ClaudeRemoteHost] {
-        hosts.hosts().filter { host in
+        hosts.activeHostsIfReadable().filter { host in
             host.persistentForwardEnabled
-                && !host.isRevoked
                 && host.sshHostAlias.map(ClaudeRemoteEnrollmentService.isValidHostAlias) == true
         }
     }
@@ -244,7 +243,7 @@ public final class ClaudeRemoteForwardCoordinator {
     }
 
     private func activeHostIDs() -> Set<String> {
-        Set(hosts.hosts().filter { !$0.isRevoked }.map(\.id))
+        Set(hosts.activeHostsIfReadable().map(\.id))
     }
 
     /// Every teardown still draining, for a caller that must not return until

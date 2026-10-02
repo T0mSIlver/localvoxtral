@@ -278,15 +278,17 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
     }
 
     /// Every capture and suggestion under the key and name of the project
-    /// that holds its key now. A capture still drafting keeps its key, since
-    /// its run answers for it.
+    /// that holds its key now. A capture still drafting or checking keeps
+    /// its key, since its run answers for it.
     package func adopting(_ projects: [QuickCaptureProject]) -> QuickCaptureInbox {
         var result = self
         for index in result.items.indices {
             let item = result.items[index]
             if let key = item.projectKey, let project = projects.first(where: { $0.keys.contains(key) }) {
-                if item.state != .drafting { result.items[index].projectKey = project.key }
+                let runs = item.state == .drafting || item.codeCheck?.state == .checking
+                if !runs { result.items[index].projectKey = project.key }
                 result.items[index].projectName = project.name
+                Self.followFilingChoice(of: project, &result.items[index])
             }
             if let suggestion = item.suggestion,
                let project = projects.first(where: { $0.keys.contains(suggestion.projectKey) })
@@ -295,6 +297,23 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
             }
         }
         return result
+    }
+
+    /// A capture not filed yet files where its project files now: a fork's
+    /// "File issues here" choice changed since it took the fork's or the
+    /// upstream's repository. The issue its draft extended or duplicated
+    /// belongs to the other repository, so the link goes. A repository the
+    /// user typed for the capture is neither of the project's and stays.
+    private static func followFilingChoice(of project: QuickCaptureProject, _ item: inout QuickCaptureItem) {
+        guard item.state != .filing, item.state != .filed,
+              let target = project.issueRepository, let current = item.repository,
+              current.caseInsensitiveCompare(target) != .orderedSame
+        else { return }
+        let projectRepositories = [project.repository, project.github?.parent].compactMap { $0 }
+        guard projectRepositories.contains(where: { $0.caseInsensitiveCompare(current) == .orderedSame }) else { return }
+        item.repository = target
+        item.relation = .none
+        item.relatedIssue = nil
     }
 
     package mutating func discard(_ id: UUID) {
@@ -364,7 +383,7 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
     ) {
         update(id) { item in
             if item.state == .ready, item.codeCheck?.state == .checking {
-                Self.applyCheck(outcome, firstDraft: firstDraft, to: &item)
+                Self.applyCheck(outcome, repository: repository, firstDraft: firstDraft, to: &item)
                 return
             }
             guard item.state == .drafting else { return }
@@ -390,8 +409,11 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
         }
     }
 
+    /// `repository` is the one the check listed open issues in: when the
+    /// capture files elsewhere now, the issue it names is not one there.
     private static func applyCheck(
-        _ outcome: QuickCaptureDraft.Outcome, firstDraft: (title: String, body: String)?, to item: inout QuickCaptureItem
+        _ outcome: QuickCaptureDraft.Outcome, repository: String?, firstDraft: (title: String, body: String)?,
+        to item: inout QuickCaptureItem
     ) {
         switch outcome {
         case .draft(let draft, _):
@@ -402,8 +424,12 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
             guard untouched else { return }
             item.title = draft.title
             item.body = draft.body
-            item.relation = draft.relation
-            item.relatedIssue = draft.issue
+            var sameRepository = true
+            if let current = item.repository, let repository {
+                sameRepository = current.caseInsensitiveCompare(repository) == .orderedSame
+            }
+            item.relation = sameRepository ? draft.relation : .none
+            item.relatedIssue = sameRepository ? draft.issue : nil
             item.note = nil
         case .failed(let failure):
             item.codeCheck?.state = .failed

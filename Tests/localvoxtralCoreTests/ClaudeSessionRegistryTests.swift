@@ -844,6 +844,7 @@ final class ClaudeSessionRegistryTests: XCTestCase {
 
 private final class MemoryClaudeSessionStore: ClaudeSessionStore, @unchecked Sendable {
     private let bytes = Mutex<Data?>(nil)
+    private let asideBytes = Mutex<Data?>(nil)
     private let clearCount = Mutex(0)
 
     init(_ data: Data? = nil) {
@@ -856,8 +857,16 @@ private final class MemoryClaudeSessionStore: ClaudeSessionStore, @unchecked Sen
         bytes.withLock { $0 = nil }
         clearCount.withLock { $0 += 1 }
     }
+    func moveAside() throws {
+        let moved = bytes.withLock { data in
+            defer { data = nil }
+            return data
+        }
+        asideBytes.withLock { $0 = moved }
+    }
 
     var data: Data? { bytes.withLock { $0 } }
+    var movedAside: Data? { asideBytes.withLock { $0 } }
     var clears: Int { clearCount.withLock { $0 } }
 }
 
@@ -873,13 +882,14 @@ final class ClaudeSessionPersistenceTests: XCTestCase {
         alive: @escaping @Sendable (Int32) -> Bool = { _ in true },
         boot: String? = "boot-a",
         activeChannels: Set<String>? = nil,
+        channelsUnknown: Bool = false,
         limits: ClaudeRegistryLimits = .default
     ) -> ClaudeSessionRegistry {
         let timestamp = now ?? epoch
         return ClaudeSessionRegistry(
             limits: limits,
             store: store,
-            allowedRemoteChannels: activeChannels ?? [channel],
+            allowedRemoteChannels: channelsUnknown ? nil : activeChannels ?? [channel],
             now: { timestamp },
             isProcessAlive: alive,
             bootIdentity: { boot },
@@ -921,6 +931,9 @@ final class ClaudeSessionPersistenceTests: XCTestCase {
     func testLocalAndRemoteSessionsSurviveRestartWithoutPersistingContent() throws {
         let store = MemoryClaudeSessionStore()
         let first = registry(store: store)
+        var titled = localRecord(.sessionStart)
+        titled.sessionTitle = "private title must stay in memory"
+        first.ingest(titled, origin: .localAuthenticated(peerUID: 501))
         first.ingest(
             localRecord(.userPromptSubmit, prompt: "private prompt must stay in memory"),
             origin: .localAuthenticated(peerUID: 501)
@@ -945,6 +958,7 @@ final class ClaudeSessionPersistenceTests: XCTestCase {
         let persisted = try XCTUnwrap(store.data)
         let text = String(decoding: persisted, as: UTF8.self)
         XCTAssertFalse(text.contains("private prompt"))
+        XCTAssertFalse(text.contains("private title"))
         XCTAssertFalse(text.contains("private snippet"))
         XCTAssertFalse(text.contains("Edit new_string"))
 
@@ -954,6 +968,7 @@ final class ClaudeSessionPersistenceTests: XCTestCase {
         }
         XCTAssertEqual(local.sessionID, "local-session")
         XCTAssertNil(local.latestPriorUserPrompt)
+        XCTAssertNil(local.harnessTitle)
         XCTAssertTrue(local.recentFiles.isEmpty)
         XCTAssertTrue(local.recentSnippets.isEmpty)
 
@@ -1019,23 +1034,71 @@ final class ClaudeSessionPersistenceTests: XCTestCase {
         )
     }
 
-    func testCorruptStoreRestoresNothingAndNextMutationReplacesIt() throws {
-        let store = MemoryClaudeSessionStore(Data("not json".utf8))
-        let corruptRegistry = registry(store: store)
-        XCTAssertTrue(corruptRegistry.liveSessions().isEmpty)
-        corruptRegistry.ingest(localRecord(.sessionStart), origin: .localAuthenticated(peerUID: 501))
-        corruptRegistry.flushPersistence()
-        XCTAssertNoThrow(try JSONSerialization.jsonObject(with: XCTUnwrap(store.data)))
+    func testCorruptStoreRestoresNothingAndIsMovedAsideBeforeTheNextWrite() throws {
+        for refused in ["not json", #"{"v":99,"sessions":[]}"#] {
+            let store = MemoryClaudeSessionStore(Data(refused.utf8))
+            let refusedRegistry = registry(store: store)
+            XCTAssertTrue(refusedRegistry.liveSessions().isEmpty)
+            refusedRegistry.ingest(localRecord(.sessionStart), origin: .localAuthenticated(peerUID: 501))
+            refusedRegistry.flushPersistence()
+            XCTAssertEqual(store.movedAside, Data(refused.utf8))
+            XCTAssertNoThrow(try JSONSerialization.jsonObject(with: XCTUnwrap(store.data)))
+        }
+    }
 
-        let unknownVersion = MemoryClaudeSessionStore(Data(#"{"v":99,"sessions":[]}"#.utf8))
-        let versionRegistry = registry(store: unknownVersion)
-        XCTAssertTrue(versionRegistry.liveSessions().isEmpty)
-        versionRegistry.ingest(
-            localRecord(.sessionStart),
-            origin: .localAuthenticated(peerUID: 501)
+    func testANewerSessionFileIsMovedAsideOnDiskBeforeTheNextWrite() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("lvx-sessions-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
         )
-        versionRegistry.flushPersistence()
-        XCTAssertNoThrow(try JSONSerialization.jsonObject(with: XCTUnwrap(unknownVersion.data)))
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("claude-sessions.json")
+        let newer = Data(#"{"v":2,"sessions":[],"from":"a later build"}"#.utf8)
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: fileURL.path,
+            contents: newer,
+            attributes: [.posixPermissions: NSNumber(value: Int16(0o600))]
+        ))
+
+        let timestamp = epoch
+        let registry = ClaudeSessionRegistry(
+            store: ClaudeSessionFileStore(fileURL: fileURL),
+            now: { timestamp },
+            isProcessAlive: { _ in true },
+            bootIdentity: { "boot-a" },
+            localPeerUID: { 501 }
+        )
+        registry.ingest(localRecord(.sessionStart), origin: .localAuthenticated(peerUID: 501))
+        registry.flushPersistence()
+
+        let aside = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            .filter { $0.hasPrefix("claude-sessions.json.incompatible-") }
+        XCTAssertEqual(aside.count, 1)
+        XCTAssertEqual(
+            try Data(contentsOf: directory.appendingPathComponent(try XCTUnwrap(aside.first))),
+            newer
+        )
+        XCTAssertTrue(String(decoding: try Data(contentsOf: fileURL), as: UTF8.self).contains("local-session"))
+    }
+
+    func testUnknownRemoteChannelsKeepRemoteSessionsInTheFile() throws {
+        let store = MemoryClaudeSessionStore()
+        let first = registry(store: store)
+        first.ingest(remoteRecord(.sessionStart), origin: remoteOrigin)
+        first.flushPersistence()
+        let saved = try XCTUnwrap(store.data)
+
+        let unknown = registry(store: store, channelsUnknown: true)
+        unknown.flushPersistence()
+        XCTAssertEqual(store.data, saved)
+        XCTAssertTrue(unknown.liveRemoteSessions(hostID: hostID).isEmpty)
+
+        unknown.ingest(localRecord(.sessionStart), origin: .localAuthenticated(peerUID: 501))
+        unknown.flushPersistence()
+        XCTAssertEqual(registry(store: store).liveRemoteSessions(hostID: hostID).count, 1)
     }
 
     func testRemoveAllAndSessionEndAreDurable() {

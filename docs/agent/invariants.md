@@ -192,17 +192,23 @@ there is not.
   `.focused` only when that tty is the session's. A Return after a focus
   (#723 step 3) or #717's answer hotkey must require `.focused`, never
   `.unverified`.
-- **A session's title is a name, never evidence** (#1013). Claude
+- **A session's title is a name, never evidence** (#1013, #1020). Claude
   Desktop's title for a session is read from Desktop's own file on this
   Mac (`ClaudeDesktopSessionTitles`, keyed by the `local_<uuid>` the hooks
-  reported), for an ssh-host session too, so no title crosses the wire.
-  It names the session in the overlay, the popover, banners and go-to,
-  and nothing else: no join, route or capture reads it, the registry file
-  does not keep it, and no log line carries it. Other harnesses' titles
-  (Claude Code's `session_title`, Codex's `thread_name`, opencode's and
-  Vibe's `title`) stay on their host until a wire step carries them: the
-  auto-generated ones summarize the first prompt, which needs an owner
-  ruling (#1013).
+  reported), for an ssh-host session too. The other harnesses' titles ride
+  on the hook record as the optional `session_title` (owner ruling on
+  #1013: a title the harness made from the first prompt may cross, the app
+  never summarizes a prompt itself): Claude Code's from `SessionStart`
+  input, local or remote; opencode's from `session.updated`, placeholder
+  titles skipped; Codex's `thread_name`, which the publisher reads from the
+  tail of `~/.codex/session_index.jsonl` (`CodexSessionIndex`). Vibe's
+  `meta.json` title is still null on every measured session, so it is not
+  sent. The wire makes a title one sanitized line of at most 320 bytes and
+  drops it from focus records; an app that predates the key ignores it.
+  Desktop's title wins over the record's. Either names the session in the
+  overlay, the popover, banners and go-to, and nothing else: no join, route
+  or capture reads it (`ClaudeSessionSnapshot.harnessTitle` has no other
+  reader), the registry file does not keep it, and no log line carries it.
 - **Live Auto-Paste holds back only what may still read "go to"** (#747).
   Typed words cannot be taken back, so while a session is live a segment is
   held while its words so far may still become "go to" ("G", "Go", "go t")
@@ -249,10 +255,13 @@ there is not.
   focused app. **The Return exception** (owner ruling): in a terminal tab,
   and only there, Return may be pressed in an app the app itself brought
   forward. The pane must first read back `.focused` (its tty through the
-  join's reader, never a window title); only then is the text typed, into
+  join's reader, never a window title) and the registry still list the
+  session after the focus, since the shell left by an agent that exited
+  holds the same tty (#1219); only then is the text typed, into
   the terminal pid that is frontmost and carries the focused bundle ID.
   After the typing the tty is read back again, and Return is pressed only
-  if it still matches, that pid is frontmost and on `ReturnSubmitsAppList`,
+  if it still matches, the registry still lists the session after that
+  read-back, that pid is frontmost and on `ReturnSubmitsAppList`,
   and Secure Keyboard Entry is off. A failed check before the typing types
   nothing and keeps the text in History; one after it leaves the text
   unsubmitted, and the popover says so. Correction learning and term
@@ -495,6 +504,25 @@ there is not.
   a name written into it). Built-in commands that exist on no disk are not
   listed.
 
+- **A host's agent projects leave as name and origin only** (#1027). The
+  Claude Code remote shim sends `X-Lvx-Agent-Projects` on SessionStart:
+  `<epoch>:<name>:<repository>` entries, newest first, for each repository
+  Claude Code ran in on that host in the last 30 days. `hooks/agent-projects.sh`
+  reads only the first top-level `cwd` key of each transcript folder's newest
+  `.jsonl`, never anything else in a transcript, and never decodes a folder
+  name into a path. It names the repository as the shim names a session's
+  project (the main checkout's basename, the origin from `capture.sh
+  repository`); a cwd outside git or without an origin is not listed, so no
+  path ever leaves. The scan takes seconds, so the hook sends the value cached
+  in its state folder and rescans detached when the cache is six hours old.
+  Each field is checked against an enumerated charset before it is cached and
+  the whole value again before it is sent; at most 30 entries and 2000 bytes.
+  The Mac reads its own `~/.claude/projects` the same way
+  (`AgentTranscripts`), at launch and at most hourly after, and takes a
+  checkout's `origin` from its git config file, never from git. A project
+  only agents' work listed (`LearnedTermProject.agentActiveAt`) goes 30 days
+  after that work unless a dictation, hook or proposal touched it since.
+
 - **A learned term does not rewrite ordinary words** (#522). The exact tier
   pre-applies any span that normalizes to a term, so a learned `useAuth`
   would turn "we should use auth tokens" into code. For the `.learned`
@@ -729,7 +757,10 @@ there is not.
     (`ClaudeSessionJoinResolver.herdrPromptRoute(for:)`), so it writes to
     that pane id over the socket or `ssh -L` forward the join already
     trusted, and only while that dictation runs. It never asks herdr which
-    pane to write to.
+    pane to write to. A remote or federated pane is written only while the
+    host its session's transport origin names is enrolled and not revoked,
+    asked before every call (#1117): a revoked host's pane gets neither a
+    write nor typed keys, and the text stays in History.
     *No control characters:* herdr writes `send_text` to the pane's input
     byte for byte, with no bracketed paste, so a newline would press Enter
     and an escape would start a key sequence. Text holding any Unicode
@@ -747,11 +778,12 @@ there is not.
     Otherwise, and
     whenever the request went out with no valid answer (it may have landed),
     the text stays in History (`keepInHistory`).
-    *Enter only over the joined agent:* before each Enter the route asks the
-    pane's foreground processes again, with the test its arm joined on (the
-    registered pid for a local pane, the parent pid or agent name for a
-    remote one). A pane back at its shell gets no Enter: it would run the
-    prompt as a command.
+    *Text and Enter only over the joined agent:* before each append and
+    each Enter the route asks the pane's foreground processes again, with
+    the test its arm joined on (the registered pid for a local pane, the
+    parent pid or agent name for a remote one). A pane back at its shell, or
+    running another agent, gets neither: the text would land in that prompt
+    and an Enter would run it. The text stays in History, never typed.
     *Resolution:* only when opencode's relay did not resolve, so an opencode
     pane with a relay keeps it; from the context join's herdr binding when
     the join resolved one, and, when no join ran (polishing off), from a
@@ -1442,6 +1474,11 @@ there is not.
     background queue): every caller is a user-visible path — idle, health
     replacement, revoke, app quit, all on the main actor — and a child wedged in an
     uninterruptible wait must cost a background thread, never the UI.
+    The arms read their host and session before the forward opens and
+    build the join after it and the pane reads answer, so each re-asks, after
+    its last await, that the host is still enrolled and not revoked and the
+    session still live in the same pane (`remoteHerdrJoinLapse`, #1117). A
+    revoke or a session end in between leaves no join.
     A remote herdr join authorizes no more than a local one: never the raw AX
     capture (that grid is the composite herdr TUI, on someone else's machine),
     and never local repo collection — the origin is remote, so
@@ -1494,7 +1531,13 @@ there is not.
     reconcile, vocab-always / raw-excerpt-only-after-authorized-join). A TTY
     join in iTerm2/Terminal.app authorizes attaching that focused pane's
     contents; herdr and cmux joins never attach AX surface text on any
-    terminal.
+    terminal. A TTY join authorizes only the pane it matched: the start
+    capture carries the focused pane's tty, read just before its text, and
+    the join's own tty read just after it closes the bracket. The two must
+    be equal, because a window's tabs share its window identity and a tab
+    switch between the capture and the join would otherwise pair one tab's
+    screen with another tab's session (#1226). This is the one extra surface
+    read per dictation; it selects nothing, it only binds the capture.
   - **The local-tty echo arm (`.remoteLocalTTY`, 2026-09-06).** The tty arm,
     with the identifier taking one extra trip — and the arm that actually
     serves the configs people have. `resolve(tty:)` compares the focused
@@ -2094,7 +2137,7 @@ there is not.
     Desktop reader read it back from its prompt 0.2 s after the open. The
     sidebar exposes no session id to Accessibility (rows are titles), so
     clicking a row cannot be tied to a session. `.focused` requires Desktop
-    frontmost and `sessionShown` to resolve the focused view to this
+    frontmost before and after the read, and `sessionShown` to resolve the focused view to this
     registry session: focus in the primary pane's prompt, and the id
     reported by this session alone. An ambiguous id, focus left in the
     sidebar or a second pane, or no answer within 2 s is `.unverified`, and
@@ -2183,6 +2226,12 @@ there is not.
   --repo`, after the Inbox shows it, and as `gh api repos/<owner>/<name>`,
   which only reads. A squatter on the port cannot send it: it rides on the
   host's authenticated hook.
+  `X-Lvx-Env-Branch` (#1020) is the branch checked out in the session's
+  cwd, from `git symbolic-ref --short HEAD` on the host (none on a
+  detached HEAD). It is read only as `SessionDefaultNames.branch`, a name
+  for a remote linked worktree, exactly as a local session's branch is; it
+  never reaches git, a path or a join, and the registry file does not keep
+  it.
 - **A remote request names its agent in a header, and the header buys nothing
   but a namespace.** A remote host runs no publisher of ours, so the agent
   cannot ride inside the record the way it does locally: the Vibe shim
@@ -2430,6 +2479,22 @@ there is not.
   that could put a byte on a terminal, so there is no variable part left for a
   squatter to aim at. The fixed `X-Lvx-Session: joined|unknown` response header
   only selects a private per-session status stamp and never reaches stdout.
+  Both copies still read one host file, and each answers a hook from the
+  file as it is now (#1046): `authenticate`, the alias match the remote
+  join starts from and the host queries `lstat` the file first and reload
+  it when another copy replaced it, so a host one copy revokes or rotates
+  is refused by the other on its next request. A file that changed and
+  cannot be read back (damaged, a newer build's format) may hold a
+  revocation, so until it reads again it authenticates nothing and every
+  caller that selects a host gets none (`activeHostsIfReadable`): the
+  alias match, the `ssh -G` fallback, the app-held forwards and quick
+  capture's routing. Only Settings and the doctor still list hosts from
+  memory. A read or write that takes in a host the other copy revoked,
+  removed or rotated also calls the registry's hosts-dropped handler
+  (#1125): the Settings model hops to the main actor and runs what an
+  in-app revoke runs, so this copy's app-held forward, herdr forwards and,
+  after the last host, its listener come down without a relaunch. No timer
+  polls the file; the next hook or query is what notices.
   A second copy of the app (a `try-pr.sh` build) loses this port and the
   broker socket to the running copy, and then waits:
   `ClaudeHookSocketTakeover` retries only the binds it lost, each time

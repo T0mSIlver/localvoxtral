@@ -738,7 +738,7 @@ final class TerminalScreenContextTests: XCTestCase {
         TerminalScreenRawAttachmentPolicy.debugAuthorizationOverride = nil
         TerminalScreenRawAttachmentPolicy.configure(authorizer: nil)
         XCTAssertFalse(
-            TerminalScreenRawAttachmentPolicy.isAuthorized(target: ghostty, windowID: 101),
+            TerminalScreenRawAttachmentPolicy.isAuthorized(target: ghostty, windowID: 101, paneTTY: nil),
             "raw screen attachment must stay off unless an authorizer positively joins the pane"
         )
     }

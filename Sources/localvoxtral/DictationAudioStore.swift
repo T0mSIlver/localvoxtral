@@ -123,6 +123,15 @@ final class DictationAudioStore: Sendable {
     }
 
     /// Bytes on disk, for the Settings row.
+    /// How many recordings there are and their size, for the Settings row.
+    /// A missing folder holds none; a folder that will not list throws, so
+    /// the row never reads a failure as nothing to delete (#1166).
+    func summary() throws -> (recordings: Int, bytes: Int) {
+        guard FileManager.default.fileExists(atPath: directoryURL.path) else { return (0, 0) }
+        _ = try FileManager.default.contentsOfDirectory(atPath: directoryURL.path)
+        return (storedIDs().count, totalBytes())
+    }
+
     func totalBytes() -> Int {
         storedIDs().reduce(0) { total, id in
             let size = (try? FileManager.default.attributesOfItem(atPath: fileURL(for: id).path))?[.size]

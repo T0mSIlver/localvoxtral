@@ -24,6 +24,8 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
             apiKey: env["VLLM_REALTIME_TEST_API_KEY"] ?? "",
             model: env["VLLM_REALTIME_TEST_MODEL"] ?? "mistralai/Voxtral-Mini-4B-Realtime-2602"
         )
+        // The memo's bound covers transcription, not the service's first answer.
+        let warmUp = try await LiveSTTWarmUp.once(configuration: configuration)
         let phrase = "remember to add a retry button to the inbox page. "
             + "it should only show when filing failed, and it keeps the draft as it is."
         let memo = FileManager.default.temporaryDirectory
@@ -34,7 +36,9 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
         say.arguments = ["-o", memo.path, "--file-format=m4af", "--data-format=aac", phrase]
         try say.run()
         say.waitUntilExit()
-        try XCTSkipUnless(say.terminationStatus == 0, "say could not write an m4a")
+        guard say.terminationStatus == 0 else {
+            throw SpokenAudioFailure(description: "say could not write an m4a (status \(say.terminationStatus))")
+        }
 
         let pcm = try VoiceMemoAudioDecoder.pcm16(from: memo)
         let audioSeconds = Double(pcm.count) / Double(AudioChunkBuffer.bytesPerSecond)
@@ -44,8 +48,8 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
         let elapsed = ContinuousClock.now - started
         let accuracy = IntegrationTestSupport.wordAccuracy(expected: phrase, actual: text)
         print(
-            "voice memo integration: \(String(format: "%.1f", audioSeconds)) s of audio in \(elapsed), "
-                + "word accuracy \(String(format: "%.3f", accuracy)); transcript: \(text)")
+            "voice memo integration: \(String(format: "%.1f", audioSeconds)) s of audio in \(elapsed) "
+                + "after a \(warmUp) warm-up, word accuracy \(String(format: "%.3f", accuracy)); transcript: \(text)")
         XCTAssertGreaterThanOrEqual(accuracy, 0.55, "Transcript: \(text)")
     }
 

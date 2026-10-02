@@ -60,6 +60,17 @@ final class AgentCLIArgumentsTests: XCTestCase {
         XCTAssertEqual(parser.project("quillmark"), "quillmark")
     }
 
+    /// `~user` is that user's home, as a shell would expand it; an argument
+    /// passed through exec or quoted reaches the CLI unexpanded.
+    func testATildeUserProjectIsThatUsersHome() throws {
+        let parser = arguments()
+        let rootHome = try XCTUnwrap(FileManager.default.homeDirectory(forUser: "root")).path
+        XCTAssertEqual(parser.project("~root/repo"), rootHome + "/repo")
+        XCTAssertEqual(parser.project("~root"), rootHome)
+        // A shell leaves an unknown user's tilde as it is.
+        XCTAssertEqual(parser.project("~nosuchuser9/repo"), "/work/quillmark/Sources/~nosuchuser9/repo")
+    }
+
     func testProposeDefaultsToTheWorkingDirectoryAndTheDetectedAgent() throws {
         var invocation = try XCTUnwrap(
             run(["terms", "propose", "Inkwell", "QuillDoc"], environment: ["CLAUDECODE": "1"])

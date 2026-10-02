@@ -241,6 +241,13 @@ public struct AgentCLIArguments: Sendable {
         var path = trimmed
         if path == "~" || path.hasPrefix("~/"), let home = environment["HOME"] {
             path = home + path.dropFirst()
+        } else if path.hasPrefix("~") {
+            // `~user`, as a shell expands it. An unknown user stays as typed,
+            // as it does in a shell.
+            let user = path.dropFirst().prefix { $0 != "/" }
+            if !user.isEmpty, let home = FileManager.default.homeDirectory(forUser: String(user))?.path {
+                path = home + path.dropFirst(1 + user.count)
+            }
         }
         if !path.hasPrefix("/") {
             path = workingDirectory + "/" + path

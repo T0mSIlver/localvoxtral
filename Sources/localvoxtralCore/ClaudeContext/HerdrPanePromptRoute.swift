@@ -13,14 +13,18 @@ package struct HerdrPanePromptRoute: AgentPromptRoute {
     package let binding: ClaudeHerdrPaneBinding
     private let writer: any HerdrPaneWriting
     /// Whether the pane still runs the joined session's agent in the
-    /// foreground. Asked before every Enter: a pane back at its shell would
-    /// run the prompt as a command.
+    /// foreground. Asked before every call: a pane back at its shell, or
+    /// running another agent, would take the text into its own prompt, and
+    /// an Enter there would run it.
     private let agentIsForeground: @Sendable () async -> Bool
     /// Whether a key typed now would land in this pane: its terminal is
     /// frontmost, focused on the tty the join saw and showing the same
     /// machine there, and herdr's focused pane is this one. Asked only after
     /// a refusal, to choose between typing the text and keeping it in History.
     private let keysReachThePane: @Sendable () async -> Bool
+    /// For a remote or federated pane: whether its host is still enrolled and
+    /// not revoked (#1117). Asked before every call; nil for a local pane.
+    private let hostIsEnrolled: (@Sendable () async -> Bool)?
 
     package var name: String { "herdr pane" }
 
@@ -28,18 +32,30 @@ package struct HerdrPanePromptRoute: AgentPromptRoute {
         binding: ClaudeHerdrPaneBinding,
         writer: any HerdrPaneWriting,
         agentIsForeground: @escaping @Sendable () async -> Bool,
-        keysReachThePane: @escaping @Sendable () async -> Bool
+        keysReachThePane: @escaping @Sendable () async -> Bool,
+        hostIsEnrolled: (@Sendable () async -> Bool)? = nil
     ) {
         self.binding = binding
         self.writer = writer
         self.agentIsForeground = agentIsForeground
         self.keysReachThePane = keysReachThePane
+        self.hostIsEnrolled = hostIsEnrolled
     }
 
     package func deliver(_ call: AgentPromptCall) async -> AgentPromptDelivery {
+        if let hostIsEnrolled, await !hostIsEnrolled() {
+            // Neither sent nor typed: keys would land in the revoked host's pane.
+            Log.backends.notice("herdr pane route: the remote host is no longer enrolled; not sent")
+            return .keepInHistory
+        }
         let outcome: HerdrWriteOutcome
         switch call {
         case .append(let text):
+            guard await agentIsForeground() else {
+                // Neither sent nor typed: both would land in what replaced the agent.
+                Log.backends.notice("herdr pane route: joined agent is no longer foreground in the pane; text not sent")
+                return .keepInHistory
+            }
             guard Self.isSendable(text) else {
                 Log.backends.notice("herdr pane route: text holds a control character or is too long; not sent")
                 return await refused()

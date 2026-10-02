@@ -643,7 +643,7 @@ extension DictationSessionController {
         )
         audio.restartCommitTask(client: activeRealtimeClient, sleep: dependencies.clock.sleep)
         if isLiveAutoPasteModeEnabled {
-            textInsertion.restartInsertionRetryTask { [weak self] in
+            textInsertion.restartInsertionRetryTask(sleep: dependencies.clock.sleep) { [weak self] in
                 self?.acceptsRealtimeEvents ?? false
             }
         } else {
@@ -662,7 +662,8 @@ extension DictationSessionController {
         if audio.capturesFromMicrophone {
             audio.healthMonitor.start(
                 microphone: audio.microphone,
-                callbacks: makeHealthMonitorCallbacks()
+                callbacks: makeHealthMonitorCallbacks(),
+                clock: dependencies.clock
             )
         }
     }
