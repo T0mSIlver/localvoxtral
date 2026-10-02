@@ -546,7 +546,7 @@ extension DictationSessionController {
         requestedQuickCapture = false
         requestedDraftReview = nil
         sessionStartedAt = Date()
-        sessionStartedBehindVoiceMemoAt = isVoiceMemoTranscribing() ? dependencies.clock.now() : nil
+        sessionStartedBehindVoiceMemoAt = voiceMemoHoldsTheEngine() ? dependencies.clock.now() : nil
         sessionCaptureTimeline = CaptureTimeline(
             pressedAt: dependencies.clock.now(), now: dependencies.clock.now)
         latchSessionAudio(outputMode: requestedOutputMode)
@@ -753,7 +753,7 @@ extension DictationSessionController {
                 }
 
                 let now = clock.now()
-                if behindVoiceMemo, self.isVoiceMemoTranscribing() {
+                if behindVoiceMemo, self.voiceMemoHoldsTheEngine() {
                     // The memo's own timeout bounds this wait.
                     startedAt = now
                     await clock.sleep(.seconds(TimingConstants.finalizationPollInterval))
@@ -1161,7 +1161,7 @@ extension DictationSessionController {
                     return
                 }
 
-                if behindVoiceMemo, self.isVoiceMemoTranscribing() {
+                if behindVoiceMemo, self.voiceMemoHoldsTheEngine() {
                     startedAt = clock.now()
                     continue
                 }

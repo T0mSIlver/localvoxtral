@@ -241,7 +241,7 @@ final class DictationPipelineTests: XCTestCase {
     func testAFinalHeldUpBehindAVoiceMemoIsStillCommittedAndSaved() async throws {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
         var memoTranscribing = true
-        pipeline.viewModel.session.isVoiceMemoTranscribing = { memoTranscribing }
+        pipeline.viewModel.session.voiceMemoHoldsTheEngine = { memoTranscribing }
 
         await startAndSpeak(pipeline)
         pipeline.viewModel.stopDictation(reason: "test")

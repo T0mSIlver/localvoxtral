@@ -240,6 +240,24 @@ final class VoiceMemoIntakeTests: XCTestCase {
         XCTAssertFalse(intake.isTranscribing, "after a capture and after a failure")
     }
 
+    /// Voice memos turned off mid-memo: the memo in flight is finished, since
+    /// the helper decodes its audio anyway, and no other memo is taken.
+    func testStoppingFinishesTheMemoInFlightAndTakesNoOther() async {
+        let intake = intake()
+        transcriber.whileTranscribing.withLock {
+            $0 = { [unowned self] in
+                intake.stopAfterCurrentMemo()
+                streamingSeen.append(intake.isTranscribing)
+            }
+        }
+        files = [memo("a.m4a", minute: 1), memo("b.m4a", minute: 2)]
+        _ = await intake.scan()
+        await intake.run()
+        XCTAssertEqual(streamingSeen, [true], "still streaming after the stop")
+        XCTAssertEqual(captured.map(\.text), ["words of a.m4a"])
+        XCTAssertEqual(transcriber.calls.withLock { $0 }, ["a.m4a"])
+    }
+
     /// #988: a capture whose audio or words could not be written leaves
     /// the memo for a later scan, like an engine failure.
     func testAFailedCaptureLeavesTheMemoAndStopsThePass() async {
