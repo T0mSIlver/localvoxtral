@@ -118,6 +118,92 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertNil(model.file(id), "a filed capture is not filed again")
     }
 
+    /// Two running copies both show the draft ready (#990): once one filed
+    /// it, File in the other, which has not read the file since, files
+    /// nothing.
+    func testACopyThatHasNotSeenAFilingDoesNotFileAgain() async throws {
+        let installed = model(answer: ["reach": 0.9])
+        await installed.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(installed.items.first?.id)
+        let tryBuild = model(answer: ["reach": 0.9])
+        await installed.file(id)?.value
+
+        await tryBuild.file(id)?.value
+
+        XCTAssertEqual(github.created.withLock { $0.count }, 1)
+        XCTAssertEqual(tryBuild.items.first?.state, .filed)
+        XCTAssertEqual(tryBuild.items.first?.filedURL, "https://github.com/o/reach/issues/9")
+    }
+
+    /// A copy launched while another's `gh issue create` runs (#1288): the
+    /// capture it loads as filing is that copy's, not one a quit left, so
+    /// File stays off in it.
+    func testACopyLaunchedDuringAFilingDoesNotFileAgain() async throws {
+        let filing = ManualSleeper()
+        github.createGate = filing
+        let installed = QuickCaptureFixture.model(
+            fileURL: fileURL, answer: ["reach": 0.9], github: github, runner: runner, processID: 1)
+        await installed.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(installed.items.first?.id)
+        let first = try XCTUnwrap(installed.file(id))
+        await filing.waitForSleepers(1)
+
+        let tryBuild = QuickCaptureFixture.model(
+            fileURL: fileURL, answer: ["reach": 0.9], github: github, runner: runner, processID: 2)
+        github.createGate = nil
+        let second = tryBuild.file(id)
+        filing.wakeAll()
+        await first.value
+        await second?.value
+
+        XCTAssertNil(second)
+        XCTAssertEqual(github.created.withLock { $0.count }, 1)
+    }
+
+    /// A claim the Inbox could not save (#1288): another copy, reading the
+    /// file, would file it too, so this copy sends nothing, and the claim
+    /// does not come back when a later save lands.
+    func testAClaimThatWasNotSavedSendsNothing() async throws {
+        struct DiskFull: Error {}
+        let failing = Mutex(false)
+        let installed = QuickCaptureFixture.model(
+            fileURL: fileURL, answer: ["reach": 0.9], github: github, runner: runner, processID: 1,
+            write: { data, url in
+                if failing.withLock({ $0 }) { throw DiskFull() }
+                try PrivateFile.write(data, to: url)
+            })
+        await installed.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(installed.items.first?.id)
+        let tryBuild = QuickCaptureFixture.model(
+            fileURL: fileURL, answer: ["reach": 0.9], github: github, runner: runner, processID: 2)
+
+        failing.withLock { $0 = true }
+        await installed.file(id)?.value
+        await tryBuild.file(id)?.value
+        failing.withLock { $0 = false }
+        installed.setTitle("Another title", for: id)
+
+        XCTAssertEqual(github.created.withLock { $0.count }, 1)
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.first?.state, .filed)
+    }
+
+    /// "File it" files the draft the overlay showed (#927), also when
+    /// another running copy changed it since (#1288).
+    func testFileItDoesNotFileADraftAnotherCopyChanged() async throws {
+        let installed = model(answer: ["reach": 0.9])
+        await installed.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(installed.items.first?.id)
+        let shown = try XCTUnwrap(installed.reviewSnapshot(id))
+        let tryBuild = model(answer: ["reach": 0.9])
+        tryBuild.setBody("Edited in the other copy", for: id)
+
+        let outcome = installed.applySpokenReview(.file, to: shown)
+        await outcome.task?.value
+
+        XCTAssertTrue(github.created.withLock { $0.isEmpty }, "never files what the overlay did not show")
+        XCTAssertNotEqual(outcome.status, QuickCaptureReviewStatus.filing)
+    }
+
     /// #923: a coding agent filed it with its own gh; the app only records it.
     func testAnAgentMarksACaptureFiledInItsOwnRepositoryOnly() async throws {
         let model = model(answer: ["reach": 0.9])
@@ -351,6 +437,47 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(model.items.first?.repository, "me/other", "a typed repository is the user's")
         await model.file(id)?.value
         XCTAssertEqual(github.created.withLock { $0.map(\.first) }, ["them/tool"])
+    }
+
+    /// "File issues here" changed while a draft ran: the capture files
+    /// where the project files when the draft lands, and the fork's issue
+    /// the draft names is not linked. Its first draft, and a redraft.
+    func testADraftThatLandsAfterAFilingChangeFilesWhereTheProjectFilesNow() async throws {
+        let facts = GitHubRepositoryFacts(description: nil, topics: [], parent: "them/tool")
+        func tool(filingIn issueRepository: String) -> [QuickCaptureProject] {
+            [QuickCaptureProject(
+                key: "/w/tool", name: "tool", summary: nil, terms: [], userLine: nil,
+                repository: "me/tool", issueRepository: issueRepository, github: facts)]
+        }
+        let list = ProjectListBox(tool(filingIn: "me/tool"))
+        let runner = FakeQuickCaptureCheckRunner([
+            .draft(.init(title: "Verbose flag", body: "b", relation: .extends, issue: 7), usage: nil),
+        ], gated: true)
+        let model = QuickCaptureFixture.model(
+            fileURL: fileURL, answer: ["tool": 0.95], github: github, runner: runner, currentProjects: { list.value })
+
+        let drafting = model.capture(text: "Add a verbose flag", historyRecordID: nil)
+        await runner.gate!.waitForSleepers(1)
+        list.value = tool(filingIn: "them/tool")
+        model.adoptProjects()
+        runner.gate!.wakeAll()
+        await drafting.value
+        var item = try XCTUnwrap(model.items.first)
+        XCTAssertEqual(item.repository, "them/tool", "first draft")
+        XCTAssertNil(item.relatedIssue, "first draft")
+
+        list.value = tool(filingIn: "me/tool")
+        model.adoptProjects()
+        let redrafting = try XCTUnwrap(model.redraft(item.id, change: "and a quiet flag"))
+        await runner.gate!.waitForSleepers(1)
+        list.value = tool(filingIn: "them/tool")
+        model.adoptProjects()
+        runner.gate!.wakeAll()
+        await redrafting.value
+        item = try XCTUnwrap(model.items.first)
+        XCTAssertEqual(item.repository, "them/tool", "redraft")
+        XCTAssertNil(item.relatedIssue, "redraft")
+        XCTAssertFalse(item.canComment)
     }
 
     func testARemoteDraftSaysItWaitsForASessionUntilTheHostAnswers() async throws {

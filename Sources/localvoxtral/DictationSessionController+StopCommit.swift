@@ -212,7 +212,7 @@ extension DictationSessionController {
                 profile: polishProfile,
                 settings: settings,
                 appConfigStore: appConfigStore,
-                projectNames: polishProjectNames(),
+                projectNames: polishProjectNames(join: capture.claudeJoin),
                 skillNames: polishSkillNames()
             )
             agentSkillStore?.refreshLocalIfStale()
@@ -339,7 +339,10 @@ extension DictationSessionController {
         }
         if overlayCommit.succeeded {
             // Read before the cleanup below discards the join.
-            expectCorrection(of: displayWorkingText, join: context.claudeSessionJoin, project: nil)
+            expectCorrection(
+                of: displayWorkingText, join: context.claudeSessionJoin, project: nil,
+                startedAt: capturedSessionStartedAt
+            )
             proposeProjectTermsIfNew(join: context.claudeSessionJoin, inserted: displayWorkingText)
         }
         sendOverlaySpokenSendIfNeeded(spokenSend, commit: overlayCommit)
@@ -375,6 +378,20 @@ extension DictationSessionController {
                 technicalDetails: llmConfigurationFailure.technicalDetails
             )
         }
+    }
+
+    /// What a delivered dictation taught, remembered for the next one in
+    /// the same project. Recorded from the MERGED entries and nowhere else:
+    /// a span the merge abstained on is not evidence of a spelling, and a
+    /// verification pair is a question put to the model, not an answer.
+    /// Only once the text reached its target: a commit cancelled while it
+    /// polished, or one the target refused, taught nothing (#1372).
+    private func recordLearnedTerms(of outcome: StopCommitCoordinator.PolishOutcome) {
+        StopCommitCoordinator.recordLearnedTerms(
+            merged: outcome.material.merged,
+            project: outcome.material.learnedProject,
+            store: learnedTermStore
+        )
     }
 
     /// The polish-and-commit task's body: polish, apply the reply, commit,
@@ -483,6 +500,9 @@ extension DictationSessionController {
             // Clears the interrupted-save once the text is handed over.
             guard let addressed = await self.commitOverlayAddressed(to: addressedTo) else { return }
             self.finishAddressedCommit(addressed, sessionMode: sessionMode)
+            if addressed.inserted {
+                self.recordLearnedTerms(of: outcome)
+            }
             let historyID = self.saveSessionRecord(
                 startedAt: capturedSessionStartedAt,
                 rawText: originalText,
@@ -546,10 +566,12 @@ extension DictationSessionController {
             self.lastError = failureMessage
         }
         if overlayCommit.succeeded {
+            self.recordLearnedTerms(of: outcome)
             self.expectCorrection(
                 of: insertedText,
                 join: capture.claudeJoin,
-                project: outcome.material.learnedProject
+                project: outcome.material.learnedProject,
+                startedAt: capturedSessionStartedAt
             )
             self.proposeProjectTermsIfNew(join: capture.claudeJoin, inserted: insertedText)
         }
@@ -670,7 +692,10 @@ extension DictationSessionController {
         let historyJoin = context.claudeSessionJoin.map(AgentCLIJoin.init)
         // Read before the cleanup below discards the join.
         if liveDictationCanTeachACorrection {
-            expectCorrection(of: liveTypedText(), join: context.claudeSessionJoin, project: nil)
+            expectCorrection(
+                of: liveTypedText(), join: context.claudeSessionJoin, project: nil,
+                startedAt: capturedSessionStartedAt
+            )
         }
         // Read before the cleanup below drops text the field refused (#1176).
         let allTextInserted = !textInsertion.hasPendingInsertionText
@@ -869,6 +894,9 @@ extension DictationSessionController {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let recordID = UUID()
         let keptInHistory = !text.isEmpty && settings.dictationHistoryRetention.savesDictations && sessionStore != nil
+        // Read before the cleanup lets the join go: the capture is polished
+        // and routed among its group's projects only (#1005).
+        let group = learnedTermStore?.snapshot().group(ofJoin: context.claudeSessionJoin)
         saveSessionRecord(
             id: recordID,
             startedAt: sessionStartedAt ?? Date(),
@@ -893,7 +921,7 @@ extension DictationSessionController {
         }
         Log.dictation.info("quick capture: \(text.count, privacy: .public) chars to the inbox")
         statusText = StatusStrings.quickCaptureSaved
-        onQuickCapture?(text, keptInHistory ? recordID : nil)
+        onQuickCapture?(text, keptInHistory ? recordID : nil, group)
     }
 
     /// Returns the saved entry's id, or nil when nothing was saved.
@@ -1028,6 +1056,9 @@ extension DictationSessionController {
         let context: StopSecondPass.ContextTerms
         /// The joined session's workspace, the project's first word.
         let workspace: ClaudeWorkspaceReference?
+        /// The joined session's git root, as the start looked it up
+        /// (`lookUpJoinedRepositoryRoot`).
+        let joinedRepositoryRoot: LearnedTermProjectResolver.RepositoryRoot
         /// Whether the project's agent proposals may go, and so whether the
         /// git root is looked up: repo vocabulary on, and `contextTrusted`.
         let repositoryTermsPermitted: Bool
@@ -1090,6 +1121,7 @@ extension DictationSessionController {
                 ? stopSecondPassContextTerms(join: join, capture: capture, endpoint: endpoint)
                 : .none,
             workspace: contextTrusted ? join?.snapshot.learnedTermWorkspace : nil,
+            joinedRepositoryRoot: join?.repositoryRoot ?? .unknown,
             // An agent's unconfirmed proposals go only where repo vocabulary
             // may (#609): until use confirms them they are the repo's words.
             repositoryTermsPermitted: contextTrusted && settings.repoVocabularyEnabled
@@ -1146,7 +1178,13 @@ extension DictationSessionController {
                     context.repository = memory.unconfirmedProposals(projectKey: project.key)
                 }
             }
-            learnedTerms += memory.confirmedEverywhere().map(\.term)
+            // Only the joined project's group's (#1005). Without a root of its
+            // own, the pass takes the one the start looked up (#1155).
+            let group = request.workspace == nil
+                ? nil
+                : memory.group(ofDictationProject: project?.key)
+                    ?? memory.group(ofJoinedWorkspace: request.workspace, repositoryRoot: request.joinedRepositoryRoot)
+            learnedTerms += memory.inGroup(group).confirmedEverywhere().map(\.term)
         }
         let candidates = StopSecondPass.candidates(
             userTerms: request.userTerms,
@@ -1171,7 +1209,7 @@ extension DictationSessionController {
     }
 
     /// For the log: whether a root was found, never the path.
-    private static func describe(_ root: LearnedTermProjectResolver.RepositoryRoot) -> String {
+    static func describe(_ root: LearnedTermProjectResolver.RepositoryRoot) -> String {
         switch root {
         case .unknown: "unknown"
         case .noRepository: "no repository"

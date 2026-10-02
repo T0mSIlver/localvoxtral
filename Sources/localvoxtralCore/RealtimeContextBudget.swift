@@ -112,7 +112,7 @@ package enum RealtimeContextLimitProbe {
     /// models (not vLLM, or unreachable). Logs the outcome either way.
     package static func budget(
         for configuration: RealtimeSessionConfiguration,
-        fetch: Fetch = { try await URLSession.shared.data(for: $0) }
+        fetch: Fetch = { try await SameOriginHTTP.shared.data(for: $0) }
     ) async -> RealtimeContextBudget? {
         guard let url = modelsURL(forRealtimeEndpoint: configuration.endpoint) else {
             Log.backends.error("realtime context limit: no models URL for the realtime endpoint; no rollover")

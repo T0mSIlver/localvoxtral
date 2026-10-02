@@ -80,6 +80,28 @@ final class TerminalSessionPaneFocuserTests: XCTestCase {
         XCTAssertEqual(fake.activated, [], "a new dictation keeps its frontmost app")
     }
 
+    func testAGoToCancelledWhileTheConsentSheetIsUpSelectsNoPane() async {
+        // The first Apple event to a terminal parks on the Automation consent
+        // sheet; a new dictation cancels the go-to before the user answers.
+        let fake = FakeTerminals(
+            running: [Self.ghostty], holding: Self.ghostty,
+            consentGranted: false, cancelsOnConsentSheet: true
+        )
+        let outcome = await Task { await fake.focuser.focusPane(of: session(termProgram: "ghostty")) }.value
+
+        XCTAssertEqual(outcome, .paneNotFound)
+        XCTAssertEqual(fake.selected, [], "the new dictation's pane stays selected")
+        XCTAssertEqual(fake.activated, [])
+    }
+
+    func testAGoToThatWaitsOnTheConsentSheetStillFocusesThePane() async {
+        let fake = FakeTerminals(running: [Self.ghostty], holding: Self.ghostty, consentGranted: false)
+        let outcome = await fake.focuser.focusPane(of: session(termProgram: "ghostty"))
+
+        XCTAssertEqual(outcome, .focused(bundleID: Self.ghostty))
+        XCTAssertEqual(fake.selected, [Self.ghostty])
+    }
+
     func testAHerdrPaneAsksNoTerminal() async {
         let fake = FakeTerminals(running: [Self.ghostty], holding: Self.ghostty)
         var herdr = session(termProgram: "ghostty")
@@ -105,6 +127,10 @@ final class TerminalSessionPaneFocuserTests: XCTestCase {
     private final class FakeTerminals {
         private(set) var asked: [String] = []
         private(set) var activated: [String] = []
+        /// Terminals whose focus script ran far enough to select the pane.
+        private(set) var selected: [String] = []
+        /// Settled for each terminal by the first Apple event it gets.
+        private var granted: Set<String>
         private(set) var focuser: TerminalSessionPaneFocuser!
 
         init(
@@ -112,22 +138,35 @@ final class TerminalSessionPaneFocuserTests: XCTestCase {
             holding: String?,
             failing: Set<String> = [],
             readBack: String = "/dev/ttys004",
-            cancelsWhileAnswering: Bool = false
+            cancelsWhileAnswering: Bool = false,
+            consentGranted: Bool = true,
+            cancelsOnConsentSheet: Bool = false
         ) {
+            granted = consentGranted ? running : []
             focuser = TerminalSessionPaneFocuser(
                 runningTerminalBundleIDs: { running },
                 runScript: { [unowned self] source in
                     let bundleID = [TerminalSessionPaneFocuserTests.ghostty, TerminalSessionPaneFocuserTests.iterm, TerminalSessionPaneFocuserTests.terminal].first { source.contains("\"\($0)\"") } ?? ""
+                    if !self.granted.contains(bundleID) {
+                        // The sheet is up until the user answers it, and a
+                        // running script cannot be stopped meanwhile.
+                        if cancelsOnConsentSheet { withUnsafeCurrentTask { $0?.cancel() } }
+                        self.granted.insert(bundleID)
+                    }
+                    guard source.contains("tty of") else { return .success("") }
                     self.asked.append(bundleID)
                     if cancelsWhileAnswering { withUnsafeCurrentTask { $0?.cancel() } }
                     if failing.contains(bundleID) { return .failure(code: -1743) }
-                    return .success(bundleID == holding ? TerminalSessionPaneFocuser.focusedReply : "")
+                    guard bundleID == holding else { return .success("") }
+                    self.selected.append(bundleID)
+                    return .success(TerminalSessionPaneFocuser.focusedReply)
                 },
                 activate: { [unowned self] bundleID in
                     self.activated.append(bundleID)
                     return true
                 },
-                focusedTTY: { _ in readBack }
+                focusedTTY: { _ in readBack },
+                isConsentGranted: { [unowned self] in self.granted.contains($0) }
             )
         }
     }

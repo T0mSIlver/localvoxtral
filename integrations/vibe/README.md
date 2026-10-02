@@ -128,6 +128,12 @@ Vibe's environment. Sessions then expire after four idle hours.
 note in `~/.vibe/AGENTS.md` saying your prompts come from speech-to-text. See
 [Telling the agent you dictate](../../docs/coding-agents.md#telling-the-agent-you-dictate).
 
+## Teach Mistral Vibe to check dictation
+
+**Settings → Mistral Vibe → Teach Mistral Vibe to check dictation → Add** installs a
+skill in ~/.vibe/skills that names `localvoxtral doctor` and `localvoxtral logs`. See
+[Teaching the agent to check dictation](../../docs/coding-agents.md#teaching-the-agent-to-check-dictation).
+
 ## What it sends
 
 Everything stays on this machine. The hooks publish bounded records to
@@ -169,10 +175,11 @@ reads it from the session's message log, whose path Vibe passes to every
 hook.
 
 It reads the last 512 KiB of that file and keeps one thing: the newest
-message you typed (role user, not injected by Vibe), cut to 8 KiB. It does
-not parse lines that lack the user-role marker, which covers assistant
-messages, reasoning, tool calls and tool results. It never sends the file
-path.
+message you typed (role user, not injected by Vibe), cut to 8 KiB, with
+Vibe's id for that message. Every hook reads that message again until you
+send the next one; the id lets the app count it once. It does not parse
+lines that lack the user-role marker, which covers assistant messages,
+reasoning, tool calls and tool results. It never sends the file path.
 
 If the read takes longer than 250 ms, the hook publishes without a prompt.
 

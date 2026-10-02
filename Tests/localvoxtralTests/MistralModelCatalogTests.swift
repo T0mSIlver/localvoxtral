@@ -241,6 +241,31 @@ final class MistralModelCatalogTests: XCTestCase {
         XCTAssertEqual(relaunched.mistralModelCatalog, settings.mistralModelCatalog)
     }
 
+    /// The first draft asks for the model's lowest effort, but a model the
+    /// catalog lists without reasoning rejects the field outright (#1365).
+    @MainActor
+    func testNonReasoningModelFirstDraftOmitsReasoningEffort() throws {
+        let suiteName = "localvoxtral.MistralModelCatalogTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = SettingsStore(
+            defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
+        settings.llmPolishingEnabled = true
+        settings.polishingBackendMode = .mistralAPI
+        settings.mistralAPIKey = "mk-mistral"
+        settings.mistralModelCatalog = try catalog()
+
+        func firstDraftEffort(_ model: String) throws -> String? {
+            settings.mistralPolishingModel = model
+            let configuration = try XCTUnwrap(settings.llmPolishingConfiguration)
+            return QuickCaptureInboxViewModel.firstDraftExtraBody(configuration)["reasoning_effort"] as? String
+        }
+
+        XCTAssertNil(try firstDraftEffort("ministral-8b-2512"))
+        XCTAssertEqual(try firstDraftEffort("zai-glm-5-3"), "low")
+        XCTAssertEqual(try firstDraftEffort("mistral-medium-3-5"), "none")
+    }
+
     private func requestJSON(
         model: String, effort: MistralReasoningEffort?
     ) throws -> [String: Any] {

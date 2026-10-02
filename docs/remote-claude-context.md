@@ -269,7 +269,9 @@ altogether, since the token goes through SSH stdin (see above).
 Press **Check Setup** in the enrollment sheet. It runs two read-only checks
 and explains the results. The checks below run them by hand.
 
-Or run `localvoxtral doctor` in a Claude Code session on the host. It runs
+Or run `localvoxtral doctor` in a Claude Code session on the host, or ask
+the agent why a dictation did not join: plugin 1.36.0 ships a skill that
+tells it about the command. It runs
 them all from there: the forward port, the 401 without the token and the 200
 with it, the plugin version each running session loaded, the Vibe hooks and
 the last hook's outcome. It then prints the Mac's own checks for this host,
@@ -632,7 +634,9 @@ detached, at most once per project per 24 hours.
 
 The capture script posts the first 16 KiB of the project's README.md to the
 listener. The Mac keeps the first two prose paragraphs, 400 characters at
-most, on the project.
+most, on the project. From localvoxtral-remote 1.35.0 and Vibe hooks 1.17.0,
+the script skips a README, AGENTS.md or CLAUDE.md that is a symlink, so a
+committed link cannot send a file from elsewhere on the host.
 
 **Draft.** The capture waits up to 10 minutes for a hook from a live session in
 its project. The reply to that hook asks for a draft. With no such session, or

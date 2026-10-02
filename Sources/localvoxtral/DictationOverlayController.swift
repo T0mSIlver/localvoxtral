@@ -474,6 +474,8 @@ final class DictationOverlayController {
         Dictionary(uniqueKeysWithValues: destinationFrames.filter { $0.key.inList == inList }.map { ($0.key.destination, $0.value) })
     }
     var contentHeightForTesting: CGFloat { panel.contentView?.bounds.height ?? 0 }
+
+    var panelFrameForTesting: CGRect { panel.frame }
     #endif
 
     /// Drops the remembered position, here and in settings, and puts the panel
@@ -517,8 +519,18 @@ final class DictationOverlayController {
         let visibleFrame = screenVisibleFrame(containing: targetRect)
         let margin = OverlayManualPlacementResolver.edgeMargin
 
-        let originX = resolveLockedOriginX(targetRect: targetRect, contentWidth: contentSize.width, visibleFrame: visibleFrame, margin: margin)
-        let originY = resolveLockedOriginY(targetRect: targetRect, contentHeight: contentSize.height, visibleFrame: visibleFrame, margin: margin)
+        let lockedX = resolveLockedOriginX(targetRect: targetRect, contentWidth: contentSize.width, visibleFrame: visibleFrame, margin: margin)
+        let lockedY = resolveLockedOriginY(targetRect: targetRect, contentHeight: contentSize.height, visibleFrame: visibleFrame, margin: margin)
+        // The lock was taken against the display of the session's first
+        // render. Once that display is gone (unplugged mid-dictation), the
+        // locked point can sit past every surviving edge, so each render
+        // keeps the panel inside the display it now falls back to. On an
+        // unchanged display both clamps leave the locked point alone; a
+        // panel taller than the screen keeps its bottom edge in view.
+        let originX = min(
+            max(lockedX, visibleFrame.minX + margin), visibleFrame.maxX - contentSize.width - margin)
+        let originY = max(
+            min(lockedY, visibleFrame.maxY - contentSize.height), visibleFrame.minY + margin)
 
         panel.setFrame(
             NSRect(origin: CGPoint(x: originX, y: originY), size: contentSize),
@@ -526,8 +538,14 @@ final class DictationOverlayController {
         )
     }
 
+    /// The visible frame of the display under the anchor, or of the first
+    /// display when none is (the anchor's display was removed).
     private func screenVisibleFrame(containing targetRect: CGRect) -> CGRect {
         let midPoint = CGPoint(x: targetRect.midX, y: targetRect.midY)
+        let screens = screensProvider()
+        if let screen = screens.first(where: { $0.frame.contains(midPoint) }) ?? screens.first {
+            return screen.visibleFrame
+        }
         let screen = NSScreen.screens.first { $0.frame.contains(midPoint) } ?? NSScreen.main
         return screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1200, height: 800)
     }

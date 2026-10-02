@@ -36,6 +36,16 @@ public enum ClaudePluginAssets {
     /// Marketplace name, as it appears in marketplace.json.
     public static let marketplaceName = "localvoxtral"
 
+    /// The remote plugin's doctor skill, which the app also installs for the
+    /// agents on this Mac: one text for both. Nil when it cannot be read.
+    public static func doctorSkill(marketplaceURL: URL? = ClaudePluginAssets.marketplaceURL()) -> Data? {
+        guard let marketplaceURL else { return nil }
+        let url = marketplaceURL.appendingPathComponent(
+            "plugins/\(remotePluginName)/skills/\(AgentSkillInstallService.skillName)/SKILL.md"
+        )
+        return try? Data(contentsOf: url)
+    }
+
     /// The marketplace root — the directory containing `.claude-plugin/`.
     /// Nil when neither location holds a valid marketplace.
     ///

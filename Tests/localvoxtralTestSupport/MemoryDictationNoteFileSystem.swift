@@ -2,14 +2,16 @@ import Foundation
 import Synchronization
 import localvoxtralCore
 
-/// Instructions files in memory, keyed by path relative to home, recording
-/// every write and delete the dictation-note service makes.
+/// Instructions files and skills in memory, keyed by path relative to home,
+/// recording every write and delete the dictation-note and skill services
+/// make.
 package final class MemoryDictationNoteFileSystem: DictationNoteFileSystem {
     package struct Storage: Sendable {
         package var files: [String: DictationNoteFile]
         package var createdDirectories: [String] = []
         package var writes: [(path: String, permissions: UInt16)] = []
         package var deletes: [String] = []
+        package var removedDirectories: [String] = []
         /// Replaces a file's contents after the service's first read of it,
         /// the way an editor saving mid-edit would.
         package var editBetweenReads: (path: String, text: String)?
@@ -70,6 +72,14 @@ package final class MemoryDictationNoteFileSystem: DictationNoteFileSystem {
         storage.withLock {
             $0.deletes.append(relativePath)
             $0.files[relativePath] = nil
+        }
+    }
+
+    package func removeDirectoryIfEmpty(relativePath: String) {
+        storage.withLock { storage in
+            let prefix = relativePath + "/"
+            guard !storage.files.keys.contains(where: { $0.hasPrefix(prefix) }) else { return }
+            storage.removedDirectories.append(relativePath)
         }
     }
 }

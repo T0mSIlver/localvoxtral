@@ -12,7 +12,8 @@ import Glibc
 /// listener on 127.0.0.1, port 0, that records every call and answers each
 /// with the status `status` picks (200 by default; 0 reads the call and
 /// closes the connection without answering). One connection at a time, as
-/// the app's client makes them.
+/// the app's client makes them. `location` adds a Location header, for a
+/// redirect.
 package final class FakeOpencodePromptRelay: @unchecked Sendable {
     package struct Call: Sendable, Equatable {
         package var method: String
@@ -27,11 +28,16 @@ package final class FakeOpencodePromptRelay: @unchecked Sendable {
 
     private let listener: Int32
     private let status: @Sendable (Call) -> Int
+    private let location: @Sendable (Call) -> String?
     private typealias Watch = (reached: @Sendable ([Call]) -> Bool, wait: BoundedWait)
     private let state = Mutex<(calls: [Call], watches: [Watch], stopped: Bool)>(([], [], false))
 
-    package init(status: @escaping @Sendable (Call) -> Int = { _ in 200 }) throws {
+    package init(
+        status: @escaping @Sendable (Call) -> Int = { _ in 200 },
+        location: @escaping @Sendable (Call) -> String? = { _ in nil }
+    ) throws {
         self.status = status
+        self.location = location
         let descriptor = socket(AF_INET, POSIXSocket.stream, 0)
         guard descriptor >= 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
         var address = sockaddr_in()
@@ -167,7 +173,8 @@ package final class FakeOpencodePromptRelay: @unchecked Sendable {
         )
         let code = status(call)
         if code != 0 {
-            let reply = "HTTP/1.1 \(code) Fake\r\nContent-Type: application/json\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntrue"
+            let locationHeader = location(call).map { "Location: \($0)\r\n" } ?? ""
+            let reply = "HTTP/1.1 \(code) Fake\r\n\(locationHeader)Content-Type: application/json\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntrue"
             _ = reply.utf8CString.withUnsafeBufferPointer { pointer in
                 send(connection, pointer.baseAddress, pointer.count - 1, POSIXSocket.sendFlags)
             }

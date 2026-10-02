@@ -678,6 +678,49 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         XCTAssertEqual(clock.sleeps.withLock { $0.reduce(0, +) }, 2.0, accuracy: 0.05)
     }
 
+    /// The copy that lost the listener port still runs the launch reap
+    /// (#1368), wired as the app wires it, so a dictation into a remote herdr
+    /// pane spawns its forward without spending the readiness budget at the
+    /// reap gate.
+    func testAnUnboundListenerStillLetsAHerdrForwardOpenAfterTheReap() async throws {
+        let spawner = ForwardTestSpawner()
+        let clock = ForwardTestClock()
+        let service = service(
+            spawner: spawner,
+            workspaces: ForwardTestWorkspaces(),
+            clock: clock,
+            dialable: { _ in true },
+            orphanReapInitiallyComplete: false
+        )
+        let registry = try ClaudeRemoteHostRegistry(
+            fileURL: URL(fileURLWithPath: "/lvx-tests/\(UUID().uuidString).json"),
+            io: MemoryHostStore(),
+            now: { Date(timeIntervalSince1970: 1_700_000_000) }
+        )
+        let spawnsAtReap = Mutex<Int?>(nil)
+        let forwards = ClaudeRemoteForwardCoordinator(
+            hosts: registry,
+            remoteForwardPort: 28511,
+            isListenerBound: { false },
+            reapOrphans: {
+                spawnsAtReap.withLock { $0 = spawner.spawnCount }
+                await MainActor.run { service.markOrphanReapComplete() }
+            }
+        )
+
+        forwards.reconcile()
+        await waitUntil("the launch reap to finish") { spawnsAtReap.withLock { $0 } != nil }
+        for _ in 0..<50 { await Task.yield() }
+
+        let handle = try unwrapAsync(
+            await service.open(alias: "builder", remoteSocketPath: remoteSocketPath)
+        )
+        XCTAssertEqual(spawnsAtReap.withLock { $0 }, 0, "no ssh may launch ahead of orphan cleanup")
+        XCTAssertEqual(spawner.spawnCount, 1)
+        XCTAssertEqual(clock.sleepCount, 0, "nothing waited at the reap gate")
+        handle.close()
+    }
+
     func testPrepareRefusesAnAliasThatDoesNotUniquelyNameItsHostID() async {
         let spawner = ForwardTestSpawner()
         let service = service(

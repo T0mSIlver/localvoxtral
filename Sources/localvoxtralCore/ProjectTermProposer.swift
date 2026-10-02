@@ -16,6 +16,14 @@ package protocol ProjectTermProposalStoring: Sendable {
         excluding: [String]
     )
     func recordProposalFailure(project: LearnedTermProjectIdentity)
+    /// A checkout's `origin` names `remote` (#971); for an ignored one, the
+    /// checkout joins its entry (#1006).
+    func recordOrigin(_ remote: ProjectRemote, projectKey: String)
+}
+
+extension ProjectTermProposalStoring {
+    /// A store that keeps no repository links has nothing to record.
+    package func recordOrigin(_ remote: ProjectRemote, projectKey: String) {}
 }
 
 /// Asks a project's coding agent for its terms after the first joined
@@ -36,6 +44,7 @@ package final class ProjectTermProposer: @unchecked Sendable {
     private let runner: any ProjectTermProposalRunning
     private let now: @Sendable () -> Date
     private let trackedFiles: @Sendable (String) async -> [String]
+    private let origin: @Sendable (String) async -> ProjectRemote?
     private let fileManager: FileManager
     /// Keys asked this launch, with when. The store's stamp lands on its own
     /// queue, so without this a dictation right behind the first one could
@@ -51,6 +60,7 @@ package final class ProjectTermProposer: @unchecked Sendable {
         runner: any ProjectTermProposalRunning,
         now: @escaping @Sendable () -> Date,
         trackedFiles: @escaping @Sendable (String) async -> [String] = ProjectTermProposer.gitTrackedFiles,
+        origin: @escaping @Sendable (String) async -> ProjectRemote? = ProjectTermProposer.gitOrigin,
         fileManager: FileManager = .default,
         usageRecorder: (any UsageRecording)? = nil
     ) {
@@ -59,6 +69,7 @@ package final class ProjectTermProposer: @unchecked Sendable {
         self.runner = runner
         self.now = now
         self.trackedFiles = trackedFiles
+        self.origin = origin
         self.fileManager = fileManager
     }
 
@@ -109,6 +120,17 @@ package final class ProjectTermProposer: @unchecked Sendable {
               claim(project.key, at: started)
         else { return }
 
+        // A new clone of an ignored repo has no record yet to say so; its
+        // `origin` does (#1006).
+        if let gitRoot, let remote = await origin(gitRoot),
+           store.snapshot().isIgnored(projectKey: project.key, remote: remote)
+        {
+            Log.backends.info("Project terms: not asking, the repository is ignored")
+            // Links the checkout, so the store drops what it learned there
+            // and knows its key from now on.
+            store.recordOrigin(remote, projectKey: project.key)
+            return
+        }
         let workingDirectory = gitRoot ?? directory
         let files: [String]
         if request.agent == .vibe {
@@ -178,6 +200,16 @@ package final class ProjectTermProposer: @unchecked Sendable {
                 .sorted()
                 .prefix(ProjectTermProposal.maxListedFiles)
         )
+    }
+
+    /// The repository `origin` names, from git alone: no gh, whose answer
+    /// can be an upstream's.
+    package static let gitOrigin: @Sendable (String) async -> ProjectRemote? = { root in
+        guard let output = await RepoGitRunner.run(
+            arguments: ["remote", "get-url", "origin"], root: root, timeoutSeconds: 20, maxBytes: 4096
+        ), !output.timedOut, output.exitCode == 0
+        else { return nil }
+        return ProjectRemote(remoteURL: String(decoding: output.data, as: UTF8.self))
     }
 
     /// The first `ProjectTermProposal.maxListedFiles` tracked files, for

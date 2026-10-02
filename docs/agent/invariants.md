@@ -272,7 +272,13 @@ there is not.
   read-back, that pid is frontmost and on `ReturnSubmitsAppList`,
   and Secure Keyboard Entry is off. A failed check before the typing types
   nothing and keeps the text in History; one after it leaves the text
-  unsubmitted, and the popover says so. Correction learning and term
+  unsubmitted, and the popover says so. Right before the typing and
+  again before the Return, the session's agent pid must be in its tty's
+  foreground process group (the process table, the herdr route's
+  foreground test), and the destination list's picked pane must pass the
+  same test before its words go in: a suspended agent stays alive and
+  registered, and its tab reads back as the session's, while its shell
+  owns the terminal (#1249). Correction learning and term
   proposals skip an addressed dictation: they key on the join of the pane
   it started in. Live Auto-Paste has no addressed send: its words are
   typed before the phrase at the end is heard.
@@ -470,9 +476,9 @@ there is not.
   About-you block ends with `Their projects (repository names): …`, built by
   `PolishProjectNames` from quick capture's project list
   (`QuickCaptureProjects.projects`): each project's name and its
-  repository's, sorted, the 30 most recent projects, without labels a tool
-  generated (a folder name ending in a hex hash, such as a Claude Desktop
-  worktree's). It goes to every endpoint whatever the context toggles say,
+  repository's, sorted, the 30 most recent projects. That list holds no
+  label a tool generated (a folder name ending in a hex hash, such as a
+  Claude Desktop worktree's, `LearnedTerms.isGeneratedLabel`, #1026). It goes to every endpoint whatever the context toggles say,
   on the same ruling as learned terms above: a repository name is the
   speaker's vocabulary. A remote project's name is a label its host sent, so
   a host can put up to 60 characters of its choosing in every prompt; the
@@ -849,8 +855,12 @@ there is not.
     the cmux process the join was about, with the join's password, one
     connection per call. Before every call it re-reads the opt-in
     (`cmuxSurfaceJoinEnabled`) and whether the joined session still holds
-    the surface in the registry: once the agent exits, the surface is a
-    shell, and an Enter there runs the dictation as a command.
+    the surface in the registry, and asks again right before the write:
+    once the agent exits, the surface is a shell, and an Enter there runs
+    the dictation as a command. A local agent must also be in its tty's
+    foreground process group (the process table, the herdr route's
+    foreground test): a suspended agent stays alive and registered while
+    its shell owns the terminal.
     *Only the dictation in progress:* armed at start, dropped at stop.
     *No control characters:* cmux turns `\n` and `\r` into Return and Tab,
     Escape and Backspace into keys, so text with any C0 or C1 control is
@@ -2044,9 +2054,19 @@ there is not.
     `role` is `user`, its `injected` field is PRESENT and `false`, and its
     `content` is a string, truncated to the wire's prompt limit. A line that
     does not contain Vibe's user-role marker is never parsed, nothing but the
-    chosen `content` string is kept, and the path never crosses the socket
+    chosen `content` string and that line's `message_id` is kept, and the path
+    never crosses the socket
     (`testRecordsPutThePromptFirstAndNeverCarryTheTranscriptPath`). Schema
     drift in the log therefore costs the prompt and nothing else.
+    Every hook re-reads the newest prompt, and Vibe 2.25.4 saves the log after
+    each model step, so one message arrives once per hook and a turn's first
+    tool still reads the turn before's. The `message_id` rides as the
+    record's `prompt_id`, and the registry counts a Vibe submit once per id
+    (`ClaudeSessionReducer.isRepeatedSubmit`,
+    `testEachVibeMessageIsSubmittedOnceHoweverManyHooksReadIt`, #1285):
+    correction learning took each replay for the user's fix. Text cannot
+    stand in for the id, because a prompt sent again on purpose has the same
+    text; a log without ids counts every submit, as before.
     Do not widen this read to another field or another agent: an agent whose
     hooks carry the prompt has no reason to be read this way.
     Vibe has TWO hook runners, chosen per account by a server-side rollout

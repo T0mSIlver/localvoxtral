@@ -336,6 +336,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         registry: ClaudeRemoteHostRegistry,
         stubs: ForwardStubs,
         isListenerBound: @escaping @MainActor () -> Bool = { true },
+        reapOrphans: (@Sendable () async -> Void)? = nil,
         reconcileHerdrEnrollment: @escaping @MainActor (Set<String>) -> Void = { _ in }
     ) -> ClaudeRemoteForwardCoordinator {
         ClaudeRemoteForwardCoordinator(
@@ -349,6 +350,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
                 stubs.byHost[configuration.hostID] = stub
                 return stub
             },
+            reapOrphans: reapOrphans,
             reconcileHerdrEnrollment: reconcileHerdrEnrollment
         )
     }
@@ -1533,6 +1535,31 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
         XCTAssertTrue(listener.isListening)
         XCTAssertEqual(model.listenerStatus, .listening(port: 8473))
+    }
+
+    /// A second copy of the app loses the listener port at launch. Its herdr
+    /// forwards wait on the launch orphan reap, so the failed bind must still
+    /// run it, or every remote herdr join waits out its readiness budget and
+    /// joins nothing (#1368).
+    func testAPortConflictAtLaunchStillRunsTheOrphanReap() async throws {
+        let registry = try makeRegistry()
+        _ = try registry.enroll(label: "buildhost", sshHostAlias: "builder")
+        let listener = StubClaudeRemoteListener(hosts: registry)
+        listener.bindError = ClaudeRemoteContextListener.StartFailure.bindFailed(errno: EADDRINUSE)
+        let reapCount = Mutex(0)
+        let forwards = makeForwardCoordinator(
+            registry: registry,
+            stubs: ForwardStubs(),
+            isListenerBound: { listener.isListening },
+            reapOrphans: { reapCount.withLock { $0 += 1 } }
+        )
+        let model = makeModel(registry: registry, listener: listener, forwards: forwards)
+
+        model.synchronizeListenerAtLaunch()
+        for _ in 0..<50 { await Task.yield() }
+
+        XCTAssertEqual(model.listenerStatus, .portConflict(port: 8473))
+        XCTAssertEqual(reapCount.withLock { $0 }, 1)
     }
 
     // MARK: Last-heard and rejection diagnostics

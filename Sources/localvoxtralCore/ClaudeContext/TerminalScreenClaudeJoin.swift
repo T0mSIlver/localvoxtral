@@ -185,6 +185,13 @@ package struct ClaudeSessionJoin: Sendable, Equatable {
     /// Set on herdr joins by the arm that resolved them. Nil never lets a
     /// refused text be typed.
     package internal(set) var herdrSurface: HerdrJoinedSurface?
+    /// The git root of a local session's directory and its repository's
+    /// main checkout, looked up off the commit path after the join resolved
+    /// (`DictationSessionController.lookUpJoinedRepositoryRoot`). It finds
+    /// the project group of a session in a linked worktree outside its main
+    /// checkout (#1155). `.unknown` until the lookup answers, and for every
+    /// join it never runs for.
+    package var repositoryRoot: LearnedTermProjectResolver.RepositoryRoot = .unknown
 
     package init(
         target: TerminalScreenTarget,

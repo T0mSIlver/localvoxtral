@@ -136,6 +136,33 @@ final class ModifierOnlyHotKeyManagerTests: XCTestCase {
         XCTAssertEqual(tapCount, 0)
     }
 
+    // Left ⌘ (0x08) stays down while right ⌘ (0x10) is tapped: the release
+    // still carries `.command`, so only the device bit says right ⌘ is up.
+    func testRightModifierReleaseInvalidatesHoldWhileLeftModifierRemainsDown() {
+        let cases: [(ModifierOnlyHotKeyManager.ModifierKey, Int, Int, NSEvent.ModifierFlags, UInt)] = [
+            (.rightCommand, kVK_Command, kVK_RightCommand, .command, 0x08),
+            (.rightOption, kVK_Option, kVK_RightOption, .option, 0x20),
+        ]
+        for (target, leftKey, rightKey, flag, leftBit) in cases {
+            let scheduler = HoldSchedulerProbe()
+            let manager = ModifierOnlyHotKeyManager(holdScheduler: scheduler.scheduler)
+            var holdStartCount = 0
+            manager.onHoldStart = { holdStartCount += 1 }
+            manager.debugStartGestureForTesting(modifier: target)
+            let rightBit: UInt = target == .rightCommand ? 0x10 : 0x40
+            let leftDown = NSEvent.ModifierFlags(rawValue: flag.rawValue | leftBit)
+            let bothDown = NSEvent.ModifierFlags(rawValue: flag.rawValue | leftBit | rightBit)
+
+            manager.debugHandleFlagsChangedForTesting(keyCode: UInt16(leftKey), flags: leftDown)
+            manager.debugHandleFlagsChangedForTesting(keyCode: UInt16(rightKey), flags: bothDown)
+            manager.debugHandleFlagsChangedForTesting(keyCode: UInt16(rightKey), flags: leftDown)
+            scheduler.fireAll()
+
+            XCTAssertEqual(holdStartCount, 0, "\(target): hold fired after the right key was released")
+            XCTAssertFalse(manager.debugGestureSnapshotForTesting().isModifierDown, "\(target)")
+        }
+    }
+
     func testKeyInterruptionCancelsTapAndPendingHold() async {
         let scheduler = HoldSchedulerProbe()
         let manager = ModifierOnlyHotKeyManager(holdScheduler: scheduler.scheduler)

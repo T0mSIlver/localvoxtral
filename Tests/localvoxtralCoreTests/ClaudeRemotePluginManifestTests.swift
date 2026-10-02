@@ -107,19 +107,26 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     }
 
     func testPluginDeclaresNoTokenConsumingSurfaces() throws {
-        // Same rule as the local plugin: a data channel, not a Claude feature.
-        // A skill or command would spend the user's tokens on a remote host for
-        // something they never asked Claude to do.
+        // A data channel, not a Claude feature: a command or agent would spend
+        // the user's tokens on a remote host for something they never asked
+        // Claude to do. The one exception is the doctor skill (#935): only its
+        // description sits in the session's context, and its body loads when
+        // the user asks why dictation misbehaves.
         let manifest = try manifest()
         for key in ["skills", "commands", "agents", "mcpServers", "statusLine"] {
             XCTAssertNil(manifest[key], "the remote plugin must not declare \(key)")
         }
-        for directory in ["skills", "commands", "agents"] {
+        for directory in ["commands", "agents"] {
             XCTAssertFalse(
                 FileManager.default.fileExists(atPath: pluginRoot.appendingPathComponent(directory).path),
                 "the remote plugin must not ship a \(directory)/ directory"
             )
         }
+        XCTAssertEqual(
+            try FileManager.default.subpathsOfDirectory(atPath: pluginRoot.appendingPathComponent("skills").path).sorted(),
+            ["\(AgentSkillInstallService.skillName)", "\(AgentSkillInstallService.skillName)/SKILL.md"],
+            "the remote plugin ships the doctor skill and no other"
+        )
     }
 
     func testPluginShipsExactlySevenExecutablesAllPOSIXSh() throws {
@@ -164,8 +171,8 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
                 "the remote plugin must ship no executable but its seven sh scripts, found \(path)"
             )
             XCTAssertTrue(
-                path.hasSuffix(".json"),
-                "the remote plugin must ship JSON manifests and its seven sh scripts only, found \(path)"
+                path.hasSuffix(".json") || path == "skills/\(AgentSkillInstallService.skillName)/SKILL.md",
+                "the remote plugin must ship JSON manifests, the doctor skill and its seven sh scripts only, found \(path)"
             )
         }
         for script in shellScripts {

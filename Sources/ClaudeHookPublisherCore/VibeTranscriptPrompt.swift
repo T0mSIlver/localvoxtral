@@ -15,9 +15,9 @@ import Glibc
 /// on every axis: one file the hook payload named, which must be a regular file
 /// called `messages.jsonl` owned by this user; only its tail; only a line that
 /// Vibe wrote with `"role": "user"` and `"injected": false`; only its `content`
-/// string, truncated to the wire's prompt limit. A line without the user-role
-/// marker is never parsed, and nothing but the chosen `content` string is kept
-/// or sent.
+/// string, truncated to the wire's prompt limit, and its `message_id`. A line
+/// without the user-role marker is never parsed, and nothing but those two
+/// strings is kept or sent.
 public enum VibeTranscriptPrompt {
     public static let fileName = "messages.jsonl"
 
@@ -29,7 +29,7 @@ public enum VibeTranscriptPrompt {
     public static func lastUserPrompt(
         atPath path: String?,
         limits: ClaudeHookLimits = .default
-    ) -> String? {
+    ) -> VibeUserPrompt? {
         guard let path, path.hasPrefix("/"),
               (path as NSString).lastPathComponent == fileName,
               let tail = readTail(path: path)
@@ -48,10 +48,10 @@ public enum VibeTranscriptPrompt {
         atPath path: String?,
         limits: ClaudeHookLimits = .default,
         deadline: TimeInterval,
-        read: @escaping @Sendable (String?, ClaudeHookLimits) -> String? = {
+        read: @escaping @Sendable (String?, ClaudeHookLimits) -> VibeUserPrompt? = {
             VibeTranscriptPrompt.lastUserPrompt(atPath: $0, limits: $1)
         }
-    ) -> String? {
+    ) -> VibeUserPrompt? {
         let result = DeadlineResult()
         let done = DispatchSemaphore(value: 0)
         let thread = Thread {
@@ -65,10 +65,10 @@ public enum VibeTranscriptPrompt {
 
     private final class DeadlineResult: @unchecked Sendable {
         private let lock = NSLock()
-        private var stored: String?
+        private var stored: VibeUserPrompt?
 
-        func set(_ prompt: String?) { lock.withLock { stored = prompt } }
-        var value: String? { lock.withLock { stored } }
+        func set(_ prompt: VibeUserPrompt?) { lock.withLock { stored = prompt } }
+        var value: VibeUserPrompt? { lock.withLock { stored } }
     }
 
     /// How Vibe (`json.dumps`) and a compact encoder spell a user line's role.
@@ -77,7 +77,7 @@ public enum VibeTranscriptPrompt {
     /// Newest-first scan of complete lines. The first line of a tail window is
     /// usually cut mid-record; it fails to parse and is skipped like any other
     /// line that is not a JSON object.
-    static func lastUserPrompt(inTail tail: Data, limits: ClaudeHookLimits) -> String? {
+    static func lastUserPrompt(inTail tail: Data, limits: ClaudeHookLimits) -> VibeUserPrompt? {
         for line in tail.split(separator: 0x0A, omittingEmptySubsequences: true).reversed() {
             // Assistant and tool lines stop here, unparsed. A tool line that
             // QUOTES the marker gets parsed and then fails the role check.
@@ -94,7 +94,10 @@ public enum VibeTranscriptPrompt {
             else { continue }
             let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
-            return ClaudeHookWireCodec.truncate(trimmed, toUTF8Bytes: limits.maxPromptBytes)
+            return VibeUserPrompt(
+                text: ClaudeHookWireCodec.truncate(trimmed, toUTF8Bytes: limits.maxPromptBytes),
+                messageID: ClaudeHookWireCodec.cleanPromptID(message["message_id"] as? String)
+            )
         }
         return nil
     }
@@ -129,5 +132,19 @@ public enum VibeTranscriptPrompt {
         }
         guard filled > 0 else { return nil }
         return Data(buffer[0..<filled])
+    }
+}
+
+/// The newest message the user typed into a Vibe session.
+public struct VibeUserPrompt: Sendable, Equatable {
+    public var text: String
+    /// Vibe's id for the message. Every hook reads the same message again
+    /// until the user sends another, so this, not the text, tells a new
+    /// submission from a repeat (#1285). Nil when the log has none.
+    public var messageID: String?
+
+    public init(text: String, messageID: String? = nil) {
+        self.text = text
+        self.messageID = messageID
     }
 }

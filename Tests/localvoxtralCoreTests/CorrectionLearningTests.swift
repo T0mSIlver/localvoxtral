@@ -37,7 +37,7 @@ final class CorrectionLearningTests: XCTestCase {
 
     func testFixInTheSubmittedPromptIsLearnedAndShownOnce() async {
         let (learner, store, presenter) = makeLearner()
-        learner.expect(inserted: "please fix the kwen tokenizer", sessionID: "s1", project: project)
+        learner.expect(inserted: "please fix the kwen tokenizer", sessionID: "s1", project: project, dictationStartedAt: start)
         clock += 20
         learner.promptSubmitted(sessionID: "s1", prompt: "please fix the Qwen tokenizer")
         store.waitForPendingWrites()
@@ -47,7 +47,7 @@ final class CorrectionLearningTests: XCTestCase {
         XCTAssertTrue(learner.pending.isEmpty, "a prompt is compared once")
 
         // The same fix in a later dictation confirms it again, silently.
-        learner.expect(inserted: "the kwen server is down", sessionID: "s1", project: project)
+        learner.expect(inserted: "the kwen server is down", sessionID: "s1", project: project, dictationStartedAt: start)
         learner.promptSubmitted(sessionID: "s1", prompt: "the Qwen server is down")
         store.waitForPendingWrites()
         XCTAssertEqual(presenter.shown, ["Qwen"])
@@ -56,7 +56,7 @@ final class CorrectionLearningTests: XCTestCase {
 
     func testUndoForgetsTheTerm() async {
         let (learner, store, presenter) = makeLearner()
-        learner.expect(inserted: "please fix the kwen tokenizer", sessionID: "s1", project: project)
+        learner.expect(inserted: "please fix the kwen tokenizer", sessionID: "s1", project: project, dictationStartedAt: start)
         learner.promptSubmitted(sessionID: "s1", prompt: "please fix the Qwen tokenizer")
         store.waitForPendingWrites()
 
@@ -67,7 +67,7 @@ final class CorrectionLearningTests: XCTestCase {
 
     func testPromptAfterTheWindowTeachesNothing() async {
         let (learner, store, presenter) = makeLearner()
-        learner.expect(inserted: "please fix the kwen tokenizer", sessionID: "s1", project: project)
+        learner.expect(inserted: "please fix the kwen tokenizer", sessionID: "s1", project: project, dictationStartedAt: start)
         clock += CorrectionLearning.window + 1
         learner.promptSubmitted(sessionID: "s1", prompt: "please fix the Qwen tokenizer")
         store.waitForPendingWrites()
@@ -80,7 +80,7 @@ final class CorrectionLearningTests: XCTestCase {
     /// up the wait for the session the dictation went into.
     func testAnotherSessionsPromptIsNotCompared() async {
         let (learner, store, _) = makeLearner()
-        learner.expect(inserted: "please fix the kwen tokenizer", sessionID: "s1", project: project)
+        learner.expect(inserted: "please fix the kwen tokenizer", sessionID: "s1", project: project, dictationStartedAt: start)
         learner.promptSubmitted(sessionID: "s2", prompt: "please fix the Qwen tokenizer")
         store.waitForPendingWrites()
         XCTAssertEqual(store.summary().terms, 0)
@@ -93,9 +93,9 @@ final class CorrectionLearningTests: XCTestCase {
     /// Two dictations before one send land in one prompt.
     func testTwoDictationsBeforeOneSendAreComparedTogether() async {
         let (learner, store, _) = makeLearner()
-        learner.expect(inserted: "the kwen tokenizer", sessionID: "s1", project: project)
+        learner.expect(inserted: "the kwen tokenizer", sessionID: "s1", project: project, dictationStartedAt: start)
         clock += 30
-        learner.expect(inserted: "drops the BOS token", sessionID: "s1", project: project)
+        learner.expect(inserted: "drops the BOS token", sessionID: "s1", project: project, dictationStartedAt: start)
         learner.promptSubmitted(sessionID: "s1", prompt: "the Qwen tokenizer drops the BOS token")
         store.waitForPendingWrites()
 
@@ -104,7 +104,7 @@ final class CorrectionLearningTests: XCTestCase {
 
     func testRewordedPromptTeachesNothing() async {
         let (learner, store, presenter) = makeLearner()
-        learner.expect(inserted: "fix the bug in the parser", sessionID: "s1", project: project)
+        learner.expect(inserted: "fix the bug in the parser", sessionID: "s1", project: project, dictationStartedAt: start)
         learner.promptSubmitted(sessionID: "s1", prompt: "fix the issue in the parser")
         store.waitForPendingWrites()
 
@@ -118,7 +118,7 @@ final class CorrectionLearningTests: XCTestCase {
         store.recordCorrection("SessionStart", project: project)
         store.waitForPendingWrites()
 
-        learner.expect(inserted: "hook the SessionStart event", sessionID: "s1", project: project)
+        learner.expect(inserted: "hook the SessionStart event", sessionID: "s1", project: project, dictationStartedAt: start)
         learner.promptSubmitted(sessionID: "s1", prompt: "hook the session start event")
         store.waitForPendingWrites()
 
@@ -135,7 +135,7 @@ final class CorrectionLearningTests: XCTestCase {
         store.waitForPendingWrites()
         XCTAssertEqual(store.snapshot().termRecord(project.key)?.terms.map(\.term), ["SessionStart"])
 
-        learner.expect(inserted: "hook the SessionStart event", sessionID: "s1", project: project)
+        learner.expect(inserted: "hook the SessionStart event", sessionID: "s1", project: project, dictationStartedAt: start)
         learner.promptSubmitted(sessionID: "s1", prompt: "hook the session start event")
         store.waitForPendingWrites()
 
@@ -147,7 +147,7 @@ final class CorrectionLearningTests: XCTestCase {
     func testListedTermIsNotRememberedAgain() async {
         speakerTerms = ["Qwen"]
         let (learner, store, presenter) = makeLearner()
-        learner.expect(inserted: "please fix the kwen tokenizer", sessionID: "s1", project: project)
+        learner.expect(inserted: "please fix the kwen tokenizer", sessionID: "s1", project: project, dictationStartedAt: start)
         learner.promptSubmitted(sessionID: "s1", prompt: "please fix the Qwen tokenizer")
         store.waitForPendingWrites()
 
@@ -160,7 +160,7 @@ final class CorrectionLearningTests: XCTestCase {
         let (learner, store, _) = makeLearner()
         learner.promptSubmitted(sessionID: "s1", prompt: "please fix the Qwen tokenizer")
         clock += CorrectionLearning.earlyPromptGrace - 1
-        learner.expect(inserted: "please fix the kwen tokenizer", sessionID: "s1", project: project)
+        learner.expect(inserted: "please fix the kwen tokenizer", sessionID: "s1", project: project, dictationStartedAt: start)
         store.waitForPendingWrites()
 
         XCTAssertEqual(store.confirmedTerms(projectKey: project.key), ["Qwen"])
@@ -168,11 +168,34 @@ final class CorrectionLearningTests: XCTestCase {
         XCTAssertTrue(learner.earlyPrompts.isEmpty)
     }
 
+    /// A prompt the user sent before the next dictation began is their own
+    /// earlier work, not a fix of that dictation, however close in time.
+    func testPromptBeforeDictationStartCannotConfirmItsTerms() async {
+        let (learner, store, presenter) = makeLearner()
+        learner.promptSubmitted(sessionID: "s1", prompt: "please use HTTP2 today")
+        clock += 2
+        let dictationStart = clock
+        clock += 3
+        learner.expect(
+            inserted: "please use HTTP3 today", sessionID: "s1", project: project,
+            dictationStartedAt: dictationStart
+        )
+        store.waitForPendingWrites()
+
+        XCTAssertEqual(store.summary().terms, 0)
+        XCTAssertEqual(presenter.shown, [])
+        XCTAssertNotNil(learner.pending["s1"], "the dictation still waits for its own prompt")
+
+        learner.promptSubmitted(sessionID: "s1", prompt: "please use HTTP2 today")
+        store.waitForPendingWrites()
+        XCTAssertEqual(store.confirmedTerms(projectKey: project.key), ["HTTP2"])
+    }
+
     func testAnEarlierPromptPastTheGraceIsNotCompared() async {
         let (learner, store, _) = makeLearner()
         learner.promptSubmitted(sessionID: "s1", prompt: "please fix the Qwen tokenizer")
         clock += CorrectionLearning.earlyPromptGrace + 1
-        learner.expect(inserted: "please fix the kwen tokenizer", sessionID: "s1", project: project)
+        learner.expect(inserted: "please fix the kwen tokenizer", sessionID: "s1", project: project, dictationStartedAt: start)
         store.waitForPendingWrites()
 
         XCTAssertEqual(store.summary().terms, 0)
@@ -186,7 +209,8 @@ final class CorrectionLearningTests: XCTestCase {
         learner.expect(
             inserted: "open aaaaaaaaaaaaaaa bbbbbbbbbbbbbbb cccccccccccccccc dddddddddddddddd now",
             sessionID: "s1",
-            project: project
+            project: project,
+            dictationStartedAt: start
         )
         learner.promptSubmitted(sessionID: "s1", prompt: "open \(long) now")
         store.waitForPendingWrites()
@@ -199,7 +223,7 @@ final class CorrectionLearningTests: XCTestCase {
         let (learner, _, _) = makeLearner()
         for index in 0...CorrectionLearning.maxPending {
             clock += 1
-            learner.expect(inserted: "text \(index)", sessionID: "s\(index)", project: project)
+            learner.expect(inserted: "text \(index)", sessionID: "s\(index)", project: project, dictationStartedAt: start)
         }
         XCTAssertEqual(learner.pending.count, CorrectionLearning.maxPending)
         XCTAssertNil(learner.pending["s0"], "the oldest wait goes first")

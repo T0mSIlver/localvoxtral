@@ -317,6 +317,30 @@ alone, and the row then says so. The app does not see `VIBE_HOME`,
 `CODEX_HOME` or `CLAUDE_CONFIG_DIR`. If you moved one of those directories,
 copy the note by hand.
 
+## Teaching the agent to check dictation
+
+Each agent's pane also has a **Teach … to check dictation** row. **Add**
+installs a skill named `localvoxtral-doctor` in that agent's skills
+directory. A skill is a file the agent loads only when a task needs it; until
+then, only its one-line description sits in the agent's context. This one
+names `localvoxtral doctor` and `localvoxtral logs` and says what each
+reports, so an agent asked why a dictation did not join runs them without
+being told.
+
+| Agent | Skill |
+|---|---|
+| Claude Code | `~/.claude/skills/localvoxtral-doctor/SKILL.md` |
+| opencode | `~/.config/opencode/skills/localvoxtral-doctor/SKILL.md` |
+| Mistral Vibe | `~/.vibe/skills/localvoxtral-doctor/SKILL.md` |
+| Codex | `~/.codex/skills/localvoxtral-doctor/SKILL.md` |
+
+opencode also loads Claude Code's skills, so with only Claude Code's row set
+up, opencode has the skill too. **Remove** deletes the file, and its
+directory unless you put another file there. A skill you edited, or one from
+an older version, reads as another version, with an **Update** button that
+replaces it. The remote Claude Code plugin ships the same skill, so a
+session on an enrolled host has it without this row.
+
 ## The localvoxtral command
 
 A coding agent can read your dictation history, your terms and your quick
@@ -539,6 +563,28 @@ Click a project to see its repository and checkouts, its description, its
 learned terms ([Terms learned from polishing](dictation.md#terms-learned-from-polishing)),
 and its joined sessions, captures and dictations this week. **Open Inbox**
 goes to its drafts.
+
+**Forget Project…** in a project's sheet deletes its records and learned
+terms, on every checkout of its repository. It comes back the next time you
+dictate there or a session on an ssh host reports it; Claude Code working
+in it is not enough. `forgotten-projects.json` remembers it until then.
+**Ignore Project…** also forgets it, then keeps it out: localvoxtral learns
+nothing there, its coding agent is never asked for its terms, and quick
+capture no longer lists it. Dictation there works as
+before. Both ask first and offer **Export Terms…** when the project has
+terms. Ignored projects are listed under **Ignored**, at the bottom of
+**Settings → Projects**, each with **Un-ignore**. The list is kept in
+`ignored-projects.json`, beside `learned-terms.json`.
+
+#### Keep work and personal projects apart
+
+The **Group** column puts a project in **Work** or **Personal**. A dictation
+joined to a project in a group then reads only that group's projects
+wherever it reads more than its own: the project names every polish
+carries, the confirmed terms the second pass sends, and a quick capture's
+polish, routing and follow-ups. A dictation with no join, or joined to a
+project in no group, reads every project, as before. You can still move a
+capture to any project by hand.
 
 ### Each project's repository
 

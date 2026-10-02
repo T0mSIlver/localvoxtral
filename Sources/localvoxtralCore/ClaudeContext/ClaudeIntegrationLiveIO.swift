@@ -310,7 +310,8 @@ package struct LiveVibeHooksFileSystem: VibeHooksFileSystem {
     }
 }
 
-/// The agents' user-level instructions files for the dictation note, live.
+/// The agents' user-level instructions files for the dictation note, and
+/// their skills directories for the doctor skill, live.
 /// Every path is under home; a symlinked file or directory on the way reads
 /// as a symlink, which the service refuses.
 package struct LiveDictationNoteFileSystem: DictationNoteFileSystem {
@@ -355,6 +356,12 @@ package struct LiveDictationNoteFileSystem: DictationNoteFileSystem {
         if FileManager.default.fileExists(atPath: fileURL.path) {
             try FileManager.default.removeItem(at: fileURL)
         }
+    }
+
+    package func removeDirectoryIfEmpty(relativePath: String) {
+        // `rmdir` only removes an empty directory, so a file the user put
+        // there keeps it.
+        _ = rmdir(homeURL.appendingPathComponent(relativePath, isDirectory: true).path)
     }
 }
 

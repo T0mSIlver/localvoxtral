@@ -331,6 +331,26 @@ final class SessionNavigationTests: XCTestCase {
         XCTAssertEqual(focuser.readBackSessionIDs, ["s"])
     }
 
+    /// A suspended agent's tab reads back as the session's, but its shell
+    /// owns the terminal: no pane route may type there (#1249). An
+    /// unreadable process table refuses too.
+    @MainActor
+    func testAPaneWhoseAgentIsNotInTheForegroundDoesNotShowTheSession() async {
+        let session = localSession("s", cwd: "/r/payments", tty: "/dev/ttys002")
+        let cases: [(foreground: [Int32]?, shows: Bool)] = [([1, 2], true), ([1], false), (nil, false)]
+        for (foreground, expected) in cases {
+            let navigator = SessionNavigator(
+                liveSessions: { [session] },
+                repositoryRoot: { _ in .unknown },
+                focuser: FakeSessionPaneFocuser(),
+                sleep: ManualSessionClock().sleep,
+                ttyForegroundPIDs: { $0 == "/dev/ttys002" ? foreground : [2] }
+            )
+            let shows = await navigator.focusedPaneShows(sessionID: "s", bundleID: "com.mitchellh.ghostty")
+            XCTAssertEqual(shows, expected, "foreground \(String(describing: foreground))")
+        }
+    }
+
     // MARK: - Helpers
 
     private func localSession(

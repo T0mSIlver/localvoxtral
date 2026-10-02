@@ -423,6 +423,41 @@ final class QuickCaptureTwoStageInboxTests: XCTestCase {
         XCTAssertFalse(item.canComment)
     }
 
+    /// A redraft's first draft that lands after "File issues here" changed
+    /// links no issue it found among the fork's.
+    func testARedraftFromBeforeAFilingChangeLinksNoIssueOfTheOldRepository() async throws {
+        let facts = GitHubRepositoryFacts(description: nil, topics: [], parent: "them/reach")
+        func reach(filingIn issueRepository: String) -> [QuickCaptureProject] {
+            [QuickCaptureProject(
+                key: "/w/reach", name: "reach", summary: nil, terms: [], userLine: nil,
+                repository: "me/reach", issueRepository: issueRepository, github: facts)]
+        }
+        let extending = QuickCaptureDraft.Draft(
+            kind: .issue, title: Self.first.title, body: Self.first.body, relation: .extends, issue: 7)
+        let first = FakeQuickCaptureFirstDrafter([.draft(extending, usage: nil)], gated: true)
+        let runner = FakeQuickCaptureCheckRunner([.failed(.agentError("down"))])
+        let list = Mutex(reach(filingIn: "me/reach"))
+        let model = model(runner: runner, first: first, projects: { list.withLock { $0 } })
+        let drafting = model.capture(text: "show drafting progress", historyRecordID: nil)
+        await first.gate!.waitForSleepers(1)
+        first.gate!.wakeAll()
+        await drafting.value
+        let id = try XCTUnwrap(model.items.first?.id)
+        XCTAssertEqual(model.items.first?.relatedIssue, 7)
+
+        let redrafting = try XCTUnwrap(model.redraft(id, change: "only the popover"))
+        await first.gate!.waitForSleepers(1)
+        list.withLock { $0 = reach(filingIn: "them/reach") }
+        model.adoptProjects()
+        first.gate!.wakeAll()
+        await redrafting.value
+
+        let item = try XCTUnwrap(model.items.first)
+        XCTAssertEqual(item.repository, "them/reach")
+        XCTAssertNil(item.relatedIssue)
+        XCTAssertFalse(item.canComment)
+    }
+
     func testEditsMadeDuringTheCheckAreKept() async throws {
         let runner = FakeQuickCaptureCheckRunner([.draft(Self.checked, usage: nil)], gated: true)
         let model = model(runner: runner, first: FakeQuickCaptureFirstDrafter([.draft(Self.first, usage: nil)]))
@@ -518,6 +553,41 @@ final class QuickCaptureTwoStageInboxTests: XCTestCase {
         await again.value
         XCTAssertEqual(model.items.first?.codeCheck?.state, .checked)
         XCTAssertEqual(model.items.first?.title, Self.checked.title)
+    }
+
+    /// Two running copies (#990): this one's Draft Again could not save its
+    /// start or its first draft, and the other copy filed the capture
+    /// meanwhile. When the check lands, those unsaved changes apply again on
+    /// top of the filing (#1260) and must not reopen it for a second File.
+    func testADraftWhoseSavesFailedDoesNotReopenACaptureAnotherCopyFiled() async throws {
+        let runner = FakeQuickCaptureCheckRunner([.failed(.budgetExceeded), .draft(Self.checked, usage: nil)], gated: true)
+        runner.gate!.wakeAll()
+        let installed = model(runner: runner, first: FakeQuickCaptureFirstDrafter([.draft(Self.first, usage: nil)]))
+        let capture = installed.capture(text: "show drafting progress", historyRecordID: nil)
+        await runner.gate!.waitForSleepers(1)
+        runner.gate!.wakeAll()
+        await capture.value
+        let id = try XCTUnwrap(installed.items.first?.id)
+        XCTAssertTrue(try XCTUnwrap(installed.items.first).canDraftAgain)
+        let tryBuild = model(runner: runner, first: FakeQuickCaptureFirstDrafter([.draft(Self.first, usage: nil)]))
+
+        // A file where the Inbox's folder goes: every save fails.
+        let inboxFolder = fileURL.deletingLastPathComponent()
+        try FileManager.default.removeItem(at: inboxFolder)
+        try Data().write(to: inboxFolder)
+        let again = try XCTUnwrap(installed.draftAgain(id))
+        await runner.gate!.waitForSleepers(1)
+        XCTAssertTrue(installed.hasUnsavedChanges)
+        try FileManager.default.removeItem(at: inboxFolder)
+        try FileManager.default.createDirectory(at: inboxFolder, withIntermediateDirectories: true)
+        await tryBuild.file(id)?.value
+        runner.gate!.wakeAll()
+        await again.value
+
+        XCTAssertEqual(installed.items.first?.state, .filed)
+        XCTAssertNil(installed.file(id), "never filed twice")
+        XCTAssertEqual(github.created.withLock { $0.count }, 1)
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.first?.state, .filed)
     }
 
     func testAFailedCheckKeepsTheFirstDraftAndOffersDraftAgain() async throws {

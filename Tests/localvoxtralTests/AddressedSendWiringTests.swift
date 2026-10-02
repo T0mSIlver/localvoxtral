@@ -16,6 +16,9 @@ final class AddressedSendWiringTests: XCTestCase {
     private static let focusedAppPID: pid_t = 4242
     /// The named session's terminal, frontmost once its pane comes forward.
     private static let namedTerminalPID: pid_t = 5151
+    /// The agent's pid in `session(_:cwd:tty:)`, and its parent shell's.
+    private static let agentPID: Int32 = 2
+    private static let shellPID: Int32 = 1
     private let local = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
 
     override func tearDown() async throws {
@@ -143,6 +146,43 @@ final class AddressedSendWiringTests: XCTestCase {
             sessions: [session("pay", cwd: "/r/payments")]
         )
         harness.focuser.onReadBack = { _ in harness.live.value = [] }
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.inserted.value.map(\.text), ["Run the tests"])
+        XCTAssertEqual(harness.returns.value, [], "no Return into the shell")
+        XCTAssertEqual(
+            harness.viewModel.statusText,
+            DictationSessionController.AddressedSendStatus.typedNotSubmitted
+        )
+    }
+
+    /// Ctrl-Z on the named agent: it is alive and registered, and its tab's
+    /// tty reads back as the session's, but its shell owns the terminal and
+    /// would run the text as a command (#1249).
+    func testASuspendedAgentGetsNoTextOrReturn() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments")]
+        )
+        harness.foreground.value = [Self.shellPID]
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.inserted.value.count, 0, "no text into the shell")
+        XCTAssertEqual(harness.returns.value, [])
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false])
+        XCTAssertEqual(harness.viewModel.statusText, DictationSessionController.AddressedSendStatus.notSent)
+    }
+
+    /// The agent is suspended during the read-back after the typing: the
+    /// text is at its prompt, but no Return goes to the shell.
+    func testAnAgentSuspendedAfterTheTypingGetsNoReturn() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments")]
+        )
+        harness.focuser.onReadBack = { _ in harness.foreground.value = [Self.shellPID] }
 
         await harness.stop()
 
@@ -335,6 +375,8 @@ final class AddressedSendWiringTests: XCTestCase {
         let records: Box<[DictationSessionRecord]>
         /// The registry's live sessions, which a test can end mid-send.
         let live: Box<[ClaudeSessionSnapshot]>
+        /// The pids in every tty's foreground process group.
+        let foreground: Box<[Int32]>
 
         @MainActor
         func stop() async {
@@ -348,7 +390,7 @@ final class AddressedSendWiringTests: XCTestCase {
     private func session(_ id: String, cwd: String, tty: String = "/dev/ttys009") -> ClaudeSessionSnapshot {
         var snapshot = ClaudeSessionSnapshot(sessionID: id, origin: local, firstSeen: Date(timeIntervalSince1970: 0))
         snapshot.workspace = ClaudeWorkspaceReference.make(rawCwd: cwd, origin: local)
-        snapshot.process = ClaudeHookProcessInfo(hookPID: 1, claudePID: 2, tty: tty, termProgram: "ghostty")
+        snapshot.process = ClaudeHookProcessInfo(hookPID: 1, claudePID: Self.agentPID, tty: tty, termProgram: "ghostty")
         return snapshot
     }
 
@@ -428,12 +470,14 @@ final class AddressedSendWiringTests: XCTestCase {
 
         let focuser = FakeSessionPaneFocuser(outcome: outcome)
         let live = Box(sessions)
+        let foreground = Box<[Int32]>([Self.agentPID])
         viewModel.session.sessionNavigator = SessionNavigator(
             liveSessions: { live.value },
             repositoryRoot: { _ in .unknown },
             focuser: focuser,
             sleep: ManualSessionClock().sleep,
-            nicknames: SessionNicknameStore(load: []) { _ in }
+            nicknames: SessionNicknameStore(load: []) { _ in },
+            ttyForegroundPIDs: { _ in foreground.value }
         )
         let herdrClient = HerdrSocketClient(timeout: 2)
         viewModel.session.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
@@ -464,7 +508,8 @@ final class AddressedSendWiringTests: XCTestCase {
             returns: returns,
             frontmost: frontmost,
             records: records,
-            live: live
+            live: live,
+            foreground: foreground
         )
     }
 }

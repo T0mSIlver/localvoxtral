@@ -18,6 +18,7 @@ final class TerminalSessionPaneFocuser: SessionPaneFocusing {
     private let runScript: (String) async -> AppleScriptTerminalTTYReader.ExecutionResult
     private let activate: (String) -> Bool
     private let focusedTTY: (String) async -> String?
+    private let isConsentGranted: (String) async -> Bool
 
     /// The terminals, in the order they are asked when the session's
     /// `$TERM_PROGRAM` names none of them.
@@ -31,12 +32,14 @@ final class TerminalSessionPaneFocuser: SessionPaneFocusing {
         runningTerminalBundleIDs: @escaping () -> Set<String>,
         runScript: @escaping (String) async -> AppleScriptTerminalTTYReader.ExecutionResult,
         activate: @escaping (String) -> Bool,
-        focusedTTY: @escaping (String) async -> String?
+        focusedTTY: @escaping (String) async -> String?,
+        isConsentGranted: @escaping (String) async -> Bool = { _ in true }
     ) {
         self.runningTerminalBundleIDs = runningTerminalBundleIDs
         self.runScript = runScript
         self.activate = activate
         self.focusedTTY = focusedTTY
+        self.isConsentGranted = isConsentGranted
     }
 
     /// The Apple events and the activation are real; only the app builds one.
@@ -67,7 +70,8 @@ final class TerminalSessionPaneFocuser: SessionPaneFocusing {
                 else { return false }
                 return app.activate(options: [])
             },
-            focusedTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) }
+            focusedTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) },
+            isConsentGranted: { await AutomationConsent.isGranted(bundleID: $0) }
         )
     }
 
@@ -103,6 +107,19 @@ final class TerminalSessionPaneFocuser: SessionPaneFocusing {
         for bundleID in Self.askingOrder(termProgram: termProgram) where running.contains(bundleID) {
             guard !Task.isCancelled else { return .paneNotFound }
             guard let source = Self.focusScriptSource(bundleID: bundleID, tty: tty) else { continue }
+            // A running script cannot be stopped, and the focus script selects
+            // the pane as soon as the user answers the consent sheet. Settle
+            // consent with a script that selects nothing, so a new dictation
+            // that cancelled the go-to meanwhile keeps its pane.
+            if await !isConsentGranted(bundleID), let probe = Self.consentProbeSource(bundleID: bundleID) {
+                if case .failure(let code) = await runScript(probe) {
+                    Log.claudeContext.info(
+                        "go to session: \(bundleID, privacy: .public) could not be asked (AppleScript error \(code, privacy: .public))"
+                    )
+                    continue
+                }
+                guard !Task.isCancelled else { return .paneNotFound }
+            }
             switch await runScript(source) {
             case .failure(let code):
                 // Code only: an AppleScript error string can quote a title.
@@ -163,6 +180,25 @@ final class TerminalSessionPaneFocuser: SessionPaneFocusing {
     /// Apple event a terminal gets. Once consent is settled the script
     /// answers in milliseconds; a new dictation cancels the wait.
     static let scriptTimeoutSeconds = 120
+
+    /// Asks the terminal for something that changes nothing, under the same
+    /// timeout, so the Automation consent sheet is answered before the focus
+    /// script runs. Nil for an unsupported terminal.
+    static func consentProbeSource(bundleID: String) -> String? {
+        let body: String
+        switch bundleID {
+        case TerminalScreenAllowlist.ghosttyBundleID: body = "count terminals"
+        case TerminalScreenAllowlist.iterm2BundleID, TerminalScreenAllowlist.appleTerminalBundleID:
+            body = "count windows"
+        default: return nil
+        }
+        return """
+        with timeout of \(scriptTimeoutSeconds) seconds
+            tell application id "\(bundleID)" to \(body)
+        end timeout
+        return ""
+        """
+    }
 
     /// Selects the pane holding `tty` and answers "focused", or answers
     /// nothing when no pane holds it. Nil for an unsupported terminal or an

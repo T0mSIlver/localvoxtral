@@ -767,6 +767,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 reportCmuxStatus: { [weak viewModel] status in
                     viewModel?.claudeIntegrationSettings?.cmuxStatus = status
                 },
+                ttyForegroundPIDs: { TTYProcessTable.foregroundPIDs(onTTYDevicePath: $0) },
                 sshDestinationProbe: {
                     SSHDestinationTTYProbe.connection(onTTYDevicePath: $0)
                 },
@@ -823,7 +824,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 sleep: viewModel.session.dependencies.clock.sleep,
                 nicknames: nicknames,
                 branch: { RepoIndexing.branch(root: $0) },
-                title: desktopTitles.title(of:)
+                title: desktopTitles.title(of:),
+                ttyForegroundPIDs: { TTYProcessTable.foregroundPIDs(onTTYDevicePath: $0) }
             )
             installAgentAttention(
                 ttyReader: ttyReader,
@@ -1263,6 +1265,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             dictationNoteService: { agent in
                 DictationNoteInstallService(agent: agent, fileSystem: LiveDictationNoteFileSystem())
+            },
+            doctorSkillService: { agent in
+                AgentSkillInstallService(
+                    agent: agent,
+                    bundledSkill: { ClaudePluginAssets.doctorSkill() },
+                    fileSystem: LiveDictationNoteFileSystem()
+                )
             },
             vibeRemoteFiles: { VibeRemoteHooksFiles.bundled() },
             codexService: { CodexPluginInstallService.live() },

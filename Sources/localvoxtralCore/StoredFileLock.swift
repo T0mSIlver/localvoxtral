@@ -234,48 +234,65 @@ extension StoredFile {
         change: @escaping (inout Value) -> Void
     ) -> StoredFileUpdate<Value> {
         StoredFileLock.withLock(beside: url) {
-            var value = memory
-            let stamp = StoredFileStamp.of(url)
-            switch read(url) {
-            case .unreadable:
-                return .refused(.unreadable)
+            updateHoldingTheLock(
+                url, memory: memory, seen: &seen, unsaved: &unsaved, decode: decode, encode: encode,
+                write: write, change: change)
+        }
+    }
+
+    /// `update`, for a caller that already holds `url`'s lock: a store that
+    /// keeps one file's lock across a change to another (#1006).
+    package static func updateHoldingTheLock<Value>(
+        _ url: URL,
+        memory: Value,
+        seen: inout StoredFileSeen,
+        unsaved: inout [(inout Value) -> Void],
+        decode: (Data) -> StoredFileLoad<Value>,
+        encode: (Value) throws -> Data,
+        write: (Data, URL) throws -> Void,
+        change: @escaping (inout Value) -> Void
+    ) -> StoredFileUpdate<Value> {
+        var value = memory
+        let stamp = StoredFileStamp.of(url)
+        switch read(url) {
+        case .unreadable:
+            return .refused(.unreadable)
+        case .absent:
+            if seen.bytes != nil {
+                Log.persistence.notice(
+                    "\(url.lastPathComponent, privacy: .public): gone since this copy last wrote it, written again"
+                )
+            }
+        case .bytes(let data) where data != seen.bytes:
+            switch decode(data) {
+            case .loaded(let onDisk):
+                Log.persistence.notice(
+                    "\(url.lastPathComponent, privacy: .public): another running copy wrote it, this change applies on top"
+                )
+                value = onDisk
+                for pending in unsaved { pending(&value) }
+                // Memory now holds these bytes plus the changes: should the
+                // write fail, the next update applies to memory, not to
+                // these bytes again, and keeps the changes.
+                seen = StoredFileSeen(bytes: data, stamp: stamp)
+            case .refused(let problem):
+                return .refused(problem)
             case .absent:
-                if seen.bytes != nil {
-                    Log.persistence.notice(
-                        "\(url.lastPathComponent, privacy: .public): gone since this copy last wrote it, written again"
-                    )
-                }
-            case .bytes(let data) where data != seen.bytes:
-                switch decode(data) {
-                case .loaded(let onDisk):
-                    Log.persistence.notice(
-                        "\(url.lastPathComponent, privacy: .public): another running copy wrote it, this change applies on top"
-                    )
-                    value = onDisk
-                    for pending in unsaved { pending(&value) }
-                    // Memory now holds these bytes plus the changes: should the
-                    // write fail, the next update applies to memory, not to
-                    // these bytes again, and keeps the changes.
-                    seen = StoredFileSeen(bytes: data, stamp: stamp)
-                case .refused(let problem):
-                    return .refused(problem)
-                case .absent:
-                    return .refused(.unreadable)
-                }
-            case .bytes:
-                seen.stamp = stamp
+                return .refused(.unreadable)
             }
-            change(&value)
-            do {
-                let data = try encode(value)
-                try write(data, url)
-                seen = StoredFileSeen(bytes: data, stamp: StoredFileStamp.of(url))
-                unsaved = []
-                return .written(value)
-            } catch {
-                unsaved.append(change)
-                return .failed(value, error)
-            }
+        case .bytes:
+            seen.stamp = stamp
+        }
+        change(&value)
+        do {
+            let data = try encode(value)
+            try write(data, url)
+            seen = StoredFileSeen(bytes: data, stamp: StoredFileStamp.of(url))
+            unsaved = []
+            return .written(value)
+        } catch {
+            unsaved.append(change)
+            return .failed(value, error)
         }
     }
 }

@@ -182,7 +182,7 @@ write_header() {
   cat 2>/dev/null >"$1" <<HEADERS
 Authorization: Bearer $2
 X-Lvx-Agent: vibe
-X-Lvx-Vibe-Hooks-Version: 1.15.0
+X-Lvx-Vibe-Hooks-Version: 1.17.0
 HEADERS
 }
 write_header "$WORK/header" "$TOKEN" || exit 0
