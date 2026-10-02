@@ -10,6 +10,9 @@ import Foundation
 /// the result is one value the assembler and the capture read.
 struct PolishContextMaterial {
     var screenDecision: TerminalScreenContextDecision
+    /// The screen decision as gathered, before any consent withdrawal: the
+    /// diagnostic record's socket-pane swap signal compares against it.
+    let gatheredScreenDecision: TerminalScreenContextDecision
     /// The clipboard read at stop, nil once its consent is withdrawn.
     var clipboardContext: PolishClipboardContext?
     var repoVocabularyOutcome: RepoVocabularyMatcher.GroundingOutcome
@@ -27,10 +30,10 @@ struct PolishContextMaterial {
     var clipboardPreparation: PolishContextPreparation
     var screenPreparation: PolishContextPreparation
     let learnedProject: LearnedTermProjectResolver.Identity?
-    let learnedVocabularyOutcome: RepoVocabularyMatcher.GroundingOutcome
+    var learnedVocabularyOutcome: RepoVocabularyMatcher.GroundingOutcome
     /// The agent proposals (#609) that took part in matching: pre-applied
     /// like any learned entry, never listed as the speaker's vocabulary.
-    let learnedProposals: Set<String>
+    var learnedProposals: Set<String>
     var merged: PolishContextGrounding.Merged
 
     var claudeRepoOutcome: RepoVocabularyMatcher.GroundingOutcome { claudeRepoPreparation.grounding }
@@ -393,6 +396,7 @@ enum PolishContextGatherer {
 
         return PolishContextMaterial(
             screenDecision: screenDecision,
+            gatheredScreenDecision: screenDecision,
             clipboardContext: capturedClipboardContext,
             repoVocabularyOutcome: repoVocabularyOutcome,
             claudeRepoSnapshot: claudeRepoSnapshot,
@@ -524,9 +528,21 @@ extension PolishContextMaterial {
             material.screenPreparation = .empty
             withdrawn.append("screen")
         }
-        if repoVocabularyOutcome != .empty,
+        if repoVocabularyOutcome != .empty || !learnedProposals.isEmpty,
            !(settings.repoVocabularyEnabled && endpointPermitted) {
             material.repoVocabularyOutcome = .empty
+            // Agent proposals (#609) are admitted only where repo vocabulary
+            // may go, so they leave with it.
+            let proposals = learnedProposals
+            let keep = { (entry: ReplacementEntry) in !proposals.contains(entry.replaceWith) }
+            let learned = learnedVocabularyOutcome
+            material.learnedVocabularyOutcome = RepoVocabularyMatcher.GroundingOutcome(
+                entries: learned.entries.filter(keep),
+                isFallbackOnly: learned.isFallbackOnly,
+                phoneticEntries: learned.phoneticEntries.filter(keep),
+                verificationCandidates: learned.verificationCandidates.filter(keep)
+            )
+            material.learnedProposals = []
             withdrawn.append("repo-vocabulary")
         }
         if claudeRepoSnapshot != nil || !claudeSessionText.isEmpty,

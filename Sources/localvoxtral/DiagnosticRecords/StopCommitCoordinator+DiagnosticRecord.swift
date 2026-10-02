@@ -43,12 +43,13 @@ extension StopCommitCoordinator {
             joinAbstentions: [],
             screenDecision: material.screenDecision,
             // Value inequality is the swap signal: only the herdr reconcile in
-            // the gatherer ever reassigns `screenDecision`, and a failed
+            // the gatherer reassigns the gathered decision (a consent
+            // withdrawal changes `screenDecision` only), and a failed
             // pane.read returns the fallback (equal). A successful pane.read
             // that happens to EQUAL the fallback mislabels only the route —
             // the decision and cause still tell the true story. Intentional.
             socketPaneSwapApplied: capture.socketPaneStart != nil
-                && material.screenDecision != capture.screenDecision,
+                && material.gatheredScreenDecision != capture.screenDecision,
             targetBundleID: targetBundleID,
             demands: [
                 .repository: material.repoRenderDemand,
