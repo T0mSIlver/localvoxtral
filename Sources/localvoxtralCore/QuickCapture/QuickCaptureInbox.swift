@@ -165,6 +165,11 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
             && codeCheck?.state != .checking
     }
 
+    /// Filed, or on its way there: a draft or Split no longer changes its
+    /// state. Such a change can run again on another running copy's write
+    /// after a failed save (#1260), and must not reopen it (#1356).
+    package var isFilingOrFiled: Bool { state == .filing || state == .filed }
+
     /// Only an issue is filed; a capture no draft sorted counts as one.
     package var isIssue: Bool { (kind ?? .issue) == .issue }
 
@@ -344,11 +349,12 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
     /// The first draft (#918). A draft makes the capture ready to review,
     /// and an issue's check starts when `checking`. A failure leaves it
     /// drafting when the agent will draft it from scratch, else ready with
-    /// the reason.
+    /// the reason. Only a capture still drafting takes it.
     package mutating func applyFirstDraft(
         _ outcome: QuickCaptureDraft.Outcome, repository: String?, checking: Bool, to id: UUID
     ) {
         update(id) { item in
+            guard item.state == .drafting else { return }
             if item.repository == nil { item.repository = repository }
             switch outcome {
             case .draft(let draft, _):
@@ -490,7 +496,7 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
     package mutating func split(
         _ followUpID: UUID, from id: UUID
     ) -> (capture: QuickCaptureItem, restored: Bool)? {
-        guard let index = items.firstIndex(where: { $0.id == id }),
+        guard let index = items.firstIndex(where: { $0.id == id }), !items[index].isFilingOrFiled,
               let followUps = items[index].followUps,
               let position = followUps.firstIndex(where: { $0.id == followUpID })
         else { return nil }
