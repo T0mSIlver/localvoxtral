@@ -44,7 +44,7 @@ brew install --cask T0mSIlver/localvoxtral/localvoxtral
 
 You can also download the latest DMG from [Releases](https://github.com/T0mSIlver/localvoxtral/releases/latest). localvoxtral needs an Apple Silicon Mac on macOS 15 or later.
 
-On first launch, a setup wizard asks for permissions and downloads the engine. If Gatekeeper blocks a DMG you installed by hand, see the [install guide](docs/install.md#fix-a-blocked-first-launch).
+On first launch, a setup wizard asks for permissions and downloads the engine.
 
 ## Features
 
