@@ -339,7 +339,10 @@ extension DictationSessionController {
         }
         if overlayCommit.succeeded {
             // Read before the cleanup below discards the join.
-            expectCorrection(of: displayWorkingText, join: context.claudeSessionJoin, project: nil)
+            expectCorrection(
+                of: displayWorkingText, join: context.claudeSessionJoin, project: nil,
+                startedAt: capturedSessionStartedAt
+            )
             proposeProjectTermsIfNew(join: context.claudeSessionJoin, inserted: displayWorkingText)
         }
         sendOverlaySpokenSendIfNeeded(spokenSend, commit: overlayCommit)
@@ -549,7 +552,8 @@ extension DictationSessionController {
             self.expectCorrection(
                 of: insertedText,
                 join: capture.claudeJoin,
-                project: outcome.material.learnedProject
+                project: outcome.material.learnedProject,
+                startedAt: capturedSessionStartedAt
             )
             self.proposeProjectTermsIfNew(join: capture.claudeJoin, inserted: insertedText)
         }
@@ -670,7 +674,10 @@ extension DictationSessionController {
         let historyJoin = context.claudeSessionJoin.map(AgentCLIJoin.init)
         // Read before the cleanup below discards the join.
         if liveDictationCanTeachACorrection {
-            expectCorrection(of: liveTypedText(), join: context.claudeSessionJoin, project: nil)
+            expectCorrection(
+                of: liveTypedText(), join: context.claudeSessionJoin, project: nil,
+                startedAt: capturedSessionStartedAt
+            )
         }
         // Read before the cleanup below drops text the field refused (#1176).
         let allTextInserted = !textInsertion.hasPendingInsertionText
