@@ -234,6 +234,45 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.session.handleNetworkChange(connected: false)
     }
 
+    /// A voice memo was streaming through the engine when the dictation
+    /// started: the bundled helper decodes the dictation's audio only after
+    /// the memo's, so the final commit is answered long after every usual
+    /// limit. Its words are still committed and saved.
+    func testAFinalHeldUpBehindAVoiceMemoIsStillCommittedAndSaved() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        var memoTranscribing = true
+        pipeline.viewModel.session.isVoiceMemoTranscribing = { memoTranscribing }
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        // The stop's two polls: the finalization and its watchdog.
+        await pipeline.clock.waitForSleepers(2)
+        let armed = pipeline.clock.pendingSleepers
+
+        // The memo runs past the idle rule and the stop's time limit.
+        pipeline.clock.advance(by: TimingConstants.stopFinalizationTimeout + 3)
+        await pipeline.clock.waitForSleepers(armed)
+        XCTAssertTrue(pipeline.viewModel.isFinalizingStop, "the stop waits while the memo holds the engine")
+
+        // The memo is done; the dictation's audio is decoded in one long step
+        // that streams nothing until it ends.
+        memoTranscribing = false
+        pipeline.clock.advance(by: TimingConstants.finalizationPollInterval)
+        await pipeline.clock.waitForSleepers(armed)
+        pipeline.clock.advance(by: TimingConstants.stopFinalizationTimeout - 1)
+        await pipeline.clock.waitForSleepers(armed)
+        XCTAssertTrue(pipeline.viewModel.isFinalizingStop, "no idle rule behind a memo")
+
+        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
+        let recorded = await pipeline.records.waitForCount(1)
+        XCTAssertTrue(recorded, "the session never finished and wrote its record")
+        await pipeline.server.awaitClose()
+
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
+    }
+
     /// A settled sentence past 30 words, the first piece early polish takes.
     private static let settledPiece =
         "the first part of this dictation is long enough to settle into a piece of its own "

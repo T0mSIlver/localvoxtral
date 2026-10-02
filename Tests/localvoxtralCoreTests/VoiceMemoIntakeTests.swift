@@ -12,9 +12,11 @@ final class VoiceMemoIntakeTests: XCTestCase {
     private final class Transcriber: VoiceMemoTranscribing, @unchecked Sendable {
         let results = Mutex<[String: Result<String, any Error>]>([:])
         let calls = Mutex<[String]>([])
+        let whileTranscribing = Mutex<(@MainActor @Sendable () -> Void)?>(nil)
         func transcribe(_ url: URL) async throws -> VoiceMemoTranscript {
             let name = url.lastPathComponent
             calls.withLock { $0.append(name) }
+            if let observe = whileTranscribing.withLock({ $0 }) { await observe() }
             let result = results.withLock { $0[name] } ?? .success("words of \(name)")
             return VoiceMemoTranscript(text: try result.get(), pcm16: Data(name.utf8))
         }
@@ -41,6 +43,7 @@ final class VoiceMemoIntakeTests: XCTestCase {
     private var captureFails = false
     /// The Inbox turned the capture down, as a refused Inbox does.
     private var captureRefused = false
+    private var streamingSeen: [Bool] = []
 
     override func setUp() async throws {
         workDirectory = FileManager.default.temporaryDirectory
@@ -219,6 +222,22 @@ final class VoiceMemoIntakeTests: XCTestCase {
         transcriber.results.withLock { $0["a.m4a"] = nil }
         _ = await intake.scan()
         XCTAssertEqual(captured.map(\.text), ["words of a.m4a", "words of b.m4a"])
+    }
+
+    /// A dictation started while a memo streams gets its text only after the
+    /// memo's, so its stop asks whether one is streaming.
+    func testTheIntakeSaysWhileAMemoStreamsThroughTheEngine() async {
+        let intake = intake()
+        transcriber.whileTranscribing.withLock {
+            $0 = { [unowned self] in streamingSeen.append(intake.isTranscribing) }
+        }
+        transcriber.results.withLock { $0["b.m4a"] = .failure(EngineDown()) }
+        files = [memo("a.m4a", minute: 1), memo("b.m4a", minute: 2)]
+        _ = await intake.scan()
+        _ = await intake.scan()
+        XCTAssertEqual(streamingSeen, [true, true])
+        XCTAssertEqual(captured.map(\.text), ["words of a.m4a"])
+        XCTAssertFalse(intake.isTranscribing, "after a capture and after a failure")
     }
 
     /// #988: a capture whose audio or words could not be written leaves

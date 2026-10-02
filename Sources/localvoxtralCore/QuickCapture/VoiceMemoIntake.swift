@@ -60,6 +60,10 @@ package final class VoiceMemoIntake {
     /// Set, the ledger could not be loaded: it is left as it is and no memo
     /// is taken, since each would be taken again (#989).
     package private(set) var ledgerProblem: StoredFileProblem?
+    /// A memo is streaming through the engine. The bundled helper decodes
+    /// one connection's queued audio at a time, so a dictation started now
+    /// waits behind the memo for its text.
+    package private(set) var isTranscribing = false
     private var reportedLedgerProblem = false
     private var reportedInboxProblem = false
     private var lastSeen: [String: VoiceMemoFile] = [:]
@@ -253,6 +257,8 @@ package final class VoiceMemoIntake {
         Log.backends.info("Voice memos: transcribing a \(file.size, privacy: .public)-byte memo")
         let transcript: VoiceMemoTranscript
         do {
+            isTranscribing = true
+            defer { isTranscribing = false }
             transcript = try await transcriber.transcribe(url)
         } catch is VoiceMemoUnreadable {
             Log.backends.error("Voice memos: a memo is not audio this Mac can decode; left in the folder")

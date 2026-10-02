@@ -115,6 +115,7 @@ final class VoiceMemoController {
     var onStatus: (@MainActor (String) -> Void)?
     /// The ledger was refused, or no longer is (#989).
     var onLedgerProblem: (@MainActor (StoredFileProblem?) -> Void)?
+    var isTranscribing: Bool { intake?.isTranscribing ?? false }
 
     init(
         settings: SettingsStore,

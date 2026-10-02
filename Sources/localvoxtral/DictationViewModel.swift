@@ -1108,6 +1108,7 @@ extension DictationViewModel {
             self.statusText = sentence
         }
         controller.onLedgerProblem = { [weak self] in self?.voiceMemoLedgerProblem = $0 }
+        session.isVoiceMemoTranscribing = { [weak controller] in controller?.isTranscribing ?? false }
         voiceMemos = controller
         controller.apply()
     }
