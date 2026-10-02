@@ -80,9 +80,10 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
 - **macOS 26 launch stall**: first launch of a *downloaded* ad-hoc-signed
   bundle stalls forever at `_dyld_start` (Gatekeeper first-exec scan);
   `xattr -cr` does NOT fix it, a LOCAL `codesign --force --deep --preserve-metadata=entitlements --sign -`
-  does. `install.sh` re-signs unconditionally for end users; `try-pr.sh`
-  re-signs only ad-hoc artifacts (never downgrades identity-signed ones).
-  Durable fix is Developer ID + notarization (roadmap #1).
+  does. Releases are notarized since #1430, so only ad-hoc downloads hit
+  it: `install.sh` re-signs an ad-hoc release (an old pinned one, or a
+  nightly built without the identity), and `try-pr.sh` re-signs ad-hoc CI
+  artifacts (never downgrades identity-signed ones).
 - **Field bug on the Mac? Dispatch `mac-crashlog.yml` FIRST, theorize
   second** (`gh workflow run mac-crashlog.yml --ref main`). It reports, all
   redacted for the public Actions log: recent crash summaries (procPath +

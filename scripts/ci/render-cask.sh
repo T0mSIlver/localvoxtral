@@ -9,6 +9,9 @@
 # pushes it there. main carries a required-status-checks ruleset, so a release
 # could not commit a new pin here without a PR per release.
 #
+# No postflight: stable releases are notarized (#1430), so the cask installs
+# the app as Apple signed it, quarantine flag included.
+#
 # Stable only. `brew upgrade` compares version strings, and a nightly
 # (vX.Y.Z-nightly.DATE) or an rc in the same cask would move stable users onto
 # a prerelease. The tag shape is checked here so every caller gets the refusal.
@@ -55,17 +58,6 @@ cask "localvoxtral" do
 
   app "localvoxtral.app"
 
-  # Releases are ad-hoc signed and not notarized. On macOS 26 Gatekeeper's
-  # first-exec scan can hang forever on a downloaded foreign ad-hoc signature,
-  # and clearing quarantine alone does not fix it; a local re-sign does.
-  # scripts/install.sh does the same two things for the same reason.
-  postflight do
-    system_command "/usr/bin/xattr",
-                   args: ["-cr", "#{appdir}/localvoxtral.app"]
-    system_command "/usr/bin/codesign",
-                   args: ["--force", "--deep", "--sign", "-", "#{appdir}/localvoxtral.app"]
-  end
-
   uninstall quit: "com.localvoxtral.app"
 
   # Dictation history lives in the app's folder (history.store). Builds before
@@ -85,10 +77,10 @@ cask "localvoxtral" do
     permissions, then for an engine: local models (downloaded once) or
     Mistral's hosted API (paste a key, nothing to download).
 
-    Releases are ad-hoc signed, so macOS may drop the Accessibility grant
-    after an upgrade. If the dictation shortcut stops working, toggle
-    localvoxtral off and on in System Settings > Privacy & Security >
-    Accessibility.
+    Releases before October 2026 were ad-hoc signed. After upgrading from
+    one, macOS asks for Accessibility again, once: if the dictation shortcut
+    does nothing, remove localvoxtral from System Settings > Privacy &
+    Security > Accessibility and add it back.
   EOS
 end
 EOF

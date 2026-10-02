@@ -68,7 +68,7 @@ is_fast_path_allowlisted() {
       REJECTION_REASON="CI decision path: $path"
       return 1
       ;;
-    scripts/package_app.sh)
+    scripts/package_app.sh|scripts/packaging/*)
       REJECTION_REASON="tier-0 packaging path: $path"
       return 1
       ;;

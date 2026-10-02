@@ -36,7 +36,7 @@ BUILD_NUMBER="${3:-${GIT_BUILD_NUMBER:-1}}"
 # survive rebuilds; ad-hoc signatures change every build and invalidate them.
 CODESIGN_IDENTITY="${LOCALVOXTRAL_CODESIGN_IDENTITY:--}"
 if [[ "$CODESIGN_IDENTITY" != "-" ]] \
-  && ! security find-identity -v -p codesigning 2>/dev/null | grep -q "$CODESIGN_IDENTITY"; then
+  && ! security find-identity -v -p codesigning 2>/dev/null | grep -qF "$CODESIGN_IDENTITY"; then
   # A SILENT ad-hoc fallback here is exactly how the TCC-grant regression
   # shipped unnoticed: when a same-repo CI build runs as a user whose login
   # keychain can't see the localvoxtral-dev cert, packaging quietly produced an
@@ -664,19 +664,10 @@ fi # LOCALVOXTRAL_SKIP_SPEECHD
 chmod -R u+w "$APP_DIR"
 xattr -cr "$APP_DIR"
 
-# Sign the packaged app so Gatekeeper can evaluate a usable signature.
-# This does not replace Developer ID signing/notarization, but it avoids the
-# "no usable signature" path that breaks first-run open flows.
-if ! codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP_DIR"; then
-  echo "Failed to code-sign packaged app bundle."
-  exit 1
-fi
-# --deep signed the widget extension without its sandbox entitlements.
-"$ROOT_DIR/scripts/packaging/package-widgets.sh" sign "$APP_DIR" "$CODESIGN_IDENTITY"
-if ! codesign --verify --deep --strict --verbose=2 "$APP_DIR"; then
-  echo "Invalid code signature detected in packaged app bundle."
-  exit 1
-fi
+# Sign every Mach-O inside-out, each with its own entitlements
+# (scripts/packaging/sign-bundle.sh). A Developer ID identity adds the
+# hardened runtime and a secure timestamp, which notarization requires.
+"$ROOT_DIR/scripts/packaging/sign-bundle.sh" "$APP_DIR" "$CODESIGN_IDENTITY"
 
 # Prove we did not silently downgrade to ad-hoc when a stable identity was
 # requested. TCC keys the Accessibility grant on the designated requirement; an
