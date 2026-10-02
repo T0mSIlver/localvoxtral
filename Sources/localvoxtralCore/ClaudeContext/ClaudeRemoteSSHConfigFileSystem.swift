@@ -35,5 +35,21 @@ public struct ClaudeRemoteSSHConfigState: Sendable, Equatable {
 public protocol ClaudeRemoteSSHConfigFileSystem: Sendable {
     func readState() throws -> ClaudeRemoteSSHConfigState
     func createSSHDirectory(permissions: UInt16) throws
-    func atomicWriteConfig(_ data: Data, permissions: UInt16) throws
+    /// Replaces the config with `data` only while it still holds `expected`
+    /// (nil: no file), the bytes the caller read. Otherwise it throws
+    /// `ClaudeRemoteSSHConfigChangedOnDisk` and writes nothing (#1345).
+    func atomicWriteConfig(_ data: Data, permissions: UInt16, replacing expected: Data?) throws
+    /// Runs `body` excluding the other running copies' read-change-write
+    /// sections on the same config.
+    func withExclusiveAccess<T>(_ body: () throws -> T) throws -> T
+}
+
+extension ClaudeRemoteSSHConfigFileSystem {
+    public func withExclusiveAccess<T>(_ body: () throws -> T) throws -> T { try body() }
+}
+
+/// The config is no longer the one the caller read: another program saved
+/// it in between.
+public struct ClaudeRemoteSSHConfigChangedOnDisk: Error, Equatable {
+    public init() {}
 }
