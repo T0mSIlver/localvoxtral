@@ -379,12 +379,16 @@ final class DictationViewModel {
         /// Brings an app back to the front: ⇧Tab to the focused app after a
         /// session pane came forward. False when it is gone.
         var activateApp: @MainActor (pid_t) -> Bool
-        /// The center the sleep and terminate observers register on. Nil is
-        /// the default center, registered only when runtime services run; a
+        /// The center the terminate observer registers on. Nil is the
+        /// default center, registered only when runtime services run; a
         /// private center is registered on regardless, so a test posts
         /// through the real wiring without reaching every retained view
         /// model in the process.
         var lifecycleNotificationCenter: NotificationCenter?
+        /// The center the sleep observer registers on, under the same rule.
+        /// Nil is `NSWorkspace.shared.notificationCenter`: AppKit posts
+        /// `willSleepNotification` there and nowhere else.
+        var workspaceNotificationCenter: NotificationCenter?
         /// The clock a mid-dictation reconnect run (#380) sleeps on.
         var reconnectSleep: @MainActor (TimeInterval) async -> Void
         /// Where a connection failure the popover cannot carry is shown.
@@ -425,6 +429,7 @@ final class DictationViewModel {
                 NSRunningApplication(processIdentifier: $0)?.activate(options: []) ?? false
             },
             lifecycleNotificationCenter: NotificationCenter? = nil,
+            workspaceNotificationCenter: NotificationCenter? = nil,
             reconnectSleep: @escaping @MainActor (TimeInterval) async -> Void =
                 DictationSessionController.sleepForReconnect,
             connectionFailurePresenter: any ConnectionFailurePresenting = ModalConnectionFailurePresenter(),
@@ -442,6 +447,7 @@ final class DictationViewModel {
             self.applicationName = applicationName
             self.activateApp = activateApp
             self.lifecycleNotificationCenter = lifecycleNotificationCenter
+            self.workspaceNotificationCenter = workspaceNotificationCenter
             self.reconnectSleep = reconnectSleep
             self.connectionFailurePresenter = connectionFailurePresenter
             self.onSessionRecord = onSessionRecord
@@ -479,12 +485,10 @@ final class DictationViewModel {
 
 
 
+    /// Each lifecycle observer with the center it was registered on, so
+    /// deinit removes it from the same one.
     @ObservationIgnored
-    private var lifecycleObservers: [NSObjectProtocol] = []
-    /// The center `lifecycleObservers` were registered on, so deinit removes
-    /// them from the same one.
-    @ObservationIgnored
-    private var lifecycleNotificationCenter: NotificationCenter = .default
+    private var lifecycleObservers: [(NotificationCenter, NSObjectProtocol)] = []
     @ObservationIgnored
     let managesRuntimeServices: Bool
     /// When true, the startup permission-prompt pass (microphone +
@@ -794,7 +798,11 @@ final class DictationViewModel {
             installUsageLedger(usageLedger)
             installVoiceMemos(usageLedger: usageLedger)
             refreshMicrophoneInputs()
-            registerLifecycleObservers(on: dependencies.lifecycleNotificationCenter ?? .default)
+            registerLifecycleObservers(
+                application: dependencies.lifecycleNotificationCenter ?? .default,
+                workspace: dependencies.workspaceNotificationCenter
+                    ?? NSWorkspace.shared.notificationCenter
+            )
             permissions.requestStartupPermissionsIfNeeded()
             importSpeakerTermsFromReplacementDictionaryIfNeeded()
             // Subscribe BEFORE the launch warmup below so the very first
@@ -821,8 +829,11 @@ final class DictationViewModel {
                 promptWarmup?.ensureWarm(reason: "dictation start")
             }
             engines.warmUpManagedBackendsAtLaunchIfNeeded()
-        } else if let center = dependencies.lifecycleNotificationCenter {
-            registerLifecycleObservers(on: center)
+        } else {
+            registerLifecycleObservers(
+                application: dependencies.lifecycleNotificationCenter,
+                workspace: dependencies.workspaceNotificationCenter
+            )
         }
     }
 
@@ -839,8 +850,8 @@ final class DictationViewModel {
 
     @MainActor
     deinit {
-        for observer in lifecycleObservers {
-            lifecycleNotificationCenter.removeObserver(observer)
+        for (center, observer) in lifecycleObservers {
+            center.removeObserver(observer)
         }
         lifecycleObservers.removeAll()
         audio.commitTask?.cancel()
@@ -874,20 +885,25 @@ final class DictationViewModel {
 
     // MARK: - Lifecycle Observers
 
-    private func registerLifecycleObservers(on nc: NotificationCenter) {
-
-        let sleepObserver = nc.addObserver(
-            forName: NSWorkspace.willSleepNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self, self.isDictating else { return }
-                self.stopDictation(reason: "system sleep", finalizeRemainingAudio: false)
+    private func registerLifecycleObservers(
+        application: NotificationCenter?, workspace: NotificationCenter?
+    ) {
+        if let workspace {
+            let sleepObserver = workspace.addObserver(
+                forName: NSWorkspace.willSleepNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self, self.isDictating else { return }
+                    self.stopDictation(reason: "system sleep", finalizeRemainingAudio: false)
+                }
             }
+            lifecycleObservers.append((workspace, sleepObserver))
         }
 
-        let terminateObserver = nc.addObserver(
+        guard let application else { return }
+        let terminateObserver = application.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
@@ -919,8 +935,7 @@ final class DictationViewModel {
             }
         }
 
-        lifecycleObservers = [sleepObserver, terminateObserver]
-        lifecycleNotificationCenter = nc
+        lifecycleObservers.append((application, terminateObserver))
     }
 
     /// True when `LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS=1` — the
