@@ -8,16 +8,26 @@ export const WIRE_VERSION = 1
 
 export type ChannelMessage = { mod_message: number; kind: string; id: string; text?: string }
 
+/** What a fork cost, in the API's spelling. */
+export type ChannelUsage = {
+  input_tokens: number
+  cache_creation_input_tokens: number
+  cache_read_input_tokens: number
+  output_tokens: number
+}
+
 export type ChannelReply = {
   mod_reply: number
   session_id: string
   id: string
   ok: boolean
   reason?: string
+  text?: string
+  usage?: ChannelUsage
 }
 
-/** Whether the mod did what a message asked, and why not. */
-export type Outcome = { ok: boolean; reason?: string }
+/** Whether the mod did what a message asked, why not, and any answer. */
+export type Outcome = { ok: boolean; reason?: string; text?: string; usage?: ChannelUsage }
 
 // A child that ends sooner than this after it started is a publisher that
 // does not know `--attach` (an app older than the mod): stop asking it.

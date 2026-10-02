@@ -418,6 +418,12 @@ session ended), the app types it as before. A dictation that ends in the
 spoken send word, and sessions in Claude Desktop or a browser tab, are still
 typed.
 
+With **Ask the coding agent for each new project's terms** on, a session with
+the mod answers that question itself when it has had at least three prompts
+and was active in the last four minutes: the app asks the session's own model
+over its transcript, which the prompt cache serves, and no separate run
+starts. A younger or idle session gets the separate run as before.
+
 Mods are early access in Claude Code, and load only where Claude Code enables
 them. Where they do not load, this plugin does nothing and the `localvoxtral`
 plugin keeps working; use the setting below instead. By hand:

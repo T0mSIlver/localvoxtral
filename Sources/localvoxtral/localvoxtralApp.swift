@@ -804,6 +804,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             viewModel.context.claudeSessionJoinResolver = resolver
             viewModel.context.claudeModChannels = claudeModChannels
+            viewModel.session.projectTermProposer?.attachSessionChannels(claudeModChannels)
             // "Go to <name>" (#723): the same registry and the same
             // focused-pane reader as the join, so a pane counts as brought
             // forward by the evidence the join trusts.

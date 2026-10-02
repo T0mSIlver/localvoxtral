@@ -302,8 +302,11 @@ there is not.
   still shows the session (`ClaudeSessionJoinResolver.sessionShown`): a pid
   cannot tell two tabs apart. Otherwise, and for a fill the mod got but never
   answered, the text stays in History. Unless keys put it in, the next
-  commit gets no continuation space. Mod replies ride one-shot connections and carry only a
-  short reason code, never text.
+  commit gets no continuation space. Mod replies ride one-shot connections
+  and carry a short reason code, never what the person typed or dictated;
+  the one text a reply carries is the session model's answer to the
+  project-terms question (#1410), which the same parser and filters read as
+  a one-shot run's.
 - **The Mistral second pass holds the text back, never the world** (#317).
   An Overlay Buffer dictation in Mistral API mode is sent whole to the batch
   endpoint on stop (`DictationSessionController+StopCommit.swift`,

@@ -82,6 +82,59 @@ describe('channel', () => {
     })
   }
 
+  test('terms asks the session itself and returns its answer and usage', async ($, on) => {
+    const clock = mock.clock(on)
+    mock.env(on, { HOME: '/Users/tom' })
+    const prompts: string[] = []
+    const replies: unknown[] = []
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('session.id', () => ({ value: 'sess-1' }))
+    on('settings.read', () => ({ value: {} }))
+    on('fs.exists', ($, e) => ({ value: e.path === PUBLISHER }))
+    on('ui.status', () => ({ value: undefined }))
+    on('model.fork', ($, e) => {
+      prompts.push(e.prompt)
+      return {
+        value: {
+          isAnswered: true,
+          text: '{"terms":["Voxtral"],"description":"A dictation app."}',
+          usage: {
+            input_tokens: 12,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 48000,
+            output_tokens: 30,
+          },
+        },
+      }
+    })
+    on('process.spawn', async function* (): AsyncGenerator<ProcessSpawnChunk, { value: ProcessSpawnResult }> {
+      yield { stream: 'stdout', text: '{"id":"t","kind":"terms","mod_message":1,"text":"List the names."}\n' }
+      await clock.sleep(60000)
+      return { value: EXITED }
+    })
+    on('process.run', ($, e) => {
+      if (e.argv[1] === '--mod-reply') replies.push(JSON.parse(e.init?.stdin ?? ''))
+      return {
+        value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+      }
+    })
+
+    await $.session.start(STARTED)
+    await clock.advance(1000)
+
+    expect(prompts).toEqual(['List the names.'])
+    expect(replies).toEqual([
+      {
+        mod_reply: 1,
+        session_id: 'sess-1',
+        id: 't',
+        ok: true,
+        text: '{"terms":["Voxtral"],"description":"A dictation app."}',
+        usage: { input_tokens: 12, cache_creation_input_tokens: 0, cache_read_input_tokens: 48000, output_tokens: 30 },
+      },
+    ])
+  })
+
   test('a publisher that exits at once is not started again', async ($, on) => {
     const clock = mock.clock(on)
     mock.env(on, { HOME: '/Users/tom' })

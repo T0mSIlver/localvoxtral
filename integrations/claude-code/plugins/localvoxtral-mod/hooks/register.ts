@@ -116,6 +116,19 @@ async function handle($: EngineInterface, message: ChannelMessage): Promise<Outc
       const filled = await $.prompt.fill({ text: message.text, mode: 'insert' })
       return filled.isFilled ? { ok: true } : { ok: false, reason: filled.refusal ?? 'refused' }
     }
+    case 'terms': {
+      // The project's names, from what this session already holds (#1410):
+      // its own transcript, served from the prompt cache, no tool.
+      if (message.text === undefined || message.text === '') return { ok: false, reason: 'no_text' }
+      const forked = await $.model.fork({ prompt: message.text })
+      if (!forked.isAnswered) return { ok: false, reason: forked.reason }
+      const { input_tokens, cache_creation_input_tokens, cache_read_input_tokens, output_tokens } = forked.usage
+      return {
+        ok: true,
+        text: forked.text,
+        usage: { input_tokens, cache_creation_input_tokens, cache_read_input_tokens, output_tokens },
+      }
+    }
     default:
       return { ok: false, reason: 'unknown_kind' }
   }

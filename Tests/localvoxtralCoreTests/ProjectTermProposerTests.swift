@@ -130,6 +130,109 @@ final class ProjectTermProposerTests: XCTestCase {
         await proposer.dictationCommitted(join: snapshot, enabled: enabled, excluding: excluding)?.value
     }
 
+    // MARK: From the joined session's own transcript (#1410)
+
+    /// A hub whose one channel, for session `s`, answers every message with
+    /// `reply` and records what it was asked.
+    private func sessionHub(
+        answering reply: @escaping @Sendable (String) -> ClaudeModChannelWire.Reply
+    ) -> (ClaudeModChannelHub, Asked) {
+        let hub = ClaudeModChannelHub(sleep: { _ in try? await Task.sleep(for: .seconds(60)) })
+        let asked = Asked()
+        _ = hub.attach(sessionID: "s", channel: .init(
+            write: { line in
+                guard let message = ClaudeModChannelWire.decode(
+                    ClaudeModChannelWire.Message.self, from: line.dropLast()
+                ) else { return false }
+                asked.messages.withLock { $0.append(message) }
+                hub.deliver(reply(message.id))
+                return true
+            },
+            close: {}
+        ))
+        return (hub, asked)
+    }
+
+    /// What a session's mod was asked.
+    private final class Asked: Sendable {
+        let messages = Mutex<[ClaudeModChannelWire.Message]>([])
+    }
+
+    private func warmJoin(_ cwd: String, prompts: Int = 5, idleFor idle: TimeInterval = 30) -> ClaudeSessionSnapshot {
+        var snapshot = join(cwd)
+        snapshot.promptsSubmitted = prompts
+        snapshot.lastActivity = clock.now().addingTimeInterval(-idle)
+        return snapshot
+    }
+
+    func testAWarmSessionWithAModAnswersFromItsOwnTranscriptAndNoAgentRuns() async throws {
+        let repo = try checkout("quillmark")
+        let runner = FakeRunner(.terms(["from the agent"]))
+        let (proposer, store) = proposer(runner)
+        let usage = ClaudeModChannelWire.Usage(
+            inputTokens: 9, cacheCreationInputTokens: 0, cacheReadInputTokens: 52_000, outputTokens: 40
+        )
+        let (hub, asked) = sessionHub {
+            .init(
+                sessionID: "s", id: $0, ok: true,
+                text: #"{"terms": ["Inkwell"], "description": "A markdown editor."}"#, usage: usage
+            )
+        }
+        proposer.attachSessionChannels(hub)
+
+        await commit(proposer, warmJoin(repo))
+
+        XCTAssertEqual(runner.count, 0, "the session answered, so no agent ran")
+        XCTAssertEqual(asked.messages.withLock { $0.map(\.kind) }, [.terms])
+        XCTAssertEqual(asked.messages.withLock { $0.first?.text }, ProjectTermProposal.forkPrompt)
+        XCTAssertEqual(store.snapshot().unconfirmedProposals(projectKey: repo), ["Inkwell"])
+    }
+
+    /// Too young a session would pin a thin answer to the project, and a
+    /// session idle past the prompt cache would pay for its whole
+    /// transcript: both run the agent instead.
+    func testAYoungOrColdSessionRunsTheAgentAndIsNotAsked() async throws {
+        for (label, snapshot) in [
+            ("young", warmJoin(try checkout("young"), prompts: ProjectTermProposal.minPromptsToFork - 1)),
+            ("cold", warmJoin(try checkout("cold"), idleFor: ProjectTermProposal.forkCacheWindow + 1)),
+        ] {
+            let runner = FakeRunner(.terms(["from the agent"]))
+            let (proposer, _) = proposer(runner)
+            let (hub, asked) = sessionHub { .init(sessionID: "s", id: $0, ok: true, text: "{}") }
+            proposer.attachSessionChannels(hub)
+
+            await commit(proposer, snapshot)
+
+            XCTAssertEqual(runner.count, 1, label)
+            XCTAssertEqual(asked.messages.withLock(\.count), 0, label)
+        }
+    }
+
+    func testASessionThatCannotAnswerFallsBackToTheAgent() async throws {
+        let replies: [@Sendable (String) -> ClaudeModChannelWire.Reply] = [
+            { (id: String) in ClaudeModChannelWire.Reply(sessionID: "s", id: id, ok: false, reason: "nothing-to-fork") },
+            { (id: String) in ClaudeModChannelWire.Reply(sessionID: "s", id: id, ok: true, text: "I can't tell.") },
+        ]
+        for reply in replies {
+            let repo = try checkout("quillmark-\(UUID().uuidString.prefix(4))")
+            let runner = FakeRunner(.terms(["from the agent"]))
+            let (proposer, store) = proposer(runner)
+            let (hub, _) = sessionHub(answering: reply)
+            proposer.attachSessionChannels(hub)
+
+            await commit(proposer, warmJoin(repo))
+
+            XCTAssertEqual(runner.count, 1)
+            XCTAssertEqual(store.snapshot().unconfirmedProposals(projectKey: repo), ["from the agent"])
+        }
+    }
+
+    func testTheForkAsksTheRunsQuestionWithoutReadingFiles() {
+        XCTAssertNotEqual(ProjectTermProposal.forkPrompt, ProjectTermProposal.prompt, "the replaced sentence is still in the prompt")
+        XCTAssertTrue(ProjectTermProposal.forkPrompt.contains("read no file"))
+        XCTAssertFalse(ProjectTermProposal.forkPrompt.contains("Read at most six files"))
+    }
+
     // MARK: Runs once
 
     func testALocalClaudeJoinInANewProjectRunsOnceInTheRepositoryRoot() async throws {
