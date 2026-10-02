@@ -35,6 +35,22 @@ final class SpeakerTermsTests: XCTestCase {
         )
     }
 
+    /// `_` joins an identifier: "vllm_server" is not the word "vllm". Batch
+    /// and live correction agree on it.
+    func testTermCasingPreservesUnderscoreIdentifiers() {
+        let dictionary = ReplacementDictionary(entries: [])
+            .adding(speakerTerms: ["vLLM"])
+        let text = "start vllm_server and my_vllm, then vllm."
+        let expected = "start vllm_server and my_vllm, then vLLM."
+        XCTAssertEqual(dictionary.apply(to: text), expected)
+        XCTAssertEqual(
+            LiveReplacementCorrector.completedBoundaryCorrectedText(
+                text, dictionary: dictionary, includeFinalUnboundedWord: true
+            ),
+            expected
+        )
+    }
+
     /// "Work" and "Vibe" are products AND ordinary words. Nothing without a
     /// model can tell them apart, so they get no rule and reach the prompt only.
     func testPlainCapitalizedWordGetsNoRule() {

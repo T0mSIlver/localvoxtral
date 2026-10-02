@@ -26,6 +26,11 @@ extension ClaudeRemoteEnrollmentService {
             fi
             mkdir -p "$(dirname "$lv_config")"
             touch "$lv_config"
+            # A last line with no newline would take the table header onto it.
+            # $(...) drops a trailing newline, so it is empty only when the
+            # file is, or already ends with one.
+            if [ -n "$(tail -c 1 "$lv_config")" ]; then printf '\\n' >> "$lv_config"; fi
+            if [ -s "$lv_config" ]; then printf '\\n' >> "$lv_config"; fi
             cat >> "$lv_config" <<'LOCALVOXTRAL_HERDR_PANEL'
             \(Self.herdrPanelConfigSnippet)
             LOCALVOXTRAL_HERDR_PANEL

@@ -1,4 +1,5 @@
 import Foundation
+import localvoxtralTestSupport
 import Synchronization
 import XCTest
 @testable import localvoxtral
@@ -1529,6 +1530,70 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         XCTAssertNotNil(savedRecord?.polishContextSummary)
     }
 
+    /// Consent withdrawn while the stop is still gathering — trust in the
+    /// remote endpoint revoked, or clipboard context switched off — reaches
+    /// the request: the clipboard read at stop is neither attached nor used to
+    /// pre-apply its spellings. The repo-vocabulary seam stands in for the
+    /// up-to-3 s index the user can toggle Settings during.
+    func testConsentWithdrawnDuringGatherKeepsTheClipboardOutOfTheRequest() async throws {
+        let withdrawals: [(label: String, withdraw: @MainActor (SettingsStore) -> Void)] = [
+            ("trust revoked", { $0.polishContextTrustedEndpointEnabled = false }),
+            ("clipboard context off", { $0.polishClipboardContextEnabled = false }),
+        ]
+        for withdrawal in withdrawals {
+            let settings = makeSettings(outputMode: .overlayBuffer)
+            settings.llmPolishingEnabled = true
+            settings.agentPolishProfileEnabled = false
+            settings.polishingBackendMode = .externalURL
+            settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
+            settings.polishContextTrustedEndpointEnabled = true
+            settings.polishClipboardContextEnabled = true
+            settings.repoVocabularyEnabled = true
+
+            let template = LLMPromptTemplates(
+                systemContent: "system",
+                userContent: "Clean this up.\n{{replacement_dictionary}}\nWorking text:\n{{input_text}}"
+            )
+            let service = FakePolishingService()
+            let viewModel = DictationViewModel(
+                settings: settings,
+                overlayBufferCoordinator: MockOverlayCoordinator(),
+                startRuntimeServices: false
+            )
+            viewModel.appConfigStore = MockAppConfigStore(
+                promptTemplates: template,
+                agentPromptTemplates: template
+            )
+            viewModel.llmPolishingService = service
+            viewModel.stubCommitTarget { "com.acme.notes" }
+            let pasteboard = PasteboardStub(string: "UserSessionManager.swift ZebraSentinel42")
+            viewModel.dependencies.pasteboardReader = { pasteboard }
+            var gathered = false
+            viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding { _ in
+                gathered = true
+                withdrawal.withdraw(settings)
+                return nil
+            }
+            retainForTestProcessLifetime(viewModel)
+
+            viewModel.session.sessionOutputMode = .overlayBuffer
+            viewModel.isFinalizingStop = true
+            viewModel.transcript.currentDictationEventText = "look at usersessionmanager.swift"
+
+            viewModel.session.finishStoppedSession(promotePendingSegment: false)
+            await awaitStoppedSessionCommit(viewModel)
+
+            XCTAssertTrue(gathered, "\(withdrawal.label): the stop gathered after reading the clipboard")
+            XCTAssertEqual(pasteboard.stringCallCount, 1, "\(withdrawal.label): the clipboard was read at stop")
+            let capturedRequest = await service.lastRequest
+            let request = try XCTUnwrap(capturedRequest, withdrawal.label)
+            let sent = ([request.systemPrompt, request.inputText] + request.userPrompts).joined(separator: "\n")
+            XCTAssertFalse(sent.contains("ZebraSentinel42"), "\(withdrawal.label): clipboard excerpt sent")
+            XCTAssertFalse(sent.contains("UserSessionManager"), "\(withdrawal.label): clipboard spelling sent")
+            XCTAssertEqual(request.inputText, "look at usersessionmanager.swift", withdrawal.label)
+        }
+    }
+
     /// The full vocabulary path end to end: exact repo bytes are placed before
     /// the model call, so even an identity model commits `useAuth.ts` rather
     /// than depending on the model to reproduce the prompt hint.
@@ -1702,11 +1767,12 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
     }
 
     /// The deadline race: a vocabulary pipeline that NEVER completes (a stat
-    /// blocked on a stale network mount) must not wedge the commit. With an
-    /// instantly-expiring deadline (injected sleep seam — no wall-clock), the
-    /// polish request is built WITHOUT vocabulary, the commit completes, and
+    /// blocked on a stale network mount) must not wedge the commit. Once the
+    /// deadline passes on the session clock (#1310: it slept on the wall
+    /// clock), the polish request is built WITHOUT vocabulary, the commit completes, and
     /// no vocab provenance is recorded. Abandonment is safe: the pipeline only
     /// returns a value, never mutates view-model state.
+    @MainActor
     func testVocabularyPipelineDeadlineProceedsWithoutVocabulary() async throws {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.llmPolishingEnabled = true
@@ -1739,9 +1805,8 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             await withUnsafeContinuation { (_: UnsafeContinuation<Void, Never>) in }
             return nil
         }
-        // Deadline sleep seam: returns immediately — the deadline expires
-        // before the pipeline can ever win.
-        viewModel.session.repoVocabularyPipeline.deadlineSleep = {}
+        let clock = ManualSessionClock()
+        viewModel.dependencies.clock = clock.clock
         var savedRecord: DictationSessionRecord?
         viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
@@ -1751,6 +1816,10 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.transcript.currentDictationEventText = "open use auth dot t s and fix the import"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        // The one timer armed is the deadline, three seconds out.
+        await clock.waitForSleepers(1)
+        XCTAssertEqual(clock.pendingDeadlines, [clock.now.addingTimeInterval(3)])
+        clock.advance(by: 3)
         await awaitStoppedSessionCommit(viewModel)
 
         // The commit completed despite the wedged pipeline...
@@ -1772,6 +1841,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
     /// is decided synchronously by the gate (acquired before the pipeline
     /// spawns), and the count assertion waits on a start signal from the
     /// wedged pipeline, never on wall-clock.
+    @MainActor
     func testWedgedPipelineSingleFlightSkipsNextCommit() async {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.llmPolishingEnabled = true
@@ -1795,12 +1865,18 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             await withUnsafeContinuation { (_: UnsafeContinuation<Void, Never>) in }
             return nil
         }
-        viewModel.session.repoVocabularyPipeline.deadlineSleep = {}
+        let clock = ManualSessionClock()
+        viewModel.dependencies.clock = clock.clock
 
         let endpoint = URL(string: "http://127.0.0.1:8472/v1/chat/completions")!
-        let first = await viewModel.session.repoVocabularyGroundingIfEnabled(
-            endpointURL: endpoint, transcript: "open use auth dot t s"
-        )
+        let firstGrounding = Task {
+            await viewModel.session.repoVocabularyGroundingIfEnabled(
+                endpointURL: endpoint, transcript: "open use auth dot t s"
+            )
+        }
+        await clock.waitForSleepers(1)
+        clock.advance(by: 3)
+        let first = await firstGrounding.value
         // Deadline expired; the wedged pipeline was abandoned holding the gate.
         XCTAssertNil(first)
         var startIterator = pipelineStarted.makeAsyncIterator()

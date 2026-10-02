@@ -329,9 +329,9 @@ final class DesktopSessionClaudeJoinTests: XCTestCase {
         XCTAssertNil(join.windowID)
         XCTAssertNil(join.socketPaneKey)
         let authorizer = TerminalScreenClaudeJoinAuthorizer(resolver: joinResolver, currentJoin: { join })
-        XCTAssertFalse(authorizer.isAuthorized(target: desktop, windowID: 101))
-        XCTAssertFalse(authorizer.isAuthorized(target: desktop, windowID: nil))
-        XCTAssertFalse(authorizer.isAuthorized(target: ghostty, windowID: 101))
+        XCTAssertFalse(authorizer.isAuthorized(target: desktop, windowID: 101, paneTTY: nil))
+        XCTAssertFalse(authorizer.isAuthorized(target: desktop, windowID: nil, paneTTY: nil))
+        XCTAssertFalse(authorizer.isAuthorized(target: ghostty, windowID: 101, paneTTY: nil))
     }
 
     // The mechanism refuses, not the missing window id: a desktop join that
@@ -353,7 +353,7 @@ final class DesktopSessionClaudeJoinTests: XCTestCase {
             resolver: joinResolver, currentJoin: { joinWithWindow }
         )
         XCTAssertTrue(joinResolver.isStillLive(joinWithWindow), "precondition")
-        XCTAssertFalse(authorizer.isAuthorized(target: desktop, windowID: 101))
+        XCTAssertFalse(authorizer.isAuthorized(target: desktop, windowID: 101, paneTTY: nil))
     }
 
     func testJoinSummaryNamesTheArm() {

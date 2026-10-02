@@ -71,6 +71,16 @@ final class TranscriptAccumulatorTests: XCTestCase {
         XCTAssertEqual(transcript.currentDictationEventText, "First part. Second part.")
     }
 
+    func testALaterSegmentReceivedOnlyAsAFinalKeepsItsLeadingSpace() {
+        var transcript = TranscriptAccumulator()
+        feedGeneration(["First", " part", "."], into: &transcript)
+
+        let finalized = transcript.applyFinal(" Second part.")
+
+        XCTAssertEqual(finalized?.liveInsertion, " Second part.")
+        XCTAssertEqual(transcript.currentDictationEventText, "First part. Second part.")
+    }
+
     func testFinalThatRevisesTypedPartialsInsertsNothing() {
         var transcript = TranscriptAccumulator()
         transcript.appendPartial("sparisce")

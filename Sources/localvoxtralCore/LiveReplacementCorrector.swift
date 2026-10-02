@@ -346,8 +346,10 @@ package struct LiveReplacementCorrector {
         return false
     }
 
+    /// `_` is punctuation but joins an identifier, as in `makeRegex`: the
+    /// word in `vllm_server` is not complete at the `_`.
     private static func isCompletionBoundary(_ character: Character) -> Bool {
-        isWhitespace(character) || isPunctuation(character)
+        character != "_" && (isWhitespace(character) || isPunctuation(character))
     }
 
     // Internal (not private): `LiveHoldBackReplacementStream` computes its
@@ -361,17 +363,18 @@ package struct LiveReplacementCorrector {
     }
 
     /// True when a rule match may begin at `offset`, mirroring the
-    /// `(?<![\p{L}\p{N}])` lookbehind in `ReplacementDictionary.makeRegex`.
+    /// `(?<![\p{L}\p{N}_])` lookbehind in `ReplacementDictionary.makeRegex`.
     ///
     /// Match starts are NOT the same as whitespace-separated word starts: the
-    /// lookbehind only forbids a preceding letter or digit, so `voxtral`
+    /// lookbehind only forbids a preceding letter, digit or `_`, so `voxtral`
     /// matches inside `foo-voxtral`. The hold-back scan must treat every such
     /// offset as a candidate, or it would release text a later correction
     /// reaches back into.
     package static func isCandidateMatchStart(_ characters: [Character], _ offset: Int) -> Bool {
         guard offset < characters.count, !isWhitespace(characters[offset]) else { return false }
         guard offset > 0 else { return true }
-        return !isLetterOrNumber(characters[offset - 1])
+        let previous = characters[offset - 1]
+        return previous != "_" && !isLetterOrNumber(previous)
     }
 
     /// `\p{L}` or `\p{N}` applied to the LAST unicode scalar of `character`.

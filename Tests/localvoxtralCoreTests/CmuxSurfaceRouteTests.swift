@@ -1,3 +1,4 @@
+import ClaudeContextWire
 import Foundation
 import Synchronization
 import XCTest
@@ -8,22 +9,24 @@ import XCTest
 private final class RouteTestCmux: CmuxSurfaceQuerying, CmuxSurfaceWriting, @unchecked Sendable {
     let writeAnswer: CmuxWriteResult
     let workspaceIsRemote: Bool?
+    let tty: String?
     /// The focused surface each `focusedSurface` call reports, in turn; the
     /// last one repeats.
     private let focusSequence: Mutex<[String?]>
     private let sent = Mutex<[String]>([])
 
-    init(writeAnswer: CmuxWriteResult, focusSequence: [String?], workspaceIsRemote: Bool? = nil) {
+    init(writeAnswer: CmuxWriteResult, focusSequence: [String?], workspaceIsRemote: Bool? = nil, tty: String? = nil) {
         self.writeAnswer = writeAnswer
         self.focusSequence = Mutex(focusSequence)
         self.workspaceIsRemote = workspaceIsRemote
+        self.tty = tty
     }
 
     var writes: [String] { sent.withLock { $0 } }
 
     func focusedSurface(expectedPeerPID _: pid_t) async -> CmuxQueryResult<CmuxFocusedSurface> {
         let focused = focusSequence.withLock { $0.count > 1 ? $0.removeFirst() : $0.first ?? nil }
-        return focused.map { .value(CmuxFocusedSurface(surfaceID: $0, workspaceIsRemote: workspaceIsRemote)) }
+        return focused.map { .value(CmuxFocusedSurface(surfaceID: $0, tty: tty, workspaceIsRemote: workspaceIsRemote)) }
             ?? .unavailable
     }
 
@@ -40,6 +43,12 @@ private final class RouteTestCmux: CmuxSurfaceQuerying, CmuxSurfaceWriting, @unc
         sent.withLock { $0.append("\(surfaceID) enter") }
         return writeAnswer
     }
+}
+
+/// The pids a tty's foreground process group holds, changed by the test.
+private final class ForegroundGroup: @unchecked Sendable {
+    let pids: Mutex<[Int32]>
+    init(_ pids: [Int32]) { self.pids = Mutex(pids) }
 }
 
 @MainActor
@@ -154,5 +163,42 @@ final class CmuxSurfaceRouteTests: XCTestCase {
         let (outcome, writes) = await deliver(answer: .accepted(queued: false), focused: surface, frontmost: 1, enabled: false)
         XCTAssertEqual(outcome, .keepInHistory)
         XCTAssertEqual(writes, [])
+    }
+
+    /// Ctrl-Z on the agent: it is alive and still registered on the
+    /// surface, but its shell owns the terminal, where the text is a command
+    /// and an Enter runs it.
+    func testSuspendedAgentCannotSubmitIntoItsCmuxShell() async throws {
+        let tty = "/dev/ttys004"
+        let agentPID: Int32 = 9001
+        let shellPID: Int32 = 9000
+        let registry = ClaudeSessionRegistry(now: { Date(timeIntervalSince1970: 2_000_000) }, isProcessAlive: { _ in true })
+        registry.ingest(
+            ClaudeHookRecord(
+                event: .sessionStart, sessionID: "s1", timestamp: 0, rawCwd: "/repo", prompt: nil, files: [],
+                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: agentPID, tty: tty, cmuxSurfaceID: surface)
+            ),
+            origin: .localAuthenticated(peerUID: 501)
+        )
+        let cmux = RouteTestCmux(writeAnswer: .accepted(queued: false), focusSequence: [surface], tty: tty)
+        let foreground = ForegroundGroup([agentPID])
+        let resolver = ClaudeSessionJoinResolver(
+            registry: registry, cmuxSurfaces: cmux, cmuxJoinEnabled: { true },
+            ttyForegroundPIDs: { $0 == tty ? foreground.pids.withLock { $0 } : nil }
+        )
+        let target = TerminalScreenTarget(pid: cmuxPID, bundleID: TerminalScreenAllowlist.cmuxBundleID)
+        let resolved = await resolver.resolveViaCmux(target: target)
+        let join = try XCTUnwrap(resolved)
+        let route = try XCTUnwrap(resolver.cmuxSurfaceRoute(for: join, frontmostPID: { [cmuxPID] in cmuxPID }))
+
+        let whileForeground = await route.deliver(.append("fix the tests"))
+        XCTAssertEqual(whileForeground, .delivered)
+
+        foreground.pids.withLock { $0 = [shellPID] }
+        let append = await route.deliver(.append("rm -rf build"))
+        let submit = await route.deliver(.submit)
+        XCTAssertEqual(append, .keepInHistory)
+        XCTAssertEqual(submit, .keepInHistory)
+        XCTAssertEqual(cmux.writes, ["\(surface) text fix the tests"], "nothing reaches the shell")
     }
 }

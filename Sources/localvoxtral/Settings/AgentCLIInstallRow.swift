@@ -48,18 +48,18 @@ final class AgentCLIInstallModel {
             AgentCLIInstallState.installCommand(bundledBinary: bundledBinary),
             action: "install"
         ) { [bundledBinary] in
-            let fileManager = FileManager.default
-            try? fileManager.removeItem(atPath: AgentCLIInstallState.linkPath)
-            try fileManager.createSymbolicLink(
-                atPath: AgentCLIInstallState.linkPath, withDestinationPath: bundledBinary)
+            try AgentCLIInstallState.installLink(bundledBinary: bundledBinary)
         }
     }
 
     func remove() async {
         // Only a link we made: `foreign` offers no Remove.
         guard state == .installed || state == .otherCopy else { return }
-        await run(AgentCLIInstallState.removeCommand(), action: "remove") {
-            try FileManager.default.removeItem(atPath: AgentCLIInstallState.linkPath)
+        await run(
+            AgentCLIInstallState.removeCommand(bundledBinary: bundledBinary),
+            action: "remove"
+        ) { [bundledBinary] in
+            try AgentCLIInstallState.removeLink(bundledBinary: bundledBinary)
         }
     }
 

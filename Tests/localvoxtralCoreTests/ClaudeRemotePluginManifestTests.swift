@@ -122,12 +122,13 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         }
     }
 
-    func testPluginShipsExactlySixExecutablesAllPOSIXSh() throws {
+    func testPluginShipsExactlySevenExecutablesAllPOSIXSh() throws {
         // The premise, updated for the command-hook shape: nothing to install
-        // on the remote but the manifests and SIX POSIX-sh scripts — the curl
+        // on the remote but the manifests and SEVEN POSIX-sh scripts — the curl
         // shim every hook runs, the status-line renderer the user may point
         // their own `statusLine` setting at, the project-terms (#641) and
-        // quick capture (#745) runners the shim starts when the Mac asks, and
+        // quick capture (#745) runners the shim starts when the Mac asks, the
+        // agent projects scan (#1027) it starts on SessionStart, and
         // `localvoxtral doctor` (#910) with the `bin/` entry Claude Code puts
         // on the agent's PATH. No
         // Python, no jq, no nc,
@@ -135,7 +136,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         // appears here, the premise is gone.
         let shellScripts: Set<String> = [
             "hooks/post.sh", "hooks/statusline.sh", "hooks/terms.sh", "hooks/capture.sh", "hooks/doctor.sh",
-            "bin/localvoxtral",
+            "hooks/agent-projects.sh", "bin/localvoxtral",
         ]
         let contents = try FileManager.default.subpathsOfDirectory(atPath: pluginRoot.path)
         for path in contents {
@@ -160,11 +161,11 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             }
             XCTAssertFalse(
                 FileManager.default.isExecutableFile(atPath: full.path),
-                "the remote plugin must ship no executable but its six sh scripts, found \(path)"
+                "the remote plugin must ship no executable but its seven sh scripts, found \(path)"
             )
             XCTAssertTrue(
                 path.hasSuffix(".json"),
-                "the remote plugin must ship JSON manifests and its six sh scripts only, found \(path)"
+                "the remote plugin must ship JSON manifests and its seven sh scripts only, found \(path)"
             )
         }
         for script in shellScripts {

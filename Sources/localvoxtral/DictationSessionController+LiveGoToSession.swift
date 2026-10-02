@@ -213,6 +213,9 @@ extension DictationSessionController {
             deliverLiveGoToHeldFinal(finalText, merged: merged, startsMidWord: startsMidWord)
             return
         }
+        // A voice command is a final that submits nothing: the same
+        // submission after it is said again, not a duplicate final.
+        spokenSendLatch.noteNonSubmittingFinal()
         let spokenName: String
         switch command {
         case .goTo(let name):

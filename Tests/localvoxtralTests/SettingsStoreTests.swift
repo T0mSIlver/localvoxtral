@@ -795,6 +795,29 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(makeStore().livePasteShortcut, bareF14)
     }
 
+    // Clearing the default Overlay Buffer key before ever recording one writes
+    // only the enabled flag; the reload must still honour it, or the key comes
+    // back and, after a move to Live Auto-Paste, binds twice.
+    func testClearingUntouchedDefaultOverlayShortcutPersistsAcrossReload() {
+        let store = makeStore()
+        XCTAssertEqual(store.overlayBufferShortcut, SettingsStore.defaultDictationShortcut)
+
+        store.setOverlayBufferShortcut(nil)
+
+        XCTAssertNil(makeStore().overlayBufferShortcut)
+    }
+
+    func testMovingUntouchedDefaultToLivePasteLeavesOneBindingAfterReload() {
+        let store = makeStore()
+
+        store.setOverlayBufferShortcut(nil)
+        store.setLivePasteShortcut(SettingsStore.defaultDictationShortcut)
+
+        let reloaded = makeStore()
+        XCTAssertNil(reloaded.overlayBufferShortcut)
+        XCTAssertEqual(reloaded.livePasteShortcut, SettingsStore.defaultDictationShortcut)
+    }
+
     func testOverlayBufferShortcut_bareTypingKeyFallsBackToDefault() {
         let store = makeStore()
 

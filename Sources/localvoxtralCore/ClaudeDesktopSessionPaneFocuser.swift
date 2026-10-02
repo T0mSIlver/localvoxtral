@@ -76,9 +76,13 @@ package final class ClaudeDesktopSessionPaneFocuser: SessionPaneFocusing {
         return await shows(session, pid: pid)
     }
 
+    /// Frontmost is checked again after the read: the user can switch apps
+    /// while it is suspended, and a dictation started on a stale `true`
+    /// would go to the app they switched to.
     private func shows(_ session: ClaudeSessionSnapshot, pid: pid_t) async -> Bool {
         guard frontmostPID() == pid else { return false }
-        return await shownSessionID(pid) == session.sessionID
+        guard await shownSessionID(pid) == session.sessionID else { return false }
+        return frontmostPID() == pid
     }
 }
 

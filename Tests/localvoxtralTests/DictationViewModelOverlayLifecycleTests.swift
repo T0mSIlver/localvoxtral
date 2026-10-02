@@ -148,6 +148,39 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertFalse(viewModel.session.realtimeAPIClient.isConnected)
     }
 
+    /// The overlay the view model builds for itself holds the panel on the
+    /// session clock, so a test's clock dismisses it and no real timer stays
+    /// armed past the test.
+    func testDefaultOverlayDismissesOnTheSessionClock() async throws {
+        let clock = ManualSessionClock()
+        let viewModel = DictationViewModel(
+            settings: makeSettings(outputMode: .overlayBuffer),
+            startRuntimeServices: false,
+            dependencies: DictationViewModel.Dependencies(clock: clock.clock)
+        )
+        retainForTestProcessLifetime(viewModel)
+        let overlay = try XCTUnwrap(
+            viewModel.session.overlayBufferCoordinator as? OverlayBufferSessionCoordinator)
+        defer { overlay.reset() }
+
+        overlay.startSession(
+            preResolvedAnchor: OverlayAnchor(
+                targetRect: CGRect(x: 400, y: 400, width: 10, height: 10), source: .mouseLocation),
+            claudeJoin: .hidden)
+        overlay.refresh(displayBufferText: "hello", commitBufferText: "hello")
+        overlay.markPolished(true)
+        overlay.dismissAfterHold(minimumVisibility: 1)
+
+        await clock.waitForSleepers(1, failAfter: 2)
+        XCTAssertEqual(clock.pendingDeadlines, [clock.now.addingTimeInterval(1)])
+        XCTAssertTrue(overlay.showsPolishChange, "still held")
+
+        clock.advance(by: 1)
+        await overlay.debugDismissTask?.value
+
+        XCTAssertFalse(overlay.showsPolishChange, "dismissed once the session clock passed the hold")
+    }
+
     func testPushToTalkReleaseWhileConnectingStillSurfacesTimeoutFailure() async {
         let settings = makeSettings(outputMode: .liveAutoPaste)
         settings.dictationShortcutMode = .pushToTalk

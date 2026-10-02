@@ -22,9 +22,9 @@ package final class CmuxSurfaceRoute: AgentPromptRoute, Sendable {
     private let isEnabled: @MainActor () -> Bool
     /// The frontmost app's pid now, for deciding where refused text goes.
     private let frontmostPID: @MainActor () -> pid_t?
-    /// Whether the joined session still holds the surface, read before
-    /// every call: once it exits, the surface is a shell, and an Enter
-    /// there runs the dictation as a command.
+    /// Whether the joined session still holds the surface, read right
+    /// before every write: once it exits or is suspended, the surface is a
+    /// shell, and an Enter there runs the dictation as a command.
     private let sessionHoldsSurface: @MainActor () -> Bool
     /// A `cmux ssh` join: the session runs on another host, so the registry
     /// cannot see it exit. Every Enter first needs cmux to report the
@@ -59,10 +59,7 @@ package final class CmuxSurfaceRoute: AgentPromptRoute, Sendable {
             Log.backends.notice("cmux surface route: cmux join turned off; nothing sent")
             return await refusedDelivery()
         }
-        guard await sessionHoldsSurface() else {
-            Log.backends.notice("cmux surface route: the joined session left the surface; nothing sent")
-            return .keepInHistory
-        }
+        guard await sessionStillHoldsSurface() else { return .keepInHistory }
         // An older cmux that does not report delivery drops text sent to a
         // surface whose tab is not focused (manaflow-ai/cmux#3129). Its word
         // counts only when the surface was focused before the write and
@@ -78,12 +75,16 @@ package final class CmuxSurfaceRoute: AgentPromptRoute, Sendable {
                 Log.backends.notice("cmux surface route: text has control characters or is too long; nothing sent")
                 return await refusedDelivery()
             }
+            // Again after the focus query, which the agent may have spent
+            // exiting or being suspended.
+            guard await sessionStillHoldsSurface() else { return .keepInHistory }
             result = await client.sendText(text, surfaceID: surfaceID, expectedPeerPID: cmuxPID)
         case .submit:
             if isRemoteJoin, await !surfaceIsFocusedRemoteHosted() {
                 Log.backends.notice("cmux surface route: remote surface not proved remote-hosted; no Enter")
                 return .keepInHistory
             }
+            guard await sessionStillHoldsSurface() else { return .keepInHistory }
             result = await client.sendEnter(surfaceID: surfaceID, expectedPeerPID: cmuxPID)
         }
         if case .accepted(let queued) = result {
@@ -101,6 +102,14 @@ package final class CmuxSurfaceRoute: AgentPromptRoute, Sendable {
         case .unconfirmed:
             return .keepInHistory
         }
+    }
+
+    private func sessionStillHoldsSurface() async -> Bool {
+        guard await sessionHoldsSurface() else {
+            Log.backends.notice("cmux surface route: the joined session left the surface; nothing sent")
+            return false
+        }
+        return true
     }
 
     /// Nothing was sent, so typing cannot double it. While cmux is the
