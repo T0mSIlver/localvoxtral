@@ -256,6 +256,78 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertFalse(pipeline.viewModel.isFinalizingStop)
     }
 
+    /// A start cancelled while its context capture still waits on the focused
+    /// app, then a dictation that connects before that read returns: the late
+    /// read leaves the new dictation's connection and join alone, and its
+    /// words commit.
+    func testACancelledStartsLateContextCaptureLeavesTheNextDictationAlone() async throws {
+        let polish = FakePolishingService { $0.inputText }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish, earlyPolish: false)
+        let viewModel = pipeline.viewModel
+        viewModel.settings.claudeRepoContextEnabled = true
+        viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        let desktop = TerminalScreenTarget(pid: 6060, bundleID: ClaudeDesktopAllowlist.bundleID)
+        TerminalScreenContextSource.debugFrontmostTargetOverride = { desktop }
+        addTeardownBlock { @MainActor in
+            TerminalScreenContextSource.debugFrontmostTargetOverride = nil
+            viewModel.textInsertion.debugSetAccessibilityTrusted(nil)
+        }
+        // One Claude Desktop session per start: the cancelled one's, and the
+        // next dictation's.
+        let cancelledDesktopID = "local_fb53459c-6a7b-43b1-a326-52258b970501"
+        let nextDesktopID = "local_0c1d7a52-2f4e-4b8e-9a51-3d6f0e7c2b14"
+        let registry = ClaudeSessionRegistry(
+            now: { Date(timeIntervalSince1970: 1_000) },
+            isProcessAlive: { _ in true }
+        )
+        for (sessionID, desktopID, claudePID) in [
+            ("s-cancelled", cancelledDesktopID, Int32(9001)), ("s-next", nextDesktopID, Int32(9002)),
+        ] {
+            registry.ingest(
+                ClaudeHookRecord(
+                    event: .sessionStart,
+                    sessionID: sessionID,
+                    timestamp: 0,
+                    rawCwd: "/repo",
+                    process: ClaudeHookProcessInfo(hookPID: 777, claudePID: claudePID, desktopSessionID: desktopID)
+                ),
+                origin: .localAuthenticated(peerUID: 501)
+            )
+        }
+        // The first start's read of the focused app is held, as a slow
+        // AppleScript reply would be; the next one answers at once.
+        let reads = DesktopReadCounter()
+        let firstReadStarted = BoundedWait()
+        let releaseFirstRead = BoundedWait()
+        viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            focusedDesktopSessionURL: { _ in
+                guard await reads.next() == 1 else { return "https://claude.ai/epitaxy/\(nextDesktopID)" }
+                firstReadStarted.resolve()
+                _ = await releaseFirstRead.value(failAfter: 30)
+                return "https://claude.ai/epitaxy/\(cancelledDesktopID)"
+            }
+        )
+
+        viewModel.startDictation()
+        let cancelledStart = try XCTUnwrap(viewModel.session.managedStartupTask)
+        let reading = await firstReadStarted.value(failAfter: 10)
+        XCTAssertTrue(reading, "the first start never read the focused app")
+        viewModel.cancelDictation()
+
+        await startAndSpeak(pipeline)
+        releaseFirstRead.resolve()
+        await cancelledStart.value
+
+        XCTAssertEqual(
+            viewModel.context.claudeSessionJoin?.snapshot.sessionID, "s-next",
+            "the cancelled start's late capture replaced or cleared the new dictation's join"
+        )
+        await stopAndFinalize(pipeline)
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
+    }
+
     /// A 200 reply with no usable text, through the real client: the raw
     /// transcript is committed once and the failure is shown (#1111).
     func testAMalformedPolishReplyCommitsTheTranscriptOnceAndSaysSo() async throws {
@@ -2518,6 +2590,16 @@ private final class TypedText {
         let wait = BoundedWait()
         watches.append((expected, wait))
         return await wait.value(failAfter: failAfter)
+    }
+}
+
+/// Numbers the reads of the focused Claude Desktop address, from 1.
+private actor DesktopReadCounter {
+    private var count = 0
+
+    func next() -> Int {
+        count += 1
+        return count
     }
 }
 
