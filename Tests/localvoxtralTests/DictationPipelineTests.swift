@@ -680,6 +680,67 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(whole)>"])
     }
 
+    /// Clipboard context switched off while the stop waits on the piece in
+    /// flight: the request leaves without the clipboard, and nothing the
+    /// clipboard grounded is learned for the project (#1293).
+    func testClipboardTurnedOffWhileTheStopWaitsOnAPieceIsNeitherSentNorLearned() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish)
+        let settings = pipeline.viewModel.settings
+        settings.polishClipboardContextEnabled = true
+        settings.repoVocabularyEnabled = true
+        pipeline.viewModel.dependencies.pasteboardReader = {
+            PasteboardStub(string: "error in PolishContextBudget.swift line 40", types: [.string])
+        }
+        // A project to learn into; the repository itself has no vocabulary.
+        let gathered = Mutex(false)
+        pipeline.viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding(
+            root: "/nonexistent-1293/project"
+        ) { _ in
+            gathered.withLock { $0 = true }
+            return nil
+        }
+        let store = LearnedTermStore(fileURL: nil)
+        pipeline.viewModel.learnedTermStore = store
+        // The first clock read after the stop's gather is the early polish's
+        // `finish()`: the moment the stop waits on the piece.
+        let waitsOnPiece = BoundedWait()
+        let now = pipeline.viewModel.dependencies.clock.now
+        pipeline.viewModel.dependencies.clock.now = {
+            if gathered.withLock({ $0 }) { waitsOnPiece.resolve() }
+            return now()
+        }
+        let tail = "and open polishcontextbudget.swift now."
+        await polish.holdNextRequest()
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.done", "text": Self.settledPiece])
+        let pieceSent = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(pieceSent, "no piece was polished while dictating")
+
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        pipeline.server.send(["type": "transcription.done", "text": tail])
+        let waiting = await waitsOnPiece.value(failAfter: 10)
+        XCTAssertTrue(waiting, "the stop never waited on the piece")
+
+        settings.polishClipboardContextEnabled = false
+        await polish.releaseHeldRequest()
+        let recorded = await pipeline.records.waitForCount(1)
+        XCTAssertTrue(recorded)
+        await pipeline.viewModel.session.polishAndCommitTask?.value
+        store.waitForPendingWrites()
+
+        let requests = await polish.requests
+        XCTAssertFalse(
+            requests.contains { request in
+                ([request.inputText] + request.userPrompts).contains { $0.contains("PolishContextBudget") }
+            },
+            "the withdrawn clipboard was sent"
+        )
+        XCTAssertEqual(store.summary().terms, 0, "a term from the withdrawn clipboard was learned")
+    }
+
     /// A quick capture is never polished, so no piece of it is sent to the
     /// polisher while the user speaks (#709).
     func testAQuickCaptureSendsNoPieceToThePolisher() async throws {
