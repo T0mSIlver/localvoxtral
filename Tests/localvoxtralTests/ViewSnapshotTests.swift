@@ -381,8 +381,8 @@ final class ViewSnapshotTests: XCTestCase {
                 .background(Color(nsColor: .windowBackgroundColor))
             try record(popover, name: "popover-accessibility-off-macos\(version)", width: 304, height: 460, growToFit: false)
             let rows = PermissionRowsView(viewModel: viewModel, accessibilityPane: pane)
-                .fixedSize(horizontal: false, vertical: true)
                 .padding(20)
+                .frame(width: 560, height: 170, alignment: .top)
                 .background(Color(nsColor: .windowBackgroundColor))
             try record(rows, name: "permissions-accessibility-off-macos\(version)", width: 560, height: 200, growToFit: false)
         }
