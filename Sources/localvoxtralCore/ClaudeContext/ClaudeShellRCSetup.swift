@@ -117,8 +117,11 @@ public enum ClaudeShellRCSetup {
     }
 
     /// The block rules live in `MarkedTextBlock`; these bind them to the rc
-    /// markers.
-    package static let block = MarkedTextBlock(markerBegin: markerBegin, markerEnd: markerEnd)
+    /// markers. The block is LF whatever the file uses: a shell cannot read
+    /// a CRLF one.
+    package static let block = MarkedTextBlock(
+        markerBegin: markerBegin, markerEnd: markerEnd, blockLineEnding: .lf
+    )
 
     public static func containsBlock(_ existing: String) -> Bool { block.containsBlock(existing) }
 

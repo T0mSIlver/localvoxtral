@@ -10,10 +10,22 @@ import Foundation
 public struct MarkedTextBlock: Sendable, Equatable {
     public var markerBegin: String
     public var markerEnd: String
+    public var blockLineEnding: BlockLineEnding
 
-    public init(markerBegin: String, markerEnd: String) {
+    /// How the block's own lines end. The user's lines always keep theirs.
+    public enum BlockLineEnding: Sendable, Equatable {
+        /// CRLF in a file whose every line ends CRLF, LF otherwise: a TOML or
+        /// Markdown file reads either way, and the user's editor shows one style.
+        case matchFile
+        /// Always LF. A shell reads `then\r` as a word, not a keyword, so a
+        /// CRLF block in an rc file is a syntax error at every shell start.
+        case lf
+    }
+
+    public init(markerBegin: String, markerEnd: String, blockLineEnding: BlockLineEnding = .matchFile) {
         self.markerBegin = markerBegin
         self.markerEnd = markerEnd
+        self.blockLineEnding = blockLineEnding
     }
 
     /// Is our block already in this text?
@@ -24,12 +36,14 @@ public struct MarkedTextBlock: Sendable, Equatable {
 
     /// Is our block in this text exactly once, and exactly this snippet?
     ///
-    /// Line terminators aside: `apply` writes the file's own, so a CRLF file
-    /// holding this build's block is current. Two copies are not current even
-    /// when both match, because `apply` would still collapse them.
+    /// Line terminators aside where the block matches the file's: a CRLF file
+    /// holding this build's block is current. An LF-only block written with
+    /// CRLF by an older build is not, so `apply` gets to rewrite it. Two
+    /// copies are not current even when both match, because `apply` would
+    /// still collapse them.
     public func containsCurrentBlock(_ existing: String, snippet: String) -> Bool {
-        let lines = splitLines(existing)
-        guard case .present(let ranges) = locateBlock(in: lines), ranges.count == 1 else {
+        let lines = blockLineEnding == .lf ? rawLines(existing) : splitLines(existing)
+        guard case .present(let ranges) = locateBlock(in: splitLines(existing)), ranges.count == 1 else {
             return false
         }
         return Array(lines[ranges[0]]) == splitLines(snippet)
@@ -40,14 +54,45 @@ public struct MarkedTextBlock: Sendable, Equatable {
         locateBlock(in: splitLines(existing)) == .damaged
     }
 
-    /// Lines, plus the terminator the file actually uses.
+    /// The terminator the file uses: CRLF only when every line break is CRLF.
     ///
     /// A CRLF file spliced with LF comes back mixed (review finding m3), and
     /// "mostly CRLF with one LF region" is a file we damaged in a way the user
-    /// will notice in their editor. The whole file is never normalized either —
-    /// that would be the same crime in the other direction.
+    /// will notice in their editor. A file that is already mixed has no one
+    /// style to match, and LF is the one every reader of these files accepts.
+    /// The whole file is never normalized either — that would be the same
+    /// crime in the other direction.
     package func lineTerminator(of text: String) -> String {
-        text.contains("\r\n") ? "\r\n" : "\n"
+        var sawBreak = false
+        var previous: Unicode.Scalar?
+        for scalar in text.unicodeScalars {
+            if scalar == "\n" {
+                guard previous == "\r" else { return "\n" }
+                sawBreak = true
+            }
+            previous = scalar
+        }
+        return sawBreak ? "\r\n" : "\n"
+    }
+
+    private func blockTerminator(of text: String) -> String {
+        blockLineEnding == .lf ? "\n" : lineTerminator(of: text)
+    }
+
+    /// Lines split on LF with any CR left on, so the user's lines rejoin with
+    /// LF byte for byte whatever each one ended with.
+    private func rawLines(_ text: String) -> [String] {
+        text.unicodeScalars.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    }
+
+    /// When the last block reached the end of a file with no final newline,
+    /// the line break before it went with it: drop that break's CR too.
+    private func joinKeepingUserBytes(_ raw: [String], blockReachedEnd: Bool) -> String {
+        var raw = raw
+        if blockReachedEnd, let last = raw.last, last.unicodeScalars.last == "\r" {
+            raw[raw.count - 1] = String(last.unicodeScalars.dropLast())
+        }
+        return raw.joined(separator: "\n")
     }
 
     /// Split on LF and strip a trailing CR, so a CRLF file's lines compare and
@@ -70,7 +115,7 @@ public struct MarkedTextBlock: Sendable, Equatable {
     /// - Returns: nil when the file's markers do not pair — the caller must
     ///   refuse rather than write.
     public func apply(to existing: String, snippet: String) -> String? {
-        let terminator = lineTerminator(of: existing)
+        let terminator = blockTerminator(of: existing)
         let lines = splitLines(existing)
         switch locateBlock(in: lines) {
         case .damaged:
@@ -86,28 +131,30 @@ public struct MarkedTextBlock: Sendable, Equatable {
             if existing.unicodeScalars.last == "\n" {
                 return existing + terminator + body + terminator
             }
-            return existing + terminator + terminator + body
+            // The user's last line gets the file's own terminator; `remove`
+            // takes it back.
+            return existing + lineTerminator(of: existing) + terminator + body
         case .present(let ranges):
             // Replace the FIRST block in place and drop the rest, so a file
             // that was hand-duplicated converges to one.
+            let raw = rawLines(existing)
+            let carriageReturn = terminator == "\r\n" ? "\r" : ""
+            let blockLines = snippet.components(separatedBy: "\n").map { $0 + carriageReturn }
             var result: [String] = []
             var cursor = 0
             for (offset, range) in ranges.enumerated() {
-                result.append(contentsOf: lines[cursor..<range.lowerBound])
-                if offset == 0 {
-                    result.append(contentsOf: snippet.components(separatedBy: "\n"))
-                }
+                result.append(contentsOf: raw[cursor..<range.lowerBound])
+                if offset == 0 { result.append(contentsOf: blockLines) }
                 cursor = range.upperBound + 1
             }
-            result.append(contentsOf: lines[cursor...])
-            return result.joined(separator: terminator)
+            result.append(contentsOf: raw[cursor...])
+            return joinKeepingUserBytes(result, blockReachedEnd: cursor == raw.count)
         }
     }
 
     /// Remove the block, leaving everything else untouched.
     /// - Returns: nil for the same unpaired-marker case as `apply`.
     public func remove(from existing: String) -> String? {
-        let terminator = lineTerminator(of: existing)
         let lines = splitLines(existing)
         switch locateBlock(in: lines) {
         case .damaged:
@@ -115,6 +162,7 @@ public struct MarkedTextBlock: Sendable, Equatable {
         case .absent:
             return existing
         case .present(let ranges):
+            let raw = rawLines(existing)
             var result: [String] = []
             var cursor = 0
             for range in ranges {
@@ -127,11 +175,11 @@ public struct MarkedTextBlock: Sendable, Equatable {
                 // still lose that line here; nothing in the file tells them
                 // apart.
                 if start > cursor, lines[start - 1].isEmpty { start -= 1 }
-                result.append(contentsOf: lines[cursor..<start])
+                result.append(contentsOf: raw[cursor..<start])
                 cursor = range.upperBound + 1
             }
-            result.append(contentsOf: lines[cursor...])
-            return result.joined(separator: terminator)
+            result.append(contentsOf: raw[cursor...])
+            return joinKeepingUserBytes(result, blockReachedEnd: cursor == raw.count)
         }
     }
 

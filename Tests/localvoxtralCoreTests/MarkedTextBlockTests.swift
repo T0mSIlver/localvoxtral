@@ -25,7 +25,8 @@ final class MarkedTextBlockTests: XCTestCase {
             "\n",
             "\n\n",
         ]
-        return lf + lf.map { $0.replacingOccurrences(of: "\n", with: "\r\n") }
+        let mixed = ["first\r\nsecond\n", "first\nsecond\r\n", "first\r\nsecond", "first\nsecond\r\n\r\n"]
+        return lf + lf.map { $0.replacingOccurrences(of: "\n", with: "\r\n") } + mixed
     }
 
     func testApplyThenRemoveIsByteIdenticalForEveryShape() throws {
