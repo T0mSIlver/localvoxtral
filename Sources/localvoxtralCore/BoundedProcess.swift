@@ -31,6 +31,10 @@ package enum BoundedProcess {
         }
     }
 
+    /// How long a process that hit the output cap gets to exit on SIGTERM
+    /// before SIGKILL.
+    static let capGraceSeconds: TimeInterval = 1.0
+
     /// Hops to a background queue so the blocking run never touches the
     /// calling actor. Nil when the process could not be launched, or did not
     /// exit even after SIGKILL.
@@ -122,15 +126,24 @@ package enum BoundedProcess {
 
         let timedOut = finished.wait(timeout: .now() + timeoutSeconds) == .timedOut
         let capped = collector.withLock { $0.capped }
+        // Set once the exit signal is consumed, so the final wait below does
+        // not wait on a semaphore that was already drained.
+        var exitObserved = false
         if timedOut || capped, process.isRunning {
             // Cap: the reader stopped consuming, so a still-writing process
-            // would block forever on a full pipe — a polite SIGTERM suffices
-            // (never a raw kill on a possibly-already-exited pid). Timeout:
-            // the process ignored its deadline; escalate to SIGKILL so the
+            // would block forever on a full pipe. SIGTERM first, then SIGKILL
+            // for a process still running after a short grace: an agent that
+            // ignores SIGTERM must not outlive the run. Timeout: the process
+            // ignored its deadline; escalate to SIGKILL at once so the
             // reader's read(2) sees EOF promptly.
             process.terminate()
             if timedOut {
                 kill(process.processIdentifier, SIGKILL)
+            } else if exited.wait(timeout: .now() + capGraceSeconds) == .timedOut {
+                Log.polishing.info("\(label, privacy: .public): ignored SIGTERM after the output cap; killing")
+                kill(process.processIdentifier, SIGKILL)
+            } else {
+                exitObserved = true
             }
         }
         if timedOut {
@@ -148,7 +161,7 @@ package enum BoundedProcess {
         // Foundation's process monitor (and, on the timeout path, the reader
         // thread) is deliberately leaked until the kernel eventually reaps the
         // child.
-        guard exited.wait(timeout: .now() + 2.0) != .timedOut else {
+        guard exitObserved || exited.wait(timeout: .now() + 2.0) != .timedOut else {
             Log.polishing.info("\(label, privacy: .public): did not exit after kill; abandoning")
             return nil
         }
