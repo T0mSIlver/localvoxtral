@@ -41,6 +41,10 @@ else
 fi
 [[ "$status" == "7" ]] || fail "payload exit status changed from 7 to $status"
 
+# xctest under the gate writes its log unbuffered (#1387).
+unbuffered="$( run_payload_with_cleanup 'printf %s "$NSUnbufferedIO"' )"
+[[ "$unbuffered" == "YES" ]] || fail "payload saw NSUnbufferedIO='$unbuffered', not YES"
+
 # No wall-clock wait: reading the FIFO is the readiness handshake, and
 # waiting for the wrapper means its EXIT cleanup has completed.
 #
