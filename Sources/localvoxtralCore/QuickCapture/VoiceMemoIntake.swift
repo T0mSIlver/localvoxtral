@@ -60,12 +60,15 @@ package final class VoiceMemoIntake {
     /// Set, the ledger could not be loaded: it is left as it is and no memo
     /// is taken, since each would be taken again (#989).
     package private(set) var ledgerProblem: StoredFileProblem?
-    /// A memo is streaming through the engine. The bundled helper decodes
-    /// one connection's queued audio at a time, so a dictation started now
-    /// waits behind the memo for its text.
+    /// A memo is streaming through the engine. The bundled helper runs one
+    /// connection's step at a time, so a dictation starting on it calls
+    /// `yieldToDictation()`.
     package private(set) var isTranscribing = false
     /// Called each time `isTranscribing` turns false.
     package var onTranscriptionEnded: (@MainActor () -> Void)?
+    /// The memo in flight, cancelled by `yieldToDictation()`.
+    private var transcription: Task<VoiceMemoTranscript, Error>?
+    private var yieldedToDictation = false
     private var isStopping = false
     private var reportedLedgerProblem = false
     private var reportedInboxProblem = false
@@ -144,11 +147,20 @@ package final class VoiceMemoIntake {
     }
 
     /// Takes no further memo and lets `run` return once the memo in flight
-    /// is done. Cancelling would close the memo's socket, but the bundled
-    /// helper still decodes the audio it queued, and a dictation waiting
-    /// behind it would stop waiting too early.
+    /// is done.
     package func stopAfterCurrentMemo() {
         isStopping = true
+    }
+
+    /// A dictation starts on the engine the memo streams through: cancels the
+    /// memo, which goes back for the next scan. The bundled helper then skips
+    /// the memo's queued audio, so the dictation's text streams live (#1317).
+    package func yieldToDictation() {
+        guard isTranscribing, let transcription else { return }
+        Log.backends.info("Voice memos: a dictation started; the memo waits for the next scan")
+        yieldedToDictation = true
+        isTranscribing = false
+        transcription.cancel()
     }
 
     /// One pass over the folder. Returns how many memos became captures.
@@ -271,16 +283,29 @@ package final class VoiceMemoIntake {
         let transcript: VoiceMemoTranscript
         do {
             isTranscribing = true
+            yieldedToDictation = false
+            let transcriber = transcriber
+            let task = Task { try await transcriber.transcribe(url) }
+            transcription = task
             defer {
+                transcription = nil
                 isTranscribing = false
                 onTranscriptionEnded?()
             }
-            transcript = try await transcriber.transcribe(url)
+            transcript = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
         } catch is VoiceMemoUnreadable {
             Log.backends.error("Voice memos: a memo is not audio this Mac can decode; left in the folder")
             record(file, .unreadable)
             onStatus?("A voice memo could not be read.")
             return .left
+        } catch where yieldedToDictation {
+            ledger.entries[file.name] = nil
+            saveLedger()
+            return .stopPass
         } catch {
             Log.backends.error("Voice memos: transcription failed, retrying on the next scan: \(String(describing: error), privacy: .public)")
             ledger.entries[file.name] = nil
