@@ -76,14 +76,17 @@ enum VoiceMemoAudioDecoder {
 /// helper, started if it is not running, or the server or Mistral model the
 /// user dictates with. A realtime socket, never a batch model.
 struct VoiceMemoEngineTranscriber: VoiceMemoTranscribing {
-    /// What a dictation would dial now, with its engine ready.
-    let prepare: @MainActor @Sendable () async throws -> (RealtimeSessionConfiguration, @Sendable () -> any RealtimeClient)
+    /// What a dictation would dial now, with its engine ready, and the
+    /// server's context budget when it has one.
+    let prepare: @MainActor @Sendable () async throws -> (
+        RealtimeSessionConfiguration, RealtimeContextBudget?, @Sendable () -> any RealtimeClient
+    )
 
     func transcribe(_ url: URL) async throws -> VoiceMemoTranscript {
         let pcm = try VoiceMemoAudioDecoder.pcm16(from: url)
-        let (configuration, makeClient) = try await prepare()
+        let (configuration, contextBudget, makeClient) = try await prepare()
         let text = try await RealtimeFileTranscriber(makeClient: makeClient)
-            .transcribe(pcm16: pcm, configuration: configuration)
+            .transcribe(pcm16: pcm, configuration: configuration, contextBudget: contextBudget)
         return VoiceMemoTranscript(text: text, pcm16: pcm)
     }
 }
