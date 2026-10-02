@@ -224,6 +224,36 @@ final class SessionShownNamesTests: XCTestCase {
         )
     }
 
+    /// Remote Control sessions on the dev box, as its server starts them for
+    /// claude.ai and Claude projects: each in a worktree named after its
+    /// session id, on the branch Claude Code made for it. They read as their
+    /// repository, told apart; one whose agent switched to a named branch reads
+    /// as that branch.
+    func testRemoteControlWorktreesReadAsTheirRepository() throws {
+        let worktrees = "/home/dev/work/localvoxtral/.claude/worktrees/"
+        let first = try remoteCLISession(
+            "first", cwd: worktrees + "bridge-cse_01APpLRSYFaxzhAjYcBXt2ds",
+            branch: "worktree-bridge-cse_01APpLRSYFaxzhAjYcBXt2ds", seen: 0
+        )
+        let second = try remoteCLISession(
+            "second", cwd: worktrees + "bridge-cse_01Yaee4CfkjgonpmTSFHdNv6",
+            branch: "worktree-bridge-cse_01Yaee4CfkjgonpmTSFHdNv6", seen: 1
+        )
+        let branched = try remoteCLISession(
+            "branched", cwd: worktrees + "bridge-session_01Ed49yVPnuTVgdyEMjTtu4T",
+            branch: "fix/projects-session-names", seen: 2
+        )
+        let candidates = [first, second, branched].map { candidate($0) }
+
+        XCTAssertEqual(SessionShownNames.of(candidates), [
+            "first": "localvoxtral · 1",
+            "second": "localvoxtral · 2",
+            "branched": "projects-session-names",
+        ])
+        XCTAssertEqual(resolvedID("projects session names", candidates), "branched")
+        XCTAssertFalse(SessionDefaultNames.isRemoteControlWorktree("bridge-builder"))
+    }
+
     func testDesktopsTitleBeatsTheHooksTitle() throws {
         let session = try remoteCLISession(
             "desktop", cwd: "/home/dev/work/localvoxtral", branch: "main", title: "From the hook", seen: 0
