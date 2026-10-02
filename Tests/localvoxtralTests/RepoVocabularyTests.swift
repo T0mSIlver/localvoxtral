@@ -395,6 +395,28 @@ final class RepoVocabularyCacheTests: XCTestCase {
         )
         XCTAssertNil(miss)
     }
+
+    /// Dictating across many repos in one app run must not keep every root's
+    /// vocabulary: past capacity the least recently stored root goes, while
+    /// the recent ones still hit within the TTL.
+    func testInsertBeyondCapacityEvictsOldestRoot() {
+        let cache = RepoVocabularyCache(ttl: 300, capacity: 2)
+        let start = Date(timeIntervalSince1970: 1_000)
+        let head = Date(timeIntervalSince1970: 500)
+        for (offset, root) in ["/a", "/b", "/c"].enumerated() {
+            cache.insert(
+                root: root,
+                vocabulary: vocab,
+                headModificationDate: head,
+                now: start.addingTimeInterval(TimeInterval(offset))
+            )
+        }
+
+        let now = start.addingTimeInterval(10)
+        XCTAssertNil(cache.lookup(root: "/a", now: now, currentHeadModificationDate: head))
+        XCTAssertEqual(cache.lookup(root: "/b", now: now, currentHeadModificationDate: head), vocab)
+        XCTAssertEqual(cache.lookup(root: "/c", now: now, currentHeadModificationDate: head), vocab)
+    }
 }
 
 // MARK: - Service orchestration (injected subprocess + fixture .git)
