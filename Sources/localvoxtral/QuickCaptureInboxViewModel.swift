@@ -225,10 +225,14 @@ final class QuickCaptureInboxViewModel {
     /// The model's lowest reasoning effort on the Mistral shape, whatever
     /// polish uses: GLM's `low`, Mistral's own `none` (it rejects `low`).
     /// At a higher effort GLM 5.3's reasoning once used the whole token cap
-    /// (#918). A self-hosted server keeps its polish switches.
+    /// (#918). A model the catalog lists without reasoning gets no field: it
+    /// rejects even `none` (#1365). A self-hosted server keeps its polish
+    /// switches.
     static func firstDraftExtraBody(_ configuration: LLMPolishingConfiguration) -> [String: any Sendable] {
         guard configuration.requestShape == .mistral else { return chatExtraBody(configuration) }
-        guard let wireValue = MistralReasoningEffort.forModel(configuration.model).wireValue else { return [:] }
+        guard configuration.mistralReasoningEffort != .omitted,
+              let wireValue = MistralReasoningEffort.forModel(configuration.model).wireValue
+        else { return [:] }
         return ["reasoning_effort": wireValue]
     }
 
