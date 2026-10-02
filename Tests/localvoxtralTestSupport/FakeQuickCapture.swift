@@ -10,9 +10,15 @@ package final class FakeQuickCaptureGitHub: QuickCaptureGitHub, @unchecked Senda
     /// Set, `gh issue create` waits on it before it answers.
     package var createGate: ManualSleeper?
 
+    /// Set, reading a checkout's `origin` waits on it before it answers.
+    package var repositoryGate: ManualSleeper?
+
     package init() {}
 
-    package func repository(ofCheckout path: String) async -> String? { path == "/w/reach" ? "o/reach" : nil }
+    package func repository(ofCheckout path: String) async -> String? {
+        if let repositoryGate { await repositoryGate.sleep(0) }
+        return path == "/w/reach" ? "o/reach" : nil
+    }
     package let issuesListed = Mutex<[String?]>([])
 
     package func openIssues(ofCheckout path: String, repository: String?) async -> [QuickCaptureDraft.OpenIssue]? {

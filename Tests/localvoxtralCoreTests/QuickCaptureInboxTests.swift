@@ -179,6 +179,30 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertTrue(item.canFile)
     }
 
+    /// A drafted capture moved to a checkout whose `origin` is still being
+    /// read, then to No project: the late answer is the project it left,
+    /// so it is not attached and File stays off.
+    func testALateRepositoryLookupIsDroppedOnceTheCaptureMovedOn() async throws {
+        let model = model(answer: ["reach": 0.9])
+        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        await model.move(id, toProjectKey: "remote:website")?.value
+        XCTAssertNil(model.items.first?.repository)
+
+        let lookup = ManualSleeper()
+        github.repositoryGate = lookup
+        let moveBack = try XCTUnwrap(model.move(id, toProjectKey: "/w/reach"))
+        await lookup.waitForSleepers(1)
+        XCTAssertNil(model.move(id, toProjectKey: nil))
+        lookup.wakeAll()
+        await moveBack.value
+
+        let item = try XCTUnwrap(model.items.first)
+        XCTAssertNil(item.projectKey)
+        XCTAssertNil(item.repository)
+        XCTAssertFalse(item.canFile)
+    }
+
     func testMovingElsewhereDropsTheSuggestion() async throws {
         let model = model(answer: ["reach": 0.5])
         await model.capture(text: "Add a dark mode", historyRecordID: nil).value
