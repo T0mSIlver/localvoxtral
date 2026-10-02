@@ -1111,10 +1111,12 @@ extension DictationViewModel {
     }
 
     /// What a dictation would dial now, on a socket of its own so a memo never
-    /// touches the session's client. The bundled helper is started first.
+    /// touches the session's client. The bundled helper is started first. An
+    /// External URL server's context budget comes along, as a dictation's
+    /// does (#1148).
     private func voiceMemoEngine(
         usageLedger: UsageLedger
-    ) async throws -> (RealtimeSessionConfiguration, @Sendable () -> any RealtimeClient) {
+    ) async throws -> (RealtimeSessionConfiguration, RealtimeContextBudget?, @Sendable () -> any RealtimeClient) {
         let mode = settings.dictationBackendMode
         if mode == .managedLocal {
             try await backendManager.ensureReady(dictation: true, polishing: false)
@@ -1130,13 +1132,17 @@ extension DictationViewModel {
             usageBackend: DictationSessionController.usageBackend(for: mode)
         )
         if mode == .mistralAPI {
-            return (configuration, {
+            return (configuration, nil, {
                 let client = MistralRealtimeWebSocketClient()
                 client.setUsageRecorder(usageLedger)
                 return client
             })
         }
-        return (configuration, {
+        var contextBudget: RealtimeContextBudget?
+        if configuration.usageBackend == .userServer, let lookup = dependencies.realtimeContextLimit {
+            contextBudget = await lookup(configuration)
+        }
+        return (configuration, contextBudget, {
             let client = RealtimeAPIWebSocketClient()
             client.setUsageRecorder(usageLedger)
             return client
