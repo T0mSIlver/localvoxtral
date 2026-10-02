@@ -12,8 +12,10 @@ extension DictationSessionController {
     /// Connect time, once per dictation: hands the relay resolved at start to
     /// the insertion service, or disarms the previous one.
     func armPromptRelayForSession() {
+        promptRelaySessionID = context.claudeSessionJoin?.snapshot.sessionID
         textInsertion.beginPromptRelay(context.agentPromptRoute, kept: { [weak self] _ in
             self?.lastError = StatusStrings.agentPromptTextKeptInHistory
+            self?.forgetLandingThePromptRelayDidNotFill()
         })
     }
 
@@ -42,6 +44,7 @@ extension DictationSessionController {
             return
         }
         Log.overlay.error("overlay commit: relay refused and keyboard insertion unavailable; text copied")
+        forgetLandingThePromptRelayDidNotFill()
         #if DEBUG
         // A test must never write the host's clipboard.
         if TerminalTargetDetector.isRunningUnderXCTest {
@@ -54,6 +57,20 @@ extension DictationSessionController {
         lastError = pasteboard.setString(text, forType: .string)
             ? StatusStrings.overlayCopiedToClipboard
             : "Unable to insert buffered text into the focused app."
+    }
+
+    /// The commit recorded its landing when it handed the text off. Text the
+    /// relay then left on the clipboard or in History is not in the prompt,
+    /// so the next commit there must not continue it: a leading space would
+    /// turn `/compact` into text (docs/agent/invariants.md, "An Overlay
+    /// Buffer commit starts with a space only when it continues the unsent
+    /// prompt").
+    private func forgetLandingThePromptRelayDidNotFill() {
+        guard let sessionID = promptRelaySessionID,
+              lastOverlayCommitLanding?.sessionID == sessionID
+        else { return }
+        Log.overlay.notice("overlay commit: relay text not in the prompt; next commit adds no space")
+        lastOverlayCommitLanding = nil
     }
 }
 

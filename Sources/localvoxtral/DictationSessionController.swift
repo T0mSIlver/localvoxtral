@@ -164,6 +164,12 @@ final class DictationSessionController {
     @ObservationIgnored
     var onDictationStartRequested: (() -> Void)?
 
+    /// The joined session the prompt relay armed at connect writes into;
+    /// nil without a join. The join itself is consumed before a polished
+    /// commit, and the relay's answer comes after it.
+    @ObservationIgnored
+    var promptRelaySessionID: String?
+
     /// `var` so a test can replace one collaborator after construction. The
     /// lifecycle center and the microphone are read at init (the microphone
     /// into the audio pipeline, so replace it through `init`); the rest when a
