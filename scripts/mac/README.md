@@ -464,8 +464,8 @@ scripts/mac/runner-node-resign.sh install-agent
 #    signing key lands on you, not on the silent agent:
 "$HOME/Library/Application Support/localvoxtral/bin/runner-node-resign.sh" run
 
-# 3. System Settings > Privacy & Security: in BOTH Accessibility and Screen
-#    Recording, REMOVE the existing node rows and re-add BOTH
+# 3. System Settings > Privacy & Security: in BOTH Accessibility (Device
+#    Control and Data Access on macOS 27) and Screen Recording, REMOVE the existing node rows and re-add BOTH
 #    ~/actions-runner/externals/node*/bin/node binaries (4 entries total).
 #    The old rows are keyed to the pre-signing hashes and never match again.
 #    This is the LAST manual TCC action; later updates re-sign automatically.
@@ -720,7 +720,7 @@ required, and both are granted to **sshd**, not to the gate script — press
 Cmd-Shift-G in the "+" file picker and enter
 `/usr/libexec/sshd-keygen-wrapper`:
 
-- **Accessibility** — `ax dump/click/type` and `key` (AX API + CGEvent).
+- **Accessibility** (Device Control and Data Access on macOS 27) — `ax dump/click/type` and `key` (AX API + CGEvent).
 - **Screen Recording** — `shot` (`screencapture -l`). Without it the capture
   silently produces an empty or desktop-picture-only file.
 

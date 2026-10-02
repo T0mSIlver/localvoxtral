@@ -30,7 +30,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/launch-app.sh"
 #
 # One-time TCC grants required for the terminal you run this from
 # (System Settings > Privacy & Security):
-#   - Accessibility    (System Events drives the menu and settings tabs)
+#   - Accessibility, called Device Control and Data Access on macOS 27
+#                      (System Events drives the menu and settings tabs)
 #   - Screen Recording (screencapture -l reads window contents)
 #
 # The run takes over the GUI session (appearance switch, app launch, menus,
@@ -96,7 +97,7 @@ import CoreGraphics
 
 var ok = true
 if !AXIsProcessTrusted() {
-    print("MISSING Accessibility: System Settings > Privacy & Security > Accessibility — enable the app that launched this script (your terminal, or the CI runner app for workflow runs), then rerun.")
+    print("MISSING Accessibility: System Settings > Privacy & Security > Accessibility (Device Control and Data Access on macOS 27) — enable the app that launched this script (your terminal, or the CI runner app for workflow runs), then rerun.")
     ok = false
 }
 if !CGPreflightScreenCaptureAccess() {

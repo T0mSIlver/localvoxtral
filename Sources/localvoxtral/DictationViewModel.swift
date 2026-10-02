@@ -138,7 +138,10 @@ final class DictationViewModel {
     /// active but Accessibility isn't trusted — transcribed text would otherwise
     /// land nowhere. Kept as a stable constant so `ErrorToken` can recognize it.
     static let liveAutoPasteAccessibilityWarningMessage =
-        "Live Auto-Paste needs Accessibility access to type into other apps. Text won't appear until you enable it in System Settings > Privacy & Security > Accessibility."
+        "Live Auto-Paste can't type into other apps until you turn on localvoxtral in \(AccessibilitySettingsPane.current.path)."
+
+    /// The same warning in the popover, where the Enable button names the pane.
+    static let liveAutoPastePopoverAccessibilityWarningMessage = "Live Auto-Paste can't type into other apps."
 
     /// Surfaced at dictation start when macOS Secure Keyboard Entry is active
     /// (e.g. Ghostty around password prompts): it blocks synthetic keyboard

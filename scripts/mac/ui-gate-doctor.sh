@@ -249,7 +249,8 @@ for key, label, verbs in (
     else:
         fix(label, "not granted — %s cannot work" % verbs,
             "System Settings > Privacy & Security > %s: add /usr/libexec/sshd-keygen-wrapper"
-            % ("Accessibility" if key == "accessibility" else "Screen Recording"))
+            % ("Accessibility (Device Control and Data Access on macOS 27)"
+               if key == "accessibility" else "Screen Recording"))
 
 # 5. the gate conf and the term-open allowlist
 conf = setup.get("gate_conf", {})

@@ -33,6 +33,7 @@ struct StatusPopoverView: View {
 
     var viewModel: DictationViewModel
     var navigator: SettingsNavigator
+    var accessibilityPane: AccessibilitySettingsPane = .current
 
     private var dictationButtonTitle: String {
         if viewModel.isFinalizingStop {
@@ -133,7 +134,7 @@ struct StatusPopoverView: View {
             }
 
             if !viewModel.isAccessibilityTrusted {
-                Button("Enable Accessibility…") {
+                Button("Enable \(accessibilityPane.name)…") {
                     viewModel.permissions.requestAccessibilityPermission()
                     openAccessibilitySettings()
                 }
@@ -144,8 +145,8 @@ struct StatusPopoverView: View {
             // Prominent, single-source-of-truth "why can't I dictate right now"
             // banner. Surfaces the Live Auto-Paste + Accessibility gap before the
             // user speaks into the void; the affordance to fix it is right below.
-            if let warning = viewModel.liveAutoPasteAccessibilityWarning {
-                Text(warning)
+            if viewModel.liveAutoPasteAccessibilityWarning != nil {
+                Text(DictationViewModel.liveAutoPastePopoverAccessibilityWarningMessage)
                     .foregroundStyle(.orange)
                     .lineLimit(nil)
                     .fixedSize(horizontal: false, vertical: true)

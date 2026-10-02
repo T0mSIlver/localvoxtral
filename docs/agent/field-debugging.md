@@ -63,7 +63,8 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   stop && ./svc.sh start`). Identity-signed builds keep their Accessibility
   (TCC) grant across rebuilds; ad-hoc builds get a fresh signature each time
   and macOS silently invalidates the old grant (fix: toggle the app off/on in
-  System Settings → Accessibility). Microphone is gentler: a copy with
+  System Settings → Privacy & Security → Accessibility, or Device Control
+  and Data Access on macOS 27). Microphone is gentler: a copy with
   another signature (an ad-hoc `/Applications` copy against an
   identity-signed `try-pr.sh` copy) is simply asked again, and the dialog
   can open on another display, so **Allow microphone…** looks like it did

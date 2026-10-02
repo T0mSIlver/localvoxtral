@@ -76,7 +76,8 @@ edited ([how new defaults arrive](dictation.md#edit-the-polishing-prompts-and-di
 > Because releases are ad-hoc signed, macOS may silently drop the
 > Accessibility grant after an update. If the dictation hotkey stops
 > working, toggle localvoxtral off and on in **System Settings → Privacy &
-> Security → Accessibility**.
+> Security → Accessibility** (**Device Control and Data Access** on macOS
+> 27).
 
 ## Uninstall with Homebrew
 

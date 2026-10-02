@@ -11,8 +11,7 @@ final class AccessibilityTrustManager {
     typealias SleepClosure = (Duration) async -> Void
     typealias DateProvider = () -> Date
 
-    static let errorMessage =
-        "Enable Accessibility for localvoxtral in System Settings > Privacy & Security > Accessibility."
+    static let errorMessage = "Turn on localvoxtral in \(AccessibilitySettingsPane.current.path)."
 
     private(set) var isTrusted = false
     var lastError: String?

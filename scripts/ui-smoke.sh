@@ -204,7 +204,7 @@ import CoreGraphics
 var ok = true
 
 if !AXIsProcessTrusted() {
-    print("Missing Accessibility TCC grant: grant Accessibility to the self-hosted runner process in System Settings > Privacy & Security > Accessibility, then rerun.")
+    print("Missing Accessibility TCC grant: grant Accessibility to the self-hosted runner process in System Settings > Privacy & Security > Accessibility (Device Control and Data Access on macOS 27), then rerun.")
     ok = false
 }
 

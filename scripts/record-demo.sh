@@ -228,7 +228,7 @@ import CoreGraphics
 
 var ok = true
 if !AXIsProcessTrusted() {
-    print("MISSING Accessibility: System Settings > Privacy & Security > Accessibility — enable the app that launched this script, then rerun.")
+    print("MISSING Accessibility: System Settings > Privacy & Security > Accessibility (Device Control and Data Access on macOS 27) — enable the app that launched this script, then rerun.")
     ok = false
 }
 if !CGPreflightScreenCaptureAccess() {

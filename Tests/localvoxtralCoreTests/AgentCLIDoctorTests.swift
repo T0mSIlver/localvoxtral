@@ -236,7 +236,8 @@ final class AgentCLIDoctorTests: XCTestCase {
     func testDoctorAnswersThroughTheServiceAndPrintsNumberedChecks() async throws {
         var state = FixtureAgentCLIDataSource.State()
         state.doctorFacts = AgentCLIDoctorFacts(
-            appVersion: "1.4.0", microphone: .granted, accessibilityTrusted: false, speech: .managed(.ready),
+            appVersion: "1.4.0", microphone: .granted, accessibilityTrusted: false,
+            accessibilityPane: AccessibilitySettingsPane(macOSMajorVersion: 26), speech: .managed(.ready),
             polish: .off, claudePlugin: nil, remoteHosts: [], recentJoins: [], now: now
         )
         let service = AgentCLIService(source: FixtureAgentCLIDataSource(state))
