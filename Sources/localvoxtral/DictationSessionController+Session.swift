@@ -350,17 +350,13 @@ extension DictationSessionController {
         // overlay takes focus once the socket connects, and screen context must
         // record what the user could see as they chose their words.
         let ownerTaskID = managedStartupTaskID
+        sessionStartGeneration &+= 1
+        let startGeneration = sessionStartGeneration
         isConnectingRealtimeSession = true
-        await captureTerminalScreenContextForSession()
-        // Both spawn paths register their managedStartupTaskID before this
-        // method runs, so a changed (non-nil) ID means a NEWER session start
-        // owns the shared capture/metadata now — a cancelled predecessor must
-        // not wipe the successor's state, and must not proceed either. A nil
-        // ID means the canceller merely cleared the slot: cleanup is ours, and
-        // resetting the connecting flag here also heals any cancel path that
-        // never called abortConnectingSession.
-        let ownsSharedSessionState =
-            managedStartupTaskID == ownerTaskID || managedStartupTaskID == nil
+        await captureTerminalScreenContextForSession(isCurrent: {
+            !Task.isCancelled && self.ownsSessionStart(generation: startGeneration, ownerTaskID: ownerTaskID)
+        })
+        let ownsSharedSessionState = ownsSessionStart(generation: startGeneration, ownerTaskID: ownerTaskID)
         guard !Task.isCancelled, isConnectingRealtimeSession, ownsSharedSessionState else {
             if ownsSharedSessionState {
                 context.discardTerminalScreenCapture()
@@ -394,6 +390,19 @@ extension DictationSessionController {
             model: model,
             usageBackend: usageBackend
         )
+    }
+
+    /// Whether the start that took `generation` and `ownerTaskID` before its
+    /// capture still owns the shared capture and session metadata. A later
+    /// start that reached `prepareDictationSession` took a new generation; one
+    /// still waiting for its backend holds a different startup task ID. A nil
+    /// ID with an unchanged generation means a canceller only cleared the
+    /// slot: cleanup is the start's own, and resetting the connecting flag
+    /// there also heals a cancel path that never called
+    /// `abortConnectingSession`.
+    private func ownsSessionStart(generation: UInt64, ownerTaskID: UUID?) -> Bool {
+        sessionStartGeneration == generation
+            && (managedStartupTaskID == ownerTaskID || managedStartupTaskID == nil)
     }
 
     /// Who the usage ledger charges a dictation in `mode` to. The Mistral

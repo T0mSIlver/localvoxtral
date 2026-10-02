@@ -91,7 +91,10 @@ final class SessionContextResolver {
     /// an opted-out user, a remote polishing endpoint, or an unlisted app
     /// means the screen is never read. A nil polishing configuration also means
     /// no read: with no endpoint there is nothing to ground for.
-    func captureAtStart() async -> OverlayClaudeJoinBadge {
+    ///
+    /// `isCurrent` answers whether the start that called is still the one
+    /// running. Once it says no, nothing is stored and the badge is hidden.
+    func captureAtStart(isCurrent: @MainActor () -> Bool = { true }) async -> OverlayClaudeJoinBadge {
         // A fresh dictation gets fresh tap slots: an abandoned pipeline's late
         // note from the PREVIOUS session must not describe this one. (The
         // owner supersedes its post-commit edit watch before calling here.)
@@ -108,54 +111,68 @@ final class SessionContextResolver {
             noteJoinOutcome(.gated(.noPolishingEndpoint), causes: [])
             return .hidden
         }
+        // Every result below waits in a local until the last suspension: a
+        // start cancelled or replaced while an Apple event or a socket read
+        // was in flight writes nothing over the state a newer start owns.
         let joinResolver = claudeSessionJoinResolver
-        terminalScreenStartCapture = await TerminalScreenContextSource.captureAtStart(
+        let screenCapture = await TerminalScreenContextSource.captureAtStart(
             settingEnabled: settings.terminalScreenContextEnabled,
             endpointURL: endpointURL,
             isAccessibilityTrusted: textInsertion.isAccessibilityTrusted,
             trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled,
             readPaneTTY: { target in await joinResolver?.focusedPaneTTY(of: target) }
         )
+        guard isCurrent() else { return .hidden }
         // The resolver's abstention causes are collected HERE, around the one
         // resolution, because it reduces each of them to a log line and a nil;
         // after it returns, nothing else can say why.
         let (attempt, causes) = await ClaudeJoinAbstentionTap.collecting {
             await resolveClaudeSessionJoin(endpointURL: endpointURL)
         }
-        claudeSessionJoin = attempt.join
-        if case .resolved = attempt { contextJoinAskedTheArms = true }
-        noteJoinOutcome(attempt, causes: causes)
-        // Ownership of the join's `ssh -L` is taken HERE, at the one place a
-        // join is ever assigned, and never given back to whoever happens to
+        let join = attempt.join
+        // Ownership of the join's `ssh -L` is taken HERE, as soon as the one
+        // resolution returns, and never given back to whoever happens to
         // hold the join later. The commit path CONSUMES the join, so an owner
         // that reached the child only through `claudeSessionJoin` was nil at
         // exactly the moments it mattered — quit during polish, an aborted
         // connect — and the ssh outlived the app (review finding 4).
-        retainRemoteHerdrForward(of: claudeSessionJoin)
-        // Read from the ONE resolved join, never by asking again. The badge is
-        // a description of `claudeSessionJoin`, so it cannot disagree with the
-        // context that actually ships.
-        let badge = OverlayClaudeJoinBadge.resolve(
-            attempt: attempt,
-            liveSessionsExist: { [claudeSessionJoinResolver] in
-                claudeSessionJoinResolver?.hasLiveSessions() ?? false
-            }
-        )
+        retainRemoteHerdrForward(of: join)
+        guard isCurrent() else {
+            releaseRemoteHerdrForward(of: join)
+            return .hidden
+        }
         // Only a socket-routed pane join — herdr, remote herdr, or cmux —
         // produces a sample here (the function refuses everything else before
         // any socket request), and it reads exactly the joined pane. Fetched at
         // start for the same reason the AX screen is:
         // this text is evidence of what the user could see while choosing
         // their words, and only a start sample can be that.
-        socketPaneStartCapture = await SocketPaneScreenContext.captureAtStart(
-            join: claudeSessionJoin,
+        let paneCapture = await SocketPaneScreenContext.captureAtStart(
+            join: join,
             resolver: claudeSessionJoinResolver,
             settingEnabled: settings.terminalScreenContextEnabled,
             endpointURL: endpointURL,
             isAccessibilityTrusted: textInsertion.isAccessibilityTrusted,
             trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
         )
-        return badge
+        guard isCurrent() else {
+            releaseRemoteHerdrForward(of: join)
+            return .hidden
+        }
+        terminalScreenStartCapture = screenCapture
+        claudeSessionJoin = join
+        socketPaneStartCapture = paneCapture
+        if case .resolved = attempt { contextJoinAskedTheArms = true }
+        noteJoinOutcome(attempt, causes: causes)
+        // Read from the ONE resolved join, never by asking again. The badge is
+        // a description of `claudeSessionJoin`, so it cannot disagree with the
+        // context that actually ships.
+        return OverlayClaudeJoinBadge.resolve(
+            attempt: attempt,
+            liveSessionsExist: { [claudeSessionJoinResolver] in
+                claudeSessionJoinResolver?.hasLiveSessions() ?? false
+            }
+        )
     }
 
     /// Resolves where this dictation may write instead of typing: the prompt
@@ -227,17 +244,14 @@ final class SessionContextResolver {
     }
 
     /// This dictation's route into the joined agent, if any. Runs after the
-    /// join.
-    func resolveAgentPromptRoute() async {
-        if let opencode = await resolveOpencodePromptRoute() {
-            agentPromptRoute = opencode
-        } else {
-            agentPromptRoute = await resolveHerdrPaneRoute()
-            if agentPromptRoute == nil {
-                agentPromptRoute = await resolveCmuxSurfaceRoute()
-            }
-        }
-        if let route = agentPromptRoute {
+    /// join. Stores nothing once `isCurrent` says the start was replaced.
+    func resolveAgentPromptRoute(isCurrent: @MainActor () -> Bool = { true }) async {
+        var route: (any AgentPromptRoute)? = await resolveOpencodePromptRoute()
+        if route == nil { route = await resolveHerdrPaneRoute() }
+        if route == nil { route = await resolveCmuxSurfaceRoute() }
+        guard isCurrent() else { return }
+        agentPromptRoute = route
+        if let route {
             Log.claudeContext.notice("\(route.name, privacy: .public): resolved; dictation writes through it")
         }
     }
