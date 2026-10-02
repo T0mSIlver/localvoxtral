@@ -279,25 +279,27 @@ final class VoiceMemoIntakeTests: XCTestCase {
         XCTAssertEqual(statuses, [])
     }
 
-    /// #1423: voice memos turned off mid-memo cancel the memo in flight. It
-    /// goes back for a later scan, and the popover says nothing about it.
+    /// #1423: voice memos turned off mid-memo cancel the memo in flight,
+    /// even on a scan the wake started rather than `run`. It goes back for a
+    /// later scan, no other is taken, and the popover says nothing about it.
     func testTurningMemosOffCancelsTheMemoInFlightAndRequeuesIt() async {
         let clock = ManualSessionClock()
         var first: VoiceMemoIntake? = intake(clock: clock.clock)
         var statuses: [String] = []
         first?.onStatus = { statuses.append($0) }
-        var run: Task<Void, Never>?
         transcriber.whileTranscribing.withLock {
             $0 = { [unowned self] in
                 guard streamingSeen.isEmpty else { return }
                 streamingSeen.append(first?.isTranscribing == true)
-                run?.cancel()
+                first?.stop()
             }
         }
         files = [memo("a.m4a", minute: 1), memo("b.m4a", minute: 2)]
         _ = await first?.scan()
-        run = Task { [first] in await first?.run() }
-        await run?.value
+        let wakeScan = Task { [first] in await first?.scan() }
+        let taken = await wakeScan.value
+        await first?.run()
+        XCTAssertEqual(taken, 0)
         XCTAssertEqual(streamingSeen, [true])
         XCTAssertEqual(first?.isTranscribing, false)
         XCTAssertEqual(transcriber.calls.withLock { $0 }, ["a.m4a"], "b is not taken")

@@ -67,6 +67,7 @@ package final class VoiceMemoIntake {
     /// The memo in flight, cancelled by `yieldToDictation()`.
     private var transcription: Task<VoiceMemoTranscript, Error>?
     private var yieldedToDictation = false
+    private var isStopped = false
     private var reportedLedgerProblem = false
     private var reportedInboxProblem = false
     private var lastSeen: [String: VoiceMemoFile] = [:]
@@ -134,13 +135,20 @@ package final class VoiceMemoIntake {
     }
 
     /// Scans now and every `scanInterval` after, until the task is
-    /// cancelled. Cancelling stops the memo in flight, which goes back for
-    /// the next scan; the bundled helper skips the audio it queued.
+    /// cancelled or `stop()`.
     package func run() async {
-        while !Task.isCancelled {
+        while !Task.isCancelled, !isStopped {
             await scan()
             await clock.sleep(Self.scanInterval)
         }
+    }
+
+    /// Voice memos turned off: cancels the memo in flight, whichever scan
+    /// runs it, and takes no other. The memo goes back for a later scan, and
+    /// the bundled helper skips the audio it queued.
+    package func stop() {
+        isStopped = true
+        transcription?.cancel()
     }
 
     /// A dictation starts on the engine the memo streams through: cancels the
@@ -226,7 +234,7 @@ package final class VoiceMemoIntake {
                 continue
             }
             guard file.size > 0, previous[file.name] == file else { continue }
-            guard canTranscribe() else { break }
+            guard canTranscribe(), !isStopped else { break }
             let outcome = await take(file, at: url)
             if outcome == .captured { captured += 1 }
             // The engine or the disk failed; the rest would fail the same way.
@@ -287,21 +295,22 @@ package final class VoiceMemoIntake {
             } onCancel: {
                 task.cancel()
             }
+        } catch where yieldedToDictation {
+            // Before the unreadable case: a cancelled decode can still fail.
+            Log.backends.info("Voice memos: the memo stopped for the dictation (\(String(describing: error), privacy: .public)); retrying on the next scan")
+            ledger.entries[file.name] = nil
+            saveLedger()
+            return .stopPass
+        } catch where isStopped || Task.isCancelled {
+            Log.backends.info("Voice memos: the memo stopped with voice memos (\(String(describing: error), privacy: .public)); retrying on the next scan")
+            ledger.entries[file.name] = nil
+            saveLedger()
+            return .stopPass
         } catch is VoiceMemoUnreadable {
             Log.backends.error("Voice memos: a memo is not audio this Mac can decode; left in the folder")
             record(file, .unreadable)
             onStatus?("A voice memo could not be read.")
             return .left
-        } catch where yieldedToDictation {
-            Log.backends.info("Voice memos: the memo stopped for the dictation (\(String(describing: error), privacy: .public)); retrying on the next scan")
-            ledger.entries[file.name] = nil
-            saveLedger()
-            return .stopPass
-        } catch where Task.isCancelled {
-            Log.backends.info("Voice memos: the memo stopped with voice memos (\(String(describing: error), privacy: .public)); retrying on the next scan")
-            ledger.entries[file.name] = nil
-            saveLedger()
-            return .stopPass
         } catch {
             Log.backends.error("Voice memos: transcription failed, retrying on the next scan: \(String(describing: error), privacy: .public)")
             ledger.entries[file.name] = nil

@@ -174,6 +174,7 @@ final class VoiceMemoController {
             if intake != nil { Log.backends.info("Voice memos: off") }
             startTask?.cancel()
             startTask = nil
+            intake?.stop()
             runTask?.cancel()
             runTask = nil
             intake = nil
