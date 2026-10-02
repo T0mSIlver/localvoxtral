@@ -176,6 +176,12 @@ private struct InboxCaptureRow: View {
                     .disabled(!isEditable)
                     .accessibilityIdentifier("inbox.row.suggestion")
             }
+            // A recent GitHub repository no project names (#930).
+            if let suggestion = item.repositorySuggestion, item.projectKey == nil, item.suggestion == nil {
+                Button("Add \(suggestion.name)?") { _ = model.acceptRepositorySuggestion(item.id) }
+                    .disabled(!isEditable)
+                    .accessibilityIdentifier("inbox.row.addRepository")
+            }
             if item.isIssue {
                 Button("File") { _ = model.file(item.id) }
                     .disabled(!item.canFile)
