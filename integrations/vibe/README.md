@@ -169,10 +169,11 @@ reads it from the session's message log, whose path Vibe passes to every
 hook.
 
 It reads the last 512 KiB of that file and keeps one thing: the newest
-message you typed (role user, not injected by Vibe), cut to 8 KiB. It does
-not parse lines that lack the user-role marker, which covers assistant
-messages, reasoning, tool calls and tool results. It never sends the file
-path.
+message you typed (role user, not injected by Vibe), cut to 8 KiB, with
+Vibe's id for that message. Every hook reads that message again until you
+send the next one; the id lets the app count it once. It does not parse
+lines that lack the user-role marker, which covers assistant messages,
+reasoning, tool calls and tool results. It never sends the file path.
 
 If the read takes longer than 250 ms, the hook publishes without a prompt.
 

@@ -335,6 +335,13 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
 
     package var version: Int = LearnedTerms.currentVersion
     package var projects: [LearnedTermProject] = []
+    /// The repositories the user ignored (#1006). Kept in its own file by
+    /// `LearnedTermStore`, never in this one's: see `IgnoredProjects`.
+    package var ignored = IgnoredProjects()
+
+    private enum CodingKeys: String, CodingKey {
+        case version, projects
+    }
 
     package init(version: Int = LearnedTerms.currentVersion, projects: [LearnedTermProject] = []) {
         self.version = version
@@ -606,6 +613,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     }
 
     package func needsProposal(projectKey: String, now: Date, revision: Int = 1) -> Bool {
+        guard !isIgnored(projectKey: projectKey) else { return false }
         guard let project = termRecord(projectKey) else { return true }
         if let answered = project.answeredRevision, answered >= revision { return false }
         guard let attempted = project.proposalAttemptedAt else { return true }
@@ -805,6 +813,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         excluding: [String] = [],
         now: Date
     ) -> [String] {
+        guard !isIgnored(projectKey: project.key) else { return [] }
         let index = projectIndex(for: project, now: now)
         var known = Set(projects[index].terms.map(\.term.caseFoldedForMatching))
         known.formUnion(excluding.map(\.caseFoldedForMatching))
@@ -921,6 +930,10 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// that has sat on disk for a season must not come back larger than the
     /// caps allow just because nothing has been dictated since.
     package mutating func prune(now: Date) {
+        // An ignored repo's record takes no room: the sweep after the write
+        // drops it, but would not bring back a project the cap evicted for
+        // it (#1006).
+        removeIgnoredProjects()
         let cutoff = now.addingTimeInterval(-Double(LearnedTerms.staleAfterDays) * 86_400)
         for index in projects.indices {
             projects[index].terms.removeAll { !$0.isPinned && $0.lastSeen < cutoff }
