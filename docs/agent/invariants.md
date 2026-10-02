@@ -2128,7 +2128,7 @@ there is not.
     Desktop reader read it back from its prompt 0.2 s after the open. The
     sidebar exposes no session id to Accessibility (rows are titles), so
     clicking a row cannot be tied to a session. `.focused` requires Desktop
-    frontmost and `sessionShown` to resolve the focused view to this
+    frontmost before and after the read, and `sessionShown` to resolve the focused view to this
     registry session: focus in the primary pane's prompt, and the id
     reported by this session alone. An ambiguous id, focus left in the
     sidebar or a second pane, or no answer within 2 s is `.unverified`, and
