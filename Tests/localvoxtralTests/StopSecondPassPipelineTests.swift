@@ -178,14 +178,23 @@ final class StopSecondPassPipelineTests: XCTestCase {
 
     /// What a dictation joined in `cwd` sends: the second pass's terms and
     /// the polish's system prompt, which carries the project names.
-    private func groupedDictation(joinedIn cwd: String?) async -> (bias: [String], systemPrompt: String) {
+    /// With `root`, the start's lookup of the session's git root answers it.
+    private func groupedDictation(
+        joinedIn cwd: String?,
+        root: LearnedTermProjectResolver.RepositoryRoot = .unknown
+    ) async -> (bias: [String], systemPrompt: String) {
         let transcriber = FakeBatchTranscriber(.text(Self.batchText))
         let polisher = FakePolishingService()
         let harness = makeHarness(transcriber: transcriber, polisher: polisher)
         harness.viewModel.settings.polishContextTrustedEndpointEnabled = true
         harness.viewModel.learnedTermStore = groupedStore()
-        harness.viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding(outcome: nil)
-        if let cwd { join(harness, cwd: cwd) }
+        let grounding = FakeRepoVocabularyGrounding(outcome: nil)
+        grounding.secondPassRoot = root
+        harness.viewModel.dependencies.repoVocabularyGrounding = grounding
+        if let cwd {
+            join(harness, cwd: cwd)
+            await harness.viewModel.session.lookUpJoinedRepositoryRoot()
+        }
 
         harness.stop()
         await awaitStoppedSessionCommit(harness.viewModel)
@@ -210,6 +219,19 @@ final class StopSecondPassPipelineTests: XCTestCase {
         let unjoined = await groupedDictation(joinedIn: nil)
         XCTAssertTrue(unjoined.bias.contains("Kubrix") && unjoined.bias.contains("Florabel"))
         XCTAssertTrue(unjoined.systemPrompt.contains("acme") && unjoined.systemPrompt.contains("garden"))
+    }
+
+    /// A session in a `git worktree add` checkout outside its Work main
+    /// checkout: no recorded checkout holds its directory, so only the git
+    /// root the start looked up puts it in Work (#1155).
+    func testASessionInAWorktreeOutsideItsCheckoutGetsTheCheckoutsGroup() async {
+        let worktree = Self.workProject + "-feature"
+        let work = await groupedDictation(
+            joinedIn: worktree + "/Sources", root: .root(worktree, mainCheckout: Self.workProject))
+        XCTAssertTrue(work.bias.contains("Kubrix"))
+        XCTAssertFalse(work.bias.contains("Florabel"), "a Personal term reached the second pass")
+        XCTAssertTrue(work.systemPrompt.contains("acme"))
+        XCTAssertFalse(work.systemPrompt.contains("garden"), "a Personal project reached the polish")
     }
 
     // MARK: - Unjoined terminal (#705)

@@ -815,6 +815,39 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(groups.all, [.work])
     }
 
+    /// A quick capture joined to a session in a worktree outside its Work
+    /// checkout reaches the Inbox in Work, through the git root the start
+    /// looked up (#1155).
+    func testAQuickCaptureInAWorktreeOutsideItsCheckoutCarriesTheCheckoutsGroup() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let store = LearnedTermStore(fileURL: nil, now: { Date(timeIntervalSince1970: 0) })
+        store.recordCorrection("Kubrix", project: .init(key: "/nonexistent-1155/acme", name: "acme"))
+        store.setGroup(.work, keys: ["/nonexistent-1155/acme"])
+        store.waitForPendingWrites()
+        pipeline.viewModel.learnedTermStore = store
+        let grounding = FakeRepoVocabularyGrounding(outcome: nil)
+        grounding.secondPassRoot = .root("/nonexistent-1155/acme-feature", mainCheckout: "/nonexistent-1155/acme")
+        pipeline.viewModel.dependencies.repoVocabularyGrounding = grounding
+        let groups = QuickCaptureGroups()
+        pipeline.viewModel.session.onQuickCapture = { _, _, group in groups.all.append(group) }
+
+        await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
+        let origin = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
+        var snapshot = ClaudeSessionSnapshot(
+            sessionID: "s1", origin: origin, agent: .claude, firstSeen: Date(timeIntervalSince1970: 0))
+        snapshot.workspace = ClaudeWorkspaceReference.make(
+            rawCwd: "/nonexistent-1155/acme-feature/Sources", origin: origin)
+        pipeline.viewModel.session.context.claudeSessionJoin = ClaudeSessionJoin(
+            target: TerminalScreenTarget(pid: 4242, bundleID: "com.apple.Terminal"),
+            snapshot: snapshot, windowID: 101, mechanism: .ttyDevice)
+        await pipeline.viewModel.session.lookUpJoinedRepositoryRoot()
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline, finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved)
+
+        XCTAssertEqual(grounding.rootLookups, ["/nonexistent-1155/acme-feature/Sources"])
+        XCTAssertEqual(groups.all, [.work])
+    }
+
     // MARK: - Destinations (#840)
 
     /// Tab moves an ordinary dictation to the Inbox: it stops as a quick

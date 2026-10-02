@@ -896,8 +896,7 @@ extension DictationSessionController {
         let keptInHistory = !text.isEmpty && settings.dictationHistoryRetention.savesDictations && sessionStore != nil
         // Read before the cleanup lets the join go: the capture is polished
         // and routed among its group's projects only (#1005).
-        let group = learnedTermStore?.snapshot()
-            .group(ofJoinedWorkspace: context.claudeSessionJoin?.snapshot.learnedTermWorkspace)
+        let group = learnedTermStore?.snapshot().group(ofJoin: context.claudeSessionJoin)
         saveSessionRecord(
             id: recordID,
             startedAt: sessionStartedAt ?? Date(),
@@ -1057,6 +1056,9 @@ extension DictationSessionController {
         let context: StopSecondPass.ContextTerms
         /// The joined session's workspace, the project's first word.
         let workspace: ClaudeWorkspaceReference?
+        /// The joined session's git root, as the start looked it up
+        /// (`lookUpJoinedRepositoryRoot`).
+        let joinedRepositoryRoot: LearnedTermProjectResolver.RepositoryRoot
         /// Whether the project's agent proposals may go, and so whether the
         /// git root is looked up: repo vocabulary on, and `contextTrusted`.
         let repositoryTermsPermitted: Bool
@@ -1119,6 +1121,7 @@ extension DictationSessionController {
                 ? stopSecondPassContextTerms(join: join, capture: capture, endpoint: endpoint)
                 : .none,
             workspace: contextTrusted ? join?.snapshot.learnedTermWorkspace : nil,
+            joinedRepositoryRoot: join?.repositoryRoot ?? .unknown,
             // An agent's unconfirmed proposals go only where repo vocabulary
             // may (#609): until use confirms them they are the repo's words.
             repositoryTermsPermitted: contextTrusted && settings.repoVocabularyEnabled
@@ -1175,8 +1178,12 @@ extension DictationSessionController {
                     context.repository = memory.unconfirmedProposals(projectKey: project.key)
                 }
             }
-            // Only the joined project's group's (#1005).
-            let group = request.workspace == nil ? nil : memory.group(ofDictationProject: project?.key)
+            // Only the joined project's group's (#1005). Without a root of its
+            // own, the pass takes the one the start looked up (#1155).
+            let group = request.workspace == nil
+                ? nil
+                : memory.group(ofDictationProject: project?.key)
+                    ?? memory.group(ofJoinedWorkspace: request.workspace, repositoryRoot: request.joinedRepositoryRoot)
             learnedTerms += memory.inGroup(group).confirmedEverywhere().map(\.term)
         }
         let candidates = StopSecondPass.candidates(
@@ -1202,7 +1209,7 @@ extension DictationSessionController {
     }
 
     /// For the log: whether a root was found, never the path.
-    private static func describe(_ root: LearnedTermProjectResolver.RepositoryRoot) -> String {
+    static func describe(_ root: LearnedTermProjectResolver.RepositoryRoot) -> String {
         switch root {
         case .unknown: "unknown"
         case .noRepository: "no repository"
