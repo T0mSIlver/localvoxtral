@@ -127,12 +127,17 @@ package protocol QuickCaptureGitHub: Sendable {
     func openIssues(ofCheckout path: String, repository: String?) async -> [QuickCaptureDraft.OpenIssue]?
     /// GitHub's description, topics and parent; nil when gh failed.
     func repositoryFacts(_ repository: String) async -> GitHubRepositoryFacts?
+    /// The user's repositories (`gh repo list`, #930); nil when gh failed.
+    func listRepositories() async -> [GitHubListedRepository]?
     func createIssue(repository: String, title: String, body: String) async -> Result<String, QuickCaptureFiling.Failure>
     /// Posts `body` on issue `issue`; the comment's URL.
     func commentOnIssue(repository: String, issue: Int, body: String) async -> Result<String, QuickCaptureFiling.Failure>
 }
 
 extension QuickCaptureGitHub {
+    /// No list, for a client that asks GitHub for none.
+    package func listRepositories() async -> [GitHubListedRepository]? { nil }
+
     /// The GitHub repository's remote, for a client that reads no other host.
     package func remote(ofCheckout path: String) async -> ProjectRemote? {
         await repository(ofCheckout: path).flatMap(ProjectRemote.init(githubRepository:))
@@ -183,6 +188,26 @@ package struct QuickCaptureGHClient: QuickCaptureGitHub {
         }
         Log.backends.info("Quick capture: GitHub described \(repository, privacy: .public)")
         return facts
+    }
+
+    package func listRepositories() async -> [GitHubListedRepository]? {
+        guard let gh else {
+            Log.backends.error("Quick capture: gh repo list not run, GitHub CLI not found")
+            return nil
+        }
+        guard let output = await BoundedProcess.run(
+            executableURL: gh, arguments: GitHubRepositorySuggestions.listArguments,
+            environment: environment, timeoutSeconds: 30, maxBytes: 262_144, label: "quick capture gh repo list"
+        ), output.exitCode == 0, !output.timedOut, !output.capped else {
+            Log.backends.error("Quick capture: gh repo list failed")
+            return nil
+        }
+        guard let repositories = GitHubRepositorySuggestions.repositories(inOutput: output.data) else {
+            Log.backends.error("Quick capture: gh repo list answered no list")
+            return nil
+        }
+        Log.backends.info("Quick capture: gh repo list answered \(repositories.count, privacy: .public) repositories")
+        return repositories
     }
 
     package func createIssue(repository: String, title: String, body: String) async -> Result<String, QuickCaptureFiling.Failure> {

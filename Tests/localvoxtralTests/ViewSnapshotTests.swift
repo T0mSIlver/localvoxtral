@@ -108,7 +108,8 @@ final class ViewSnapshotTests: XCTestCase {
     }
 
     /// The Inbox with a drafted capture that has a follow-up and extends an
-    /// issue (#965), one no project took, and one filed (#725). Made-up
+    /// issue (#965), one no project took, one offering to add a GitHub
+    /// repository (#930), and one filed (#725). Made-up
     /// words: the artifacts are public.
     func testInboxWithCaptures() async throws {
         try await recordSettings(pane: .inbox, name: "settings-inbox-captures", setUp: false) { viewModel in
@@ -134,12 +135,18 @@ final class ViewSnapshotTests: XCTestCase {
             var unplaced = QuickCaptureItem(capturedAt: now.addingTimeInterval(-3_600), text: "renew the passport before December")
             unplaced.state = .ready
             unplaced.note = "Not routed to a project. Move it to one."
+            // One of the user's recent GitHub repositories no project names (#930).
+            var suggested = QuickCaptureItem(
+                capturedAt: now.addingTimeInterval(-5_400), text: "the recipes app should scale a recipe to four people")
+            suggested.state = .ready
+            suggested.note = "Not routed to a project. Move it to one."
+            suggested.repositorySuggestion = .init(repository: "example/recipes", name: "recipes")
             var filed = QuickCaptureItem(capturedAt: now.addingTimeInterval(-7_200), text: "add a dark mode to the settings window")
             filed.state = .filed
             filed.title = "Dark mode for the settings window"
             filed.repository = "example/demo"
             filed.filedURL = "https://github.com/example/demo/issues/12"
-            try QuickCaptureInboxFile.save(QuickCaptureInbox(items: [drafted, unplaced, filed]), to: fileURL)
+            try QuickCaptureInboxFile.save(QuickCaptureInbox(items: [drafted, unplaced, suggested, filed]), to: fileURL)
             self.addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
             let learned = LearnedTerms(projects: [
                 LearnedTermProject(key: "/work/demo", name: "demo", terms: [], lastSeen: now),

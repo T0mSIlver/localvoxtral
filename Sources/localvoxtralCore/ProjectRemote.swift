@@ -213,6 +213,6 @@ extension LearnedTerms {
 
     /// Every checkout of `repositoryKey`, in `listedCheckouts` order.
     package func checkouts(ofRepository repositoryKey: String, now: Date) -> [LearnedTermProject] {
-        listedCheckouts(now: now).filter { $0.repositoryRecordKey == repositoryKey }
+        listedCheckouts(now: now).filter { !$0.isRepositoryRecord && $0.repositoryRecordKey == repositoryKey }
     }
 }
