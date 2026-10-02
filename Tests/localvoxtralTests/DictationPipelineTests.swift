@@ -2395,6 +2395,104 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertTrue(pipeline.overlay.shownDraftReviews.isEmpty)
     }
 
+    // MARK: - A take past the server's context limit (#1139)
+
+    /// Two tokens of context: 6.4 KB of audio (two chunks) passes the
+    /// margin, one chunk does not.
+    private static let tinyContext = RealtimeContextBudget(maxModelLen: 2)
+
+    /// Live Auto-Paste: the session rolls over mid-take, and what each server
+    /// session wrote is typed once, with a space at the seam.
+    func testLiveAutoPasteTypesBothSidesOfARolloverOnce() async throws {
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste, contextBudget: Self.tinyContext)
+        let typed = TypedText()
+        pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        pipeline.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { chunk in
+                typed.append(chunk)
+                return true
+            },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false }
+        )
+
+        await startAndSpeak(pipeline)
+        await rollOver(pipeline, retiringText: "Hello from the first session.")
+        let typedFirst = await typed.waitFor("Hello from the first session.")
+        XCTAssertTrue(typedFirst, "typed so far: \(typed.text.debugDescription)")
+
+        // A fresh server session writes its first word with no space.
+        pipeline.server.send(["type": "transcription.delta", "delta": "And the second."])
+        let typedSecond = await typed.waitFor("Hello from the first session. And the second.")
+        XCTAssertTrue(typedSecond, "typed so far: \(typed.text.debugDescription)")
+
+        await stopAndFinalize(pipeline, finalText: "And the second.")
+
+        XCTAssertEqual(typed.text, "Hello from the first session. And the second.")
+        XCTAssertEqual(
+            pipeline.records.all.map(\.rawText), ["Hello from the first session. And the second."])
+    }
+
+    /// Overlay Buffer: the overlay holds both sides of the rollover, and the
+    /// stop commits them once, as one dictation.
+    func testOverlayBufferCommitsBothSidesOfARolloverOnce() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, contextBudget: Self.tinyContext)
+
+        await startAndSpeak(pipeline)
+        await rollOver(pipeline, retiringText: "Hello from the first session.")
+        let shown = BoundedWait()
+        pipeline.overlay.onRefresh = { call in
+            if call.displayText == "Hello from the first session. And the second." { shown.resolve() }
+        }
+        pipeline.server.send(["type": "transcription.delta", "delta": "And the second."])
+        let shownBoth = await shown.value(failAfter: 10)
+        XCTAssertTrue(
+            shownBoth,
+            "overlay shows: \(pipeline.overlay.refreshCalls.last?.displayText.debugDescription ?? "nothing")"
+        )
+        pipeline.overlay.onRefresh = nil
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "a rollover commits nothing")
+
+        await stopAndFinalize(pipeline, finalText: "And the second.")
+
+        XCTAssertEqual(pipeline.overlay.committedTexts, ["Hello from the first session. And the second."])
+        XCTAssertEqual(
+            pipeline.records.all.map(\.rawText), ["Hello from the first session. And the second."])
+    }
+
+    /// The second chunk passes the margin: the client ends the server session
+    /// with a final commit, the server answers it with `retiringText`, and
+    /// the client dials a fresh session on the same server, which starts its
+    /// run at once. Returns once that session asked for the model.
+    private func rollOver(
+        _ pipeline: Pipeline, retiringText: String,
+        file: StaticString = #filePath, line: UInt = #line
+    ) async {
+        XCTAssertEqual(
+            pipeline.viewModel.session.realtimeAPIClient.debugStateSnapshot().contextBudget, Self.tinyContext,
+            "the server's limit reached the client", file: file, line: line
+        )
+        pipeline.server.send(["type": "transcription.delta", "delta": retiringText])
+        XCTAssertTrue(pipeline.microphone.deliver(Self.speech(seed: 4)), file: file, line: line)
+        pipeline.clock.advance(by: TimingConstants.audioSendInterval)
+        await pipeline.server.awaitFrame("the rollover's final commit", file: file, line: line) {
+            $0.isFinalCommit
+        }
+        XCTAssertTrue(pipeline.viewModel.isDictating, "a rollover is not a stop", file: file, line: line)
+        pipeline.server.forgetFrames()
+
+        pipeline.server.send(["type": "transcription.done", "text": retiringText])
+        let update = await pipeline.server.awaitFrame("the next session's session.update", file: file, line: line) {
+            $0.type == "session.update"
+        }
+        XCTAssertEqual(update?.json["model"] as? String, Self.model, file: file, line: line)
+        await pipeline.server.awaitFrame("the commit that starts the next run", file: file, line: line) {
+            $0.type == "input_audio_buffer.commit" && !$0.isFinalCommit
+        }
+        XCTAssertTrue(pipeline.viewModel.isDictating, file: file, line: line)
+        XCTAssertNil(pipeline.viewModel.lastError, file: file, line: line)
+    }
+
     // MARK: - The two halves every scenario shares
 
     /// Start, open the microphone, connect, and get one captured chunk to the
@@ -2533,7 +2631,8 @@ final class DictationPipelineTests: XCTestCase {
         outputMode: DictationOutputMode,
         polish: (any LLMPolishingServicing)? = nil,
         polishEndpoint: String = "http://127.0.0.1:8080/v1/chat/completions",
-        earlyPolish: Bool = true
+        earlyPolish: Bool = true,
+        contextBudget: RealtimeContextBudget? = nil
     ) async throws -> Pipeline {
         let server = try FakeRealtimeServer()
         addTeardownBlock { server.stop() }
@@ -2563,7 +2662,8 @@ final class DictationPipelineTests: XCTestCase {
                 microphone: { microphone },
                 connectionFailurePresenter: presenter,
                 onSessionRecord: { records.append($0) },
-                clock: clock.clock
+                clock: clock.clock,
+                realtimeContextLimit: { _ in contextBudget }
             )
         )
         viewModel.appConfigStore = MockAppConfigStore()

@@ -100,6 +100,11 @@ there is not.
   refuses everything that socket SAYS, but a WebSocket left in `connecting`
   still transmits the audio the stop flushed into its pending queue, and only
   closing it stops that.
+  A context rollover (#1139) is the one socket swap the client makes on its
+  own. The retiring socket raises `.sessionRolledOver(to:)` after its last
+  transcript and before the new socket is resumed, so the FIFO hands the
+  session its new name before that socket can say anything; from there the
+  retiring socket is refused like any other retired one.
 - **Live Auto-Paste holds back the tail of the transcript.** Replacements are
   applied before typing (nothing is ever un-typed — there are no backspaces in
   the insertion path, and terminals can't support them: field bug 2026-07-06),
