@@ -7,9 +7,11 @@ import Synchronization
 ///
 /// The broker attaches a channel when a session's `--attach` process
 /// connects and detaches it when that connection ends; the app sends through
-/// `send`. One channel per session: a second attach for the same session
-/// replaces the first, which is what a reloaded mod or a restarted publisher
-/// does.
+/// `send`. One channel per session, the first: a second attach while it is
+/// open is refused, so two publishers for one session (the session open in
+/// two windows) cannot take the channel from each other in a loop. A
+/// reloaded mod or a restarted publisher closes its old connection first,
+/// and its retry lands once the broker has seen that.
 ///
 /// A send names its session exactly and never falls back to another one
 /// (`docs/agent/invariants.md`): no channel, a failed write or no reply in
@@ -119,28 +121,36 @@ public final class ClaudeModChannelHub: Sendable {
 
     // MARK: Broker side
 
-    /// Takes over `channel` for `sessionID`, closing the one it replaces.
+    /// Takes `channel` for `sessionID`.
     ///
-    /// - Returns: the token `detach` needs, or nil when the hub is full.
+    /// - Returns: the token `detach` needs, or nil when the session already
+    ///   has a channel or the hub is full.
     package func attach(sessionID: String, channel: Channel) -> UInt64? {
-        let outcome: (token: UInt64, replaced: Channel?)? = state.withLock { state in
-            let replaced = state.channels[sessionID]?.channel
-            guard replaced != nil || state.channels.count < maxChannels else { return nil }
+        enum Refusal: Error { case taken, full }
+        let outcome: Result<UInt64, Refusal> = state.withLock { state in
+            guard state.channels[sessionID] == nil else { return .failure(.taken) }
+            guard state.channels.count < maxChannels else { return .failure(.full) }
             let token = state.nextToken
             state.nextToken += 1
             state.channels[sessionID] = Attached(token: token, channel: channel)
-            return (token, replaced)
+            return .success(token)
         }
-        guard let outcome else {
+        let token: UInt64
+        switch outcome {
+        case .success(let attached):
+            token = attached
+        case .failure(.taken):
+            Log.claudeContext.info("Mod channel: refused a second attach for a session that has one")
+            return nil
+        case .failure(.full):
             Log.claudeContext.error("Mod channel: refused an attach, \(self.maxChannels, privacy: .public) already open")
             return nil
         }
-        outcome.replaced?.close()
         Log.claudeContext.info("Mod channel attached")
         #if DEBUG
         debugAttachHook.withLock { $0 }?(true)
         #endif
-        return outcome.token
+        return token
     }
 
     /// Forgets the channel `token` names, if it is still the session's, and

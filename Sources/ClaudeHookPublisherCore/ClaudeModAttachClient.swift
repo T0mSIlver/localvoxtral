@@ -70,7 +70,10 @@ public struct ClaudeModAttachClient: Sendable {
             case .parentGone:
                 return
             case .closed:
+                // Never straight back: whatever ended the channel may end
+                // the next one at once.
                 delay = Self.firstRetryDelay
+                sleep(delay)
             case .refused:
                 sleep(delay)
                 delay = min(delay * 2, Self.maxRetryDelay)

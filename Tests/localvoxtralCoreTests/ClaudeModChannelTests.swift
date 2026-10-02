@@ -110,25 +110,23 @@ final class ClaudeModChannelHubTests: XCTestCase {
         )
     }
 
-    func testASecondAttachReplacesAndClosesTheFirst() async {
+    /// Two publishers for one session (it is open in two windows) must not
+    /// take the channel from each other: the second is refused until the
+    /// first is gone.
+    func testASecondAttachIsRefusedWhileTheFirstIsOpen() {
         let hub = ClaudeModChannelHub(sleep: { _ in })
-        let first = Received()
-        let second = Received()
-        let closed = expectation(description: "the replaced channel is closed")
-        let oldToken = try? XCTUnwrap(hub.attach(sessionID: "sess-1", channel: channel(first, closed: closed)))
-        _ = hub.attach(sessionID: "sess-1", channel: channel(second))
-        await fulfillment(of: [closed], timeout: 1)
+        let token = hub.attach(sessionID: "sess-1", channel: channel(Received()))
+        XCTAssertNotNil(token)
+        XCTAssertNil(hub.attach(sessionID: "sess-1", channel: channel(Received())))
 
-        // The old connection's end must not detach its replacement.
-        hub.detach(sessionID: "sess-1", token: oldToken ?? 0)
-        XCTAssertTrue(hub.isAttached("sess-1"))
+        hub.detach(sessionID: "sess-1", token: token ?? 0)
+        XCTAssertNotNil(hub.attach(sessionID: "sess-1", channel: channel(Received())))
     }
 
-    func testAFullHubRefusesANewSessionButNotAReattach() {
+    func testAFullHubRefusesANewSession() {
         let hub = ClaudeModChannelHub(maxChannels: 1, sleep: { _ in })
         XCTAssertNotNil(hub.attach(sessionID: "sess-1", channel: channel(Received())))
         XCTAssertNil(hub.attach(sessionID: "sess-2", channel: channel(Received())))
-        XCTAssertNotNil(hub.attach(sessionID: "sess-1", channel: channel(Received())))
     }
 
     func testADetachAnswersNilToTheSendStillWaiting() async {
@@ -261,6 +259,23 @@ final class ClaudeModChannelSocketTests: XCTestCase {
         await fulfillment(of: [detached], timeout: 5)
         XCTAssertEqual(ended, ClaudeModAttachClient.Outcome.parentGone)
         XCTAssertFalse(hub.isAttached("sess-1"))
+    }
+
+    func testASecondPublisherForTheSameSessionIsRefusedNotSwapped() async throws {
+        try announce("sess-1")
+        let attached = expectation(description: "attached")
+        hub.debugConfigureAttachHook { if $0 { attached.fulfill() } }
+        let alive = Flag(true)
+        let first = client("sess-1", output: Received(), parentAlive: alive)
+        let outcome = Task.detached { first.attachOnce() }
+        await fulfillment(of: [attached], timeout: 5)
+        hub.debugConfigureAttachHook(nil)
+
+        XCTAssertEqual(client("sess-1", output: Received()).attachOnce(), ClaudeModAttachClient.Outcome.refused)
+        XCTAssertTrue(hub.isAttached("sess-1"), "the first channel is still the session's")
+
+        alive.isSet = false
+        _ = await outcome.value
     }
 
     func testStoppingTheAppEndsTheChannelSoTheClientAttachesAgain() async throws {

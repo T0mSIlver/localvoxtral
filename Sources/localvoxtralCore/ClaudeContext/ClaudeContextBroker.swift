@@ -603,31 +603,37 @@ public final class ClaudeContextBroker: Sendable {
         // hold a sender.
         var sendTimeout = timeval(tv_sec: 2, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size))
-        let writeLock = NSLock()
+        let descriptor = HeldDescriptor(fd)
         let channel = ClaudeModChannelHub.Channel(
             write: { [weak self] data in
                 guard let self else { return false }
-                return writeLock.withLock { self.writeAll(fd: fd, data: data) == data.count }
+                return descriptor.use { self.writeAll(fd: $0, data: data) == data.count } ?? false
             },
-            close: { _ = shutdown(fd, Int32(SHUT_RDWR)) }
+            close: { _ = descriptor.use { shutdown($0, Int32(SHUT_RDWR)) } }
         )
         // The answer must be the connection's first line: a send that starts
         // the moment the hub has the channel waits for it on the lock.
-        writeLock.lock()
-        guard let token = modChannels.attach(sessionID: attach.sessionID, channel: channel) else {
-            writeLock.unlock()
+        let token: UInt64? = descriptor.use { fd in
+            guard let token = modChannels.attach(sessionID: attach.sessionID, channel: channel) else {
+                return nil
+            }
+            answerAttach(fd: fd, accepted: true)
+            return token
+        } ?? nil
+        guard let token else {
             answerAttach(fd: fd, accepted: false)
             return false
         }
-        answerAttach(fd: fd, accepted: true)
-        writeLock.unlock()
         state.withLock { $0.activeConnections -= 1 }
 
         // The publisher sends nothing after its attach, so any readable
         // event is the end: EOF, an error, a shutdown, or a peer that broke
         // the protocol.
-        var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-        while retryingOnEINTRInt32({ poll(&descriptor, 1, -1) }) == 0 {}
+        var pollDescriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+        while retryingOnEINTRInt32({ poll(&pollDescriptor, 1, -1) }) == 0 {}
+        // Before `serve` closes the number: a send still holding the channel
+        // must not write to whatever connection gets it next.
+        descriptor.retire()
         modChannels.detach(sessionID: attach.sessionID, token: token)
         return true
     }
@@ -888,6 +894,25 @@ public final class ClaudeContextBroker: Sendable {
             #endif
             return (false, ClaudeHookWire.version)
         }
+    }
+}
+
+/// A held mod channel's descriptor, as the hub's callers reach it: one use
+/// at a time, and none once the connection's thread retires it, so a late
+/// send never touches a number the kernel gave to another connection.
+private final class HeldDescriptor: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fd: Int32?
+
+    init(_ fd: Int32) { self.fd = fd }
+
+    /// Runs `body` on the descriptor, or answers nil once it is retired.
+    func use<Value>(_ body: (Int32) -> Value) -> Value? {
+        lock.withLock { fd.map(body) }
+    }
+
+    func retire() {
+        lock.withLock { fd = nil }
     }
 }
 
