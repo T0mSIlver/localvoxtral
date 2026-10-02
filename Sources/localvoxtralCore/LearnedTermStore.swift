@@ -930,10 +930,10 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
     }
 
     /// Start Over for `forgotten-projects.json` (#1425): moves it aside, so
-    /// agents list projects again. The tombstones this copy still holds in
-    /// memory stay, and the next change writes them. Throws, keeping the
-    /// refusal, when the move could not be verified: the file is never read
-    /// as empty and written over (#989).
+    /// agents list projects again, and writes the tombstones this copy still
+    /// holds in memory. Throws, keeping the refusal, when the move could not
+    /// be verified or the lock not taken: the file is never read as empty and
+    /// written over (#989).
     package func moveForgottenListAsideAndStartOver() async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
             writeQueue.async { [self] in
@@ -942,16 +942,27 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
                     continuation.resume(throwing: StoredFile.MoveAsideFailed())
                     return
                 }
+                // The lock every write of the file takes. Unlike a write, the
+                // move never runs without it: another copy's file replacing
+                // this one between the link and the removal would be deleted.
+                guard let lock = StoredFileLock.holding(beside: ignoredFileURL) else {
+                    Log.persistence.error("forgotten projects: not moved aside, the lock shared with other running copies could not be taken")
+                    continuation.resume(throwing: StoredFile.MoveAsideFailed())
+                    return
+                }
+                defer { withExtendedLifetime(lock) {} }
                 do {
-                    // The lock every write of the file takes, so no copy
-                    // writes it while it moves.
-                    let aside = try StoredFileLock.withLock(beside: ignoredFileURL) {
-                        try StoredFile.moveAside(forgottenFileURL)
-                    }
+                    let aside = try StoredFile.moveAside(forgottenFileURL)
                     seenForgotten = StoredFileSeen()
+                    var kept = state.withLock { $0.terms?.forgotten } ?? ForgottenProjects()
+                    kept.isUnreadable = false
                     state.withLock { state in
                         state.forgottenListProblem = nil
-                        state.terms?.forgotten.isUnreadable = false
+                        state.terms?.forgotten = kept
+                    }
+                    if !kept.projects.isEmpty || !pendingForgottenChanges.isEmpty {
+                        // A failed write waits in `pendingForgottenChanges`.
+                        _ = updateForgottenList(forgottenFileURL, memory: kept, change: { _ in })
                     }
                     Log.polishing.info("Learned terms: forgotten-projects.json moved aside, agents list projects again")
                     onChange?()
