@@ -387,6 +387,25 @@ final class QuickCaptureFollowUpTests: XCTestCase {
         XCTAssertNil(model.comment(id), "never twice")
     }
 
+    /// Two running copies both show the draft (#990): once one commented,
+    /// Comment in the other, which has not read the file since, posts
+    /// nothing.
+    func testACopyThatHasNotSeenACommentDoesNotPostAgain() async throws {
+        let runner = FakeQuickCaptureCheckRunner([
+            .draft(.init(title: "Dark mode", body: "b", relation: .extends, issue: 7), usage: nil),
+        ])
+        let installed = model(classifier: ScriptedQuickCaptureClassifier([["reach": 0.95]]), runner: runner)
+        await installed.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(installed.items.first?.id)
+        let tryBuild = model(classifier: ScriptedQuickCaptureClassifier([["reach": 0.95]]), runner: runner)
+        await installed.comment(id)?.value
+
+        await tryBuild.comment(id)?.value
+
+        XCTAssertEqual(github.comments.withLock { $0.count }, 1)
+        XCTAssertEqual(tryBuild.items.first?.state, .filed)
+    }
+
     func testCommentNeedsAnExtendsRelationAndAFailureKeepsTheCapture() async throws {
         for relation in [QuickCaptureDraft.Draft.Relation.none, .duplicate] {
             let runner = FakeQuickCaptureCheckRunner([

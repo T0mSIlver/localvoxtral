@@ -339,7 +339,10 @@ extension DictationSessionController {
         }
         if overlayCommit.succeeded {
             // Read before the cleanup below discards the join.
-            expectCorrection(of: displayWorkingText, join: context.claudeSessionJoin, project: nil)
+            expectCorrection(
+                of: displayWorkingText, join: context.claudeSessionJoin, project: nil,
+                startedAt: capturedSessionStartedAt
+            )
             proposeProjectTermsIfNew(join: context.claudeSessionJoin, inserted: displayWorkingText)
         }
         sendOverlaySpokenSendIfNeeded(spokenSend, commit: overlayCommit)
@@ -375,6 +378,20 @@ extension DictationSessionController {
                 technicalDetails: llmConfigurationFailure.technicalDetails
             )
         }
+    }
+
+    /// What a delivered dictation taught, remembered for the next one in
+    /// the same project. Recorded from the MERGED entries and nowhere else:
+    /// a span the merge abstained on is not evidence of a spelling, and a
+    /// verification pair is a question put to the model, not an answer.
+    /// Only once the text reached its target: a commit cancelled while it
+    /// polished, or one the target refused, taught nothing (#1372).
+    private func recordLearnedTerms(of outcome: StopCommitCoordinator.PolishOutcome) {
+        StopCommitCoordinator.recordLearnedTerms(
+            merged: outcome.material.merged,
+            project: outcome.material.learnedProject,
+            store: learnedTermStore
+        )
     }
 
     /// The polish-and-commit task's body: polish, apply the reply, commit,
@@ -483,6 +500,9 @@ extension DictationSessionController {
             // Clears the interrupted-save once the text is handed over.
             guard let addressed = await self.commitOverlayAddressed(to: addressedTo) else { return }
             self.finishAddressedCommit(addressed, sessionMode: sessionMode)
+            if addressed.inserted {
+                self.recordLearnedTerms(of: outcome)
+            }
             let historyID = self.saveSessionRecord(
                 startedAt: capturedSessionStartedAt,
                 rawText: originalText,
@@ -546,10 +566,12 @@ extension DictationSessionController {
             self.lastError = failureMessage
         }
         if overlayCommit.succeeded {
+            self.recordLearnedTerms(of: outcome)
             self.expectCorrection(
                 of: insertedText,
                 join: capture.claudeJoin,
-                project: outcome.material.learnedProject
+                project: outcome.material.learnedProject,
+                startedAt: capturedSessionStartedAt
             )
             self.proposeProjectTermsIfNew(join: capture.claudeJoin, inserted: insertedText)
         }
@@ -670,7 +692,10 @@ extension DictationSessionController {
         let historyJoin = context.claudeSessionJoin.map(AgentCLIJoin.init)
         // Read before the cleanup below discards the join.
         if liveDictationCanTeachACorrection {
-            expectCorrection(of: liveTypedText(), join: context.claudeSessionJoin, project: nil)
+            expectCorrection(
+                of: liveTypedText(), join: context.claudeSessionJoin, project: nil,
+                startedAt: capturedSessionStartedAt
+            )
         }
         // Read before the cleanup below drops text the field refused (#1176).
         let allTextInserted = !textInsertion.hasPendingInsertionText

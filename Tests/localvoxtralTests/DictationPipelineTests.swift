@@ -234,6 +234,45 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.session.handleNetworkChange(connected: false)
     }
 
+    /// A voice memo was streaming through the engine when the dictation
+    /// started: the bundled helper decodes the dictation's audio only after
+    /// the memo's, so the final commit is answered long after every usual
+    /// limit. Its words are still committed and saved.
+    func testAFinalHeldUpBehindAVoiceMemoIsStillCommittedAndSaved() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        var memoTranscribing = true
+        pipeline.viewModel.session.voiceMemoHoldsTheEngine = { memoTranscribing }
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        // The stop's two polls: the finalization and its watchdog.
+        await pipeline.clock.waitForSleepers(2)
+        let armed = pipeline.clock.pendingSleepers
+
+        // The memo runs past the idle rule and the stop's time limit.
+        pipeline.clock.advance(by: TimingConstants.stopFinalizationTimeout + 3)
+        await pipeline.clock.waitForSleepers(armed)
+        XCTAssertTrue(pipeline.viewModel.isFinalizingStop, "the stop waits while the memo holds the engine")
+
+        // The memo is done; the dictation's audio is decoded in one long step
+        // that streams nothing until it ends.
+        memoTranscribing = false
+        pipeline.clock.advance(by: TimingConstants.finalizationPollInterval)
+        await pipeline.clock.waitForSleepers(armed)
+        pipeline.clock.advance(by: TimingConstants.stopFinalizationTimeout - 1)
+        await pipeline.clock.waitForSleepers(armed)
+        XCTAssertTrue(pipeline.viewModel.isFinalizingStop, "no idle rule behind a memo")
+
+        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
+        let recorded = await pipeline.records.waitForCount(1)
+        XCTAssertTrue(recorded, "the session never finished and wrote its record")
+        await pipeline.server.awaitClose()
+
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
+    }
+
     /// A settled sentence past 30 words, the first piece early polish takes.
     private static let settledPiece =
         "the first part of this dictation is long enough to settle into a piece of its own "
@@ -407,11 +446,9 @@ final class DictationPipelineTests: XCTestCase {
         _ body: String, file: StaticString = #filePath, line: UInt = #line
     ) async throws {
         StubHTTPProtocol.reply.withLock { $0 = .http(200, body) }
-        URLProtocol.registerClass(StubHTTPProtocol.self)
-        defer { URLProtocol.unregisterClass(StubHTTPProtocol.self) }
         let pipeline = try await makePipeline(
             outputMode: .overlayBuffer,
-            polish: LLMPolishingService(),
+            polish: LLMPolishingService(session: StubHTTPProtocol.session()),
             polishEndpoint: "http://\(StubHTTPProtocol.host)/v1/chat/completions",
             earlyPolish: false
         )
@@ -437,11 +474,9 @@ final class DictationPipelineTests: XCTestCase {
         StubHTTPProtocol.reply.withLock {
             $0 = .http(200, #"{"choices":[{"index":0,"message":{"role":"assistant","content":"Hello from"},"finish_reason":"length"}]}"#)
         }
-        URLProtocol.registerClass(StubHTTPProtocol.self)
-        addTeardownBlock { URLProtocol.unregisterClass(StubHTTPProtocol.self) }
         let endpoint = "https://\(StubHTTPProtocol.host)/v1/chat/completions"
         let pipeline = try await makePipeline(
-            outputMode: .overlayBuffer, polish: LLMPolishingService(), polishEndpoint: endpoint, earlyPolish: false)
+            outputMode: .overlayBuffer, polish: LLMPolishingService(session: StubHTTPProtocol.session()), polishEndpoint: endpoint, earlyPolish: false)
 
         await startAndSpeak(pipeline)
         let notice = "The polish reached the model's output limit, so the transcript was not polished."
@@ -643,6 +678,67 @@ final class DictationPipelineTests: XCTestCase {
             "the stop's request carries the clipboard"
         )
         XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(whole)>"])
+    }
+
+    /// Clipboard context switched off while the stop waits on the piece in
+    /// flight: the request leaves without the clipboard, and nothing the
+    /// clipboard grounded is learned for the project (#1293).
+    func testClipboardTurnedOffWhileTheStopWaitsOnAPieceIsNeitherSentNorLearned() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish)
+        let settings = pipeline.viewModel.settings
+        settings.polishClipboardContextEnabled = true
+        settings.repoVocabularyEnabled = true
+        pipeline.viewModel.dependencies.pasteboardReader = {
+            PasteboardStub(string: "error in PolishContextBudget.swift line 40", types: [.string])
+        }
+        // A project to learn into; the repository itself has no vocabulary.
+        let gathered = Mutex(false)
+        pipeline.viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding(
+            root: "/nonexistent-1293/project"
+        ) { _ in
+            gathered.withLock { $0 = true }
+            return nil
+        }
+        let store = LearnedTermStore(fileURL: nil)
+        pipeline.viewModel.learnedTermStore = store
+        // The first clock read after the stop's gather is the early polish's
+        // `finish()`: the moment the stop waits on the piece.
+        let waitsOnPiece = BoundedWait()
+        let now = pipeline.viewModel.dependencies.clock.now
+        pipeline.viewModel.dependencies.clock.now = {
+            if gathered.withLock({ $0 }) { waitsOnPiece.resolve() }
+            return now()
+        }
+        let tail = "and open polishcontextbudget.swift now."
+        await polish.holdNextRequest()
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.done", "text": Self.settledPiece])
+        let pieceSent = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(pieceSent, "no piece was polished while dictating")
+
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        pipeline.server.send(["type": "transcription.done", "text": tail])
+        let waiting = await waitsOnPiece.value(failAfter: 10)
+        XCTAssertTrue(waiting, "the stop never waited on the piece")
+
+        settings.polishClipboardContextEnabled = false
+        await polish.releaseHeldRequest()
+        let recorded = await pipeline.records.waitForCount(1)
+        XCTAssertTrue(recorded)
+        await pipeline.viewModel.session.polishAndCommitTask?.value
+        store.waitForPendingWrites()
+
+        let requests = await polish.requests
+        XCTAssertFalse(
+            requests.contains { request in
+                ([request.inputText] + request.userPrompts).contains { $0.contains("PolishContextBudget") }
+            },
+            "the withdrawn clipboard was sent"
+        )
+        XCTAssertEqual(store.summary().terms, 0, "a term from the withdrawn clipboard was learned")
     }
 
     /// A quick capture is never polished, so no piece of it is sent to the
@@ -1032,6 +1128,43 @@ final class DictationPipelineTests: XCTestCase {
 
         XCTAssertEqual(pipeline.overlay.commitCallCount, 0)
         XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
+    }
+
+    /// A pick still bringing a pane forward when its dictation is cancelled
+    /// belongs to that dictation: once the pane comes forward during the
+    /// next one, a quick capture, it picks nothing there, and the capture's
+    /// words go only to the Inbox.
+    func testOldQueuedPickCannotRedirectANewInboxCapture() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let waiting = installWaitingSessions(pipeline, ["pay": "/r/payments"])
+        waiting.focuser.holdsFocus = true
+        let captured = QuickCaptures()
+        pipeline.viewModel.session.onQuickCapture = { text, _ in captured.all.append((text, 0)) }
+        // Were the pane picked, the words would go into it.
+        let terminalPID: pid_t = 5151
+        pipeline.overlay.commitTargetAppPID = terminalPID
+        pipeline.viewModel.dependencies.bundleIdentifier = { _ in TerminalScreenAllowlist.ghosttyBundleID }
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.session.moveDestination(forward: false)
+        let sessionPick = try XCTUnwrap(pipeline.viewModel.session.destinationFocusTask)
+        await waiting.focuser.waitUntilHeld(1)
+        XCTAssertTrue(pipeline.viewModel.session.pickInboxOrStop(), "the Inbox pick queues behind the session's")
+        pipeline.viewModel.cancelDictation()
+
+        pipeline.server.forgetFrames()
+        await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .inbox)
+        waiting.focuser.releaseHeldFocuses()
+        await sessionPick.value
+
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .inbox)
+        XCTAssertTrue(pipeline.viewModel.session.sessionIsQuickCapture)
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline, finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved)
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing reaches the pane")
+        XCTAssertEqual(waiting.focuser.readBackSessionIDs, [])
+        XCTAssertEqual(captured.all.map(\.text), [Self.phrase])
     }
 
     /// An unconfirmed pane may still have come forward. Staying on the
@@ -2145,7 +2278,11 @@ final class DictationPipelineTests: XCTestCase {
 
         pipeline.viewModel.session.moveDestination(forward: true)
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "the Inbox stops on its phrase")
-        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
+        // Tab also opened the destination list, whose close timer sleeps on
+        // the same clock. Waiting for one new sleeper could return on that
+        // timer alone, and an advance before the stop's own sleep registers
+        // never reaches its deadline (#1378).
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 2)
         pipeline.clock.advance(by: 3)
         await armed.value
         await finishStoppedSession(
@@ -2224,7 +2361,8 @@ final class DictationPipelineTests: XCTestCase {
             origin: .localAuthenticated(peerUID: 501)
         ))
         pipeline.viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
-            registry: registry, cmuxSurfaces: cmux.client(), cmuxJoinEnabled: { true }
+            registry: registry, cmuxSurfaces: cmux.client(), cmuxJoinEnabled: { true },
+            ttyForegroundPIDs: { _ in [9001] }
         )
         let target = TerminalScreenTarget(pid: FakeCmuxSocket.pid, bundleID: TerminalScreenAllowlist.cmuxBundleID)
         TerminalScreenContextSource.debugFrontmostTargetOverride = { target }
@@ -2629,10 +2767,10 @@ final class DictationPipelineTests: XCTestCase {
         let records: SessionRecords
 
         /// The timers a listening session keeps armed: the send loop, the
-        /// periodic commit and the microphone health poll, plus the
-        /// insertion retry in Live Auto-Paste.
+        /// periodic commit, the microphone health poll and the socket's
+        /// keepalive ping, plus the insertion retry in Live Auto-Paste.
         @MainActor var listeningTimers: Int {
-            viewModel.session.isLiveAutoPasteModeEnabled ? 4 : 3
+            viewModel.session.isLiveAutoPasteModeEnabled ? 5 : 4
         }
     }
 
@@ -2736,7 +2874,8 @@ final class DictationPipelineTests: XCTestCase {
             liveSessions: { live },
             repositoryRoot: { _ in .unknown },
             focuser: focuser,
-            sleep: ManualSessionClock().sleep
+            sleep: ManualSessionClock().sleep,
+            ttyForegroundPIDs: { _ in [2] }
         )
         var tick = 0.0
         let tracker = AgentAttentionTracker(

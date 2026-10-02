@@ -340,6 +340,7 @@ lv_run_one_unit_shard() {
     shard_status=0
   fi
   echo "$shard_status $((SECONDS - shard_started))" >"$work/$index.status"
+  : >"$work/$index.ended"
 }
 
 # Signal handler of lv_run_one_unit_shard, run in its subshell with its
@@ -360,13 +361,19 @@ lv_stop_unit_shard() {
     cat "$work/$index.attempt" >>"$work/$index.log" 2>/dev/null
   fi
   echo "==> Shard $index: stopped by SIG$signal" >>"$work/$index.log"
+  : >"$work/$index.ended"
   exit 143
 }
 
 # Signal handler of lv_run_unit_shards: stop the shards, log what they printed,
 # then restore the caller's handlers and deliver the signal again to them.
+#
+# A shard's log is read only once its `.ended` marker exists, the last thing
+# the shard writes: on hosted macOS this `wait` returned before shard 1's
+# handler had logged its signal (#1210). Five seconds caps the poll; a shard
+# the signal kept from starting is not waited for.
 lv_interrupt_unit_shards() {
-  local signal="$1" index
+  local signal="$1" index polls
   trap '' INT TERM HUP
   if (( ${#LV_SHARD_PIDS[@]} > 0 )); then
     kill "${LV_SHARD_PIDS[@]}" 2>/dev/null
@@ -374,9 +381,16 @@ lv_interrupt_unit_shards() {
   fi
   for index in $(seq 1 "$LV_SHARD_PLANNED"); do
     [[ -f "$LV_SHARD_WORK/$index.logged" ]] && continue
+    polls=0
+    while (( index <= ${#LV_SHARD_PIDS[@]} )) && [[ ! -f "$LV_SHARD_WORK/$index.ended" ]] \
+        && (( polls++ < 50 )); do
+      sleep 0.1
+    done
     {
       echo "==> Shard $index/$LV_SHARD_PLANNED: INTERRUPTED; its output so far:"
       cat "$LV_SHARD_WORK/$index.log" 2>/dev/null
+      [[ -f "$LV_SHARD_WORK/$index.ended" ]] || (( index > ${#LV_SHARD_PIDS[@]} )) \
+        || echo "==> Shard $index: still stopping after 5 s; its output may be cut short"
     } | tee -a "$LV_SHARD_LOG"
   done
   rm -rf "$LV_SHARD_WORK"
