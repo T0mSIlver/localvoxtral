@@ -6,7 +6,7 @@
 
 export const WIRE_VERSION = 1
 
-export type ChannelMessage = { mod_message: number; kind: string; id: string; text?: string }
+export type ChannelMessage = { mod_message: number; kind: string; id: string; text?: string; phase?: string }
 
 /** What a fork cost, in the API's spelling. */
 export type ChannelUsage = {
@@ -33,15 +33,30 @@ export type Outcome = { ok: boolean; reason?: string; text?: string; usage?: Cha
 // does not know `--attach` (an app older than the mod): stop asking it.
 export const SHORTEST_LIFE_MS = 5000
 export const RESTART_DELAY_MS = 30000
+// A band nobody updated for this long belongs to a dictation whose end never
+// arrived (the app quit mid-dictation): it clears itself.
+export const BAND_STALE_MS = 30000
+
+/** The band a `state` message asks for; null clears it. */
+export function bandOf(message: ChannelMessage): { phase: 'listening' | 'finishing'; text: string } | null {
+  if (message.phase !== 'listening' && message.phase !== 'finishing') return null
+  return { phase: message.phase, text: message.text ?? '' }
+}
 
 /** Parses one line, or null for anything that is not a message of this wire. */
 export function parseMessage(line: string): ChannelMessage | null {
   try {
     const value: unknown = JSON.parse(line)
     if (typeof value !== 'object' || value === null) return null
-    const { mod_message, kind, id, text } = value as Record<string, unknown>
+    const { mod_message, kind, id, text, phase } = value as Record<string, unknown>
     if (mod_message !== WIRE_VERSION || typeof kind !== 'string' || typeof id !== 'string') return null
-    return typeof text === 'string' ? { mod_message, kind, id, text } : { mod_message, kind, id }
+    return {
+      mod_message,
+      kind,
+      id,
+      ...(typeof text === 'string' ? { text } : {}),
+      ...(typeof phase === 'string' ? { phase } : {}),
+    }
   } catch {
     return null
   }

@@ -418,6 +418,12 @@ session ended), the app types it as before. A dictation that ends in the
 spoken send word, and sessions in Claude Desktop or a browser tab, are still
 typed.
 
+While an Overlay Buffer dictation is joined to a session with the mod, that
+session shows it above its prompt: **Listening** and the words so far, then
+**Finishing** while the text is polished, then nothing. The band shows
+wherever the session is drawn, a terminal, the Claude Desktop Code tab or the
+Claude app on a phone.
+
 With **Ask the coding agent for each new project's terms** on, a session with
 the mod answers that question itself when it has had at least three prompts
 and was active in the last four minutes: the app asks the session's own model
