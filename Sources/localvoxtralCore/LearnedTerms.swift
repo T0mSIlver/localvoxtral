@@ -468,7 +468,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         let at = min(reported, now)
         guard now.timeIntervalSince(at) < Double(Self.agentActivityListedDays) * 86_400,
               project.key.hasPrefix("/") || project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix),
-              !project.name.isEmpty, !PolishProjectNames.isGeneratedLabel(project.name)
+              !project.name.isEmpty, !Self.isGeneratedLabel(project.name)
         else { return false }
         let index: Int
         let added: Bool
