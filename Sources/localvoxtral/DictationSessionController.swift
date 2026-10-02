@@ -195,12 +195,13 @@ final class DictationSessionController {
 
     @ObservationIgnored
     let networkMonitor = NetworkMonitor()
-    /// Reads the rollover's pause and sleeps its watchdog on the session
-    /// clock (#1139).
+    /// Reads the rollover's pause and sleeps its watchdog (#1139), its
+    /// handshake fallback and its keepalive ping (#1366) on the session clock.
     @ObservationIgnored
     let realtimeAPIClient: RealtimeAPIWebSocketClient
+    /// Sleeps its keepalive ping on the session clock (#1366).
     @ObservationIgnored
-    let mistralRealtimeClient = MistralRealtimeWebSocketClient()
+    let mistralRealtimeClient: MistralRealtimeWebSocketClient
     /// The client THIS session speaks to, latched at session start from
     /// `settings.dictationBackendMode` (`latchActiveRealtimeClient`). A stored
     /// latch rather than a lookup on every call: flipping the mode in Settings
@@ -595,6 +596,7 @@ final class DictationSessionController {
         self.overlayBufferCoordinator = overlayBufferCoordinator
         self.dependencies = dependencies
         self.realtimeAPIClient = RealtimeAPIWebSocketClient(clock: dependencies.clock)
+        self.mistralRealtimeClient = MistralRealtimeWebSocketClient(clock: dependencies.clock)
     }
 
     func prepareLLMPolishingPromptAccessIfNeeded() {
