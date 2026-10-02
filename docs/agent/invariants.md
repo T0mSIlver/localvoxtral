@@ -264,7 +264,13 @@ there is not.
   read-back, that pid is frontmost and on `ReturnSubmitsAppList`,
   and Secure Keyboard Entry is off. A failed check before the typing types
   nothing and keeps the text in History; one after it leaves the text
-  unsubmitted, and the popover says so. Correction learning and term
+  unsubmitted, and the popover says so. Right before the typing and
+  again before the Return, the session's agent pid must be in its tty's
+  foreground process group (the process table, the herdr route's
+  foreground test), and the destination list's picked pane must pass the
+  same test before its words go in: a suspended agent stays alive and
+  registered, and its tab reads back as the session's, while its shell
+  owns the terminal (#1249). Correction learning and term
   proposals skip an addressed dictation: they key on the join of the pane
   it started in. Live Auto-Paste has no addressed send: its words are
   typed before the phrase at the end is heard.
