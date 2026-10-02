@@ -12,8 +12,8 @@ import Foundation
 /// `PolishRequestGoldenTests` pins what those inputs produce.
 ///
 /// It touches nothing but what it is handed — `capture` clears the
-/// context's captures, `commit` inserts through the overlay, `polish`
-/// records learned terms — and it never reads or writes the view model, so
+/// context's captures, `commit` inserts through the overlay,
+/// `recordLearnedTerms` writes the store — and it never reads or writes the view model, so
 /// the ordering rules below hold wherever the commit is driven from.
 enum StopCommitCoordinator {
     // MARK: - Prologue
@@ -535,17 +535,6 @@ enum StopCommitCoordinator {
         var material = gathered.withdrawingRevokedConsent(
             settings: input.settings, endpointURL: endpointURL, workingText: workingText
         ) ?? gathered
-
-        // What this dictation taught, remembered for the next one
-        // in the same project. Recorded from the MERGED entries
-        // and nowhere else: a span the merge abstained on is not
-        // evidence of a spelling, and a verification pair is a
-        // question put to the model, not an answer.
-        recordLearnedTerms(
-            merged: material.merged,
-            project: material.learnedProject,
-            store: input.learnedTermStore
-        )
 
         // Sections, pre-application, prompts, blocks and provenance
         // are one pure step over the merged material; the request
