@@ -193,4 +193,53 @@ final class LearnedTermsForgottenProjectTests: XCTestCase {
         XCTAssertEqual(store.snapshot().projects.map(\.key).sorted(), [mac.key, quill.key].sorted())
         XCTAssertNil(store.forgottenListProblem)
     }
+
+    /// Tombstones this copy read before another wrote a file it cannot read
+    /// outlive Start Over and a relaunch.
+    func testStartOverWritesTheTombstonesThisCopyStillHolds() async throws {
+        let fileURL = makeFileURL()
+        let store = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        store.recordAgentActivity(agentWorked(in: mac), hostID: nil)
+        store.forgetProject(keys: [mac.key, quill.key])
+        store.waitForPendingWrites()
+        let tombstoneURL = try XCTUnwrap(store.forgottenFileURL)
+        try Data(#"{"version":99,"projects":[]}"#.utf8).write(to: tombstoneURL)
+        store.recordAgentActivity(agentWorked(in: mac), hostID: nil)
+        store.waitForPendingWrites()
+        XCTAssertEqual(store.forgottenListProblem, .newerVersion(99))
+
+        _ = try await store.moveForgottenListAsideAndStartOver()
+        let written = try XCTUnwrap(
+            LearnedTermStore.forgotten(fromFileContents: Data(contentsOf: tombstoneURL)).value)
+        XCTAssertEqual(written.projects.map(\.keys), [[mac.key, quill.key].sorted()])
+
+        let relaunched = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        relaunched.recordAgentActivity(agentWorked(in: mac), hostID: nil)
+        relaunched.waitForPendingWrites()
+        XCTAssertEqual(relaunched.snapshot().projects, [], "the forget holds")
+    }
+
+    /// Start Over deletes the original once it is linked aside: without the
+    /// lock another copy could replace it in between, so it refuses.
+    func testStartOverRefusesWithoutTheLock() async throws {
+        let fileURL = makeFileURL()
+        let directory = fileURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let tombstoneURL = directory.appendingPathComponent(LearnedTermStore.forgottenFileName)
+        let newer = Data(#"{"version":99,"projects":[]}"#.utf8)
+        try newer.write(to: tombstoneURL)
+        let store = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        store.waitForPendingWrites()
+        // A directory where the lock file goes: open(2) fails.
+        let ignoredURL = try XCTUnwrap(store.ignoredFileURL)
+        try FileManager.default.createDirectory(
+            at: StoredFileLock.lockURL(beside: ignoredURL), withIntermediateDirectories: true)
+
+        do {
+            _ = try await store.moveForgottenListAsideAndStartOver()
+            XCTFail("Start Over moved the file without the lock")
+        } catch {}
+        XCTAssertEqual(try Data(contentsOf: tombstoneURL), newer)
+        XCTAssertEqual(store.forgottenListProblem, .newerVersion(99))
+    }
 }
