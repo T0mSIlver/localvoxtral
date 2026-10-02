@@ -46,12 +46,11 @@ APPEX="$APP_DIR/Contents/PlugIns/localvoxtralWidgets.appex"
 # tabs) without automation.apple-events.
 #
 # Relative path inside the bundle -> entitlements file ("" = none). The two
-# MLX helpers load their Metal kernels from mlx-swift_Cmlx.bundle as data and
-# compile shaders through the out-of-process Metal compiler, so they need no
-# entitlement under the hardened runtime (measured in #1430).
+# MLX helpers need helper.entitlements under the hardened runtime: without
+# disable-library-validation they fail to load (measured in #1430).
 NESTED=(
-  "Contents/MacOS/localvoxtral-polishd|"
-  "Contents/MacOS/localvoxtral-speechd|"
+  "Contents/MacOS/localvoxtral-polishd|helper.entitlements"
+  "Contents/MacOS/localvoxtral-speechd|helper.entitlements"
   "Contents/MacOS/localvoxtral-claude-hook|"
   "Contents/MacOS/localvoxtral-cli|"
 )
