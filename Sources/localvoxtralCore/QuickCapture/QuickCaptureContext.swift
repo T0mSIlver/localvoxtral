@@ -1,5 +1,11 @@
 import Foundation
 
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+
 /// What the first draft reads about a project (#918): the README's opening,
 /// the repository guide's rules for issues, `git grep` hits for the
 /// capture's words, and the tracker (open issues, recent closed issues and
@@ -300,10 +306,16 @@ package struct QuickCaptureContextGatherer: Sendable {
         )
     }
 
-    /// The first `maxBytes` of a file, leniently decoded.
+    /// The first `maxBytes` of a file, leniently decoded. Nil unless the path
+    /// names a regular file: a repository's `README.md -> ~/.ssh/config` must
+    /// not reach the model (#1271). `O_NOFOLLOW` and the `fstat` on the open
+    /// descriptor keep the check and the read on the same file.
     package static let readPrefix: @Sendable (String, Int) -> String? = { path, maxBytes in
-        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
-        defer { try? handle.close() }
+        let descriptor = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return nil }
         guard let data = try? handle.read(upToCount: maxBytes) else { return nil }
         return String(decoding: data, as: UTF8.self)
     }

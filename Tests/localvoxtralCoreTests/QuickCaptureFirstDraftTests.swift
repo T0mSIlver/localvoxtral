@@ -211,6 +211,32 @@ final class QuickCaptureContextTests: XCTestCase {
         let named = await gatherer.gather(root: root.path, repository: "me/fork", capture: "x")
         XCTAssertNil(named.openIssues, "the project's repository wins over the checkout's")
     }
+
+    /// README, AGENTS.md and CLAUDE.md symlinked to a file outside the
+    /// checkout stay out of the first draft's request.
+    func testTheGathererReadsNoSymlinkedReadmeOrGuide() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("qc-context-link-\(UUID().uuidString)")
+        let root = base.appendingPathComponent("checkout")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let secret = base.appendingPathComponent("secret.md")
+        try "# OUTSIDE-SENTINEL\n\nOUTSIDE-SENTINEL prose.\n\n## Proof\nOUTSIDE-SENTINEL".write(
+            to: secret, atomically: true, encoding: .utf8
+        )
+        for name in ["README.md", "AGENTS.md", "CLAUDE.md"] {
+            try FileManager.default.createSymbolicLink(
+                atPath: root.appendingPathComponent(name).path, withDestinationPath: secret.path
+            )
+        }
+        let gatherer = QuickCaptureContextGatherer(
+            run: { _, _, _ in nil },
+            openIssues: { _, _ in nil },
+            checkoutRepository: { _ in nil }
+        )
+        let context = await gatherer.gather(root: root.path, repository: nil, capture: "kerning")
+        XCTAssertNil(context.readme)
+        XCTAssertNil(context.issueRules)
+    }
 }
 
 /// #918's two stages in the drafter: the first draft, then the agent's
