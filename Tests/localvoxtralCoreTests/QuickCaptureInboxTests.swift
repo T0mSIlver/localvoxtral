@@ -118,6 +118,23 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertNil(model.file(id), "a filed capture is not filed again")
     }
 
+    /// Two running copies both show the draft ready (#990): once one filed
+    /// it, File in the other, which has not read the file since, files
+    /// nothing.
+    func testACopyThatHasNotSeenAFilingDoesNotFileAgain() async throws {
+        let installed = model(answer: ["reach": 0.9])
+        await installed.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(installed.items.first?.id)
+        let tryBuild = model(answer: ["reach": 0.9])
+        await installed.file(id)?.value
+
+        await tryBuild.file(id)?.value
+
+        XCTAssertEqual(github.created.withLock { $0.count }, 1)
+        XCTAssertEqual(tryBuild.items.first?.state, .filed)
+        XCTAssertEqual(tryBuild.items.first?.filedURL, "https://github.com/o/reach/issues/9")
+    }
+
     /// #923: a coding agent filed it with its own gh; the app only records it.
     func testAnAgentMarksACaptureFiledInItsOwnRepositoryOnly() async throws {
         let model = model(answer: ["reach": 0.9])

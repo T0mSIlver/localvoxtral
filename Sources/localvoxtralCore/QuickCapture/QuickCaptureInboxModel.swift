@@ -526,10 +526,9 @@ package final class QuickCaptureInboxModel {
     /// The only path to `gh issue create`.
     @discardableResult
     package func file(_ id: UUID) -> Task<Void, Never>? {
-        guard let item = inbox.items.first(where: { $0.id == id }), item.canFile, let repository = item.repository else {
-            return nil
-        }
-        mutate { inbox in inbox.update(id) { $0.state = .filing } }
+        guard inbox.items.first(where: { $0.id == id })?.canFile == true,
+              let item = claim(id, when: \.canFile), let repository = item.repository
+        else { return nil }
         let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let body = item.bodyToFile
         return Task { @MainActor [weak self] in
@@ -565,10 +564,10 @@ package final class QuickCaptureInboxModel {
     /// that extends an open issue. Like File, only on the user's click.
     @discardableResult
     package func comment(_ id: UUID) -> Task<Void, Never>? {
-        guard let item = inbox.items.first(where: { $0.id == id }), item.canComment,
+        guard inbox.items.first(where: { $0.id == id })?.canComment == true,
+              let item = claim(id, when: \.canComment),
               let repository = item.repository, let issue = item.relatedIssue
         else { return nil }
-        mutate { inbox in inbox.update(id) { $0.state = .filing } }
         let body = item.commentBody
         return Task { @MainActor [weak self] in
             guard let self else { return }
@@ -598,6 +597,26 @@ package final class QuickCaptureInboxModel {
                 self.onRouted?(recordID, "Commented on \(repository)#\(issue)")
             }
         }
+    }
+
+    /// Marks capture `id` filing, as the inbox file has it now, and returns
+    /// it as claimed. Nil when another running copy filed it, or changed it
+    /// so it no longer passes `eligible`, since this copy last read the file
+    /// (#990): what File or Comment sends is the claimed item, never this
+    /// copy's older one.
+    private func claim(_ id: UUID, when eligible: (QuickCaptureItem) -> Bool) -> QuickCaptureItem? {
+        var claimed: QuickCaptureItem?
+        mutate { inbox in
+            inbox.update(id) { item in
+                guard eligible(item) else { return }
+                claimed = item
+                item.state = .filing
+            }
+        }
+        if claimed == nil {
+            Log.backends.notice("Quick capture: not sent, another running copy filed or changed it")
+        }
+        return claimed
     }
 
     // MARK: Spoken review (#927)
