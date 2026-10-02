@@ -96,8 +96,8 @@ package final class CorrectionLearning {
             return
         }
 
-        let remembered = store.snapshot().projects
-            .first { $0.key == entry.project.key }?.terms ?? []
+        // A linked checkout's terms are on its repository's record (#971).
+        let remembered = store.snapshot().termRecord(entry.project.key)?.terms ?? []
         let speakerTerms = knownTerms()
         let verdict = CorrectionDiffClassifier.classify(
             inserted: entry.inserted,

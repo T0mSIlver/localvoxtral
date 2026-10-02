@@ -126,6 +126,23 @@ final class CorrectionLearningTests: XCTestCase {
         XCTAssertEqual(presenter.shown, [])
     }
 
+    /// A checkout linked to its repository keeps no terms of its own (#971):
+    /// the revert has to find the spelling on the repository's record.
+    func testRevertingALearnedSpellingForgetsItInALinkedCheckout() async {
+        let (learner, store, presenter) = makeLearner()
+        store.recordCorrection("SessionStart", project: project)
+        store.recordOrigin(ProjectRemote(remoteURL: "git@github.com:o/r.git")!, projectKey: project.key)
+        store.waitForPendingWrites()
+        XCTAssertEqual(store.snapshot().termRecord(project.key)?.terms.map(\.term), ["SessionStart"])
+
+        learner.expect(inserted: "hook the SessionStart event", sessionID: "s1", project: project)
+        learner.promptSubmitted(sessionID: "s1", prompt: "hook the session start event")
+        store.waitForPendingWrites()
+
+        XCTAssertEqual(store.snapshot().termRecord(project.key)?.terms ?? [], [])
+        XCTAssertEqual(presenter.shown, [])
+    }
+
     /// A spelling already in Global terms is the user's everywhere.
     func testListedTermIsNotRememberedAgain() async {
         speakerTerms = ["Qwen"]
