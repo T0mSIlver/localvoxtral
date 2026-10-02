@@ -242,9 +242,12 @@ final class LearnedTermsForgottenProjectTests: XCTestCase {
         tombstoneWriteFails.withLock { $0 = true }
         _ = try await store.moveForgottenListAsideAndStartOver()
         XCTAssertFalse(FileManager.default.fileExists(atPath: tombstoneURL.path), "the write failed")
-        // Another running copy writes its own tombstones.
-        try Data(#"{"projects":[{"forgottenAt":"2023-11-14T22:13:20Z","keys":["/w/ink"]}],"version":1}"#.utf8)
-            .write(to: tombstoneURL)
+        // Another running copy writes its own tombstones, one of them a
+        // later forget of the same project.
+        try Data(
+            (#"{"projects":[{"forgottenAt":"2023-11-14T22:13:20Z","keys":["/w/ink"]},"#
+                + #"{"forgottenAt":"2023-11-14T22:14:20Z","keys":["/w/quill"]}],"version":1}"#).utf8
+        ).write(to: tombstoneURL)
         tombstoneWriteFails.withLock { $0 = false }
 
         store.recordAgentActivity(agentWorked(in: mac), hostID: nil)
@@ -256,6 +259,9 @@ final class LearnedTermsForgottenProjectTests: XCTestCase {
         XCTAssertEqual(
             Set(written.projects.map(\.keys)), [["/w/ink"], [mac.key, quill.key].sorted()],
             "both copies' tombstones")
+        XCTAssertEqual(
+            written.projects.first { $0.keys.contains(mac.key) }?.forgottenAt, Self.start.addingTimeInterval(60),
+            "the later forget's time, which decides what records it removes")
     }
 
     /// Start Over deletes the original once it is linked aside: without the
