@@ -124,6 +124,7 @@ extension DictationSessionController {
         liveSpokenSendTypedWord = ""
         liveSpokenSendSegmentMode = .undecided
         liveSpokenSendBlockLogged = false
+        liveSpokenSendPaneLeft = false
         textInsertion.clearLiveInsertionTargetPIDs()
     }
 
@@ -183,10 +184,56 @@ extension DictationSessionController {
                 typeLiveSpokenSendText(final, startsMidWord: startsMidWord)
                 return
             }
-            if case .insertTextAndPressReturn(let text) = action {
-                typeLiveSpokenSendText(text, startsMidWord: startsMidWord)
+            let remainder: String? = if case .insertTextAndPressReturn(let text) = action { text } else { nil }
+            guard let paneSessionID = liveSpokenSendPaneSessionID(),
+                  let navigator = sessionNavigator,
+                  let bundleID = dependencies.bundleIdentifier(pid)
+            else {
+                sendLiveSpokenSendFinal(remainder, in: pid, startsMidWord: startsMidWord)
+                return
             }
-            pressLiveSpokenSendReturn(in: pid)
+            // Tabs of one terminal, and Claude Desktop's sessions, share a
+            // pid: only the pane read back tells the session's prompt from
+            // another one. Later segments wait, as behind a go-to.
+            liveGoToTask = Task { @MainActor [weak self] in
+                let shows = await navigator.focusedPaneShows(sessionID: paneSessionID, bundleID: bundleID)
+                guard let self, !Task.isCancelled else { return }
+                if shows {
+                    self.sendLiveSpokenSendFinal(remainder, in: pid, startsMidWord: startsMidWord)
+                } else {
+                    Log.dictation.notice(
+                        "spoken send: the session's pane is no longer focused; no Return for the rest of this dictation"
+                    )
+                    self.liveSpokenSendPaneLeft = true
+                    self.typeLiveSpokenSendText(final, startsMidWord: startsMidWord)
+                }
+                self.liveGoToTask = nil
+                self.drainLiveGoToQueue()
+            }
+        }
+    }
+
+    private func sendLiveSpokenSendFinal(_ remainder: String?, in pid: pid_t, startsMidWord: Bool) {
+        if let remainder {
+            typeLiveSpokenSendText(remainder, startsMidWord: startsMidWord)
+        }
+        pressLiveSpokenSendReturn(in: pid)
+    }
+
+    /// The session whose pane the words are for, when its pane can be read
+    /// back: the one a go-to brought forward, or else the one the dictation
+    /// joined. Nil when there is none, or its pane cannot be read back (a
+    /// plain ssh or cmux session); the pid check alone then applies.
+    private func liveSpokenSendPaneSessionID() -> String? {
+        switch liveGoToLanding {
+        case .verified(let sessionID)?:
+            return sessionID
+        case .unverified?:
+            return nil
+        case nil:
+            guard let snapshot = context.claudeSessionJoin?.snapshot else { return nil }
+            if case .unsupported = SessionPaneFocusRoute.of(snapshot) { return nil }
+            return snapshot.sessionID
         }
     }
 
@@ -244,6 +291,16 @@ extension DictationSessionController {
     private func liveSpokenSendReturnTarget() -> pid_t? {
         guard !TerminalTargetDetector.isSecureKeyboardEntryEnabled() else {
             Log.dictation.notice("spoken send: Secure Keyboard Entry is on; no Return")
+            return nil
+        }
+        // A go-to whose pane did not read back as the session's may have
+        // brought another prompt forward.
+        if case .unverified? = liveGoToLanding {
+            Log.dictation.notice("spoken send: the last go-to was not verified; no Return")
+            return nil
+        }
+        guard !liveSpokenSendPaneLeft else {
+            Log.dictation.notice("spoken send: the session's pane left the front earlier; no Return")
             return nil
         }
         guard let pid = frontmostReturnSubmitsPID() else {
