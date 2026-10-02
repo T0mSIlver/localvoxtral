@@ -40,6 +40,14 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
         return .init(endpoint: endpoint, apiKey: apiKey, model: model)
     }
 
+    /// For a test that times an utterance: the service has answered one first
+    /// (#1122).
+    private func transcribingConfiguration() async throws -> RealtimeSessionConfiguration {
+        let configuration = try integrationConfiguration()
+        _ = try await LiveSTTWarmUp.once(configuration: configuration)
+        return configuration
+    }
+
     func testVLLMHandshakeAndDisconnectCycle() async throws {
         let configuration = try integrationConfiguration()
         let client = RealtimeAPIWebSocketClient()
@@ -125,7 +133,7 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
     /// End-to-end quality check that enforces minimum transcript accuracy
     /// for synthetic spoken audio streamed over the realtime websocket client.
     func testVLLMProcessesSpokenSyntheticAudio_meetsExpectedAccuracy() async throws {
-        let configuration = try integrationConfiguration()
+        let configuration = try await transcribingConfiguration()
         let longPhrase = [
             "hello from localvoxtral realtime test.",
             "this is a longer synthetic audio passage for integration testing.",
@@ -210,7 +218,7 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
     /// injected clocks (`RealtimeReconnectTests`); what only a live backend can
     /// answer is whether the fresh session accepts the replay at all.
     func testVLLMReconnectedSessionTranscribesReplayedGapAudio() async throws {
-        let configuration = try integrationConfiguration()
+        let configuration = try await transcribingConfiguration()
         let beforeDrop = "hello from localvoxtral, this is the first half of the passage."
         let afterDrop =
             "the connection dropped and came back, and these words were spoken into the gap."
