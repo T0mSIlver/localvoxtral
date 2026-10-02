@@ -186,7 +186,8 @@ final class ClaudeDesktopAttentionTests: XCTestCase {
     private func focusHarness(
         running: Bool = true,
         shownAfterOpen: String?,
-        afterSleeps: Int = 2
+        afterSleeps: Int = 2,
+        switchAppsDuringRead: Bool = false
     ) -> FocusHarness {
         let shown = Box<String?>("https://claude.ai/epitaxy/\(otherDesktopID)")
         let frontmost = Box<pid_t?>(999)
@@ -208,6 +209,8 @@ final class ClaudeDesktopAttentionTests: XCTestCase {
                       let id = ClaudeDesktopSessionURL.sessionID(inWebAreaURL: address),
                       case .resolved(let snapshot) = registry.resolve(desktopSessionID: id)
                 else { return nil }
+                // The user switches apps while the read is suspended.
+                if switchAppsDuringRead { frontmost.set(999) }
                 return snapshot.sessionID
             },
             sleep: { _ in
@@ -270,6 +273,20 @@ final class ClaudeDesktopAttentionTests: XCTestCase {
         let session = try XCTUnwrap(registry.snapshot(sessionID: "fdad6dd0-fdd7-4118-ba62-ef71e8bf90e7"))
         let h = focusHarness(shownAfterOpen: "https://claude.ai/epitaxy/\(desktopID)", afterSleeps: 0)
         h.shown.set("https://claude.ai/epitaxy/\(desktopID)")
+
+        let outcome = await h.focuser.focusPane(of: session)
+        XCTAssertEqual(outcome, .unverified(bundleID: ClaudeDesktopAllowlist.bundleID))
+    }
+
+    /// Desktop stops being frontmost while the read is suspended: the
+    /// session it read is no answer, or the answer shortcut would dictate
+    /// into the app the user switched to.
+    func testASwitchToAnotherAppDuringTheReadIsUnverified() async throws {
+        _ = try start()
+        defer { stop() }
+        try publish(["Notification-permission_prompt"])
+        let session = try XCTUnwrap(registry.snapshot(sessionID: "fdad6dd0-fdd7-4118-ba62-ef71e8bf90e7"))
+        let h = focusHarness(shownAfterOpen: "https://claude.ai/epitaxy/\(desktopID)", switchAppsDuringRead: true)
 
         let outcome = await h.focuser.focusPane(of: session)
         XCTAssertEqual(outcome, .unverified(bundleID: ClaudeDesktopAllowlist.bundleID))
