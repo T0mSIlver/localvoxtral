@@ -72,6 +72,10 @@ public struct ClaudeEnrollmentActionFailure: Sendable, Equatable {
             return "ssh config is a symlink"
         case .sshDirectoryNotTrusted:
             return "~/.ssh not trusted"
+        case .sshConfigBlockDamaged:
+            return "ssh config block markers unpaired"
+        case .sshConfigChangedDuringWrite:
+            return "ssh config kept changing during the write"
         case .commandFailed(let step, _, let exitCode, let message):
             return "step \(step) exited \(exitCode) with \(message.count) characters of output"
         case .commandTimedOut(let step, _, let seconds, _):

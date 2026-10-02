@@ -3,7 +3,7 @@ import Foundation
 import Synchronization
 
 /// Where a remote project's README summary is kept (`LearnedTermStore`).
-package protocol RemoteProjectSummaryStoring: Sendable {
+package protocol RemoteProjectSummaryStoring: AgentActivityRecording {
     func snapshot() -> LearnedTerms
     func recordSummary(_ summary: String?, projectKey: String)
     func recordRemoteReport(project: LearnedTermProjectIdentity, asRepository: Bool, repository: String?, hostID: String?)
@@ -112,6 +112,9 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
         /// Keyed by project and host: when a hook's report of it was last
         /// recorded, and whether as a repository.
         var reported: [String: (at: Date, asRepository: Bool, repository: String?)] = [:]
+        /// Keyed by host: the last list of repositories its agents worked in
+        /// that was recorded, and when.
+        var agentProjects: [String: (at: Date, entries: [AgentProjectsCodec.Entry])] = [:]
     }
 
     private let state = Mutex(State())
@@ -224,6 +227,35 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
         }
         guard due else { return }
         store.recordRemoteReport(project: project, asRepository: asRepository, repository: repository, hostID: hostID)
+    }
+
+    /// A host's shim listed the repositories its agents worked in (#1027),
+    /// on a SessionStart. Each is recorded under `remote:<name>`, the key
+    /// its sessions' hooks name it by, and linked to its `origin`. The same
+    /// list from the same host is recorded at most once per
+    /// `reportInterval`.
+    package func noteAgentProjects(_ entries: [AgentProjectsCodec.Entry], hostID: String) {
+        let repositories = entries.compactMap { entry -> AgentWorkedRepository? in
+            guard let remote = ProjectRemote(header: entry.repository) else { return nil }
+            return AgentWorkedRepository(
+                project: LearnedTermProjectIdentity(key: LearnedTermProjectResolver.remoteKeyPrefix + entry.name, name: entry.name),
+                remote: remote,
+                lastActive: entry.lastActive
+            )
+        }
+        guard !repositories.isEmpty else { return }
+        let moment = now()
+        let due = state.withLock { state -> Bool in
+            if let last = state.agentProjects[hostID], last.entries == entries,
+               moment.timeIntervalSince(last.at) < Self.reportInterval
+            {
+                return false
+            }
+            state.agentProjects[hostID] = (moment, entries)
+            return true
+        }
+        guard due else { return }
+        store.recordAgentActivity(repositories, hostID: hostID)
     }
 
     // MARK: The asks, on an accepted hook's reply

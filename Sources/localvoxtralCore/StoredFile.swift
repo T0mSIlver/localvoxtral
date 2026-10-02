@@ -77,14 +77,18 @@ package enum StoredFile {
     }
 
     /// The user's way out of a refused file: renames it beside itself under a
-    /// name no file has (`<name>.unreadable-<id>`), and returns that name
+    /// name no file has (`<name>.<label>-<id>`), and returns that name
     /// only once the moved file has the same size and the original is gone.
     /// A rename that would replace a file fails instead.
-    package static func moveAside(_ url: URL, id: String = UUID().uuidString) throws -> URL {
+    package static func moveAside(
+        _ url: URL,
+        label: String = "unreadable",
+        id: String = UUID().uuidString
+    ) throws -> URL {
         let fileManager = FileManager.default
         let size = try fileManager.attributesOfItem(atPath: url.path)[.size] as? Int
         let destination = url.deletingLastPathComponent()
-            .appendingPathComponent("\(url.lastPathComponent).unreadable-\(id)")
+            .appendingPathComponent("\(url.lastPathComponent).\(label)-\(id)")
         guard !fileManager.fileExists(atPath: destination.path) else { throw MoveAsideFailed() }
         // link(2) refuses an existing name, so nothing is ever replaced; then
         // the original goes.

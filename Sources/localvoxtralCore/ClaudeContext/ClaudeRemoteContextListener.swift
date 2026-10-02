@@ -654,6 +654,9 @@ public final class ClaudeRemoteContextListener: Sendable {
         if let skills = AgentSkillNamesCodec.names(in: request.headers) {
             onRemoteSkills(host.id, skills)
         }
+        if let agentProjects = AgentProjectsCodec.entries(in: request.headers) {
+            quickCapture?.noteAgentProjects(agentProjects, hostID: host.id)
+        }
         let scopedSessionID = ClaudeAgentSessionScope.scopedSessionID(
             agent: prepared.record.agent, sessionID: prepared.record.sessionID
         )

@@ -85,12 +85,21 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
     /// layout (`ClaudeWorkspaceReference.claudeWorktreeRepository`). A label,
     /// like `workspace`; remote only.
     public var remoteWorktreeRepository: String?
+    /// The harness's own title for the session, as its last record carrying
+    /// one said (#1020). A name, never evidence: nothing but
+    /// `SessionDefaultNames` reads it, the registry file does not keep it,
+    /// and no log line carries it.
+    package var harnessTitle: String?
     /// The shim version a remote session's last accepted hook sent: the
     /// Claude Code plugin's `X-Lvx-Plugin-Version`, or the Vibe hooks'
     /// version. A running session keeps the shim it loaded, so this can
     /// trail its host's (`AgentCLIDoctorChecks.staleSessions`). Nil for a
     /// local session; not persisted.
     package var remoteShimVersion: ClaudeRemotePluginVersionReport?
+    /// The id of the last Vibe prompt this session submitted (#1285). Every
+    /// Vibe hook re-sends the newest prompt, so a submit carrying this id
+    /// again is that prompt read again, not a new one. Not persisted.
+    package var lastSubmittedPromptID: String?
     public var firstSeen: Date
     public var lastActivity: Date
 
@@ -117,6 +126,12 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
     package var remoteProject: String? {
         guard !origin.isLocalAuthenticated else { return nil }
         return remoteEnvironment?.project ?? remoteWorktreeRepository
+    }
+
+    /// The branch a remote session's host reported (`X-Lvx-Env-Branch`), a
+    /// label. Nil for a local session, whose branch the app reads itself.
+    package var remoteBranch: String? {
+        remoteSessionEnvironment?.branch
     }
 
     /// Recent files that name paths on THIS machine.
@@ -207,6 +222,8 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
         self.process = nil
         self.remoteEnvironment = nil
         self.remoteWorktreeRepository = nil
+        self.harnessTitle = nil
+        self.lastSubmittedPromptID = nil
         self.firstSeen = firstSeen
         self.lastActivity = firstSeen
     }
@@ -222,6 +239,16 @@ public enum ClaudeSessionReducer {
     /// each one is up to 512 bytes of foreign text and the polish context budget
     /// is the real consumer.
     public static let maxRecentSnippets = 8
+
+    /// Whether `record` re-sends the Vibe prompt `snapshot` last submitted
+    /// (#1285). Vibe hooks carry no prompt, so each one reads the newest from
+    /// the session log, and a turn's first tool still reads the turn before's.
+    /// The message id tells such a read from a prompt the user sent again;
+    /// without one, every submit counts, as before.
+    public static func isRepeatedSubmit(_ record: ClaudeHookRecord, of snapshot: ClaudeSessionSnapshot) -> Bool {
+        record.event == .userPromptSubmit && record.agent == .vibe
+            && record.promptID != nil && record.promptID == snapshot.lastSubmittedPromptID
+    }
 
     /// Fold one record into a snapshot.
     ///
@@ -273,17 +300,25 @@ public enum ClaudeSessionReducer {
            record.event != .focusChanged, record.event != .focusCleared {
             snapshot.remoteEnvironment = environment
         }
+        // Kept until a record carries another: Claude Code sends its title on
+        // `SessionStart` only. The wire clamp already dropped it from focus
+        // records.
+        if let title = record.sessionTitle {
+            snapshot.harnessTitle = title
+        }
 
         switch record.event {
         case .sessionStart:
             snapshot.activity = .idle
         case .userPromptSubmit:
+            snapshot.activity = .working
+            guard !isRepeatedSubmit(record, of: snapshot) else { break }
+            snapshot.lastSubmittedPromptID = record.agent == .vibe ? record.promptID : nil
             snapshot.promptsSubmitted += 1
             if let prompt = record.prompt, !prompt.isEmpty {
                 snapshot.latestPriorUserPrompt = prompt
                 snapshot.latestPriorUserPromptAt = now
             }
-            snapshot.activity = .working
         case .cwdChanged:
             // Workspace already applied above; a cwd change does not alter the
             // turn state.

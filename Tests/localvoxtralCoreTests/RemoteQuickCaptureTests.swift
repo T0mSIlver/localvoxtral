@@ -28,6 +28,17 @@ final class RemoteQuickCaptureTests: XCTestCase {
                 _ = $0.recordRemoteReport(project: project, asRepository: asRepository, repository: repository, hostID: hostID, now: moment)
             }
         }
+        func recordAgentActivity(_ repositories: [AgentWorkedRepository], hostID: String?) {
+            let moment = now()
+            memory.withLock { memory in
+                for repository in repositories {
+                    memory.recordAgentActivity(
+                        project: repository.project, remote: repository.remote, hostID: hostID,
+                        at: repository.lastActive, now: moment
+                    )
+                }
+            }
+        }
         /// A project a dictation has shown the app.
         func learn(_ name: String) {
             let moment = now()
@@ -123,6 +134,7 @@ final class RemoteQuickCaptureTests: XCTestCase {
         sendsProject: Bool = true,
         repository: String? = nil,
         cwd: String? = nil,
+        agentProjects: String? = nil,
         token: String? = nil
     ) throws -> RemoteListenerResponse {
         var headers = ["Authorization": "Bearer \(token ?? self.token)", "Content-Type": "application/json"]
@@ -137,6 +149,7 @@ final class RemoteQuickCaptureTests: XCTestCase {
         }
         if sendsProject { headers["X-Lvx-Env-Project"] = project }
         if let repository { headers["X-Lvx-Env-Repository"] = repository }
+        if let agentProjects { headers[AgentProjectsCodec.headerName] = agentProjects }
         let body = #"{"hook_event_name":"\#(event)","session_id":"\#(session)","cwd":"\#(cwd ?? "/srv/work/\(project)-fix")","prompt":"hello"}"#
         return try postToRemoteListener(port: port, path: "/v1/hook/\(event)", headers: headers, body: Data(body.utf8))
     }
@@ -308,6 +321,25 @@ final class RemoteQuickCaptureTests: XCTestCase {
         let hostIDs = try XCTUnwrap(store.snapshot().projects.first { $0.key == "remote:inkwell" }?.hostIDs)
         XCTAssertEqual(hostIDs.count, 2)
         XCTAssertEqual(hostIDs.first, hostID)
+    }
+
+    /// #1027: a repository the host's agents worked in is listed before a
+    /// dictation joins a session in it, under the key its hooks name it by,
+    /// linked to its origin.
+    func testTheReposAHostsAgentsWorkedInAreListed() throws {
+        let hourAgo = Int(clock.now().timeIntervalSince1970) - 3600
+        let monthsAgo = Int(clock.now().timeIntervalSince1970) - 40 * 86_400
+        try hook(
+            "SessionStart", session: "s-1",
+            agentProjects: "\(hourAgo):vidtheque:T0mSIlver/vidtheque,\(monthsAgo):oldrepo:T0mSIlver/oldrepo,bad entry"
+        )
+        let learned = store.snapshot()
+        let vidtheque = try XCTUnwrap(learned.projects.first { $0.key == "remote:vidtheque" })
+        XCTAssertEqual(vidtheque.remote, "github.com/T0mSIlver/vidtheque")
+        XCTAssertEqual(vidtheque.hostIDs, [hostID])
+        XCTAssertTrue(learned.listedCheckouts(now: clock.now()).contains { $0.key == "remote:vidtheque" })
+        XCTAssertFalse(learned.projects.contains { $0.key == "remote:oldrepo" }, "work older than 30 days lists nothing")
+        XCTAssertTrue(PolishProjectNames.names(from: learned, now: clock.now()).contains("vidtheque"))
     }
 
     func testAnEmptyReadmeIsRecordedSoTheHostIsNotAskedAgainThisWeek() throws {

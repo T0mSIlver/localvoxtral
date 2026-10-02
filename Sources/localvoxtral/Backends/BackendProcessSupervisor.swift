@@ -35,6 +35,7 @@ final class BackendProcessSupervisor {
     @ObservationIgnored private let configuration: BackendProcessConfiguration
     @ObservationIgnored private let probe: Probe
     @ObservationIgnored private let sleepFor: SleepClosure
+    @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private var stateContinuations: [UUID: AsyncStream<State>.Continuation] = [:]
 
     /// The running child's pid, for the widgets' memory reading.
@@ -64,11 +65,13 @@ final class BackendProcessSupervisor {
         probe: @escaping Probe = BackendProcessSupervisor.defaultProbe,
         sleepFor: @escaping SleepClosure = { duration in
             try await Task.sleep(for: duration)
-        }
+        },
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.configuration = configuration
         self.probe = probe
         self.sleepFor = sleepFor
+        self.now = now
         self.state = .idle
         self.recentOutput = []
     }
@@ -148,11 +151,21 @@ final class BackendProcessSupervisor {
 
             switch readinessOutcome {
             case .ready:
-                consecutiveFailures = 0
                 transition(to: .running)
+                let readyAt = now()
                 _ = await waitForCurrentProcessExit()
                 guard !stoppingIntentionally && !Task.isCancelled else { return }
+                // Readiness alone does not reset the count: a helper that
+                // crashes soon after each start would otherwise restart
+                // forever (#1306). Only a run that stayed up resets it.
+                let uptime = now().timeIntervalSince(readyAt)
+                if uptime >= Self.seconds(configuration.healthyRunDuration) {
+                    consecutiveFailures = 0
+                }
                 consecutiveFailures += 1
+                Log.backends.info(
+                    "\(self.configuration.name, privacy: .public) backend exited after \(uptime, privacy: .public)s ready; consecutive failures \(consecutiveFailures, privacy: .public)"
+                )
 
             case .exited:
                 guard !stoppingIntentionally && !Task.isCancelled else { return }
@@ -458,6 +471,10 @@ final class BackendProcessSupervisor {
     private func backoffDuration(attempt: Int) -> Duration {
         let seconds = min(30.0, 0.5 * pow(2.0, Double(max(0, attempt - 1))))
         return .seconds(seconds)
+    }
+
+    private static func seconds(_ duration: Duration) -> TimeInterval {
+        Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
     }
 
     private func minDuration(_ lhs: Duration, _ rhs: Duration) -> Duration {

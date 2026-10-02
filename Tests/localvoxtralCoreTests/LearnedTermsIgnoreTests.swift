@@ -352,6 +352,29 @@ final class LearnedTermsIgnoreTests: XCTestCase {
                        "the list stays out of learned-terms.json")
     }
 
+    /// The Projects pane reads the terms' file again when another copy wrote
+    /// it (#1126). That file never carries the list, so the reload keeps the
+    /// list in memory and sweeps what an older build recorded.
+    func testReadingAnotherCopysWriteKeepsTheIgnoreList() async throws {
+        let fileURL = makeFileURL()
+        let store = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        store.ignoreProject(key: quill.key, name: "quill", keys: ["/w/quill"])
+        store.waitForPendingWrites()
+        let older = LearnedTerms(projects: [
+            LearnedTermProject(key: "/w/quill", name: "quill", terms: [term("Kern")], lastSeen: Self.start),
+            LearnedTermProject(key: "/w/ink", name: "ink", terms: [term("Inkwell")], lastSeen: Self.start),
+        ])
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(older).write(to: fileURL)
+
+        await store.reloadIfChanged()
+
+        XCTAssertEqual(store.snapshot().ignored.projects.map(\.key), [quill.key])
+        XCTAssertEqual(store.snapshot().projects.map(\.key), ["/w/ink"])
+        XCTAssertFalse(store.snapshot().needsProposal(projectKey: "/w/quill", now: Self.start))
+    }
+
     private func assertAnUnreadableListKeepsItsBytes(_ contents: Data, problem: StoredFileProblem) async throws {
         let fileURL = makeFileURL()
         let seeded = LearnedTermStore(fileURL: fileURL, now: { Self.start })

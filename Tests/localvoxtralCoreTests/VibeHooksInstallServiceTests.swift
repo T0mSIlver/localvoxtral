@@ -210,6 +210,48 @@ final class VibeHooksInstallServiceTests: XCTestCase {
         }
     }
 
+    func testHooksDefinedAsATableIsRefusedHoweverTheKeyIsSpelled() {
+        // Each makes `hooks` a table, so an appended `[[hooks]]` breaks the
+        // whole file and Vibe runs none of the user's hooks (#1167).
+        let tables = [
+            "[hooks.defaults]\ntimeout = 30\n",
+            "[\"hooks\".x]\ntimeout = 30\n",
+            "[ 'hooks' . x ]\ntimeout = 30\n",
+            "[[hooks.extra]]\nname = \"mine\"\n",
+            "hooks.timeout = 30\n",
+            "\"hooks\" . timeout = 30\n",
+            "hooks.defaults.timeout = 30\n[[hooks]]\nname = \"mine\"\n",
+        ]
+        for text in tables {
+            let (service, fs) = service(state: VibeHooksState(hooksFileExists: true, hooksData: Data(text.utf8)))
+            XCTAssertThrowsError(try service.install(), text) { error in
+                XCTAssertEqual(
+                    error as? VibeHooksInstallService.ServiceError, .refused(.hooksIsNotAnArrayOfTables), text
+                )
+            }
+            XCTAssertEqual(fs.operations, [], "\(text): nothing may be written")
+            XCTAssertEqual(VibeHooksBlockEditor.remote.refusal(for: text), .hooksIsNotAnArrayOfTables, text)
+        }
+    }
+
+    func testHooksAlreadyAnArrayOfTablesStillInstalls() throws {
+        // After `[[hooks]]`, `[hooks.x]` is a sub-table of that hook, and a
+        // quoted "hooks.x" is a different key altogether.
+        let arrays = [
+            Self.userHooks,
+            Self.userHooks + "[hooks.env]\nMODE = \"strict\"\n",
+            Self.userHooks + "[[hooks.steps]]\nrun = \"lint\"\n",
+            "[\"hooks.x\"]\ntimeout = 30\n\n" + Self.userHooks,
+            "\"hooks.timeout\" = 30\n" + Self.userHooks,
+        ]
+        for text in arrays {
+            let (service, fs) = service(state: VibeHooksState(hooksFileExists: true, hooksData: Data(text.utf8)))
+            try service.install()
+            XCTAssertEqual(fs.hooksText, text + "\n" + Self.block, text)
+            XCTAssertNil(VibeHooksBlockEditor.remote.refusal(for: text), text)
+        }
+    }
+
     func testNamesThatMerelyLookLikeOursDoNotBlockAnInstall() throws {
         // Vibe deduplicates by EXACT name, so these are the user's own.
         let theirs = "namespace = \"localvoxtral-turn\"\n\n[[hooks]]\nname = \"localvoxtral-custom\"\n"

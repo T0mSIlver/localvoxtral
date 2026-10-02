@@ -354,6 +354,8 @@ private struct MistralUsageRow: View {
             .fixedSize()
             .accessibilityIdentifier("engines.mistral.usage.period")
         }
+        // Another running copy may have recorded usage (#1126).
+        .task { await viewModel.engines.usageLedger?.reloadIfChanged() }
     }
 }
 

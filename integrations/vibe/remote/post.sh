@@ -182,7 +182,7 @@ write_header() {
   cat 2>/dev/null >"$1" <<HEADERS
 Authorization: Bearer $2
 X-Lvx-Agent: vibe
-X-Lvx-Vibe-Hooks-Version: 1.12.0
+X-Lvx-Vibe-Hooks-Version: 1.17.0
 HEADERS
 }
 write_header "$WORK/header" "$TOKEN" || exit 0
@@ -275,6 +275,23 @@ if [ -n "$LVX_PROJECT" ] && [ -r "$DIR/capture.sh" ]; then
   LVX_REPOSITORY="$(sh "$DIR/capture.sh" repository </dev/null 2>/dev/null)" || LVX_REPOSITORY=""
 fi
 
+# --- Branch (#1020) -----------------------------------------------------------
+# The branch checked out in the session's cwd. The Mac names a session in a
+# linked worktree by it when a person named it (`fix/overlay-names` reads
+# "overlay-names"), as it does for a local session. A label, never a ref the
+# Mac hands to git: it leaves only under the header charset and length cap
+# above. A detached HEAD, no git or no repository sends no header.
+lvx_branch() {
+  LC_ALL=C
+  export LC_ALL
+  command -v git >/dev/null 2>&1 || return 0
+  git symbolic-ref --quiet --short HEAD 2>/dev/null
+}
+LVX_BRANCH=""
+if [ -n "$LVX_PROJECT" ]; then
+  LVX_BRANCH="$(lvx_branch 2>/dev/null)" || LVX_BRANCH=""
+fi
+
 (
   LC_ALL=C
   export LC_ALL
@@ -300,6 +317,7 @@ fi
   lvx_env_header 'X-Lvx-Env-Hook-Parent-Pid' "$AGENT_PID"
   lvx_env_header 'X-Lvx-Env-Project' "${LVX_PROJECT:-}"
   lvx_env_header 'X-Lvx-Env-Repository' "${LVX_REPOSITORY:-}"
+  lvx_env_header 'X-Lvx-Env-Branch' "${LVX_BRANCH:-}"
 ) 2>/dev/null || :
 
 # --- Skill names (#1024) -------------------------------------------------------
@@ -530,12 +548,14 @@ lvx_capture_asks() {
 # One request per plan line, in order: the prompt before the event that ends or
 # continues the turn. The event name is matched against the three this shim can
 # send before it is spliced into a URL. The first transport failure arms the
-# backoff and stops; any completed exchange clears it.
+# backoff and stops; any completed exchange clears it. -q and --noproxy '*'
+# keep ~/.curlrc and an inherited http_proxy or ALL_PROXY from sending the
+# token and the prompt to a proxy instead of the tunnel (#1281).
 while IFS=' ' read -r INDEX NAME; do
   case "$INDEX" in 1 | 2) ;; *) break ;; esac
   case "$NAME" in UserPromptSubmit | PostToolUse | Stop) ;; *) break ;; esac
   [ -r "$WORK/event-$INDEX.json" ] || break
-  STATUS="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  STATUS="$(curl -q --noproxy '*' --silent --output /dev/null --write-out '%{http_code}' \
     --dump-header "$WORK/response-headers-$INDEX" \
     --max-time 1 --request POST \
     --header 'Content-Type: application/json' \
@@ -652,7 +672,7 @@ send_session_end() {
   cat >"$_work/body" 2>/dev/null <<BODY
 {"hook_event_name":"SessionEnd","session_id":"$SESSION_ID"}
 BODY
-  _status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  _status="$(curl -q --noproxy '*' --silent --output /dev/null --write-out '%{http_code}' \
     --max-time 2 --request POST \
     --header 'Content-Type: application/json' \
     --header @"$_work/header" \

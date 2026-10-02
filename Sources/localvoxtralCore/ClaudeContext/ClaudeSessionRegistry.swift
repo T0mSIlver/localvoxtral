@@ -140,6 +140,11 @@ public final class ClaudeSessionRegistry: Sendable {
         /// Counts accepted records, so the turn observer, which runs off the
         /// lock on whichever broker thread ingested, can tell their order.
         var acceptedCount: UInt64 = 0
+        /// Remote rows restored while the host registry could not be read.
+        /// Not join candidates, since no enrollment vouches for them, but
+        /// written back with every save so a registry that failed to load
+        /// does not prune them from the file (#1041).
+        var unverifiedRemoteRows: [StoredClaudeSessions.Session] = []
     }
 
     private let state = Mutex(State())
@@ -165,10 +170,13 @@ public final class ClaudeSessionRegistry: Sendable {
     ///     TTL/staleness is testable without sleeping (AGENTS: no wall-clock in
     ///     tests).
     ///   - isProcessAlive: liveness probe for a session's hook pid.
+    ///   - allowedRemoteChannels: the enrolled, unrevoked hosts' channels.
+    ///     Nil when the host registry could not be read: the restore then
+    ///     keeps remote rows in the file without trusting them.
     public init(
         limits: ClaudeRegistryLimits = .default,
         store: (any ClaudeSessionStore)? = nil,
-        allowedRemoteChannels: Set<String> = [],
+        allowedRemoteChannels: Set<String>? = [],
         now: @escaping @Sendable () -> Date = { Date() },
         isProcessAlive: @escaping @Sendable (Int32) -> Bool = ClaudeSessionRegistry.defaultLivenessProbe,
         processStartMicros: @escaping @Sendable (Int32) -> Int64? = ClaudeSessionRegistry.defaultProcessStartMicros,
@@ -248,6 +256,7 @@ public final class ClaudeSessionRegistry: Sendable {
         )
         var capEvictions = CapEvictions()
         var sequence: UInt64 = 0
+        var repeatedSubmit = false
         let ingested = state.withLock { state -> ClaudeSessionSnapshot? in
             let before = state.sessions
             defer {
@@ -315,6 +324,7 @@ public final class ClaudeSessionRegistry: Sendable {
                 )
             }
 
+            repeatedSubmit = ClaudeSessionReducer.isRepeatedSubmit(record, of: snapshot)
             ClaudeSessionReducer.reduce(
                 &snapshot,
                 record: record,
@@ -352,8 +362,10 @@ public final class ClaudeSessionRegistry: Sendable {
         }
         // The record's own prompt, never the snapshot's: a submit without
         // one leaves the PREVIOUS prompt in the snapshot, and announcing that
-        // would compare a new dictation with an old prompt.
+        // would compare a new dictation with an old prompt. A Vibe prompt
+        // read again by a later hook is not announced again (#1285).
         if record.event == .userPromptSubmit,
+           !repeatedSubmit,
            let ingested,
            let prompt = record.prompt,
            !prompt.isEmpty,
@@ -905,7 +917,14 @@ public final class ClaudeSessionRegistry: Sendable {
             for sessionID in doomed {
                 removeLocked(&state, sessionID: sessionID)
             }
-            if !doomed.isEmpty { schedulePersistenceLocked(state) }
+            let heldBefore = state.unverifiedRemoteRows.count
+            state.unverifiedRemoteRows.removeAll { row in
+                guard let channel = row.origin.channel else { return true }
+                return channel.hasPrefix(sshPrefix) && !channels.contains(channel)
+            }
+            if !doomed.isEmpty || state.unverifiedRemoteRows.count != heldBefore {
+                schedulePersistenceLocked(state)
+            }
             return doomed.count
         }
     }
@@ -914,6 +933,7 @@ public final class ClaudeSessionRegistry: Sendable {
         state.withLock { state in
             state.sessions.removeAll()
             state.focusByTTY.removeAll()
+            state.unverifiedRemoteRows.removeAll()
             persistenceWriter?.submit(.clear)
         }
     }
@@ -1117,16 +1137,15 @@ public final class ClaudeSessionRegistry: Sendable {
 
     private func schedulePersistenceLocked(_ state: State) {
         guard let persistenceWriter else { return }
-        guard !state.sessions.isEmpty else {
+        guard !state.sessions.isEmpty || !state.unverifiedRemoteRows.isEmpty else {
             persistenceWriter.submit(.clear)
             return
         }
         let file = StoredClaudeSessions(
             version: StoredClaudeSessions.currentVersion,
             bootIdentity: bootIdentity(),
-            sessions: state.sessions.values
+            sessions: (state.sessions.values.map(Self.storedSession) + state.unverifiedRemoteRows)
                 .sorted { $0.sessionID < $1.sessionID }
-                .map(Self.storedSession)
         )
         do {
             let encoder = JSONEncoder()
@@ -1139,7 +1158,7 @@ public final class ClaudeSessionRegistry: Sendable {
 
     private func restore(
         from store: any ClaudeSessionStore,
-        allowedRemoteChannels: Set<String>,
+        allowedRemoteChannels: Set<String>?,
         currentBootIdentity: String?,
         currentPeerUID: UInt32,
         timestamp: Date
@@ -1149,7 +1168,8 @@ public final class ClaudeSessionRegistry: Sendable {
             guard let loaded = try store.load() else { return }
             data = loaded
         } catch {
-            Log.claudeContext.error("Claude session store load failed; restored 0 sessions")
+            Log.claudeContext.error("Claude session store load failed; restored 0 sessions, file kept")
+            persistenceWriter?.keepRefusedFile()
             return
         }
 
@@ -1159,15 +1179,20 @@ public final class ClaudeSessionRegistry: Sendable {
             decoder.dateDecodingStrategy = .millisecondsSince1970
             file = try decoder.decode(StoredClaudeSessions.self, from: data)
         } catch {
-            Log.claudeContext.error("Claude session store is corrupt; restored 0 sessions")
+            Log.claudeContext.error("Claude session store is corrupt; restored 0 sessions, file kept")
+            persistenceWriter?.keepRefusedFile()
             return
         }
         guard file.version == StoredClaudeSessions.currentVersion else {
-            Log.claudeContext.error("Claude session store version is unsupported; restored 0 sessions")
+            Log.claudeContext.error(
+                "Claude session store version \(file.version, privacy: .public) is unsupported; restored 0 sessions, file kept"
+            )
+            persistenceWriter?.keepRefusedFile()
             return
         }
 
         var restored: [String: ClaudeSessionSnapshot] = [:]
+        var unverified: [StoredClaudeSessions.Session] = []
         var dropped: [String: Int] = [:]
         func drop(_ reason: String) { dropped[reason, default: 0] += 1 }
 
@@ -1198,9 +1223,11 @@ public final class ClaudeSessionRegistry: Sendable {
                     continue
                 }
             case .remote(let channel):
-                guard channel.hasPrefix(ClaudeRemoteSessionScope.channel(hostID: "")),
-                      allowedRemoteChannels.contains(channel)
-                else {
+                guard channel.hasPrefix(ClaudeRemoteSessionScope.channel(hostID: "")) else {
+                    drop("inactive remote host")
+                    continue
+                }
+                if let allowedRemoteChannels, !allowedRemoteChannels.contains(channel) {
                     drop("inactive remote host")
                     continue
                 }
@@ -1215,16 +1242,28 @@ public final class ClaudeSessionRegistry: Sendable {
                 }
                 continue
             }
-            guard restored[snapshot.sessionID] == nil else {
+            guard restored[snapshot.sessionID] == nil,
+                  !unverified.contains(where: { $0.sessionID == stored.sessionID })
+            else {
                 drop("duplicate id")
+                continue
+            }
+            if allowedRemoteChannels == nil, !snapshot.origin.isLocalAuthenticated {
+                unverified.append(stored)
                 continue
             }
             restored[snapshot.sessionID] = snapshot
         }
 
+        if !unverified.isEmpty {
+            Log.claudeContext.error(
+                "Claude remote host registry unreadable; kept \(unverified.count, privacy: .public) remote session(s) in the file, not restored"
+            )
+        }
         let beforeCap = restored.count
         state.withLock { state in
             state.sessions = restored
+            state.unverifiedRemoteRows = unverified
             enforceCapLocked(&state)
             restored = state.sessions
         }
@@ -1234,7 +1273,7 @@ public final class ClaudeSessionRegistry: Sendable {
         if !dropped.isEmpty {
             let reasons = dropped.keys.sorted().map { "\($0)=\(dropped[$0]!)" }.joined(separator: ", ")
             Log.claudeContext.info(
-                "Claude session store restored \(restoredCount, privacy: .public) session(s); dropped \(file.sessions.count - restoredCount, privacy: .public) (\(reasons, privacy: .public))"
+                "Claude session store restored \(restoredCount, privacy: .public) session(s); dropped \(file.sessions.count - restoredCount - unverified.count, privacy: .public) (\(reasons, privacy: .public))"
             )
         } else if restoredCount > 0 {
             Log.claudeContext.info(

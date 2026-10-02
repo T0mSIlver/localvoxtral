@@ -327,7 +327,7 @@ final class AudioDuckingControllerTests: XCTestCase {
             "the device the user switched to was never ours to touch")
     }
 
-    func testUnpluggingTheDuckedDeviceAbandonsTheRestoreInsteadOfGuessing() async {
+    func testUnpluggingTheDuckedDeviceHoldsItsRestoreForTheNextLaunch() async {
         let harness = makeHarness(fadeDuration: 0.4)
         harness.controller.duckForSessionStart()
         await harness.controller.debugFadeTask?.value
@@ -341,8 +341,44 @@ final class AudioDuckingControllerTests: XCTestCase {
         XCTAssertTrue(
             harness.volume.writes.isEmpty,
             "the level left with the device; writing it anywhere else is the bug")
-        XCTAssertNil(harness.controller.debugDuckedOutput)
+        XCTAssertEqual(
+            harness.pendingRestore(), OutputVolumeReading(deviceUID: Self.deviceA, volume: Self.original),
+            "the only record of what that device was set to")
+
+        // The device comes back at the level it was ducked to.
+        harness.volume.reconnect(Self.deviceA, volume: Self.original * AudioDuckingController.duckedFractionOfOriginal)
+        harness.controller.restoreInterruptedDuckFromPreviousLaunch()
+
+        assertEqual(harness.volume.volume(of: Self.deviceA), Self.original)
+        assertEqual(
+            harness.volume.volume(of: Self.deviceB), 0.3,
+            "the device the user switched to was never ours to touch")
         XCTAssertNil(harness.pendingRestore())
+    }
+
+    func testAnUnpluggedDuckedDeviceIsRestoredAtTheNextSessionOnceItIsBack() async {
+        let harness = makeHarness(fadeDuration: 0.4)
+        harness.controller.duckForSessionStart()
+        await harness.controller.debugFadeTask?.value
+        harness.volume.switchDefault(to: Self.deviceB, volume: 0.3)
+        harness.volume.disconnect(Self.deviceA)
+        harness.controller.restoreAfterSession()
+        await harness.controller.debugFadeTask?.value
+
+        harness.volume.reconnect(Self.deviceA, volume: Self.original * AudioDuckingController.duckedFractionOfOriginal)
+        harness.controller.duckForSessionStart()
+        await harness.controller.debugFadeTask?.value
+
+        assertEqual(harness.volume.volume(of: Self.deviceA), Self.original)
+        assertEqual(
+            harness.volume.volume(of: Self.deviceB), 0.3 * AudioDuckingController.duckedFractionOfOriginal,
+            "this session ducks the device it runs on, from that device's own level")
+
+        harness.controller.restoreAfterSession()
+        await harness.controller.debugFadeTask?.value
+
+        assertEqual(harness.volume.volume(of: Self.deviceB), 0.3)
+        XCTAssertNil(harness.pendingRestore(), "nothing is left for the next launch to restore")
     }
 
     // MARK: - Harness

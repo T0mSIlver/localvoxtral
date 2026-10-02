@@ -182,7 +182,8 @@ package struct ReplacementDictionary: Equatable, Sendable {
             .map { NSRegularExpression.escapedPattern(for: String($0)) }
         guard !parts.isEmpty else { return nil }
 
-        let pattern = "(?<![\\p{L}\\p{N}])" + parts.joined(separator: "\\s+") + "(?![\\p{L}\\p{N}])"
+        // `_` joins an identifier: `vllm_server` holds no word `vllm` (#1358).
+        let pattern = "(?<![\\p{L}\\p{N}_])" + parts.joined(separator: "\\s+") + "(?![\\p{L}\\p{N}_])"
         return try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
     }
 }
@@ -486,6 +487,7 @@ package struct AppConfigStore: AppConfigServing {
     /// shipped defaults without carrying their full content.
     private let knownDefaultHashes: [String: Set<String>]
     private let now: @Sendable () -> Date
+    private let durableFileSystem: DurableFileSystem
 
     /// `bundledResourceURL` finds a bundled default by file name
     /// (`llm_system_prompt.toml`); the app passes its resource bundle.
@@ -494,13 +496,15 @@ package struct AppConfigStore: AppConfigServing {
         bundledResourceURL: @escaping @Sendable (_ fileName: String) -> URL?,
         configDirectoryOverride: URL? = nil,
         knownDefaultHashes: [String: Set<String>] = BundledConfigDefaultHistory.knownDefaultHashes,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        durableFileSystem: DurableFileSystem = .live
     ) {
         self.fileManager = fileManager
         self.bundledResourceURL = bundledResourceURL
         self.configDirectoryOverride = configDirectoryOverride
         self.knownDefaultHashes = knownDefaultHashes
         self.now = now
+        self.durableFileSystem = durableFileSystem
     }
 
     package func configDirectoryURL() -> URL {
@@ -743,7 +747,7 @@ package struct AppConfigStore: AppConfigServing {
 
             do {
                 let data = try Data(contentsOf: sourceURL)
-                try data.write(to: destinationURL, options: .atomic)
+                try replaceFile(at: destinationURL, with: data)
             } catch {
                 Log.config.error(
                     "Failed to bootstrap \(file.fileName, privacy: .public): \(error.localizedDescription, privacy: .public)"
@@ -1078,7 +1082,7 @@ extension AppConfigStore {
                         continue
                     }
                     do {
-                        try bundled.data.write(to: userURL, options: .atomic)
+                        try replaceFile(at: userURL, with: bundled.data)
                     } catch {
                         // The file is untouched, and a kept copy would pile
                         // up with every launch that retries.
@@ -1131,7 +1135,7 @@ extension AppConfigStore {
                     )
                     backupName = name
                 }
-                try bundled.data.write(to: userURL, options: .atomic)
+                try replaceFile(at: userURL, with: bundled.data)
                 if let backupName {
                     backupNames.append(backupName)
                 }
@@ -1213,12 +1217,23 @@ extension AppConfigStore {
         return state
     }
 
+    /// A power cut leaves the old file or the new one, never an empty one
+    /// (#1087). The new file is 0600: only the user, whose app and editor
+    /// read it, needs it.
+    private func replaceFile(at url: URL, with data: Data) throws {
+        let directory = url.deletingLastPathComponent()
+        if !fileManager.fileExists(atPath: directory.path) {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: nil)
+        }
+        try DurableFile.write(data, to: url, fileSystem: durableFileSystem)
+    }
+
     private func writeBundledDefaultsState(_ state: BundledDefaultsState, in directory: URL) {
         let url = directory.appendingPathComponent(Self.defaultsStateFileName, isDirectory: false)
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
-            try encoder.encode(state).write(to: url, options: .atomic)
+            try replaceFile(at: url, with: encoder.encode(state))
         } catch {
             Log.config.error(
                 "Failed to persist bundled-defaults state: \(error.localizedDescription, privacy: .public)"

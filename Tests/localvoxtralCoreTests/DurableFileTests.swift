@@ -1,6 +1,6 @@
 import Foundation
-import Synchronization
 import XCTest
+import localvoxtralTestSupport
 
 @testable import localvoxtralCore
 
@@ -21,44 +21,15 @@ final class DurableFileTests: XCTestCase {
         try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent())
     }
 
-    private enum Call: Equatable {
-        case sync(String)
-        case rename(String, String)
-    }
-
-    private final class CallLog: Sendable {
-        private let calls = Mutex<[Call]>([])
-        func append(_ call: Call) { calls.withLock { $0.append(call) } }
-        var recorded: [Call] { calls.withLock { $0 } }
-    }
-
-    /// The live syscalls, recorded in order; `failSync` fails the sync of
-    /// the temporary file.
-    private func recording(_ calls: CallLog, failSync: Bool = false) -> DurableFileSystem {
-        DurableFileSystem(
-            sync: { descriptor, path in
-                calls.append(.sync(path))
-                if failSync, path.hasSuffix(".tmp") {
-                    errno = EIO
-                    return -1
-                }
-                return DurableFileSystem.live.sync(descriptor, path)
-            },
-            rename: { source, destination in
-                calls.append(.rename(source, destination))
-                return DurableFileSystem.live.rename(source, destination)
-            })
-    }
-
     private func directoryContents() throws -> [String] {
         try FileManager.default.contentsOfDirectory(atPath: fileURL.deletingLastPathComponent().path).sorted()
     }
 
     func testWriteSyncsTheFileBeforeTheRenameAndTheDirectoryAfterIt() throws {
         try Data("old".utf8).write(to: fileURL)
-        let calls = CallLog()
+        let calls = RecordingDurableFileSystem()
 
-        try DurableFile.write(Data("new".utf8), to: fileURL, fileSystem: recording(calls))
+        try DurableFile.write(Data("new".utf8), to: fileURL, fileSystem: calls.fileSystem)
 
         let recorded = calls.recorded
         guard recorded.count == 3, case .sync(let temporary) = recorded[0] else {
@@ -74,10 +45,10 @@ final class DurableFileTests: XCTestCase {
 
     func testAFailedSyncKeepsTheOldBytesAndRemovesTheTemporaryFile() throws {
         try Data("old".utf8).write(to: fileURL)
-        let calls = CallLog()
+        let calls = RecordingDurableFileSystem(failTemporarySync: true)
 
         XCTAssertThrowsError(
-            try DurableFile.write(Data("new".utf8), to: fileURL, fileSystem: recording(calls, failSync: true)))
+            try DurableFile.write(Data("new".utf8), to: fileURL, fileSystem: calls.fileSystem))
 
         XCTAssertFalse(calls.recorded.contains { if case .rename = $0 { true } else { false } })
         XCTAssertEqual(try Data(contentsOf: fileURL), Data("old".utf8))

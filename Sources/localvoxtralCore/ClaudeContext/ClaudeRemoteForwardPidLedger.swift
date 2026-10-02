@@ -154,8 +154,10 @@ public enum ClaudeRemoteForwardProcessIdentity {
 ///
 /// Storage piggybacks on `ClaudeRemoteHostStoreIO` (atomic 0600 writes, same
 /// hardening) in a file beside the host registry. Unlike the registry, a
-/// corrupt or unreadable ledger is treated as EMPTY: it is a cleanup aid, and
-/// the safe reading of "cannot tell what we spawned" is "kill nothing".
+/// corrupt, unreadable or newer-version ledger reads as EMPTY: it is a cleanup
+/// aid, and the safe reading of "cannot tell what we spawned" is "kill
+/// nothing". The next write moves that file aside first and never writes over
+/// it (#1041).
 public final class ClaudeRemoteForwardPidLedger: Sendable {
     private struct Contents: Codable {
         var version: Int
@@ -187,12 +189,26 @@ public final class ClaudeRemoteForwardPidLedger: Sendable {
     }
 
     public func records() -> [String: ClaudeRemoteForwardPidRecord] {
-        lock.withLock { _ in load() }
+        lock.withLock { _ in load().value ?? [:] }
     }
 
     public func remember(hostID: String, record: ClaudeRemoteForwardPidRecord) {
         lock.withLock { _ in
-            var records = load()
+            var records: [String: ClaudeRemoteForwardPidRecord]
+            switch load() {
+            case .absent: records = [:]
+            case .loaded(let loaded): records = loaded
+            case .refused:
+                do {
+                    _ = try io.moveAside(fileURL)
+                } catch {
+                    Log.claudeContext.error(
+                        "Claude remote forward pid ledger could not be moved aside; not recording pid \(record.pid, privacy: .public): \(String(describing: error), privacy: .public)"
+                    )
+                    return
+                }
+                records = [:]
+            }
             records[hostID] = record
             store(records)
         }
@@ -202,14 +218,13 @@ public final class ClaudeRemoteForwardPidLedger: Sendable {
     /// must not erase the NEW process's record.
     public func forget(hostID: String, pid: Int32) {
         lock.withLock { _ in
-            var records = load()
-            guard records[hostID]?.pid == pid else { return }
+            guard var records = load().value, records[hostID]?.pid == pid else { return }
             records[hostID] = nil
             store(records)
         }
     }
 
-    private func load() -> [String: ClaudeRemoteForwardPidRecord] {
+    private func load() -> StoredFileLoad<[String: ClaudeRemoteForwardPidRecord]> {
         let data: Data?
         do {
             data = try io.read(from: fileURL)
@@ -220,18 +235,19 @@ public final class ClaudeRemoteForwardPidLedger: Sendable {
             Log.claudeContext.error(
                 "Claude remote forward pid ledger unreadable: \(String(describing: error), privacy: .public)"
             )
-            return [:]
+            return .refused(.unreadable)
         }
-        guard let data else { return [:] }
-        guard let contents = try? JSONDecoder().decode(Contents.self, from: data),
-              contents.version == Self.version
-        else {
-            Log.claudeContext.error(
-                "Claude remote forward pid ledger corrupt; skipping orphan cleanup this launch"
-            )
-            return [:]
+        guard let data else { return .absent }
+        switch StoredFile.decode(Contents.self, from: data, name: fileURL.lastPathComponent, currentVersion: Self.version) {
+        case .loaded(let contents) where contents.version == Self.version:
+            return .loaded(contents.records)
+        case .refused(let problem):
+            Log.claudeContext.error("Claude remote forward pid ledger refused; skipping orphan cleanup this launch")
+            return .refused(problem)
+        default:
+            Log.claudeContext.error("Claude remote forward pid ledger has an older format; skipping orphan cleanup this launch")
+            return .refused(.unreadable)
         }
-        return contents.records
     }
 
     private func store(_ records: [String: ClaudeRemoteForwardPidRecord]) {

@@ -377,6 +377,70 @@ final class ClaudeHookWireCodecTests: XCTestCase {
         XCTAssertFalse(String(decoding: encoded, as: UTF8.self).contains("notification_type"))
     }
 
+    /// #1020: the title is additive. A line from a publisher that predates
+    /// it decodes with none, and a record that carries one reaches this app
+    /// as one clean line under its golden name.
+    func testSessionTitleIsOptionalAndRoundTripsUnderAGoldenWireName() throws {
+        XCTAssertNil(try ClaudeHookWireCodec.decodeLine(line(validJSON(event: "SessionStart"))).sessionTitle)
+
+        let titled = ClaudeHookRecord(
+            event: .sessionStart, sessionID: "sess-title", timestamp: 7,
+            sessionTitle: "Carry harness titles on the wire"
+        )
+        let encoded = try XCTUnwrap(ClaudeHookWireCodec.encodeLine(titled))
+        XCTAssertEqual(
+            String(decoding: encoded, as: UTF8.self),
+            #"{"event":"SessionStart","files":[],"session_id":"sess-title","session_title":"Carry harness titles on the wire","ts":7,"v":2}"# + "\n"
+        )
+        XCTAssertEqual(try ClaudeHookWireCodec.decodeLine(encoded), titled)
+        XCTAssertFalse(
+            String(decoding: try XCTUnwrap(ClaudeHookWireCodec.encodeLine(ClaudeHookRecord(
+                event: .stop, sessionID: "s", timestamp: 1
+            ))), as: UTF8.self).contains("session_title"),
+            "no title, no key: the bytes an older reader expects"
+        )
+    }
+
+    func testDecodeMakesTheTitleOneBoundedLineAndDropsOneThatIsNot() throws {
+        let hostile = try ClaudeHookWireCodec.decodeLine(line(validJSON(
+            event: "Stop",
+            extra: #","session_title":"  Fix\u001b[31m the\nparser\u202e \u200b ""#
+        )))
+        XCTAssertEqual(hostile.sessionTitle, "Fix[31m the parser")
+
+        let long = String(repeating: "é", count: 400)
+        let bounded = try ClaudeHookWireCodec.decodeLine(line(validJSON(extra: #","session_title":"\#(long)""#)))
+        XCTAssertEqual(bounded.sessionTitle?.utf8.count, ClaudeHookLimits.default.maxTitleBytes)
+
+        for extra in [#","session_title":7"#, #","session_title":" \n\t ""#] {
+            let record = try ClaudeHookWireCodec.decodeLine(line(validJSON(extra: extra)))
+            XCTAssertNil(record.sessionTitle, "\(extra) loses the field, not the record")
+        }
+        let focus = try ClaudeHookWireCodec.decodeLine(line(validJSON(
+            event: "FocusCleared", extra: #","agent":"opencode","session_title":"a pane's""#
+        )))
+        XCTAssertNil(focus.sessionTitle, "a focus record describes a pane")
+    }
+
+    /// #1285: a Vibe submit names its log message, so the registry can count
+    /// it once. The id rides on submits only, and one too long to be an id is
+    /// dropped rather than cut, since a cut could make two ids equal.
+    func testPromptIDRidesOnSubmitsOnlyAndIsNeverCut() throws {
+        let submit = try ClaudeHookWireCodec.decodeLine(line(validJSON(
+            event: "UserPromptSubmit", extra: #","agent":"vibe","prompt":"p","prompt_id":"u2""#
+        )))
+        XCTAssertEqual(submit.promptID, "u2")
+        XCTAssertEqual(try ClaudeHookWireCodec.decodeLine(XCTUnwrap(ClaudeHookWireCodec.encodeLine(submit))), submit)
+
+        let stop = try ClaudeHookWireCodec.decodeLine(line(validJSON(event: "Stop", extra: #","prompt_id":"u2""#)))
+        XCTAssertNil(stop.promptID)
+        let long = String(repeating: "a", count: ClaudeHookWireCodec.maxPromptIDBytes + 1)
+        let overlong = try ClaudeHookWireCodec.decodeLine(line(validJSON(
+            event: "UserPromptSubmit", extra: #","prompt":"p","prompt_id":"\#(long)""#
+        )))
+        XCTAssertNil(overlong.promptID)
+    }
+
     func testRejectsUnknownEventRatherThanThrowingGenericError() {
         XCTAssertThrowsError(try ClaudeHookWireCodec.decodeLine(line(validJSON(event: "PreCompact")))) { error in
             XCTAssertEqual(error as? ClaudeHookWireError, .unknownEvent)

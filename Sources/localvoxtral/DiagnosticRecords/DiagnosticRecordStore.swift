@@ -82,7 +82,8 @@ struct DiagnosticRecordStore: Sendable {
     /// patch runs from a detached task while a write, a prune or a delete can
     /// run from the History store's queue. Process-wide because the identity
     /// that matters is the directory. Never held across an `await`, and never
-    /// re-entered: the locked paths call the private unlocked bodies.
+    /// re-entered: the locked paths call the private unlocked bodies. Taken
+    /// only through `exclusively`, which adds the lock other copies share.
     private static let recordMutationLock = Mutex(0)
 
     /// Bumped by `removeAll()`, per folder. A write that started before the
@@ -131,7 +132,7 @@ struct DiagnosticRecordStore: Sendable {
     /// read it.
     @discardableResult
     func write(_ record: DiagnosticRecord, unlessDeletedSince epoch: UInt64? = nil) throws -> URL {
-        try Self.recordMutationLock.withLock { _ in
+        try exclusively {
             if let epoch, epoch != deletionEpoch() { throw StoreError.deletedSinceDecision }
             return try writeLocked(record)
         }
@@ -174,7 +175,7 @@ struct DiagnosticRecordStore: Sendable {
     /// The behavior block is fixed slugs and numbers, so no re-redaction is
     /// needed.
     func attachBehavior(_ behavior: DiagnosticRecord.Behavior, toRecordAt url: URL) throws {
-        try Self.recordMutationLock.withLock { _ in
+        try exclusively {
             guard
                 let data = try directoryIO.read(from: url),
                 var record = try? makeDecoder().decode(DiagnosticRecord.self, from: data)
@@ -226,15 +227,16 @@ struct DiagnosticRecordStore: Sendable {
     }
 
     /// How many records there are and their size on disk, for the Settings row.
-    func summary() -> (records: Int, bytes: Int) {
-        let records = (try? listRecords()) ?? []
+    /// Throws when the folder will not list: that is not zero (#1166).
+    func summary() throws -> (records: Int, bytes: Int) {
+        let records = try listRecords()
         let bytes = records.reduce(0) { $0 + (directoryIO.size(of: $1.url) ?? 0) }
         return (records.count, bytes)
     }
 
     /// Applies the retention rules.
     func prune() {
-        Self.recordMutationLock.withLock { _ in pruneLocked() }
+        exclusively { pruneLocked() }
     }
 
     private func pruneLocked() {
@@ -250,7 +252,7 @@ struct DiagnosticRecordStore: Sendable {
     @discardableResult
     func remove(_ ids: some Sequence<UUID>) -> Int {
         let ids = Set(ids)
-        return Self.recordMutationLock.withLock { _ in
+        return exclusively {
             removeLocked(((try? listRecords()) ?? []).filter { ids.contains($0.id) })
         }
     }
@@ -258,7 +260,7 @@ struct DiagnosticRecordStore: Sendable {
     /// Deletes every record whose dictation is not in `kept`.
     @discardableResult
     func removeAll(except kept: Set<UUID>) -> Int {
-        Self.recordMutationLock.withLock { _ in
+        exclusively {
             removeLocked(((try? listRecords()) ?? []).filter { !kept.contains($0.id) })
         }
     }
@@ -268,7 +270,7 @@ struct DiagnosticRecordStore: Sendable {
     /// many moved.
     @discardableResult
     func quarantine(_ ids: Set<UUID>, into folder: URL) -> Int {
-        Self.recordMutationLock.withLock { _ in
+        exclusively {
             var moved = 0
             for record in ((try? listRecords()) ?? []) where ids.contains(record.id) {
                 do {
@@ -299,7 +301,7 @@ struct DiagnosticRecordStore: Sendable {
     /// record that no sweep would otherwise find. Launch only, on the History
     /// write queue, where no record write is in flight.
     func removeStrayFiles() {
-        Self.recordMutationLock.withLock { _ in
+        exclusively {
             let names = ((try? directoryIO.contents(of: directoryURL)) ?? nil) ?? []
             for name in names
             where name.hasPrefix("." + DiagnosticRecordFileName.prefix) && name.hasSuffix(".tmp") {
@@ -318,7 +320,7 @@ struct DiagnosticRecordStore: Sendable {
     /// file a write left when the app died mid-write holds a record too.
     @discardableResult
     func removeAll() -> Int {
-        Self.recordMutationLock.withLock { _ in
+        exclusively {
             Self.deletionEpochs.withLock { $0[directoryURL.path, default: 0] += 1 }
             let names = ((try? directoryIO.contents(of: directoryURL)) ?? nil) ?? []
             var removed = 0
@@ -333,6 +335,17 @@ struct DiagnosticRecordStore: Sendable {
                 }
             }
             return removed
+        }
+    }
+
+    /// Runs `body` as the only mutation of the folder, in this process and
+    /// among every running copy of the app that shares the data folder (#990):
+    /// another copy's Delete between a patch's read and its write would
+    /// otherwise be undone by the write. The shared lock sits beside the
+    /// folder, not in it, because `removeAll()` empties the folder.
+    private func exclusively<T: Sendable>(_ body: () throws -> T) rethrows -> T {
+        try Self.recordMutationLock.withLock { _ in
+            try StoredFileLock.withLock(beside: directoryURL, body)
         }
     }
 

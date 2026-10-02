@@ -459,12 +459,15 @@ final class TextInsertionService {
         }
     }
 
-    func restartInsertionRetryTask(isDictating: @escaping @MainActor () -> Bool) {
+    func restartInsertionRetryTask(
+        sleep: @escaping @Sendable (Duration) async -> Void,
+        isDictating: @escaping @MainActor () -> Bool
+    ) {
         insertionRetryTask?.cancel()
 
         insertionRetryTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(120))
+                await sleep(.milliseconds(120))
                 guard !Task.isCancelled else { break }
                 guard let self else { break }
                 guard isDictating() else { continue }
@@ -592,6 +595,13 @@ final class TextInsertionService {
         // pendingHoldBackReleasedText intentionally survives: the session
         // cleanup path reads hasPendingInsertionText to surface lost text
         // before calling clearPendingText().
+    }
+
+    /// A cancelled session: the words the stream still holds are dropped,
+    /// never typed (#1222). Text whose insertion failed stays pending, for
+    /// the cleanup to report.
+    func discardLiveReplacementSession() {
+        liveHoldBackStream = nil
     }
 
     func flushFinalLiveReplacementCorrections() {

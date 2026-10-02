@@ -127,6 +127,24 @@ final class LiveGoToSessionWiringTests: XCTestCase {
         XCTAssertEqual(harness.records.value.count, 1, "the dictation is saved once the go-to is done")
     }
 
+    /// A cancel during a go-to drops the words that ended behind it; the
+    /// go-to itself still lands (#1251).
+    func testACancelDuringAGoToTypesNothingThatFollowed() async {
+        let harness = makeHarness()
+        harness.focuser.onFocus = { _ in harness.frontmost.value = Self.otherTerminalPID }
+
+        harness.partial("go to payments")
+        harness.final("go to payments")
+        harness.partial("fix the build")
+        harness.final("fix the build")
+        harness.viewModel.cancelDictation()
+        await awaitStoppedSessionCommit(harness.viewModel)
+
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, ["pay"])
+        XCTAssertEqual(harness.typedText, "", "nothing the user cancelled is typed")
+        XCTAssertEqual(harness.records.value.count, 1)
+    }
+
     /// Review of #773 (P2): the stop waited only for the first go-to, and
     /// the cleanup cancelled the one queued behind it.
     func testAStopWaitsForAGoToQueuedBehindAnother() async {
@@ -193,6 +211,35 @@ final class LiveGoToSessionWiringTests: XCTestCase {
 
         XCTAssertEqual(harness.typedText, "go to the tests")
         XCTAssertEqual(harness.events.value.last, "return:\(Self.terminalPID)")
+    }
+
+    /// The same instruction sent to one agent, then after a go-to to
+    /// another, reaches both: the go-to is an utterance between them, so the
+    /// second is no duplicate final.
+    func testSameInstructionAfterGoToReachesTheNewAgent() async {
+        let harness = makeHarness(sessions: [
+            session("pay", cwd: "/r/payments", tty: "/dev/ttys001"),
+            session("bill", cwd: "/r/billing", tty: "/dev/ttys002"),
+        ], spokenSend: true)
+        harness.focuser.onFocus = { _ in harness.frontmost.value = Self.otherTerminalPID }
+
+        harness.partial("run the tests send it")
+        harness.final("Run the tests, send it.")
+        await harness.settle()
+        harness.partial("go to billing")
+        harness.final("Go to billing.")
+        await harness.settle()
+        harness.partial("run the tests send it")
+        harness.final("Run the tests, send it.")
+        await harness.settle()
+
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, ["bill"])
+        XCTAssertEqual(harness.typedText(in: Self.terminalPID), "Run the tests")
+        XCTAssertEqual(harness.typedText(in: Self.otherTerminalPID), "Run the tests")
+        XCTAssertEqual(
+            harness.events.value.filter { $0.hasPrefix("return:") },
+            ["return:\(Self.terminalPID)", "return:\(Self.otherTerminalPID)"]
+        )
     }
 
     // MARK: - Naming this session (#723 step 2)

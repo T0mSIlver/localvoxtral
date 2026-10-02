@@ -185,7 +185,7 @@ package struct JevClassifier: QuickCaptureClassifying {
     package init(
         host: Jev.Host,
         apiKey: String,
-        session: URLSession = .shared,
+        session: URLSession = SameOriginHTTP.shared,
         sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) },
         usageRecorder: (any UsageRecording)? = nil,
         now: @escaping @Sendable () -> Date = { Date() }

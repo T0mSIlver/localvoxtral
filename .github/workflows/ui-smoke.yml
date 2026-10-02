@@ -178,12 +178,11 @@ jobs:
 
       - name: Run e2e dictation
         # The packaged app hears a WAV, dictates into a throwaway window, and
-        # the inserted text is scored (scripts/e2e-dictation.sh). Exit 3 means
-        # the Mac was not in a state to run it (locked, no STT server, no
-        # Accessibility grant, a lagging speech service): a guarded dispatch
-        # on main reports that and stays green, like the guard's own skips,
-        # while a branch dispatch or a label is a PR asking for a result and
-        # goes red.
+        # the inserted text is scored (scripts/e2e-dictation.sh). How each
+        # exit status concludes the step, guarded or not, is
+        # scripts/ci/e2e-dictation-outcome.sh: a Mac that was locked or had no
+        # STT server stays green on a guarded dispatch, a missing
+        # Accessibility grant goes red.
         id: e2e
         if: steps.guard.outputs.run != 'false'
         # A job timeout SIGKILLs the step, and then nothing restores the
@@ -203,11 +202,7 @@ jobs:
             echo "scored=true" >> "$GITHUB_OUTPUT"
           fi
           sed -n '/^E2E dictation summary:/,$p' logs/e2e-dictation.log >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$STATUS" == "3" && "$GUARDED" == "true" ]]; then
-            echo "::warning::e2e dictation did not run: the Mac was not in a state to run it."
-            exit 0
-          fi
-          exit "$STATUS"
+          ./scripts/ci/e2e-dictation-outcome.sh "$STATUS" "$GUARDED"
 
       - name: E2E dictation scored
         # What the release gates read (scripts/release.sh and

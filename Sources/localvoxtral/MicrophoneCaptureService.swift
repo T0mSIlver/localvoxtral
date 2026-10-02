@@ -194,9 +194,8 @@ private func auhalInputCallback(
     }
 
     converterState.consecutiveFailureCount = 0
-    context.processingQueue.async { [weak service = context.service] in
-        service?.lastCapturedAudioAt.withLock { $0 = Date() }
-        service?.hasCapturedAudioInCurrentRunFlag.withLock { $0 = true }
+    guard let service = context.service else { return noErr }
+    service.deliverCapturedChunk(chunk) { [weak service] chunk in
         if context.debugLoggingEnabled {
             let shouldLog = context.hasLoggedFirstChunk.withLock { hasLogged in
                 if hasLogged { return false }
@@ -257,6 +256,7 @@ final class MicrophoneCaptureService: @unchecked Sendable {
     }
 
     private let processingQueue = DispatchQueue(label: "localvoxtral.microphone.processing")
+    private static let processingQueueKey = DispatchSpecificKey<Void>()
     fileprivate let lastCapturedAudioAt = Mutex<Date?>(nil)
     fileprivate let hasCapturedAudioInCurrentRunFlag = Mutex(false)
     private static let targetSampleRate: Double = 16_000
@@ -291,6 +291,7 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         }
 
         targetOutputFormat = outputFormat
+        processingQueue.setSpecific(key: Self.processingQueueKey, value: ())
         startMonitoringInputDevices()
     }
 
@@ -464,8 +465,16 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         // If the AUHAL is already running on the same device, skip
         // teardown + rebuild. This avoids a visible mic-indicator flicker
         // when the health monitor restarts capture on the same device
-        // (common during BT SCO codec renegotiation delays).
-        if isCapturing(), withState({ $0.activeDeviceID }) == deviceID {
+        // (common during BT SCO codec renegotiation delays). A unit that
+        // captured and then went silent is rebuilt: keeping it would make
+        // the monitor's recovery a no-op.
+        if MicrophoneRestartPolicy.keepsRunningUnit(
+            isCapturing: isCapturing(),
+            onSameDevice: withState({ $0.activeDeviceID }) == deviceID,
+            hasCapturedAudioInRun: hasCapturedAudioInCurrentRun(),
+            hasRecentAudio: hasRecentCapturedAudio(
+                within: MicrophoneRestartPolicy.stalledAfterSeconds)
+        ) {
             debugLog("start: already capturing on device \(deviceID), skipping restart")
             return
         }
@@ -624,6 +633,16 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         }
     }
 
+    /// Hands a converted chunk to `handler` on the processing queue. `stop()`
+    /// waits for every chunk queued here.
+    func deliverCapturedChunk(_ chunk: Data, to handler: @escaping ChunkHandler) {
+        processingQueue.async { [weak self] in
+            self?.lastCapturedAudioAt.withLock { $0 = Date() }
+            self?.hasCapturedAudioInCurrentRunFlag.withLock { $0 = true }
+            handler(chunk)
+        }
+    }
+
     func stop() {
         let (auHAL, deviceID, unmanagedCtx, pendingWork) = withState { s in
             let hal = s.auHAL
@@ -654,6 +673,15 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         // Release the render context AFTER disposing the AUHAL, which
         // guarantees the callback will never fire again.
         unmanagedCtx?.release()
+
+        // Chunks the callback queued before the AUHAL stopped belong to this
+        // run. Deliver them before returning: the caller flushes its buffer
+        // right after, and a later delivery would miss that flush or land in
+        // the next run's buffer. Skipped on the queue itself, where a deinit
+        // reached from a chunk delivery would otherwise wait on itself.
+        if DispatchQueue.getSpecific(key: Self.processingQueueKey) == nil {
+            processingQueue.sync {}
+        }
 
         lastCapturedAudioAt.withLock { $0 = nil }
         hasCapturedAudioInCurrentRunFlag.withLock { $0 = false }

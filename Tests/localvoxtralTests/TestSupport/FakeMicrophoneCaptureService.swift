@@ -17,6 +17,7 @@ final class FakeMicrophoneCaptureService: MicrophoneCapturing, @unchecked Sendab
         var startCount = 0
         var stopCount = 0
         var isCapturing = false
+        var isSilent = false
         var onConfigurationChange: (@Sendable () -> Void)?
         var onInputDevicesChanged: (@Sendable () -> Void)?
         var onError: (@Sendable (String) -> Void)?
@@ -37,6 +38,13 @@ final class FakeMicrophoneCaptureService: MicrophoneCapturing, @unchecked Sendab
     var startCount: Int { state.withLock { $0.startCount } }
     var stopCount: Int { state.withLock { $0.stopCount } }
     var pendingAccessRequestCount: Int { state.withLock { $0.pendingAccessCompletions.count } }
+
+    /// A running capture that delivers no frames: the health monitor sees
+    /// no recent audio and none in this run.
+    var isSilent: Bool {
+        get { state.withLock { $0.isSilent } }
+        set { state.withLock { $0.isSilent = newValue } }
+    }
 
     func configureDevices(_ devices: [MicrophoneInputDevice], defaultInputDeviceID: String?) {
         state.withLock {
@@ -157,9 +165,10 @@ final class FakeMicrophoneCaptureService: MicrophoneCapturing, @unchecked Sendab
     }
 
     func isCapturing() -> Bool { state.withLock { $0.isCapturing } }
-    func hasRecentCapturedAudio(within _: TimeInterval) -> Bool { isCapturing() }
-    func hasCapturedAudioInCurrentRun() -> Bool { isCapturing() }
+    func hasRecentCapturedAudio(within _: TimeInterval) -> Bool { hearsAudio() }
+    func hasCapturedAudioInCurrentRun() -> Bool { hearsAudio() }
     func resumeIfNeeded() -> Bool { false }
+    private func hearsAudio() -> Bool { state.withLock { $0.isCapturing && !$0.isSilent } }
     func refreshInputTapIfNeeded() -> Bool { false }
 }
 

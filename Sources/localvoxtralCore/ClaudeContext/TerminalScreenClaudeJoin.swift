@@ -147,6 +147,10 @@ package struct ClaudeSessionJoin: Sendable, Equatable {
     /// between the two — so authorization compares windows, not just targets
     /// (review F2). Nil means unknown, which never authorizes.
     package let windowID: CGWindowID?
+    /// Non-nil exactly for `.ttyDevice` joins: the focused pane's tty the arm
+    /// matched. A window's tabs share `windowID`, so raw attachment also
+    /// requires the capture's own tty to equal this one (#1226).
+    package let paneTTY: String?
     /// Positive evidence that selected this session. In particular, a herdr
     /// pane join is useful for session/repository context but can never license
     /// a composite raw TUI capture.
@@ -194,6 +198,7 @@ package struct ClaudeSessionJoin: Sendable, Equatable {
         snapshot: ClaudeSessionSnapshot,
         windowID: CGWindowID?,
         mechanism: ClaudeSessionJoinMechanism,
+        paneTTY: String? = nil,
         herdrPane: ClaudeHerdrPaneBinding? = nil,
         browserTab: ClaudeBrowserTabBinding? = nil,
         desktopSession: ClaudeDesktopSessionBinding? = nil,
@@ -206,6 +211,7 @@ package struct ClaudeSessionJoin: Sendable, Equatable {
         self.snapshot = snapshot
         self.windowID = windowID
         self.mechanism = mechanism
+        self.paneTTY = paneTTY
         self.herdrPane = herdrPane
         self.browserTab = browserTab
         self.desktopSession = desktopSession

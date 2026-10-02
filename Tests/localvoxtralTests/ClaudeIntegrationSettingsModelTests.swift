@@ -29,7 +29,7 @@ private final class StubSSHConfigFileSystem: ClaudeRemoteSSHConfigFileSystem, @u
     }
 
     func createSSHDirectory(permissions _: UInt16) throws {}
-    func atomicWriteConfig(_ data: Data, permissions _: UInt16) throws {
+    func atomicWriteConfig(_ data: Data, permissions _: UInt16, replacing _: Data?) throws {
         configText = String(decoding: data, as: UTF8.self)
     }
 }
@@ -62,7 +62,7 @@ private final class RecordingSSHConfigFileSystem: ClaudeRemoteSSHConfigFileSyste
 
     func createSSHDirectory(permissions _: UInt16) throws {}
 
-    func atomicWriteConfig(_ data: Data, permissions: UInt16) throws {
+    func atomicWriteConfig(_ data: Data, permissions: UInt16, replacing _: Data?) throws {
         XCTAssertFalse(data.isEmpty)
         XCTAssertEqual(permissions, 0o600)
         writes.withLock { $0 += 1 }
@@ -83,6 +83,16 @@ final class ShutdownJournal: @unchecked Sendable {
     private let entries = Mutex<[String]>([])
     func note(_ entry: String) { entries.withLock { $0.append(entry) } }
     var recorded: [String] { entries.withLock { $0 } }
+}
+
+/// Holds what the model hands to the main actor, so a test runs it at a
+/// point it chooses instead of awaiting a scheduled task.
+private final class MainActorHops: Sendable {
+    private let pending = Mutex<[@MainActor @Sendable () -> Void]>([])
+    func enqueue(_ body: @escaping @MainActor @Sendable () -> Void) { pending.withLock { $0.append(body) } }
+    @MainActor func drain() {
+        for body in pending.withLock({ queued in defer { queued = [] }; return queued }) { body() }
+    }
 }
 
 private final class StubForwarding: ClaudeRemoteForwarding {
@@ -226,7 +236,8 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         },
         herdrPaneReportingHostIDs: @escaping @Sendable () -> [String] = { [] },
         hasEnabledHerdrMachineReport: @escaping @Sendable () -> Bool = { false },
-        vibeRemoteFiles: @escaping @Sendable () -> VibeRemoteHooksFiles? = { nil }
+        vibeRemoteFiles: @escaping @Sendable () -> VibeRemoteHooksFiles? = { nil },
+        hops: MainActorHops = MainActorHops()
     ) -> ClaudeIntegrationSettingsModel {
         ClaudeIntegrationSettingsModel(
             registry: registry,
@@ -272,7 +283,8 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             liveLocalTTYReport: liveLocalTTYReport,
             vibeRemoteFiles: vibeRemoteFiles,
             herdrPaneReportingHostIDs: herdrPaneReportingHostIDs,
-            hasEnabledHerdrMachineReport: hasEnabledHerdrMachineReport
+            hasEnabledHerdrMachineReport: hasEnabledHerdrMachineReport,
+            runOnMainActor: { hops.enqueue($0) }
         )
     }
 
@@ -323,7 +335,8 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     private func makeForwardCoordinator(
         registry: ClaudeRemoteHostRegistry,
         stubs: ForwardStubs,
-        isListenerBound: @escaping @MainActor () -> Bool = { true }
+        isListenerBound: @escaping @MainActor () -> Bool = { true },
+        reconcileHerdrEnrollment: @escaping @MainActor (Set<String>) -> Void = { _ in }
     ) -> ClaudeRemoteForwardCoordinator {
         ClaudeRemoteForwardCoordinator(
             hosts: registry,
@@ -335,7 +348,8 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
                 stub.journal = stubs.journal
                 stubs.byHost[configuration.hostID] = stub
                 return stub
-            }
+            },
+            reconcileHerdrEnrollment: reconcileHerdrEnrollment
         )
     }
 
@@ -444,6 +458,64 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             "shutdown is the mirror of startup: forwards first, listener second"
         )
         XCTAssertFalse(listener.isListening)
+    }
+
+    /// Two copies on one host file: what the installed app revokes, the
+    /// try-pr build stops forwarding on its next read of the file, and the
+    /// last revoke closes its listener after the forwards (#1125).
+    func testAHostTheOtherCopyRevokesLosesItsForwardsHere() async throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("lvx-two-copies-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("claude-remote-hosts.json")
+        let installed = try ClaudeRemoteHostRegistry(fileURL: fileURL, io: ClaudeRemoteHostFileStoreIO())
+        let studio = try installed.enroll(label: "studio", sshHostAlias: "studio")
+        let laptop = try installed.enroll(label: "laptop", sshHostAlias: "laptop")
+        for host in [studio.host, laptop.host] {
+            try installed.setPersistentForwardEnabled(true, hostID: host.id)
+        }
+
+        let tryBuild = try ClaudeRemoteHostRegistry(fileURL: fileURL, io: ClaudeRemoteHostFileStoreIO())
+        let journal = ShutdownJournal()
+        let stubs = ForwardStubs()
+        stubs.journal = journal
+        let listener = StubClaudeRemoteListener(hosts: tryBuild)
+        listener.journal = journal
+        var herdrHostIDs: Set<String>?
+        let forwards = makeForwardCoordinator(
+            registry: tryBuild, stubs: stubs,
+            isListenerBound: { listener.isListening },
+            reconcileHerdrEnrollment: { herdrHostIDs = $0 }
+        )
+        let hops = MainActorHops()
+        let model = makeModel(registry: tryBuild, listener: listener, forwards: forwards, hops: hops)
+        model.synchronizeListenerAtLaunch()
+        XCTAssertEqual(stubs.byHost[studio.host.id]?.state, .connecting)
+        XCTAssertEqual(stubs.byHost[laptop.host.id]?.state, .connecting)
+
+        try installed.revoke(hostID: studio.host.id)
+        // A hook on a listener thread is this copy's next read of the file.
+        XCTAssertNil(tryBuild.authenticate(token: studio.token))
+        hops.drain()
+
+        XCTAssertEqual(stubs.byHost[studio.host.id]?.state, .stopped)
+        XCTAssertEqual(stubs.byHost[laptop.host.id]?.state, .connecting)
+        XCTAssertEqual(herdrHostIDs, [laptop.host.id])
+        XCTAssertEqual(model.hosts.first { $0.id == studio.host.id }?.isRevoked, true)
+        XCTAssertTrue(listener.isListening)
+
+        try installed.revoke(hostID: laptop.host.id)
+        XCTAssertNil(tryBuild.authenticate(token: laptop.token))
+        hops.drain()
+
+        XCTAssertEqual(stubs.byHost[laptop.host.id]?.state, .stopped)
+        XCTAssertEqual(herdrHostIDs, [])
+        XCTAssertFalse(listener.isListening)
+        XCTAssertEqual(journal.recorded, ["forward.stop", "forward.stop", "listener.stop"])
     }
 
     func testAHostWithNoAliasIsNotOfferedATunnel() async throws {

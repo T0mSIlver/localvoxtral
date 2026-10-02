@@ -122,12 +122,13 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         }
     }
 
-    func testPluginShipsExactlySixExecutablesAllPOSIXSh() throws {
+    func testPluginShipsExactlySevenExecutablesAllPOSIXSh() throws {
         // The premise, updated for the command-hook shape: nothing to install
-        // on the remote but the manifests and SIX POSIX-sh scripts — the curl
+        // on the remote but the manifests and SEVEN POSIX-sh scripts — the curl
         // shim every hook runs, the status-line renderer the user may point
         // their own `statusLine` setting at, the project-terms (#641) and
-        // quick capture (#745) runners the shim starts when the Mac asks, and
+        // quick capture (#745) runners the shim starts when the Mac asks, the
+        // agent projects scan (#1027) it starts on SessionStart, and
         // `localvoxtral doctor` (#910) with the `bin/` entry Claude Code puts
         // on the agent's PATH. No
         // Python, no jq, no nc,
@@ -135,7 +136,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         // appears here, the premise is gone.
         let shellScripts: Set<String> = [
             "hooks/post.sh", "hooks/statusline.sh", "hooks/terms.sh", "hooks/capture.sh", "hooks/doctor.sh",
-            "bin/localvoxtral",
+            "hooks/agent-projects.sh", "bin/localvoxtral",
         ]
         let contents = try FileManager.default.subpathsOfDirectory(atPath: pluginRoot.path)
         for path in contents {
@@ -160,11 +161,11 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             }
             XCTAssertFalse(
                 FileManager.default.isExecutableFile(atPath: full.path),
-                "the remote plugin must ship no executable but its six sh scripts, found \(path)"
+                "the remote plugin must ship no executable but its seven sh scripts, found \(path)"
             )
             XCTAssertTrue(
                 path.hasSuffix(".json"),
-                "the remote plugin must ship JSON manifests and its six sh scripts only, found \(path)"
+                "the remote plugin must ship JSON manifests and its seven sh scripts only, found \(path)"
             )
         }
         for script in shellScripts {
@@ -372,13 +373,14 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
 
     // MARK: Plugin version advertisement
     //
-    // One version stated three ways — the manifest Claude Code installs and
-    // updates against, the header constant the shim sends on every post, and
-    // the Swift constant the app compares reports to. Field finding
-    // 2026-09-17: a host ran 1.8.0 for weeks while the app expected 1.9.0 and
-    // nothing anywhere said so. Any two of the three drifting apart is either
-    // a user told to update an already-current plugin or — the failure that
-    // actually happened — an outdated host read as current.
+    // One version stated four ways — the manifest Claude Code installs and
+    // updates against, the header constant the shim sends on every post, the
+    // version the shim records for the host's doctor, and the Swift constant
+    // the app compares reports to. Field finding 2026-09-17: a host ran 1.8.0
+    // for weeks while the app expected 1.9.0 and nothing anywhere said so.
+    // Any two of them drifting apart is either a user told to update an
+    // already-current plugin or — the failure that actually happened — an
+    // outdated host read as current.
 
     func testTheManifestTheShimAndTheAppAgreeOnOnePluginVersion() throws {
         let expected = ClaudeRemoteEnrollmentService.remotePluginVersion
@@ -389,6 +391,10 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         XCTAssertTrue(
             try shimSource().contains("X-Lvx-Plugin-Version: \(expected)\n"),
             "the shim must advertise that same version as a header CONSTANT"
+        )
+        XCTAssertTrue(
+            try shimSource().contains("\nPLUGIN_VERSION=\(expected)\n"),
+            "the shim must record that same version for the host's doctor (#1159)"
         )
     }
 
@@ -1245,13 +1251,14 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     /// `$SSH_CONNECTION` is the one value the shim TRANSFORMS — its four
     /// space-separated fields are re-joined with commas, so an opaque
     /// `value-…` fixture would be correctly dropped. Each has a test of its
-    /// own below. `$LVX_PROJECT` is not read from the environment at all: the
-    /// shim computes it with git from its cwd (#652), and
+    /// own below. `$LVX_PROJECT` and `$LVX_BRANCH` are not read from the
+    /// environment at all: the shim computes them with git from its cwd
+    /// (#652, #1020), and
     /// `scripts/ci/test-remote-shim-project.sh` runs both shims in real
     /// repositories for it. `$CLAUDE_CODE_HOST_SESSION_ID` is sent only from a
     /// process tree the test runner is not, and has tests of its own (#657).
     private static let shimTransformedOrIntrinsicFields: Set<ClaudeRemoteEnvironmentField> =
-        [.hookParentPID, .sshConnection, .project, .repository, .desktopSessionID]
+        [.hookParentPID, .sshConnection, .project, .repository, .branch, .desktopSessionID]
 
     func testShimSendsEveryAllowlistedEnvValueUnderTheHeaderTheListenerReads() throws {
         // One distinct value per variable, so a copy-pasted header name shows
@@ -1311,7 +1318,8 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     /// inside a repository, so it is run inside one. On macOS that is bash
     /// 3.2 as /bin/sh, which ended the first version with a syntax error that
     /// Linux's dash never raised (#652). Its GitHub `origin` rides beside it
-    /// (#926), a fork's own rather than its upstream.
+    /// (#926), a fork's own rather than its upstream, and so does the branch
+    /// checked out (#1020).
     func testShimNamesTheRepositoryItRunsIn() throws {
         let repo = FileManager.default.temporaryDirectory
             .appendingPathComponent("shim-repo-\(UUID().uuidString)/api")
@@ -1321,6 +1329,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             ["init", "-q", repo.path],
             ["-C", repo.path, "remote", "add", "origin", "git@github.com:me/api.git"],
             ["-C", repo.path, "remote", "add", "upstream", "https://github.com/them/api.git"],
+            ["-C", repo.path, "checkout", "-q", "-b", "fix/overlay-names"],
         ] {
             let git = Process()
             git.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -1334,6 +1343,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         let environment = ClaudeRemoteEnvironmentCodec.environment(in: request.headers)
         XCTAssertEqual(environment?.project, "api")
         XCTAssertEqual(environment?.repository, "me/api")
+        XCTAssertEqual(environment?.branch, "fix/overlay-names")
     }
 
     func testShimTreatsAnExportedButEmptyVariableAsAbsent() throws {
@@ -1765,7 +1775,8 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
 
     /// What the shim posts for a recorded Desktop hook (#834), run as a
     /// Desktop session's own hook: the env headers and the body, read by the
-    /// listener's own parsers.
+    /// listener's own parsers. Run outside any repository, or the checkout
+    /// the suite runs in would lend the session its project and branch.
     private func desktopSessionPost(
         event: String, recorded name: String
     ) throws -> (environment: ClaudeRemoteSessionEnvironment?, body: Data) {
@@ -1783,6 +1794,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             status: "200",
             body: ClaudeRemoteHTTPCodec.hookResponseBody,
             extraEnvironment: environment,
+            workingDirectory: tree.root,
             payload: payload,
             launcher: tree.launcher
         )

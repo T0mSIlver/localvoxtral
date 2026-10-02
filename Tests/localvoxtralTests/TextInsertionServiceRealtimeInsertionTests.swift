@@ -40,6 +40,48 @@ final class TextInsertionServiceRealtimeInsertionTests: XCTestCase {
         XCTAssertEqual(snapshot.axInsertionSuccessCount, 0)
     }
 
+    // MARK: - Retry on the session clock (#1060)
+
+    func testFailedLiveInsertionIsRetriedOnTheSessionClockAndNotAfterStop() async {
+        let clock = ManualSessionClock()
+        let posted = PostedKeys()
+        var fieldAccepts = false
+        let service = TextInsertionService()
+        service.debugConfigureInsertionHooks(
+            unicodePoster: { text in
+                guard fieldAccepts else { return false }
+                posted.value.append(text)
+                return true
+            },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false }
+        )
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.example.editor" }
+        defer { TerminalTargetDetector.debugFrontmostBundleIDOverride = nil }
+        addTeardownBlock { @MainActor in service.stopInsertionRetryTask() }
+
+        service.enqueueRealtimeInsertion("hello")
+        service.restartInsertionRetryTask(sleep: clock.clock.sleep) { true }
+        await clock.waitForSleepers(1)
+        fieldAccepts = true
+        clock.advance(by: 0.12)
+        await clock.waitForSleepers(1)
+
+        XCTAssertEqual(posted.value, ["hello"])
+        XCTAssertFalse(service.hasPendingInsertionText)
+
+        fieldAccepts = false
+        service.enqueueRealtimeInsertion(" world")
+        service.stopInsertionRetryTask()
+        XCTAssertEqual(clock.pendingSleepers, 0)
+        fieldAccepts = true
+        clock.advance(by: 60)
+        await Task.yield()
+
+        XCTAssertEqual(posted.value, ["hello"])
+        XCTAssertTrue(service.hasPendingInsertionText)
+    }
+
     // MARK: - Newlines in Claude Desktop (#660)
 
     /// Claude Desktop dropped a newline that opened a unicode event and

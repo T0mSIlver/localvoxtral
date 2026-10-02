@@ -261,9 +261,9 @@ final class BrowserTabClaudeJoinTests: XCTestCase {
             resolver: joinResolver, currentJoin: { join }
         )
         // Asked about its own target, and about a terminal — refused either way.
-        XCTAssertFalse(authorizer.isAuthorized(target: chrome, windowID: 101))
-        XCTAssertFalse(authorizer.isAuthorized(target: chrome, windowID: nil))
-        XCTAssertFalse(authorizer.isAuthorized(target: ghostty, windowID: 101))
+        XCTAssertFalse(authorizer.isAuthorized(target: chrome, windowID: 101, paneTTY: nil))
+        XCTAssertFalse(authorizer.isAuthorized(target: chrome, windowID: nil, paneTTY: nil))
+        XCTAssertFalse(authorizer.isAuthorized(target: ghostty, windowID: 101, paneTTY: nil))
     }
 
     // The MECHANISM is what refuses, not the missing window identity. A browser
@@ -292,7 +292,7 @@ final class BrowserTabClaudeJoinTests: XCTestCase {
             joinResolver.isStillLive(joinWithWindow),
             "precondition: only the mechanism can be what refuses below"
         )
-        XCTAssertFalse(authorizer.isAuthorized(target: chrome, windowID: 101))
+        XCTAssertFalse(authorizer.isAuthorized(target: chrome, windowID: 101, paneTTY: nil))
     }
 
     // A browser join carries no window identity on purpose: a window id exists
