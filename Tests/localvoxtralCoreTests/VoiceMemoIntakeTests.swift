@@ -536,6 +536,24 @@ final class VoiceMemoIntakeTests: XCTestCase {
         XCTAssertEqual(captured.map(\.text), ["words of walk.m4a"])
     }
 
+    /// The copy that holds the folder writes the ledger; Start Over waits
+    /// for it to let go rather than delete a ledger it may have just
+    /// written (#1432).
+    func testStartOverOnTheLedgerRefusesWhileAnotherCopyHoldsTheFolder() async throws {
+        try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
+        let data = Data(#"{"version":\#(VoiceMemoLedger.currentVersion + 1),"entries":{}}"#.utf8)
+        try data.write(to: ledgerURL)
+        let intake = intake()
+        _ = await intake.scan()
+        XCTAssertNotNil(intake.ledgerProblem)
+        let otherCopy = try XCTUnwrap(StoredFileLock.tryHolding(beside: ledgerURL))
+
+        XCTAssertThrowsError(try intake.moveLedgerAsideAndStartOver())
+        XCTAssertEqual(try Data(contentsOf: ledgerURL), data)
+        XCTAssertNotNil(intake.ledgerProblem)
+        withExtendedLifetime(otherCopy) {}
+    }
+
     func testACorruptLedgerKeepsItsBytesAndTakesNoMemo() async throws {
         try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
         let data = Data(#"{"version":1,"entries":{"walk.m4a":"#.utf8)
