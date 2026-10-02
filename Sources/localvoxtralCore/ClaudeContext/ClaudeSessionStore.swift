@@ -36,14 +36,23 @@ public struct ClaudeSessionFileStore: ClaudeSessionStore {
     }
 
     public func save(_ data: Data) throws {
-        try io.write(data, to: fileURL)
+        try io.withExclusiveAccess(to: fileURL) { try io.write(data, to: fileURL) }
     }
 
+    /// Under the lock the writes take, or not at all: a write another copy
+    /// lands between the link and the removal would be deleted (#1441).
     public func moveAside() throws {
-        _ = try io.moveAside(fileURL)
+        try io.withLockedAccess(to: fileURL) { lockHeld in
+            guard lockHeld else { throw StoredFile.MoveAsideFailed() }
+            _ = try io.moveAside(fileURL)
+        }
     }
 
     public func clear() throws {
+        try io.withExclusiveAccess(to: fileURL) { try removeFile() }
+    }
+
+    private func removeFile() throws {
         #if canImport(Darwin)
         let result = fileURL.path.withCString { unlink($0) }
         guard result == 0 || errno == ENOENT else {

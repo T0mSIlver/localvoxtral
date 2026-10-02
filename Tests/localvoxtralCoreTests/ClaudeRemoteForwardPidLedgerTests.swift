@@ -102,6 +102,35 @@ final class ClaudeRemoteForwardPidLedgerTests: XCTestCase {
         XCTAssertEqual(ledger.records(), ["host": recorded])
     }
 
+    func testANewerLedgerStaysPutWhenTheSharedLockCannotBeTaken() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("lvx-pid-ledger-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("claude-remote-forward-pids.json")
+        let newer = Data(#"{"version":2,"records":{},"from":"a later build"}"#.utf8)
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: url.path,
+            contents: newer,
+            attributes: [.posixPermissions: NSNumber(value: Int16(0o600))]
+        ))
+        // A directory where the lock file goes: the lock cannot be opened.
+        try FileManager.default.createDirectory(
+            at: StoredFileLock.lockURL(beside: url), withIntermediateDirectories: false)
+
+        ClaudeRemoteForwardPidLedger(fileURL: url).remember(hostID: "host", record: record(pid: 4242))
+
+        XCTAssertEqual(try Data(contentsOf: url), newer)
+        XCTAssertFalse(
+            try FileManager.default.contentsOfDirectory(atPath: directory.path)
+                .contains { $0.hasPrefix("claude-remote-forward-pids.json.incompatible-") }
+        )
+    }
+
     func testMissingFileReadsAsEmpty() {
         XCTAssertTrue(
             ClaudeRemoteForwardPidLedger(fileURL: makeURL(), io: MemoryLedgerStore())
