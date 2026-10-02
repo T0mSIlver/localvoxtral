@@ -324,6 +324,11 @@ final class DictationSessionController {
     var managedStartupTask: Task<Void, Never>?
     @ObservationIgnored
     var managedStartupTaskID: UUID?
+    /// Counts session starts that reached `prepareDictationSession`. A start
+    /// still capturing context when this moves on has been replaced, even
+    /// once the replacement's startup task has cleared `managedStartupTaskID`.
+    @ObservationIgnored
+    var sessionStartGeneration: UInt64 = 0
     @ObservationIgnored
     var stopFinalizationTask: Task<Void, Never>?
     @ObservationIgnored
@@ -1112,13 +1117,19 @@ extension DictationSessionController {
     /// Start-of-session capture, through the resolver; the badge it returns
     /// describes the one resolved join, so the overlay cannot disagree with
     /// the context that ships.
-    func captureTerminalScreenContextForSession() async {
+    ///
+    /// `isCurrent` is asked after every suspension: once it answers false,
+    /// this start was cancelled or replaced, and nothing it resolved is
+    /// written over the state a newer start owns.
+    func captureTerminalScreenContextForSession(isCurrent: @MainActor () -> Bool = { true }) async {
         // The previous dictation's post-commit edit watch closes here rather
         // than reading this session's keys. It still flushes its own record,
         // as `superseded`.
         editSignalWatcher.supersede()
-        sessionClaudeJoinBadge = await context.captureAtStart()
+        let badge = await context.captureAtStart(isCurrent: isCurrent)
+        guard isCurrent() else { return }
+        sessionClaudeJoinBadge = badge
         noteDictationJoinedAgentSession(context.claudeSessionJoin?.snapshot.sessionID)
-        await context.resolveAgentPromptRoute()
+        await context.resolveAgentPromptRoute(isCurrent: isCurrent)
     }
 }
