@@ -135,7 +135,8 @@ enum WidgetSnapshotAssembler {
                 days: WidgetSnapshot.days(from: samples, now: now, calendar: calendar),
                 today: todayDetail,
                 last7Days: weekDetail,
-                last30Days: monthDetail
+                last30Days: monthDetail,
+                detailDay: today
             ),
             weeklyShares: trend.weeks.map(\.termsSpelledRightShare),
             lastDictation: last,
