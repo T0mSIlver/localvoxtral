@@ -234,3 +234,12 @@ vllm serve mistralai/Voxtral-Mini-4B-Realtime-2602 --compilation_config '{"cudag
 These are the settings the
 [model page](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602)
 recommends, tested on an NVIDIA RTX 3090.
+
+Voxtral Realtime spends one token of context per 80 ms of audio, so one vLLM
+session holds about 164 s at the default `--max-model-len 2048`. Past that the
+transcript turns to garbage, and vLLM's engine can crash. The app reads the
+limit from the server's `/v1/models` at the start of each dictation (2048 when
+the model is listed without one) and, before the limit, finishes the session
+and carries the dictation on in a fresh one. It picks a pause once the
+session is 60% full and does it regardless at 85%. Nothing changes on
+screen; a raised `--max-model-len` just moves the switch later.

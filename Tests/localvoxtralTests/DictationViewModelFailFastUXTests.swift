@@ -340,7 +340,9 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
         await viewModel.session.beginDictationSession()
 
-        XCTAssertEqual(flips.count, 1, "positive control: the mode flipped inside the capture")
+        // Two tty reads: one binds the screen capture to its pane (#1226),
+        // one resolves the join.
+        XCTAssertEqual(flips.count, 2, "positive control: the mode flipped inside the capture")
         XCTAssertEqual(viewModel.settings.dictationBackendMode, .mistralAPI)
         let dialled = viewModel.session.realtimeAPIClient.debugLastConnectConfigurationForTesting()
         XCTAssertEqual(

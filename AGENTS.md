@@ -20,7 +20,8 @@ it only where nothing else can do the job:
 
 - Linux first. `localvoxtralCore` (the Foundation-only pieces) builds and
   tests here: `./scripts/core-tests-linux.sh` (Swift 6.2; `SWIFT=` names the
-  toolchain), and so do `scripts/ci/test-*.sh`. The app re-exports core, so a
+  toolchain; a cloud session gets it from `scripts/linux/cloud-setup.sh`, the
+  environment's setup script), and so do `scripts/ci/test-*.sh`. The app re-exports core, so a
   core declaration the app uses needs `package` access. On Linux a
   synchronous test method in a `@MainActor` class aborts the whole test
   process at discovery; make it `async`.

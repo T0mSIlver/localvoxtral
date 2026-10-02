@@ -192,7 +192,7 @@ package final class QuickCaptureChatPolisher: QuickCapturePolishing {
     package init(
         endpoint: URL, apiKey: String, model: String, extraBody: [String: any Sendable] = [:],
         inputs: QuickCapturePolishInputs,
-        send: @escaping Send = { try await URLSession.shared.data(for: $0) }
+        send: @escaping Send = { try await SameOriginHTTP.shared.data(for: $0) }
     ) {
         self.endpoint = endpoint
         self.apiKey = apiKey

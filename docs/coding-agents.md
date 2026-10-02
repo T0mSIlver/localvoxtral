@@ -523,6 +523,10 @@ The classifier picks from the projects **Settings → Projects** lists:
 - with an older plugin, the folder a session ran in, which is a worktree's
   name when the session ran in one. It stays on the list for 7 days after
   that session's last hook;
+- a repository with an `origin` that Claude Code worked in during the last
+  30 days, on this Mac or on an ssh host with remote plugin 1.32.0 or
+  later, read from Claude Code's session history. It leaves the list 30
+  days after that work unless a dictation used it since;
 - a GitHub repository you added from an Inbox row's **Add <name>?**.
 
 A repository checked out both on this Mac and on a host is one project,
@@ -542,6 +546,26 @@ Click a project to see its repository and checkouts, its description, its
 learned terms ([Terms learned from polishing](dictation.md#terms-learned-from-polishing)),
 and its joined sessions, captures and dictations this week. **Open Inbox**
 goes to its drafts.
+
+**Forget Project…** in a project's sheet deletes its records and learned
+terms, on every checkout of its repository. It comes back the next time you
+dictate there. **Ignore Project…** also forgets it, then keeps it out:
+localvoxtral learns nothing there, its coding agent is never asked for its
+terms, and quick capture no longer lists it. Dictation there works as
+before. Both ask first and offer **Export Terms…** when the project has
+terms. Ignored projects are listed under **Ignored**, at the bottom of
+**Settings → Projects**, each with **Un-ignore**. The list is kept in
+`ignored-projects.json`, beside `learned-terms.json`.
+
+#### Keep work and personal projects apart
+
+The **Group** column puts a project in **Work** or **Personal**. A dictation
+joined to a project in a group then reads only that group's projects
+wherever it reads more than its own: the project names every polish
+carries, the confirmed terms the second pass sends, and a quick capture's
+polish, routing and follow-ups. A dictation with no join, or joined to a
+project in no group, reads every project, as before. You can still move a
+capture to any project by hand.
 
 ### Each project's repository
 

@@ -96,6 +96,10 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
     /// trail its host's (`AgentCLIDoctorChecks.staleSessions`). Nil for a
     /// local session; not persisted.
     package var remoteShimVersion: ClaudeRemotePluginVersionReport?
+    /// The id of the last Vibe prompt this session submitted (#1285). Every
+    /// Vibe hook re-sends the newest prompt, so a submit carrying this id
+    /// again is that prompt read again, not a new one. Not persisted.
+    package var lastSubmittedPromptID: String?
     public var firstSeen: Date
     public var lastActivity: Date
 
@@ -219,6 +223,7 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
         self.remoteEnvironment = nil
         self.remoteWorktreeRepository = nil
         self.harnessTitle = nil
+        self.lastSubmittedPromptID = nil
         self.firstSeen = firstSeen
         self.lastActivity = firstSeen
     }
@@ -234,6 +239,16 @@ public enum ClaudeSessionReducer {
     /// each one is up to 512 bytes of foreign text and the polish context budget
     /// is the real consumer.
     public static let maxRecentSnippets = 8
+
+    /// Whether `record` re-sends the Vibe prompt `snapshot` last submitted
+    /// (#1285). Vibe hooks carry no prompt, so each one reads the newest from
+    /// the session log, and a turn's first tool still reads the turn before's.
+    /// The message id tells such a read from a prompt the user sent again;
+    /// without one, every submit counts, as before.
+    public static func isRepeatedSubmit(_ record: ClaudeHookRecord, of snapshot: ClaudeSessionSnapshot) -> Bool {
+        record.event == .userPromptSubmit && record.agent == .vibe
+            && record.promptID != nil && record.promptID == snapshot.lastSubmittedPromptID
+    }
 
     /// Fold one record into a snapshot.
     ///
@@ -296,12 +311,14 @@ public enum ClaudeSessionReducer {
         case .sessionStart:
             snapshot.activity = .idle
         case .userPromptSubmit:
+            snapshot.activity = .working
+            guard !isRepeatedSubmit(record, of: snapshot) else { break }
+            snapshot.lastSubmittedPromptID = record.agent == .vibe ? record.promptID : nil
             snapshot.promptsSubmitted += 1
             if let prompt = record.prompt, !prompt.isEmpty {
                 snapshot.latestPriorUserPrompt = prompt
                 snapshot.latestPriorUserPromptAt = now
             }
-            snapshot.activity = .working
         case .cwdChanged:
             // Workspace already applied above; a cwd change does not alter the
             // turn state.

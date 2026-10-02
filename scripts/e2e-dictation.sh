@@ -39,9 +39,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/launch-app.sh"
 # one that measured nothing, leaves the failure a FAIL.
 #
 # Exit status: 0 every scenario passed, 1 a scenario failed, 3 the machine was
-# not in a state to run one (locked, no STT server, no grant, a lagging speech
-# service). A caller that schedules this can treat 3 as "skipped" and 1 as a
-# regression.
+# not in a state to run one (locked, no STT server, a lagging speech service),
+# 4 the app under test has no Accessibility grant. A caller that schedules this
+# can treat 3 as "skipped" and 1 as a regression. 4 is never a skip: the
+# grant does not come back by itself, so every later run would skip too.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_PATH="${1:-dist/localvoxtral.app}"
@@ -52,6 +53,7 @@ OWNER_APP_BUNDLE=""
 DRILL_LAUNCHED=0
 FAILED=0
 NOT_RUNNABLE=0
+NEEDS_OWNER=0
 CLEANED_UP=0
 ANNOUNCED=0
 WORK_DIR=""
@@ -96,6 +98,13 @@ record_not_runnable() {
   NOT_RUNNABLE=1
 }
 
+# The machine needs the owner before any run can measure the app.
+record_needs_owner() {
+  SUMMARY+=("NOT RUN: $1")
+  printf 'NOT RUN: %s\n' "$1" >&2
+  NEEDS_OWNER=1
+}
+
 print_summary() {
   printf '\nE2E dictation summary:\n'
   if ((${#SUMMARY[@]} == 0)); then
@@ -111,6 +120,7 @@ print_summary() {
 finish() {
   print_summary
   if ((FAILED)); then exit 1; fi
+  if ((NEEDS_OWNER)); then exit 4; fi
   if ((NOT_RUNNABLE)); then exit 3; fi
   exit 0
 }
@@ -376,7 +386,7 @@ run_scenario() {
   reply="$(control "session start $mode")"
   printf '%s: session start -> %s\n' "$name" "$reply"
   if json_has "$reply" '"accessibilityTrusted":false'; then
-    record_not_runnable "$name: the app under test has no Accessibility grant."
+    record_needs_owner "$name: the app under test has no Accessibility grant. Allow the localvoxtral-dev-signed localvoxtral in System Settings > Privacy & Security > Accessibility (toggle it off and on if it is listed)."
     return
   fi
   if json_has "$reply" '"secureInputActive":true'; then

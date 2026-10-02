@@ -50,7 +50,8 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
 
     private struct State {
         var base = BaseState()
-        var pingTimer: DispatchSourceTimer?
+        /// Sleeps on `clock`; cancelled when the socket closes.
+        var pingTimer: Task<Void, Never>?
         var hasReceivedSessionCreated = false
         var hasRequestedFinalCommit = false
         var finalCommitCompletionGate: FinalCommitCompletionGate = .idle
@@ -95,6 +96,8 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
     /// Monotonic seconds, injectable so the stall bookkeeping is testable
     /// without a wall clock.
     private let now: @Sendable () -> TimeInterval
+    /// What the keepalive ping sleeps on.
+    private let clock: SessionClock
 
     package var isConnected: Bool {
         state.withLock { $0.base.socketState == .connected }
@@ -106,10 +109,12 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
 
     package init(
         targetStreamingDelayMilliseconds: Int? = nil,
-        now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+        now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+        clock: SessionClock = .live
     ) {
         self.targetStreamingDelayMilliseconds = targetStreamingDelayMilliseconds
         self.now = now
+        self.clock = clock
         super.init()
     }
 
@@ -332,6 +337,9 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
         send(event: ["type": "input_audio.flush"])
         send(event: ["type": "input_audio.end"])
     }
+
+    /// Mistral's sessions have no context limit the client tracks (#1139).
+    package func setContextBudget(_ budget: RealtimeContextBudget?) {}
 
     // MARK: - JSON Event Handling
 
@@ -703,34 +711,38 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
     private func startPingTimerLocked(_ s: inout State) {
         stopPingTimerLocked(&s)
 
-        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
-        timer.schedule(deadline: .now() + 30, repeating: 30)
-        timer.setEventHandler { [weak self] in
-            guard let self else { return }
-            let sentAt = self.now()
-            let task: URLSessionWebSocketTask? = self.state.withLock { s in
-                guard s.base.socketState == .connected else { return nil }
-                s.health?.pingSent(at: sentAt)
-                return s.base.webSocketTask
-            }
-            guard let task else { return }
-            task.sendPing { [weak self] error in
-                guard let self else { return }
-                guard let error else {
-                    self.state.withLock { s in
-                        guard s.base.webSocketTask === task else { return }
-                        s.health?.pongReceived()
-                    }
-                    return
-                }
-                self.handleTerminalSocketError(
-                    for: task,
-                    errorMessage: "Connection lost: \(self.describeSocketError(error))"
-                )
+        let clock = clock
+        s.pingTimer = Task { [weak self] in
+            while true {
+                await clock.sleep(Self.keepalivePingInterval)
+                guard !Task.isCancelled, let self else { return }
+                self.sendKeepalivePing()
             }
         }
-        s.pingTimer = timer
-        timer.resume()
+    }
+
+    private func sendKeepalivePing() {
+        let sentAt = now()
+        let task: URLSessionWebSocketTask? = state.withLock { s in
+            guard s.base.socketState == .connected else { return nil }
+            s.health?.pingSent(at: sentAt)
+            return s.base.webSocketTask
+        }
+        guard let task else { return }
+        task.sendPing { [weak self] error in
+            guard let self else { return }
+            guard let error else {
+                self.state.withLock { s in
+                    guard s.base.webSocketTask === task else { return }
+                    s.health?.pongReceived()
+                }
+                return
+            }
+            self.handleTerminalSocketError(
+                for: task,
+                errorMessage: "Connection lost: \(self.describeSocketError(error))"
+            )
+        }
     }
 
     private func stopPingTimerLocked(_ s: inout State) {

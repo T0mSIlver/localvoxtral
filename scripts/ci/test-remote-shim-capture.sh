@@ -63,6 +63,26 @@ git -C "$TMP_DIR/repo" commit -q -m init
 git -C "$TMP_DIR/repo" remote add origin git@github.com:me/quill.git
 git -C "$TMP_DIR/repo" remote add upstream https://github.com/upstream/quill
 
+# A checkout whose README.md and AGENTS.md link to a file outside it (#1272),
+# beside a regular README and CLAUDE.md.
+{
+  echo OUTSIDE-SENTINEL
+  head -c 400 /dev/zero | tr '\0' 's'
+  echo
+} >"$TMP_DIR/outside-secret"
+LINKED="$TMP_DIR/linked"
+git init -q "$LINKED"
+ln -s "$TMP_DIR/outside-secret" "$LINKED/README.md"
+ln -s "$TMP_DIR/outside-secret" "$LINKED/AGENTS.md"
+echo 'Linked plain README.' >"$LINKED/README"
+{
+  echo 'Linked plain guide.'
+  head -c 400 /dev/zero | tr '\0' 'g'
+  echo
+} >"$LINKED/CLAUDE.md"
+git -C "$LINKED" add -A
+git -C "$LINKED" commit -q -m init
+
 STUB="$TMP_DIR/stub"
 AGENTS="$TMP_DIR/agents"
 mkdir -p "$STUB" "$AGENTS"
@@ -390,6 +410,27 @@ for agent in claude vibe; do
   wait_gone "$LOCK" || fail "$label: a 204 kept the lock"
   [ ! -e "$TMP_DIR/$agent-started" ] && [ ! -e "$TMP_DIR/answer-body" ] || fail "$label: ran an agent with no check due"
   pass "$label: no check due runs nothing"
+
+  # 11. A README or guide that is a symlink is skipped, even to a file
+  #     outside the checkout (#1272): the next regular name is read instead.
+  reset_state
+  printf 'X-Lvx-Readme: wanted\r\n' >"$TMP_DIR/asks"
+  run_hook "$agent" "$LINKED"
+  wait_for "$TMP_DIR/readme-body" || fail "$label: the linked checkout's README never reached /v1/readme"
+  ! grep -q OUTSIDE-SENTINEL "$TMP_DIR/readme-body" || fail "$label: posted a symlinked README's outside target"
+  grep -qx 'Linked plain README.' "$TMP_DIR/readme-body" || fail "$label: skipped the regular README too"
+  reset_state
+  printf 'X-Lvx-Draft: %s\r\n' "$DRAFT_ID" >"$TMP_DIR/asks"
+  printf 'quillmark\n' >"$TMP_DIR/words"
+  echo 200 >"$TMP_DIR/words-status"
+  printf '204\n' >"$TMP_DIR/check-statuses"
+  run_hook "$agent" "$LINKED"
+  wait_for "$TMP_DIR/context-body" || fail "$label: the linked checkout posted no context"
+  wait_gone "$LOCK" || fail "$label: the linked checkout's draft kept the lock"
+  ! grep -q OUTSIDE-SENTINEL "$TMP_DIR/context-body" || fail "$label: the bundle carries a symlink's outside target"
+  grep -qx 'Linked plain README.' "$TMP_DIR/context-body" || fail "$label: no regular README in the bundle"
+  grep -qx 'Linked plain guide.' "$TMP_DIR/context-body" || fail "$label: no regular CLAUDE.md in the bundle"
+  pass "$label: symlinked README and guide skipped, regular ones posted"
 done
 done
 echo "remote shim capture: all checks passed"

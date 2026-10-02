@@ -30,8 +30,9 @@ package final class MemorySSHConfigFileSystem: ClaudeRemoteSSHConfigFileSystem {
         }
     }
 
-    package func atomicWriteConfig(_ data: Data, permissions: UInt16) throws {
-        storage.withLock {
+    package func atomicWriteConfig(_ data: Data, permissions: UInt16, replacing expected: Data?) throws {
+        try storage.withLock {
+            guard $0.state.configData == expected else { throw ClaudeRemoteSSHConfigChangedOnDisk() }
             $0.writes.append((data, permissions))
             $0.state.configData = data
             $0.state.configPermissions = permissions

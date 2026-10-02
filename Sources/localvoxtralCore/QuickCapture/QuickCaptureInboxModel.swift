@@ -40,6 +40,10 @@ package final class QuickCaptureInboxModel {
     /// unplaced; never the router's options.
     private let recentRepositories: @MainActor () async -> [GitHubListedRepository]
     private let now: @MainActor () -> Date
+    /// This running copy, as a filing claim names it.
+    private let processID: Int32
+    private let isProcessRunning: (Int32) -> Bool
+    private let write: (Data, URL) throws -> Void
     /// The latest draft run per capture: an older run's answer is dropped.
     private var draftRuns: [UUID: Int] = [:]
     private var draftRunCount = 0
@@ -73,8 +77,14 @@ package final class QuickCaptureInboxModel {
         polisher: @escaping @MainActor () -> (any QuickCapturePolishing)? = { nil },
         polishVocabulary: @escaping @MainActor ([QuickCaptureProject]) -> [String] = { _ in [] },
         recentRepositories: @escaping @MainActor () async -> [GitHubListedRepository] = { [] },
-        now: @escaping @MainActor () -> Date = { Date() }
+        now: @escaping @MainActor () -> Date = { Date() },
+        processID: Int32 = getpid(),
+        isProcessRunning: @escaping (Int32) -> Bool = QuickCaptureInboxModel.isRunning,
+        write: @escaping (Data, URL) throws -> Void = PrivateFile.write
     ) {
+        self.processID = processID
+        self.isProcessRunning = isProcessRunning
+        self.write = write
         self.fileURL = fileURL
         self.makeRouter = makeRouter
         self.projects = projects
@@ -90,7 +100,11 @@ package final class QuickCaptureInboxModel {
             (load, seen) = StoredFile.loadShared(fileURL, decode: QuickCaptureInboxFile.decode)
         }
         storeProblem = load.problem
-        var loaded = load.value.map(QuickCaptureInboxFile.resumingInterrupted) ?? QuickCaptureInbox()
+        var loaded = load.value.map {
+            QuickCaptureInboxFile.resumingInterrupted($0) { claim in
+                claim.processID != processID && isProcessRunning(claim.processID)
+            }
+        } ?? QuickCaptureInbox()
         loaded.prune(now: now())
         inbox = loaded
         adoptProjects()
@@ -103,7 +117,10 @@ package final class QuickCaptureInboxModel {
 
     /// The last write of the inbox file failed, so memory holds changes the
     /// file does not (#988).
-    package private(set) var hasUnsavedChanges = false
+    package var hasUnsavedChanges: Bool { !unsaved.isEmpty }
+    /// Those changes, in order, for `StoredFile.update` to apply again on
+    /// top of another running copy's write (#1260).
+    private var unsaved: [(inout QuickCaptureInbox) -> Void] = []
 
     /// The voice memo recordings a sweep keeps (#988).
     package var recordingIDsToKeep: Set<UUID> { inbox.recordingIDsToKeep }
@@ -119,6 +136,15 @@ package final class QuickCaptureInboxModel {
     package var waitingCount: Int { inbox.items.filter { $0.state != .filed }.count }
     package var projectChoices: [QuickCaptureProject] { projects() }
 
+    /// The projects a capture said in `group` may be polished with and
+    /// routed to (#1005); every project for nil. The user can still move a
+    /// capture to any project.
+    private func projects(in group: ProjectGroup?) -> [QuickCaptureProject] {
+        let all = projects()
+        guard let group else { return all }
+        return all.filter { $0.group == group }
+    }
+
     // MARK: Capture
 
     /// Adds the capture, polishes it, and starts routing it. Returns the task
@@ -127,7 +153,8 @@ package final class QuickCaptureInboxModel {
     /// recorded.
     ///
     /// The file holds the raw words before the polish starts. The polish
-    /// (#970) runs once, with every project's names and confirmed terms; its
+    /// (#970) runs once, with the names and confirmed terms of every project
+    /// in `group` (#1005), or of every project with no group; its
     /// words replace the raw ones in the Inbox, and the router and drafter
     /// read them. A failed polish, or no polishing configuration, routes the
     /// raw words.
@@ -137,7 +164,7 @@ package final class QuickCaptureInboxModel {
     /// any of them on the same call that picks a project.
     @discardableResult
     package func capture(
-        text: String, historyRecordID: UUID?, id: UUID = UUID(), capturedAt: Date? = nil
+        text: String, historyRecordID: UUID?, id: UUID = UUID(), capturedAt: Date? = nil, group: ProjectGroup? = nil
     ) -> Task<Void, Never> {
         guard storeProblem == nil else {
             // The words are in History; the Inbox file is not replaced.
@@ -146,7 +173,7 @@ package final class QuickCaptureInboxModel {
             return Task {}
         }
         let item = QuickCaptureItem(
-            id: id, capturedAt: capturedAt ?? now(), text: text, historyRecordID: historyRecordID)
+            id: id, capturedAt: capturedAt ?? now(), text: text, historyRecordID: historyRecordID, group: group)
         mutate { $0.add(item) }
         guard storeProblem == nil else {
             // Another running copy left a file this build cannot read.
@@ -181,7 +208,7 @@ package final class QuickCaptureInboxModel {
         // the one before it has, so an "also" whose polish ends first still
         // finds the capture it follows.
         let previous = lastPlaced
-        let vocabulary = polisher == nil ? [] : polishVocabulary(projects())
+        let vocabulary = polisher == nil ? [] : polishVocabulary(projects(in: item.group))
         if polisher != nil {
             Log.backends.notice("Quick capture: saved, polishing with \(vocabulary.count, privacy: .public) terms")
         }
@@ -243,6 +270,7 @@ package final class QuickCaptureInboxModel {
     private func place(_ item: QuickCaptureItem, rawText: String) -> Placement {
         let open = inbox.items
             .filter { $0.id != item.id && $0.acceptsFollowUp(at: item.capturedAt) }
+            .filter { item.group == nil || $0.group == item.group }
             .sorted { $0.lastCapturedAt > $1.lastCapturedAt }
         if QuickCaptureInbox.saysFollowUp(item.text) || QuickCaptureInbox.saysFollowUp(rawText),
            let latest = open.first
@@ -262,7 +290,7 @@ package final class QuickCaptureInboxModel {
     /// capture the router matched.
     private func route(_ item: QuickCaptureItem, openCaptures: [QuickCaptureOpenCapture]) -> Placement {
         let router = makeRouter()
-        let projects = projects()
+        let projects = projects(in: item.group)
         let text = item.text
         let historyRecordID = item.historyRecordID
         // What is left once the capture has its place: the joined capture's
@@ -353,7 +381,7 @@ package final class QuickCaptureInboxModel {
               let after = inbox.items.first(where: { $0.id == id })
         else {
             if !result.restored, item.state == .drafting {
-                mutate { inbox in inbox.update(id) { $0.state = .ready } }
+                mutate { inbox in inbox.update(id) { if $0.state == .drafting { $0.state = .ready } } }
             }
             return routing
         }
@@ -374,6 +402,7 @@ package final class QuickCaptureInboxModel {
         draftRuns[id] = run
         mutate { inbox in
             inbox.update(id) {
+                guard !$0.isFilingOrFiled else { return }
                 $0.state = .drafting
                 $0.note = nil
                 $0.codeCheck = nil
@@ -398,7 +427,13 @@ package final class QuickCaptureInboxModel {
                 guard let self, self.draftRuns[id] == run, let item = self.inbox.items.first(where: { $0.id == id }),
                       item.state == .drafting, item.projectKey == key
                 else { return false }
-                self.mutate { $0.applyFirstDraft(outcome, repository: repository, checking: !agents.isEmpty, to: id) }
+                self.mutate { inbox in
+                    guard inbox.items.first(where: { $0.id == id })?.projectKey == key else { return }
+                    inbox.applyFirstDraft(outcome, repository: repository, checking: !agents.isEmpty, to: id)
+                }
+                // The repository was read when the run started: the
+                // capture files where the project files now.
+                self.adoptProjects()
                 guard let now = self.inbox.items.first(where: { $0.id == id }) else { return false }
                 if case .draft = outcome { shown.withLock { $0 = (now.title, now.body) } }
                 return now.state == .drafting || now.codeCheck?.state == .checking
@@ -425,6 +460,7 @@ package final class QuickCaptureInboxModel {
             return
         }
         mutate { $0.applyDraft(final, repository: repository, firstDraft: shown.withLock { $0 }, to: id) }
+        adoptProjects()
         if let after = inbox.items.first(where: { $0.id == id }), after.codeCheck?.keptEdits == true {
             Log.backends.notice("Quick capture draft: checked, the user's edits kept")
         }
@@ -489,7 +525,14 @@ package final class QuickCaptureInboxModel {
                 await self.draft(id, text: item.words, destination: .project(project.key), projects: projects)
             } else if project.issueRepository == nil, project.key.hasPrefix("/") {
                 let repository = await self.github.repository(ofCheckout: project.key)
-                self.mutate { inbox in inbox.update(id) { if $0.repository == nil { $0.repository = repository } } }
+                // Moved again meanwhile: the answer is for a project the
+                // capture left.
+                self.mutate { inbox in
+                    inbox.update(id) {
+                        guard $0.projectKey == project.key, $0.state == .ready, $0.repository == nil else { return }
+                        $0.repository = repository
+                    }
+                }
             }
         }
     }
@@ -575,11 +618,16 @@ package final class QuickCaptureInboxModel {
 
     /// The only path to `gh issue create`.
     @discardableResult
-    package func file(_ id: UUID) -> Task<Void, Never>? {
-        guard let item = inbox.items.first(where: { $0.id == id }), item.canFile, let repository = item.repository else {
-            return nil
+    ///
+    /// With `shown`, it files that draft only: unchanged since, also by
+    /// another running copy.
+    package func file(_ id: UUID, shown: QuickCaptureDraftSnapshot? = nil) -> Task<Void, Never>? {
+        let eligible: (QuickCaptureItem) -> Bool = { item in
+            item.canFile && shown.map { item.title == $0.title && item.body == $0.body } ?? true
         }
-        mutate { inbox in inbox.update(id) { $0.state = .filing } }
+        guard inbox.items.first(where: { $0.id == id }).map(eligible) == true,
+              let item = claim(id, when: eligible), let repository = item.repository
+        else { return nil }
         let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let body = item.bodyToFile
         return Task { @MainActor [weak self] in
@@ -587,6 +635,7 @@ package final class QuickCaptureInboxModel {
             let result = await self.github.createIssue(repository: repository, title: title, body: body)
             let saveFailure = self.mutate { inbox in
                 inbox.update(id) { item in
+                    guard item.state == .filing else { return }
                     switch result {
                     case .success(let url):
                         item.state = .filed
@@ -615,16 +664,17 @@ package final class QuickCaptureInboxModel {
     /// that extends an open issue. Like File, only on the user's click.
     @discardableResult
     package func comment(_ id: UUID) -> Task<Void, Never>? {
-        guard let item = inbox.items.first(where: { $0.id == id }), item.canComment,
+        guard inbox.items.first(where: { $0.id == id })?.canComment == true,
+              let item = claim(id, when: \.canComment),
               let repository = item.repository, let issue = item.relatedIssue
         else { return nil }
-        mutate { inbox in inbox.update(id) { $0.state = .filing } }
         let body = item.commentBody
         return Task { @MainActor [weak self] in
             guard let self else { return }
             let result = await self.github.commentOnIssue(repository: repository, issue: issue, body: body)
             let saveFailure = self.mutate { inbox in
                 inbox.update(id) { item in
+                    guard item.state == .filing else { return }
                     switch result {
                     case .success(let url):
                         item.state = .filed
@@ -648,6 +698,45 @@ package final class QuickCaptureInboxModel {
                 self.onRouted?(recordID, "Commented on \(repository)#\(issue)")
             }
         }
+    }
+
+    /// Marks capture `id` filing, as the inbox file has it now, and returns
+    /// it as claimed. Nil when another running copy filed it, or changed it
+    /// so it no longer passes `eligible`, since this copy last read the file
+    /// (#990): what File or Comment sends is the claimed item, never this
+    /// copy's older one. Nil too when the claim could not be saved: another
+    /// copy reading the file would send it as well (#1288). Run again on
+    /// another copy's write after a failed save, the change checks
+    /// `eligible` again before it claims.
+    private func claim(_ id: UUID, when eligible: @escaping (QuickCaptureItem) -> Bool) -> QuickCaptureItem? {
+        let token = QuickCaptureItem.FilingClaim(processID: processID)
+        var claimed: QuickCaptureItem?
+        let failure = mutate { inbox in
+            inbox.update(id) { item in
+                guard eligible(item) else { return }
+                claimed = item
+                item.state = .filing
+                item.filingClaim = token
+            }
+        }
+        guard let claimed else {
+            Log.backends.notice("Quick capture: not sent, another running copy filed or changed it")
+            return nil
+        }
+        guard failure == nil else {
+            Log.backends.error("Quick capture: not sent, the Inbox could not save the filing")
+            // Only this claim's own capture goes back: replayed onto another
+            // copy's write, it leaves that copy's filing alone.
+            mutate { inbox in
+                inbox.update(id) {
+                    guard $0.state == .filing, $0.filingClaim == token else { return }
+                    $0.state = .ready
+                    $0.note = "Not sent: the Inbox could not be saved."
+                }
+            }
+            return nil
+        }
+        return claimed
     }
 
     // MARK: Spoken review (#927)
@@ -681,7 +770,7 @@ package final class QuickCaptureInboxModel {
                 Log.backends.notice("Quick capture review: the draft changed since it was shown; not filed")
                 return (QuickCaptureReviewStatus.changedSinceShown, nil)
             }
-            guard item.canFile, let task = file(shown.id) else {
+            guard item.canFile, let task = file(shown.id, shown: shown) else {
                 Log.backends.notice("Quick capture review: the draft cannot be filed")
                 return (QuickCaptureReviewStatus.cannotFile, nil)
             }
@@ -714,6 +803,7 @@ package final class QuickCaptureInboxModel {
         // ready draft until the redraft lands.
         mutate { inbox in
             inbox.update(id) {
+                guard !$0.isFilingOrFiled else { return }
                 $0.changes = changes
                 $0.state = .drafting
             }
@@ -801,6 +891,12 @@ package final class QuickCaptureInboxModel {
         }
     }
 
+    /// Whether process `pid` runs: a signal 0 that reaches it, or that it
+    /// refuses.
+    package nonisolated static func isRunning(_ pid: Int32) -> Bool {
+        LibC.kill(pid, 0) == 0 || errno == EPERM
+    }
+
     /// Why a change was not taken: the Inbox file could not be loaded.
     package struct StoreRefused: Error {}
 
@@ -808,7 +904,7 @@ package final class QuickCaptureInboxModel {
     /// failed; the change stays in memory either way. A refused Inbox
     /// takes no change and returns `StoreRefused`.
     @discardableResult
-    private func mutate(_ change: (inout QuickCaptureInbox) -> Void) -> (any Error)? {
+    private func mutate(_ change: @escaping (inout QuickCaptureInbox) -> Void) -> (any Error)? {
         guard storeProblem == nil else {
             Log.persistence.error("Quick capture inbox: a change was refused, the file could not be loaded")
             return StoreRefused()
@@ -819,23 +915,22 @@ package final class QuickCaptureInboxModel {
         }
         // The change applies to what another running copy wrote, if it did.
         switch StoredFile.update(
-            fileURL, memory: inbox, seen: &seen,
+            fileURL, memory: inbox, seen: &seen, unsaved: &unsaved,
             decode: QuickCaptureInboxFile.decode, encode: QuickCaptureInboxFile.encode,
-            write: PrivateFile.write, change: change)
+            write: write, change: change)
         {
         case .written(let updated):
             inbox = updated
-            hasUnsavedChanges = false
             return nil
         case .failed(let updated, let error):
             inbox = updated
-            hasUnsavedChanges = true
             Log.persistence.error("Quick capture inbox: save failed: \(error.localizedDescription, privacy: .public)")
             return error
         case .refused(let problem):
             Log.persistence.error("Quick capture inbox: a change was refused, another copy left a file this build cannot read")
             storeProblem = problem
             inbox = QuickCaptureInbox()
+            unsaved = []
             return StoreRefused()
         }
     }

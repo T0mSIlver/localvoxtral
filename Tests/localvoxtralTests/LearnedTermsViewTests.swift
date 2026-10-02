@@ -101,7 +101,8 @@ final class LearnedTermsViewTests: XCTestCase {
         terms.setPinned(true, term: "Voxtral", projectKey: project.key)
         for index in 0..<LearnedTerms.maxProjects {
             record(
-                "term", in: &terms, at: start + Double(index + 1) * day,
+                // Hours apart: the cap is past the days a term lasts.
+                "term", in: &terms, at: start + Double(index + 1) * 3600,
                 project: LearnedTermProjectResolver.Identity(key: "/p\(index)", name: "p\(index)")
             )
         }

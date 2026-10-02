@@ -118,8 +118,8 @@ final class QuickCaptureInboxViewModel {
     }
 
     /// Takes a capture, then links any project it is the first sign of.
-    func capture(text: String, historyRecordID: UUID?) {
-        _ = model.capture(text: text, historyRecordID: historyRecordID)
+    func capture(text: String, historyRecordID: UUID?, group: ProjectGroup? = nil) {
+        _ = model.capture(text: text, historyRecordID: historyRecordID, group: group)
         Task { [weak self] in await self?.refreshProjects() }
     }
 
@@ -130,6 +130,14 @@ final class QuickCaptureInboxViewModel {
         _ = await store.loadedSnapshot()
         // A checkout linked just now joins its repository's project (#971).
         model.adoptProjects()
+        projectsRevision += 1
+    }
+
+    /// The Group column's choice for one row (#1005).
+    func setGroup(_ group: ProjectGroup?, keys: [String]) async {
+        guard let store else { return }
+        store.setGroup(group, keys: keys)
+        _ = await store.loadedSnapshot()
         projectsRevision += 1
     }
 

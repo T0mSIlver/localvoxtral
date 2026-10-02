@@ -157,6 +157,61 @@ final class StopSecondPassPipelineTests: XCTestCase {
         XCTAssertEqual(transcriber.calls.first?.contextBias, ["localvoxtral", "Claude_Code", "inkwell"])
     }
 
+    // MARK: - Project groups (#1005)
+
+    private static let workProject = "/nonexistent-1005/acme"
+    private static let personalProject = "/nonexistent-1005/garden"
+
+    /// A Work project that confirmed `Kubrix` and a Personal one that
+    /// confirmed `Florabel`.
+    private func groupedStore() -> LearnedTermStore {
+        let store = LearnedTermStore(fileURL: nil, now: { Date(timeIntervalSince1970: 0) })
+        for (key, term, group) in [
+            (Self.workProject, "Kubrix", ProjectGroup.work), (Self.personalProject, "Florabel", .personal),
+        ] {
+            store.recordCorrection(term, project: .init(key: key, name: (key as NSString).lastPathComponent))
+            store.setGroup(group, keys: [key])
+        }
+        store.waitForPendingWrites()
+        return store
+    }
+
+    /// What a dictation joined in `cwd` sends: the second pass's terms and
+    /// the polish's system prompt, which carries the project names.
+    private func groupedDictation(joinedIn cwd: String?) async -> (bias: [String], systemPrompt: String) {
+        let transcriber = FakeBatchTranscriber(.text(Self.batchText))
+        let polisher = FakePolishingService()
+        let harness = makeHarness(transcriber: transcriber, polisher: polisher)
+        harness.viewModel.settings.polishContextTrustedEndpointEnabled = true
+        harness.viewModel.learnedTermStore = groupedStore()
+        harness.viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding(outcome: nil)
+        if let cwd { join(harness, cwd: cwd) }
+
+        harness.stop()
+        await awaitStoppedSessionCommit(harness.viewModel)
+        return (transcriber.calls.first?.contextBias ?? [], await polisher.lastRequest?.systemPrompt ?? "")
+    }
+
+    /// A dictation joined to a Work project sends no Personal project's
+    /// name or term, and the reverse; with no join it sends both.
+    func testAJoinedDictationSendsOnlyItsGroupsNamesAndTerms() async {
+        let work = await groupedDictation(joinedIn: Self.workProject + "/Sources")
+        XCTAssertTrue(work.bias.contains("Kubrix"))
+        XCTAssertFalse(work.bias.contains("Florabel"), "a Personal term reached the second pass")
+        XCTAssertTrue(work.systemPrompt.contains("acme"))
+        XCTAssertFalse(work.systemPrompt.contains("garden"), "a Personal project reached the polish")
+
+        let personal = await groupedDictation(joinedIn: Self.personalProject)
+        XCTAssertTrue(personal.bias.contains("Florabel"))
+        XCTAssertFalse(personal.bias.contains("Kubrix"), "a Work term reached the second pass")
+        XCTAssertTrue(personal.systemPrompt.contains("garden"))
+        XCTAssertFalse(personal.systemPrompt.contains("acme"), "a Work project reached the polish")
+
+        let unjoined = await groupedDictation(joinedIn: nil)
+        XCTAssertTrue(unjoined.bias.contains("Kubrix") && unjoined.bias.contains("Florabel"))
+        XCTAssertTrue(unjoined.systemPrompt.contains("acme") && unjoined.systemPrompt.contains("garden"))
+    }
+
     // MARK: - Unjoined terminal (#705)
 
     private nonisolated static let unjoinedRepository = "/nonexistent-705/quillmark"

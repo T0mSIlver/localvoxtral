@@ -54,8 +54,30 @@ private final class CaptureTestClock: Sendable {
     func set(_ date: Date) { value.withLock { $0 = date } }
 }
 
+/// The real folder, with a hook that runs between a patch reading a record
+/// and writing it back.
+private struct InterleavingDirectoryIO: DiagnosticRecordDirectoryIO {
+    let base = DiagnosticRecordFileDirectoryIO()
+    let afterRead: @Sendable (URL) -> Void
+
+    func contents(of url: URL) throws -> [String]? { try base.contents(of: url) }
+    func remove(at url: URL) throws { try base.remove(at: url) }
+    func size(of url: URL) -> Int? { base.size(of: url) }
+
+    func read(from url: URL) throws -> Data? {
+        let data = try base.read(from: url)
+        afterRead(url)
+        return data
+    }
+}
+
 final class DiagnosticRecordStoreTests: XCTestCase {
-    private let directory = URL(fileURLWithPath: "/tmp/lvx-diagnostic-records-test")
+    /// Unique per test: the store's lock shared with other running copies
+    /// is a file beside this folder, and test classes run in several
+    /// processes at once.
+    private let home = FileManager.default.temporaryDirectory
+        .appendingPathComponent("lvx-diagnostic-records-\(UUID().uuidString)", isDirectory: true)
+    private var directory: URL { home.appendingPathComponent("diagnostic-records", isDirectory: true) }
     private var io: MemoryCaptureIO!
     private let clock = CaptureTestClock()
 
@@ -63,6 +85,11 @@ final class DiagnosticRecordStoreTests: XCTestCase {
         super.setUp()
         io = MemoryCaptureIO()
         clock.set(Date(timeIntervalSince1970: 1_800_000_000))
+    }
+
+    override func tearDown() {
+        try? FileManager.default.removeItem(at: home)
+        super.tearDown()
     }
 
     private func makeStore(
@@ -312,6 +339,39 @@ final class DiagnosticRecordStoreTests: XCTestCase {
                 .newerRecord(schemaVersion: DiagnosticRecord.currentSchemaVersion + 1))
         }
         XCTAssertEqual(try io.read(from: url), before)
+    }
+
+    /// Another running copy of the app (a try-pr build beside the installed
+    /// one, #990) deletes the dictation while this copy's edit watcher is
+    /// patching its record. The patch must not write the record back.
+    func testAnotherCopyDeletingDuringABehaviorPatchIsNotUndone() throws {
+        let folder = directory
+        let deletedDuringPatch = Mutex(false)
+        // The other copy deletes the moment it can take the lock the copies
+        // share, as its History Delete does.
+        let directoryIO = InterleavingDirectoryIO { url in
+            guard let otherCopy = StoredFileLock.tryHolding(beside: folder) else { return }
+            withExtendedLifetime(otherCopy) {
+                try? FileManager.default.removeItem(at: url)
+                deletedDuringPatch.withLock { $0 = true }
+            }
+        }
+        let clock = self.clock
+        let store = DiagnosticRecordStore(
+            directoryURL: folder, directoryIO: directoryIO, now: { clock.now() })
+        let id = UUID()
+        let url = try store.write(makeRecord(id: id.uuidString))
+        let behavior = DiagnosticRecord.Behavior(
+            outcome: .clean, signal: nil, secondsSinceCommitBucket: nil,
+            wordCountBucket: "1-5", watchWindowSeconds: 2, outputMode: "overlayBuffer")
+
+        try store.attachBehavior(behavior, toRecordAt: url)
+        if !deletedDuringPatch.withLock({ $0 }) {
+            // Locked out until the patch finished: the delete runs now.
+            DiagnosticRecordStore(directoryURL: folder, now: { clock.now() }).remove([id])
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
     }
 
     func testFileNameParsingRejectsForeignNames() {
@@ -643,6 +703,28 @@ final class DiagnosticRecordRedactionTests: XCTestCase {
         let record = DiagnosticRecordBuilder.build(id: UUID().uuidString, capturedAt: Date(), inputs: inputs)
 
         XCTAssertFalse(record.text.userPrompts.joined().contains("SIGPIPE killed"))
+    }
+
+    /// A source's harvest is re-derived from its text, so it would keep the
+    /// prompt's identifiers while the excerpts beside it read withheld.
+    /// Terms the rest of the text holds stay.
+    func testTheBuilderHarvestsNoTermOnlyThePriorPromptHeld() {
+        let prompt = "fix the UserProfileCache race"
+        let context = "previous request to the agent: \(prompt)\n\nfiles the agent recently touched:\nSessionRouter.swift (edit)"
+        var inputs = DiagnosticRecordInputs.minimal(context: context)
+        inputs.screenDecision = .render(excerpt: "> \(prompt)\nDone", startText: "> \(prompt)\nDone", elidedChurnLines: 0)
+        inputs.clipboardRetainedText = "\(prompt)\nSessionRouter"
+        inputs.withheldPrompt = prompt
+
+        let record = DiagnosticRecordBuilder.build(id: UUID().uuidString, capturedAt: Date(), inputs: inputs)
+
+        XCTAssertEqual(record.sources.map(\.source), ["terminal", "claude", "clipboard"])
+        for source in record.sources {
+            XCTAssertFalse(source.harvest.contains { $0.contains("UserProfileCache") }, "\(source.source): \(source.harvest)")
+        }
+        for source in record.sources.dropFirst() {
+            XCTAssertTrue(source.harvest.contains { $0.contains("SessionRouter") }, "\(source.source): \(source.harvest)")
+        }
     }
 }
 

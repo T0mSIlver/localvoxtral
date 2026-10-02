@@ -632,7 +632,9 @@ detached, at most once per project per 24 hours.
 
 The capture script posts the first 16 KiB of the project's README.md to the
 listener. The Mac keeps the first two prose paragraphs, 400 characters at
-most, on the project.
+most, on the project. From localvoxtral-remote 1.35.0 and Vibe hooks 1.17.0,
+the script skips a README, AGENTS.md or CLAUDE.md that is a symlink, so a
+committed link cannot send a file from elsewhere on the host.
 
 **Draft.** The capture waits up to 10 minutes for a hook from a live session in
 its project. The reply to that hook asks for a draft. With no such session, or

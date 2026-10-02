@@ -70,6 +70,13 @@ package enum RealtimeEvent: Sendable {
     /// utterance limit, or a model end-of-stream). The message is one short sentence meant
     /// for the status line; the connection stays open (#314).
     case transcriptionStopped(String)
+    /// The client finished its socket before the server's context limit and
+    /// carries the dictation on in a fresh one (#1139). Raised by the retiring
+    /// socket, after its last transcript and before the new socket can raise
+    /// anything, so the main-queue FIFO hands it over in order: from here the
+    /// session is on `to`, and refuses the retiring socket by name like any
+    /// other retired one. The new socket's own `.connected` follows.
+    case sessionRolledOver(to: RealtimeConnectionGeneration)
 }
 
 /// `Sendable` because the session's audio-send and periodic-commit tasks hold
@@ -95,4 +102,9 @@ package protocol RealtimeClient: AnyObject, Sendable {
     func disconnect()
     func sendAudioChunk(_ pcm16Data: Data)
     func sendCommit(final: Bool)
+    /// How much audio one server session may take before the client rolls it
+    /// over (#1139). Nil, the default, never rolls over. Kept across
+    /// `connect()`, so a reconnect stays under it; the session sets it at
+    /// every start.
+    func setContextBudget(_ budget: RealtimeContextBudget?)
 }

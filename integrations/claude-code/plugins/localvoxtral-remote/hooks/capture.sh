@@ -165,7 +165,7 @@ fi
 
 # post <path> <body-file> <reply-file>: prints the HTTP status.
 post() {
-  curl --silent --output "$3" --write-out '%{http_code}' \
+  curl -q --noproxy '*' --silent --output "$3" --write-out '%{http_code}' \
     --max-time 10 --max-filesize 65536 --request POST \
     --header 'Content-Type: application/octet-stream' \
     --header @"$WORK/header" \
@@ -173,10 +173,17 @@ post() {
     "http://127.0.0.1:$PORT$1" 2>/dev/null
 }
 
+# doc <name>: a readable regular file at the checkout's root, not a symlink.
+# A committed link can name any file on this host (#1272), and what is read
+# here goes to the Mac and on to a model.
+doc() {
+  [ -f "$1" ] && [ ! -L "$1" ] && [ -r "$1" ]
+}
+
 if [ "$MODE" = readme ]; then
   : >"$WORK/readme"
   for name in README.md README readme.md README.markdown Readme.md; do
-    if [ -f "$name" ] && [ -r "$name" ]; then
+    if doc "$name"; then
       head -c 16384 "$name" >"$WORK/readme" 2>/dev/null || : >"$WORK/readme"
       break
     fi
@@ -250,7 +257,7 @@ if [ "$STATUS" = 200 ]; then
   {
     echo '@@lvx readme'
     for name in README.md README readme.md README.markdown Readme.md; do
-      if [ -f "$name" ] && [ -r "$name" ]; then
+      if doc "$name"; then
         head -c 16384 "$name" 2>/dev/null
         break
       fi
@@ -258,7 +265,7 @@ if [ "$STATUS" = 200 ]; then
     echo
     echo '@@lvx guide'
     for name in AGENTS.md CLAUDE.md; do
-      if [ -f "$name" ] && [ -r "$name" ] && [ "$(wc -c <"$name" 2>/dev/null | tr -d '[:space:]')" -gt 200 ]; then
+      if doc "$name" && [ "$(wc -c <"$name" 2>/dev/null | tr -d '[:space:]')" -gt 200 ]; then
         head -c 32768 "$name" 2>/dev/null
         break
       fi

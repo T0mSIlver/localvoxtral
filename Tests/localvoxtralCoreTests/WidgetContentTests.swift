@@ -171,7 +171,8 @@ final class WidgetContentTests: XCTestCase {
                 recurringFixes: [.init(heard: "cloud code", written: "Claude Code", dictations: 7),
                                  .init(heard: "swift ui", written: "SwiftUI", dictations: 4),
                                  .init(heard: "get hub", written: "GitHub", dictations: 3)]),
-            last30Days: WidgetSnapshot.PeriodDetail()
+            last30Days: WidgetSnapshot.PeriodDetail(),
+            detailDay: calendar.startOfDay(for: now)
         )
     }
 
@@ -211,6 +212,14 @@ final class WidgetContentTests: XCTestCase {
         let content = DictationWidgetContent(dictation, period: .today, now: tomorrow, calendar: calendar, locale: locale)
         XCTAssertEqual([content.words, content.dictations, content.saved], ["0", "0", "0 s"])
         XCTAssertNil(content.wordsPerMinute)
+        // The lists were counted yesterday too: none of them is today's.
+        XCTAssertEqual(content.apps, [])
+        XCTAssertEqual(content.polish, "No dictation polished")
+        XCTAssertEqual(content.fixes, [])
+        // No dictation has left the last 7 days since: its lists still hold.
+        let week = DictationWidgetContent(dictation, period: .last7Days, now: tomorrow, calendar: calendar, locale: locale)
+        XCTAssertEqual(week.polish, "Changed 61 of 98 · median 0.9 s")
+        XCTAssertEqual(week.apps.count, 3)
     }
 
     func testTheLargeSizeListsWhatInsightsShows() {

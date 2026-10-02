@@ -602,6 +602,7 @@ package final class SessionNavigator {
     private let title: @Sendable (ClaudeSessionSnapshot) -> String?
     private let sleep: @Sendable (Duration) async -> Void
     private let nicknames: SessionNicknameStore?
+    private let ttyForegroundPIDs: @Sendable (String) -> [Int32]?
     package let focuser: any SessionPaneFocusing
 
     /// - Parameters:
@@ -613,6 +614,10 @@ package final class SessionNavigator {
     ///     actor.
     ///   - title: the harness's title for a session (#1013). Runs off the
     ///     main actor.
+    ///   - ttyForegroundPIDs: the pids in a tty's foreground process group,
+    ///     from the local process table. DEFAULTS TO ABSTAIN (nil), which
+    ///     refuses every write into a local terminal pane; the app wires the
+    ///     live table.
     package init(
         liveSessions: @escaping @Sendable () -> [ClaudeSessionSnapshot],
         repositoryRoot: @escaping @Sendable (String) -> LearnedTermProjectResolver.RepositoryRoot,
@@ -620,9 +625,11 @@ package final class SessionNavigator {
         sleep: @escaping @Sendable (Duration) async -> Void,
         nicknames: SessionNicknameStore? = nil,
         branch: @escaping @Sendable (String) -> String? = { _ in nil },
-        title: @escaping @Sendable (ClaudeSessionSnapshot) -> String? = { _ in nil }
+        title: @escaping @Sendable (ClaudeSessionSnapshot) -> String? = { _ in nil },
+        ttyForegroundPIDs: @escaping @Sendable (String) -> [Int32]? = { _ in nil }
     ) {
         self.liveSessions = liveSessions
+        self.ttyForegroundPIDs = ttyForegroundPIDs
         self.repositoryRoot = repositoryRoot
         self.branch = branch
         self.title = title
@@ -667,19 +674,48 @@ package final class SessionNavigator {
     }
 
     /// Whether `bundleID`'s focused pane, read back the way the join reads
-    /// it, shows the live session `sessionID`; false once it is not live.
+    /// it, shows the live session `sessionID`; false once it is not live,
+    /// before or after the read-back, or once its local agent no longer
+    /// holds its terminal. An agent that exits leaves a shell on its tty,
+    /// which reads back the same (#1219).
     package func focusedPaneShows(sessionID: String, bundleID: String) async -> Bool {
-        guard let session = liveSessions().first(where: { $0.sessionID == sessionID }) else { return false }
-        return await focuser.focusedPaneShows(session, bundleID: bundleID)
+        guard let session = liveSession(sessionID) else { return false }
+        let shows = await focuser.focusedPaneShows(session, bundleID: bundleID)
+        return shows && liveSession(sessionID) != nil && agentHoldsItsTerminal(sessionID: sessionID)
+    }
+
+    /// Whether the live session `sessionID`'s local agent is in its tty's
+    /// foreground process group, the herdr route's foreground test. A
+    /// suspended agent (Ctrl-Z) is alive and registered, and its tty reads
+    /// back as the session's, but its shell owns the terminal and runs
+    /// typed text as a command (#1249). Asked right before each key into a
+    /// local terminal pane. A session with no local tty (remote, Claude
+    /// Desktop) has no shell here to reach and passes.
+    package func agentHoldsItsTerminal(sessionID: String) -> Bool {
+        guard let session = liveSession(sessionID) else { return false }
+        guard session.origin.isLocalAuthenticated, let tty = session.process?.tty else { return true }
+        guard let foreground = ttyForegroundPIDs(tty),
+              ClaudeSessionJoinResolver.registeredAgentIsForeground(
+                  snapshot: session, foregroundPIDs: foreground, abstain: { _ in }
+              )
+        else {
+            Log.dictation.notice("session pane: the agent does not own its terminal's foreground; no key")
+            return false
+        }
+        return true
     }
 
     /// Brings a live session's pane forward by registry id; nil when the
-    /// session is no longer live.
+    /// session is no longer live, before or after the focus (#1219).
     package func focusPane(sessionID: String) async -> SessionPaneFocusOutcome? {
-        guard let session = liveSessions().first(where: { $0.sessionID == sessionID }) else {
-            return nil
-        }
-        return await focuser.focusPane(of: session)
+        guard let session = liveSession(sessionID) else { return nil }
+        let outcome = await focuser.focusPane(of: session)
+        guard liveSession(sessionID) != nil else { return nil }
+        return outcome
+    }
+
+    private func liveSession(_ sessionID: String) -> ClaudeSessionSnapshot? {
+        liveSessions().first { $0.sessionID == sessionID }
     }
 
     private static func candidates(

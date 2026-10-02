@@ -176,7 +176,7 @@ if [ "$AGENT" = vibe ]; then
   [0-9]*" "[0-9]*" "[0-9]*) echo "X-Lvx-Usage: $USAGE" >>"$WORK/header" || exit 0 ;;
   esac
 fi
-STATUS="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+STATUS="$(curl -q --noproxy '*' --silent --output /dev/null --write-out '%{http_code}' \
   --max-time 5 --request POST \
   --header 'Content-Type: application/json' \
   --header @"$WORK/header" \

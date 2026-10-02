@@ -88,7 +88,10 @@ enum WidgetSnapshotAssembler {
                 startedAt: $0.startedAt,
                 finishedAt: $0.finishedAt,
                 words: TranscriptDiff.wordRanges(in: $0.finalText).count,
-                polishingSeconds: $0.polishingDurationSeconds
+                // A quick capture is polished in the Inbox after its record
+                // is written: its polish is not in its duration (#970).
+                polishingSeconds: $0.outputMode == DictationSessionRecord.quickCaptureOutputMode
+                    ? nil : $0.polishingDurationSeconds
             )
         }
         let today = calendar.startOfDay(for: now)
@@ -135,7 +138,8 @@ enum WidgetSnapshotAssembler {
                 days: WidgetSnapshot.days(from: samples, now: now, calendar: calendar),
                 today: todayDetail,
                 last7Days: weekDetail,
-                last30Days: monthDetail
+                last30Days: monthDetail,
+                detailDay: today
             ),
             weeklyShares: trend.weeks.map(\.termsSpelledRightShare),
             lastDictation: last,

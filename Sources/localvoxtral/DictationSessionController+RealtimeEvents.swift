@@ -28,6 +28,11 @@ extension DictationSessionController {
             // attempt, when the generation has not moved on yet.
             sessionConnectionGeneration = .none
         }
+        if case .sessionRolledOver(let next) = event {
+            // The retiring socket hands the session to the one the client
+            // rolled over to (#1139), and is refused by name from here.
+            sessionConnectionGeneration = next
+        }
         handle(event: event)
     }
 
@@ -63,6 +68,8 @@ extension DictationSessionController {
             handleErrorEvent(message)
         case .transcriptionStopped(let message):
             handleTranscriptionStoppedEvent(message)
+        case .sessionRolledOver:
+            handleSessionRolledOverEvent()
         }
     }
 
@@ -282,6 +289,23 @@ extension DictationSessionController {
         )
         guard acceptsRealtimeEvents, !isFinalizingStop else { return }
         statusText = message
+    }
+
+    /// The client finished its server session before the context limit and
+    /// goes on in a fresh one (#1139). The retiring socket's last final came
+    /// first, so normally nothing is pending. A socket that left without its
+    /// `done` leaves its partial: promoted, as a reconnect promotes it, so the
+    /// new session's text follows it instead of replacing it.
+    private func handleSessionRolledOverEvent() {
+        guard acceptsRealtimeEvents else { return }
+        if let promoted = promotePendingRealtimeTextToLatestSegment() {
+            transcript.appendToTranscript(promoted)
+        }
+        if isFinalizingStop {
+            realtimeFinalizationLastActivityAt = dependencies.clock.now()
+        }
+        refreshOverlayBufferSession()
+        Log.backends.notice("realtime session rolled over; the dictation goes on in the new server session")
     }
 
     // MARK: - Segment Promotion
