@@ -211,6 +211,7 @@ extension DictationSessionController {
                 skillNames: polishSkillNames()
             )
             agentSkillStore?.refreshLocalIfStale()
+            agentProjectScanner?.refreshIfStale()
 
             statusText = StatusStrings.polishing
             overlayBufferCoordinator.markPolishing(true)

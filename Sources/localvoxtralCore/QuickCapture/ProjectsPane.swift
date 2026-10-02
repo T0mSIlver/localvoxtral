@@ -108,7 +108,7 @@ package enum ProjectsPane {
             let sessions = ProjectsPaneRow.Sessions(
                 running: running.count, agents: ClaudeHookAgent.allCases.filter(running.contains)
             )
-            let lastUsed: Date = members.map { max($0.lastSeen, $0.reportedAt ?? $0.lastSeen) }.max() ?? .distantPast
+            let lastUsed: Date = members.map(\.lastActivity).max() ?? .distantPast
             let dictations = dictationProjectKeys.filter { $0.map(keys.contains) ?? false }.count
             return ProjectsPaneRow(
                 key: project.key,

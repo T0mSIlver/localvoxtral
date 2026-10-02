@@ -25,7 +25,7 @@ import os
 /// write re-reads it under their shared lock and applies its change to what
 /// the other copy wrote (`StoredFile.update`), and Settings' Projects pane
 /// reads it again when it appears (`reloadIfChanged`, #1126).
-package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectSummaryStoring, QuickCaptureProjectLinkStoring, @unchecked Sendable {
+package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposalStoring, RemoteProjectSummaryStoring, QuickCaptureProjectLinkStoring, @unchecked Sendable {
     private struct State {
         var terms: LearnedTerms?
         /// Set, the file on disk is left alone.
@@ -256,6 +256,24 @@ package final class LearnedTermStore: ProjectTermProposalStoring, RemoteProjectS
             ) {
                 Log.polishing.info("Learned terms: a remote hook named a new repository")
             }
+        }
+    }
+
+    /// The repositories coding agents worked in (#1027): the Mac's own
+    /// transcripts (`hostID` nil) or a host's report.
+    package func recordAgentActivity(_ repositories: [AgentWorkedRepository], hostID: String?) {
+        let moment = now()
+        mutate { memory in
+            var added = 0
+            for repository in repositories where memory.recordAgentActivity(
+                project: repository.project, remote: repository.remote, hostID: hostID,
+                at: repository.lastActive, now: moment
+            ) {
+                added += 1
+            }
+            Log.polishing.info(
+                "Learned terms: agents worked in \(repositories.count, privacy: .public) repositories, \(added, privacy: .public) new"
+            )
         }
     }
 
