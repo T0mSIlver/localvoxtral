@@ -345,7 +345,7 @@ package final class QuickCaptureInboxModel {
               let after = inbox.items.first(where: { $0.id == id })
         else {
             if !result.restored, item.state == .drafting {
-                mutate { inbox in inbox.update(id) { $0.state = .ready } }
+                mutate { inbox in inbox.update(id) { if $0.state == .drafting { $0.state = .ready } } }
             }
             return routing
         }
@@ -366,6 +366,7 @@ package final class QuickCaptureInboxModel {
         draftRuns[id] = run
         mutate { inbox in
             inbox.update(id) {
+                guard !$0.isFilingOrFiled else { return }
                 $0.state = .drafting
                 $0.note = nil
                 $0.codeCheck = nil
@@ -388,7 +389,10 @@ package final class QuickCaptureInboxModel {
                 guard let self, self.draftRuns[id] == run, let item = self.inbox.items.first(where: { $0.id == id }),
                       item.state == .drafting, item.projectKey == key
                 else { return false }
-                self.mutate { $0.applyFirstDraft(outcome, repository: repository, checking: !agents.isEmpty, to: id) }
+                self.mutate { inbox in
+                    guard inbox.items.first(where: { $0.id == id })?.projectKey == key else { return }
+                    inbox.applyFirstDraft(outcome, repository: repository, checking: !agents.isEmpty, to: id)
+                }
                 guard let now = self.inbox.items.first(where: { $0.id == id }) else { return false }
                 if case .draft = outcome { shown.withLock { $0 = (now.title, now.body) } }
                 return now.state == .drafting || now.codeCheck?.state == .checking
@@ -537,6 +541,7 @@ package final class QuickCaptureInboxModel {
             let result = await self.github.createIssue(repository: repository, title: title, body: body)
             let saveFailure = self.mutate { inbox in
                 inbox.update(id) { item in
+                    guard item.state == .filing else { return }
                     switch result {
                     case .success(let url):
                         item.state = .filed
@@ -575,6 +580,7 @@ package final class QuickCaptureInboxModel {
             let result = await self.github.commentOnIssue(repository: repository, issue: issue, body: body)
             let saveFailure = self.mutate { inbox in
                 inbox.update(id) { item in
+                    guard item.state == .filing else { return }
                     switch result {
                     case .success(let url):
                         item.state = .filed
@@ -664,6 +670,7 @@ package final class QuickCaptureInboxModel {
         // ready draft until the redraft lands.
         mutate { inbox in
             inbox.update(id) {
+                guard !$0.isFilingOrFiled else { return }
                 $0.changes = changes
                 $0.state = .drafting
             }
