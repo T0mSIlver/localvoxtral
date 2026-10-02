@@ -12,7 +12,7 @@ extension DictationSessionController {
     /// Connect time, once per dictation: hands the relay resolved at start to
     /// the insertion service, or disarms the previous one.
     func armPromptRelayForSession() {
-        promptRelaySessionID = context.claudeSessionJoin?.snapshot.sessionID
+        promptRelaySessionID = context.agentPromptRoute == nil ? nil : context.claudeSessionJoin?.snapshot.sessionID
         textInsertion.beginPromptRelay(context.agentPromptRoute, kept: { [weak self] _ in
             self?.lastError = StatusStrings.agentPromptTextKeptInHistory
             self?.forgetLandingThePromptRelayDidNotFill()
