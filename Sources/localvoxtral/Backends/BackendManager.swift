@@ -521,6 +521,13 @@ final class BackendManager: ManagedBackendManaging {
     ) async throws {
         let updates = supervisor.stateUpdates
         await supervisor.start()
+        // The stream carries only later transitions, and start() does nothing
+        // for a supervisor already active. One that became ready while the
+        // model was being checked would never be reported again (#1305).
+        if supervisor.state == .running {
+            mirrorSupervisorState(.running, for: spec)
+            return
+        }
 
         for await state in updates {
             switch state {
