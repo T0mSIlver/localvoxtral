@@ -2027,9 +2027,19 @@ there is not.
     `role` is `user`, its `injected` field is PRESENT and `false`, and its
     `content` is a string, truncated to the wire's prompt limit. A line that
     does not contain Vibe's user-role marker is never parsed, nothing but the
-    chosen `content` string is kept, and the path never crosses the socket
+    chosen `content` string and that line's `message_id` is kept, and the path
+    never crosses the socket
     (`testRecordsPutThePromptFirstAndNeverCarryTheTranscriptPath`). Schema
     drift in the log therefore costs the prompt and nothing else.
+    Every hook re-reads the newest prompt, and Vibe 2.25.4 saves the log after
+    each model step, so one message arrives once per hook and a turn's first
+    tool still reads the turn before's. The `message_id` rides as the
+    record's `prompt_id`, and the registry counts a Vibe submit once per id
+    (`ClaudeSessionReducer.isRepeatedSubmit`,
+    `testEachVibeMessageIsSubmittedOnceHoweverManyHooksReadIt`, #1285):
+    correction learning took each replay for the user's fix. Text cannot
+    stand in for the id, because a prompt sent again on purpose has the same
+    text; a log without ids counts every submit, as before.
     Do not widen this read to another field or another agent: an agent whose
     hooks carry the prompt has no reason to be read this way.
     Vibe has TWO hook runners, chosen per account by a server-side rollout

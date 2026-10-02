@@ -339,6 +339,13 @@ public struct ClaudeHookRecord: Sendable, Equatable {
     /// predates it ignores the key, and a record without it reads nil. `clamp`
     /// makes it one sanitized line and drops it from focus records.
     public var sessionTitle: String?
+    /// Which user message a Vibe `UserPromptSubmit` carries: the message's
+    /// `message_id` in Vibe's session log (#1285). Vibe hooks carry no
+    /// prompt, so the publisher reads the newest one from the log on every
+    /// hook, and the same message arrives many times; the registry counts it
+    /// once per id. Text cannot tell such a replay from a prompt typed again.
+    /// Opaque, bounded by `clamp`, and kept on `UserPromptSubmit` only.
+    public var promptID: String?
 
     public init(
         version: Int = ClaudeHookWire.version,
@@ -353,7 +360,8 @@ public struct ClaudeHookRecord: Sendable, Equatable {
         process: ClaudeHookProcessInfo? = nil,
         promptRelay: OpencodePromptRelayAddress? = nil,
         notificationType: ClaudeNotificationType? = nil,
-        sessionTitle: String? = nil
+        sessionTitle: String? = nil,
+        promptID: String? = nil
     ) {
         self.version = version
         self.event = event
@@ -368,6 +376,7 @@ public struct ClaudeHookRecord: Sendable, Equatable {
         self.promptRelay = promptRelay
         self.notificationType = notificationType
         self.sessionTitle = sessionTitle
+        self.promptID = promptID
     }
 }
 
@@ -411,6 +420,7 @@ extension ClaudeHookRecord: Codable {
         case promptRelay = "prompt_relay"
         case notificationType = "notification_type"
         case sessionTitle = "session_title"
+        case promptID = "prompt_id"
     }
 
     public init(from decoder: Decoder) throws {
@@ -437,6 +447,7 @@ extension ClaudeHookRecord: Codable {
         notificationType = (try? container.decodeIfPresent(ClaudeNotificationType.self, forKey: .notificationType)) ?? nil
         // A title that is not a string loses the field, not the record.
         sessionTitle = (try? container.decodeIfPresent(String.self, forKey: .sessionTitle)) ?? nil
+        promptID = (try? container.decodeIfPresent(String.self, forKey: .promptID)) ?? nil
         // Any other key on the wire — notably an `origin`-shaped one — is
         // silently discarded here. That is the point: trust is not a field.
     }
@@ -460,6 +471,7 @@ extension ClaudeHookRecord: Codable {
         try container.encodeIfPresent(promptRelay, forKey: .promptRelay)
         try container.encodeIfPresent(notificationType, forKey: .notificationType)
         try container.encodeIfPresent(sessionTitle, forKey: .sessionTitle)
+        try container.encodeIfPresent(promptID, forKey: .promptID)
     }
 }
 
@@ -600,6 +612,7 @@ public enum ClaudeHookWireCodec {
         } else {
             clamped.sessionTitle = record.sessionTitle.flatMap { cleanTitle($0, limits: limits) }
         }
+        clamped.promptID = record.event == .userPromptSubmit ? cleanPromptID(record.promptID) : nil
         clamped.sessionID = truncate(record.sessionID, toUTF8Bytes: limits.maxPathBytes)
         clamped.prompt = record.prompt.map { truncate($0, toUTF8Bytes: limits.maxPromptBytes) }
         clamped.rawCwd = record.rawCwd.map { truncate($0, toUTF8Bytes: limits.maxPathBytes) }
@@ -633,6 +646,16 @@ public enum ClaudeHookWireCodec {
             clamped.process = process
         }
         return clamped
+    }
+
+    /// Longest prompt id kept. Vibe's are UUIDs; a longer one is not an id
+    /// this code knows, and truncating it could make two ids equal.
+    public static let maxPromptIDBytes = 128
+
+    /// A prompt id as sent, or nil when empty or too long.
+    public static func cleanPromptID(_ raw: String?) -> String? {
+        guard let raw, !raw.isEmpty, raw.utf8.count <= maxPromptIDBytes else { return nil }
+        return raw
     }
 
     /// A title as one line: controls, bidi overrides and zero-width

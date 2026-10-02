@@ -141,7 +141,10 @@ final class VibeTranscriptPromptTests: XCTestCase {
             #"{"role":"assistant","reasoning_content":"REASONING","tool_calls":[]}"#,
             #"{"role":"tool","content":"TOOL OUTPUT","name":"read_file"}"#,
         ])
-        XCTAssertEqual(VibeTranscriptPrompt.lastUserPrompt(atPath: path), "second prompt")
+        XCTAssertEqual(
+            VibeTranscriptPrompt.lastUserPrompt(atPath: path),
+            VibeUserPrompt(text: "second prompt", messageID: "b")
+        )
     }
 
     func testInjectedUserMessagesAreNotThePrompt() throws {
@@ -149,7 +152,7 @@ final class VibeTranscriptPromptTests: XCTestCase {
             #"{"role":"user","content":"what the user typed","injected":false}"#,
             #"{"role":"user","content":"hook retry reason","injected":true}"#,
         ])
-        XCTAssertEqual(VibeTranscriptPrompt.lastUserPrompt(atPath: path), "what the user typed")
+        XCTAssertEqual(VibeTranscriptPrompt.lastUserPrompt(atPath: path)?.text, "what the user typed")
     }
 
     func testAUserLineWithoutTheInjectedFieldIsNotTrusted() throws {
@@ -158,7 +161,7 @@ final class VibeTranscriptPromptTests: XCTestCase {
             #"{"role":"user","content":"older, marked","injected":false}"#,
             #"{"role":"user","content":"newer, unmarked"}"#,
         ])
-        XCTAssertEqual(VibeTranscriptPrompt.lastUserPrompt(atPath: path), "older, marked")
+        XCTAssertEqual(VibeTranscriptPrompt.lastUserPrompt(atPath: path)?.text, "older, marked")
     }
 
     func testALineWithoutTheUserRoleMarkerIsNeverParsed() {
@@ -176,11 +179,11 @@ final class VibeTranscriptPromptTests: XCTestCase {
         defer { release.signal() }
         let prompt = VibeTranscriptPrompt.lastUserPrompt(atPath: "/stalled/messages.jsonl", deadline: 0.05) { _, _ in
             release.wait()
-            return "too late"
+            return VibeUserPrompt(text: "too late")
         }
         XCTAssertNil(prompt)
         XCTAssertEqual(
-            VibeTranscriptPrompt.lastUserPrompt(atPath: "/fast/messages.jsonl", deadline: 30) { _, _ in "in time" },
+            VibeTranscriptPrompt.lastUserPrompt(atPath: "/fast/messages.jsonl", deadline: 30) { _, _ in VibeUserPrompt(text: "in time") }?.text,
             "in time"
         )
     }
@@ -191,13 +194,13 @@ final class VibeTranscriptPromptTests: XCTestCase {
             #"{"role":"user","content":[{"type":"text","text":"multimodal"}],"injected":false}"#,
             #"{"role":"user","content":"cut mid-rec"#,
         ])
-        XCTAssertEqual(VibeTranscriptPrompt.lastUserPrompt(atPath: path), "kept")
+        XCTAssertEqual(VibeTranscriptPrompt.lastUserPrompt(atPath: path)?.text, "kept")
     }
 
     func testThePromptIsTruncatedToTheWireLimit() throws {
         let long = String(repeating: "a", count: 20_000)
         let path = try write([#"{"role": "user", "content": "\#(long)", "injected": false}"#])
-        let prompt = try XCTUnwrap(VibeTranscriptPrompt.lastUserPrompt(atPath: path))
+        let prompt = try XCTUnwrap(VibeTranscriptPrompt.lastUserPrompt(atPath: path)?.text)
         XCTAssertEqual(prompt.utf8.count, ClaudeHookLimits.default.maxPromptBytes)
     }
 
@@ -329,7 +332,9 @@ final class VibeHookPublisherRunTests: XCTestCase {
                 pid == 500 ? .init(parent: 300, session: 500, hasTTY: false)
                     : .init(parent: 1, session: 300, hasTTY: true, startMicros: 1_700_000_000_000_123)
             },
-            lastUserPrompt: { path, _ in path == "/t/messages.jsonl" ? "rename the wire enum" : nil }
+            lastUserPrompt: { path, _ in
+                path == "/t/messages.jsonl" ? VibeUserPrompt(text: "rename the wire enum") : nil
+            }
         )
     }
 
@@ -384,6 +389,67 @@ final class VibeHookPublisherRunTests: XCTestCase {
         XCTAssertEqual(snapshot.recentFiles.map(\.path), ["/tmp/a.swift"])
         XCTAssertEqual(snapshot.recentFiles.map(\.kind), [.edited])
         XCTAssertEqual(snapshot.activity, .working)
+    }
+
+    /// The legacy runner hands every hook the session log, and the publisher
+    /// reads its newest user message each time, so one prompt reaches the app
+    /// once per hook. Vibe 2.25.4 saves the log after each model step: a
+    /// turn's first file tool still sees the PREVIOUS turn's prompt, and its
+    /// turn end sees its own prompt again. Correction learning takes each
+    /// submission as the fix of the dictation it waits on, so only a message
+    /// the session has not announced yet may count. A prompt typed again on
+    /// purpose is a new message and counts.
+    func testEachVibeMessageIsSubmittedOnceHoweverManyHooksReadIt() throws {
+        let submitted = Mutex<[String]>([])
+        registry.setSubmittedPromptObserver { _, prompt in submitted.withLock { $0.append(prompt) } }
+        let log = directory.appendingPathComponent("session/\(VibeTranscriptPrompt.fileName)")
+        try FileManager.default.createDirectory(
+            at: log.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try Data().write(to: log)
+        func append(_ lines: String...) throws {
+            let handle = try FileHandle(forWritingTo: log)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data((lines.joined(separator: "\n") + "\n").utf8))
+        }
+        func user(_ text: String, id: String) -> String {
+            #"{"role": "user", "content": "\#(text)", "injected": false, "message_id": "\#(id)"}"#
+        }
+        let answer = #"{"role": "assistant", "content": "done", "injected": false, "message_id": "a"}"#
+        let realLog = ClaudeHookPublisher.VibeEnvironment(
+            ownSession: vibe.ownSession, processFacts: vibe.processFacts
+        )
+        let tool = #","tool_name":"read_file","tool_input":{"file_path":"a.swift"}"#
+        func hook(_ event: String, extra: String = "") {
+            let ingested = expectation(description: "\(event) ingested")
+            ingested.expectedFulfillmentCount = 2
+            broker.debugConfigureIngestHook { _ in ingested.fulfill() }
+            let body = Data("""
+            {"session_id":"abc","transcript_path":"\(log.path)","cwd":"/tmp",\
+            "parent_session_id":null,"hook_event_name":"\(event)"\(extra)}
+            """.utf8)
+            XCTAssertEqual(publisher().runVibe(stdin: body, vibe: realLog), .published)
+            wait(for: [ingested], timeout: 5)
+        }
+
+        try append(user("first prompt", id: "u1"), answer)
+        hook("post_agent")
+        // Turn 2: the first step's tool runs before Vibe saves the new prompt.
+        hook("post_tool", extra: tool)
+        try append(user("rename the wire enum", id: "u2"), answer)
+        hook("post_tool", extra: tool)
+        hook("post_agent")
+        // Turn 3 sends the same words again.
+        hook("post_tool", extra: tool)
+        try append(user("rename the wire enum", id: "u3"), answer)
+        hook("post_agent")
+
+        XCTAssertEqual(
+            submitted.withLock { $0 },
+            ["first prompt", "rename the wire enum", "rename the wire enum"]
+        )
+        XCTAssertEqual(registry.snapshot(sessionID: "vibe:abc")?.promptsSubmitted, 3)
     }
 
     func testAnAbsentAppIsATransportFailureAfterOneDial() {
