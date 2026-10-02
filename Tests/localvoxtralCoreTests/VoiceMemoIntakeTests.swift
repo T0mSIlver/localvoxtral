@@ -250,10 +250,11 @@ final class VoiceMemoIntakeTests: XCTestCase {
                 streamingSeen.append(intake.isTranscribing)
             }
         }
+        intake.onTranscriptionEnded = { [unowned self] in streamingSeen.append(intake.isTranscribing) }
         files = [memo("a.m4a", minute: 1), memo("b.m4a", minute: 2)]
         _ = await intake.scan()
         await intake.run()
-        XCTAssertEqual(streamingSeen, [true], "still streaming after the stop")
+        XCTAssertEqual(streamingSeen, [true, false], "still streaming after the stop, then told it ended")
         XCTAssertEqual(captured.map(\.text), ["words of a.m4a"])
         XCTAssertEqual(transcriber.calls.withLock { $0 }, ["a.m4a"])
     }

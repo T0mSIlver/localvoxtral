@@ -172,14 +172,15 @@ final class VoiceMemoController {
             if intake != nil { Log.backends.info("Voice memos: off") }
             startTask?.cancel()
             startTask = nil
-            if let intake, intake.isTranscribing, let running = runTask {
-                // The memo in flight finishes: the helper decodes its queued
-                // audio whether or not its socket stays open (#1313).
+            if let intake, intake.isTranscribing {
+                // The memo in flight finishes, whichever scan runs it: the
+                // helper decodes its queued audio whether or not its socket
+                // stays open (#1313).
                 intake.stopAfterCurrentMemo()
                 finishingIntake = intake
-                Task { [weak self] in
-                    await running.value
-                    if self?.finishingIntake === intake { self?.finishingIntake = nil }
+                intake.onTranscriptionEnded = { [weak self, weak intake] in
+                    guard let self, let intake, self.finishingIntake === intake else { return }
+                    self.finishingIntake = nil
                 }
             } else {
                 runTask?.cancel()

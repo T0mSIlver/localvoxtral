@@ -64,6 +64,8 @@ package final class VoiceMemoIntake {
     /// one connection's queued audio at a time, so a dictation started now
     /// waits behind the memo for its text.
     package private(set) var isTranscribing = false
+    /// Called each time `isTranscribing` turns false.
+    package var onTranscriptionEnded: (@MainActor () -> Void)?
     private var isStopping = false
     private var reportedLedgerProblem = false
     private var reportedInboxProblem = false
@@ -269,7 +271,10 @@ package final class VoiceMemoIntake {
         let transcript: VoiceMemoTranscript
         do {
             isTranscribing = true
-            defer { isTranscribing = false }
+            defer {
+                isTranscribing = false
+                onTranscriptionEnded?()
+            }
             transcript = try await transcriber.transcribe(url)
         } catch is VoiceMemoUnreadable {
             Log.backends.error("Voice memos: a memo is not audio this Mac can decode; left in the folder")
