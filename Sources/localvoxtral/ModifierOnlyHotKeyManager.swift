@@ -267,7 +267,11 @@ final class ModifierOnlyHotKeyManager {
 
         if state.isModifierDown {
             if isTargetKeyEvent || !targetFlagPresent {
-                effect = handleTargetModifierReleaseIfNeeded(targetFlagPresent: targetFlagPresent)
+                // The left twin keeps `.command` / `.option` set after the
+                // right key is up; only the right key's device bit says so (#1270).
+                let targetKeyHeld = targetFlagPresent
+                    && (!isTargetKeyEvent || Self.targetSideStillHeld(target, flags: flags))
+                effect = handleTargetModifierReleaseIfNeeded(targetFlagPresent: targetKeyHeld)
             } else {
                 effect = handleModifierInterruptedByFlagsTimeline()
             }
@@ -371,6 +375,20 @@ final class ModifierOnlyHotKeyManager {
             return flags.contains(.option)
         case .chord:
             return false
+        }
+    }
+
+    private static func targetSideStillHeld(
+        _ target: ModifierKey,
+        flags: NSEvent.ModifierFlags
+    ) -> Bool {
+        switch target {
+        case .rightCommand:
+            return flags.rawValue & SidedModifier.rightCommand.deviceFlag != 0
+        case .rightOption:
+            return flags.rawValue & SidedModifier.rightOption.deviceFlag != 0
+        case .fn, .chord:
+            return true
         }
     }
 
