@@ -383,7 +383,7 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
     ) {
         update(id) { item in
             if item.state == .ready, item.codeCheck?.state == .checking {
-                Self.applyCheck(outcome, firstDraft: firstDraft, to: &item)
+                Self.applyCheck(outcome, repository: repository, firstDraft: firstDraft, to: &item)
                 return
             }
             guard item.state == .drafting else { return }
@@ -409,8 +409,11 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
         }
     }
 
+    /// `repository` is the one the check listed open issues in: when the
+    /// capture files elsewhere now, the issue it names is not one there.
     private static func applyCheck(
-        _ outcome: QuickCaptureDraft.Outcome, firstDraft: (title: String, body: String)?, to item: inout QuickCaptureItem
+        _ outcome: QuickCaptureDraft.Outcome, repository: String?, firstDraft: (title: String, body: String)?,
+        to item: inout QuickCaptureItem
     ) {
         switch outcome {
         case .draft(let draft, _):
@@ -421,8 +424,12 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
             guard untouched else { return }
             item.title = draft.title
             item.body = draft.body
-            item.relation = draft.relation
-            item.relatedIssue = draft.issue
+            var sameRepository = true
+            if let current = item.repository, let repository {
+                sameRepository = current.caseInsensitiveCompare(repository) == .orderedSame
+            }
+            item.relation = sameRepository ? draft.relation : .none
+            item.relatedIssue = sameRepository ? draft.issue : nil
             item.note = nil
         case .failed(let failure):
             item.codeCheck?.state = .failed
