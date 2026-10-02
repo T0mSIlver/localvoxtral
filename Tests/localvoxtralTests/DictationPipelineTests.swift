@@ -2182,7 +2182,11 @@ final class DictationPipelineTests: XCTestCase {
 
         pipeline.viewModel.session.moveDestination(forward: true)
         let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "the Inbox stops on its phrase")
-        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
+        // Tab also opened the destination list, whose close timer sleeps on
+        // the same clock. Waiting for one new sleeper could return on that
+        // timer alone, and an advance before the stop's own sleep registers
+        // never reaches its deadline (#1378).
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 2)
         pipeline.clock.advance(by: 3)
         await armed.value
         await finishStoppedSession(
