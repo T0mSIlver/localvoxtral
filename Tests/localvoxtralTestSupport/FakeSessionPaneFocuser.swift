@@ -17,8 +17,37 @@ package final class FakeSessionPaneFocuser: SessionPaneFocusing {
 
     package func focusPane(of session: ClaudeSessionSnapshot) async -> SessionPaneFocusOutcome {
         focusedSessionIDs.append(session.sessionID)
+        if holdsFocus {
+            await withCheckedContinuation { heldFocuses.append($0) }
+        }
         onFocus?(session.sessionID)
         return outcome
+    }
+
+    /// While true, `focusPane` waits for `releaseHeldFocuses()`, as a
+    /// terminal slow to answer would.
+    package var holdsFocus = false
+    private var heldFocuses: [CheckedContinuation<Void, Never>] = [] {
+        didSet { resumeHoldWaiters() }
+    }
+    private var holdWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    /// Returns once `count` focuses are held.
+    package func waitUntilHeld(_ count: Int) async {
+        guard heldFocuses.count < count else { return }
+        await withCheckedContinuation { holdWaiters.append((count, $0)) }
+    }
+
+    package func releaseHeldFocuses() {
+        let held = heldFocuses
+        heldFocuses = []
+        held.forEach { $0.resume() }
+    }
+
+    private func resumeHoldWaiters() {
+        let ready = holdWaiters.filter { $0.count <= heldFocuses.count }
+        holdWaiters.removeAll { $0.count <= heldFocuses.count }
+        ready.forEach { $0.continuation.resume() }
     }
 
     /// The answer to the read-back before a Return; `onReadBack` runs first.
