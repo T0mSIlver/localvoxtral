@@ -164,7 +164,8 @@ final class LearnedTermsTests: XCTestCase {
             terms.record(
                 [observation("term")],
                 project: LearnedTermProjectResolver.Identity(key: "/p\(index)", name: "p\(index)"),
-                now: start + Double(index) * day
+                // Hours apart: the cap is past the days a term lasts.
+                now: start + Double(index) * 3600
             )
         }
 
@@ -239,7 +240,7 @@ final class LearnedTermsTests: XCTestCase {
         }
         XCTAssertTrue(terms.canPin(projectKey: "/pin0"))
         XCTAssertTrue(terms.setPinned(true, term: "other", projectKey: "/pin0"))
-        // A 41st project, as an import brings one in.
+        // One project past the cap, as an import brings one in.
         var withSpare = terms
         withSpare.projects.append(
             LearnedTermProject(

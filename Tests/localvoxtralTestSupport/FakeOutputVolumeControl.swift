@@ -53,6 +53,11 @@ package final class FakeOutputVolumeControl: SystemOutputVolumeControlling, @unc
         state.withLock { $0.volumes[deviceUID] = nil }
     }
 
+    /// The device was plugged back in, at the level it kept while away.
+    package func reconnect(_ deviceUID: String, volume: Float) {
+        state.withLock { $0.volumes[deviceUID] = volume }
+    }
+
     package func volume(of deviceUID: String) -> Float? {
         state.withLock { $0.volumes[deviceUID] }
     }

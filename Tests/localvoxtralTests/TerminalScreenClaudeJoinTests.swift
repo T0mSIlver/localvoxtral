@@ -248,7 +248,11 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
         XCTAssertEqual(join.mechanism, .ttyDevice)
         XCTAssertTrue(joinResolver.isStillLive(join))
         let gate = await authorizer(registry: registry, focusedTTY: "/dev/ttys003")
-        XCTAssertTrue(gate.isAuthorized(target: ghostty, windowID: windowA))
+        XCTAssertTrue(gate.isAuthorized(target: ghostty, windowID: windowA, paneTTY: "/dev/ttys003"))
+        XCTAssertFalse(
+            gate.isAuthorized(target: ghostty, windowID: windowA, paneTTY: nil),
+            "a capture whose pane is unknown is not the joined pane"
+        )
     }
 
     // The join carries the session's LOCAL workspace, which is what the repo
@@ -347,11 +351,11 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
         XCTAssertEqual(join?.mechanism, .ttyDevice)
         let gate = TerminalScreenClaudeJoinAuthorizer(resolver: joinResolver, currentJoin: { join })
         XCTAssertTrue(
-            gate.isAuthorized(target: ghostty, windowID: windowB),
+            gate.isAuthorized(target: ghostty, windowID: windowB, paneTTY: "/dev/ttys003"),
             "precondition: the tty-joined window itself authorizes"
         )
         XCTAssertFalse(
-            gate.isAuthorized(target: ghostty, windowID: windowA),
+            gate.isAuthorized(target: ghostty, windowID: windowA, paneTTY: "/dev/ttys003"),
             "a capture from another window of the same app must not inherit a tty join"
         )
     }
@@ -371,8 +375,8 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
         let gate = TerminalScreenClaudeJoinAuthorizer(
             resolver: joinResolver, currentJoin: { join }
         )
-        XCTAssertFalse(gate.isAuthorized(target: ghostty, windowID: windowA))
-        XCTAssertFalse(gate.isAuthorized(target: ghostty, windowID: nil))
+        XCTAssertFalse(gate.isAuthorized(target: ghostty, windowID: windowA, paneTTY: "/dev/ttys003"))
+        XCTAssertFalse(gate.isAuthorized(target: ghostty, windowID: nil, paneTTY: "/dev/ttys003"))
     }
 
     func testRemoteSessionNeverJoinsViaTTY() async {
@@ -934,7 +938,7 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
 
         XCTAssertEqual(join.mechanism, .herdrPane)
         XCTAssertEqual(join.windowID, windowA)
-        XCTAssertFalse(gate.isAuthorized(target: ghostty, windowID: windowA))
+        XCTAssertFalse(gate.isAuthorized(target: ghostty, windowID: windowA, paneTTY: "/dev/ttys-outer"))
     }
 
     // MARK: - TTY reply validation
@@ -994,7 +998,7 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
         ).resolve(target: ghostty)
         XCTAssertNil(join)
         let gate = await authorizer(registry: registry, focusedTTY: "/dev/ttys003")
-        XCTAssertFalse(gate.isAuthorized(target: ghostty, windowID: windowA))
+        XCTAssertFalse(gate.isAuthorized(target: ghostty, windowID: windowA, paneTTY: "/dev/ttys003"))
     }
 
     /// The regression for the REMOVED title arm (owner decision 2026-09-05).
@@ -1130,8 +1134,8 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
 
         // The authorizer consults the resolved join; it must not read again.
         let gate = TerminalScreenClaudeJoinAuthorizer(resolver: resolver, currentJoin: { join })
-        XCTAssertTrue(gate.isAuthorized(target: ghostty, windowID: windowA))
-        XCTAssertTrue(gate.isAuthorized(target: ghostty, windowID: windowA))
+        XCTAssertTrue(gate.isAuthorized(target: ghostty, windowID: windowA, paneTTY: "/dev/ttys003"))
+        XCTAssertTrue(gate.isAuthorized(target: ghostty, windowID: windowA, paneTTY: "/dev/ttys003"))
         XCTAssertEqual(
             reads.withLock { $0 }, 1,
             "the authorizer must consult the resolved join, never re-read the surface"
@@ -1145,8 +1149,8 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
         XCTAssertNotNil(registry.ingest(record(tty: "/dev/ttys003"), origin: local))
         let other = TerminalScreenTarget(pid: 777, bundleID: TerminalScreenAllowlist.ghosttyBundleID)
         let gate = await authorizer(registry: registry, focusedTTY: "/dev/ttys003")
-        XCTAssertTrue(gate.isAuthorized(target: ghostty, windowID: windowA), "precondition: the joined pane authorizes")
-        XCTAssertFalse(gate.isAuthorized(target: other, windowID: windowA))
+        XCTAssertTrue(gate.isAuthorized(target: ghostty, windowID: windowA, paneTTY: "/dev/ttys003"), "precondition: the joined pane authorizes")
+        XCTAssertFalse(gate.isAuthorized(target: other, windowID: windowA, paneTTY: "/dev/ttys003"))
     }
 
     // Same pid, different app: the bundle id is part of the identity compare,
@@ -1156,7 +1160,7 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
         XCTAssertNotNil(registry.ingest(record(tty: "/dev/ttys003"), origin: local))
         let recycled = TerminalScreenTarget(pid: ghostty.pid, bundleID: "com.apple.Terminal")
         let gate = await authorizer(registry: registry, focusedTTY: "/dev/ttys003")
-        XCTAssertFalse(gate.isAuthorized(target: recycled, windowID: windowA))
+        XCTAssertFalse(gate.isAuthorized(target: recycled, windowID: windowA, paneTTY: "/dev/ttys003"))
     }
 
     // The session can end between start and stop. The SESSION is fixed by the
@@ -1169,10 +1173,10 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
             registry.ingest(record(claudePID: 9001, tty: "/dev/ttys003"), origin: local)
         )
         let gate = await authorizer(registry: registry, focusedTTY: "/dev/ttys003")
-        XCTAssertTrue(gate.isAuthorized(target: ghostty, windowID: windowA), "precondition: live at join time")
+        XCTAssertTrue(gate.isAuthorized(target: ghostty, windowID: windowA, paneTTY: "/dev/ttys003"), "precondition: live at join time")
         liveness.kill(9001)
         XCTAssertFalse(
-            gate.isAuthorized(target: ghostty, windowID: windowA),
+            gate.isAuthorized(target: ghostty, windowID: windowA, paneTTY: "/dev/ttys003"),
             "a session that died mid-dictation must not attach its pane"
         )
     }
@@ -1183,7 +1187,7 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
         let registry = makeRegistry()
         let resolver = resolver(registry: registry)
         let gate = TerminalScreenClaudeJoinAuthorizer(resolver: resolver, currentJoin: { nil })
-        XCTAssertFalse(gate.isAuthorized(target: ghostty, windowID: windowA))
+        XCTAssertFalse(gate.isAuthorized(target: ghostty, windowID: windowA, paneTTY: "/dev/ttys003"))
     }
 
     // MARK: - Window identity (review F2)
@@ -1200,11 +1204,11 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
             registry: registry, focusedTTY: "/dev/ttys003", windowID: windowB
         )
         XCTAssertTrue(
-            gate.isAuthorized(target: ghostty, windowID: windowB),
+            gate.isAuthorized(target: ghostty, windowID: windowB, paneTTY: "/dev/ttys003"),
             "precondition: the joined window itself authorizes"
         )
         XCTAssertFalse(
-            gate.isAuthorized(target: ghostty, windowID: windowA),
+            gate.isAuthorized(target: ghostty, windowID: windowA, paneTTY: "/dev/ttys003"),
             "a capture from another window of the same app must not inherit the join"
         )
     }
@@ -1218,14 +1222,81 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
             registry: registry, focusedTTY: "/dev/ttys003", windowID: nil
         )
         XCTAssertFalse(
-            nilIdentityGate.isAuthorized(target: ghostty, windowID: nil),
+            nilIdentityGate.isAuthorized(target: ghostty, windowID: nil, paneTTY: "/dev/ttys003"),
             "nil join identity + nil capture identity must abstain, never match"
         )
         let knownIdentityGate = await authorizer(
             registry: registry, focusedTTY: "/dev/ttys003", windowID: windowA
         )
-        XCTAssertFalse(knownIdentityGate.isAuthorized(target: ghostty, windowID: nil))
-        XCTAssertFalse(nilIdentityGate.isAuthorized(target: ghostty, windowID: windowA))
+        XCTAssertFalse(knownIdentityGate.isAuthorized(target: ghostty, windowID: nil, paneTTY: "/dev/ttys003"))
+        XCTAssertFalse(nilIdentityGate.isAuthorized(target: ghostty, windowID: windowA, paneTTY: "/dev/ttys003"))
+    }
+
+    // Tabs of one window share the window identity, so the window compare
+    // cannot tell them apart either. The user starts dictating in tab A, which
+    // has no agent, and switches to agent tab B before the join's tty read
+    // answers: the join names B. Back on an unchanged A at stop, the start
+    // capture is A's text, and B's join must not authorize it.
+    func testSameWindowDifferentTabCannotAuthorizeCapturedScreen() async throws {
+        let ttyA = "/dev/ttys001"
+        let ttyB = "/dev/ttys002"
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(record(tty: ttyB), origin: local))
+        let focusedTTY = Mutex(ttyA)
+        let screenReads = Mutex(0)
+        let screens = [ttyA: "SENTINEL tab A, no agent here", ttyB: "claude tab B"]
+        let joinResolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            focusedTerminalTTY: { _ in focusedTTY.withLock { $0 } },
+            focusedWindowID: { _ in self.windowA }
+        )
+        let context = makeScreenContext()
+        context.claudeSessionJoinResolver = joinResolver
+        TerminalScreenRawAttachmentPolicy.configure(
+            authorizer: TerminalScreenClaudeJoinAuthorizer(
+                resolver: joinResolver, currentJoin: { context.claudeSessionJoin }
+            )
+        )
+        TerminalScreenContextSource.debugFrontmostTargetOverride = { self.ghostty }
+        TerminalScreenContextSource.debugTargetForPIDOverride = { _ in self.ghostty }
+        TerminalScreenAXReader.debugScreenWindowIDOverride = { _ in self.windowA }
+        TerminalScreenAXReader.debugScreenReadOverride = { _ in
+            focusedTTY.withLock { tty in
+                let text = screens[tty]
+                // The switch to tab B lands right after the start capture.
+                if screenReads.withLock({ $0 += 1; return $0 }) == 1 { tty = ttyB }
+                return text
+            }
+        }
+
+        _ = await context.captureAtStart()
+        XCTAssertEqual(
+            context.claudeSessionJoin?.snapshot.sessionID, "s1",
+            "precondition: the join resolved to tab B's session"
+        )
+        focusedTTY.withLock { $0 = ttyA }
+        let endpointURL = try XCTUnwrap(context.settings.llmPolishingConfiguration?.endpointURL)
+        let decision = context.terminalScreenContextDecision(endpointURL: endpointURL)
+        if case .render(let excerpt, _, _) = decision {
+            XCTFail("tab B's join rendered tab A's screen: \(excerpt)")
+        }
+    }
+
+    /// A context with polishing on (loopback), screen context on and
+    /// Accessibility trusted, so every gate in front of the capture is open.
+    private func makeScreenContext() -> SessionContextResolver {
+        let suiteName = "localvoxtral.TerminalScreenClaudeJoinTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
+        settings.llmPolishingEnabled = true
+        settings.terminalScreenContextEnabled = true
+        let context = SessionContextResolver(settings: settings, textInsertion: TextInsertionService())
+        context.textInsertion.debugSetAccessibilityTrusted(true)
+        addTeardownBlock { context.textInsertion.debugSetAccessibilityTrusted(nil) }
+        context.joinOutcomeLog = { _ in }
+        return context
     }
 
     // MARK: - Wiring into the reconciler

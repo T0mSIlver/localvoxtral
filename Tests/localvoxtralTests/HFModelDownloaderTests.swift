@@ -430,6 +430,35 @@ final class HFModelDownloaderTests: XCTestCase {
         }
     }
 
+    /// Swift runs a cancellation handler before its operation when the task is
+    /// already cancelled, so the real transport sees the cancel before it has
+    /// a URLSession task to stop. That cancel must still win: otherwise Pause,
+    /// Cancel or a backend switch landing in that window lets the whole file
+    /// transfer, and backend shutdown waits for it.
+    func testCancellationBeforeDownloadRegistrationStartsNoTransfer() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("model.safetensors")
+        try Data("weights".utf8).write(to: source)
+        let transport = URLSessionHFModelDownloadTransport()
+
+        let download = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await transport.download(from: source, resumeData: nil) { _, _ in }
+        }
+
+        do {
+            let delivered = try await download.value
+            try? FileManager.default.removeItem(at: delivered.temporaryURL)
+            XCTFail("a download cancelled before it started delivered a file")
+        } catch {
+            XCTAssertTrue(
+                error is CancellationError || (error as? URLError)?.code == .cancelled,
+                "expected a cancellation, got \(error)"
+            )
+        }
+    }
+
     /// The mapping above must stay narrow: a transport error that is NOT a
     /// cancellation still has to surface as a failure the UI can report.
     func testNonCancellationTransportErrorStillSurfacesAsAModelDownloadFailure() async throws {

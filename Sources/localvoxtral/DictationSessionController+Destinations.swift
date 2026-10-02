@@ -206,7 +206,13 @@ extension DictationSessionController {
         destinations = state
         let prior = destinationFocusTask
         destinationFocusTask = Task { @MainActor [weak self] in
-            await prior?.value
+            // The stop cancels only the latest pick; that cancels the ones
+            // it waits on, which would otherwise pick in the next dictation.
+            await withTaskCancellationHandler {
+                await prior?.value
+            } onCancel: {
+                prior?.cancel()
+            }
             guard let self, !Task.isCancelled, self.isDictating, self.destinations != nil else { return }
             await self.pickBringingForward(destination)
             guard !Task.isCancelled, self.destinations?.pickGeneration == generation else { return }

@@ -178,7 +178,8 @@ final class DictationSessionController {
     lazy var repoVocabularyPipeline = RepoVocabularyPipeline(
         settings: settings,
         commitTargetAppPID: { [weak self] in self?.overlayBufferCoordinator.commitTargetAppPID },
-        targetBundleID: { [weak self] in self?.resolveTargetAppBundleID() }
+        targetBundleID: { [weak self] in self?.resolveTargetAppBundleID() },
+        clock: { [weak self] in self?.dependencies.clock ?? .live }
     )
     var repoVocabularyGrounding: any RepoVocabularyGrounding {
         dependencies.repoVocabularyGrounding ?? repoVocabularyPipeline
@@ -194,10 +195,13 @@ final class DictationSessionController {
 
     @ObservationIgnored
     let networkMonitor = NetworkMonitor()
+    /// Reads the rollover's pause and sleeps its watchdog (#1139), its
+    /// handshake fallback and its keepalive ping (#1366) on the session clock.
     @ObservationIgnored
-    let realtimeAPIClient = RealtimeAPIWebSocketClient()
+    let realtimeAPIClient: RealtimeAPIWebSocketClient
+    /// Sleeps its keepalive ping on the session clock (#1366).
     @ObservationIgnored
-    let mistralRealtimeClient = MistralRealtimeWebSocketClient()
+    let mistralRealtimeClient: MistralRealtimeWebSocketClient
     /// The client THIS session speaks to, latched at session start from
     /// `settings.dictationBackendMode` (`latchActiveRealtimeClient`). A stored
     /// latch rather than a lookup on every call: flipping the mode in Settings
@@ -234,6 +238,10 @@ final class DictationSessionController {
     /// services, so a unit test never reads the user's folders.
     @ObservationIgnored
     var agentSkillStore: AgentSkillStore?
+    /// Lists the repositories this Mac's coding agents worked in (#1027).
+    /// Nil without runtime services, like `agentSkillStore`.
+    @ObservationIgnored
+    var agentProjectScanner: AgentProjectActivityScanner?
     @ObservationIgnored
     var correctionLearning: CorrectionLearning?
     /// Where the last Overlay Buffer commit landed while its prompt may
@@ -320,6 +328,11 @@ final class DictationSessionController {
     var managedStartupTask: Task<Void, Never>?
     @ObservationIgnored
     var managedStartupTaskID: UUID?
+    /// Counts session starts that reached `prepareDictationSession`. A start
+    /// still capturing context when this moves on has been replaced, even
+    /// once the replacement's startup task has cleared `managedStartupTaskID`.
+    @ObservationIgnored
+    var sessionStartGeneration: UInt64 = 0
     @ObservationIgnored
     var stopFinalizationTask: Task<Void, Never>?
     @ObservationIgnored
@@ -362,6 +375,10 @@ final class DictationSessionController {
     /// `handle(event:from:)` refuses it.
     @ObservationIgnored
     var sessionConnectionGeneration: RealtimeConnectionGeneration = .none
+    /// Bumped at every session's connect, so a context-limit lookup that
+    /// answers late cannot set its budget on a later session (#1139).
+    @ObservationIgnored
+    var realtimeContextLimitLookupID = 0
     @ObservationIgnored
     var reconnectTask: Task<Void, Never>?
     /// True from an unexpected drop until the reconnect run behind it either
@@ -390,11 +407,25 @@ final class DictationSessionController {
     var isShowingConnectionFailureAlert = false
     @ObservationIgnored
     var realtimeFinalizationLastActivityAt: Date?
+    /// True while a voice memo streams through the bundled helper this
+    /// dictation also uses.
+    @ObservationIgnored
+    var voiceMemoHoldsTheEngine: @MainActor () -> Bool = { false }
+    /// When this session started, on the session clock, if a voice memo was
+    /// streaming then. The bundled helper runs one inference queue, so this
+    /// session's audio is decoded only after the memo's, and its final can
+    /// come long after the stop.
+    @ObservationIgnored
+    var sessionStartedBehindVoiceMemoAt: Date?
     @ObservationIgnored
     var isAwaitingMicrophonePermission = false
     /// Gives up on a microphone prompt nobody answers.
     @ObservationIgnored
     var microphonePermissionTimeoutTask: Task<Void, Never>?
+    /// The start attempt the open microphone prompt belongs to. The timeout
+    /// clears it, so an answer that lands later starts nothing.
+    @ObservationIgnored
+    var microphonePermissionAttemptID: UUID?
     @ObservationIgnored
     var sessionOutputMode: DictationOutputMode?
     /// Resolves "go to <name>" (#723). Nil until the app installs it, and
@@ -574,6 +605,8 @@ final class DictationSessionController {
         self.audio = audio
         self.overlayBufferCoordinator = overlayBufferCoordinator
         self.dependencies = dependencies
+        self.realtimeAPIClient = RealtimeAPIWebSocketClient(clock: dependencies.clock)
+        self.mistralRealtimeClient = MistralRealtimeWebSocketClient(clock: dependencies.clock)
     }
 
     func prepareLLMPolishingPromptAccessIfNeeded() {
@@ -597,6 +630,16 @@ final class DictationSessionController {
             }
         } else {
             debugLog("network lost")
+            // A loopback socket, such as the bundled speech server's, does not
+            // ride the network path: stopping would only drop the final commit
+            // that flushes the server's tail (#1238), and an idle status saying
+            // the network is gone would be wrong about it (#1242). Remote
+            // sockets can sit half-dead after the path goes, so those sessions
+            // still stop.
+            guard realtimeEndpointNeedsNetwork else {
+                Log.backends.info("network lost; loopback realtime endpoint unaffected")
+                return
+            }
             if isConnectingRealtimeSession {
                 abortConnectingSession()
                 handleConnectFailure(reason: .networkLost)
@@ -613,6 +656,21 @@ final class DictationSessionController {
                 statusText = StatusStrings.noNetworkConnection
             }
         }
+    }
+
+    /// False when the realtime endpoint is loopback, which a lost network path
+    /// leaves untouched. A running or starting session judges the endpoint it
+    /// dials: the latched connect snapshot once the socket was asked to open,
+    /// else what Settings resolves to for its provider. An idle one judges
+    /// what the next start would dial. No endpoint counts as needing one.
+    private var realtimeEndpointNeedsNetwork: Bool {
+        let sessionActive = isDictating || isFinalizingStop || isConnectingRealtimeSession
+        let endpoint = (sessionActive ? sessionRealtimeConfiguration?.endpoint : nil)
+            ?? settings.resolvedWebSocketURL(
+                for: (sessionActive ? sessionProvider : nil) ?? settings.realtimeProvider
+            )
+        guard let endpoint else { return true }
+        return !PolishContextClipboardReader.isLoopbackEndpoint(endpoint)
     }
 
     // MARK: - Public API
@@ -742,6 +800,10 @@ final class DictationSessionController {
         outputMode: DictationOutputMode?, quickCapture: Bool, draftReview: QuickCaptureDraftSnapshot? = nil
     ) {
         guard !isDictating else { return }
+        // An answer whose pane is still coming forward would activate its
+        // terminal under this dictation and take its words there.
+        answerAgentTask?.cancel()
+        answerAgentTask = nil
         onDictationStartRequested?()
         guard !isConnectingRealtimeSession else {
             statusText = StatusStrings.connectingRealtimeBackend
@@ -757,7 +819,7 @@ final class DictationSessionController {
             statusText = StatusStrings.awaitingMicrophonePermission
             return
         }
-        guard networkMonitor.isConnected else {
+        guard networkMonitor.isConnected || !realtimeEndpointNeedsNetwork else {
             statusText = StatusStrings.noNetworkConnection
             lastError = "Connect to a network before starting dictation."
             return
@@ -792,9 +854,18 @@ final class DictationSessionController {
             isAwaitingMicrophonePermission = true
             statusText = StatusStrings.requestingMicrophonePermission
             debugLog("microphone permission prompt requested")
+            let attemptID = UUID()
+            microphonePermissionAttemptID = attemptID
             requestMicrophoneAccessForSessionStart { [weak self] granted in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
+                    // The prompt timed out (or a newer one replaced it): the
+                    // user has moved on, and a push-to-talk key is long released.
+                    guard self.microphonePermissionAttemptID == attemptID else {
+                        self.debugLog("microphone permission result granted=\(granted) for an expired attempt; ignored")
+                        return
+                    }
+                    self.microphonePermissionAttemptID = nil
                     self.isAwaitingMicrophonePermission = false
                     self.debugLog("microphone permission result granted=\(granted)")
                     guard granted else {
@@ -831,6 +902,7 @@ final class DictationSessionController {
                 // it must not clear the newer prompt's flag.
                 guard let self, !Task.isCancelled, self.isAwaitingMicrophonePermission else { return }
                 self.isAwaitingMicrophonePermission = false
+                self.microphonePermissionAttemptID = nil
                 self.statusText = StatusStrings.ready
                 if self.shortcuts.shouldCancelPushToTalkStartAfterConnect() {
                     self.shortcuts.clearPushToTalkShortcutSessionAttempt()
@@ -1108,13 +1180,19 @@ extension DictationSessionController {
     /// Start-of-session capture, through the resolver; the badge it returns
     /// describes the one resolved join, so the overlay cannot disagree with
     /// the context that ships.
-    func captureTerminalScreenContextForSession() async {
+    ///
+    /// `isCurrent` is asked after every suspension: once it answers false,
+    /// this start was cancelled or replaced, and nothing it resolved is
+    /// written over the state a newer start owns.
+    func captureTerminalScreenContextForSession(isCurrent: @MainActor () -> Bool = { true }) async {
         // The previous dictation's post-commit edit watch closes here rather
         // than reading this session's keys. It still flushes its own record,
         // as `superseded`.
         editSignalWatcher.supersede()
-        sessionClaudeJoinBadge = await context.captureAtStart()
+        let badge = await context.captureAtStart(isCurrent: isCurrent)
+        guard isCurrent() else { return }
+        sessionClaudeJoinBadge = badge
         noteDictationJoinedAgentSession(context.claudeSessionJoin?.snapshot.sessionID)
-        await context.resolveAgentPromptRoute()
+        await context.resolveAgentPromptRoute(isCurrent: isCurrent)
     }
 }

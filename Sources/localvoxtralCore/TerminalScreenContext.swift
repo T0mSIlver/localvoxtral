@@ -166,11 +166,22 @@ package struct TerminalScreenCapture: Equatable, Sendable {
     /// Nil means the identity could not be established, which every consumer
     /// treats as "not provably the same window".
     package var windowID: CGWindowID?
+    /// The controlling tty of the focused pane, read just before the text.
+    /// Tabs and splits of one window share `windowID`, so the window cannot
+    /// say which pane the text came from; the tty can (#1226). Nil means
+    /// unknown, which never authorizes.
+    package var paneTTY: String?
 
-    package init(text: String, target: TerminalScreenTarget, windowID: CGWindowID? = nil) {
+    package init(
+        text: String,
+        target: TerminalScreenTarget,
+        windowID: CGWindowID? = nil,
+        paneTTY: String? = nil
+    ) {
         self.text = text
         self.target = target
         self.windowID = windowID
+        self.paneTTY = paneTTY
     }
 }
 
@@ -217,11 +228,12 @@ package enum TerminalScreenStopSample: Equatable, Sendable {
 /// `false` merely withholds an excerpt the matcher already covered.
 @MainActor
 package protocol TerminalScreenRawAttachmentAuthorizing {
-    /// `windowID` is the identity of the window the CAPTURE came from.
-    /// Implementations must refuse when it does not provably match the window
-    /// their own evidence is about — pid + bundle ID cannot tell two windows
-    /// of one process apart.
-    func isAuthorized(target: TerminalScreenTarget, windowID: CGWindowID?) -> Bool
+    /// `windowID` and `paneTTY` identify the window and the pane the CAPTURE
+    /// came from. Implementations must refuse when either does not provably
+    /// match what their own evidence is about — pid + bundle ID cannot tell
+    /// two windows of one process apart, and a window cannot tell its tabs
+    /// apart.
+    func isAuthorized(target: TerminalScreenTarget, windowID: CGWindowID?, paneTTY: String?) -> Bool
 }
 
 /// Whether a RAW screen excerpt may be rendered into the prompt.
@@ -248,14 +260,16 @@ package enum TerminalScreenRawAttachmentPolicy {
     /// False unless a configured authorizer positively joins `target` to one
     /// live Claude session. Tests pin the seam explicitly; nothing else can
     /// turn this on.
-    package static func isAuthorized(target: TerminalScreenTarget, windowID: CGWindowID?) -> Bool {
+    package static func isAuthorized(
+        target: TerminalScreenTarget, windowID: CGWindowID?, paneTTY: String?
+    ) -> Bool {
         #if DEBUG
         if let override = debugAuthorizationOverride {
             return override(target, windowID)
         }
         #endif
         guard let authorizer else { return false }
-        return authorizer.isAuthorized(target: target, windowID: windowID)
+        return authorizer.isAuthorized(target: target, windowID: windowID, paneTTY: paneTTY)
     }
 
     #if DEBUG

@@ -79,7 +79,15 @@ final class ShortcutController {
 
     /// The launch registration; the owner calls it once runtime services run.
     func registerAtLaunch() {
-        registerCurrentHotKeys()
+        // A key another app already holds leaves the dictation trigger dead,
+        // so say so as a settings change would. A modifier gesture refused
+        // before Accessibility trust lands is the exception: trust can lag a
+        // cold launch, and the trust retry registers it then.
+        if case .failure(let reason) = registerCurrentHotKeys(),
+           reason != .modifierOnlyHotKeyUnavailable || session.isAccessibilityTrusted
+        {
+            applyHotKeyRegistrationFailure(reason)
+        }
         if case .failure = hotKeyManager.registerCopyLastDictation(settings.copyLastDictationShortcut) {
             applyHotKeyRegistrationFailure(.copyLastDictationShortcutUnavailable)
         }

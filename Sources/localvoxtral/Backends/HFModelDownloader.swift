@@ -204,6 +204,9 @@ private final class ProgressReportingDownloadDelegate: NSObject, URLSessionDownl
         var movedURL: URL?
         var moveError: Error?
         var resumeData: Data?
+        /// Set by a cancel that arrived before `begin` published the task;
+        /// `begin` then starts no transfer.
+        var cancelled = false
     }
 
     private let onBytes: @Sendable (Int64, Int64?) -> Void
@@ -219,11 +222,19 @@ private final class ProgressReportingDownloadDelegate: NSObject, URLSessionDownl
         resumeData: Data?,
         continuation: CheckedContinuation<(temporaryURL: URL, statusCode: Int), Error>
     ) {
-        let task = resumeData.map { session.downloadTask(withResumeData: $0) }
-            ?? session.downloadTask(with: url)
-        state.withLock {
-            $0.continuation = continuation
-            $0.task = task
+        let task = state.withLock { state -> URLSessionDownloadTask? in
+            // A Swift task cancelled before this call ran its cancellation
+            // handler first, when there was no transfer to stop yet.
+            if state.cancelled { return nil }
+            let task = resumeData.map { session.downloadTask(withResumeData: $0) }
+                ?? session.downloadTask(with: url)
+            state.continuation = continuation
+            state.task = task
+            return task
+        }
+        guard let task else {
+            continuation.resume(throwing: CancellationError())
+            return
         }
         task.resume()
     }
@@ -235,7 +246,10 @@ private final class ProgressReportingDownloadDelegate: NSObject, URLSessionDownl
     /// arrives first wins; a live LFS pause/resume proved the error's copy (the
     /// one that always wins this race) does resume the transfer.
     func cancelProducingResumeData() {
-        guard let task = state.withLock({ $0.task }) else { return }
+        guard let task = state.withLock({ state -> URLSessionDownloadTask? in
+            state.cancelled = true
+            return state.task
+        }) else { return }
         task.cancel { [weak self] data in
             guard let data else { return }
             self?.storeResumeDataIfAbsent(data)

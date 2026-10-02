@@ -25,7 +25,9 @@ package struct TerminalScreenClaudeJoinAuthorizer: TerminalScreenRawAttachmentAu
         self.currentJoin = currentJoin
     }
 
-    package func isAuthorized(target: TerminalScreenTarget, windowID: CGWindowID?) -> Bool {
+    package func isAuthorized(
+        target: TerminalScreenTarget, windowID: CGWindowID?, paneTTY: String?
+    ) -> Bool {
         guard let join = currentJoin() else { return false }
         // Exhaustive on purpose: a new join mechanism must DECIDE here rather
         // than inherit authorization from whichever arm was written first.
@@ -107,6 +109,16 @@ package struct TerminalScreenClaudeJoinAuthorizer: TerminalScreenRawAttachmentAu
         else {
             Log.claudeContext.info(
                 "Claude join and screen capture do not name the same window of the target app; raw screen attachment withheld"
+            )
+            return false
+        }
+        // Tabs and splits of one window share its identity, and the capture
+        // is read before the join's tty: a tab switch in between pairs one
+        // tab's screen with another tab's session (#1226). The capture's tty,
+        // read just before its text, must be the one the join matched.
+        guard let joinTTY = join.paneTTY, let paneTTY, joinTTY == paneTTY else {
+            Log.claudeContext.info(
+                "Claude join and screen capture do not name the same pane; raw screen attachment withheld"
             )
             return false
         }

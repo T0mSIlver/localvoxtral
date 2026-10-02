@@ -29,7 +29,7 @@ private final class StubSSHConfigFileSystem: ClaudeRemoteSSHConfigFileSystem, @u
     }
 
     func createSSHDirectory(permissions _: UInt16) throws {}
-    func atomicWriteConfig(_ data: Data, permissions _: UInt16) throws {
+    func atomicWriteConfig(_ data: Data, permissions _: UInt16, replacing _: Data?) throws {
         configText = String(decoding: data, as: UTF8.self)
     }
 }
@@ -62,7 +62,7 @@ private final class RecordingSSHConfigFileSystem: ClaudeRemoteSSHConfigFileSyste
 
     func createSSHDirectory(permissions _: UInt16) throws {}
 
-    func atomicWriteConfig(_ data: Data, permissions: UInt16) throws {
+    func atomicWriteConfig(_ data: Data, permissions: UInt16, replacing _: Data?) throws {
         XCTAssertFalse(data.isEmpty)
         XCTAssertEqual(permissions, 0o600)
         writes.withLock { $0 += 1 }
