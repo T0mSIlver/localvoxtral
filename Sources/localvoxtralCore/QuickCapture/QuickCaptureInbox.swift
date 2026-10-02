@@ -181,6 +181,18 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
             && codeCheck?.state != .checking
     }
 
+    /// It files in another repository now: an issue its draft extends or
+    /// duplicates is one of the old repository's, and so is the one in a
+    /// draft saved at a join, which Split gives back (#1396).
+    mutating func dropIssueLinks() {
+        relation = .none
+        relatedIssue = nil
+        for index in (followUps ?? []).indices {
+            followUps?[index].draftBefore?.relation = .none
+            followUps?[index].draftBefore?.relatedIssue = nil
+        }
+    }
+
     /// Filed, or on its way there: a draft or Split no longer changes its
     /// state. Such a change can run again on another running copy's write
     /// after a failed save (#1260), and must not reopen it (#1356).
@@ -333,13 +345,7 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
         let projectRepositories = [project.repository, project.github?.parent].compactMap { $0 }
         guard projectRepositories.contains(where: { $0.caseInsensitiveCompare(current) == .orderedSame }) else { return }
         item.repository = target
-        item.relation = .none
-        item.relatedIssue = nil
-        // Split gives back a draft saved at a join: its link goes too.
-        for index in (item.followUps ?? []).indices {
-            item.followUps?[index].draftBefore?.relation = .none
-            item.followUps?[index].draftBefore?.relatedIssue = nil
-        }
+        item.dropIssueLinks()
     }
 
     /// A draft's issue link holds only for the repository whose open issues
@@ -481,8 +487,7 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
             item.projectName = project?.name
             item.suggestion = nil
             item.repository = repository
-            item.relation = .none
-            item.relatedIssue = nil
+            item.dropIssueLinks()
             // A check still reading the old project's code no longer applies.
             if item.codeCheck?.state == .checking { item.codeCheck = nil }
             if project != nil, item.note == "Not routed to a project. Move it to one." { item.note = nil }
