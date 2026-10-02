@@ -19,6 +19,7 @@ final class TerminalSessionPaneFocuser: SessionPaneFocusing {
     private let activate: (String) -> Bool
     private let focusedTTY: (String) async -> String?
     private let isConsentGranted: (String) async -> Bool
+    private let frontmostBundleID: () -> String?
 
     /// The terminals, in the order they are asked when the session's
     /// `$TERM_PROGRAM` names none of them.
@@ -33,13 +34,15 @@ final class TerminalSessionPaneFocuser: SessionPaneFocusing {
         runScript: @escaping (String) async -> AppleScriptTerminalTTYReader.ExecutionResult,
         activate: @escaping (String) -> Bool,
         focusedTTY: @escaping (String) async -> String?,
-        isConsentGranted: @escaping (String) async -> Bool = { _ in true }
+        isConsentGranted: @escaping (String) async -> Bool = { _ in true },
+        frontmostBundleID: @escaping () -> String?
     ) {
         self.runningTerminalBundleIDs = runningTerminalBundleIDs
         self.runScript = runScript
         self.activate = activate
         self.focusedTTY = focusedTTY
         self.isConsentGranted = isConsentGranted
+        self.frontmostBundleID = frontmostBundleID
     }
 
     /// The Apple events and the activation are real; only the app builds one.
@@ -71,7 +74,8 @@ final class TerminalSessionPaneFocuser: SessionPaneFocusing {
                 return app.activate(options: [])
             },
             focusedTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) },
-            isConsentGranted: { await AutomationConsent.isGranted(bundleID: $0) }
+            isConsentGranted: { await AutomationConsent.isGranted(bundleID: $0) },
+            frontmostBundleID: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier }
         )
     }
 
@@ -133,7 +137,10 @@ final class TerminalSessionPaneFocuser: SessionPaneFocusing {
                 guard !Task.isCancelled else { return .paneNotFound }
                 let activated = activate(bundleID)
                 let readBack = await focusedTTY(bundleID)
-                let verified = readBack == tty
+                // The read answers for the terminal's front window even when
+                // the user switched apps meanwhile; a dictation started then
+                // would go to that app.
+                let verified = readBack == tty && frontmostBundleID() == bundleID
                 Log.claudeContext.info(
                     "go to session: \(bundleID, privacy: .public) selected the pane; activated=\(activated, privacy: .public) verified=\(verified, privacy: .public)"
                 )
