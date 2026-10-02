@@ -471,13 +471,21 @@ final class BackendProcessSupervisorTests: XCTestCase {
         let sleeps = ControlledSleep()
         let supervisor = makeSupervisor(
             executableURL: script,
-            readinessPollInterval: .milliseconds(10),
+            readinessPollInterval: .milliseconds(20),
             readinessTimeout: .seconds(600),
             terminationGracePeriod: .milliseconds(2),
             probe: { _ in probe.value && FileManager.default.fileExists(atPath: pidFile.path) },
             sleepFor: { duration in
-                if duration == .milliseconds(10) {
+                if duration == .milliseconds(20) {
                     await TerminationAwareSleep.waitForFile(pidFile)
+                    return
+                }
+                // The 10 ms slices after SIGKILL wait for Foundation to reap
+                // the shell, which only real time brings: returned at once,
+                // their hundred iterations ran out before the reap on a
+                // loaded runner and `stop()` came back with the shell alive.
+                if duration == .milliseconds(10) {
+                    try await Task.sleep(for: duration)
                     return
                 }
                 try await sleeps.sleep(duration)
