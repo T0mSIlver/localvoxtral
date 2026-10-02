@@ -134,7 +134,12 @@ final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
     /// thing that ever happens to it is being passed through to `ssh`, which
     /// resolves it on the host that named it.
     func open(alias: String, remoteSocketPath: String) async -> ClaudeRemoteHerdrForwardHandle? {
-        await waitForOrphanReap()
+        guard await orphanReapFinished(by: now().addingTimeInterval(max(0, readinessTimeout))) else {
+            Log.claudeContext.info(
+                "Remote herdr forward abstained: the launch orphan reap has not run (listener not bound?)"
+            )
+            return nil
+        }
         guard !stoppedForQuit else { return nil }
         guard ClaudeRemoteEnrollmentService.isValidHostAlias(alias) else {
             Log.claudeContext.info("Remote herdr forward refused: invalid host alias")
@@ -333,6 +338,18 @@ final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
     private func waitForOrphanReap() async {
         guard !orphanReapComplete else { return }
         await withCheckedContinuation { orphanReapWaiters.append($0) }
+    }
+
+    /// The dictation-start side of `waitForOrphanReap`, bounded (#1359): the
+    /// forward coordinator runs the reap only once the listener binds, so in
+    /// a copy that lost the port to another copy it never runs. False when
+    /// it has not run by `deadline`, or the start was cancelled.
+    private func orphanReapFinished(by deadline: Date) async -> Bool {
+        while !orphanReapComplete {
+            guard now() < deadline, !Task.isCancelled else { return false }
+            await sleepFor(pollInterval)
+        }
+        return true
     }
 
     private func makeEntry(
