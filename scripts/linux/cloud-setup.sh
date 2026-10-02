@@ -7,7 +7,8 @@
 #
 # It installs the swift.org 6.2.0 toolchain that ci.yml's `linux` job runs
 # (swift:6.2.0-bookworm) and what scripts/core-tests-linux.sh needs besides:
-# python3, ps and curl for the VibeRemoteShimTests and usage tests.
+# python3, ps and curl for the VibeRemoteShimTests and usage tests, and the
+# ssh client for SSHConfigOverrideTests.
 #
 # Network: download.swift.org is not in the Trusted list (swift.org is), so the
 # environment needs Custom access with download.swift.org plus the default list.
@@ -26,7 +27,7 @@ apt-get install -qq -y --no-install-recommends \
   binutils git gnupg2 libc6-dev libcurl4-openssl-dev libedit2 libgcc-13-dev \
   libncurses-dev libpython3-dev libsqlite3-0 libstdc++-13-dev libxml2-dev \
   libz3-dev pkg-config tzdata unzip zlib1g-dev \
-  python3 procps curl ca-certificates >/dev/null
+  python3 procps curl openssh-client ca-certificates >/dev/null
 
 if ! "$prefix/usr/bin/swift" --version 2>/dev/null | grep -q "Swift version ${version}"; then
   tmp="$(mktemp -d)"

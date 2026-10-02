@@ -432,6 +432,16 @@ final class HerdrLiveFixture {
 
     let info: Info
     let primarySurface: HerdrSurfaceLog
+
+    /// The environment every live ssh constructor in the lane gets: this
+    /// process's, plus `LOCALVOXTRAL_SSH_CONFIG` naming the run's config.
+    /// Passed explicitly because `setenv` need not reach
+    /// `ProcessInfo.processInfo.environment` once it has been read.
+    var sshEnvironment: [String: String] {
+        ProcessInfo.processInfo.environment.merging(
+            [SSHConfigOverride.environmentKey: info.sshConfig], uniquingKeysWith: { _, run in run }
+        )
+    }
     private let scriptURL: URL
     private let repoRoot: URL
     private let diagnosticsRoot: URL
@@ -493,9 +503,6 @@ final class HerdrLiveFixture {
                 "`up` printed no fixture description\n\(result.standardOutput)\(result.standardError)"
             )
         }
-        // Every live constructor the lane uses reads it per spawn, or at
-        // init after this line.
-        setenv(SSHConfigOverride.environmentKey, info.sshConfig, 1)
         print("[herdr-fixture] ssh.config=\(info.sshConfig)")
         return HerdrLiveFixture(
             info: info,
@@ -514,7 +521,6 @@ final class HerdrLiveFixture {
             arguments: [scriptURL.path, "down", info.workdir],
             currentDirectory: repoRoot
         )
-        unsetenv(SSHConfigOverride.environmentKey)
         // The account's own herdr and ssh config after the run, next to the
         // `before` lines in environment.txt: the evidence the lane left them
         // alone.
