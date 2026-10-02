@@ -1,0 +1,13 @@
+{
+  "name": "localvoxtral-mod",
+  "version": "0.1.0",
+  "description": "Prototype: localvoxtral's connection indicator as a plugin status line, which also shows in Claude Desktop's Code tab.",
+  "userConfig": {
+    "publisher_path": {
+      "type": "string",
+      "title": "Publisher path",
+      "description": "Path of the app's localvoxtral-claude-hook binary; left empty, the usual locations are tried.",
+      "default": ""
+    }
+  }
+}
