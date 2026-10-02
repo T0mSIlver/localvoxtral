@@ -313,6 +313,9 @@ package enum QuickCaptureDraft {
         /// a working directory on this Mac (docs/agent/invariants.md).
         case remoteProject
         case checkoutMissing
+        /// A GitHub repository the user added from the Inbox (#930), with
+        /// no checkout on the Mac or a host to draft in.
+        case noCheckout
         /// A remote project with no live session on a host that drafts
         /// (#745), or none that sent a hook in time.
         case noHostSession

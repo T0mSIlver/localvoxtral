@@ -52,6 +52,8 @@ package struct QuickCaptureCodeCheck: Codable, Equatable, Sendable {
 ///   filing; `filedURL` is then the comment's URL.
 /// - `filingClaim` (#1288): the running copy whose File or Comment set
 ///   `state` to filing.
+/// - `repositorySuggestion` (#930): a GitHub repository offered to add as a
+///   project, while the capture waits unplaced.
 /// A draft is final once `state == .ready`, `title` is set and
 /// `codeCheck?.state != .checking`.
 package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
@@ -90,6 +92,21 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
         package init(projectKey: String, projectName: String) {
             self.projectKey = projectKey
             self.projectName = projectName
+        }
+    }
+    /// One of the user's recent GitHub repositories that no project names
+    /// (#930), offered as "Add <name>?" while the capture waits unplaced
+    /// with no `suggestion`. Not a project until the user accepts it.
+    package var repositorySuggestion: RepositorySuggestion?
+
+    package struct RepositorySuggestion: Codable, Equatable, Sendable {
+        /// `owner/name`.
+        package let repository: String
+        package let name: String
+
+        package init(repository: String, name: String) {
+            self.repository = repository
+            self.name = name
         }
     }
     /// `owner/name` for `gh issue create --repo`. Resolved from a local
@@ -372,6 +389,7 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
     package mutating func applyRoute(_ route: QuickCaptureRoute, to id: UUID, projects: [QuickCaptureProject]) {
         update(id) { item in
             item.route = route
+            item.repositorySuggestion = nil
             if case .project(let key) = route.destination, let project = projects.first(where: { $0.key == key }) {
                 item.projectKey = key
                 item.projectName = project.name
@@ -494,6 +512,7 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
             item.projectKey = project?.key
             item.projectName = project?.name
             item.suggestion = nil
+            item.repositorySuggestion = nil
             item.repository = repository
             item.dropIssueLinks()
             // A check still reading the old project's code no longer applies.
@@ -656,6 +675,7 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
         case .catchAll: "Not routed to a project. Move it to one."
         case .remoteProject: "No draft for a project on another machine."
         case .checkoutMissing: "The project's folder is gone."
+        case .noCheckout: "No checkout of this repository to draft in."
         case .noHostSession: "No session of this project answered on its host."
         case .hostNeedsUpdate: "Update the host to draft there."
         }

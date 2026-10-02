@@ -164,6 +164,12 @@ final class DictationSessionController {
     @ObservationIgnored
     var onDictationStartRequested: (() -> Void)?
 
+    /// The joined session the prompt relay armed at connect writes into;
+    /// nil without a join. The join itself is consumed before a polished
+    /// commit, and the relay's answer comes after it.
+    @ObservationIgnored
+    var promptRelaySessionID: String?
+
     /// `var` so a test can replace one collaborator after construction. The
     /// lifecycle center and the microphone are read at init (the microphone
     /// into the audio pipeline, so replace it through `init`); the rest when a
@@ -277,6 +283,10 @@ final class DictationSessionController {
             sentNames: { [weak self] in
                 guard let self else { return [] }
                 return self.polishProjectNames() + self.polishSkillNames()
+            },
+            currentProjectTerms: { [weak self] in
+                guard let memory = self?.learnedTermStore?.snapshot() else { return [] }
+                return PolishProjectNames.currentProjectTerms(from: memory, now: Date())
             },
             service: { [weak self] in self?.llmPolishingService ?? LLMPolishingService() },
             unavailableReason: { [weak self] in
@@ -557,6 +567,10 @@ final class DictationSessionController {
     /// The "text went to another app" line is logged once per dictation.
     @ObservationIgnored
     var liveSpokenSendBlockLogged = false
+    /// The words' session pane read back as no longer focused before a
+    /// Return: no Return for the rest of this dictation.
+    @ObservationIgnored
+    var liveSpokenSendPaneLeft = false
     /// Live Auto-Paste "go to <name>" state
     /// (`DictationSessionController+LiveGoToSession.swift`), reset per session.
     @ObservationIgnored
@@ -564,8 +578,8 @@ final class DictationSessionController {
     /// The current segment's deltas the go-to hold-back has not typed.
     @ObservationIgnored
     var liveGoToHeldText = ""
-    /// Resolves a spoken name and brings its pane forward; later segments
-    /// wait for it.
+    /// Resolves a spoken name and brings its pane forward, or reads the
+    /// pane back before a spoken send's Return; later segments wait for it.
     @ObservationIgnored
     var liveGoToTask: Task<Void, Never>?
     /// Segments that ended while `liveGoToTask` ran, in order.

@@ -476,6 +476,31 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         XCTAssertTrue(known?.hasSuffix("vidtheque") ?? false, String(known ?? "no known list"))
     }
 
+    /// #1442: the current project's terms ride its polish too, so neither
+    /// producer offers one; the request does not change to say so.
+    func testACurrentProjectTermIsNeverSuggested() async {
+        let settings = makePolishingSettings()
+        let service = Service()
+        service.reply = .success(#"["Glossator.", "Qwen"]"#)
+        let model = SpeakerTermSuggestionModel(
+            settings: settings,
+            recentDictations: { [.init(raw: "the glossy tour", final: "the Glossator")] },
+            learnedTerms: { ["VOXTRAL", "polishd"] },
+            currentProjectTerms: { ["glossator", "Voxtral"] },
+            service: { service }
+        )
+
+        await model.suggest()
+
+        XCTAssertEqual(model.suggestions, ["Qwen", "polishd"])
+        XCTAssertEqual(
+            service.requests.first?.inputText,
+            SpeakerTermSuggestions.request(
+                dictations: [.init(raw: "the glossy tour", final: "the Glossator")], terms: [], dismissed: []
+            ).inputText
+        )
+    }
+
     /// The bundled 4B cannot do this (measured): no request is ever sent.
     func testNothingIsSentWhenSuggestionsAreUnavailable() async {
         let settings = makePolishingSettings()

@@ -1631,6 +1631,54 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(typed.text, "")
     }
 
+    /// The relay refused an Overlay Buffer commit and Secure Keyboard Entry
+    /// sent the words to the clipboard: the joined session's prompt is still
+    /// empty, so the next dictation into it, a slash command, starts with no
+    /// space (#1426).
+    func testARelayCommitThatEndedOnTheClipboardLeavesNoLeadingSpaceForTheNext() async throws {
+        // The first append's answer waits for the test, so the refusal
+        // arrives after the stop has settled.
+        let answerFirst = DispatchSemaphore(value: 0)
+        let relay = try FakeOpencodePromptRelay { call in
+            guard call.text == "/compact" else {
+                _ = answerFirst.wait(timeout: .now() + 10)
+                return 500
+            }
+            return 200
+        }
+        addTeardownBlock { relay.stop() }
+        addTeardownBlock { answerFirst.signal() }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.overlay.insertsThroughCommitter = true
+        pipeline.overlay.commitTargetAppPID = 4343
+        pipeline.overlay.passesTargetPIDToCommitter = false
+        joinOpencodePane(pipeline, relay: relay.relay(sessionID: "ses_a").address)
+        // Polishing on: the context join is what lets a commit continue the
+        // prompt.
+        pipeline.viewModel.settings.llmPolishingEnabled = true
+        pipeline.viewModel.settings.llmPolishingEndpointURL = "http://127.0.0.1:8080/v1/chat/completions"
+        pipeline.viewModel.settings.terminalScreenContextEnabled = true
+        pipeline.viewModel.llmPolishingService = FakePolishingService()
+        let typed = recordTypedText(pipeline)
+
+        var sink: AgentPromptSink?
+        await dictate(pipeline, "that's what I was doing.") {
+            XCTAssertEqual(pipeline.viewModel.context.claudeSessionJoin?.snapshot.sessionID, "opencode:ses_a")
+            sink = pipeline.viewModel.textInsertion.promptRelaySink
+        }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+        answerFirst.signal()
+        await sink?.waitUntilIdle()
+        XCTAssertEqual(pipeline.viewModel.lastError, DictationViewModel.StatusStrings.overlayCopiedToClipboard)
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+
+        await dictate(pipeline, "/compact")
+        let appended = await relay.waitForCalls(2)
+        XCTAssertTrue(appended, "calls: \(relay.calls)")
+        XCTAssertEqual(relay.calls.map(\.text), ["that's what I was doing.", "/compact"])
+        XCTAssertEqual(typed.text, "", "no key went to the terminal")
+    }
+
     /// A relay that refuses the connection: the dictation types, as it
     /// would with no relay, and nothing is lost or doubled.
     func testLiveAutoPasteFallsBackToKeystrokesWhenTheRelayRefusesTheConnection() async throws {

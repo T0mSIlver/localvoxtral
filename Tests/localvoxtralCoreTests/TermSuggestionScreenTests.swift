@@ -77,4 +77,28 @@ final class TermSuggestionScreenTests: XCTestCase {
     func testDropsBlankCandidates() {
         XCTAssertEqual(TermSuggestionScreen.screened(["  ", ""], dictations: []), [])
     }
+
+    /// #1442: nothing the polish request already carries comes back as a
+    /// suggestion, however the model cased or punctuated it. Only the most
+    /// recent project's terms count as the current project's.
+    func testDropsWhatThePolishRequestAlreadyCarries() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        func term(_ spelling: String) -> LearnedTerm {
+            LearnedTerm(term: spelling, sources: ["screen"], dictations: 3, firstSeen: now, lastSeen: now)
+        }
+        let learned = LearnedTerms(projects: [
+            LearnedTermProject(key: "/w/working-set", name: "working-set", terms: [term("Voxtral")], lastSeen: now),
+            LearnedTermProject(
+                key: "/w/vidtheque", name: "vidtheque", terms: [term("Glossator")], lastSeen: now.addingTimeInterval(-60)),
+        ])
+        let carried = ["Qwen"]
+            + PolishProjectNames.names(from: learned, now: now)
+            + PolishProjectNames.currentProjectTerms(from: learned, now: now)
+            + ["cross-review"]
+        XCTAssertEqual(
+            TermSuggestionScreen.unsent(
+                ["QWEN", "voxtral!", "Working Set", "Cross-Review.", "Mistral", "Glossator"], carried: carried),
+            ["Mistral", "Glossator"]
+        )
+    }
 }

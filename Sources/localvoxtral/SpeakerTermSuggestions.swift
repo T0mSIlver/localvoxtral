@@ -214,6 +214,9 @@ final class SpeakerTermSuggestionModel {
     /// The project and skill names every polish already carries (#1024),
     /// known like the user's own terms.
     private let sentNames: @MainActor () -> [String]
+    /// The current project's terms, which its polish carries too (#1442).
+    /// Never sent in the suggestion request, only screened out of its answer.
+    private let currentProjectTerms: @MainActor () -> [String]
     private let service: @MainActor () -> any LLMPolishingServicing
     /// Why the button cannot be used right now, or nil. Measured on the
     /// owner's history (2026-09-19): the bundled 4B took 177 s, listed the
@@ -232,6 +235,7 @@ final class SpeakerTermSuggestionModel {
         recentDictations: @escaping @MainActor () async -> [TermSuggestionScreen.Dictation],
         learnedTerms: @escaping @MainActor () -> [String] = { [] },
         sentNames: @escaping @MainActor () -> [String] = { [] },
+        currentProjectTerms: @escaping @MainActor () -> [String] = { [] },
         service: @escaping @MainActor () -> any LLMPolishingServicing,
         unavailableReason: @escaping @MainActor () -> String? = { nil },
         now: @escaping @MainActor () -> Date = { Date() }
@@ -240,6 +244,7 @@ final class SpeakerTermSuggestionModel {
         self.recentDictations = recentDictations
         self.learnedTerms = learnedTerms
         self.sentNames = sentNames
+        self.currentProjectTerms = currentProjectTerms
         self.service = service
         self.unavailableReasonProvider = unavailableReason
         self.now = now
@@ -251,6 +256,11 @@ final class SpeakerTermSuggestionModel {
         settings.polishSpeakerTerms + sentNames()
     }
 
+    /// The candidates no polish request already carries.
+    private func unsent(_ candidates: [String]) -> [String] {
+        TermSuggestionScreen.unsent(candidates, carried: knownTerms + currentProjectTerms())
+    }
+
     /// Chips the app can offer for free: terms it has already watched the
     /// polishing model fix, confirmed across dictations. Called when the pane
     /// appears, so the list is there before anyone presses a button.
@@ -260,7 +270,7 @@ final class SpeakerTermSuggestionModel {
     func refreshLearnedSuggestions() {
         let shown = Set(suggestions.map(SpeakerTermSuggestions.key))
         let learned = SpeakerTermSuggestions.filtered(
-            learnedTerms(),
+            unsent(learnedTerms()),
             terms: knownTerms,
             dismissed: settings.polishDismissedTermSuggestions
         ).filter { !shown.contains(SpeakerTermSuggestions.key($0)) }
@@ -361,7 +371,7 @@ final class SpeakerTermSuggestionModel {
             let candidates = SpeakerTermSuggestions.parseCandidates(result.polishedText)
             let found = TermSuggestionScreen.screened(
                 SpeakerTermSuggestions.filtered(
-                    candidates.map(\.term),
+                    unsent(candidates.map(\.term)),
                     terms: knownTerms,
                     dismissed: settings.polishDismissedTermSuggestions
                 ),
@@ -376,7 +386,7 @@ final class SpeakerTermSuggestionModel {
             // "never again" true (review, 2026-09-20).
             suggestions = Array(
                 SpeakerTermSuggestions.filtered(
-                    found + suggestions,
+                    unsent(found + suggestions),
                     terms: knownTerms,
                     dismissed: settings.polishDismissedTermSuggestions
                 ).prefix(SpeakerTermSuggestions.maxShown)

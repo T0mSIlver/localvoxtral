@@ -144,15 +144,24 @@ package enum QuickCaptureProjects {
             }
         }
         let built = groups.map { group -> (project: QuickCaptureProject, remote: ProjectRemote?) in
-            var members = group.filter { $0.key.hasPrefix("/") } + group.filter { !$0.key.hasPrefix("/") }
-            if group.count > 1, let lead = members.firstIndex(where: { !$0.key.hasPrefix("/") || checkoutExists($0.key) }) {
+            // A repository the user added from the Inbox (#930) is listed
+            // as its own record, and leads only when no checkout is listed.
+            var members = group.filter { $0.key.hasPrefix("/") }
+                + group.filter { !$0.key.hasPrefix("/") && !$0.isRepositoryRecord }
+            let checkoutCount = members.count
+            members += group.filter(\.isRepositoryRecord)
+            if checkoutCount > 1,
+               let lead = members.prefix(checkoutCount).firstIndex(where: { !$0.key.hasPrefix("/") || checkoutExists($0.key) })
+            {
                 members.insert(members.remove(at: lead), at: 0)
             }
             let primary = members[0]
             // The repository's own record holds a linked project's terms and
             // its agent's answer (#971).
-            let remote = primary.isLinkedCheckout ? primary.projectRemote : nil
-            let repositoryRecord = remote.flatMap { remote in learned.projects.first { $0.key == remote.key } }
+            let remote = primary.isLinkedCheckout || primary.isRepositoryRecord ? primary.projectRemote : nil
+            let repositoryRecord = remote.flatMap { remote in
+                members.contains { $0.key == remote.key } ? nil : learned.projects.first { $0.key == remote.key }
+            }
             let records = members + (repositoryRecord.map { [$0] } ?? [])
             var seen = Set<String>()
             var terms: [String] = []
@@ -166,7 +175,8 @@ package enum QuickCaptureProjects {
             for member in members where summary == nil {
                 summary = member.key.hasPrefix("/") ? readme(member.key).flatMap(Self.summary(ofReadme:)) : member.summary
             }
-            let keys = members.map(\.key) + (remote.map { [$0.key] } ?? [])
+            var keys = members.map(\.key)
+            if let remote, !keys.contains(remote.key) { keys.append(remote.key) }
             let userLine = keys.lazy.compactMap { key in
                 userLines[key]
                     .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
