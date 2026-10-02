@@ -1034,6 +1034,43 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
     }
 
+    /// A pick still bringing a pane forward when its dictation is cancelled
+    /// belongs to that dictation: once the pane comes forward during the
+    /// next one, a quick capture, it picks nothing there, and the capture's
+    /// words go only to the Inbox.
+    func testOldQueuedPickCannotRedirectANewInboxCapture() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let waiting = installWaitingSessions(pipeline, ["pay": "/r/payments"])
+        waiting.focuser.holdsFocus = true
+        let captured = QuickCaptures()
+        pipeline.viewModel.session.onQuickCapture = { text, _ in captured.all.append((text, 0)) }
+        // Were the pane picked, the words would go into it.
+        let terminalPID: pid_t = 5151
+        pipeline.overlay.commitTargetAppPID = terminalPID
+        pipeline.viewModel.dependencies.bundleIdentifier = { _ in TerminalScreenAllowlist.ghosttyBundleID }
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.session.moveDestination(forward: false)
+        let sessionPick = try XCTUnwrap(pipeline.viewModel.session.destinationFocusTask)
+        await waiting.focuser.waitUntilHeld(1)
+        XCTAssertTrue(pipeline.viewModel.session.pickInboxOrStop(), "the Inbox pick queues behind the session's")
+        pipeline.viewModel.cancelDictation()
+
+        pipeline.server.forgetFrames()
+        await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .inbox)
+        waiting.focuser.releaseHeldFocuses()
+        await sessionPick.value
+
+        XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .inbox)
+        XCTAssertTrue(pipeline.viewModel.session.sessionIsQuickCapture)
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline, finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved)
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing reaches the pane")
+        XCTAssertEqual(waiting.focuser.readBackSessionIDs, [])
+        XCTAssertEqual(captured.all.map(\.text), [Self.phrase])
+    }
+
     /// An unconfirmed pane may still have come forward. Staying on the
     /// focused app, the words go in only if the focused app is still the
     /// commit target; here the pane's terminal is, so they stay in History.
