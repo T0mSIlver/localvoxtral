@@ -54,6 +54,9 @@ package final class ProjectTermProposer: @unchecked Sendable {
     /// listener exists; nil on a Mac with no enrolled host.
     private let remoteRequests = Mutex<RemoteProjectTermRequests?>(nil)
     private let usageRecorder: (any UsageRecording)?
+    /// The mods of joined Claude Code sessions, which can answer from the
+    /// session's own transcript (#1410). Attached with the broker.
+    private let sessionChannels = Mutex<ClaudeModChannelHub?>(nil)
 
     package init(
         store: any ProjectTermProposalStoring,
@@ -76,6 +79,10 @@ package final class ProjectTermProposer: @unchecked Sendable {
     /// The remote half, handed over by whoever builds the remote listener.
     package func attachRemote(_ requests: RemoteProjectTermRequests?) {
         remoteRequests.withLock { $0 = requests }
+    }
+
+    package func attachSessionChannels(_ hub: ClaudeModChannelHub?) {
+        sessionChannels.withLock { $0 = hub }
     }
 
     /// Returns the task that asks, or nil when this dictation starts no local
@@ -148,7 +155,13 @@ package final class ProjectTermProposer: @unchecked Sendable {
         Log.backends.info(
             "Project terms: asking \(request.agent.rawValue, privacy: .public) for a new project's terms"
         )
-        switch await runner.run(invocation) {
+        let outcome: ProjectTermProposal.Outcome
+        if let answered = await askSession(request, at: started) {
+            outcome = answered
+        } else {
+            outcome = await runner.run(invocation)
+        }
+        switch outcome {
         case .terms(let raw, let usage, let line):
             usageRecorder?.record(.agentRun(date: now(), feature: .projectTerms, agent: request.agent, usage: usage))
             let accepted = ProjectTermProposal.acceptedTerms(raw)
@@ -170,6 +183,32 @@ package final class ProjectTermProposer: @unchecked Sendable {
             )
             store.recordProposalFailure(project: project)
         }
+    }
+
+    /// The joined session's own answer through its mod, or nil: not a
+    /// Claude Code session, too young, its cache likely gone, no mod, or no
+    /// usable answer. Nil runs the one-shot agent instead.
+    private func askSession(_ request: ProjectTermProposal.Request, at moment: Date) async -> ProjectTermProposal.Outcome? {
+        guard let session = request.session,
+              ProjectTermProposal.sessionMayAnswer(session, now: moment),
+              let hub = sessionChannels.withLock({ $0 }),
+              hub.isAttached(session.id)
+        else { return nil }
+        Log.backends.info("Project terms: asking the joined session through its mod")
+        let reply = await hub.send(
+            .init(kind: .terms, text: ProjectTermProposal.forkPrompt),
+            to: session.id,
+            timeout: .seconds(ProjectTermProposal.timeoutSeconds)
+        )
+        guard let reply, reply.ok, let text = reply.text,
+              let outcome = ProjectTermProposal.outcome(forkAnswer: text, usage: reply.usage)
+        else {
+            Log.backends.error(
+                "Project terms: the session did not answer (\(reply?.reason ?? (reply == nil ? "no reply" : "no answer object"), privacy: .public)); running the agent"
+            )
+            return nil
+        }
+        return outcome
     }
 
     /// True when no run for `key` started this launch within
