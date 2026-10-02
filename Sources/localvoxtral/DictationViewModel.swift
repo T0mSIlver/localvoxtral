@@ -872,6 +872,13 @@ final class DictationViewModel {
         }
     }
 
+    /// A stopped dictation still waiting on its polish is saved to History
+    /// as not inserted, and its commit cancelled. Quit calls this before it
+    /// drains the History writes (#1284).
+    func saveStoppedDictationForQuit() {
+        session.cancelPolishingForNewSessionIfNeeded()
+    }
+
     // MARK: - Lifecycle Observers
 
     private func registerLifecycleObservers(on nc: NotificationCenter) {
