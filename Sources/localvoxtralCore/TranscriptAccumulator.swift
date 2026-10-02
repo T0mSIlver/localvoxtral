@@ -32,7 +32,8 @@ package struct TranscriptAccumulator: Equatable, Sendable {
     /// to type for it.
     package struct FinalizedSegment: Equatable, Sendable {
         package let text: String
-        /// The whole segment when no partial was typed live; the missing
+        /// The whole segment, led by one space when the final starts with
+        /// whitespace, when no partial was typed live; the missing
         /// suffix when the final purely extends what was typed; nil when the
         /// final revises typed text, which live mode cannot rewrite.
         package let liveInsertion: String?
@@ -85,8 +86,11 @@ package struct TranscriptAccumulator: Equatable, Sendable {
 
         let liveInsertion: String?
         if !hadLiveDelta {
-            // No partials were typed live: insert the whole segment.
-            liveInsertion = finalizedSegment
+            // No partials were typed live: insert the whole segment, with
+            // the space the backend put in front of it, as a first delta's
+            // would have been typed. Only the session's first chunk loses it.
+            let separator = processedText.first?.isWhitespace == true ? " " : ""
+            liveInsertion = separator + finalizedSegment
         } else {
             // Partials were already typed live and the final is a pure
             // extension of them (e.g. a trailing "." that only arrived in
