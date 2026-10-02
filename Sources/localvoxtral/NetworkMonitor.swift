@@ -35,21 +35,30 @@ final class NetworkMonitor: @unchecked Sendable {
 
     init() {
         monitor.pathUpdateHandler = { [weak self] path in
-            guard let self else { return }
-            let connected = path.status == .satisfied
-            let callback: (@Sendable (_ connected: Bool) -> Void)?
-
-            self.state.lock()
-            let wasConnected = self._isConnected
-            self._isConnected = connected
-            callback = self._onChange
-            self.state.unlock()
-
-            guard connected != wasConnected else { return }
-            Log.dictation.info("network path changed: \(connected ? "connected" : "disconnected")")
-            callback?(connected)
+            self?.apply(connected: path.status == .satisfied)
         }
     }
+
+    private func apply(connected: Bool) {
+        let callback: (@Sendable (_ connected: Bool) -> Void)?
+
+        state.lock()
+        let wasConnected = _isConnected
+        _isConnected = connected
+        callback = _onChange
+        state.unlock()
+
+        guard connected != wasConnected else { return }
+        Log.dictation.info("network path changed: \(connected ? "connected" : "disconnected")")
+        callback?(connected)
+    }
+
+    #if DEBUG
+    /// Reports a path change as `NWPathMonitor` would, for tests.
+    func debugReportPath(connected: Bool) {
+        apply(connected: connected)
+    }
+    #endif
 
     func start() {
         monitor.start(queue: queue)
