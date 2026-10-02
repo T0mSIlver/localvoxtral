@@ -520,6 +520,41 @@ final class QuickCaptureTwoStageInboxTests: XCTestCase {
         XCTAssertEqual(model.items.first?.title, Self.checked.title)
     }
 
+    /// Two running copies (#990): this one's Draft Again could not save its
+    /// start or its first draft, and the other copy filed the capture
+    /// meanwhile. When the check lands, those unsaved changes apply again on
+    /// top of the filing (#1260) and must not reopen it for a second File.
+    func testADraftWhoseSavesFailedDoesNotReopenACaptureAnotherCopyFiled() async throws {
+        let runner = FakeQuickCaptureCheckRunner([.failed(.budgetExceeded), .draft(Self.checked, usage: nil)], gated: true)
+        runner.gate!.wakeAll()
+        let installed = model(runner: runner, first: FakeQuickCaptureFirstDrafter([.draft(Self.first, usage: nil)]))
+        let capture = installed.capture(text: "show drafting progress", historyRecordID: nil)
+        await runner.gate!.waitForSleepers(1)
+        runner.gate!.wakeAll()
+        await capture.value
+        let id = try XCTUnwrap(installed.items.first?.id)
+        XCTAssertTrue(try XCTUnwrap(installed.items.first).canDraftAgain)
+        let tryBuild = model(runner: runner, first: FakeQuickCaptureFirstDrafter([.draft(Self.first, usage: nil)]))
+
+        // A file where the Inbox's folder goes: every save fails.
+        let inboxFolder = fileURL.deletingLastPathComponent()
+        try FileManager.default.removeItem(at: inboxFolder)
+        try Data().write(to: inboxFolder)
+        let again = try XCTUnwrap(installed.draftAgain(id))
+        await runner.gate!.waitForSleepers(1)
+        XCTAssertTrue(installed.hasUnsavedChanges)
+        try FileManager.default.removeItem(at: inboxFolder)
+        try FileManager.default.createDirectory(at: inboxFolder, withIntermediateDirectories: true)
+        await tryBuild.file(id)?.value
+        runner.gate!.wakeAll()
+        await again.value
+
+        XCTAssertEqual(installed.items.first?.state, .filed)
+        XCTAssertNil(installed.file(id), "never filed twice")
+        XCTAssertEqual(github.created.withLock { $0.count }, 1)
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.first?.state, .filed)
+    }
+
     func testAFailedCheckKeepsTheFirstDraftAndOffersDraftAgain() async throws {
         let runner = FakeQuickCaptureCheckRunner([.failed(.budgetExceeded)], gated: true)
         runner.gate!.wakeAll()
