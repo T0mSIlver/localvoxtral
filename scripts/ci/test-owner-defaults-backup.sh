@@ -136,6 +136,20 @@ for old_lane in capture-assets record-demo; do
 done
 pass "the backups capture-readme-assets and record-demo left are restored too"
 
+# 2b. Two killed runs on different paths: the later one may have backed up
+#     the earlier one's forced modes, so only the oldest backup is restored
+#     and the other is dropped.
+fresh_account
+write_backup ui-smoke present
+touch -t 202609010000 "$WORK/home/.localvoxtral-ui-smoke.defaults-backup"
+force_live
+write_backup capture-assets present
+force_live
+[[ "$(lane)" == 0 ]] || fail "recovering two backups failed: $(cat "$WORK/lane.out")"
+assert_live_is_golden "after recovering two backups"
+assert_no_leftovers "after recovering two backups"
+pass "with two backups on disk, the oldest is restored and the other dropped"
+
 # 3. A damaged backup stops recovery before the live domain is deleted.
 fresh_account
 write_backup ui-smoke present

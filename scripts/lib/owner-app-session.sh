@@ -64,10 +64,6 @@ apply_defaults_backup() {
 # since an absent domain was backed up as an empty dict.
 restore_legacy_defaults_backup() {
   local legacy="$1"
-  if [[ ! -e "$legacy" ]]; then
-    rm -f "${legacy}.had-domain"
-    return 0
-  fi
   if ! plutil -lint -s "$legacy" >/dev/null 2>&1; then
     printf 'ERROR: %s is not a valid plist; leaving the %s domain untouched.\n' "$legacy" "$BUNDLE_ID" >&2
     return 1
@@ -76,14 +72,9 @@ restore_legacy_defaults_backup() {
   rm -f "$legacy" "${legacy}.had-domain"
 }
 
-# restore_defaults_backup <backup> <legacy-plist>
+# restore_defaults_backup <backup>
 restore_defaults_backup() {
-  local backup="$1" legacy="$2" payload state
-  if [[ ! -e "$backup" ]]; then
-    restore_legacy_defaults_backup "$legacy"
-    return $?
-  fi
-
+  local backup="$1" payload state
   payload="$(mktemp "${backup}.payload.XXXXXX")" || return 1
   if ! state="$(read_defaults_backup "$backup" "$payload")"; then
     rm -f "$payload"
@@ -97,28 +88,43 @@ restore_defaults_backup() {
   rm -f "$payload" "$backup"
 }
 
-# Restores the owner's domain from any backup a killed run left, oldest lane
-# first, and fails without touching the domain further when one does not
-# validate.
+# Restores the owner's domain from a backup a killed run left. Only the
+# oldest backup holds the owner's own settings: an older lane recovered only
+# its own path, so a later backup on another path can hold the forced modes
+# of the run killed before it. The others are deleted once the oldest is
+# restored. A backup that does not validate fails the lane with every backup
+# and the domain left as they are.
 recover_previous_defaults_backup() {
-  local lane backup legacy
+  local lane backup legacy found oldest=""
   for lane in $DEFAULTS_BACKUP_LANES; do
     backup="${HOME}/.localvoxtral-${lane}.defaults-backup"
     legacy="${HOME}/.localvoxtral-${lane}.pre.plist"
     # The staging files a killed snapshot or restore left beside the backup.
     rm -f "${backup}".staged.* "${backup}".export.* "${backup}".payload.*
-    if [[ ! -e "$backup" && ! -e "$legacy" ]]; then
-      rm -f "${legacy}.had-domain"
-      continue
-    fi
-
-    printf 'WARNING: found a defaults backup from a previous interrupted run; restoring owner defaults before continuing.\n' >&2
-    if ! restore_defaults_backup "$backup" "$legacy"; then
-      record_fail "Could not restore the previous defaults backup at $backup (or $legacy); refusing to run the app."
-      return 1
-    fi
-    printf 'WARNING: previous defaults backup restored and removed.\n' >&2
+    [[ -e "$legacy" ]] || rm -f "${legacy}.had-domain"
+    for found in "$backup" "$legacy"; do
+      [[ -e "$found" ]] || continue
+      if [[ -z "$oldest" || "$found" -ot "$oldest" ]]; then
+        oldest="$found"
+      fi
+    done
   done
+  [[ -n "$oldest" ]] || return 0
+
+  printf 'WARNING: found a defaults backup from a previous interrupted run (%s); restoring owner defaults before continuing.\n' "$oldest" >&2
+  if [[ "$oldest" == *.pre.plist ]]; then
+    restore_legacy_defaults_backup "$oldest"
+  else
+    restore_defaults_backup "$oldest"
+  fi || {
+    record_fail "Could not restore the previous defaults backup at $oldest; refusing to run the app."
+    return 1
+  }
+  for lane in $DEFAULTS_BACKUP_LANES; do
+    rm -f "${HOME}/.localvoxtral-${lane}.defaults-backup" \
+      "${HOME}/.localvoxtral-${lane}.pre.plist" "${HOME}/.localvoxtral-${lane}.pre.plist.had-domain"
+  done
+  printf 'WARNING: previous defaults backup restored; every backup removed.\n' >&2
 }
 
 # The suite the lanes write their settings into, and the app reads instead of
@@ -136,8 +142,15 @@ use_harness_defaults() {
 # the owner's setup with a few settings pinned on top. Reads the owner's
 # domain, never writes it.
 copy_owner_defaults_to_harness() {
-  local exported
-  exported="$(defaults export "$BUNDLE_ID" - 2>/dev/null)" || return 0
+  local exported read_error
+  if ! defaults read "$BUNDLE_ID" >/dev/null 2>&1; then
+    # Only "does not exist" means a fresh Mac; any other failure would run
+    # the lane on the app's defaults instead of the owner's setup.
+    read_error="$(defaults read "$BUNDLE_ID" 2>&1 >/dev/null)"
+    [[ "$read_error" == *"does not exist"* ]] || return 1
+    return 0
+  fi
+  exported="$(defaults export "$BUNDLE_ID" -)" || return 1
   printf '%s\n' "$exported" | defaults import "$HARNESS_DEFAULTS_SUITE" -
 }
 

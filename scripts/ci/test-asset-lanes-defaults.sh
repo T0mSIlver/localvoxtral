@@ -85,6 +85,7 @@ store="$DOMAINS/$2"
 case "$1" in
   read)
     [ -f "$store" ] || { echo "Domain $2 does not exist" >&2; exit 1; }
+    [ -z "${STUB_READ_ERROR:-}" ] || { echo "$STUB_READ_ERROR" >&2; exit 1; }
     if [ -n "${3:-}" ]; then
       value="$(awk -F '\t' -v k="$3" '$1 == k { print $2 }' "$store")"
       [ -n "$value" ] || exit 1
@@ -200,5 +201,14 @@ status="$(run_lane record-demo.sh DEMO_TERMINAL_AGENT=shell DEMO_POLISH_READY_SE
 grep -q "polishd never became healthy" "$WORK/out" || fail "record-demo did not wait for the managed helper"
 assert_owner_domain_untouched "record-demo (managed polishing)"
 pass "record-demo waits for the managed polishing helper and leaves the owner's domain alone"
+
+# 4. An owner's domain that cannot be read is not a fresh Mac: record-demo
+#    stops instead of recording on the app's defaults.
+fresh_mac external_url
+status="$(run_lane record-demo.sh DEMO_TERMINAL_AGENT=shell STUB_READ_ERROR="Could not read domain")"
+[[ "$status" == 1 ]] || fail "record-demo exited $status"
+grep -q "Could not copy $OWNER defaults into $HARNESS" "$WORK/out" || fail "record-demo did not stop at the copy"
+grep -q "^open .*dist/localvoxtral.app" "$EVENTS" && fail "record-demo launched the app without the owner's settings"
+pass "record-demo stops when the owner's domain cannot be read"
 
 echo "asset lanes defaults tests passed"
