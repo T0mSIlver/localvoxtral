@@ -294,6 +294,41 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(answered, [["remote:website", "me/website"]])
     }
 
+    /// "File issues here" changed while captures wait: File goes where the
+    /// project files now, and the issue a draft extended in the fork is
+    /// dropped. A repository typed for one capture stays.
+    func testChangingWhereAForkFilesMovesItsWaitingCaptures() async throws {
+        let facts = GitHubRepositoryFacts(description: nil, topics: [], parent: "them/tool")
+        let fork = QuickCaptureProject(
+            key: "/w/tool", name: "tool", summary: nil, terms: [], userLine: nil, repository: "me/tool", github: facts)
+        let upstream = QuickCaptureProject(
+            key: "/w/tool", name: "tool", summary: nil, terms: [], userLine: nil,
+            repository: "me/tool", issueRepository: "them/tool", github: facts)
+        let list = ProjectListBox([fork])
+        let runner = FakeQuickCaptureCheckRunner([
+            .draft(.init(title: "Verbose flag", body: "b", relation: .extends, issue: 7), usage: nil),
+        ])
+        let model = QuickCaptureFixture.model(
+            fileURL: fileURL, answer: ["tool": 0.95], github: github, runner: runner, currentProjects: { list.value })
+        await model.capture(text: "Add a verbose flag", historyRecordID: nil).value
+        await model.capture(text: "Add a quiet flag", historyRecordID: nil).value
+        let typed = try XCTUnwrap(model.items.first?.id)
+        let id = try XCTUnwrap(model.items.last?.id)
+        model.setRepository("me/other", for: typed)
+        XCTAssertEqual(model.items.last?.repository, "me/tool")
+
+        list.value = [upstream]
+        model.adoptProjects()
+
+        let item = try XCTUnwrap(model.items.last)
+        XCTAssertEqual(item.repository, "them/tool")
+        XCTAssertNil(item.relatedIssue, "#7 is the fork's issue")
+        XCTAssertFalse(item.canComment)
+        XCTAssertEqual(model.items.first?.repository, "me/other", "a typed repository is the user's")
+        await model.file(id)?.value
+        XCTAssertEqual(github.created.withLock { $0.map(\.first) }, ["them/tool"])
+    }
+
     func testARemoteDraftSaysItWaitsForASessionUntilTheHostAnswers() async throws {
         let sleeper = ManualSleeper()
         let model = model(answer: ["website": 0.9]) { _, _, _, _ in
@@ -481,4 +516,11 @@ final class QuickCaptureInboxTests: XCTestCase {
             ["issue", "create", "--repo", "o/r", "--title", "T", "--body", "--help"]
         )
     }
+}
+
+/// The project list as the Projects pane has it now.
+@MainActor
+private final class ProjectListBox {
+    var value: [QuickCaptureProject]
+    init(_ value: [QuickCaptureProject]) { self.value = value }
 }

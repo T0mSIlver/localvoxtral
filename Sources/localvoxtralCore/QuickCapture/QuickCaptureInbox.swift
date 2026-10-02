@@ -288,6 +288,7 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
                 let runs = item.state == .drafting || item.codeCheck?.state == .checking
                 if !runs { result.items[index].projectKey = project.key }
                 result.items[index].projectName = project.name
+                Self.followFilingChoice(of: project, &result.items[index])
             }
             if let suggestion = item.suggestion,
                let project = projects.first(where: { $0.keys.contains(suggestion.projectKey) })
@@ -296,6 +297,23 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
             }
         }
         return result
+    }
+
+    /// A capture not filed yet files where its project files now: a fork's
+    /// "File issues here" choice changed since it took the fork's or the
+    /// upstream's repository. The issue its draft extended or duplicated
+    /// belongs to the other repository, so the link goes. A repository the
+    /// user typed for the capture is neither of the project's and stays.
+    private static func followFilingChoice(of project: QuickCaptureProject, _ item: inout QuickCaptureItem) {
+        guard item.state != .filing, item.state != .filed,
+              let target = project.issueRepository, let current = item.repository,
+              current.caseInsensitiveCompare(target) != .orderedSame
+        else { return }
+        let projectRepositories = [project.repository, project.github?.parent].compactMap { $0 }
+        guard projectRepositories.contains(where: { $0.caseInsensitiveCompare(current) == .orderedSame }) else { return }
+        item.repository = target
+        item.relation = .none
+        item.relatedIssue = nil
     }
 
     package mutating func discard(_ id: UUID) {
