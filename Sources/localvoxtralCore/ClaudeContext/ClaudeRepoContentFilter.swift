@@ -271,7 +271,13 @@ package enum ClaudeRepoContentFilter {
     /// paths) is kept: it is git's prose, not file content.
     package static func withholdingSensitiveDiffSections(_ diff: String) -> FilteredDiff {
         guard !diff.isEmpty else { return FilteredDiff(text: diff, withheldFileCount: 0) }
-        let lines = diff.split(separator: "\n", omittingEmptySubsequences: false)
+        // Split on the LF scalar, not the "\n" Character: Swift reads CRLF as
+        // one Character, so a content line ending in CRLF would swallow the
+        // next section's header. Each line keeps its CR and the join restores
+        // the text byte for byte.
+        let lines = diff.unicodeScalars
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { Substring($0) }
         var kept: [Substring] = []
         var section: [Substring] = []
         var inSection = false
