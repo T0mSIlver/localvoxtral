@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import XCTest
 
 @testable import localvoxtralCore
@@ -76,6 +77,49 @@ final class LearnedTermsForgottenProjectTests: XCTestCase {
         store.waitForPendingWrites()
         XCTAssertEqual(store.snapshot().forgotten.projects, [])
         XCTAssertEqual(store.snapshot().projects.first { $0.key == host.key }?.agentActiveAt, Self.start)
+    }
+
+    /// The records go only once the tombstone is on disk: a quit before
+    /// then finds the project as it was, never forgotten with nothing to
+    /// keep the agent listing from adding it back.
+    func testAForgetWhoseTombstoneWasNotWrittenKeepsTheRecordsOnDisk() throws {
+        let fileURL = makeFileURL()
+        let tombstoneWriteFails = Mutex(false)
+        let store = LearnedTermStore(
+            fileURL: fileURL, now: { Self.start },
+            writeForgottenList: { data, url in
+                if tombstoneWriteFails.withLock({ $0 }) { throw CocoaError(.fileWriteOutOfSpace) }
+                try LearnedTermStore.writeFile(data, to: url)
+            })
+        store.recordAgentActivity(agentWorked(in: mac), hostID: nil)
+        store.waitForPendingWrites()
+        tombstoneWriteFails.withLock { $0 = true }
+
+        store.forgetProject(keys: [mac.key, quill.key])
+        store.waitForPendingWrites()
+        XCTAssertEqual(store.snapshot().projects, [], "forgotten in memory")
+        let relaunched = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        relaunched.waitForPendingWrites()
+        XCTAssertEqual(relaunched.snapshot().projects.count, 2, "a relaunch finds the project as it was")
+
+        tombstoneWriteFails.withLock { $0 = false }
+        store.recordAgentActivity(agentWorked(in: mac), hostID: nil)
+        store.waitForPendingWrites()
+        let reopened = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        reopened.recordAgentActivity(agentWorked(in: mac), hostID: nil)
+        reopened.waitForPendingWrites()
+        XCTAssertEqual(reopened.snapshot().projects, [], "the next write lands both, in order")
+    }
+
+    func testAnAgentsTermsProposalDoesNotBringAForgottenProjectBack() async {
+        let store = LearnedTermStore(fileURL: nil, now: { Self.start })
+        store.recordAgentActivity(agentWorked(in: mac), hostID: nil)
+        store.forgetProject(keys: [mac.key, quill.key])
+        let added = await store.recordCommandProposal(["Kern"], proposer: "claude", project: mac, excluding: [])
+        store.recordAgentActivity(agentWorked(in: mac), hostID: nil)
+        store.waitForPendingWrites()
+        XCTAssertEqual(added, [])
+        XCTAssertEqual(store.snapshot().projects, [])
     }
 
     /// A tombstone file this build cannot read is kept as it is, and only

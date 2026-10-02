@@ -144,7 +144,8 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
                 }
                 if tidy(&probe) > 0, adopted {
                     // Refused, and so not written, while the ignore list is.
-                    commit { terms in
+                    // A fold is no dictation: it brings no forgotten project back.
+                    commit(revives: false) { terms in
                         let tidied = tidy(&terms)
                         Log.polishing.info(
                             "Learned terms: \(tidied, privacy: .public) worktrees, checkouts, code-shaped proposals and records of ignored repos folded into their projects or dropped"
@@ -342,7 +343,7 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
     /// transcripts (`hostID` nil) or a host's report.
     package func recordAgentActivity(_ repositories: [AgentWorkedRepository], hostID: String?) {
         let moment = now()
-        mutate { memory in
+        mutate(revives: false) { memory in
             var added = 0
             for repository in repositories where memory.recordAgentActivity(
                 project: repository.project, remote: repository.remote, hostID: hostID,
@@ -512,13 +513,14 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
     /// After a failed write `change` can run again (`StoredFile.update`): a
     /// result it reports goes through `FirstRun`.
     private func mutate(
+        revives: Bool = true,
         _ change: @escaping @Sendable (inout LearnedTerms) -> Void,
         ignoring ignoredChange: (@Sendable (LearnedTerms, inout IgnoredProjects) -> Void)? = nil,
         forgetting forgottenChange: (@Sendable (LearnedTerms, inout ForgottenProjects) -> Void)? = nil,
         refused: @escaping @Sendable () -> Void = {}
     ) {
         writeQueue.async { [self] in
-            commit(change, ignoring: ignoredChange, forgetting: forgottenChange, refused: refused)
+            commit(revives: revives, change, ignoring: ignoredChange, forgetting: forgottenChange, refused: refused)
         }
     }
 
@@ -541,8 +543,11 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
     /// `forgottenChange` lands before the terms', so a crash in between
     /// leaves a project with a tombstone, never a forgotten one without.
     /// A write that brings a forgotten project back clears its tombstone
-    /// after the terms land.
+    /// after the terms land, unless `revives` is false. While a tombstone
+    /// change is unsaved, the terms' change holds in memory like the ignore
+    /// list's, so a relaunch never finds a forgotten project without one.
     private func commit(
+        revives: Bool = true,
         _ change: @escaping @Sendable (inout LearnedTerms) -> Void,
         ignoring ignoredChange: ((LearnedTerms, inout IgnoredProjects) -> Void)? = nil,
         forgetting forgottenChange: ((LearnedTerms, inout ForgottenProjects) -> Void)? = nil,
@@ -563,21 +568,21 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
             let before = terms
             change(&terms)
             terms.removeIgnoredProjects()
-            terms.reviveForgottenProjects(since: before)
+            if revives { terms.reviveForgottenProjects(since: before) }
             state.withLock { $0.terms = terms }
             onChange?()
             return
         }
         StoredFileLock.withLock(beside: ignoredFileURL) {
             commitHoldingTheListLock(
-                fileURL, ignoredFileURL, forgottenFileURL, memory: memory, change: change,
+                fileURL, ignoredFileURL, forgottenFileURL, memory: memory, revives: revives, change: change,
                 ignoredChange: ignoredChange, forgottenChange: forgottenChange, refused: refused)
         }
         onChange?()
     }
 
     private func commitHoldingTheListLock(
-        _ fileURL: URL, _ ignoredFileURL: URL, _ forgottenFileURL: URL, memory: LearnedTerms,
+        _ fileURL: URL, _ ignoredFileURL: URL, _ forgottenFileURL: URL, memory: LearnedTerms, revives: Bool,
         change: @escaping (inout LearnedTerms) -> Void,
         ignoredChange: ((LearnedTerms, inout IgnoredProjects) -> Void)?,
         forgottenChange: ((LearnedTerms, inout ForgottenProjects) -> Void)?,
@@ -599,14 +604,14 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
                 _ = updateForgottenList(forgottenFileURL, memory: forgotten, change: { $0.revive(keys: keys) })
             }
         }
-        if !pendingListChanges.isEmpty {
+        if !pendingListChanges.isEmpty || !pendingForgottenChanges.isEmpty {
             let held = { (terms: inout LearnedTerms) in
                 terms.ignored = ignored
                 terms.forgotten = forgotten
                 let before = terms
                 change(&terms)
                 terms.removeIgnoredProjects()
-                revived = terms.reviveForgottenProjects(since: before)
+                if revives { revived = terms.reviveForgottenProjects(since: before) }
             }
             var terms = memory
             held(&terms)
@@ -632,7 +637,7 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
                 // an ignored repo goes before it is kept or written (#1006).
                 terms.removeIgnoredProjects()
                 swept = terms.ignored
-                revived = terms.reviveForgottenProjects(since: before)
+                if revives { revived = terms.reviveForgottenProjects(since: before) }
             })
         switch update {
         case .written(let terms):

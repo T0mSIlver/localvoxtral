@@ -824,8 +824,9 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
     /// the command does not stamp the project: it is a few names an agent
     /// just met, not the project's list, so the headless run still asks once.
     /// `terms` must already be term-shaped (`ProjectTermProposal.acceptedTerms`);
-    /// a term the project holds or `excluding` names is dropped. Returns the
-    /// terms added.
+    /// a term the project holds or `excluding` names is dropped. A project
+    /// the user forgot (#1156) takes none: an agent working there does not
+    /// bring it back. Returns the terms added.
     @discardableResult
     package mutating func recordCommandProposal(
         _ terms: [String],
@@ -834,7 +835,7 @@ package struct LearnedTerms: Codable, Equatable, Sendable {
         excluding: [String] = [],
         now: Date
     ) -> [String] {
-        guard !isIgnored(projectKey: project.key) else { return [] }
+        guard !isIgnored(projectKey: project.key), !forgotten.contains(key: project.key) else { return [] }
         let index = projectIndex(for: project, now: now)
         var known = Set(projects[index].terms.map(\.term.caseFoldedForMatching))
         known.formUnion(excluding.map(\.caseFoldedForMatching))
