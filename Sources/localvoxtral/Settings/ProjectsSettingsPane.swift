@@ -60,51 +60,65 @@ struct ProjectsSettingsPane: View {
                     }
                 } else {
                     SettingsGroupRow {
-                        ProjectsTableColumns(
-                            name: Text("Project"), filing: Text("Files issues in"), checkouts: Text("Checkouts"),
-                            lastUsed: Text("Last used"), drafts: Text("Drafts")
-                        )
+                        HStack(alignment: .firstTextBaseline, spacing: ProjectsTableColumnsSpacing.value) {
+                            ProjectsTableColumns(
+                                name: Text("Project"), filing: Text("Files issues in"), checkouts: Text("Checkouts"),
+                                lastUsed: Text("Last used"), drafts: Text("Drafts")
+                            )
+                            Text("Group").frame(width: ProjectGroupPicker.width, alignment: .leading)
+                        }
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     }
                     ForEach(rows) { row in
-                        Button {
-                            openProject = .project(key: row.key)
-                        } label: {
-                            SettingsGroupRow {
-                                ProjectsTableColumns(
-                                    name: Text(row.name).fontWeight(.semibold),
-                                    filing: ProjectsFilingText(filing: row.filing),
-                                    checkouts: Text(row.checkouts()).foregroundStyle(.secondary),
-                                    lastUsed: Text(ProjectsPane.lastUsed(row.lastUsed, now: Date()))
-                                        .foregroundStyle(.secondary),
-                                    drafts: Text(row.draftsWaiting == 0 ? "–" : "\(row.draftsWaiting)")
-                                        .foregroundStyle(.secondary)
-                                )
+                        SettingsGroupRow {
+                            // The picker sits outside the row's button, so
+                            // choosing a group does not open the sheet.
+                            HStack(alignment: .firstTextBaseline, spacing: ProjectsTableColumnsSpacing.value) {
+                                Button {
+                                    openProject = .project(key: row.key)
+                                } label: {
+                                    ProjectsTableColumns(
+                                        name: Text(row.name).fontWeight(.semibold),
+                                        filing: ProjectsFilingText(filing: row.filing),
+                                        checkouts: Text(row.checkouts()).foregroundStyle(.secondary),
+                                        lastUsed: Text(ProjectsPane.lastUsed(row.lastUsed, now: Date()))
+                                            .foregroundStyle(.secondary),
+                                        drafts: Text(row.draftsWaiting == 0 ? "–" : "\(row.draftsWaiting)")
+                                            .foregroundStyle(.secondary)
+                                    )
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("projects.row")
+                                ProjectGroupPicker(group: row.group) { group in
+                                    Task { await inbox?.setGroup(group, keys: row.keys) }
+                                }
                             }
-                            .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("projects.row")
                     }
                     if let unlisted {
-                        Button {
-                            openProject = .unlisted
-                        } label: {
-                            SettingsGroupRow {
-                                ProjectsTableColumns(
-                                    name: Text(LearnedTermProjectResolver.shared.name).fontWeight(.semibold),
-                                    filing: Text("–").foregroundStyle(.secondary),
-                                    checkouts: Text("–").foregroundStyle(.secondary),
-                                    lastUsed: Text(ProjectsPane.lastUsed(unlisted.lastUsed, now: Date()))
-                                        .foregroundStyle(.secondary),
-                                    drafts: Text("–").foregroundStyle(.secondary)
-                                )
+                        SettingsGroupRow {
+                            HStack(alignment: .firstTextBaseline, spacing: ProjectsTableColumnsSpacing.value) {
+                                Button {
+                                    openProject = .unlisted
+                                } label: {
+                                    ProjectsTableColumns(
+                                        name: Text(LearnedTermProjectResolver.shared.name).fontWeight(.semibold),
+                                        filing: Text("–").foregroundStyle(.secondary),
+                                        checkouts: Text("–").foregroundStyle(.secondary),
+                                        lastUsed: Text(ProjectsPane.lastUsed(unlisted.lastUsed, now: Date()))
+                                            .foregroundStyle(.secondary),
+                                        drafts: Text("–").foregroundStyle(.secondary)
+                                    )
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("projects.noProject")
+                                Text("–").foregroundStyle(.secondary)
+                                    .frame(width: ProjectGroupPicker.width, alignment: .leading)
                             }
-                            .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("projects.noProject")
                     }
                 }
             }
@@ -178,6 +192,12 @@ enum ProjectsLearnMore {
     static let learnedTerms = DocsLink.page("docs/dictation/#terms-learned-from-polishing")
 }
 
+/// The gap between the table's columns. With the Group column, the fixed
+/// widths leave "Files issues in" about 100 points in the Settings window.
+private enum ProjectsTableColumnsSpacing {
+    static let value: CGFloat = 8
+}
+
 /// The table's five columns, the header's and each row's alike.
 private struct ProjectsTableColumns<Name: View, Filing: View, Checkouts: View, LastUsed: View, Drafts: View>: View {
     let name: Name
@@ -187,14 +207,43 @@ private struct ProjectsTableColumns<Name: View, Filing: View, Checkouts: View, L
     let drafts: Drafts
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            name.frame(width: 120, alignment: .leading)
+        HStack(alignment: .firstTextBaseline, spacing: ProjectsTableColumnsSpacing.value) {
+            name.frame(width: 104, alignment: .leading)
             filing.frame(maxWidth: .infinity, alignment: .leading)
-            checkouts.frame(width: 104, alignment: .leading)
-            lastUsed.frame(width: 70, alignment: .leading)
-            drafts.frame(width: 40, alignment: .trailing)
+            checkouts.frame(width: 88, alignment: .leading)
+            lastUsed.frame(width: 64, alignment: .leading)
+            drafts.frame(width: 36, alignment: .trailing)
         }
         .lineLimit(2)
+    }
+}
+
+/// The Group column (#1005): Work, Personal or None.
+/// Borderless, so it reads as text like the other columns: a bordered
+/// picker left "Files issues in" too narrow to read.
+private struct ProjectGroupPicker: View {
+    static let width: CGFloat = 72
+    let group: ProjectGroup?
+    let onChange: (ProjectGroup?) -> Void
+
+    var body: some View {
+        Menu {
+            Picker("Group", selection: Binding(get: { group }, set: onChange)) {
+                Text("None").tag(ProjectGroup?.none)
+                ForEach(ProjectGroup.builtIn, id: \.self) { group in
+                    Text(group.displayName).tag(ProjectGroup?.some(group))
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } label: {
+            Text(group?.displayName ?? "None")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.visible)
+        .fixedSize()
+        .frame(width: Self.width, alignment: .leading)
+        .accessibilityIdentifier("projects.row.group")
     }
 }
 

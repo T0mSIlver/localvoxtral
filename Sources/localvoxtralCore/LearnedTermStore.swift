@@ -367,6 +367,12 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
         Log.polishing.info("Learned terms: a fork files \(upstream ? "upstream" : "in the fork", privacy: .public)")
     }
 
+    /// The Projects pane's Work or Personal choice for one row (#1005).
+    package func setGroup(_ group: ProjectGroup?, keys: [String]) {
+        mutate { memory in memory.setGroup(group, keys: keys) }
+        Log.polishing.info("Learned terms: a project moved to group \(group?.rawValue ?? "none", privacy: .public)")
+    }
+
     /// A terms request failed; the project is asked again after a day.
     package func recordProposalFailure(project: LearnedTermProjectIdentity) {
         let moment = now()

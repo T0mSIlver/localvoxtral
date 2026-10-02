@@ -612,7 +612,7 @@ final class DictationPipelineTests: XCTestCase {
     func testQuitBeforeTheFinalTranscriptFilesAQuickCapture() async throws {
         let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
         let captured = QuickCaptures()
-        pipeline.viewModel.session.onQuickCapture = { text, _ in
+        pipeline.viewModel.session.onQuickCapture = { text, _, _ in
             captured.all.append((text, pipeline.records.all.count))
         }
 
@@ -747,7 +747,7 @@ final class DictationPipelineTests: XCTestCase {
         let polish = FakePolishingService { "<\($0.inputText)>" }
         let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish)
         let captured = QuickCaptures()
-        pipeline.viewModel.session.onQuickCapture = { text, _ in
+        pipeline.viewModel.session.onQuickCapture = { text, _, _ in
             captured.all.append((text, pipeline.records.all.count))
         }
 
@@ -769,7 +769,7 @@ final class DictationPipelineTests: XCTestCase {
     func testAQuickCaptureGoesToTheInboxNeverIntoTheFocusedApp() async throws {
         let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
         let captured = QuickCaptures()
-        pipeline.viewModel.session.onQuickCapture = { text, _ in
+        pipeline.viewModel.session.onQuickCapture = { text, _, _ in
             captured.all.append((text, pipeline.records.all.count))
         }
 
@@ -788,6 +788,33 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertFalse(pipeline.viewModel.session.sessionIsQuickCapture, "the next dictation is an ordinary one")
     }
 
+    /// A quick capture said while joined to a Work project goes to the
+    /// Inbox with that group, so it is polished and routed among Work
+    /// projects only (#1005).
+    func testAQuickCaptureCarriesTheJoinedProjectsGroupToTheInbox() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let store = LearnedTermStore(fileURL: nil, now: { Date(timeIntervalSince1970: 0) })
+        store.recordCorrection("Kubrix", project: .init(key: "/nonexistent-1005/acme", name: "acme"))
+        store.setGroup(.work, keys: ["/nonexistent-1005/acme"])
+        store.waitForPendingWrites()
+        pipeline.viewModel.learnedTermStore = store
+        let groups = QuickCaptureGroups()
+        pipeline.viewModel.session.onQuickCapture = { _, _, group in groups.all.append(group) }
+
+        await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
+        let origin = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
+        var snapshot = ClaudeSessionSnapshot(
+            sessionID: "s1", origin: origin, agent: .claude, firstSeen: Date(timeIntervalSince1970: 0))
+        snapshot.workspace = ClaudeWorkspaceReference.make(rawCwd: "/nonexistent-1005/acme/Sources", origin: origin)
+        pipeline.viewModel.session.context.claudeSessionJoin = ClaudeSessionJoin(
+            target: TerminalScreenTarget(pid: 4242, bundleID: "com.apple.Terminal"),
+            snapshot: snapshot, windowID: 101, mechanism: .ttyDevice)
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline, finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved)
+
+        XCTAssertEqual(groups.all, [.work])
+    }
+
     // MARK: - Destinations (#840)
 
     /// Tab moves an ordinary dictation to the Inbox: it stops as a quick
@@ -795,7 +822,7 @@ final class DictationPipelineTests: XCTestCase {
     func testTabToTheInboxSavesTheDictationThereAndNothingReachesTheFocusedApp() async throws {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
         let captured = QuickCaptures()
-        pipeline.viewModel.session.onQuickCapture = { text, _ in
+        pipeline.viewModel.session.onQuickCapture = { text, _, _ in
             captured.all.append((text, pipeline.records.all.count))
         }
 
@@ -827,7 +854,7 @@ final class DictationPipelineTests: XCTestCase {
     /// Closed, a click on the picked destination opens it without a move.
     func testTabOpensTheDestinationListUntilTheMovesStop() async throws {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
-        pipeline.viewModel.session.onQuickCapture = { _, _ in }
+        pipeline.viewModel.session.onQuickCapture = { _, _, _ in }
         await startAndSpeak(pipeline)
         let session = pipeline.viewModel.session
         func shown() -> OverlayDestinationStrip? { pipeline.overlay.shownDestinations.last ?? nil }
@@ -863,7 +890,7 @@ final class DictationPipelineTests: XCTestCase {
     func testTabFromTheInboxBackToTheFocusedAppCommitsThere() async throws {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
         let captured = QuickCaptures()
-        pipeline.viewModel.session.onQuickCapture = { text, _ in captured.all.append((text, 0)) }
+        pipeline.viewModel.session.onQuickCapture = { text, _, _ in captured.all.append((text, 0)) }
 
         await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
         XCTAssertEqual(pipeline.overlay.shownDestinations.last??.selectedKind, .inbox)
@@ -882,7 +909,7 @@ final class DictationPipelineTests: XCTestCase {
     /// pressed again on the Inbox it stops.
     func testTheQuickCaptureKeyDuringADictationPicksTheInboxThenStops() async throws {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
-        pipeline.viewModel.session.onQuickCapture = { _, _ in }
+        pipeline.viewModel.session.onQuickCapture = { _, _, _ in }
         await startAndSpeak(pipeline)
 
         pipeline.viewModel.session.toggleQuickCapture()
@@ -1139,7 +1166,7 @@ final class DictationPipelineTests: XCTestCase {
         let waiting = installWaitingSessions(pipeline, ["pay": "/r/payments"])
         waiting.focuser.holdsFocus = true
         let captured = QuickCaptures()
-        pipeline.viewModel.session.onQuickCapture = { text, _ in captured.all.append((text, 0)) }
+        pipeline.viewModel.session.onQuickCapture = { text, _, _ in captured.all.append((text, 0)) }
         // Were the pane picked, the words would go into it.
         let terminalPID: pid_t = 5151
         pipeline.overlay.commitTargetAppPID = terminalPID
@@ -1300,7 +1327,7 @@ final class DictationPipelineTests: XCTestCase {
     func testAClickOnTheInboxSavesTheDictationThere() async throws {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
         let captured = QuickCaptures()
-        pipeline.viewModel.session.onQuickCapture = { text, _ in captured.all.append((text, 0)) }
+        pipeline.viewModel.session.onQuickCapture = { text, _, _ in captured.all.append((text, 0)) }
         await startAndSpeak(pipeline)
 
         pipeline.viewModel.session.clickDestination(.session(id: "gone"))
@@ -2235,7 +2262,7 @@ final class DictationPipelineTests: XCTestCase {
         var returns: [pid_t] = []
         targetClaudeDesktop(pipeline, returns: { returns.append($0) })
         let captured = QuickCaptures()
-        pipeline.viewModel.session.onQuickCapture = { text, _ in
+        pipeline.viewModel.session.onQuickCapture = { text, _, _ in
             captured.all.append((text, pipeline.records.all.count))
         }
 
@@ -2268,7 +2295,7 @@ final class DictationPipelineTests: XCTestCase {
             return true
         })
         let captured = QuickCaptures()
-        pipeline.viewModel.session.onQuickCapture = { text, _ in
+        pipeline.viewModel.session.onQuickCapture = { text, _, _ in
             captured.all.append((text, pipeline.records.all.count))
         }
 
@@ -2966,6 +2993,10 @@ private actor DesktopReadCounter {
 /// What the quick capture sink received, with the records written by then.
 private final class QuickCaptures {
     var all: [(text: String, recordsWritten: Int)] = []
+}
+
+private final class QuickCaptureGroups {
+    var all: [ProjectGroup?] = []
 }
 
 /// Every record the sessions wrote, in order.
