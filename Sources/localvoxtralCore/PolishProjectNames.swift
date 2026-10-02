@@ -39,11 +39,12 @@ package enum PolishProjectNames {
         return names.filter { !known.contains(key($0)) }
     }
 
-    /// The global terms that only repeat a project name: every polish sends
-    /// them as a project name already, so Settings offers to remove them.
-    package static func globalTerms(_ terms: [String], repeating names: [String]) -> [String] {
-        let covered = Set(names.map(key))
-        return terms.filter { covered.contains(key($0)) }
+    /// The terms of the most recently used project, which its dictations'
+    /// polish carries: confirmed terms and its agent's proposals (#1442).
+    package static func currentProjectTerms(from learned: LearnedTerms, now: Date) -> [String] {
+        QuickCaptureProjects.projects(
+            from: learned, userLines: [:], now: now, readme: { _ in nil }, checkoutExists: { _ in true }
+        ).first?.terms ?? []
     }
 
     /// Letters and digits only, case-folded: "working set", "working-set" and

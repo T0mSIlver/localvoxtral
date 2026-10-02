@@ -46,12 +46,4 @@ final class PolishProjectNamesTests: XCTestCase {
             "project names alone bring the header"
         )
     }
-
-    func testGlobalTermsThatRepeatAProjectNameAreTheOnesOfferedForRemoval() {
-        XCTAssertEqual(
-            PolishProjectNames.globalTerms(
-                ["Qwen", "working set", "CodexBar", "Codex"], repeating: ["codexbar", "working-set", "localvoxtral"]),
-            ["working set", "CodexBar"]
-        )
-    }
 }
