@@ -40,14 +40,17 @@ extension DictationSessionController {
     /// since). Under Secure Keyboard Entry, or when no key lands, the text
     /// goes on the clipboard: the panel is gone, and it may exist nowhere
     /// else. The session's mod (#1409) gives its refusals back here too.
+    ///
+    /// - Returns: whether keys put the text in.
+    @discardableResult
     func commitOverlayTextThePromptRelayRefused(
         _ text: String, preferredAppPID pid: pid_t?, sessionID: String?
-    ) {
+    ) -> Bool {
         if !TerminalTargetDetector.isSecureKeyboardEntryEnabled(),
            textInsertion.insertTextPrioritizingKeyboard(text, preferredAppPID: pid).isSuccess
             || textInsertion.pasteUsingCommandV(text, preferredAppPID: pid) {
             Log.overlay.notice("overlay commit: relay refused; text inserted by keyboard")
-            return
+            return true
         }
         Log.overlay.error("overlay commit: relay refused and keyboard insertion unavailable; text copied")
         forgetLanding(ofSession: sessionID)
@@ -55,7 +58,7 @@ extension DictationSessionController {
         // A test must never write the host's clipboard.
         if TerminalTargetDetector.isRunningUnderXCTest {
             lastError = StatusStrings.overlayCopiedToClipboard
-            return
+            return false
         }
         #endif
         let pasteboard = NSPasteboard.general
@@ -63,6 +66,7 @@ extension DictationSessionController {
         lastError = pasteboard.setString(text, forType: .string)
             ? StatusStrings.overlayCopiedToClipboard
             : "Unable to insert buffered text into the focused app."
+        return false
     }
 
     /// The commit recorded its landing when it handed the text off. Text the

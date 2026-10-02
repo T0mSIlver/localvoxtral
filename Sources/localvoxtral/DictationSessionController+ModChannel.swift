@@ -3,8 +3,9 @@ import Foundation
 
 /// Overlay Buffer commits into a Claude Code session's prompt box through
 /// its mod (#1409): `$.prompt.fill` puts the text at the cursor, with no key
-/// posted. Anything short of the mod's `ok` gives the text back to the
-/// keyboard, the way the opencode prompt relay does.
+/// posted. A fill that surely did not land gives the text back to the
+/// keyboard, the way the opencode prompt relay does, and only while keys
+/// would still reach the session's prompt.
 extension DictationSessionController {
     /// How long a fill may take before it counts as unanswered: longer than
     /// the mod gives its own reply (3 s), so a slow reply is not mistaken
@@ -16,7 +17,7 @@ extension DictationSessionController {
     /// surface where a fill is not yet known to show (Claude Desktop, a
     /// browser tab), which keep inserting by keyboard until a hand check
     /// says otherwise.
-    func modChannelCommitter(join: ClaudeSessionJoin?) -> ModChannelOverlayCommitter? {
+    func modChannelCommitter(join: ClaudeSessionJoin?, targetPID: pid_t?) -> ModChannelOverlayCommitter? {
         guard let join, let hub = context.claudeModChannels,
               join.snapshot.agent == .claude,
               join.snapshot.origin.isLocalAuthenticated
@@ -29,40 +30,78 @@ extension DictationSessionController {
         return ModChannelOverlayCommitter(
             hub: hub,
             sessionID: sessionID,
-            refused: { [weak self] text, pid in
-                self?.commitOverlayTextThePromptRelayRefused(text, preferredAppPID: pid, sessionID: sessionID)
-            },
-            kept: { [weak self] in
-                self?.lastError = StatusStrings.agentPromptTextKeptInHistory
+            notFilled: { [weak self] text, pid, mayHaveLanded in
+                await self?.commitOverlayTextTheModDidNotFill(
+                    text, preferredAppPID: pid, sessionID: sessionID, terminalPID: targetPID,
+                    mayHaveLanded: mayHaveLanded
+                )
             }
         )
+    }
+
+    /// The text of a fill the mod did not confirm. One that may have landed
+    /// stays in History rather than going in twice. One that surely did not
+    /// is typed, but only while the commit's terminal is frontmost and its
+    /// focused pane still shows the session: a pid cannot tell two tabs
+    /// apart, and the user may have switched since the stop. Unless keys
+    /// put the text in the prompt, the next commit does not continue it.
+    func commitOverlayTextTheModDidNotFill(
+        _ text: String,
+        preferredAppPID pid: pid_t?,
+        sessionID: String,
+        terminalPID: pid_t?,
+        mayHaveLanded: Bool
+    ) async {
+        var inserted = false
+        if mayHaveLanded {
+            lastError = StatusStrings.agentPromptTextKeptInHistory
+        } else if await keysReachModSession(sessionID, terminalPID: terminalPID) {
+            inserted = commitOverlayTextThePromptRelayRefused(text, preferredAppPID: pid, sessionID: sessionID)
+        } else {
+            Log.overlay.notice(
+                "overlay commit: the mod did not fill and the session's pane is not in front; text kept in History"
+            )
+            lastError = StatusStrings.agentPromptTextKeptInHistory
+        }
+        if !inserted, lastOverlayCommitLanding?.sessionID == sessionID {
+            lastOverlayCommitLanding = nil
+        }
+    }
+
+    /// Whether a key typed now would reach `sessionID`'s prompt: `terminalPID`
+    /// is frontmost and its focused pane shows the session. The local
+    /// questions only (the focused tty, a local herdr's focused pane), so a
+    /// cmux surface answers no and keeps its text.
+    private func keysReachModSession(_ sessionID: String, terminalPID: pid_t?) async -> Bool {
+        guard let terminalPID, let resolver = context.claudeSessionJoinResolver,
+              let target = TerminalScreenContextSource.frontmostTarget(), target.pid == terminalPID
+        else { return false }
+        return await resolver.sessionShown(target: target) == sessionID
     }
 }
 
 /// Commits the overlay by asking the session's mod to fill its prompt box.
 /// The fill is handed off, not awaited. A refusal, or a request the mod
-/// never got, gives the text back to the keyboard. A request the mod got and
-/// did not answer may still have filled the box, so its text stays in
-/// History rather than going in twice (`docs/agent/invariants.md`, as for the
-/// opencode relay). Secure Keyboard Entry does not stop it, since no key is
-/// posted.
+/// never got, goes to `notFilled` as surely not landed. A request the mod
+/// got and did not answer may still have filled the box, and goes there as
+/// maybe landed (`docs/agent/invariants.md`, as for the opencode relay).
+/// Secure Keyboard Entry does not stop it, since no key is posted.
 @MainActor
 final class ModChannelOverlayCommitter: OverlayTextCommitting {
     private let hub: ClaudeModChannelHub
     private let sessionID: String
-    private let refused: @MainActor (String, pid_t?) -> Void
-    private let kept: @MainActor () -> Void
+    /// The text, the pid the commit named, and whether the fill may have
+    /// landed.
+    private let notFilled: @MainActor (String, pid_t?, Bool) async -> Void
 
     init(
         hub: ClaudeModChannelHub,
         sessionID: String,
-        refused: @escaping @MainActor (String, pid_t?) -> Void,
-        kept: @escaping @MainActor () -> Void
+        notFilled: @escaping @MainActor (String, pid_t?, Bool) async -> Void
     ) {
         self.hub = hub
         self.sessionID = sessionID
-        self.refused = refused
-        self.kept = kept
+        self.notFilled = notFilled
     }
 
     #if DEBUG
@@ -76,8 +115,7 @@ final class ModChannelOverlayCommitter: OverlayTextCommitting {
     func insertTextPrioritizingKeyboard(_ text: String, preferredAppPID: pid_t?) -> TextInsertResult {
         let hub = hub
         let sessionID = sessionID
-        let refused = refused
-        let kept = kept
+        let notFilled = notFilled
         Task { @MainActor in
             let exchange = await hub.exchange(
                 .init(kind: .fill, text: text),
@@ -92,13 +130,13 @@ final class ModChannelOverlayCommitter: OverlayTextCommitting {
                 Log.overlay.notice(
                     "overlay commit: the mod did not fill (\(reply.reason ?? "no reason", privacy: .public)); keyboard instead"
                 )
-                refused(text, preferredAppPID)
+                await notFilled(text, preferredAppPID, false)
             case .notDelivered:
                 Log.overlay.notice("overlay commit: the fill never reached the mod; keyboard instead")
-                refused(text, preferredAppPID)
+                await notFilled(text, preferredAppPID, false)
             case .unanswered:
                 Log.overlay.error("overlay commit: the mod did not answer the fill; text kept in History")
-                kept()
+                await notFilled(text, preferredAppPID, true)
             }
             #if DEBUG
             ModChannelOverlayCommitter.debugFillSettled?(filled)

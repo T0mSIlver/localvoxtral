@@ -28,7 +28,7 @@ extension DictationSessionController {
         spokenSend: OverlaySpokenSend?
     ) -> any OverlayTextCommitting {
         let committer: any OverlayTextCommitting =
-            (spokenSend == nil ? modChannelCommitter(join: join) : nil) ?? overlayTextCommitter
+            (spokenSend == nil ? modChannelCommitter(join: join, targetPID: targetPID) : nil) ?? overlayTextCommitter
         guard let landing = lastOverlayCommitLanding,
               landing == currentLanding(join: join, targetPID: targetPID)
         else { return committer }

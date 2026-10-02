@@ -1090,7 +1090,7 @@ final class DictationPipelineTests: XCTestCase {
     /// commit asks the mod to fill the prompt and posts no key. A second
     /// dictation into the same unsent prompt fills with its leading space.
     func testAnOverlayCommitIntoAClaudeSessionWithAModFillsItsPromptAndTypesNothing() async throws {
-        let (pipeline, typed, fills) = try await modChannelPipeline(answer: .fill)
+        let (pipeline, typed, fills) = try await modChannelPipeline(answers: [.fill])
         let settled = FillSettled()
         ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
         addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
@@ -1110,7 +1110,7 @@ final class DictationPipelineTests: XCTestCase {
     /// The mod got the fill and never answered: it may have filled the box,
     /// so the words stay in History instead of going in twice.
     func testAFillTheModNeverAnswersIsKeptNotTyped() async throws {
-        let (pipeline, typed, fills) = try await modChannelPipeline(answer: .silent)
+        let (pipeline, typed, fills) = try await modChannelPipeline(answers: [.silent])
         let settled = FillSettled()
         ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
         addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
@@ -1129,7 +1129,7 @@ final class DictationPipelineTests: XCTestCase {
     /// The mod could not fill (a dialog held the keys): the words go in by
     /// keyboard, once.
     func testAFillTheModRefusesIsTypedInstead() async throws {
-        let (pipeline, typed, fills) = try await modChannelPipeline(answer: .refuse)
+        let (pipeline, typed, fills) = try await modChannelPipeline(answers: [.refuse])
 
         await dictate(pipeline, "run the tests.")
         let typedAll = await typed.waitFor("run the tests.")
@@ -1138,24 +1138,72 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(fills.texts, ["run the tests."])
     }
 
+    /// The user switched to another tab of the same terminal before the mod
+    /// refused. The app pid still matches, but keys would reach the other
+    /// tab's prompt, so the words stay in History.
+    func testAFillRefusedAfterATabSwitchIsKeptNotTyped() async throws {
+        let focus = FocusedPane("/dev/ttys042")
+        let (pipeline, typed, fills) = try await modChannelPipeline(
+            answers: [.refuse], focus: focus, beforeAnswer: { focus.tty = "/dev/ttys099" }
+        )
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "run the tests.")
+        let done = await settled.wait(for: 1)
+
+        XCTAssertTrue(done)
+        XCTAssertEqual(fills.texts, ["run the tests."])
+        XCTAssertEqual(typed.text, "", "nothing typed into the other tab")
+        XCTAssertEqual(pipeline.viewModel.lastError, DictationViewModel.StatusStrings.agentPromptTextKeptInHistory)
+    }
+
+    /// The mod refused a fill and Secure Keyboard Entry sent the words to
+    /// the clipboard: the prompt is still empty, so the next dictation into
+    /// it starts with no space.
+    func testAFillThatEndedOnTheClipboardLeavesNoLeadingSpaceForTheNext() async throws {
+        let (pipeline, _, fills) = try await modChannelPipeline(answers: [.refuse, .fill])
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+        await dictate(pipeline, "that's what I was doing.")
+        let first = await settled.wait(for: 1)
+        XCTAssertEqual(pipeline.viewModel.lastError, DictationViewModel.StatusStrings.overlayCopiedToClipboard)
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        await dictate(pipeline, "/compact")
+        let second = await settled.wait(for: 2)
+
+        XCTAssertEqual(first && second, true, "both fills settled")
+        XCTAssertEqual(fills.texts, ["that's what I was doing.", "/compact"])
+    }
+
     /// How the fake mod answers a fill.
     private enum FakeModAnswer { case fill, refuse, silent }
 
     /// A dictation joined to Claude Code session `s1` in a terminal, whose
-    /// mod answers every fill with `answer`.
+    /// mod answers the fills in turn with `answers`, the last one repeating.
+    /// `focus` is the terminal's focused tty, and `beforeAnswer` runs as each
+    /// fill arrives, before the mod answers it.
     private func modChannelPipeline(
-        answer: FakeModAnswer
+        answers: [FakeModAnswer],
+        focus: FocusedPane? = nil,
+        beforeAnswer: @escaping @Sendable () -> Void = {}
     ) async throws -> (Pipeline, TypedText, FillRecorder) {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
         pipeline.overlay.insertsThroughCommitter = true
         pipeline.overlay.commitTargetAppPID = 4343
         pipeline.overlay.passesTargetPIDToCommitter = false
-        _ = joinClaudeCodeTerminal(pipeline)
+        var focusedTTY: (@Sendable () -> String)?
+        if let focus { focusedTTY = { focus.tty } }
+        _ = joinClaudeCodeTerminal(pipeline, focusedTTY: focusedTTY)
         let typed = recordTypedText(pipeline)
 
         // A silent mod's fill times out at once; the others' timer never
         // fires before their reply cancels it.
-        let sleep: @Sendable (Duration) async -> Void = answer == .silent
+        let sleep: @Sendable (Duration) async -> Void = answers.contains(.silent)
             ? { @Sendable _ in }
             : { @Sendable _ in try? await Task.sleep(for: .seconds(3600)) }
         let hub = ClaudeModChannelHub(sleep: sleep)
@@ -1165,7 +1213,9 @@ final class DictationPipelineTests: XCTestCase {
                 guard let message = ClaudeModChannelWire.decode(
                     ClaudeModChannelWire.Message.self, from: line.dropLast()
                 ), message.kind == .fill else { return false }
+                let answer = answers[min(fills.texts.count, answers.count - 1)]
                 fills.append(message.text ?? "")
+                beforeAnswer()
                 if answer != .silent {
                     hub.deliver(.init(
                         sessionID: "s1", id: message.id, ok: answer == .fill, reason: answer == .fill ? nil : "dialog"
@@ -2135,7 +2185,9 @@ final class DictationPipelineTests: XCTestCase {
     /// Joins the dictation to Claude Code session `s1` in a Ghostty surface
     /// by its tty, with polishing on (a fake polisher, so nothing leaves the
     /// process). Returns the registry, for the session's later hooks.
-    private func joinClaudeCodeTerminal(_ pipeline: Pipeline) -> ClaudeSessionRegistry {
+    private func joinClaudeCodeTerminal(
+        _ pipeline: Pipeline, focusedTTY: (@Sendable () -> String)? = nil
+    ) -> ClaudeSessionRegistry {
         let settings = pipeline.viewModel.settings
         settings.llmPolishingEnabled = true
         settings.llmPolishingEndpointURL = "http://127.0.0.1:8080/v1/chat/completions"
@@ -2153,7 +2205,7 @@ final class DictationPipelineTests: XCTestCase {
         ))
         pipeline.viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
             registry: registry,
-            focusedTerminalTTY: { _ in tty }
+            focusedTerminalTTY: { _ in focusedTTY?() ?? tty }
         )
         let ghostty = TerminalScreenAllowlist.ghosttyBundleID
         TerminalScreenContextSource.debugFrontmostTargetOverride = {
@@ -3236,6 +3288,19 @@ private final class FillSettled {
         let wait = BoundedWait()
         watches.append((count, wait))
         return await wait.value(failAfter: failAfter)
+    }
+}
+
+/// The tty a fake terminal's focused pane shows, from any thread.
+private final class FocusedPane: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: String
+
+    init(_ tty: String) { current = tty }
+
+    var tty: String {
+        get { lock.withLock { current } }
+        set { lock.withLock { current = newValue } }
     }
 }
 
