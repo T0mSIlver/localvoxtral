@@ -439,6 +439,47 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(github.created.withLock { $0.map(\.first) }, ["them/tool"])
     }
 
+    /// "File issues here" changed while a draft ran: the capture files
+    /// where the project files when the draft lands, and the fork's issue
+    /// the draft names is not linked. Its first draft, and a redraft.
+    func testADraftThatLandsAfterAFilingChangeFilesWhereTheProjectFilesNow() async throws {
+        let facts = GitHubRepositoryFacts(description: nil, topics: [], parent: "them/tool")
+        func tool(filingIn issueRepository: String) -> [QuickCaptureProject] {
+            [QuickCaptureProject(
+                key: "/w/tool", name: "tool", summary: nil, terms: [], userLine: nil,
+                repository: "me/tool", issueRepository: issueRepository, github: facts)]
+        }
+        let list = ProjectListBox(tool(filingIn: "me/tool"))
+        let runner = FakeQuickCaptureCheckRunner([
+            .draft(.init(title: "Verbose flag", body: "b", relation: .extends, issue: 7), usage: nil),
+        ], gated: true)
+        let model = QuickCaptureFixture.model(
+            fileURL: fileURL, answer: ["tool": 0.95], github: github, runner: runner, currentProjects: { list.value })
+
+        let drafting = model.capture(text: "Add a verbose flag", historyRecordID: nil)
+        await runner.gate!.waitForSleepers(1)
+        list.value = tool(filingIn: "them/tool")
+        model.adoptProjects()
+        runner.gate!.wakeAll()
+        await drafting.value
+        var item = try XCTUnwrap(model.items.first)
+        XCTAssertEqual(item.repository, "them/tool", "first draft")
+        XCTAssertNil(item.relatedIssue, "first draft")
+
+        list.value = tool(filingIn: "me/tool")
+        model.adoptProjects()
+        let redrafting = try XCTUnwrap(model.redraft(item.id, change: "and a quiet flag"))
+        await runner.gate!.waitForSleepers(1)
+        list.value = tool(filingIn: "them/tool")
+        model.adoptProjects()
+        runner.gate!.wakeAll()
+        await redrafting.value
+        item = try XCTUnwrap(model.items.first)
+        XCTAssertEqual(item.repository, "them/tool", "redraft")
+        XCTAssertNil(item.relatedIssue, "redraft")
+        XCTAssertFalse(item.canComment)
+    }
+
     func testARemoteDraftSaysItWaitsForASessionUntilTheHostAnswers() async throws {
         let sleeper = ManualSleeper()
         let model = model(answer: ["website": 0.9]) { _, _, _, _ in

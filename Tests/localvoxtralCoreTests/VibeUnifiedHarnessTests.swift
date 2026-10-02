@@ -120,7 +120,7 @@ final class VibeUnifiedHarnessPublisherTests: XCTestCase {
                 pid == 500 ? .init(parent: vibePID, session: 500, hasTTY: false)
                     : .init(parent: 1, session: vibePID, hasTTY: true, startMicros: startMicros)
             },
-            lastUserPrompt: { path, _ in path == nil ? nil : "unexpected" }
+            lastUserPrompt: { path, _ in path == nil ? nil : VibeUserPrompt(text: "unexpected") }
         )
         return publisher.runVibe(stdin: Data(payload.utf8), vibe: vibe)
     }

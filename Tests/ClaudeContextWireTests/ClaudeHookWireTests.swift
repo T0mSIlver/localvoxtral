@@ -422,6 +422,25 @@ final class ClaudeHookWireCodecTests: XCTestCase {
         XCTAssertNil(focus.sessionTitle, "a focus record describes a pane")
     }
 
+    /// #1285: a Vibe submit names its log message, so the registry can count
+    /// it once. The id rides on submits only, and one too long to be an id is
+    /// dropped rather than cut, since a cut could make two ids equal.
+    func testPromptIDRidesOnSubmitsOnlyAndIsNeverCut() throws {
+        let submit = try ClaudeHookWireCodec.decodeLine(line(validJSON(
+            event: "UserPromptSubmit", extra: #","agent":"vibe","prompt":"p","prompt_id":"u2""#
+        )))
+        XCTAssertEqual(submit.promptID, "u2")
+        XCTAssertEqual(try ClaudeHookWireCodec.decodeLine(XCTUnwrap(ClaudeHookWireCodec.encodeLine(submit))), submit)
+
+        let stop = try ClaudeHookWireCodec.decodeLine(line(validJSON(event: "Stop", extra: #","prompt_id":"u2""#)))
+        XCTAssertNil(stop.promptID)
+        let long = String(repeating: "a", count: ClaudeHookWireCodec.maxPromptIDBytes + 1)
+        let overlong = try ClaudeHookWireCodec.decodeLine(line(validJSON(
+            event: "UserPromptSubmit", extra: #","prompt":"p","prompt_id":"\#(long)""#
+        )))
+        XCTAssertNil(overlong.promptID)
+    }
+
     func testRejectsUnknownEventRatherThanThrowingGenericError() {
         XCTAssertThrowsError(try ClaudeHookWireCodec.decodeLine(line(validJSON(event: "PreCompact")))) { error in
             XCTAssertEqual(error as? ClaudeHookWireError, .unknownEvent)
