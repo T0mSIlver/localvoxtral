@@ -65,6 +65,7 @@ final class VoiceMemoIntakeTests: XCTestCase {
 
     /// A fresh intake over the same ledger file: what a relaunch sees.
     private func intake(
+        clock: SessionClock = .live,
         inboxHas: (@MainActor (UUID) -> Bool)? = nil,
         capture: (@MainActor (UUID, String, Date, Data) throws -> Void)? = nil
     ) -> VoiceMemoIntake {
@@ -72,6 +73,7 @@ final class VoiceMemoIntakeTests: XCTestCase {
             directory: directory,
             ledgerURL: ledgerURL,
             transcriber: transcriber,
+            clock: clock,
             list: { [unowned self] _ in files },
             requestDownload: { [unowned self] in downloadRequests.append($0.lastPathComponent) },
             removeTranscribed: { [unowned self] url in
@@ -227,8 +229,8 @@ final class VoiceMemoIntakeTests: XCTestCase {
         XCTAssertEqual(captured.map(\.text), ["words of a.m4a", "words of b.m4a"])
     }
 
-    /// A dictation started while a memo streams gets its text only after the
-    /// memo's, so its stop asks whether one is streaming.
+    /// A dictation starting on the bundled helper asks whether a memo streams
+    /// through it, to cancel the memo (#1317).
     func testTheIntakeSaysWhileAMemoStreamsThroughTheEngine() async {
         let intake = intake()
         transcriber.whileTranscribing.withLock {
@@ -277,23 +279,39 @@ final class VoiceMemoIntakeTests: XCTestCase {
         XCTAssertEqual(statuses, [])
     }
 
-    /// Voice memos turned off mid-memo: the memo in flight is finished, since
-    /// the helper decodes its audio anyway, and no other memo is taken.
-    func testStoppingFinishesTheMemoInFlightAndTakesNoOther() async {
-        let intake = intake()
+    /// #1423: voice memos turned off mid-memo cancel the memo in flight. It
+    /// goes back for a later scan, and the popover says nothing about it.
+    func testTurningMemosOffCancelsTheMemoInFlightAndRequeuesIt() async {
+        let clock = ManualSessionClock()
+        var first: VoiceMemoIntake? = intake(clock: clock.clock)
+        var statuses: [String] = []
+        first?.onStatus = { statuses.append($0) }
+        var run: Task<Void, Never>?
         transcriber.whileTranscribing.withLock {
             $0 = { [unowned self] in
-                intake.stopAfterCurrentMemo()
-                streamingSeen.append(intake.isTranscribing)
+                guard streamingSeen.isEmpty else { return }
+                streamingSeen.append(first?.isTranscribing == true)
+                run?.cancel()
             }
         }
-        intake.onTranscriptionEnded = { [unowned self] in streamingSeen.append(intake.isTranscribing) }
         files = [memo("a.m4a", minute: 1), memo("b.m4a", minute: 2)]
-        _ = await intake.scan()
-        await intake.run()
-        XCTAssertEqual(streamingSeen, [true, false], "still streaming after the stop, then told it ended")
-        XCTAssertEqual(captured.map(\.text), ["words of a.m4a"])
-        XCTAssertEqual(transcriber.calls.withLock { $0 }, ["a.m4a"])
+        _ = await first?.scan()
+        run = Task { [first] in await first?.run() }
+        await run?.value
+        XCTAssertEqual(streamingSeen, [true])
+        XCTAssertEqual(first?.isTranscribing, false)
+        XCTAssertEqual(transcriber.calls.withLock { $0 }, ["a.m4a"], "b is not taken")
+        XCTAssertEqual(captured, [])
+        XCTAssertEqual(trashed, [])
+        XCTAssertEqual(statuses, [])
+
+        // Back on: the controller dropped the intake, and takes a fresh one.
+        first = nil
+        let second = intake()
+        _ = await second.scan()
+        _ = await second.scan()
+        XCTAssertEqual(captured.map(\.text), ["words of a.m4a", "words of b.m4a"])
+        XCTAssertEqual(trashed, ["a.m4a", "b.m4a"])
     }
 
     /// #988: a capture whose audio or words could not be written leaves

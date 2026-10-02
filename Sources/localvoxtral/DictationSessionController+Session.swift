@@ -547,7 +547,6 @@ extension DictationSessionController {
         requestedDraftReview = nil
         sessionStartedAt = Date()
         yieldVoiceMemoEngine()
-        sessionStartedBehindVoiceMemoAt = voiceMemoHoldsTheEngine() ? dependencies.clock.now() : nil
         sessionCaptureTimeline = CaptureTimeline(
             pressedAt: dependencies.clock.now(), now: dependencies.clock.now)
         latchSessionAudio(outputMode: requestedOutputMode)
@@ -738,14 +737,9 @@ extension DictationSessionController {
                 return
             }
             let clock = self.dependencies.clock
-            var startedAt = clock.now()
-            let behindVoiceMemo = self.sessionStartedBehindVoiceMemoAt != nil
-            let timeout = self.stopFinalizationTimeout()
+            let startedAt = clock.now()
             self.realtimeFinalizationLastActivityAt = startedAt
             self.activeRealtimeClient.sendCommit(final: true)
-            if behindVoiceMemo {
-                Log.backends.notice("stop finalization: a voice memo held the engine during this dictation; waiting for its final")
-            }
             while self.isFinalizingStop {
                 if !self.activeRealtimeClient.isConnected {
                     self.debugLog("socket disconnected during finalization; finishing stop")
@@ -754,27 +748,18 @@ extension DictationSessionController {
                 }
 
                 let now = clock.now()
-                if behindVoiceMemo, self.voiceMemoHoldsTheEngine() {
-                    // The memo's own timeout bounds this wait.
-                    startedAt = now
-                    await clock.sleep(.seconds(TimingConstants.finalizationPollInterval))
-                    continue
-                }
                 let elapsed = now.timeIntervalSince(startedAt)
                 let lastActivity = self.realtimeFinalizationLastActivityAt ?? startedAt
                 let inactivity = now.timeIntervalSince(lastActivity)
 
-                if elapsed >= timeout {
-                    self.debugLog("stop finalization timeout (\(timeout)s); forcing disconnect")
+                if elapsed >= TimingConstants.stopFinalizationTimeout {
+                    self.debugLog("stop finalization timeout (\(TimingConstants.stopFinalizationTimeout)s); forcing disconnect")
                     self.activeRealtimeClient.disconnect()
                     self.finishStoppedSession(promotePendingSegment: true)
                     return
                 }
 
-                // Behind a memo the dictation's audio is decoded in one step
-                // that streams nothing until it ends: silence is not the end.
-                if !behindVoiceMemo,
-                   elapsed >= TimingConstants.finalizationMinimumOpen,
+                if elapsed >= TimingConstants.finalizationMinimumOpen,
                    inactivity >= TimingConstants.finalizationInactivityThreshold
                 {
                     self.debugLog(
@@ -1133,24 +1118,12 @@ extension DictationSessionController {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    /// How long the stop waits for the final once no voice memo holds the
-    /// engine. Behind a memo the engine still has all of this dictation's
-    /// audio to decode, so the limit grows by the dictation's length.
-    func stopFinalizationTimeout() -> TimeInterval {
-        guard let startedAt = sessionStartedBehindVoiceMemoAt else {
-            return TimingConstants.stopFinalizationTimeout
-        }
-        return TimingConstants.stopFinalizationTimeout
-            + max(0, dependencies.clock.now().timeIntervalSince(startedAt))
-    }
-
     func startStopFinalizationWatchdog() {
         finalizationWatchdogTask?.cancel()
-        let timeout: TimeInterval = stopFinalizationTimeout() + 2.0
-        let behindVoiceMemo = sessionStartedBehindVoiceMemoAt != nil
+        let timeout: TimeInterval = TimingConstants.stopFinalizationTimeout + 2.0
 
         finalizationWatchdogTask = Task { [weak self, clock = dependencies.clock] in
-            var startedAt = clock.now()
+            let startedAt = clock.now()
             while !Task.isCancelled {
                 await clock.sleep(.seconds(TimingConstants.finalizationPollInterval))
                 guard let self else { return }
@@ -1160,11 +1133,6 @@ extension DictationSessionController {
                     self.debugLog("watchdog observed disconnected socket during finalization; finishing stop")
                     self.finishStoppedSession(promotePendingSegment: true)
                     return
-                }
-
-                if behindVoiceMemo, self.voiceMemoHoldsTheEngine() {
-                    startedAt = clock.now()
-                    continue
                 }
 
                 if clock.now().timeIntervalSince(startedAt) >= timeout {

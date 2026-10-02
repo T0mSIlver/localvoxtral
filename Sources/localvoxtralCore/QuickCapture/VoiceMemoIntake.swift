@@ -64,12 +64,9 @@ package final class VoiceMemoIntake {
     /// connection's step at a time, so a dictation starting on it calls
     /// `yieldToDictation()`.
     package private(set) var isTranscribing = false
-    /// Called each time `isTranscribing` turns false.
-    package var onTranscriptionEnded: (@MainActor () -> Void)?
     /// The memo in flight, cancelled by `yieldToDictation()`.
     private var transcription: Task<VoiceMemoTranscript, Error>?
     private var yieldedToDictation = false
-    private var isStopping = false
     private var reportedLedgerProblem = false
     private var reportedInboxProblem = false
     private var lastSeen: [String: VoiceMemoFile] = [:]
@@ -136,20 +133,14 @@ package final class VoiceMemoIntake {
         return aside
     }
 
-    /// Scans now and every `scanInterval` after, until the task is cancelled
-    /// or `stopAfterCurrentMemo()`.
+    /// Scans now and every `scanInterval` after, until the task is
+    /// cancelled. Cancelling stops the memo in flight, which goes back for
+    /// the next scan; the bundled helper skips the audio it queued.
     package func run() async {
-        while !Task.isCancelled, !isStopping {
+        while !Task.isCancelled {
             await scan()
-            guard !isStopping else { return }
             await clock.sleep(Self.scanInterval)
         }
-    }
-
-    /// Takes no further memo and lets `run` return once the memo in flight
-    /// is done.
-    package func stopAfterCurrentMemo() {
-        isStopping = true
     }
 
     /// A dictation starts on the engine the memo streams through: cancels the
@@ -235,7 +226,7 @@ package final class VoiceMemoIntake {
                 continue
             }
             guard file.size > 0, previous[file.name] == file else { continue }
-            guard canTranscribe(), !isStopping else { break }
+            guard canTranscribe() else { break }
             let outcome = await take(file, at: url)
             if outcome == .captured { captured += 1 }
             // The engine or the disk failed; the rest would fail the same way.
@@ -290,7 +281,6 @@ package final class VoiceMemoIntake {
             defer {
                 transcription = nil
                 isTranscribing = false
-                onTranscriptionEnded?()
             }
             transcript = try await withTaskCancellationHandler {
                 try await task.value
@@ -304,6 +294,11 @@ package final class VoiceMemoIntake {
             return .left
         } catch where yieldedToDictation {
             Log.backends.info("Voice memos: the memo stopped for the dictation (\(String(describing: error), privacy: .public)); retrying on the next scan")
+            ledger.entries[file.name] = nil
+            saveLedger()
+            return .stopPass
+        } catch where Task.isCancelled {
+            Log.backends.info("Voice memos: the memo stopped with voice memos (\(String(describing: error), privacy: .public)); retrying on the next scan")
             ledger.entries[file.name] = nil
             saveLedger()
             return .stopPass

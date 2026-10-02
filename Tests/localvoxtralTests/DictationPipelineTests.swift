@@ -235,63 +235,27 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.session.handleNetworkChange(connected: false)
     }
 
-    /// A voice memo was streaming through the engine when the dictation
-    /// started: the bundled helper decodes the dictation's audio only after
-    /// the memo's, so the final commit is answered long after every usual
-    /// limit. Its words are still committed and saved.
-    func testAFinalHeldUpBehindAVoiceMemoIsStillCommittedAndSaved() async throws {
+    /// #1317, #1423: the start cancels a voice memo streaming through the
+    /// engine, so the stop keeps its usual rules: a final that never comes is
+    /// given up on once the stream has been idle, long before the 7 s limit.
+    func testADictationStartedDuringAVoiceMemoCancelsItAndStopsOnTheIdleRule() async throws {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
-        var memoTranscribing = true
-        pipeline.viewModel.session.voiceMemoHoldsTheEngine = { memoTranscribing }
+        var yields = 0
+        pipeline.viewModel.session.yieldVoiceMemoEngine = { yields += 1 }
 
         await startAndSpeak(pipeline)
+        XCTAssertEqual(yields, 1)
+
         pipeline.viewModel.stopDictation(reason: "test")
         await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
         // The stop's two polls: the finalization and its watchdog.
         await pipeline.clock.waitForSleepers(2)
-        let armed = pipeline.clock.pendingSleepers
+        XCTAssertTrue(pipeline.viewModel.isFinalizingStop)
 
-        // The memo runs past the idle rule and the stop's time limit.
-        pipeline.clock.advance(by: TimingConstants.stopFinalizationTimeout + 3)
-        await pipeline.clock.waitForSleepers(armed)
-        XCTAssertTrue(pipeline.viewModel.isFinalizingStop, "the stop waits while the memo holds the engine")
-
-        // The memo is done; the dictation's audio is decoded in one long step
-        // that streams nothing until it ends.
-        memoTranscribing = false
-        pipeline.clock.advance(by: TimingConstants.finalizationPollInterval)
-        await pipeline.clock.waitForSleepers(armed)
-        pipeline.clock.advance(by: TimingConstants.stopFinalizationTimeout - 1)
-        await pipeline.clock.waitForSleepers(armed)
-        XCTAssertTrue(pipeline.viewModel.isFinalizingStop, "no idle rule behind a memo")
-
-        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
-        let recorded = await pipeline.records.waitForCount(1)
-        XCTAssertTrue(recorded, "the session never finished and wrote its record")
+        pipeline.clock.advance(by: TimingConstants.finalizationMinimumOpen + TimingConstants.finalizationPollInterval)
         await pipeline.server.awaitClose()
 
-        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
-        XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
-    }
-
-    /// #1317: the start cancels a voice memo streaming through the engine
-    /// before it asks whether one holds it, so the stop keeps its usual rules.
-    func testADictationStartCancelsAVoiceMemoOnItsEngine() async throws {
-        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
-        var memoTranscribing = true
-        var yields = 0
-        pipeline.viewModel.session.voiceMemoHoldsTheEngine = { memoTranscribing }
-        pipeline.viewModel.session.yieldVoiceMemoEngine = {
-            yields += 1
-            memoTranscribing = false
-        }
-
-        await startAndSpeak(pipeline)
-        XCTAssertEqual(yields, 1)
-        XCTAssertNil(pipeline.viewModel.session.sessionStartedBehindVoiceMemoAt, "not behind the memo")
-
-        await stopAndFinalize(pipeline, finalText: Self.phrase)
-        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
+        XCTAssertFalse(pipeline.viewModel.isFinalizingStop, "closed on the idle rule")
         XCTAssertEqual(yields, 1, "only the start yields")
     }
 
