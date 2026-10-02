@@ -141,8 +141,8 @@ package enum StoredFileUpdate<Value> {
     /// The file changed under this copy into one it cannot read or one a
     /// newer build wrote. The change was not applied and nothing was written.
     case refused(StoredFileProblem)
-    /// Applied, but the write failed. The value stays in memory, and the next
-    /// update writes it.
+    /// Applied, but the write failed. The value stays in memory, the change
+    /// joins `unsaved`, and the next update writes it.
     case failed(Value, any Error)
 }
 
@@ -216,14 +216,22 @@ extension StoredFile {
     ///
     /// A file another copy removed is written again from `memory`: this copy
     /// cannot tell a Start Over from a lost file, and writing keeps the data.
+    ///
+    /// `unsaved` holds the changes in `memory` that no write has landed yet.
+    /// A failed write appends `change` to it, and a landed one empties it.
+    /// When another copy wrote the file, they apply again to what is on disk
+    /// before `change`, so a failed change is not dropped with `memory`
+    /// (#1260). A change can therefore run more than once: it must do
+    /// nothing but change the value.
     package static func update<Value>(
         _ url: URL,
         memory: Value,
         seen: inout StoredFileSeen,
+        unsaved: inout [(inout Value) -> Void],
         decode: (Data) -> StoredFileLoad<Value>,
         encode: (Value) throws -> Data,
         write: (Data, URL) throws -> Void,
-        change: (inout Value) -> Void
+        change: @escaping (inout Value) -> Void
     ) -> StoredFileUpdate<Value> {
         StoredFileLock.withLock(beside: url) {
             var value = memory
@@ -244,9 +252,10 @@ extension StoredFile {
                         "\(url.lastPathComponent, privacy: .public): another running copy wrote it, this change applies on top"
                     )
                     value = onDisk
-                    // Memory now holds these bytes plus the change: should the
+                    for pending in unsaved { pending(&value) }
+                    // Memory now holds these bytes plus the changes: should the
                     // write fail, the next update applies to memory, not to
-                    // these bytes again, and keeps the change.
+                    // these bytes again, and keeps the changes.
                     seen = StoredFileSeen(bytes: data, stamp: stamp)
                 case .refused(let problem):
                     return .refused(problem)
@@ -261,8 +270,10 @@ extension StoredFile {
                 let data = try encode(value)
                 try write(data, url)
                 seen = StoredFileSeen(bytes: data, stamp: StoredFileStamp.of(url))
+                unsaved = []
                 return .written(value)
             } catch {
+                unsaved.append(change)
                 return .failed(value, error)
             }
         }

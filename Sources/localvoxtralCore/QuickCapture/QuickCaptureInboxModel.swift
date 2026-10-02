@@ -95,7 +95,10 @@ package final class QuickCaptureInboxModel {
 
     /// The last write of the inbox file failed, so memory holds changes the
     /// file does not (#988).
-    package private(set) var hasUnsavedChanges = false
+    package var hasUnsavedChanges: Bool { !unsaved.isEmpty }
+    /// Those changes, in order, for `StoredFile.update` to apply again on
+    /// top of another running copy's write (#1260).
+    private var unsaved: [(inout QuickCaptureInbox) -> Void] = []
 
     /// The voice memo recordings a sweep keeps (#988).
     package var recordingIDsToKeep: Set<UUID> { inbox.recordingIDsToKeep }
@@ -748,7 +751,7 @@ package final class QuickCaptureInboxModel {
     /// failed; the change stays in memory either way. A refused Inbox
     /// takes no change and returns `StoreRefused`.
     @discardableResult
-    private func mutate(_ change: (inout QuickCaptureInbox) -> Void) -> (any Error)? {
+    private func mutate(_ change: @escaping (inout QuickCaptureInbox) -> Void) -> (any Error)? {
         guard storeProblem == nil else {
             Log.persistence.error("Quick capture inbox: a change was refused, the file could not be loaded")
             return StoreRefused()
@@ -759,23 +762,22 @@ package final class QuickCaptureInboxModel {
         }
         // The change applies to what another running copy wrote, if it did.
         switch StoredFile.update(
-            fileURL, memory: inbox, seen: &seen,
+            fileURL, memory: inbox, seen: &seen, unsaved: &unsaved,
             decode: QuickCaptureInboxFile.decode, encode: QuickCaptureInboxFile.encode,
             write: PrivateFile.write, change: change)
         {
         case .written(let updated):
             inbox = updated
-            hasUnsavedChanges = false
             return nil
         case .failed(let updated, let error):
             inbox = updated
-            hasUnsavedChanges = true
             Log.persistence.error("Quick capture inbox: save failed: \(error.localizedDescription, privacy: .public)")
             return error
         case .refused(let problem):
             Log.persistence.error("Quick capture inbox: a change was refused, another copy left a file this build cannot read")
             storeProblem = problem
             inbox = QuickCaptureInbox()
+            unsaved = []
             return StoreRefused()
         }
     }
