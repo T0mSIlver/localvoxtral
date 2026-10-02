@@ -1,4 +1,5 @@
 import Foundation
+import localvoxtralTestSupport
 import Synchronization
 import XCTest
 @testable import localvoxtral
@@ -1702,11 +1703,12 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
     }
 
     /// The deadline race: a vocabulary pipeline that NEVER completes (a stat
-    /// blocked on a stale network mount) must not wedge the commit. With an
-    /// instantly-expiring deadline (injected sleep seam — no wall-clock), the
-    /// polish request is built WITHOUT vocabulary, the commit completes, and
+    /// blocked on a stale network mount) must not wedge the commit. Once the
+    /// deadline passes on the session clock (#1310: it slept on the wall
+    /// clock), the polish request is built WITHOUT vocabulary, the commit completes, and
     /// no vocab provenance is recorded. Abandonment is safe: the pipeline only
     /// returns a value, never mutates view-model state.
+    @MainActor
     func testVocabularyPipelineDeadlineProceedsWithoutVocabulary() async throws {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.llmPolishingEnabled = true
@@ -1739,9 +1741,8 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             await withUnsafeContinuation { (_: UnsafeContinuation<Void, Never>) in }
             return nil
         }
-        // Deadline sleep seam: returns immediately — the deadline expires
-        // before the pipeline can ever win.
-        viewModel.session.repoVocabularyPipeline.deadlineSleep = {}
+        let clock = ManualSessionClock()
+        viewModel.dependencies.clock = clock.clock
         var savedRecord: DictationSessionRecord?
         viewModel.dependencies.onSessionRecord = { savedRecord = $0 }
         retainForTestProcessLifetime(viewModel)
@@ -1751,6 +1752,10 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.transcript.currentDictationEventText = "open use auth dot t s and fix the import"
 
         viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        // The one timer armed is the deadline, three seconds out.
+        await clock.waitForSleepers(1)
+        XCTAssertEqual(clock.pendingDeadlines, [clock.now.addingTimeInterval(3)])
+        clock.advance(by: 3)
         await awaitStoppedSessionCommit(viewModel)
 
         // The commit completed despite the wedged pipeline...
@@ -1772,6 +1777,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
     /// is decided synchronously by the gate (acquired before the pipeline
     /// spawns), and the count assertion waits on a start signal from the
     /// wedged pipeline, never on wall-clock.
+    @MainActor
     func testWedgedPipelineSingleFlightSkipsNextCommit() async {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.llmPolishingEnabled = true
@@ -1795,12 +1801,18 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             await withUnsafeContinuation { (_: UnsafeContinuation<Void, Never>) in }
             return nil
         }
-        viewModel.session.repoVocabularyPipeline.deadlineSleep = {}
+        let clock = ManualSessionClock()
+        viewModel.dependencies.clock = clock.clock
 
         let endpoint = URL(string: "http://127.0.0.1:8472/v1/chat/completions")!
-        let first = await viewModel.session.repoVocabularyGroundingIfEnabled(
-            endpointURL: endpoint, transcript: "open use auth dot t s"
-        )
+        let firstGrounding = Task {
+            await viewModel.session.repoVocabularyGroundingIfEnabled(
+                endpointURL: endpoint, transcript: "open use auth dot t s"
+            )
+        }
+        await clock.waitForSleepers(1)
+        clock.advance(by: 3)
+        let first = await firstGrounding.value
         // Deadline expired; the wedged pipeline was abandoned holding the gate.
         XCTAssertNil(first)
         var startIterator = pipelineStarted.makeAsyncIterator()

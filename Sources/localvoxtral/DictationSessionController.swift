@@ -178,7 +178,8 @@ final class DictationSessionController {
     lazy var repoVocabularyPipeline = RepoVocabularyPipeline(
         settings: settings,
         commitTargetAppPID: { [weak self] in self?.overlayBufferCoordinator.commitTargetAppPID },
-        targetBundleID: { [weak self] in self?.resolveTargetAppBundleID() }
+        targetBundleID: { [weak self] in self?.resolveTargetAppBundleID() },
+        clock: { [weak self] in self?.dependencies.clock ?? .live }
     )
     var repoVocabularyGrounding: any RepoVocabularyGrounding {
         dependencies.repoVocabularyGrounding ?? repoVocabularyPipeline
