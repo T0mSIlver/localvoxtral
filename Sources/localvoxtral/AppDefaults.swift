@@ -3,7 +3,9 @@ import Foundation
 /// The app's preferences, resolved once per launch (`LocalvoxtralDefaultsSuite`).
 /// Every app read and write of `UserDefaults` goes through `shared`.
 public enum AppDefaults {
-    public static let shared: UserDefaults = {
+    // UserDefaults is thread-safe, but the hosted runner's SDK does not mark
+    // it Sendable, so strict concurrency refuses a plain static let.
+    public nonisolated(unsafe) static let shared: UserDefaults = {
         switch LocalvoxtralDefaultsSuite.resolve() {
         case .standard:
             return .standard
