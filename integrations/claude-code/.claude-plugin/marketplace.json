@@ -18,6 +18,11 @@
       "name": "localvoxtral-remote",
       "source": "./plugins/localvoxtral-remote",
       "description": "Publishes Claude Code session context from a remote host to localvoxtral on your Mac over an SSH RemoteForward tunnel. Install this on the REMOTE host, not the Mac. Command hooks running a bundled POSIX-sh shim that POSTs via curl — no localvoxtral binary, needs only sh and curl. Fail-open: does nothing without a tunnel, a token, or curl."
+    },
+    {
+      "name": "localvoxtral-mod",
+      "source": "./plugins/localvoxtral-mod",
+      "description": "Shows whether localvoxtral is connected to this Claude Code session, as the plugin's own status line, with no edit to your settings. Install this on the machine running localvoxtral, beside the localvoxtral plugin. A Claude Code mod: a build that cannot load mods skips it and keeps the localvoxtral plugin working."
     }
   ]
 }

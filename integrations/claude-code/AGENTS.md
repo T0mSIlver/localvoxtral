@@ -8,3 +8,10 @@ must stay fail-open; the remote shim's stdout must stay fail-closed to the
 listener's exact response grammar. These paths do not run the LLM lane, which
 executes none of them (#643); a change to what a hook record carries into the
 Claude blocks shows in `PolishRequestGoldenTests`.
+
+`plugins/localvoxtral-mod` is a Claude Code mod (a TypeScript hooks module).
+Before changing it, load the `plugin-authoring` skill for the API. Check it
+with `claude plugin validate` and `claude plugin test` on its folder; both run
+on Linux. A mod hook that answers a `classic.<Event>` without calling `next`
+also silences the person's own settings hooks for that event (measured on
+Claude Code 2.1.287, #1407), so never do it.
