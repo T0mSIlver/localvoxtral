@@ -47,6 +47,11 @@ extension DictationSessionController {
             return
         }
 
+        // A cancel drops the segments that ended behind a go-to: they are
+        // words the user threw away. The go-to itself still lands (#1251).
+        if wasCancelled {
+            liveGoToQueuedSegments = []
+        }
         // A go-to still bringing a pane forward: the segments behind it land
         // before the session ends.
         guard !finishLiveAutoPasteSessionAfterGoTo(sessionMode: sessionMode, finish: { [weak self] sessionAudio in
