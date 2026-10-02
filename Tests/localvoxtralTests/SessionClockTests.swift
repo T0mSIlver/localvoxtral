@@ -279,6 +279,33 @@ final class SessionClockTests: XCTestCase {
         viewModel.audio.cancelSendAndCommitTasks()
     }
 
+    /// A socket that dies after the tick read it connected drops the chunk;
+    /// the chunk stays buffered, ahead of later audio, for the reconnect to
+    /// replay (#1458).
+    func testAChunkTheClientDropsStaysBufferedAheadOfLaterAudio() async {
+        let clock = ManualSessionClock()
+        let viewModel = makeViewModel(clock: clock)
+        let client = FakeRealtimeClient()
+        client.setConnected(true)
+        client.setRefusesAudio(true)
+        let buffer = viewModel.audio.audioChunkBuffer
+        buffer.append(Data(repeating: 1, count: 320))
+
+        viewModel.audio.restartAudioSendTask(
+            client: client, debugLoggingEnabled: false, sleep: clock.clock.sleep
+        )
+        await clock.waitForSleepers(1)
+        clock.advance(by: TimingConstants.audioSendInterval)
+        await clock.waitForSleepers(1)
+        viewModel.audio.cancelSendAndCommitTasks()
+        buffer.append(Data(repeating: 2, count: 320))
+
+        XCTAssertEqual(client.sentAudioBytes, 0)
+        XCTAssertEqual(
+            buffer.takeAll(), Data(repeating: 1, count: 320) + Data(repeating: 2, count: 320),
+            "the dropped chunk was lost")
+    }
+
     func testPeriodicCommitLoopCommitsOnTheClock() async {
         let clock = ManualSessionClock()
         let viewModel = makeViewModel(clock: clock)
