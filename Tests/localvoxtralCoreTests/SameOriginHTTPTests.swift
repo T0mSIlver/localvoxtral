@@ -62,6 +62,18 @@ final class SameOriginHTTPTests: XCTestCase {
         XCTAssertEqual(hits.value, 0, "the redirect target got nothing")
     }
 
+    func testContextLimitProbeRedirectCannotCarryTheKeyToAnotherOrigin() async throws {
+        let (configured, _, hits) = try redirectPair()
+        let configuration = RealtimeSessionConfiguration(
+            endpoint: URL(string: "ws://127.0.0.1:\(configured.port)/v1/realtime")!, apiKey: "key", model: "m")
+
+        _ = await RealtimeContextLimitProbe.budget(for: configuration)
+
+        let reached = await configured.waitForCalls(1)
+        XCTAssertTrue(reached, "the configured endpoint got the request")
+        XCTAssertEqual(hits.value, 0, "the redirect target got nothing")
+    }
+
     func testRedirectWithinTheOriginIsFollowed() async throws {
         let server = try FakeOpencodePromptRelay(
             status: { $0.path == "/old" ? 307 : 200 },
