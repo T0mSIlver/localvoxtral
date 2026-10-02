@@ -231,9 +231,9 @@ final class LearnedTermsForgottenProjectTests: XCTestCase {
         let store = LearnedTermStore(fileURL: fileURL, now: { Self.start })
         store.waitForPendingWrites()
         // A directory where the lock file goes: open(2) fails.
-        let ignoredURL = try XCTUnwrap(store.ignoredFileURL)
-        try FileManager.default.createDirectory(
-            at: StoredFileLock.lockURL(beside: ignoredURL), withIntermediateDirectories: true)
+        let lockURL = StoredFileLock.lockURL(beside: try XCTUnwrap(store.ignoredFileURL))
+        try? FileManager.default.removeItem(at: lockURL)
+        try FileManager.default.createDirectory(at: lockURL, withIntermediateDirectories: true)
 
         do {
             _ = try await store.moveForgottenListAsideAndStartOver()
