@@ -135,6 +135,8 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
                         + terms.dropIdentifierProposals()
                         // Records an older build kept for an ignored repo (#1006).
                         + terms.removeIgnoredProjects()
+                        // A forget a crash or an older build undid (#1156).
+                        + terms.removeForgottenLeftovers()
                 }
                 var probe = loaded
                 let adopted = state.withLock { state in
@@ -569,6 +571,7 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
             change(&terms)
             terms.removeIgnoredProjects()
             if revives { terms.reviveForgottenProjects(since: before) }
+            terms.removeForgottenLeftovers()
             state.withLock { $0.terms = terms }
             onChange?()
             return
@@ -612,6 +615,7 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
                 change(&terms)
                 terms.removeIgnoredProjects()
                 if revives { revived = terms.reviveForgottenProjects(since: before) }
+                terms.removeForgottenLeftovers()
             }
             var terms = memory
             held(&terms)
@@ -638,6 +642,7 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
                 terms.removeIgnoredProjects()
                 swept = terms.ignored
                 if revives { revived = terms.reviveForgottenProjects(since: before) }
+                terms.removeForgottenLeftovers()
             })
         switch update {
         case .written(let terms):
@@ -935,6 +940,7 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
                 terms.ignored = state.terms?.ignored ?? IgnoredProjects()
                 terms.forgotten = state.terms?.forgotten ?? ForgottenProjects()
                 terms.removeIgnoredProjects()
+                terms.removeForgottenLeftovers()
                 state.terms = terms
             }
             Log.persistence.notice("learned terms: another running copy wrote the file, read again")

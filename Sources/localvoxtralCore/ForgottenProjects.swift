@@ -100,4 +100,24 @@ extension LearnedTerms {
         forgotten.revive(keys: revived)
         return revived
     }
+
+    /// Finishes a forget that did not land: drops every record of a
+    /// forgotten project with no dictation (`lastSeen`) or hook
+    /// (`reportedAt`) since it was forgotten, such as one a crash between the
+    /// tombstone and the terms left, or one an older build's agent listing
+    /// added back. Runs after `reviveForgottenProjects`, so what a write just
+    /// brought back stays. Returns how many records went.
+    @discardableResult
+    package mutating func removeForgottenLeftovers() -> Int {
+        guard !forgotten.projects.isEmpty, !forgotten.isUnreadable else { return 0 }
+        let before = projects.count
+        projects.removeAll { record in
+            let keys = [record.key] + (record.repositoryRecordKey.map { [$0] } ?? [])
+            guard let tombstone = forgotten.projects.first(where: { !Set($0.keys).isDisjoint(with: keys) })
+            else { return false }
+            return record.lastSeen <= tombstone.forgottenAt
+                && (record.reportedAt ?? .distantPast) <= tombstone.forgottenAt
+        }
+        return before - projects.count
+    }
 }

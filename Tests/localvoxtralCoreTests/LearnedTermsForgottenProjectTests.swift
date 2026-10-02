@@ -122,6 +122,31 @@ final class LearnedTermsForgottenProjectTests: XCTestCase {
         XCTAssertEqual(store.snapshot().projects, [])
     }
 
+    /// An older build, which knows no tombstone, listed the project again
+    /// from activity before the forget; a dictation after it stays.
+    func testARelaunchSweepsWhatAnOlderBuildAddedBackButKeepsLaterDictations() throws {
+        let fileURL = makeFileURL()
+        let later = Self.start.addingTimeInterval(60)
+        let store = LearnedTermStore(fileURL: fileURL, now: { later })
+        store.forgetProject(keys: [mac.key, "/w/ink"])
+        store.waitForPendingWrites()
+
+        let kern = LearnedTerm(term: "Kern", sources: ["screen"], dictations: 3, firstSeen: Self.start, lastSeen: Self.start)
+        let older = LearnedTerms(projects: [
+            LearnedTermProject(key: mac.key, name: "quill", terms: [kern], lastSeen: Self.start),
+            LearnedTermProject(key: "/w/ink", name: "ink", terms: [kern], lastSeen: later.addingTimeInterval(60)),
+        ])
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(older).write(to: fileURL)
+
+        let reopened = LearnedTermStore(fileURL: fileURL, now: { later })
+        reopened.waitForPendingWrites()
+        XCTAssertEqual(reopened.snapshot().projects.map(\.key), ["/w/ink"])
+        let onDisk = try XCTUnwrap(LearnedTermStore.terms(fromFileContents: Data(contentsOf: fileURL)).value)
+        XCTAssertEqual(onDisk.projects.map(\.key), ["/w/ink"], "the sweep is written")
+    }
+
     /// A tombstone file this build cannot read is kept as it is, and only
     /// the agent listing stops: any repo may be a forgotten one.
     func testAnUnreadableTombstoneFileStopsOnlyTheAgentListing() throws {
