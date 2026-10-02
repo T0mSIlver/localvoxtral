@@ -84,12 +84,10 @@ a squash merge credits every commit author as a co-author on main. Squash
 through the API with your own `commit_message`. The `linux` job's attribution
 step fails a PR or a main push that carries a trailer.
 
-The `needs-human-review` label marks a PR that owes the owner a hand check,
-open or merged; the owner's view is the search `is:pr
-label:needs-human-review`. The owner gives the OK to merge in chat or
-through the merge classes, never through the board. Once the owner reports a
-merged PR checked, the session removes the label. A failed check becomes a
-`bug` issue that links the PR.
+The owner dogfoods every daily release, so no PR waits on a hand check. The
+owner gives the OK to merge in chat or through the merge classes, never
+through the board. A failed check in a release becomes a `bug` issue that
+links the PR.
 
 New issues get one area label (`asr`, `polish`, `ci`, `claude-join`,
 `mistral`, `session`) plus `bug` or `enhancement`. Group work with sub-issues
@@ -120,8 +118,8 @@ from your issue and say so in your report. Don't ask whether to file it.
   on the wall clock the timers fire into the process-retained view model
   after the test ends. New timers go on the clock.
 - Can't test something yourself (a UI change, behaviour only a person at
-  the Mac sees)? Add the `needs-human-review` label and numbered steps for
-  the owner under the template's Hand check item.
+  the Mac sees)? Write numbered steps under the template's Hand check item;
+  the owner tries them in the next release.
 - Session-path change (start and stop, realtime clients, merging, insertion,
   overlay commit): prove it in process, in `DictationPipelineTests` or next
   to it. The e2e dictation check, the only one where the packaged app
