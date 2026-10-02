@@ -115,6 +115,11 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
     package var followUps: [FollowUp]?
     /// The issue Comment on #N posted to (#965); nil when filed as an issue.
     package var commentedOn: Int?
+    /// The group of the project joined when it was said (#1005): its
+    /// polish, routing and follow-ups read only that group's projects and
+    /// captures. Nil reads them all.
+    package var group: ProjectGroup?
+
     /// Which running copy set it filing (#1288). A copy that loads a
     /// capture another live copy is filing leaves it filing; nil in files
     /// written before, read as left by a quit.
@@ -161,11 +166,14 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
         package var relatedIssue: Int?
     }
 
-    package init(id: UUID = UUID(), capturedAt: Date, text: String, historyRecordID: UUID? = nil) {
+    package init(
+        id: UUID = UUID(), capturedAt: Date, text: String, historyRecordID: UUID? = nil, group: ProjectGroup? = nil
+    ) {
         self.id = id
         self.capturedAt = capturedAt
         self.text = text
         self.historyRecordID = historyRecordID
+        self.group = group
         self.state = .routing
         self.title = ""
         self.body = ""
@@ -554,8 +562,10 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
                 restored = true
             }
         }
+        // A follow-up joins only a capture of its own group.
         let capture = QuickCaptureItem(
-            id: followUp.id, capturedAt: followUp.capturedAt, text: followUp.text, historyRecordID: followUp.historyRecordID
+            id: followUp.id, capturedAt: followUp.capturedAt, text: followUp.text,
+            historyRecordID: followUp.historyRecordID, group: items[index].group
         )
         items.insert(capture, at: index)
         return (capture, restored)
