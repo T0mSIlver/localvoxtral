@@ -773,11 +773,12 @@ there is not.
     Otherwise, and
     whenever the request went out with no valid answer (it may have landed),
     the text stays in History (`keepInHistory`).
-    *Enter only over the joined agent:* before each Enter the route asks the
-    pane's foreground processes again, with the test its arm joined on (the
-    registered pid for a local pane, the parent pid or agent name for a
-    remote one). A pane back at its shell gets no Enter: it would run the
-    prompt as a command.
+    *Text and Enter only over the joined agent:* before each append and
+    each Enter the route asks the pane's foreground processes again, with
+    the test its arm joined on (the registered pid for a local pane, the
+    parent pid or agent name for a remote one). A pane back at its shell, or
+    running another agent, gets neither: the text would land in that prompt
+    and an Enter would run it. The text stays in History, never typed.
     *Resolution:* only when opencode's relay did not resolve, so an opencode
     pane with a relay keeps it; from the context join's herdr binding when
     the join resolved one, and, when no join ran (polishing off), from a
