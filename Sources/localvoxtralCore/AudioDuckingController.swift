@@ -45,6 +45,9 @@ package final class AudioDuckingController {
     /// The device and volume to go back to. Non-nil exactly while a duck is
     /// outstanding.
     private var duckedOutput: OutputVolumeReading?
+    /// A duck whose device was unplugged before its restore could land. Put
+    /// back at the first session edge that finds the device again.
+    private var heldRestore: OutputVolumeReading?
     private var generation = 0
     private var fadeTask: Task<Void, Never>?
 
@@ -73,13 +76,20 @@ package final class AudioDuckingController {
     /// Called once audio capture is actually running. A no-op while the setting
     /// is off, or when the output device reports no volume the Mac owns.
     package func duckForSessionStart() {
+        retryHeldRestore()
         guard isEnabled() else { return }
 
         if duckedOutput == nil {
-            guard let reading = volumeControl.readDefaultOutput() else {
+            guard var reading = volumeControl.readDefaultOutput() else {
                 Log.ducking.info(
                     "duck skipped: default output device reports no volume this Mac controls")
                 return
+            }
+            if let held = heldRestore, held.deviceUID == reading.deviceUID {
+                // Its restore was refused just now, so the level it reports is
+                // still the old duck; the held one is the user's.
+                reading = held
+                heldRestore = nil
             }
             duckedOutput = reading
             recordInterruptedDuck(reading)
@@ -102,6 +112,7 @@ package final class AudioDuckingController {
     /// socket, an aborted connect, a mic that failed to start. Safe to call
     /// when nothing was ducked.
     package func restoreAfterSession() {
+        retryHeldRestore()
         guard let ducked = duckedOutput else { return }
         Log.ducking.info(
             "restore requested on \(ducked.deviceUID, privacy: .public) to \(ducked.volume, privacy: .public)"
@@ -113,6 +124,7 @@ package final class AudioDuckingController {
     /// closure and then the process is gone, so this writes the original
     /// volume in one shot — a fade would not get to finish.
     package func restoreImmediatelyForTermination() {
+        retryHeldRestore()
         guard let ducked = duckedOutput else { return }
         generation += 1
         fadeTask?.cancel()
@@ -122,7 +134,7 @@ package final class AudioDuckingController {
         duckedOutput = nil
 
         if volumeControl.setVolume(ducked.volume, forDeviceUID: ducked.deviceUID) {
-            recordInterruptedDuck(nil)
+            recordInterruptedDuck(heldRestore)
             Log.ducking.info(
                 "restored volume \(ducked.volume, privacy: .public) synchronously at termination")
         } else {
@@ -139,7 +151,8 @@ package final class AudioDuckingController {
         guard let pending = interruptedDuck() else { return }
         guard volumeControl.volume(forDeviceUID: pending.deviceUID) != nil else {
             // Kept, not cleared: the device is merely unplugged, and the
-            // launch that sees it again is the one that can put it back.
+            // launch or session edge that sees it again can put it back.
+            heldRestore = pending
             Log.ducking.notice(
                 "a previous launch left \(pending.deviceUID, privacy: .public) ducked; it is not connected, holding the restore"
             )
@@ -177,7 +190,15 @@ package final class AudioDuckingController {
             Log.ducking.notice(
                 "output device \(deviceUID, privacy: .public) is gone; abandoning the fade to \(target, privacy: .public)"
             )
-            if releaseDuck { releaseDuckedOutput() }
+            if releaseDuck, let ducked = duckedOutput {
+                // A device that comes back can keep the ducked level, and this
+                // is the only record of what it was set to before.
+                heldRestore = ducked
+                duckedOutput = nil
+                Log.ducking.notice(
+                    "holding the restore to \(ducked.volume, privacy: .public) until \(deviceUID, privacy: .public) is back"
+                )
+            }
             return
         }
 
@@ -250,7 +271,27 @@ package final class AudioDuckingController {
 
     private func releaseDuckedOutput() {
         duckedOutput = nil
-        recordInterruptedDuck(nil)
+        // A restore held for an unplugged device still needs the record.
+        recordInterruptedDuck(heldRestore)
+    }
+
+    /// Puts an unplugged device back to its pre-duck level once it answers
+    /// again. A refused write keeps the hold for the next edge.
+    private func retryHeldRestore() {
+        guard let held = heldRestore,
+              volumeControl.volume(forDeviceUID: held.deviceUID) != nil
+        else { return }
+        if volumeControl.setVolume(held.volume, forDeviceUID: held.deviceUID) {
+            heldRestore = nil
+            recordInterruptedDuck(duckedOutput)
+            Log.ducking.notice(
+                "restored volume \(held.volume, privacy: .public) on \(held.deviceUID, privacy: .public), held since it was unplugged"
+            )
+        } else {
+            Log.ducking.error(
+                "could not restore volume \(held.volume, privacy: .public) on \(held.deviceUID, privacy: .public), held since it was unplugged"
+            )
+        }
     }
 
     #if DEBUG
