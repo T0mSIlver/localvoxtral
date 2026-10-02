@@ -129,36 +129,17 @@ public final class ClaudeRemoteForwardCoordinator {
                 )
                 stopAll()
             }
+            // The reap still runs: herdr `-L` forwards need no listener but
+            // wait on it, so a copy that lost the port would otherwise spend
+            // every remote herdr join's readiness budget at that gate (#1368).
+            // Another copy's forwards are protected by the reaper's owner
+            // check (#892), not by the listener.
+            _ = orphanReapFinished()
             return
         }
 
-        // Orphans from a previous run die BEFORE the first forward dials. The
-        // gate sits after the listener check on purpose: a copy that lost the
-        // port has no forwards of its own to clear. It does not protect
-        // another copy's forwards (the port may be free because that copy
-        // lost it too); the reaper's owner check does (#892).
-        switch orphanReap {
-        case .running:
-            return
-        case .pending:
-            guard let reapOrphans else {
-                orphanReap = .done
-                break
-            }
-            orphanReap = .running
-            Log.claudeContext.info(
-                "Claude remote forwards waiting for the orphan reap before first start"
-            )
-            Task { @MainActor [weak self] in
-                await reapOrphans()
-                guard let self else { return }
-                self.orphanReap = .done
-                self.reconcile()
-            }
-            return
-        case .done:
-            break
-        }
+        // Orphans from a previous run die BEFORE the first forward dials.
+        guard orphanReapFinished() else { return }
 
         let eligible = eligibleHosts()
         let wanted = Set(eligible.map(\.id))
@@ -203,6 +184,33 @@ public final class ClaudeRemoteForwardCoordinator {
             } else {
                 supervisor.start()
             }
+        }
+    }
+
+    /// Starts the launch orphan reap if it has not run, and says whether it
+    /// has finished. A finished reap calls `reconcile()` again.
+    private func orphanReapFinished() -> Bool {
+        switch orphanReap {
+        case .done:
+            return true
+        case .running:
+            return false
+        case .pending:
+            guard let reapOrphans else {
+                orphanReap = .done
+                return true
+            }
+            orphanReap = .running
+            Log.claudeContext.info(
+                "Claude remote forwards waiting for the orphan reap before first start"
+            )
+            Task { @MainActor [weak self] in
+                await reapOrphans()
+                guard let self else { return }
+                self.orphanReap = .done
+                self.reconcile()
+            }
+            return false
         }
     }
 
