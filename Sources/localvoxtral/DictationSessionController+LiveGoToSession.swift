@@ -267,8 +267,8 @@ extension DictationSessionController {
     }
 
     /// Delivers the segments that waited, until one of them is itself a
-    /// go-to.
-    private func drainLiveGoToQueue() {
+    /// go-to, or a spoken send that reads its pane back.
+    func drainLiveGoToQueue() {
         while liveGoToTask == nil, !liveGoToQueuedSegments.isEmpty {
             switch liveGoToQueuedSegments.removeFirst() {
             case .final(let finalText, let merged, let startsMidWord):

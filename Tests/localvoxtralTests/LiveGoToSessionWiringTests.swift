@@ -234,12 +234,58 @@ final class LiveGoToSessionWiringTests: XCTestCase {
         await harness.settle()
 
         XCTAssertEqual(harness.focuser.focusedSessionIDs, ["bill"])
+        XCTAssertEqual(harness.focuser.readBackSessionIDs, ["bill"], "the pane the go-to brought is read back")
         XCTAssertEqual(harness.typedText(in: Self.terminalPID), "Run the tests")
         XCTAssertEqual(harness.typedText(in: Self.otherTerminalPID), "Run the tests")
         XCTAssertEqual(
             harness.events.value.filter { $0.hasPrefix("return:") },
             ["return:\(Self.terminalPID)", "return:\(Self.otherTerminalPID)"]
         )
+    }
+
+    /// Two tabs of one terminal share its pid. The words are for the joined
+    /// session's pane: a send is pressed only while that pane reads back as
+    /// focused, and once it did not, no send for the rest of the dictation.
+    func testSamePIDTabSwitchCannotSubmitAnotherPrompt() async {
+        let harness = makeHarness(spokenSend: true)
+        harness.viewModel.session.context.claudeSessionJoin = join(harness.sessions[0])
+
+        harness.partial("fix the bug send it")
+        harness.final("Fix the bug, send it.")
+        await harness.settle()
+        XCTAssertEqual(harness.returns, ["return:\(Self.terminalPID)"], "the joined pane is focused")
+
+        // Another tab of the same terminal comes forward.
+        harness.focuser.paneStillShowsSession = false
+        harness.partial("run the tests send it")
+        harness.final("Run the tests, send it.")
+        await harness.settle()
+        harness.focuser.paneStillShowsSession = true
+        harness.partial("send it")
+        harness.final("Send it.")
+        await harness.settle()
+
+        XCTAssertEqual(harness.focuser.readBackSessionIDs, ["pay", "pay"])
+        XCTAssertEqual(harness.returns, ["return:\(Self.terminalPID)"], "no Return in the other tab, nor after")
+        XCTAssertEqual(harness.typedText, "Fix the bugRun the tests, send it. Send it.")
+    }
+
+    /// A go-to whose pane did not read back as the session's may have
+    /// brought another prompt forward: a send after it is typed as text.
+    func testASendAfterAnUnverifiedGoToPressesNoReturn() async {
+        let harness = makeHarness(spokenSend: true)
+        harness.focuser.outcome = .unverified(bundleID: Self.ghostty)
+
+        harness.partial("go to payments")
+        harness.final("Go to payments.")
+        // Ends while the go-to runs, and waits behind it.
+        harness.partial("run the tests send it")
+        harness.final("Run the tests, send it.")
+        await harness.settle()
+
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, ["pay"])
+        XCTAssertEqual(harness.returns, [])
+        XCTAssertEqual(harness.typedText, "Run the tests, send it.")
     }
 
     // MARK: - Naming this session (#723 step 2)
@@ -305,6 +351,10 @@ final class LiveGoToSessionWiringTests: XCTestCase {
                 .filter { $0.hasPrefix("type:") }
                 .map { String($0.dropFirst("type:".count)) }
                 .joined()
+        }
+
+        var returns: [String] {
+            events.value.filter { $0.hasPrefix("return:") }
         }
 
         func typedText(in pid: pid_t) -> String {
