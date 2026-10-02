@@ -80,8 +80,11 @@ extension LearnedTerms {
         now: Date
     ) -> LearnedTermsExport.ImportSummary {
         // Name matching reads the memory as it was: two projects in the file
-        // must not match each other by name.
-        let localNames = Dictionary(grouping: projects, by: \.name).mapValues(\.count)
+        // must not match each other by name. A repository's record matches
+        // by its key alone.
+        let localNames = Dictionary(
+            grouping: projects.filter { !$0.isRepositoryRecord }, by: \.name
+        ).mapValues(\.count)
         var imported: [(projectKey: String, term: String)] = []
 
         for project in incoming {
@@ -109,17 +112,27 @@ extension LearnedTerms {
                 }
                 imported.append((projects[index].key, match))
             }
+            // A checkout the file links to its repository (#971) keeps the
+            // link, or its terms, already on the `repo:` record, would be
+            // out of its reach. A link this memory already has stays.
+            if let remote = project.projectRemote, !projects[index].isRepositoryRecord,
+               projects[index].remote == nil
+            {
+                link(checkoutAt: index, to: remote)
+            }
         }
         prune(now: now)
 
         var kept = Set<String>()
         var keptProjects = Set<String>()
-        for entry in imported where !kept.contains(entry.projectKey + "\n" + entry.term) {
-            guard let project = projects.first(where: { $0.key == entry.projectKey }),
+        for entry in imported {
+            // A linked checkout's terms are on its repository's record.
+            guard let project = termRecord(entry.projectKey),
+                  !kept.contains(project.key + "\n" + entry.term),
                   project.terms.contains(where: { $0.term.caseFoldedForMatching == entry.term })
             else { continue }
-            kept.insert(entry.projectKey + "\n" + entry.term)
-            keptProjects.insert(entry.projectKey)
+            kept.insert(project.key + "\n" + entry.term)
+            keptProjects.insert(project.key)
         }
         return LearnedTermsExport.ImportSummary(terms: kept.count, projects: keptProjects.count)
     }
@@ -199,8 +212,14 @@ extension LearnedTerms {
         localNames: [String: Int]
     ) -> Int {
         if let index = projects.firstIndex(where: { $0.key == key }) { return index }
-        if localNames[project.name] == 1,
-           let index = projects.firstIndex(where: { $0.name == project.name })
+        if project.isRepositoryRecord {
+            // Made as a link makes it, remote included, so the checkouts
+            // that point at it find it.
+            if let remote = project.projectRemote, remote.key == key {
+                return repositoryRecordIndex(for: remote, lastSeen: project.lastSeen)
+            }
+        } else if localNames[project.name] == 1,
+                  let index = projects.firstIndex(where: { !$0.isRepositoryRecord && $0.name == project.name })
         {
             return index
         }

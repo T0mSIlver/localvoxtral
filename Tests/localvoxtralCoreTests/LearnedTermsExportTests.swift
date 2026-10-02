@@ -130,6 +130,39 @@ final class LearnedTermsExportTests: XCTestCase {
         XCTAssertEqual(local.projects.count, 4)
     }
 
+    /// A checkout linked to its repository (#971) holds no terms: they are
+    /// on the `repo:` record. The import keeps the link, or the checkout's
+    /// dictations would read none of them.
+    func testImportPreservesRepositoryTermsForCheckout() throws {
+        var source = LearnedTerms(projects: [project("/Users/tom/work/app", "app", [term("herdr", pinned: true)])])
+        source.recordOrigin(ProjectRemote(remoteURL: "git@gitlab.com:group/app.git")!, projectKey: "/Users/tom/work/app")
+        XCTAssertEqual(source.confirmedTerms(projectKey: "/Users/tom/work/app"), ["herdr"])
+
+        var target = LearnedTerms()
+        target.merge(importing: try roundTrip(source), now: now)
+
+        XCTAssertEqual(target.termRecord("/Users/tom/work/app")?.key, "repo:gitlab.com/group/app")
+        XCTAssertEqual(target.confirmedTerms(projectKey: "/Users/tom/work/app"), ["herdr"])
+        XCTAssertEqual(target.projects.map(\.key).sorted(), ["/Users/tom/work/app", "repo:gitlab.com/group/app"])
+        XCTAssertEqual(target.projects.first { $0.isRepositoryRecord }?.remote, "gitlab.com/group/app")
+    }
+
+    /// The same checkout at another path, unlinked here: it matches by name
+    /// and takes the file's link, so its own terms and the repository's
+    /// meet on one record. The repository's record matches only by key,
+    /// never a local checkout's name.
+    func testImportLinksTheSameCheckoutAtAnotherPath() throws {
+        var source = LearnedTerms(projects: [project("/Users/tom/work/app", "app", [term("herdr", pinned: true)])])
+        source.recordOrigin(ProjectRemote(remoteURL: "git@gitlab.com:group/app.git")!, projectKey: "/Users/tom/work/app")
+
+        var target = LearnedTerms(projects: [project("/home/me/src/app", "app", [term("speechd", dictations: 3)])])
+        target.merge(importing: try roundTrip(source), now: now)
+
+        XCTAssertEqual(target.termRecord("/home/me/src/app")?.key, "repo:gitlab.com/group/app")
+        XCTAssertEqual(Set(target.confirmedTerms(projectKey: "/home/me/src/app")), ["herdr", "speechd"])
+        XCTAssertEqual(target.projects.map(\.key).sorted(), ["/home/me/src/app", "repo:gitlab.com/group/app"])
+    }
+
     func testImportNeverConfirmsATermStillBeingLearned() {
         var local = LearnedTerms()
         local.merge(importing: [
