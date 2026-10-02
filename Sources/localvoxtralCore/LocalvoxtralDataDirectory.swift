@@ -8,8 +8,9 @@ import Foundation
 /// The override is for launches on the owner's Mac that are not the owner:
 /// the e2e dictation, the UI smoke and the demo recording run as the owner,
 /// with the owner's preferences, and must not open the owner's data (#985).
-/// Sockets, plugin links, the widget folder and downloaded backends stay put:
-/// other programs find them by their fixed path.
+/// Sockets, plugin links and downloaded backends stay put: other programs
+/// find them by their fixed path. The widget snapshot moves, so the owner's
+/// widget keeps showing the owner's app (`WidgetShared.writerFileURL`).
 package enum LocalvoxtralDataDirectory {
     package static let environmentKey = "LOCALVOXTRAL_DATA_HOME"
 

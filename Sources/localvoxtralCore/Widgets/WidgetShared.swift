@@ -14,6 +14,22 @@ package enum WidgetShared {
             .appendingPathComponent(fileName, isDirectory: false)
     }
 
+    /// Where the app writes the snapshot: `fileURL(home:)`, or the `widgets`
+    /// folder under `LOCALVOXTRAL_DATA_HOME` when a lane set one (#1029). The
+    /// widget always reads the real home, so a lane's app never replaces what
+    /// the owner's widget shows. `CFFIXED_USER_HOME` already moves `home`.
+    package static func writerFileURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> URL {
+        guard LocalvoxtralDataDirectory.isOverridden(environment: environment) else {
+            return fileURL(home: home)
+        }
+        return LocalvoxtralDataDirectory.url(environment: environment)
+            .appendingPathComponent("widgets", isDirectory: true)
+            .appendingPathComponent(fileName, isDirectory: false)
+    }
+
     /// The Darwin notification "Turn off polish" posts. The widget's intent
     /// runs in the extension, and this is how it reaches the running app. It
     /// carries no data, and any process can post it, so it only ever means
