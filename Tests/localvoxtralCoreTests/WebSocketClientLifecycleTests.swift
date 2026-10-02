@@ -3,6 +3,7 @@ import Foundation
 import FoundationNetworking
 #endif
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtralCore
 
 #if DEBUG
@@ -302,6 +303,67 @@ final class WebSocketClientLifecycleTests: XCTestCase {
 
         XCTAssertEqual(secondReplay.kinds(on: task), [], "the late handshake must not race the timer's replay")
         XCTAssertTrue(client.debugStateSnapshot().hasReceivedSessionCreated)
+    }
+
+    // The handshake fallback and the keepalive ping sleep on the session
+    // clock the client was given, never on wall time (#1366).
+
+    func testHandshakeFallbackFollowsInjectedClock() async {
+        let clock = ManualSessionClock()
+        let client = RealtimeAPIWebSocketClient(clock: clock.clock)
+        let (session, task) = makeWebSocketTask()
+        defer { task.cancel(); session.invalidateAndCancel() }
+        let wire = Wire()
+        let replayed = expectation(description: "the queue is replayed")
+        client.debugObserveTransmits { sentOn, text in
+            wire.append(sentOn, text)
+            if text == "pending-message" { replayed.fulfill() }
+        }
+        client.debugPrimeConnectedStateForTesting(task: task, modelName: "model")
+
+        // No session.created: the fallback and the ping wait on the clock.
+        await clock.waitForSleepers(2)
+        let start = clock.now
+        XCTAssertEqual(clock.pendingDeadlines, [start.addingTimeInterval(3), start.addingTimeInterval(30)])
+        XCTAssertEqual(wire.kinds(on: task), [])
+
+        clock.advance(by: 3)
+        await fulfillment(of: [replayed], timeout: 10)
+        clock.advance(by: 3)
+
+        XCTAssertEqual(wire.kinds(on: task), ["session.update", "pending-message"], "replayed once")
+        XCTAssertEqual(clock.pendingDeadlines, [start.addingTimeInterval(30)], "only the ping is left")
+    }
+
+    func testDisconnectCancelsTheHandshakeFallbackAndThePing() async {
+        let clock = ManualSessionClock()
+        let client = RealtimeAPIWebSocketClient(clock: clock.clock)
+        let (session, task) = makeWebSocketTask()
+        defer { task.cancel(); session.invalidateAndCancel() }
+        let wire = Wire()
+        client.debugObserveTransmits { wire.append($0, $1) }
+        client.debugPrimeConnectedStateForTesting(task: task, modelName: "model")
+        await clock.waitForSleepers(2)
+
+        client.disconnect()
+        XCTAssertEqual(clock.pendingSleepers, 0)
+        clock.advance(by: 30)
+
+        XCTAssertEqual(wire.kinds(on: task), [])
+    }
+
+    func testMistralKeepalivePingSleepsOnTheInjectedClock() async {
+        let clock = ManualSessionClock()
+        let client = MistralRealtimeWebSocketClient(clock: clock.clock)
+        let (session, task) = makeWebSocketTask()
+        defer { task.cancel(); session.invalidateAndCancel() }
+        client.debugPrimeConnectedStateForTesting(task: task)
+
+        await clock.waitForSleepers(1)
+        XCTAssertEqual(clock.pendingDeadlines, [clock.now.addingTimeInterval(30)])
+
+        client.disconnect()
+        XCTAssertEqual(clock.pendingSleepers, 0)
     }
 
     func testMistralAudioSentDuringTheHandshakeReplayGoesOutBehindIt() {
