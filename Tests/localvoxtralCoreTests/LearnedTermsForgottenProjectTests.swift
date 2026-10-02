@@ -219,6 +219,45 @@ final class LearnedTermsForgottenProjectTests: XCTestCase {
         XCTAssertEqual(relaunched.snapshot().projects, [], "the forget holds")
     }
 
+    /// When Start Over cannot write the tombstones it keeps, the retry puts
+    /// them back on top of the file another running copy wrote meanwhile.
+    func testStartOverRetriesItsTombstonesOverAnotherCopysFile() async throws {
+        let fileURL = makeFileURL()
+        let tombstoneWriteFails = Mutex(false)
+        let store = LearnedTermStore(
+            fileURL: fileURL, now: { Self.start },
+            writeForgottenList: { data, url in
+                if tombstoneWriteFails.withLock({ $0 }) { throw CocoaError(.fileWriteOutOfSpace) }
+                try LearnedTermStore.writeFile(data, to: url)
+            })
+        store.recordAgentActivity(agentWorked(in: mac), hostID: nil)
+        store.forgetProject(keys: [mac.key, quill.key])
+        store.waitForPendingWrites()
+        let tombstoneURL = try XCTUnwrap(store.forgottenFileURL)
+        try Data(#"{"version":99,"projects":[]}"#.utf8).write(to: tombstoneURL)
+        store.recordAgentActivity(agentWorked(in: mac), hostID: nil)
+        store.waitForPendingWrites()
+        XCTAssertEqual(store.forgottenListProblem, .newerVersion(99))
+
+        tombstoneWriteFails.withLock { $0 = true }
+        _ = try await store.moveForgottenListAsideAndStartOver()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tombstoneURL.path), "the write failed")
+        // Another running copy writes its own tombstones.
+        try Data(#"{"projects":[{"forgottenAt":"2023-11-14T22:13:20Z","keys":["/w/ink"]}],"version":1}"#.utf8)
+            .write(to: tombstoneURL)
+        tombstoneWriteFails.withLock { $0 = false }
+
+        store.recordAgentActivity(agentWorked(in: mac), hostID: nil)
+        store.waitForPendingWrites()
+        XCTAssertNil(store.forgottenListProblem, "the other copy's file reads")
+        XCTAssertEqual(store.snapshot().projects, [], "the forget holds")
+        let written = try XCTUnwrap(
+            LearnedTermStore.forgotten(fromFileContents: Data(contentsOf: tombstoneURL)).value)
+        XCTAssertEqual(
+            Set(written.projects.map(\.keys)), [["/w/ink"], [mac.key, quill.key].sorted()],
+            "both copies' tombstones")
+    }
+
     /// Start Over deletes the original once it is linked aside: without the
     /// lock another copy could replace it in between, so it refuses.
     func testStartOverRefusesWithoutTheLock() async throws {
