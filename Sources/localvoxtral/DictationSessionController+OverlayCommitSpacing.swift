@@ -16,10 +16,19 @@ struct OverlayCommitLanding: Equatable {
 /// fresh prompt, where a leading space turns `/compact` into text. No
 /// trailing space after a commit either.
 extension DictationSessionController {
-    /// The committer for this commit: the usual one, behind a leading space
+    /// The committer for this commit: the usual one, or the session's mod
+    /// when the commit sends no Return of its own, behind a leading space
     /// when the evidence says the last commit is still in the prompt.
-    func overlayCommitter(join: ClaudeSessionJoin?, targetPID: pid_t?) -> any OverlayTextCommitting {
-        let committer = overlayTextCommitter
+    ///
+    /// A spoken send presses Return right after the commit, which a fill
+    /// handed off to the mod could arrive behind, so it keeps the keyboard.
+    func overlayCommitter(
+        join: ClaudeSessionJoin?,
+        targetPID: pid_t?,
+        spokenSend: OverlaySpokenSend?
+    ) -> any OverlayTextCommitting {
+        let committer: any OverlayTextCommitting =
+            (spokenSend == nil ? modChannelCommitter(join: join, targetPID: targetPID) : nil) ?? overlayTextCommitter
         guard let landing = lastOverlayCommitLanding,
               landing == currentLanding(join: join, targetPID: targetPID)
         else { return committer }

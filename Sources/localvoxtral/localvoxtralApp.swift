@@ -414,6 +414,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The resolver holds the registry; the view model must not keep
         // resolving joins against sessions nothing is feeding any more.
         viewModel.context.claudeSessionJoinResolver = nil
+        viewModel.context.claudeModChannels = nil
         viewModel.context.claudeSessionJoin = nil
         claudeSessionRegistry.flushPersistence()
         // Drop any dictation leases after the app-owned service has stopped all
@@ -802,6 +803,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             )
             viewModel.context.claudeSessionJoinResolver = resolver
+            viewModel.context.claudeModChannels = claudeModChannels
             // "Go to <name>" (#723): the same registry and the same
             // focused-pane reader as the join, so a pane counts as brought
             // forward by the evidence the join trusts.

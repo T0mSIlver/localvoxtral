@@ -327,7 +327,7 @@ extension DictationSessionController {
         let commitTargetPID = overlayBufferCoordinator.commitTargetAppPID
         let overlayCommit = StopCommitCoordinator.commit(
             overlay: overlayBufferCoordinator,
-            textInsertion: overlayCommitter(join: commitJoin, targetPID: commitTargetPID),
+            textInsertion: overlayCommitter(join: commitJoin, targetPID: commitTargetPID, spokenSend: spokenSend),
             autoCopyEnabled: settings.autoCopyEnabled
         )
         noteOverlayCommit(
@@ -555,7 +555,9 @@ extension DictationSessionController {
         let commitTargetPID = self.overlayBufferCoordinator.commitTargetAppPID
         overlayCommit = StopCommitCoordinator.commit(
             overlay: self.overlayBufferCoordinator,
-            textInsertion: self.overlayCommitter(join: capture.claudeJoin, targetPID: commitTargetPID),
+            textInsertion: self.overlayCommitter(
+                join: capture.claudeJoin, targetPID: commitTargetPID, spokenSend: spokenSend
+            ),
             autoCopyEnabled: self.settings.autoCopyEnabled
         )
         self.noteOverlayCommit(

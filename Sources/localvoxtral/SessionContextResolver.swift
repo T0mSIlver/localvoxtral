@@ -27,6 +27,9 @@ final class SessionContextResolver {
     /// `AppDelegate` once the broker is actually listening, and nil otherwise,
     /// so a build where broker startup failed simply never joins.
     var claudeSessionJoinResolver: ClaudeSessionJoinResolver?
+    /// The channels Claude Code sessions' mods hold open (#1408). Nil while
+    /// the broker is down; a commit then inserts as it always did.
+    var claudeModChannels: ClaudeModChannelHub?
 
     /// THE session join for the current dictation, resolved once at start.
     /// Read by three consumers (raw screen attachment, the session block,
