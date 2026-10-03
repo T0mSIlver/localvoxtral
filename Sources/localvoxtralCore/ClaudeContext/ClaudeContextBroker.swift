@@ -68,7 +68,7 @@ public struct ClaudeBrokerLimits: Sendable, Equatable {
 public final class ClaudeContextBroker: Sendable {
     private struct State {
         var isRunning = false
-        var activeConnections = 0
+        var admission = ConnectionAdmission()
         /// Write end of the self-pipe that wakes a blocked accept loop.
         var wakeWriteFD: Int32 = -1
         /// Signalled by the accept loop's `defer` on EVERY exit — requested or
@@ -460,14 +460,23 @@ public final class ClaudeContextBroker: Sendable {
                 }
             }
             stickyErrors = 0
-            let admitted = state.withLock { state -> Bool in
-                guard state.isRunning, state.activeConnections < limits.maxConcurrentConnections else {
-                    return false
-                }
-                state.activeConnections += 1
-                return true
+            let decision = state.withLock { state -> ConnectionAdmission.Decision? in
+                guard state.isRunning else { return nil }
+                return state.admission.admit(limit: limits.maxConcurrentConnections)
             }
-            guard admitted else {
+            switch decision {
+            case .refused(first: true):
+                Log.claudeContext.error(
+                    "Claude context broker at its cap of \(self.limits.maxConcurrentConnections, privacy: .public) connections: refusing new ones until one ends"
+                )
+            case .admitted(let refused) where refused > 0:
+                Log.claudeContext.error(
+                    "Claude context broker refused \(refused, privacy: .public) connections while at its cap; each lost a context update"
+                )
+            default:
+                break
+            }
+            guard case .admitted = decision else {
                 // Over the cap: drop immediately. The publisher fails open and
                 // the user loses one context update — the correct trade against
                 // unbounded thread growth.
@@ -481,7 +490,7 @@ public final class ClaudeContextBroker: Sendable {
                 }
                 // A held mod channel gives its slot back when it attaches.
                 if !self.serve(connectionFD: fd) {
-                    self.state.withLock { $0.activeConnections -= 1 }
+                    self.state.withLock { $0.admission.release() }
                 }
             }
             thread.name = "com.localvoxtral.claude-broker.conn"
@@ -631,7 +640,7 @@ public final class ClaudeContextBroker: Sendable {
             answerAttach(fd: fd, accepted: false)
             return false
         }
-        state.withLock { $0.activeConnections -= 1 }
+        state.withLock { $0.admission.release() }
 
         // The publisher sends nothing after its attach, so any readable
         // event is the end: EOF, an error, a shutdown, or a peer that broke

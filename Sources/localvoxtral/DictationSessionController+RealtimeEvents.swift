@@ -264,11 +264,18 @@ extension DictationSessionController {
             return
         }
         if !acceptsRealtimeEvents {
+            Log.backends.error(
+                "realtime error after the session ended: \(RealtimeConnectionFailureClassifier.publicLogDescription(of: message), privacy: .public) \(message, privacy: .private)"
+            )
             statusText = "Ready"
             return
         }
         if isFinalizingStop {
-            debugLog("realtime error while finalizing: \(message)")
+            // The stop's final commit may be what failed; the text so far still
+            // commits, so the log is the only trace of a lost tail.
+            Log.backends.error(
+                "realtime error while finalizing the stop: \(RealtimeConnectionFailureClassifier.publicLogDescription(of: message), privacy: .public) \(message, privacy: .private)"
+            )
             return
         }
 
