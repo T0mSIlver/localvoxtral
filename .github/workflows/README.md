@@ -161,12 +161,22 @@ channels that share every gate:
 ./scripts/release.sh daily      # the 03:15 UTC daily release, on demand
 ./scripts/release.sh nightly    # a nightly prerelease of main, on demand
 ./scripts/release.sh rehearse [target] [ref]   # all gates, no tag, no release
+./scripts/release.sh publish <tag>             # finish a tagged release that did not publish
 ```
 
 Pipeline: compute next version from the latest `v*` tag → release build →
 unit tests → live integration tests (speechd STT service) → package app bundle → launch
-smoke test → zip + dmg → **create tag** → publish GitHub release with
+smoke test → notarize → zip + dmg → **create tag** → publish GitHub release with
 auto-generated notes and both artifacts.
+
+The publish is `scripts/ci/publish-release.sh` (tested by
+`test-publish-release.sh`): it creates the release as a draft, uploads each
+asset with retries, checks them all, and only then publishes. A run that
+still fails or is cancelled after tagging uploads its notarized assets and
+notes as the `localvoxtral-release-<tag>` artifact (14 days), and
+`./scripts/release.sh publish <tag>` reruns the script on that artifact from
+the dev box, uploading only what the draft lacks, then pins the Homebrew tap
+for a stable tag (#1555).
 
 **Stable** is dispatched by hand from `main` (or from a branch as an
 `X.Y.Z-rc.N` prerelease), and it is what GitHub's `/releases/latest` points
@@ -265,7 +275,10 @@ signing with a warning in its summary and its release notes.
 `scripts/ci/notarize.sh` submits the app, then the DMG, and prints Apple's log
 on a rejection. It prints each submission id as soon as Apple assigns it and
 waits up to 3 h for each, because Apple can hold a team's submissions for
-hours, the DMG's too after the app's was accepted; a run that times out fails with the id,
+hours, the DMG's too after the app's was accepted. A daily release that
+started inside the night window waits only until 07:00 UTC
+(`scripts/ci/night-deadline.sh`). A run that times out fails before the Tag
+step, with the id,
 and `xcrun notarytool info <id> --keychain-profile localvoxtral-notary
 --keychain ~/Library/Keychains/login.keychain-db` on the Mac follows it from
 there.

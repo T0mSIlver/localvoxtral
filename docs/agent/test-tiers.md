@@ -266,12 +266,16 @@ release (`release.yml`) run two ways:
 - The cron stays as the fallback, for a night the scheduler's timers miss. A
   scheduled run skips green, with the reason in the step summary ("E2E eval
   (scheduled): SKIPPED", "Release skipped"), when it cannot finish by 07:00
-  UTC (`scripts/ci/night-window-guard.sh`, 30 minutes for `eval-e2e`, 20 for
-  the release) or when another run of the same workflow on main succeeded, or
-  is queued or running, in the last 20 hours (`scripts/ci/recent-run-guard.sh`),
-  which is what keeps the dispatch and the cron from both running. The
-  release chains both with the AC power guard in
-  `scripts/ci/scheduled-run-guard.sh`.
+  UTC (`scripts/ci/night-window-guard.sh`, 30 minutes for each) or when
+  another run of the same workflow on main succeeded, or is queued or
+  running, in the last 20 hours (`scripts/ci/recent-run-guard.sh`), which is
+  what keeps the dispatch and the cron from both running. The release chains
+  both with the AC power guard in `scripts/ci/scheduled-run-guard.sh`.
+- The release's 30 minutes cover a typical notarization, but Apple can hold
+  one for hours. So a daily release that starts inside the window, dispatched
+  or scheduled, cuts each notarization wait at 07:00 UTC
+  (`scripts/ci/night-deadline.sh`) and fails untagged when Apple has not
+  answered by then (#1554).
 
 A new scheduled workflow that runs inference on the Mac takes both guards.
 

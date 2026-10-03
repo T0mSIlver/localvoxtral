@@ -77,11 +77,12 @@ jobs:
     # releases ran 7-20 min before notarization. Notarization adds two Apple
     # submissions (the app, then the DMG), usually minutes each, but Apple can
     # hold a team's first submissions for hours. notarize.sh's own bounds (3 h
-    # for each) must expire before this one, so a stuck run fails with the
-    # submission id instead of being cancelled: 20 min of gates, two 3 h
-    # waits and a few minutes of DMG building and stapling come to about
-    # 385 min. The unit gate has its own 900 s supervisor, so a hang is caught
-    # long before this. Self-hosted jobs may exceed GitHub's hosted 360 min cap.
+    # for each, cut at 07:00 UTC for a night-bound daily: see the Plan step)
+    # must expire before this one, so a stuck run fails with the submission
+    # id instead of being cancelled: 20 min of gates, two 3 h waits and a few
+    # minutes of DMG building and stapling come to about 385 min. The unit
+    # gate has its own 900 s supervisor, so a hang is caught long before
+    # this. Self-hosted jobs may exceed GitHub's hosted 360 min cap.
     timeout-minutes: 420
     env:
       # Not a secret: the name and team ID are in every signature it makes.
@@ -114,9 +115,11 @@ jobs:
         # carries a single `if:`. A run stops here, green, when:
         #   * it is scheduled and scheduled-run-guard.sh says skip, which
         #     chains three guards (tested by test-scheduled-run-guard.sh):
-        #     - night-window-guard.sh 30: the run must end by 07:00 UTC, when
-        #       the owner starts work on the Mac. 30 is the longest observed
-        #       release (7-20 min) plus notarization;
+        #     - night-window-guard.sh 30: the run must be able to end by
+        #       07:00 UTC, when the owner starts work on the Mac. 30 is the
+        #       longest observed run before notarization (7-20 min) plus a
+        #       typical notarization; Apple's slow days are bounded by the
+        #       night deadline below instead (#1554);
         #     - recent-run-guard.sh release.yml 20: a release run on main
         #       succeeded, or is queued or running, in the last 20 h, most
         #       often the scheduler's 03:15 dispatch;
@@ -131,6 +134,19 @@ jobs:
         # A daily release checks out the commit the plan picked, which can be
         # behind main's head, so every step below builds, tags and ships that
         # commit.
+        #
+        # A daily release that starts inside the night window, the cron's or
+        # the scheduler's 03:15 dispatch, gets night_deadline, 07:00 UTC that
+        # day: both notarization waits are cut to what is left of the window
+        # (scripts/ci/night-deadline.sh), so a slow Apple fails the run before
+        # it tags anything instead of holding the Mac into the owner's day.
+        # Stable, nightly and rehearsal runs, and a daily dispatched in the
+        # day, keep the full 3 h waits.
+        #
+        # The release machinery this file calls after the daily detach
+        # (night-deadline.sh, publish-release.sh) runs from a copy of this
+        # ref's scripts/ci in $RELEASE_CI, taken first: the picked commit can
+        # predate those scripts.
         id: plan
         env:
           CHANNEL_INPUT: ${{ inputs.channel }}
@@ -138,6 +154,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          rm -rf "$RUNNER_TEMP/release-ci"
+          cp -R scripts/ci "$RUNNER_TEMP/release-ci"
+          echo "RELEASE_CI=$RUNNER_TEMP/release-ci" >> "$GITHUB_ENV"
 
           if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
             CHANNEL="daily"
@@ -187,6 +206,12 @@ jobs:
           fi
           echo "proceed=$PROCEED" >> "$GITHUB_OUTPUT"
 
+          NIGHT_DEADLINE=""
+          if [[ "$CHANNEL" == "daily" && "$PUBLISH" == "true" ]]; then
+            NIGHT_DEADLINE="$("$RELEASE_CI/night-deadline.sh" deadline | sed -n 's/^deadline=//p')"
+          fi
+          echo "night_deadline=$NIGHT_DEADLINE" >> "$GITHUB_OUTPUT"
+
           {
             if [[ "$PROCEED" != "true" ]]; then
               echo "## Release skipped ($CHANNEL channel)"
@@ -202,6 +227,10 @@ jobs:
               echo "## Release ($CHANNEL channel)"
               echo ""
               echo "From \`$GITHUB_REF_NAME\` @ \`$(git rev-parse --short HEAD)\` — $REASON."
+            fi
+            if [[ "$PROCEED" == "true" && -n "$NIGHT_DEADLINE" ]]; then
+              echo ""
+              echo "Night-bound: notarization must finish by 07:00 UTC, or the run fails untagged."
             fi
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
@@ -417,11 +446,16 @@ jobs:
       - name: Notarize and staple the app
         # The ticket is stapled into the bundle, so the zip and the DMG built
         # below carry it and Gatekeeper accepts the app offline.
+        # A night-bound wait holds 20 min back for the DMG's own notarization
+        # and the publish.
         if: steps.plan.outputs.proceed != 'false' && steps.signing.outputs.notarize == 'true'
+        env:
+          NIGHT_DEADLINE: ${{ steps.plan.outputs.night_deadline }}
         run: |
           set -euo pipefail
+          TIMEOUT="$("$RELEASE_CI/night-deadline.sh" timeout "$NIGHT_DEADLINE" 180 20)"
           ditto -c -k --keepParent dist/localvoxtral.app "$RUNNER_TEMP/notarize-app.zip"
-          NOTARIZE_TIMEOUT=3h ./scripts/ci/notarize.sh "$RUNNER_TEMP/notarize-app.zip" "$NOTARY_PROFILE"
+          NOTARIZE_TIMEOUT="$TIMEOUT" ./scripts/ci/notarize.sh "$RUNNER_TEMP/notarize-app.zip" "$NOTARY_PROFILE"
           xcrun stapler staple dist/localvoxtral.app
           xcrun stapler validate dist/localvoxtral.app
           SPCTL="$(spctl -a -vv --type execute dist/localvoxtral.app 2>&1)"
@@ -433,6 +467,7 @@ jobs:
         if: steps.plan.outputs.proceed != 'false'
         env:
           NOTARIZE: ${{ steps.signing.outputs.notarize }}
+          NIGHT_DEADLINE: ${{ steps.plan.outputs.night_deadline }}
         run: |
           set -euo pipefail
           TAG="${{ steps.meta.outputs.tag }}"
@@ -452,8 +487,10 @@ jobs:
             codesign --sign "$DEVELOPER_ID_IDENTITY" --timestamp "dist/localvoxtral-$TAG.dmg"
             # 3 h, as for the app: Apple accepting the app does not speed up
             # the DMG. v0.11.1's DMG was still In Progress after 1 h
-            # (run 37121470049).
-            NOTARIZE_TIMEOUT=3h ./scripts/ci/notarize.sh "dist/localvoxtral-$TAG.dmg" "$NOTARY_PROFILE"
+            # (run 37121470049). A night-bound wait holds 10 min back for the
+            # publish.
+            TIMEOUT="$("$RELEASE_CI/night-deadline.sh" timeout "$NIGHT_DEADLINE" 180 10)"
+            NOTARIZE_TIMEOUT="$TIMEOUT" ./scripts/ci/notarize.sh "dist/localvoxtral-$TAG.dmg" "$NOTARY_PROFILE"
             xcrun stapler staple "dist/localvoxtral-$TAG.dmg"
             xcrun stapler validate "dist/localvoxtral-$TAG.dmg"
             spctl -a -vv --type open --context context:primary-signature "dist/localvoxtral-$TAG.dmg"
@@ -505,6 +542,7 @@ jobs:
         # drops the checkout's persisted GITHUB_TOKEN so git sends this one.
         # No workflow triggers on tag pushes, so this tag starts no runs.
         if: steps.plan.outputs.proceed != 'false' && steps.plan.outputs.publish == 'true'
+        id: tag
         env:
           TAG: ${{ steps.meta.outputs.tag }}
           RELEASE_TAG_TOKEN: ${{ secrets.RELEASE_TAG_TOKEN }}
@@ -549,7 +587,8 @@ jobs:
           RESOLVED="$(sed -n 's/^path=//p' <<<"$DECISION")"
           REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
 
-          BODY_PATH="$RUNNER_TEMP/release-body.md"
+          # In dist/, so a failed publish keeps it with the assets.
+          BODY_PATH="dist/localvoxtral-$TAG.release-notes.md"
           {
             if [[ "$NOTARIZE" == "true" ]]; then
               echo "Signed with Developer ID and notarized by Apple."
@@ -586,40 +625,50 @@ jobs:
           echo "Release notes: $REASON" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Publish GitHub release
+        # scripts/ci/publish-release.sh creates the release as a draft whose
+        # body is the notes above GitHub's generated PR list, uploads the
+        # seven assets with retries, checks them, and only then publishes.
+        # A nightly or rc is a prerelease and never marked Latest, so
+        # /releases/latest, which install.sh's stable path and the README
+        # follow, keeps pointing at the newest stable release.
+        #
+        # Run 37128200212 lost one upload to a DNS failure and left v0.12.0 a
+        # draft (#1555). The script retries each call; when it still fails,
+        # the next step keeps the assets so `./scripts/release.sh publish
+        # <tag>` can finish the draft without a rebuild.
         if: steps.plan.outputs.proceed != 'false' && steps.plan.outputs.publish == 'true'
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          NOTES: ${{ steps.notes.outputs.path }}
+        run: '"$RELEASE_CI/publish-release.sh" "$TAG" dist "$NOTES"'
+
+      - name: Keep the assets of a release that did not publish
+        # A failure or cancel after the tag went up leaves a tagged commit
+        # whose notarized assets exist only in this workspace, which the next
+        # run's checkout wipes. Keep them on the run for `./scripts/release.sh
+        # publish <tag>`, which finds this artifact by name.
+        if: (failure() || cancelled()) && steps.tag.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          name: localvoxtral ${{ steps.meta.outputs.tag }}
-          # Nightlies are prereleases so GitHub's /releases/latest — the
-          # pointer install.sh's stable path follows, and the link in the
-          # README — keeps pointing at the newest STABLE release.
-          prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
-          # Declared, not inherited: GitHub never marks a prerelease as latest
-          # today, but the stable installer depends on it, so say so.
-          make_latest: ${{ steps.meta.outputs.prerelease == 'true' && 'false' || 'true' }}
-          # body_path + generate_release_notes, per action-gh-release v2's
-          # README: "If body is specified, the body will be pre-pended to the
-          # automatically generated notes", and "When providing a body and
-          # body_path at the same time, body_path will be attempted first,
-          # then falling back on body if the path can not be read from". So
-          # the hand-written notes lead and GitHub's PR list follows.
-          #
-          # NOT `append_body`: that input means "append to an EXISTING
-          # release's body" (an already-published release being updated), not
-          # "append the generated notes to mine". Setting it here would be a
-          # different feature that happens to sound right.
-          #
-          body_path: ${{ steps.notes.outputs.path }}
-          generate_release_notes: true
-          files: |
-            dist/localvoxtral-${{ steps.meta.outputs.tag }}.zip
-            dist/localvoxtral-${{ steps.meta.outputs.tag }}.zip.sha256
-            dist/localvoxtral-${{ steps.meta.outputs.tag }}.dmg
-            dist/localvoxtral-${{ steps.meta.outputs.tag }}.dmg.sha256
-            dist/localvoxtral-${{ steps.meta.outputs.tag }}.dSYM.zip
-            dist/localvoxtral-polishd-${{ steps.meta.outputs.tag }}.dSYM.zip
-            dist/localvoxtral-speechd-${{ steps.meta.outputs.tag }}.dSYM.zip
+          name: localvoxtral-release-${{ steps.meta.outputs.tag }}
+          path: dist/localvoxtral-*${{ steps.meta.outputs.tag }}*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Say how to finish the release
+        if: (failure() || cancelled()) && steps.tag.outcome == 'success'
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          {
+            echo ""
+            echo "**$TAG is tagged but not published.** Its assets are the \`localvoxtral-release-$TAG\` artifact on this run. Finish it from the dev box with:"
+            echo ""
+            echo '```bash'
+            echo "./scripts/release.sh publish $TAG"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Prune old nightly releases
         # Without this, on-demand nightlies would pile up on the releases page.
