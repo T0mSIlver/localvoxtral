@@ -913,6 +913,25 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(captured.all.count, 1)
     }
 
+    /// Another running copy turned History on after this one launched with
+    /// it off: the capture is saved, so the Inbox gets its History id, or
+    /// polishing and routing never update the entry (#1605 review).
+    func testAQuickCaptureSavedAfterAnotherCopyTurnedHistoryOnGetsItsHistoryID() async throws {
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
+        pipeline.viewModel.settings.dictationHistoryRetention = .off
+        makeSettings(defaults: pipeline.viewModel.settings.defaults).dictationHistoryRetention = .forever
+        let ids = QuickCaptureHistoryIDs()
+        pipeline.viewModel.session.onQuickCapture = { _, id, _ in ids.all.append(id) }
+
+        await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline, finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved)
+
+        let record = try XCTUnwrap(pipeline.records.all.first, "the capture is saved")
+        XCTAssertEqual(ids.all, [record.id])
+    }
+
     /// Quick capture (#725): the shortcut's dictation runs as Overlay Buffer,
     /// but its stop commits nothing to the focused app. The History record
     /// is written first, then the words go to the Inbox.
@@ -3906,6 +3925,10 @@ private actor DesktopReadCounter {
 /// What the quick capture sink received, with the records written by then.
 private final class QuickCaptures {
     var all: [(text: String, recordsWritten: Int)] = []
+}
+
+private final class QuickCaptureHistoryIDs {
+    var all: [UUID?] = []
 }
 
 private final class QuickCaptureGroups {
