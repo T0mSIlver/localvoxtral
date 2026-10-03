@@ -348,6 +348,31 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
         XCTAssertNil(host.text(".vibe/localvoxtral/remote/token"))
     }
 
+    /// A save while the support files go out, after the preamble's check
+    /// (#1495): a `chmod` on the host plays the editor at the `port` write.
+    func testASaveDuringTheSupportFileWritesIsNotOverwritten() throws {
+        let host = try VibeFakeHost()
+        try host.write(Self.userHooks, to: ".vibe/hooks.toml")
+        let edited = Self.userHooks + "# saved just now\n"
+        let bin = host.home.appendingPathComponent("editor-bin")
+        try host.write(edited, to: "edited.toml")
+        try host.write("""
+            #!/bin/sh
+            for last in "$@"; do :; done
+            case "$last" in */remote/port.lvx-tmp) /bin/cp "$HOME/edited.toml" "$HOME/.vibe/hooks.toml" ;; esac
+            exec /bin/chmod "$@"
+
+            """, to: "editor-bin/chmod", mode: 0o755)
+        host.pathPrefix = bin.path
+
+        let failure = try XCTUnwrap(failure { _ = try self.setUp(host) })
+        XCTAssertEqual(failure.exitCode, 45)
+        XCTAssertEqual(host.text(".vibe/hooks.toml"), edited)
+        XCTAssertNotNil(host.text(".vibe/localvoxtral/remote/port"), "the edit landed after the support files")
+        XCTAssertNil(host.text(".vibe/hooks.toml.lvx-tmp"))
+        XCTAssertNil(host.text(".vibe/localvoxtral/remote/token"))
+    }
+
     func testASymlinkedVibeDirectoryIsRefused() throws {
         let host = try VibeFakeHost()
         let real = host.home.appendingPathComponent("dotfiles-vibe")
@@ -366,7 +391,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
         host.beforeScript[3] = {
             let path = host.path(".vibe/localvoxtral/remote/post.sh")
             let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
-            try? text.replacingOccurrences(of: "Hooks-Version: 1.17.0", with: "Hooks-Version: 6.6.6")
+            try? text.replacingOccurrences(of: "Hooks-Version: 1.18.0", with: "Hooks-Version: 6.6.6")
                 .write(toFile: path, atomically: true, encoding: .utf8)
         }
         let failure = try XCTUnwrap(failure { _ = try self.setUp(host) })
@@ -404,7 +429,7 @@ final class VibeRemoteHooksSetupTests: XCTestCase {
 
     func testTheShippedFilesCarryOneVersionAndTheRemoteBlock() throws {
         let files = try shippedFiles()
-        XCTAssertEqual(files.version, "1.17.0")
+        XCTAssertEqual(files.version, "1.18.0")
         XCTAssertNotNil(VibeHooksBlockEditor.remote.snippet(fromBundled: files.hooksBlock))
         let names = files.hooksBlock.split(separator: "\n").filter { $0.hasPrefix("name = ") }
             .map { String($0.dropFirst("name = \"".count).dropLast()) }

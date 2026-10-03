@@ -828,8 +828,8 @@ final class RemoteQuickCaptureTests: XCTestCase {
         XCTAssertEqual(
             flags,
             runner.components(separatedBy: "\n")
-                .drop { !$0.contains("\"$BIN\" -p \"$(cat \"$WORK/prompt\")\"") }
-                .prefix { !$0.contains("</dev/null") }
+                .drop { !$0.contains("\"$BIN\" -p \\") }
+                .prefix { !$0.contains("<\"$WORK/prompt\"") }
                 .compactMap { $0.trimmingCharacters(in: .whitespaces).split(separator: " ").first.map(String.init) }
                 .filter { $0.hasPrefix("--") },
             "no flag added or dropped"
