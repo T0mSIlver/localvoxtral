@@ -417,20 +417,10 @@ final class DictationSessionController {
     var isShowingConnectionFailureAlert = false
     @ObservationIgnored
     var realtimeFinalizationLastActivityAt: Date?
-    /// True while a voice memo streams through the bundled helper this
-    /// dictation also uses.
-    @ObservationIgnored
-    var voiceMemoHoldsTheEngine: @MainActor () -> Bool = { false }
     /// Cancels a voice memo streaming through the bundled helper this
     /// dictation also uses, so the dictation's text streams live (#1317).
     @ObservationIgnored
     var yieldVoiceMemoEngine: @MainActor () -> Void = {}
-    /// When this session started, on the session clock, if a voice memo was
-    /// streaming then. The bundled helper runs one inference queue, so this
-    /// session's audio is decoded only after the memo's, and its final can
-    /// come long after the stop.
-    @ObservationIgnored
-    var sessionStartedBehindVoiceMemoAt: Date?
     @ObservationIgnored
     var isAwaitingMicrophonePermission = false
     /// Gives up on a microphone prompt nobody answers.

@@ -64,12 +64,10 @@ package final class VoiceMemoIntake {
     /// connection's step at a time, so a dictation starting on it calls
     /// `yieldToDictation()`.
     package private(set) var isTranscribing = false
-    /// Called each time `isTranscribing` turns false.
-    package var onTranscriptionEnded: (@MainActor () -> Void)?
     /// The memo in flight, cancelled by `yieldToDictation()`.
     private var transcription: Task<VoiceMemoTranscript, Error>?
     private var yieldedToDictation = false
-    private var isStopping = false
+    private var isStopped = false
     private var reportedLedgerProblem = false
     private var reportedInboxProblem = false
     private var lastSeen: [String: VoiceMemoFile] = [:]
@@ -136,20 +134,21 @@ package final class VoiceMemoIntake {
         return aside
     }
 
-    /// Scans now and every `scanInterval` after, until the task is cancelled
-    /// or `stopAfterCurrentMemo()`.
+    /// Scans now and every `scanInterval` after, until the task is
+    /// cancelled or `stop()`.
     package func run() async {
-        while !Task.isCancelled, !isStopping {
+        while !Task.isCancelled, !isStopped {
             await scan()
-            guard !isStopping else { return }
             await clock.sleep(Self.scanInterval)
         }
     }
 
-    /// Takes no further memo and lets `run` return once the memo in flight
-    /// is done.
-    package func stopAfterCurrentMemo() {
-        isStopping = true
+    /// Voice memos turned off: cancels the memo in flight, whichever scan
+    /// runs it, and takes no other. The memo goes back for a later scan, and
+    /// the bundled helper skips the audio it queued.
+    package func stop() {
+        isStopped = true
+        transcription?.cancel()
     }
 
     /// A dictation starts on the engine the memo streams through: cancels the
@@ -235,7 +234,7 @@ package final class VoiceMemoIntake {
                 continue
             }
             guard file.size > 0, previous[file.name] == file else { continue }
-            guard canTranscribe(), !isStopping else { break }
+            guard canTranscribe(), !isStopped else { break }
             let outcome = await take(file, at: url)
             if outcome == .captured { captured += 1 }
             // The engine or the disk failed; the rest would fail the same way.
@@ -290,23 +289,28 @@ package final class VoiceMemoIntake {
             defer {
                 transcription = nil
                 isTranscribing = false
-                onTranscriptionEnded?()
             }
             transcript = try await withTaskCancellationHandler {
                 try await task.value
             } onCancel: {
                 task.cancel()
             }
+        } catch where yieldedToDictation {
+            // Before the unreadable case: a cancelled decode can still fail.
+            Log.backends.info("Voice memos: the memo stopped for the dictation (\(String(describing: error), privacy: .public)); retrying on the next scan")
+            ledger.entries[file.name] = nil
+            saveLedger()
+            return .stopPass
+        } catch where isStopped || Task.isCancelled {
+            Log.backends.info("Voice memos: the memo stopped with voice memos (\(String(describing: error), privacy: .public)); retrying on the next scan")
+            ledger.entries[file.name] = nil
+            saveLedger()
+            return .stopPass
         } catch is VoiceMemoUnreadable {
             Log.backends.error("Voice memos: a memo is not audio this Mac can decode; left in the folder")
             record(file, .unreadable)
             onStatus?("A voice memo could not be read.")
             return .left
-        } catch where yieldedToDictation {
-            Log.backends.info("Voice memos: the memo stopped for the dictation (\(String(describing: error), privacy: .public)); retrying on the next scan")
-            ledger.entries[file.name] = nil
-            saveLedger()
-            return .stopPass
         } catch {
             Log.backends.error("Voice memos: transcription failed, retrying on the next scan: \(String(describing: error), privacy: .public)")
             ledger.entries[file.name] = nil

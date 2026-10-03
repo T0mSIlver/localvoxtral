@@ -1114,14 +1114,12 @@ extension DictationViewModel {
             self.statusText = sentence
         }
         controller.onLedgerProblem = { [weak self] in self?.voiceMemoLedgerProblem = $0 }
-        session.voiceMemoHoldsTheEngine = { [weak self, weak controller] in
-            guard let self, controller?.isTranscribing == true else { return false }
-            return Self.voiceMemoSharesTheEngine(
-                memo: self.voiceMemoBackendMode, dictation: self.settings.dictationBackendMode)
-        }
         session.yieldVoiceMemoEngine = { [weak self, weak controller] in
-            guard let self, self.session.voiceMemoHoldsTheEngine() else { return }
-            controller?.yieldToDictation()
+            guard let self, let controller, controller.isTranscribing,
+                  Self.voiceMemoSharesTheEngine(
+                      memo: self.voiceMemoBackendMode, dictation: self.settings.dictationBackendMode)
+            else { return }
+            controller.yieldToDictation()
         }
         voiceMemos = controller
         controller.apply()
