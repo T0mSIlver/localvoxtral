@@ -122,37 +122,34 @@ final class QuickCaptureFollowUpTests: XCTestCase {
         XCTAssertEqual(runner.runs.withLock { $0 }, 0)
     }
 
-    /// Another running copy filed the capture after this copy last read the
-    /// file: neither "also" nor the router's pick joins the filed one, whose
-    /// words already went to GitHub. The follow-up stays a capture of its own.
-    func testAFollowUpDoesNotJoinACaptureAnotherCopyFiled() async throws {
-        let cases: [(text: String, answer: [String: Double])] = [
-            ("Also, the settings window", ["reach": 0.95]),
-            ("It should follow the system setting", ["capture-1": 0.95, "reach": 0.05]),
-        ]
-        for (text, answer) in cases {
-            try? FileManager.default.removeItem(at: fileURL)
-            github.created.withLock { $0 = [] }
-            let runner = FakeQuickCaptureDraftRunner()
-            let filer = model(classifier: ScriptedQuickCaptureClassifier([["reach": 0.95]]), runner: runner)
-            await filer.capture(text: "Add a dark mode", historyRecordID: nil).value
-            let filed = try XCTUnwrap(filer.items.first?.id)
-            let other = model(classifier: ScriptedQuickCaptureClassifier([answer]), runner: runner)
-            XCTAssertEqual(other.items.first?.state, .ready, text)
-            await filer.file(filed)?.value
-            XCTAssertEqual(filer.items.first?.state, .filed, text)
+    /// Another running copy files the capture while the router decides that
+    /// a new one continues it: the join does not land on the filed capture,
+    /// whose words already went to GitHub. The new words stay a capture of
+    /// their own, with that project as the suggestion.
+    func testAFollowUpDoesNotJoinACaptureAnotherCopyFiledWhileRouting() async throws {
+        let runner = FakeQuickCaptureDraftRunner()
+        let filer = model(classifier: ScriptedQuickCaptureClassifier([["reach": 0.95]]), runner: runner)
+        await filer.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let filed = try XCTUnwrap(filer.items.first?.id)
+        let classifier = ScriptedQuickCaptureClassifier([["capture-1": 0.95, "reach": 0.05]], gated: true)
+        let other = model(classifier: classifier, runner: runner)
 
-            clock += 60
-            await other.capture(text: text, historyRecordID: nil).value
+        clock += 60
+        let capturing = other.capture(text: "It should follow the system setting", historyRecordID: nil)
+        await classifier.gate?.waitForSleepers(1)
+        await filer.file(filed)?.value
+        XCTAssertEqual(filer.items.first { $0.id == filed }?.state, .filed)
+        classifier.gate?.wakeAll()
+        await capturing.value
 
-            let saved = try XCTUnwrap(QuickCaptureInboxFile.load(from: fileURL).value, text)
-            XCTAssertEqual(saved.items.count, 2, text)
-            XCTAssertNil(saved.items.first { $0.id == filed }?.followUps, text)
-            let own = try XCTUnwrap(saved.items.first { $0.id != filed }, text)
-            XCTAssertEqual(own.text, text)
-            XCTAssertNotEqual(own.state, .filed, text)
-            XCTAssertEqual(github.created.withLock { $0.count }, 1, text)
-        }
+        let saved = try XCTUnwrap(QuickCaptureInboxFile.load(from: fileURL).value)
+        XCTAssertEqual(saved.items.count, 2)
+        XCTAssertNil(saved.items.first { $0.id == filed }?.followUps)
+        let own = try XCTUnwrap(saved.items.first { $0.id != filed })
+        XCTAssertEqual(own.text, "It should follow the system setting")
+        XCTAssertEqual(own.state, .ready)
+        XCTAssertEqual(own.suggestion?.projectKey, "/w/reach")
+        XCTAssertEqual(github.created.withLock { $0.count }, 1)
     }
 
     func testOnlyUnfiledCapturesFromTheLastHourAreOffered() async throws {
