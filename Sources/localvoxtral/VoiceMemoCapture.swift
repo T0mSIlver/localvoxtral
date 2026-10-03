@@ -157,14 +157,12 @@ final class VoiceMemoController {
         }
     }
 
-    static func defaultAudioDirectoryURL() -> URL {
-        DictationAudioStore.defaultDirectoryURL().deletingLastPathComponent()
-            .appendingPathComponent("voice-memo-audio", isDirectory: true)
+    static func defaultAudioDirectoryURL(in directory: URL = LocalvoxtralDataDirectory.url()) -> URL {
+        directory.appendingPathComponent("voice-memo-audio", isDirectory: true)
     }
 
-    static func defaultLedgerURL() -> URL {
-        DictationAudioStore.defaultDirectoryURL().deletingLastPathComponent()
-            .appendingPathComponent("voice-memos.json")
+    static func defaultLedgerURL(in directory: URL = LocalvoxtralDataDirectory.url()) -> URL {
+        directory.appendingPathComponent("voice-memos.json")
     }
 
     /// Starts or stops watching to match the setting. Turning it on is the

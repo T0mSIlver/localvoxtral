@@ -126,7 +126,7 @@ extension XCTestCase {
             guard (response as? HTTPURLResponse)?.statusCode == 200 else {
                 throw PolishModelProvisioningError(description: "download failed for \(name): \(response)")
             }
-            try FileManager.default.moveItem(at: temporary, to: destination)
+            try SharedCacheFile.publish(temporary, at: destination)
         }
 
         // An unpinned (custom) repo is still resolved through refs/main by the

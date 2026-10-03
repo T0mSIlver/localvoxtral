@@ -417,10 +417,15 @@ final class DictationViewModel {
         /// Mistral's batch endpoint, for the second pass an Overlay Buffer
         /// dictation gets on stop in Mistral API mode (#317).
         var batchTranscriber: any MistralBatchTranscribing
-        /// The folder holding the history store, its audio and its diagnostic
-        /// records. Nil is the app's folder in Application Support; a test
-        /// that starts runtime services passes a temporary one.
-        var historyDirectory: URL?
+        /// The folder every store the runtime services open lives in: history
+        /// and its audio, diagnostic records, the usage ledger, learned terms,
+        /// skills, the Inbox and voice memos. Nil is the app's folder in
+        /// Application Support; a test that starts runtime services passes a
+        /// temporary one, or it writes the owner's data (#1524).
+        var dataDirectory: URL?
+        /// The home folder whose Claude Code transcripts and agent skill
+        /// folders the runtime services read. Nil is the user's.
+        var home: URL?
         /// How much audio one External URL server session may take before
         /// the client rolls it over (#1139). Nil is `GET /v1/models` on the
         /// server when runtime services run, and no rollover in a unit test,
@@ -450,7 +455,8 @@ final class DictationViewModel {
             onRealtimeDeltaLogRecord: ((DebugRealtimeDeltaLogRecord) -> Void)? = nil,
             clock: SessionClock = .live,
             batchTranscriber: any MistralBatchTranscribing = MistralBatchTranscriptionClient(),
-            historyDirectory: URL? = nil,
+            dataDirectory: URL? = nil,
+            home: URL? = nil,
             realtimeContextLimit: (@Sendable (RealtimeSessionConfiguration) async -> RealtimeContextBudget?)? = nil
         ) {
             self.microphone = microphone
@@ -468,7 +474,8 @@ final class DictationViewModel {
             self.onRealtimeDeltaLogRecord = onRealtimeDeltaLogRecord
             self.clock = clock
             self.batchTranscriber = batchTranscriber
-            self.historyDirectory = historyDirectory
+            self.dataDirectory = dataDirectory
+            self.home = home
             self.realtimeContextLimit = realtimeContextLimit
         }
     }
@@ -719,7 +726,9 @@ final class DictationViewModel {
 
         textInsertion.refreshAccessibilityTrustState()
         if startRuntimeServices {
-            switch DictationSessionStore.open(directory: dependencies.historyDirectory) {
+            let dataDirectory = dependencies.dataDirectory ?? LocalvoxtralDataDirectory.url()
+            let home = dependencies.home ?? FileManager.default.homeDirectoryForCurrentUser
+            switch DictationSessionStore.open(directory: dependencies.dataDirectory) {
             case let .success(store):
                 sessionStore = store
             case let .failure(failure):
@@ -737,26 +746,22 @@ final class DictationViewModel {
             // Attached whatever the setting says, so Delete and retention
             // still clear recordings kept before it was turned off.
             sessionStore?.audioStore = DictationAudioStore(
-                directoryURL: dependencies.historyDirectory.map {
-                    $0.appendingPathComponent("dictation-audio", isDirectory: true)
-                } ?? DictationAudioStore.defaultDirectoryURL())
+                directoryURL: dataDirectory.appendingPathComponent("dictation-audio", isDirectory: true))
             // One store for writes and for deletes: a record follows its
             // History entry the way its audio does.
             let diagnosticRecordStore = DiagnosticRecordStore(
-                directoryURL: dependencies.historyDirectory.map {
-                    $0.appendingPathComponent("diagnostic-records", isDirectory: true)
-                })
+                directoryURL: dataDirectory.appendingPathComponent("diagnostic-records", isDirectory: true))
             session.diagnosticRecordStore = diagnosticRecordStore
             sessionStore?.diagnosticRecordStore = diagnosticRecordStore
             sessionStore?.removeOrphanedAudio()
             applyDictationHistoryRetention()
             // Before everything that calls a model, so each one records to it.
-            let usageLedger = UsageLedger(fileURL: UsageLedger.defaultFileURL()) {
+            let usageLedger = UsageLedger(fileURL: UsageLedger.defaultFileURL(in: dataDirectory)) {
                 [weak self] in
                 Task { @MainActor in self?.engines.noteUsageLedgerChanged() }
             }
             learnedTermStore = LearnedTermStore(
-                fileURL: LearnedTermStore.defaultFileURL(),
+                fileURL: LearnedTermStore.defaultFileURL(in: dataDirectory),
                 onChange: { [weak self] in
                     Task { @MainActor in
                         self?.learnedTermRevision += 1
@@ -766,9 +771,10 @@ final class DictationViewModel {
                     }
                 }
             )
-            session.agentSkillStore = AgentSkillStore(fileURL: AgentSkillStore.defaultFileURL())
+            session.agentSkillStore = AgentSkillStore(
+                fileURL: AgentSkillStore.defaultFileURL(in: dataDirectory), home: home)
             if let learnedTermStore {
-                let agentProjectScanner = AgentProjectActivityScanner(store: learnedTermStore)
+                let agentProjectScanner = AgentProjectActivityScanner(store: learnedTermStore, home: home)
                 agentProjectScanner.refreshIfStale()
                 session.agentProjectScanner = agentProjectScanner
                 let correctionLearning = CorrectionLearning(
@@ -778,13 +784,11 @@ final class DictationViewModel {
                 correctionLearnedPanel = CorrectionLearnedPanel()
                 correctionLearning.presenter = correctionLearnedPanel
                 session.correctionLearning = correctionLearning
-                let applicationSupport = LearnedTermStore.defaultFileURL().deletingLastPathComponent()
                 session.projectTermProposer = ProjectTermProposer(
                     store: learnedTermStore,
                     runner: ProjectTermProposalProcessRunner(
-                        vibeHome: applicationSupport.appendingPathComponent("vibe-home", isDirectory: true),
-                        userVibeDirectory: FileManager.default.homeDirectoryForCurrentUser
-                            .appendingPathComponent(".vibe", isDirectory: true)
+                        vibeHome: dataDirectory.appendingPathComponent("vibe-home", isDirectory: true),
+                        userVibeDirectory: home.appendingPathComponent(".vibe", isDirectory: true)
                     ),
                     now: { Date() },
                     usageRecorder: usageLedger
@@ -795,8 +799,8 @@ final class DictationViewModel {
                     settings: settings,
                     learnedTerms: { [weak self] in self?.learnedTermStore?.snapshot() ?? LearnedTerms() },
                     learnedTermStore: learnedTermStore,
-                    fileURL: QuickCaptureInboxViewModel.defaultFileURL(),
-                    applicationSupport: LearnedTermStore.defaultFileURL().deletingLastPathComponent(),
+                    fileURL: QuickCaptureInboxViewModel.defaultFileURL(in: dataDirectory),
+                    applicationSupport: dataDirectory,
                     usageRecorder: usageLedger,
                     polisher: QuickCaptureLLMPolisher(
                         settings: settings,
@@ -816,7 +820,7 @@ final class DictationViewModel {
                 launchedAt: Date()
             )
             installUsageLedger(usageLedger)
-            installVoiceMemos(usageLedger: usageLedger)
+            installVoiceMemos(usageLedger: usageLedger, dataDirectory: dataDirectory)
             refreshMicrophoneInputs()
             registerLifecycleObservers(
                 application: dependencies.lifecycleNotificationCenter ?? .default,
@@ -1090,13 +1094,14 @@ extension DictationViewModel {
 extension DictationViewModel {
     /// Turns each voice memo in the iCloud Drive folder into a quick capture
     /// through the dictation engine, while the setting is on (#925).
-    func installVoiceMemos(usageLedger: UsageLedger) {
+    func installVoiceMemos(usageLedger: UsageLedger, dataDirectory: URL) {
         guard let inbox = quickCapture else { return }
         let controller = VoiceMemoController(
             settings: settings,
             inbox: inbox,
-            audioStore: DictationAudioStore(directoryURL: VoiceMemoController.defaultAudioDirectoryURL()),
-            ledgerURL: VoiceMemoController.defaultLedgerURL(),
+            audioStore: DictationAudioStore(
+                directoryURL: VoiceMemoController.defaultAudioDirectoryURL(in: dataDirectory)),
+            ledgerURL: VoiceMemoController.defaultLedgerURL(in: dataDirectory),
             transcriber: VoiceMemoEngineTranscriber(prepare: { [weak self] in
                 guard let self else { throw CancellationError() }
                 return try await self.voiceMemoEngine(usageLedger: usageLedger)

@@ -183,8 +183,8 @@ final class QuickCaptureInboxViewModel {
         let value = Mutex<RemoteQuickCaptureRequests?>(nil)
     }
 
-    static func defaultFileURL() -> URL {
-        LocalvoxtralDataDirectory.url().appendingPathComponent("quick-captures.json")
+    static func defaultFileURL(in directory: URL = LocalvoxtralDataDirectory.url()) -> URL {
+        directory.appendingPathComponent("quick-captures.json")
     }
 
     var waitingCount: Int { items.filter { $0.state != .filed }.count }
