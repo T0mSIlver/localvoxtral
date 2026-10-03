@@ -25,13 +25,23 @@ export type ChannelReply = {
   text?: string
   cursor?: number
   usage?: ChannelUsage
+  submitted?: boolean
+  queued?: boolean
 }
 
 /** The mod's word that its session ends (#1646), sent like a reply. */
 export type ChannelBye = { mod_bye: number; session_id: string }
 
 /** Whether the mod did what a message asked, why not, and any answer. */
-export type Outcome = { ok: boolean; reason?: string; text?: string; cursor?: number; usage?: ChannelUsage }
+export type Outcome = {
+  ok: boolean
+  reason?: string
+  text?: string
+  cursor?: number
+  usage?: ChannelUsage
+  submitted?: boolean
+  queued?: boolean
+}
 
 /** The refusal of a request issued for a session the process has left. */
 export const SESSION_CHANGED = 'session_changed'
@@ -71,6 +81,30 @@ export function draftOf(box: { text: string; cursor: number }): { text: string; 
 
 function isLowSurrogate(code: number): boolean {
   return code >= 0xdc00 && code <= 0xdfff
+}
+
+// How long a `send` waits for its submit before it answers `queued`: a
+// plugin's submit resolves only once the running turn ends (measured on
+// Claude Code 2.1.287), and the app gives the reply 5 s.
+export const SUBMIT_ANSWER_MS = 1500
+
+/**
+ * Why a box cannot be submitted as typed, or undefined when it can: a
+ * plugin's submit is text alone, so a paste or image placeholder would go
+ * as its label and a `@file` mention unexpanded, and a slash command or a
+ * `!` shell line is the keyboard's to run. The app types those instead.
+ */
+export function needsKeys(box: string): string | undefined {
+  if (/\[(Pasted text|Image) #\d+/.test(box)) return 'placeholder'
+  if (/^\s*[/!]/.test(box)) return 'command'
+  if (/(^|\s)@\S/.test(box)) return 'mention'
+  return undefined
+}
+
+/** The box after `text` goes in at the cursor, as an `insert` fill puts it. */
+export function insertedAt(box: { text: string; cursor: number }, text: string): string {
+  const cursor = Math.min(Math.max(0, box.cursor), box.text.length)
+  return box.text.slice(0, cursor) + text + box.text.slice(cursor)
 }
 
 /** The band a `state` message asks for; null clears it. */

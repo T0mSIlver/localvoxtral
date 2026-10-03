@@ -205,6 +205,24 @@ there is not.
   only by its own bundle ID on `ReturnSubmitsAppList` (the AX probe reads the
   element focused NOW, which need not be the commit target's), and the Return
   follows only a commit that reported `.succeeded`.
+  A dictation joined to a local Claude Code session whose mod is attached
+  (#1644) is sent by the mod instead (`send`): no key, so neither focus nor
+  Secure Keyboard Entry gates it, and it can only reach the session the
+  dictation joined, never an unfocused one by name (#723's Return rule
+  stands for every key). The mod fills at the cursor, then submits the
+  box's whole text as the person's own (`$.prompt.submit` with `asUser`)
+  and empties the box, so a typed draft goes with it and nothing is sent
+  twice. A box with a paste or image placeholder, an `@` mention, or a
+  leading `/` or `!` is refused unchanged, since a plugin's submit sends
+  those as plain text. A plugin's submit resolves only once a running turn
+  ends (measured on Claude Code 2.1.287), so the mod answers `queued` when a
+  main-loop turn is running or the submit has not entered within 1.5 s; the
+  popover then says the prompt runs after the turn, not that it was sent. A
+  submit a hook drops puts the text back in the box and answers not
+  submitted. A refusal, or a request the mod never got, is typed under the
+  fill rule below and followed by Return under this bullet's gates, judged
+  then; an unanswered one is kept, with no Return. A channel that closed
+  between the stop and the commit sends by Return under the same gates.
 - **A voice stop is the stop key, never a second commit path** (#839).
   An Overlay Buffer dictation whose words (settled segments plus the
   partial in flight: the Mistral API sends no final before the stop) end in
