@@ -106,12 +106,15 @@ final class ClaudeModChannelHubTests: XCTestCase {
     }
 
     func testTheMatchingReplyAnswersTheSend() async {
-        let hub = ClaudeModChannelHub(sleep: { _ in await Task.yield() }, makeID: { "id-1" })
+        // The timeout never fires before the reply, so only the reply can answer.
+        let gate = GateSleep()
+        let hub = ClaudeModChannelHub(sleep: gate.sleep, makeID: { "id-1" })
         let written = Received()
         written.onLine = { hub.deliver(.init(sessionID: "sess-1", id: "id-1", ok: false, reason: "dialog")) }
         _ = hub.attach(sessionID: "sess-1", channel: channel(written))
 
         let reply = await hub.send(.init(kind: .ping), to: "sess-1", timeout: .seconds(60))
+        gate.fire()
 
         XCTAssertEqual(reply, .init(sessionID: "sess-1", id: "id-1", ok: false, reason: "dialog"))
         let sent = try? XCTUnwrap(written.all.first)
