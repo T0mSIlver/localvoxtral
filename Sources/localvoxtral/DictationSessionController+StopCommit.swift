@@ -1332,10 +1332,19 @@ extension DictationSessionController {
     private func applyStopSecondPass(_ outcome: StopSecondPass.Outcome) {
         switch outcome {
         case .replaced(let text):
+            // The batch model can leave out a sentence the realtime stream
+            // had; that run goes back in (#1649).
+            let reconciled = StopSecondPass.keepingDroppedRealtimeRuns(
+                realtime: transcript.currentDictationEventText, secondPass: text)
             Log.backends.info(
-                "second pass replaced the realtime text (\(self.transcript.currentDictationEventText.count, privacy: .public) -> \(text.count, privacy: .public) chars)"
+                "second pass replaced the realtime text (\(self.transcript.currentDictationEventText.count, privacy: .public) -> \(reconciled.text.count, privacy: .public) chars)"
             )
-            transcript.currentDictationEventText = text
+            if reconciled.restoredWords > 0 {
+                Log.backends.notice(
+                    "second pass dropped \(reconciled.restoredWords, privacy: .public) realtime words in a run; kept them"
+                )
+            }
+            transcript.currentDictationEventText = reconciled.text
             refreshOverlayBufferSession()
         case .empty:
             Log.backends.notice("second pass answered with no text; realtime text kept")
