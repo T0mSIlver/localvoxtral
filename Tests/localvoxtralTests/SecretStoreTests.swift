@@ -57,6 +57,9 @@ final class FakeSecretStore: SecretStoring, @unchecked Sendable {
         }
     }
 
+    /// The keychain recovering: writes that failed now succeed.
+    func allowWrites() { state.withLock { $0.writeFailures = [] } }
+
     var snapshot: [SecretKey: String] { state.withLock { $0.values } }
     var writtenKeys: [SecretKey] { state.withLock { $0.writtenKeys } }
 }
@@ -254,6 +257,24 @@ final class SecretStoreTests: XCTestCase {
         // The keys that DID migrate are still cleaned up.
         XCTAssertNil(defaults.object(forKey: Self.legacyRealtimeKey))
         XCTAssertEqual(secrets.snapshot[.realtimeAPIKey], "sk-realtime")
+    }
+
+    /// A key the migration left in the plist is not the user's any more once
+    /// they clear the field: the next launch must not migrate it back (#1570).
+    func testClearingAKeyAfterAFailedMigrationDoesNotBringItBack() {
+        defaults.set("mk-old", forKey: Self.legacyMistralKey)
+        let secrets = FakeSecretStore(writeFailures: [.mistralAPIKey])
+        let store = makeStore(secretStore: secrets)
+        XCTAssertEqual(store.mistralAPIKey, "mk-old")
+
+        secrets.allowWrites()
+        store.mistralAPIKey = ""
+
+        XCTAssertNil(secrets.snapshot[.mistralAPIKey])
+        XCTAssertNil(defaults.object(forKey: Self.legacyMistralKey), "the plist copy outlived the clear")
+        let relaunched = makeStore(secretStore: secrets)
+        relaunched.ensureSecretsLoaded([.mistralAPIKey])
+        XCTAssertEqual(relaunched.mistralAPIKey, "", "the cleared key came back")
     }
 
     /// The probe that protects a newer keychain value is itself a keychain

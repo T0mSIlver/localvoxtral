@@ -723,6 +723,40 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertFalse(pipeline.viewModel.isFinalizingStop, "the stop is over")
     }
 
+    /// Quit while still dictating: the stop the terminate observer schedules
+    /// may never run, so the text and audio so far reach the History write
+    /// queue as not inserted, before the quit drains it (#1568).
+    func testQuitWhileDictatingSavesTheTextSoFar() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.settings.dictationAudioEnabled = true
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-audio-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let audioStore = DictationAudioStore(directoryURL: directory)
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
+        store.audioStore = audioStore
+        pipeline.viewModel.sessionStore = store
+
+        await startAndSpeak(pipeline)
+        await sendSettledFinal(pipeline, Self.settledPiece)
+        XCTAssertTrue(pipeline.viewModel.isDictating)
+
+        // What `applicationWillTerminate` runs before it drains History.
+        pipeline.viewModel.saveStoppedDictationForQuit()
+        await store.pendingWrites?.value
+
+        let saved = try XCTUnwrap(pipeline.records.all.first, "the quit lost the dictation")
+        XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded), [false])
+        XCTAssertEqual(saved.rawText.trimmingCharacters(in: .whitespaces), Self.settledPiece)
+        XCTAssertEqual(audioStore.storedIDs(), [saved.id])
+        XCTAssertEqual(
+            try Data(contentsOf: audioStore.fileURL(for: saved.id)),
+            DictationAudioRecording.wav(fromPCM16: Self.speech(seed: 1)))
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing is inserted at quit")
+        XCTAssertFalse(pipeline.viewModel.isDictating)
+        XCTAssertFalse(pipeline.viewModel.isFinalizingStop, "the stop is over")
+    }
+
     /// The same quit during a quick capture files the words so far as the
     /// stop would: in History as a capture, then in the Inbox (#1296).
     func testQuitBeforeTheFinalTranscriptFilesAQuickCapture() async throws {
@@ -956,6 +990,25 @@ final class DictationPipelineTests: XCTestCase {
         let requests = await polish.requests
         XCTAssertEqual(requests.count, 0)
         XCTAssertEqual(captured.all.count, 1)
+    }
+
+    /// Another running copy turned History on after this one launched with
+    /// it off: the capture is saved, so the Inbox gets its History id, or
+    /// polishing and routing never update the entry (#1605 review).
+    func testAQuickCaptureSavedAfterAnotherCopyTurnedHistoryOnGetsItsHistoryID() async throws {
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
+        pipeline.viewModel.settings.dictationHistoryRetention = .off
+        makeSettings(defaults: pipeline.viewModel.settings.defaults).dictationHistoryRetention = .forever
+        let ids = QuickCaptureHistoryIDs()
+        pipeline.viewModel.session.onQuickCapture = { _, id, _ in ids.all.append(id) }
+
+        await startAndSpeak(pipeline, start: { $0.session.toggleQuickCapture() })
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline, finalStatus: DictationViewModel.StatusStrings.quickCaptureSaved)
+
+        let record = try XCTUnwrap(pipeline.records.all.first, "the capture is saved")
+        XCTAssertEqual(ids.all, [record.id])
     }
 
     /// Quick capture (#725): the shortcut's dictation runs as Overlay Buffer,
@@ -4312,6 +4365,10 @@ private actor DesktopReadCounter {
 /// What the quick capture sink received, with the records written by then.
 private final class QuickCaptures {
     var all: [(text: String, recordsWritten: Int)] = []
+}
+
+private final class QuickCaptureHistoryIDs {
+    var all: [UUID?] = []
 }
 
 private final class QuickCaptureGroups {

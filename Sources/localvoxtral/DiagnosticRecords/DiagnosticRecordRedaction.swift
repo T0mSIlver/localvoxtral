@@ -35,8 +35,9 @@ enum DiagnosticRecordRedaction {
         (#"\b(?:sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[abposr]-[A-Za-z0-9-]{10,}|(?:AKIA|ASIA)[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|glpat-[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9]{30,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}|npm_[A-Za-z0-9]{36}|pypi-[A-Za-z0-9_-]{50,})"#,
          placeholder),
         // A shell assignment to a variable named like a secret:
-        // `OPENAI_API_KEY=…`, `export DB_PASSWORD="…"`.
-        (#"\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)[A-Z0-9_]*\s*=\s*["']?)[^\s"']{6,}"#,
+        // `OPENAI_API_KEY=…`, `export DB_PASSWORD="…"`, and the bare
+        // `PASSWORD=…` (#1571).
+        (#"\b((?:[A-Z][A-Z0-9_]*)?(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)[A-Z0-9_]*\s*=\s*["']?)[^\s"']{6,}"#,
          "$1" + placeholder),
         // 32 or more hex digits: API secrets, session ids, and also full
         // commit hashes, which a record can do without.

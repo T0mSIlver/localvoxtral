@@ -85,6 +85,14 @@ final class WidgetSnapshotWriter {
         }
         guard var snapshot = lastWritten else { return }
         snapshot.writtenAt = now()
+        // History turned off inside the coalesce wait: the write that would
+        // have dropped the text was just cancelled (#1572).
+        if !viewModel.settings.dictationHistoryRetention.savesDictations {
+            snapshot.historyKept = false
+            snapshot.dictation = WidgetSnapshot.Dictation()
+            snapshot.vocabulary.weeklyShares = []
+            snapshot.lastDictation = nil
+        }
         snapshot.engines.appRunning = false
         for role in WidgetSnapshot.EngineRole.allCases {
             var engine = snapshot.engines.engine(role)

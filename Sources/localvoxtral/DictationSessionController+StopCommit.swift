@@ -902,13 +902,12 @@ extension DictationSessionController {
         let sessionAudio = audio.sessionRecording.finish()
         let text = quickCaptureTextWithoutSpokenStopPhrase(transcript.currentDictationEventText)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let recordID = UUID()
-        let keptInHistory = !text.isEmpty && settings.dictationHistoryRetention.savesDictations && sessionStore != nil
         // Read before the cleanup lets the join go: the capture is polished
         // and routed among its group's projects only (#1005).
         let group = learnedTermStore?.snapshot().group(ofJoin: context.claudeSessionJoin)
-        saveSessionRecord(
-            id: recordID,
+        // The id the save returns, not one decided before it: the save
+        // re-reads History's setting, which another copy may have changed.
+        let historyRecordID = saveSessionRecord(
             startedAt: sessionStartedAt ?? Date(),
             rawText: text,
             polishedText: nil,
@@ -931,7 +930,7 @@ extension DictationSessionController {
         }
         Log.dictation.info("quick capture: \(text.count, privacy: .public) chars to the inbox")
         statusText = StatusStrings.quickCaptureSaved
-        onQuickCapture?(text, keptInHistory ? recordID : nil, group)
+        onQuickCapture?(text, sessionStore == nil ? nil : historyRecordID, group)
     }
 
     /// Returns the saved entry's id, or nil when nothing was saved.
@@ -987,7 +986,7 @@ extension DictationSessionController {
         record.polishPromptTokens = polishPromptTokens
         lastDictationJoin = joined
         dependencies.onSessionRecord?(record)
-        let retention = settings.dictationHistoryRetention
+        let retention = settings.reloadHistoryStorageSettings()
         // The record holds the clipboard placeholder; the copy the user takes
         // gets the text as it was inserted.
         let entry = DictationHistoryEntry(record)
@@ -1019,14 +1018,21 @@ extension DictationSessionController {
     /// Brings the store in line with the retention setting: at launch, and
     /// when the setting changes. `off` deletes everything there is.
     func applyDictationHistoryRetention(now: Date = Date()) {
-        let retention = settings.dictationHistoryRetention
+        let retention = settings.reloadHistoryStorageSettings()
         if !retention.savesDictations {
             // A pass already reading the history would send it to the hosted
             // model after the user said not to keep it.
             termSuggestions.stop()
-            // The trim below sweeps them too; this one also stops a record
-            // already on its way to disk.
+        }
+        // The switches delete once when turned off; a delete that failed
+        // then is retried here (#1573). With History off the trim below
+        // sweeps the records too; this one also stops a record already on
+        // its way to disk.
+        if !retention.savesDictations || !settings.diagnosticRecordsEnabled {
             sessionStore?.deleteAllDiagnosticRecords()
+        }
+        if !settings.dictationAudioEnabled {
+            sessionStore?.deleteAllAudio()
         }
         guard let cutoff = retention.cutoff(now: now) else { return }
         sessionStore?.trim(olderThan: cutoff)
