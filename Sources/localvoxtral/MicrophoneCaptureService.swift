@@ -945,6 +945,11 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         if inputFormat.channelCount > 2 {
             let source = resolvedCaptureChannel(channel, channelCount: inputFormat.channelCount)
             converter.channelMap = [NSNumber(value: source)]
+        } else if inputFormat.channelCount == 2 {
+            // Off by default, and then stereo to mono keeps only the left
+            // channel: a mic on a two-input interface's second input went
+            // silent (#1627).
+            converter.downmix = true
         }
         return converter
     }
@@ -960,8 +965,8 @@ final class MicrophoneCaptureService: @unchecked Sendable {
 
     /// The AUHAL client format for capturing ONE channel of a multi-channel
     /// device: same sample rate and sample type, one channel. Returns nil for
-    /// mono and stereo devices, which keep the device format and the
-    /// converter's standard downmix.
+    /// mono and stereo devices, which keep the device format; the converter
+    /// mixes stereo down.
     /// Internal (not fileprivate) for the regression tests.
     static func narrowedClientFormat(
         from deviceASBD: AudioStreamBasicDescription,

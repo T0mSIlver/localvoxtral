@@ -2,6 +2,7 @@
 # Regression test (#851): `remote-build.sh eval-llm` bills a GLM model to the
 # Vibe plan key, never to an exported MISTRAL_API_KEY, which sessions fill
 # with the pay-per-call Studio key. Other Mistral models keep MISTRAL_API_KEY.
+# (#1622) Either key goes only to Mistral's API: another endpoint is refused.
 #
 # ssh and rsync are stubbed. The rsync stub reads the eval marker the run
 # syncs to the Mac and logs the last four characters of its key.
@@ -72,4 +73,19 @@ expect_key mistral/zai-glm-5-3 ""
 grep -q 'bills the Vibe plan key' "$TMP_DIR/stderr" \
   || fail "a GLM eval with no Vibe key did not name it: $(cat "$TMP_DIR/stderr")"
 
-printf 'PASS: eval-llm bills GLM to the Vibe plan key and other Mistral models to MISTRAL_API_KEY\n'
+# A key picked from the environment is sent only to Mistral's API (#1622).
+for endpoint in https://other-server.example http://api.mistral.ai \
+  https://api.mistral.ai:8443 https://api.mistral.ai.example \
+  https://api.mistral.ai@other-server.example; do
+  : >"$TMP_DIR/keys.log"
+  env "${common_env[@]}" "LV_TEST_KEY_LOG=$TMP_DIR/keys.log" \
+    VIBE_MISTRAL_API_KEY=vibe-override-OVRD \
+    "$REMOTE_BUILD" eval-llm "$endpoint" mistral/zai-glm-5-3 \
+    >"$TMP_DIR/stdout" 2>"$TMP_DIR/stderr" && fail "$endpoint: eval-llm ran"
+  [[ ! -s "$TMP_DIR/keys.log" ]] || fail "$endpoint: a key was synced"
+  grep -q 'only to https://api.mistral.ai' "$TMP_DIR/stderr" \
+    || fail "$endpoint: refusal did not name the endpoint rule: $(cat "$TMP_DIR/stderr")"
+done
+expect_key mistral/mistral-medium-3-5 STDO
+
+printf 'PASS: eval-llm bills GLM to the Vibe plan key and other Mistral models to MISTRAL_API_KEY, and sends neither elsewhere\n'

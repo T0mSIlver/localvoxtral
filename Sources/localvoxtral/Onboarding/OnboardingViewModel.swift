@@ -38,7 +38,19 @@ final class OnboardingViewModel {
     /// The key typed on the `.engine` page. Wizard-local until Continue: a
     /// half-typed key must not land in Settings, and nothing is persisted for a
     /// user who backs out.
-    var mistralAPIKeyDraft = ""
+    var mistralAPIKeyDraft = "" {
+        didSet {
+            // A verdict belongs to the key it checked (#1626).
+            guard mistralAPIKeyDraft != oldValue else { return }
+            mistralAPIKeyCheckGeneration += 1
+            mistralAPIKeyCheckState = .idle
+        }
+    }
+
+    /// Bumped by every edit and every check, so only the latest check
+    /// publishes: an edit lets a new check start while an old one is still
+    /// out, even for the same key typed again.
+    @ObservationIgnored private var mistralAPIKeyCheckGeneration = 0
 
     /// Result of the `.engine` page's own "Check key" press. Advisory — a
     /// rejected key does not block Continue, because the check can be wrong
@@ -159,10 +171,13 @@ final class OnboardingViewModel {
         guard !mistralAPIKeyCheckState.isChecking else { return }
         let apiKey = mistralAPIKeyDraft
         guard !apiKey.trimmed.isEmpty else { return }
+        mistralAPIKeyCheckGeneration += 1
+        let generation = mistralAPIKeyCheckGeneration
         mistralAPIKeyCheckState = .checking
         mistralAPIKeyCheckTask = Task { @MainActor [weak self] in
             guard let self else { return }
             let verification = await self.viewModel.engines.verifyMistralAPIKey(apiKey)
+            guard self.mistralAPIKeyCheckGeneration == generation else { return }
             self.mistralAPIKeyCheckState = .finished(verification)
         }
     }
@@ -184,9 +199,17 @@ final class OnboardingViewModel {
         if polishingConsent {
             viewModel.engines.applyPolishingBackendModeChange(.managedLocal)
             settings.llmPolishingEnabled = true
-        } else if let previous = polishingBeforeMistralChoice {
-            viewModel.engines.applyPolishingBackendModeChange(previous.mode)
-            settings.llmPolishingEnabled = previous.enabled
+        } else {
+            if let previous = polishingBeforeMistralChoice {
+                viewModel.engines.applyPolishingBackendModeChange(previous.mode)
+                settings.llmPolishingEnabled = previous.enabled
+            }
+            // An earlier run force-quit after consenting left polishing on,
+            // and the warmup when the wizard closes would download the model
+            // declined here (#1625).
+            if settings.polishingBackendMode == .managedLocal {
+                settings.llmPolishingEnabled = false
+            }
         }
         driver.start(dictation: true, polishing: polishingConsent)
     }

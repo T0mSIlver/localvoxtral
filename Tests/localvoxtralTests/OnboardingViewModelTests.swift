@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import XCTest
 @testable import localvoxtral
 
@@ -363,6 +364,60 @@ final class OnboardingViewModelTests: XCTestCase {
         XCTAssertEqual(settings.dictationBackendMode, .mistralAPI)
     }
 
+    /// A verdict belongs to the key it checked: editing the key clears it,
+    /// and a check still running for the old key does not publish (#1626).
+    func testEditingTheKeyDuringItsCheckDropsTheOldVerdict() async {
+        let (model, _, _, _, _) = makeModel()
+        let verifier = GatedOnboardingKeyVerifier(checks: 1)
+        model.viewModel.engines.mistralAPIKeyVerifier = verifier
+        model.engineChoice = .mistralAPI
+        model.mistralAPIKeyDraft = "mk-good"
+
+        model.checkMistralAPIKeyDraft()
+        model.mistralAPIKeyDraft = "mk-typo"
+        verifier.answer(check: 0, with: .accepted)
+        await model.mistralAPIKeyCheckTask?.value
+
+        XCTAssertEqual(model.mistralAPIKeyCheckState, .idle)
+    }
+
+    /// The same key typed again and checked again: the first check, still
+    /// out, must not overwrite the second's verdict.
+    func testAnOlderCheckOfTheSameKeyDoesNotOverwriteANewerOne() async {
+        let (model, _, _, _, _) = makeModel()
+        let verifier = GatedOnboardingKeyVerifier(checks: 2)
+        model.viewModel.engines.mistralAPIKeyVerifier = verifier
+        model.engineChoice = .mistralAPI
+        model.mistralAPIKeyDraft = "mk-good"
+
+        model.checkMistralAPIKeyDraft()
+        let firstCheck = model.mistralAPIKeyCheckTask
+        await verifier.nextCheckStarted()
+        model.mistralAPIKeyDraft = "mk-goo"
+        model.mistralAPIKeyDraft = "mk-good"
+        model.checkMistralAPIKeyDraft()
+        await verifier.nextCheckStarted()
+        verifier.answer(check: 1, with: .accepted)
+        await model.mistralAPIKeyCheckTask?.value
+        verifier.answer(check: 0, with: .unreachable("timed out"))
+        await firstCheck?.value
+
+        XCTAssertEqual(model.mistralAPIKeyCheckState, .finished(.accepted))
+    }
+
+    func testEditingTheKeyAfterItsCheckClearsTheVerdict() async {
+        let (model, _, _, _, _) = makeModel(keyVerification: .accepted)
+        model.engineChoice = .mistralAPI
+        model.mistralAPIKeyDraft = "mk-good"
+        model.checkMistralAPIKeyDraft()
+        await model.mistralAPIKeyCheckTask?.value
+        XCTAssertEqual(model.mistralAPIKeyCheckState, .finished(.accepted))
+
+        model.mistralAPIKeyDraft = "mk-typo"
+
+        XCTAssertEqual(model.mistralAPIKeyCheckState, .idle)
+    }
+
     func testEngineSummaryNamesTheEngineThatWasSetUp() {
         let (model, _, _, _, _) = makeModel()
 
@@ -400,6 +455,22 @@ final class OnboardingViewModelTests: XCTestCase {
         XCTAssertEqual(driver.lastStart?.dictation, true)
         XCTAssertEqual(driver.lastStart?.polishing, false)
         XCTAssertFalse(settings.llmPolishingEnabled)
+    }
+
+    /// A first run that turned polishing on and was force-quit before the
+    /// wizard closed leaves it on. Declining it on the next run must turn it
+    /// off, or the warmup when the wizard closes downloads it anyway (#1625).
+    func testDecliningPolishingAfterAnInterruptedRunTurnsItOff() {
+        let (model, settings, driver, _, _) = makeModel()
+        settings.polishingBackendMode = .managedLocal
+        settings.llmPolishingEnabled = true
+        model.polishingConsent = false
+
+        model.startDownloads()
+
+        XCTAssertEqual(driver.lastStart?.polishing, false)
+        XCTAssertFalse(settings.llmPolishingEnabled)
+        XCTAssertFalse(model.viewModel.engines.isManagedPolishingWarmupWanted)
     }
 
     func testStartDownloads_isIdempotent() {
@@ -467,4 +538,41 @@ private final class FakeOnboardingKeyVerifier: MistralAPIKeyVerifying {
     }
 
     func verify(apiKey: String) async -> MistralAPIKeyVerification { result }
+}
+
+/// Answers each of the wizard's key checks, in the order they start, only
+/// when the test releases that check's verdict.
+private final class GatedOnboardingKeyVerifier: MistralAPIKeyVerifying {
+    private let verdicts: [AsyncStream<MistralAPIKeyVerification>]
+    private let releases: [AsyncStream<MistralAPIKeyVerification>.Continuation]
+    private let starts: AsyncStream<Void>
+    private let startsContinuation: AsyncStream<Void>.Continuation
+    private let started = Mutex(0)
+
+    init(checks: Int) {
+        let pairs = (0..<checks).map { _ in AsyncStream<MistralAPIKeyVerification>.makeStream() }
+        verdicts = pairs.map(\.stream)
+        releases = pairs.map(\.continuation)
+        (starts, startsContinuation) = AsyncStream.makeStream()
+    }
+
+    func answer(check: Int, with verdict: MistralAPIKeyVerification) {
+        releases[check].yield(verdict)
+    }
+
+    /// Returns once one more check has reached the verifier, so the test
+    /// knows which index the next check takes.
+    func nextCheckStarted() async {
+        for await _ in starts { return }
+    }
+
+    func verify(apiKey: String) async -> MistralAPIKeyVerification {
+        let index = started.withLock { count in
+            defer { count += 1 }
+            return count
+        }
+        startsContinuation.yield()
+        for await verdict in verdicts[index] { return verdict }
+        return .accepted
+    }
 }
