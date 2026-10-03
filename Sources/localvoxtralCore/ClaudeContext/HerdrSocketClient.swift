@@ -723,10 +723,28 @@ package struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting
     /// Error-only envelope for refusal logging. Decodes ONLY
     /// responses carrying `error`; a success body never matches (its `error`
     /// key is absent and required here), so success payloads cannot leak
-    /// through this path.
+    /// through this path. An answer that also carries `result` contradicts
+    /// itself and does not decode either: the write may have landed, so it
+    /// must stay `.unknown` rather than become a refusal the keyboard
+    /// fallback would type again.
     private struct ErrorEnvelope: Decodable {
         var id: String
         var error: ErrorBody
+
+        enum CodingKeys: String, CodingKey { case id, result, error }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            guard !container.contains(.result) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .result,
+                    in: container,
+                    debugDescription: "an error answer carries no result"
+                )
+            }
+            id = try container.decode(String.self, forKey: .id)
+            error = try container.decode(ErrorBody.self, forKey: .error)
+        }
     }
 
     private struct OKResult: Decodable {
