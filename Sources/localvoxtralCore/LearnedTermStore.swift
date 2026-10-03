@@ -161,9 +161,8 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
         }
     }
 
-    package static func defaultFileURL() -> URL {
-        return LocalvoxtralDataDirectory.url()
-            .appendingPathComponent("learned-terms.json")
+    package static func defaultFileURL(in directory: URL = LocalvoxtralDataDirectory.url()) -> URL {
+        directory.appendingPathComponent("learned-terms.json")
     }
 
     // MARK: Reading

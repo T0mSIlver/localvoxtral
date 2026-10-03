@@ -11,7 +11,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         retainForTestProcessLifetime(viewModel)
 
@@ -36,7 +37,9 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
             startRuntimeServices: false,
-            dependencies: .init(microphone: { FakeMicrophoneCaptureService() })
+            dependencies: .init(
+                microphone: { FakeMicrophoneCaptureService() }, clock: ManualSessionClock().clock
+            )
         )
         retainForTestProcessLifetime(viewModel)
 
@@ -55,7 +58,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         retainForTestProcessLifetime(viewModel)
 
@@ -84,7 +88,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         retainForTestProcessLifetime(viewModel)
 
@@ -108,7 +113,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         retainForTestProcessLifetime(viewModel)
 
@@ -131,10 +137,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         viewModel.session.handle(event: .transcriptionFinalized)
 
         // The disconnect the handler issues comes back through the event
-        // handler's DispatchQueue.main.async hop; yield until it lands.
-        for _ in 0..<1_000 where viewModel.isFinalizingStop {
-            await Task.yield()
-        }
+        // handler's DispatchQueue.main.async hop; wait for the stop it ends.
+        await awaitCondition { !viewModel.isFinalizingStop }
 
         XCTAssertFalse(viewModel.isFinalizingStop)
         XCTAssertEqual(viewModel.statusText, "Ready")
@@ -231,7 +235,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         retainForTestProcessLifetime(viewModel)
 
@@ -256,7 +261,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         retainForTestProcessLifetime(viewModel)
 
@@ -296,7 +302,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         retainForTestProcessLifetime(viewModel)
 
@@ -312,7 +319,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         retainForTestProcessLifetime(viewModel)
 
@@ -343,7 +351,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         retainForTestProcessLifetime(viewModel)
 
@@ -368,7 +377,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         viewModel.llmPolishingService = polishingService
         retainForTestProcessLifetime(viewModel)
@@ -413,7 +423,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         viewModel.appConfigStore = MockAppConfigStore(
             replacementDictionary: ReplacementDictionary(entries: [
@@ -443,7 +454,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         viewModel.appConfigStore = MockAppConfigStore(
             replacementDictionary: ReplacementDictionary(entries: [
@@ -477,7 +489,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         viewModel.appConfigStore = MockAppConfigStore(
             replacementDictionary: ReplacementDictionary(entries: [
@@ -518,7 +531,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: MockOverlayCoordinator(),
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         viewModel.appConfigStore = MockAppConfigStore()
         viewModel.sessionStore = store
@@ -583,7 +597,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: MockOverlayCoordinator(),
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         viewModel.llmPolishingService = SilentService()
         let store = try XCTUnwrap(DictationSessionStore.inMemory())
@@ -597,9 +612,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.termSuggestions.start()
-        for _ in 0..<1_000 where viewModel.termSuggestions.phase != .loading {
-            await Task.yield()
-        }
+        await awaitCondition { viewModel.termSuggestions.phase == .loading }
         XCTAssertEqual(viewModel.termSuggestions.phase, .loading)
 
         settings.dictationHistoryRetention = .off
@@ -621,7 +634,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         viewModel.appConfigStore = MockAppConfigStore()
         viewModel.llmPolishingService = polishingService
@@ -658,7 +672,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         viewModel.appConfigStore = MockAppConfigStore()
         viewModel.llmPolishingService = polishingService
@@ -692,7 +707,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
             let viewModel = DictationViewModel(
                 settings: settings,
                 overlayBufferCoordinator: overlayCoordinator,
-                startRuntimeServices: false
+                startRuntimeServices: false,
+                dependencies: .init(clock: ManualSessionClock().clock)
             )
             viewModel.appConfigStore = MockAppConfigStore()
             viewModel.llmPolishingService = FakePolishingService(returning: reply)
@@ -725,7 +741,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         viewModel.appConfigStore = MockAppConfigStore()
         viewModel.llmPolishingService = FakePolishingService(failing: LLMPolishingError.invalidResponse)
@@ -748,7 +765,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: MockOverlayCoordinator(),
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         retainForTestProcessLifetime(viewModel)
 
@@ -781,7 +799,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         viewModel.appConfigStore = MockAppConfigStore(
             replacementDictionary: ReplacementDictionary(entries: [
@@ -837,7 +856,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         viewModel.appConfigStore = configStore
         viewModel.llmPolishingService = polishingService
@@ -868,7 +888,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         viewModel.appConfigStore = MockAppConfigStore(
             replacementDictionary: ReplacementDictionary(entries: [
@@ -909,7 +930,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         viewModel.appConfigStore = MockAppConfigStore(
             replacementDictionary: ReplacementDictionary(entries: [
@@ -953,7 +975,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         viewModel.session.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
@@ -985,7 +1008,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         viewModel.appConfigStore = configStore
         retainForTestProcessLifetime(viewModel)
@@ -1009,7 +1033,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
             let viewModel = DictationViewModel(
                 settings: settings,
                 overlayBufferCoordinator: overlayCoordinator,
-                startRuntimeServices: false
+                startRuntimeServices: false,
+                dependencies: .init(clock: ManualSessionClock().clock)
             )
             viewModel.appConfigStore = configStore
             retainForTestProcessLifetime(viewModel)
@@ -1039,7 +1064,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         retainForTestProcessLifetime(viewModel)
 
@@ -1075,7 +1101,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         retainForTestProcessLifetime(viewModel)
 
@@ -1100,7 +1127,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         retainForTestProcessLifetime(viewModel)
 
@@ -1124,7 +1152,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         retainForTestProcessLifetime(viewModel)
 
@@ -1147,7 +1176,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         retainForTestProcessLifetime(viewModel)
 
@@ -1177,7 +1207,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         retainForTestProcessLifetime(viewModel)
 
@@ -1205,7 +1236,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         retainForTestProcessLifetime(viewModel)
 
@@ -1232,7 +1264,8 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         retainForTestProcessLifetime(viewModel)
 
