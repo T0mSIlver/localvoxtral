@@ -46,10 +46,18 @@ expect_installed() {
   actual="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
   [[ "$actual" == "$expected" ]] || fail "$APP is version $actual, expected $expected"
   codesign --verify --deep --strict "$APP" || fail "$APP does not pass codesign --verify"
-  if xattr -r "$APP" 2>/dev/null | grep -q com.apple.quarantine; then
-    fail "$APP still carries com.apple.quarantine"
-  fi
-  pass "$APP is $actual, signature verifies, no quarantine flag"
+  pass "$APP is $actual, signature verifies"
+}
+
+# What a user's first launch depends on: Gatekeeper accepts the quarantined
+# app as notarized. The previous release of --upgrade-from may predate
+# notarization (#1430), so only the target release is held to it.
+expect_notarized() {
+  local verdict
+  verdict="$(spctl -a -vv --type execute "$APP" 2>&1)" || fail "Gatekeeper rejects $APP: $verdict"
+  grep -q 'source=Notarized Developer ID' <<<"$verdict" \
+    || fail "Gatekeeper does not accept $APP as Notarized Developer ID: $verdict"
+  pass "Gatekeeper accepts $APP as Notarized Developer ID"
 }
 
 [[ ! -e "$APP" ]] || fail "$APP already exists; this check is for a machine without the app"
@@ -87,10 +95,12 @@ if [[ -n "$PREVIOUS_TAG" ]]; then
   brew outdated --cask --verbose | grep localvoxtral || fail "brew does not list localvoxtral as outdated"
   brew upgrade --cask "$CASK"
   expect_installed "$TAG"
+  expect_notarized
   pass "brew upgrade ${PREVIOUS_TAG} -> ${TAG}"
 else
   brew install --cask "$CASK"
   expect_installed "$TAG"
+  expect_notarized
   pass "brew install --cask on a machine without the app"
 fi
 
