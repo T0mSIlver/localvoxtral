@@ -88,10 +88,14 @@ jobs:
       # end-to-end before the branch merges. Daily and nightly releases
       # publish from main only. Rehearsals (publish=false) run from any ref
       # on any channel.
+      #
+      # The dispatched commit, not the branch name: the branch can move while
+      # this job waits for the Mac, and release.sh checked the e2e dictation
+      # result for github.sha (#1490).
       - name: Checkout release ref
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.ref_name }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Plan this run
@@ -142,8 +146,8 @@ jobs:
           esac
 
           if [[ "$PUBLISH" == "true" && "$CHANNEL" != "stable" \
-                && "${{ github.ref_name }}" != "main" ]]; then
-            echo "The $CHANNEL channel publishes from main only. To exercise this pipeline from '${{ github.ref_name }}', dispatch with publish=false (rehearsal)."
+                && "$GITHUB_REF_NAME" != "main" ]]; then
+            echo "The $CHANNEL channel publishes from main only. To exercise this pipeline from '$GITHUB_REF_NAME', dispatch with publish=false (rehearsal)."
             exit 1
           fi
 
@@ -181,13 +185,13 @@ jobs:
             elif [[ "$PUBLISH" != "true" ]]; then
               echo "## REHEARSAL — no tag, no release"
               echo ""
-              echo "Channel \`$CHANNEL\` from \`${{ github.ref_name }}\` @ \`$(git rev-parse --short HEAD)\` — $REASON."
+              echo "Channel \`$CHANNEL\` from \`$GITHUB_REF_NAME\` @ \`$(git rev-parse --short HEAD)\` — $REASON."
               echo "Every gate and the packaging run; the artifacts are uploaded as"
               echo "\`localvoxtral-release-rehearsal\` and nothing is tagged or published."
             else
               echo "## Release ($CHANNEL channel)"
               echo ""
-              echo "From \`${{ github.ref_name }}\` @ \`$(git rev-parse --short HEAD)\` — $REASON."
+              echo "From \`$GITHUB_REF_NAME\` @ \`$(git rev-parse --short HEAD)\` — $REASON."
             fi
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
@@ -251,8 +255,8 @@ jobs:
             PRERELEASE=false
           fi
 
-          if [[ "$PUBLISH" == "true" && "${{ github.ref_name }}" != "main" && "$PRERELEASE" != "true" ]]; then
-            echo "Stable releases dispatch on main only. To cut a prerelease from '${{ github.ref_name }}', pass an explicit X.Y.Z-rc.N version."; exit 1
+          if [[ "$PUBLISH" == "true" && "$GITHUB_REF_NAME" != "main" && "$PRERELEASE" != "true" ]]; then
+            echo "Stable releases dispatch on main only. To cut a prerelease from '$GITHUB_REF_NAME', pass an explicit X.Y.Z-rc.N version."; exit 1
           fi
           TAG="v$VERSION"
           # A rehearsal creates no tag, so an existing one is not a conflict —
@@ -265,7 +269,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
-          echo "Releasing $TAG (channel=$CHANNEL, prerelease=$PRERELEASE, publish=$PUBLISH) from ${{ github.ref_name }} @ $(git rev-parse --short HEAD)"
+          echo "Releasing $TAG (channel=$CHANNEL, prerelease=$PRERELEASE, publish=$PUBLISH) from $GITHUB_REF_NAME @ $(git rev-parse --short HEAD)"
 
       - name: Gate — build
         if: steps.plan.outputs.proceed != 'false'
