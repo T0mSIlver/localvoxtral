@@ -15,7 +15,16 @@
 # timeout it exits 1 naming the id and that command; on any other status it
 # prints Apple's log for the submission, which names each rejected binary and
 # why, and exits 1. The profile lives in the release runner's login keychain
-# (`xcrun notarytool store-credentials`); no secret passes through here.
+# (`xcrun notarytool store-credentials ... --keychain <that file>`); no secret
+# passes through here.
+#
+# NOTARY_KEYCHAIN names the keychain file holding the profile (default: the
+# login keychain file). Every call passes it with --keychain, because a profile
+# looked up without it comes from the data-protection keychain, which macOS
+# makes unreadable while the screen is locked: notarytool then reports "No
+# Keychain password item found", as rehearsal run 37111344554 did 4 s before
+# the owner unlocked the Mac. The login keychain file stays readable then, as
+# codesign's Developer ID key in it does.
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
@@ -25,6 +34,8 @@ fi
 FILE="$1"
 PROFILE="$2"
 TIMEOUT="${NOTARIZE_TIMEOUT:-3h}"
+KEYCHAIN="${NOTARY_KEYCHAIN:-$HOME/Library/Keychains/login.keychain-db}"
+AUTH=(--keychain-profile "$PROFILE" --keychain "$KEYCHAIN")
 # Checked here because the wait's exit status is not trusted below: a
 # timeout notarytool rejects would otherwise read as Apple being slow.
 if [[ ! "$TIMEOUT" =~ ^[1-9][0-9]*[smh]?$ ]]; then
@@ -50,7 +61,7 @@ print((d.get(sys.argv[2]) or "-") if isinstance(d, dict) else "-")
 
 echo "Submitting $(basename "$FILE") for notarization"
 # Submitted without --wait so the id is known before the wait starts.
-if ! xcrun notarytool submit "$FILE" --keychain-profile "$PROFILE" \
+if ! xcrun notarytool submit "$FILE" "${AUTH[@]}" \
     --output-format json > "$OUT"; then
   echo "notarytool submit failed:" >&2
   cat "$OUT" >&2
@@ -61,19 +72,19 @@ if [[ "$ID" == "-" ]]; then
   cat "$OUT" >&2
   exit 1
 fi
-INFO_CMD="xcrun notarytool info $ID --keychain-profile $PROFILE"
+INFO_CMD="xcrun notarytool info $ID --keychain-profile $PROFILE --keychain $KEYCHAIN"
 echo "Submission $ID: submitted; waiting up to $TIMEOUT. Follow it with: $INFO_CMD"
 
 # notarytool's exit status does not tell a rejection or a timeout from a
 # success; the JSON status does. A wait that ends without a final status
 # (timeout, transport failure) is settled by one `info` call.
-xcrun notarytool wait "$ID" --keychain-profile "$PROFILE" \
+xcrun notarytool wait "$ID" "${AUTH[@]}" \
   --timeout "$TIMEOUT" --output-format json > "$OUT" || true
 STATUS="$(json_field "$OUT" status)"
 if [[ "$STATUS" == "-" || "$STATUS" == "In Progress" ]]; then
   echo "notarytool wait ended without a verdict:"
   cat "$OUT"
-  xcrun notarytool info "$ID" --keychain-profile "$PROFILE" \
+  xcrun notarytool info "$ID" "${AUTH[@]}" \
     --output-format json > "$OUT" || true
   STATUS="$(json_field "$OUT" status)"
 fi
@@ -93,5 +104,5 @@ case "$STATUS" in
     ;;
 esac
 echo "Notary log for $ID:" >&2
-xcrun notarytool log "$ID" --keychain-profile "$PROFILE" >&2 || true
+xcrun notarytool log "$ID" "${AUTH[@]}" >&2 || true
 exit 1

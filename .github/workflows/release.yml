@@ -370,8 +370,11 @@ jobs:
           missing=""
           if ! security find-identity -v -p codesigning | grep -qF "\"$DEVELOPER_ID_IDENTITY\""; then
             missing="the identity '$DEVELOPER_ID_IDENTITY' is not in $(id -un)'s keychain"
-          elif ! NOTARY_OUT="$(xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" 2>&1)"; then
-            missing="the notarytool keychain profile '$NOTARY_PROFILE' does not authenticate: $(tail -n 3 <<<"$NOTARY_OUT" | tr '\n' ' ')"
+          # --keychain as in notarize.sh: without it the profile comes from the
+          # data-protection keychain, which a locked screen makes unreadable.
+          elif ! NOTARY_OUT="$(xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" \
+              --keychain "$HOME/Library/Keychains/login.keychain-db" 2>&1)"; then
+            missing="the notarytool profile '$NOTARY_PROFILE' in the login keychain file does not authenticate: $(tail -n 3 <<<"$NOTARY_OUT" | tr '\n' ' ')"
           fi
           if [[ -z "$missing" ]]; then
             echo "notarize=true" >> "$GITHUB_OUTPUT"

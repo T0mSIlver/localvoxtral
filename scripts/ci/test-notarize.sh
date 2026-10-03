@@ -6,7 +6,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd -P)"
 SCRIPT="$ROOT_DIR/scripts/ci/notarize.sh"
 ID="8f0d8ed8-6aca-405e-ba51-60680f29ccbf"
-INFO_CMD="xcrun notarytool info $ID --keychain-profile test-profile"
+KC="/test/notary.keychain-db"
+INFO_CMD="xcrun notarytool info $ID --keychain-profile test-profile --keychain $KC"
 
 fail() {
   printf 'FAIL: %s\n' "$*" >&2
@@ -43,7 +44,7 @@ run() {
   shift
   : >"$CALLS"
   local rc=0
-  OUTPUT="$(env -u NOTARIZE_TIMEOUT "PATH=$TMP_DIR/bin:$PATH" "STUB_CALLS=$CALLS" \
+  OUTPUT="$(env -u NOTARIZE_TIMEOUT "NOTARY_KEYCHAIN=$KC" "PATH=$TMP_DIR/bin:$PATH" "STUB_CALLS=$CALLS" \
     ${envs[@]+"${envs[@]}"} "$SCRIPT" "$@" 2>&1)" || rc=$?
   [[ "$rc" == "$expected" ]] \
     || fail "$description: expected exit $expected, got $rc. Output: $OUTPUT"
@@ -57,6 +58,15 @@ called() {
 }
 not_called() {
   ! grep -qF -- "$1" "$CALLS" || fail "$DESCRIPTION: xcrun was called with '$1'. Calls: $(cat "$CALLS")"
+}
+# A profile read without --keychain comes from the data-protection keychain,
+# which is unreadable while the screen is locked (run 37111344554).
+every_call_names_keychain() {
+  local line
+  while IFS= read -r line; do
+    [[ "$line" == *"--keychain-profile test-profile --keychain $KC"* ]] \
+      || fail "$DESCRIPTION: a notarytool call lacks --keychain $KC: $line"
+  done <"$CALLS"
 }
 pass() { printf 'PASS: %s\n' "$DESCRIPTION"; }
 
@@ -76,9 +86,9 @@ run 0 "Accepted exits 0 after a default 3h wait" \
   "STUB_SUBMIT_OUT=$SUBMITTED" "STUB_WAIT_OUT=$(status_json Accepted)" -- app.zip test-profile
 contains "Follow it with: $INFO_CMD"
 contains "Submission $ID: Accepted"
-called "notarytool submit app.zip --keychain-profile test-profile --output-format json"
+called "notarytool submit app.zip --keychain-profile test-profile --keychain $KC --output-format json"
 not_called "--wait"
-called "notarytool wait $ID --keychain-profile test-profile --timeout 3h"
+called "notarytool wait $ID --keychain-profile test-profile --keychain $KC --timeout 3h"
 not_called "notarytool log"
 # The id must be out before the wait starts, so a stuck run can be followed.
 [[ "$(grep -n 'Follow it with' <<<"$OUTPUT" | cut -d: -f1)" -lt \
@@ -101,6 +111,7 @@ contains "::error::Apple did not finish notarizing app.zip within 3h"
 contains "Submission $ID is still In Progress; follow it with: $INFO_CMD"
 called "notarytool info $ID"
 not_called "notarytool log"
+every_call_names_keychain
 pass
 
 run 1 "a wait that returns In Progress fails as a timeout" \
@@ -120,7 +131,8 @@ run 1 "Invalid prints Apple's log" \
   "STUB_LOG_OUT=The binary is not signed." -- app.zip test-profile
 contains "Submission $ID: Invalid"
 contains "The binary is not signed."
-called "notarytool log $ID --keychain-profile test-profile"
+every_call_names_keychain
+called "notarytool log $ID --keychain-profile test-profile --keychain $KC"
 not_called "notarytool info"
 pass
 
@@ -135,6 +147,13 @@ run 1 "a submit with no id fails before waiting" \
 contains "returned no submission id"
 contains "HTTP status code: 401"
 not_called "notarytool wait"
+pass
+
+run 0 "the profile is read from the login keychain file by default" \
+  "NOTARY_KEYCHAIN=" "HOME=/Users/runner" \
+  "STUB_SUBMIT_OUT=$SUBMITTED" "STUB_WAIT_OUT=$(status_json Accepted)" -- app.zip test-profile
+called "notarytool submit app.zip --keychain-profile test-profile --keychain /Users/runner/Library/Keychains/login.keychain-db"
+called "notarytool wait $ID --keychain-profile test-profile --keychain /Users/runner/Library/Keychains/login.keychain-db"
 pass
 
 echo "notarize tests passed"
