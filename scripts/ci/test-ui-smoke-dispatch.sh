@@ -51,7 +51,7 @@ filter_expect false "transcript merging in core" Sources/localvoxtralCore/TextMe
 filter_expect true "text insertion" Sources/localvoxtral/TextInsertionService.swift
 filter_expect true "focus handling" Sources/localvoxtral/SystemAccessibilityFocus.swift
 filter_expect true "the overlay commit" Sources/localvoxtral/OverlayBufferSessionCoordinator.swift
-filter_expect true "the WAV source the check dictates from" Sources/localvoxtral/Dogfood/DogfoodAudioFileSource.swift
+filter_expect true "the WAV source the check dictates from" Sources/localvoxtralCore/Dogfood/DogfoodAudioFileSource.swift
 filter_expect true "a scenario" scripts/e2e/scenarios/overlay-buffer.scenario
 filter_expect true "the lane's workflow" .github/workflows/ui-smoke.yml
 filter_expect true "one match among unrelated files" docs/README.md Sources/localvoxtral/RealtimeClient.swift Sources/localvoxtral/TextInsertionService.swift
