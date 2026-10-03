@@ -41,6 +41,7 @@ PATTERNS=(
   'Sources/localvoxtral/OverlayBufferStateMachine.swift'
   'Sources/localvoxtralCore/OverlayBufferTextAssembler.swift'
   'Sources/localvoxtral/Dogfood/*'                         # the WAV source the check dictates from
+  'Sources/localvoxtralCore/Dogfood/*'                     # the socket grammar the check drives
   'scripts/e2e-dictation.sh'
   'scripts/e2e/*'
   'scripts/lib/word-accuracy.sh'
