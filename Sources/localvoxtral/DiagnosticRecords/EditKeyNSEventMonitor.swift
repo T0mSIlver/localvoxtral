@@ -101,3 +101,11 @@ final class EditKeyNSEventMonitor: EditKeyMonitoring {
         monitor = nil
     }
 }
+
+extension EditSignalWatcher {
+    /// The production watcher, observing the keyboard through
+    /// `EditKeyNSEventMonitor`.
+    convenience init() {
+        self.init(monitor: EditKeyNSEventMonitor())
+    }
+}

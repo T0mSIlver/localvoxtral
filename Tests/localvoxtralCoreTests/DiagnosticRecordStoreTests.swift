@@ -1,58 +1,8 @@
 import Foundation
 import Synchronization
 import XCTest
-@testable import localvoxtral
-
-/// In-memory disk for the record store, mirroring `MemoryStoreIO` in the
-/// registry tests: the retention rules and the naming contract are the parts
-/// worth asserting, and neither needs a real directory. The hardened write path
-/// itself is `ClaudeRemoteHostFileStoreIO`'s, already covered by its own tests.
-private final class MemoryCaptureIO: ClaudeRemoteHostStoreIO, DiagnosticRecordDirectoryIO {
-    private let files = Mutex<[String: Data]>([:])
-
-    // ClaudeRemoteHostStoreIO
-    func read(from url: URL) throws -> Data? {
-        files.withLock { $0[url.path] }
-    }
-
-    func write(_ data: Data, to url: URL) throws {
-        files.withLock { $0[url.path] = data }
-    }
-
-    // DiagnosticRecordDirectoryIO
-    func contents(of url: URL) throws -> [String]? {
-        let prefix = url.path.hasSuffix("/") ? url.path : url.path + "/"
-        return files.withLock { store in
-            store.keys
-                .filter { $0.hasPrefix(prefix) }
-                .map { String($0.dropFirst(prefix.count)) }
-        }
-    }
-
-    func remove(at url: URL) throws {
-        files.withLock { $0[url.path] = nil }
-    }
-
-    func size(of url: URL) -> Int? {
-        files.withLock { $0[url.path]?.count }
-    }
-
-    func seed(_ data: Data, at url: URL) {
-        files.withLock { $0[url.path] = data }
-    }
-
-    var fileNames: [String] {
-        files.withLock { Array($0.keys.map { URL(fileURLWithPath: $0).lastPathComponent }) }
-    }
-}
-
-private final class CaptureTestClock: Sendable {
-    private let value = Mutex(Date(timeIntervalSince1970: 1_800_000_000))
-
-    func now() -> Date { value.withLock { $0 } }
-    func advance(_ seconds: TimeInterval) { value.withLock { $0 = $0.addingTimeInterval(seconds) } }
-    func set(_ date: Date) { value.withLock { $0 = date } }
-}
+@testable import localvoxtralCore
+import localvoxtralTestSupport
 
 /// The real folder, with a hook that runs between a patch reading a record
 /// and writing it back.
@@ -111,40 +61,7 @@ final class DiagnosticRecordStoreTests: XCTestCase {
         rawTranscript: String = "run the tests",
         screenText: String? = nil
     ) -> DiagnosticRecord {
-        DiagnosticRecord(
-            id: id,
-            capturedAt: capturedAt ?? clock.now(),
-            session: .init(
-                targetBundleID: "com.mitchellh.ghostty",
-                targetKind: "terminal",
-                outputMode: "overlayBuffer",
-                promptProfile: "agent",
-                endpointClass: "loopback",
-                polishModel: "qwen35-4b"
-            ),
-            join: nil,
-            screen: screenText.map {
-                DiagnosticRecord.Screen(
-                    route: "herdrPaneRead",
-                    decision: "render",
-                    cause: nil,
-                    sanitizedCharacterCount: $0.count,
-                    sanitizedText: $0
-                )
-            },
-            allocation: [],
-            sources: [],
-            text: .init(
-                rawTranscript: rawTranscript,
-                workingText: rawTranscript,
-                groundedText: rawTranscript,
-                systemPrompt: nil,
-                userPrompts: [],
-                polishedOutput: nil,
-                committedText: nil
-            ),
-            timings: .init()
-        )
+        .storeFixture(id: id, capturedAt: capturedAt ?? clock.now(), rawTranscript: rawTranscript, screenText: screenText)
     }
 
     // MARK: - Writing and round-tripping
@@ -176,20 +93,6 @@ final class DiagnosticRecordStoreTests: XCTestCase {
 
     /// A record belongs to a History entry; an id that is not one is refused
     /// rather than written under a name nothing can delete it by.
-    /// The launch sweep keeps every record while the history holds no
-    /// dictation: an empty store is one that lost its rows (#985).
-    @MainActor
-    func testTheLaunchSweepKeepsEveryRecordWhenTheHistoryIsEmpty() async throws {
-        let store = makeStore()
-        try store.write(makeRecord())
-        try store.write(makeRecord())
-        let history = try XCTUnwrap(DictationSessionStore.inMemory())
-        history.diagnosticRecordStore = store
-        await history.removeOrphanedAudio().value
-
-        XCTAssertEqual(store.storedIDs().count, 2)
-    }
-
     /// A record already in quarantine is never overwritten: another running
     /// copy may have moved the same record there a moment ago.
     func testQuarantineNeverOverwritesARecordAlreadyThere() throws {
@@ -703,79 +606,5 @@ final class DiagnosticRecordRedactionTests: XCTestCase {
             record.screen?.sanitizedText,
             "$ git status\n> \(DiagnosticRecordRedaction.withheldPromptPlaceholder)\nDone. 3 files changed")
         XCTAssertEqual(record.text.rawTranscript, "rename the hook publisher")
-    }
-
-    /// The builder takes the prompt out before the record exists: nothing the
-    /// store receives carries it.
-    func testTheBuilderWithholdsThePromptItWasGiven() {
-        let prompt = "Explain why the SIGPIPE killed the dogfood socket"
-        var inputs = DiagnosticRecordInputs.minimal(context: "previous request to the agent: \(prompt)")
-        inputs.withheldPrompt = prompt
-
-        let record = DiagnosticRecordBuilder.build(id: UUID().uuidString, capturedAt: Date(), inputs: inputs)
-
-        XCTAssertFalse(record.text.userPrompts.joined().contains("SIGPIPE killed"))
-    }
-
-    /// A source's harvest is re-derived from its text, so it would keep the
-    /// prompt's identifiers while the excerpts beside it read withheld.
-    /// Terms the rest of the text holds stay.
-    func testTheBuilderHarvestsNoTermOnlyThePriorPromptHeld() {
-        let prompt = "fix the UserProfileCache race"
-        let context = "previous request to the agent: \(prompt)\n\nfiles the agent recently touched:\nSessionRouter.swift (edit)"
-        var inputs = DiagnosticRecordInputs.minimal(context: context)
-        inputs.screenDecision = .render(excerpt: "> \(prompt)\nDone", startText: "> \(prompt)\nDone", elidedChurnLines: 0)
-        inputs.clipboardRetainedText = "\(prompt)\nSessionRouter"
-        inputs.withheldPrompt = prompt
-
-        let record = DiagnosticRecordBuilder.build(id: UUID().uuidString, capturedAt: Date(), inputs: inputs)
-
-        XCTAssertEqual(record.sources.map(\.source), ["terminal", "claude", "clipboard"])
-        for source in record.sources {
-            XCTAssertFalse(source.harvest.contains { $0.contains("UserProfileCache") }, "\(source.source): \(source.harvest)")
-        }
-        for source in record.sources.dropFirst() {
-            XCTAssertTrue(source.harvest.contains { $0.contains("SessionRouter") }, "\(source.source): \(source.harvest)")
-        }
-    }
-}
-
-private extension DiagnosticRecordInputs {
-    /// Inputs for a dictation whose only context is the joined session's
-    /// `context`, rendered into the user prompt as sent.
-    static func minimal(context: String) -> DiagnosticRecordInputs {
-        DiagnosticRecordInputs(
-            session: .init(outputMode: "overlayBuffer"),
-            join: nil,
-            joinAbstentions: [],
-            screenDecision: .drop(reason: .targetChanged),
-            socketPaneSwapApplied: false,
-            targetBundleID: nil,
-            demands: [.claude: context.count],
-            grants: [.claude: context.count],
-            rendered: [.claude: context.count],
-            repoVocabularyHarvest: nil,
-            repoVocabularyOutcome: .empty,
-            claudeRepoSnapshot: nil,
-            claudeRepoOutcome: .empty,
-            claudeRepoRenderedExcerpt: nil,
-            claudeSessionText: context,
-            claudeSessionOutcome: .empty,
-            claudeSessionRenderedExcerpt: context,
-            clipboardRetainedText: nil,
-            clipboardOutcome: .empty,
-            clipboardRenderedExcerpt: nil,
-            screenOutcome: .empty,
-            screenRenderedExcerpt: nil,
-            text: .init(
-                rawTranscript: "why did it crash",
-                workingText: "why did it crash",
-                groundedText: "why did it crash",
-                systemPrompt: "system",
-                userPrompts: ["Context:\n\(context)\n\nWorking text:\nwhy did it crash"],
-                polishedOutput: nil,
-                committedText: nil
-            )
-        )
     }
 }

@@ -14,13 +14,13 @@ tell afterwards where a retrieval miss happened. When the polished text gets a
 technical term wrong, the record says which of four stages lost it: never
 harvested, harvested but not matched, matched but lost a conflict, or matched
 but cut by the render budget
-([`DiagnosticRecord.swift`](../../Sources/localvoxtral/DiagnosticRecords/DiagnosticRecord.swift)).
+([`DiagnosticRecord.swift`](../../Sources/localvoxtralCore/DiagnosticRecords/DiagnosticRecord.swift)).
 
 ## Where it lives and when it is written
 
 - `~/Library/Application Support/localvoxtral/diagnostic-records/dictation-<UTC stamp>-<History id>.json`,
   0600 files in a 0700 folder, written through `ClaudeRemoteHostFileStoreIO`
-  ([`DiagnosticRecordStore.swift`](../../Sources/localvoxtral/DiagnosticRecords/DiagnosticRecordStore.swift)).
+  ([`DiagnosticRecordStore.swift`](../../Sources/localvoxtralCore/DiagnosticRecords/DiagnosticRecordStore.swift)).
 - The record's `id` is its `DictationSessionRecord` id, so a record joins its
   History entry and its audio (`dictation-audio/<id>.wav`).
 - Written only on the polish commit path, after the text is committed and the
@@ -64,7 +64,7 @@ for `id` and a `flagged` field.
 
 ## What is kept out
 
-[`DiagnosticRecordRedaction`](../../Sources/localvoxtral/DiagnosticRecords/DiagnosticRecordRedaction.swift)
+[`DiagnosticRecordRedaction`](../../Sources/localvoxtralCore/DiagnosticRecords/DiagnosticRecordRedaction.swift)
 runs on every string before the write:
 
 - Secret shapes: PEM private keys (also cut off), JWTs, `Bearer` tokens,
@@ -88,7 +88,7 @@ runs on every string before the write:
 ## The edit signal
 
 A content-free signal of whether the user erased what was inserted
-([`EditSignalWatcher.swift`](../../Sources/localvoxtral/DiagnosticRecords/EditSignalWatcher.swift)).
+([`EditSignalWatcher.swift`](../../Sources/localvoxtralCore/DiagnosticRecords/EditSignalWatcher.swift)).
 A post-commit window (2 s for 1–5 words, up to 15 s for 41+ words) watches
 for Backspace/forward delete or ⌘A, and nothing else.
 

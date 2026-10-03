@@ -6,10 +6,10 @@ import Foundation
 /// directory owner, or an encoding surprise costs the RECORD (loudly), never
 /// the commit. The write itself is synchronous file IO on the generic executor
 /// — the user's text was already committed before the capture is assembled.
-enum DiagnosticRecordWriter {
+package enum DiagnosticRecordWriter {
     /// Where the record landed, or nil when the write failed (loudly).
     @discardableResult
-    nonisolated static func write(
+    package nonisolated static func write(
         _ record: DiagnosticRecord,
         store: DiagnosticRecordStore,
         unlessDeletedSince epoch: UInt64? = nil
@@ -18,7 +18,7 @@ enum DiagnosticRecordWriter {
     }
 
     /// The same write, for a caller already off the main actor.
-    nonisolated static func writeSynchronously(
+    package nonisolated static func writeSynchronously(
         _ record: DiagnosticRecord,
         store: DiagnosticRecordStore,
         unlessDeletedSince epoch: UInt64? = nil
@@ -47,7 +47,7 @@ enum DiagnosticRecordWriter {
     /// been finished for seconds — and, like `write`, it can only ever cost the
     /// record.
     @discardableResult
-    nonisolated static func attach(
+    package nonisolated static func attach(
         _ behavior: DiagnosticRecord.Behavior,
         toRecordAt url: URL,
         store: DiagnosticRecordStore
@@ -61,7 +61,7 @@ enum DiagnosticRecordWriter {
     /// JSON rewrite either way; only the caller's urgency differs.
     /// Whether the record took the patch: false when it is gone.
     @discardableResult
-    nonisolated static func attachSynchronously(
+    package nonisolated static func attachSynchronously(
         _ behavior: DiagnosticRecord.Behavior,
         toRecordAt url: URL,
         store: DiagnosticRecordStore

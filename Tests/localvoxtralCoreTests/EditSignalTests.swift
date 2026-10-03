@@ -1,134 +1,17 @@
-import AppKit
-import Carbon.HIToolbox
 import Foundation
-import Synchronization
 import XCTest
-@testable import localvoxtral
-
-// MARK: - Shared doubles (also used by DiagnosticRecordWiringTests)
-
-/// A key source the watcher can be driven from without an event stream, an
-/// Accessibility grant, or the host's keyboard.
-///
-/// `stop()` deliberately KEEPS the handler: the watcher's own generation/result
-/// guard is what must reject a late signal, and a double that forgot the handler
-/// would pass those tests without the guard existing.
-@MainActor
-final class EditSignalTestMonitor: EditKeyMonitoring {
-    private(set) var startCount = 0
-    private(set) var stopCount = 0
-    private(set) var isInstalled = false
-    /// Every `stop()`, for a test that waits on a teardown it cannot await.
-    let stops = EventCount()
-    /// Set false to stand in for the untrusted-Accessibility case, where the
-    /// real monitor never goes up.
-    var canInstall = true
-    private var handler: (@MainActor (EditSignal) -> Void)?
-
-    func start(_ handler: @escaping @MainActor (EditSignal) -> Void) -> Bool {
-        startCount += 1
-        guard canInstall else { return false }
-        isInstalled = true
-        self.handler = handler
-        return true
-    }
-
-    func stop() {
-        stopCount += 1
-        isInstalled = false
-        stops.increment()
-    }
-
-    func send(_ signal: EditSignal) {
-        handler?(signal)
-    }
-}
-
-/// A `sleepFor` seam the test decides the duration of. No wall-clock: the window
-/// elapses when `fireAll()` says it does (AGENTS.md forbids real sleeps here).
-///
-/// `fireAll()` LATCHES. The watcher starts its window inside a `Task`, which
-/// does not necessarily reach the sleep before the test's next statement runs —
-/// an un-latched fire would resume nobody and the window would then wait
-/// forever, hanging the suite rather than failing it.
-final class EditSignalManualSleeper: Sendable {
-    private struct State {
-        var requested: [Duration] = []
-        var waiters: [CheckedContinuation<Void, Never>] = []
-        var arrivalWaiters: [CheckedContinuation<Void, Never>] = []
-        var fired = false
-    }
-
-    private let state = Mutex(State())
-
-    /// Returns once a window has actually reached the sleep.
-    ///
-    /// `Task.yield()` is NOT enough: the window runs in a `Task` the main actor
-    /// is free to schedule after the test's next statement, which made asserting
-    /// the requested duration flaky (observed on the build host, 2026-07-27).
-    func waitForSleepRequest() async {
-        await withCheckedContinuation { continuation in
-            let resumeNow = state.withLock { current -> Bool in
-                guard current.requested.isEmpty else { return true }
-                current.arrivalWaiters.append(continuation)
-                return false
-            }
-            if resumeNow { continuation.resume() }
-        }
-    }
-
-    func sleep(_ duration: Duration) async {
-        let (alreadyFired, arrivals) = state.withLock { current -> (Bool, [CheckedContinuation<Void, Never>]) in
-            current.requested.append(duration)
-            let arrivals = current.arrivalWaiters
-            current.arrivalWaiters = []
-            return (current.fired, arrivals)
-        }
-        for arrival in arrivals { arrival.resume() }
-        guard !alreadyFired else { return }
-        await withCheckedContinuation { continuation in
-            let resumeNow = state.withLock { current -> Bool in
-                guard !current.fired else { return true }
-                current.waiters.append(continuation)
-                return false
-            }
-            if resumeNow { continuation.resume() }
-        }
-    }
-
-    var requestedDurations: [Duration] { state.withLock { $0.requested } }
-
-    func fireAll() {
-        let waiters = state.withLock { current -> [CheckedContinuation<Void, Never>] in
-            current.fired = true
-            let waiters = current.waiters + current.arrivalWaiters
-            current.waiters = []
-            current.arrivalWaiters = []
-            return waiters
-        }
-        for waiter in waiters { waiter.resume() }
-    }
-}
-
-/// Injected clock, mirroring `CaptureTestClock` in the store suite.
-final class EditSignalTestClock: Sendable {
-    private let value = Mutex(Date(timeIntervalSince1970: 1_800_000_000))
-
-    func now() -> Date { value.withLock { $0 } }
-    func advance(_ seconds: TimeInterval) {
-        value.withLock { $0 = $0.addingTimeInterval(seconds) }
-    }
-}
+@testable import localvoxtralCore
+import localvoxtralTestSupport
 
 // MARK: - Tests
 
-/// The post-commit behavioral signal: the ladder, the key mapping, and the
-/// watch window's lifecycle.
+/// The post-commit behavioral signal: the ladder and the watch window's
+/// lifecycle. The key mapping needs AppKit: `EditSignalKeyMappingTests`.
 @MainActor
 final class EditSignalTests: XCTestCase {
     // MARK: Policy
 
-    func testWindowLadderBoundaries() {
+    func testWindowLadderBoundaries() async {
         let cases: [(Int, Double)] = [
             (1, 2), (5, 2),
             (6, 4), (15, 4),
@@ -143,7 +26,7 @@ final class EditSignalTests: XCTestCase {
         }
     }
 
-    func testWordCountBucketBoundaries() {
+    func testWordCountBucketBoundaries() async {
         let cases: [(Int, String)] = [
             (1, "1-5"), (5, "1-5"),
             (6, "6-15"), (15, "6-15"),
@@ -157,7 +40,7 @@ final class EditSignalTests: XCTestCase {
         }
     }
 
-    func testSecondsSinceCommitBucketBoundaries() {
+    func testSecondsSinceCommitBucketBoundaries() async {
         let cases: [(Double, String)] = [
             (0, "0-1"), (0.99, "0-1"),
             (1, "1-2"), (1.99, "1-2"),
@@ -172,46 +55,9 @@ final class EditSignalTests: XCTestCase {
         }
     }
 
-    func testWordCountIgnoresWhitespaceRuns() {
+    func testWordCountIgnoresWhitespaceRuns() async {
         XCTAssertEqual(EditSignalPolicy.wordCount(of: "  run   the tests\n"), 3)
         XCTAssertEqual(EditSignalPolicy.wordCount(of: "   "), 0)
-    }
-
-    // MARK: Key mapping
-
-    /// The whole recognized alphabet. Everything else must be forgotten — this
-    /// is the property that keeps the watch from being a keylogger.
-    func testOnlyTwoGesturesAreRecognized() {
-        XCTAssertEqual(
-            EditSignal.from(keyCode: UInt16(kVK_Delete), modifiers: []), .backspace
-        )
-        XCTAssertEqual(
-            EditSignal.from(keyCode: UInt16(kVK_ForwardDelete), modifiers: []), .backspace
-        )
-        // A word/line delete is still the user erasing the insertion.
-        XCTAssertEqual(
-            EditSignal.from(keyCode: UInt16(kVK_Delete), modifiers: [.option]), .backspace
-        )
-        XCTAssertEqual(
-            EditSignal.from(keyCode: UInt16(kVK_ANSI_A), modifiers: [.command]), .selectAll
-        )
-
-        // Plain "a" is typing, not selecting.
-        XCTAssertNil(EditSignal.from(keyCode: UInt16(kVK_ANSI_A), modifiers: []))
-        // ⌥⌘A / ⌃⌘A / ⇧⌘A are app shortcuts, not select-all.
-        XCTAssertNil(
-            EditSignal.from(keyCode: UInt16(kVK_ANSI_A), modifiers: [.command, .option])
-        )
-        XCTAssertNil(
-            EditSignal.from(keyCode: UInt16(kVK_ANSI_A), modifiers: [.command, .control])
-        )
-        XCTAssertNil(
-            EditSignal.from(keyCode: UInt16(kVK_ANSI_A), modifiers: [.command, .shift])
-        )
-        // Every other key, modified or not.
-        XCTAssertNil(EditSignal.from(keyCode: UInt16(kVK_ANSI_B), modifiers: [.command]))
-        XCTAssertNil(EditSignal.from(keyCode: UInt16(kVK_Return), modifiers: []))
-        XCTAssertNil(EditSignal.from(keyCode: UInt16(kVK_Escape), modifiers: []))
     }
 
     // MARK: Watch window
@@ -367,7 +213,7 @@ final class EditSignalTests: XCTestCase {
 
     /// Nothing to measure, nothing to watch: an empty commit never installs an
     /// observer.
-    func testEmptyCommitNeverArms() {
+    func testEmptyCommitNeverArms() async {
         let harness = makeWatcher()
         harness.watcher.arm(committedText: "   \n", outputMode: "overlay_buffer")
         XCTAssertFalse(harness.watcher.isWatching)
@@ -519,7 +365,7 @@ final class EditSignalTests: XCTestCase {
     /// FINDING 3: a window still open at quit patches its record INLINE. A Task
     /// enqueued during `willTerminate` is not guaranteed to run, so the assert
     /// deliberately does not await anything.
-    func testTerminationFlushesTheOpenWindowInline() throws {
+    func testTerminationFlushesTheOpenWindowInline() async throws {
         let harness = makeWatcher()
 
         let token = try XCTUnwrap(

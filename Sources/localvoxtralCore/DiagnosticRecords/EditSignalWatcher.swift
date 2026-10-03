@@ -15,7 +15,7 @@ import Foundation
 /// guarantees that: the enum has two cases, and the only other things recorded
 /// are bucketed. No key content, no text, no timestamps finer than a bucket, and
 /// nothing at all about keys that are neither of these two.
-enum EditSignal: String, Codable, Equatable, Sendable {
+package enum EditSignal: String, Codable, Equatable, Sendable {
     /// Backspace / forward delete: the user is erasing what we inserted.
     case backspace
     /// ⌘A: almost always the first half of select-all-then-retype or
@@ -27,7 +27,7 @@ enum EditSignal: String, Codable, Equatable, Sendable {
 /// patches its record with it, including the negative — without the "clean"
 /// denominator an edit rate is not computable, and "no behavior block" would be
 /// indistinguishable from "the watch never armed".
-enum EditSignalOutcome: String, Codable, Equatable, Sendable {
+package enum EditSignalOutcome: String, Codable, Equatable, Sendable {
     case edited
     case clean
     /// The window was cut short — a new dictation began, or the app quit.
@@ -38,7 +38,7 @@ enum EditSignalOutcome: String, Codable, Equatable, Sendable {
 
 /// The window ladder and the buckets. Pure, so the boundaries are testable
 /// without a clock, a monitor, or a record.
-enum EditSignalPolicy {
+package enum EditSignalPolicy {
     /// How long to watch after a commit, by transcript length.
     ///
     /// The ladder scales with how long the insertion takes to READ: a five-word
@@ -54,7 +54,7 @@ enum EditSignalPolicy {
     /// | 6–15 | 4 s |
     /// | 16–40 | 8 s |
     /// | 41+ | 15 s |
-    static func windowSeconds(wordCount: Int) -> Double {
+    package static func windowSeconds(wordCount: Int) -> Double {
         switch wordCount {
         case ..<6: return 2
         case ..<16: return 4
@@ -67,7 +67,7 @@ enum EditSignalPolicy {
     /// away from the transcript itself, and the record already carries the text
     /// stages under the same gate — but the behavior block is meant to stay
     /// readable as an aggregate, and a bucket is what an aggregate wants.
-    static func wordCountBucket(_ wordCount: Int) -> String {
+    package static func wordCountBucket(_ wordCount: Int) -> String {
         switch wordCount {
         case ..<6: return "1-5"
         case ..<16: return "6-15"
@@ -78,7 +78,7 @@ enum EditSignalPolicy {
 
     /// Seconds since the commit, bucketed. The top bucket is open-ended only in
     /// name: nothing past the longest window can be reported.
-    static func secondsSinceCommitBucket(_ seconds: Double) -> String {
+    package static func secondsSinceCommitBucket(_ seconds: Double) -> String {
         switch seconds {
         case ..<1: return "0-1"
         case ..<2: return "1-2"
@@ -88,7 +88,7 @@ enum EditSignalPolicy {
     }
 
     /// Words, by whitespace. The count never leaves this type unbucketed.
-    static func wordCount(of text: String) -> Int {
+    package static func wordCount(of text: String) -> Int {
         text.split(whereSeparator: { $0.isWhitespace }).count
     }
 }
@@ -100,7 +100,7 @@ enum EditSignalPolicy {
 /// worth testing, and none of them should need a real event stream or a real
 /// Accessibility grant.
 @MainActor
-protocol EditKeyMonitoring: AnyObject {
+package protocol EditKeyMonitoring: AnyObject {
     /// Begins delivering recognized signals, reporting whether an observer
     /// actually went up. Called at most once per watch; `stop()` always follows
     /// a `true`, including when the window closed unobserved.
@@ -140,9 +140,9 @@ protocol EditKeyMonitoring: AnyObject {
 /// generation, arrived at the same way — a late producer must not describe a
 /// session that has ended.
 @MainActor
-final class EditSignalWatcher {
-    typealias DateProvider = () -> Date
-    typealias SleepClosure = (Duration) async -> Void
+package final class EditSignalWatcher {
+    package typealias DateProvider = () -> Date
+    package typealias SleepClosure = (Duration) async -> Void
 
     private struct Watch {
         let generation: UInt64
@@ -177,14 +177,14 @@ final class EditSignalWatcher {
     /// The open window's timer, and the in-flight record patch. Retained so
     /// tests can await them the way they await `polishAndCommitTask`; nothing in
     /// production reads either.
-    private(set) var windowTask: Task<Void, Never>?
-    private(set) var flushTask: Task<Void, Never>?
+    package private(set) var windowTask: Task<Void, Never>?
+    package private(set) var flushTask: Task<Void, Never>?
     /// Told each verdict with the History id its record is named by, so the
     /// History entry carries it too (`DictationSessionRecord.editOutcome`).
-    var onOutcome: ((UUID, EditSignalOutcome) -> Void)?
+    package var onOutcome: ((UUID, EditSignalOutcome) -> Void)?
 
-    init(
-        monitor: any EditKeyMonitoring = EditKeyNSEventMonitor(),
+    package init(
+        monitor: any EditKeyMonitoring,
         now: @escaping DateProvider = Date.init,
         sleepFor: @escaping SleepClosure = { duration in
             try? await Task.sleep(for: duration)
@@ -205,7 +205,7 @@ final class EditSignalWatcher {
 
     /// True while a window is open. Tests assert the monitor is not left
     /// installed; production never branches on it.
-    var isWatching: Bool {
+    package var isWatching: Bool {
         guard let watch else { return false }
         return watch.result == nil
     }
@@ -217,7 +217,7 @@ final class EditSignalWatcher {
     ///
     /// Not an `Int` and not `Equatable` by accident — it exists to be compared
     /// against the watcher's own state and nothing else.
-    struct WatchToken: Equatable, Sendable {
+    package struct WatchToken: Equatable, Sendable {
         fileprivate let generation: UInt64
     }
 
@@ -231,7 +231,7 @@ final class EditSignalWatcher {
     /// `committedText` is measured, never stored: only its word-count bucket
     /// reaches the record.
     @discardableResult
-    func arm(committedText: String, outputMode: String) -> WatchToken? {
+    package func arm(committedText: String, outputMode: String) -> WatchToken? {
         supersede()
         parkClosedWatchAwaitingAttach()
 
@@ -294,7 +294,7 @@ final class EditSignalWatcher {
     /// record write is `await`ed, so a second dictation can arm in between, and
     /// without the token this call would hand session A's record to session B's
     /// open window — which would then patch A's record with B's behavior.
-    func attachRecord(url: URL, store: DiagnosticRecordStore, token: WatchToken) {
+    package func attachRecord(url: URL, store: DiagnosticRecordStore, token: WatchToken) {
         if var watch, watch.generation == token.generation {
             watch.recordURL = url
             watch.store = store
@@ -314,7 +314,7 @@ final class EditSignalWatcher {
 
     /// Closes an open window because a new dictation began. Safe to call with
     /// nothing armed.
-    func supersede() {
+    package func supersede() {
         guard let watch, watch.result == nil else { return }
         closeWindow(outcome: .superseded, signal: nil, generation: watch.generation)
     }
@@ -327,7 +327,7 @@ final class EditSignalWatcher {
     /// all (the backend shutdown next to it is best-effort for the same
     /// reason). One small JSON rewrite on the main actor is cheap enough to pay
     /// at quit, and the alternative is losing the window's answer entirely.
-    func flushForTermination() {
+    package func flushForTermination() {
         guard let watch, watch.result == nil else { return }
         closeWindow(
             outcome: .superseded, signal: nil, generation: watch.generation, inline: true
