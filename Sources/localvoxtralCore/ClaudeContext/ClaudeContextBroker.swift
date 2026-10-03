@@ -362,9 +362,12 @@ public final class ClaudeContextBroker: Sendable {
         return lock
     }
 
-    private func removeSocketFile(ifStill boundSocket: StoredFileStamp?) {
+    private func removeSocketFile(ifStill boundSocket: StoredFileStamp?, thenClose listenerFD: Int32) {
         let lock = Self.takeBindLock(beside: socketPath)
-        defer { withExtendedLifetime(lock) {} }
+        defer {
+            close(listenerFD)
+            withExtendedLifetime(lock) {}
+        }
         guard let boundSocket,
               let current = StoredFileStamp.of(URL(fileURLWithPath: socketPath)),
               current.device == boundSocket.device, current.inode == boundSocket.inode
@@ -458,14 +461,16 @@ public final class ClaudeContextBroker: Sendable {
             // under the same lock before writing to it, so exactly one of us
             // ever closes it.
             if wakeWriteFD >= 0 { close(wakeWriteFD) }
-            close(listenerFD)
             close(wakeReadFD)
             // Ours to remove only while the path still names the inode we
             // bound: another copy may have replaced it (#1603). The check and
-            // the unlink hold the bind lock, so no copy rebinds in between.
-            // stop() waits for this defer rather than unlinking itself, so a
-            // subsequent start() in this process cannot lose its socket here.
-            removeSocketFile(ifStill: boundSocket)
+            // the unlink hold the bind lock, and the listener closes only
+            // after them: until then another copy's probe finds this socket
+            // live, so it cannot unlink it and bind a successor that reuses
+            // its inode number. stop() waits for this defer rather than
+            // unlinking itself, so a subsequent start() in this process
+            // cannot lose its socket here.
+            removeSocketFile(ifStill: boundSocket, thenClose: listenerFD)
             exitSignal?.signal()
         }
         /// Consecutive accept() failures we could not attribute. Used only to
