@@ -136,6 +136,27 @@ else
   echo "E2E harness: absent (release build)"
 fi
 
+# UI Smoke's e2e dictation packages the harness as com.localvoxtral.e2e-harness
+# (#1198). macOS keeps one Accessibility row per bundle id, tied to one
+# signature, so a harness under the release's id and the owner's ad-hoc
+# release kept taking the grant from each other. Only a harness may take the
+# other id; every other build is com.localvoxtral.app.
+APP_BUNDLE_ID="${LOCALVOXTRAL_BUNDLE_ID:-com.localvoxtral.app}"
+case "$APP_BUNDLE_ID" in
+  com.localvoxtral.app) ;;
+  com.localvoxtral.e2e-harness)
+    if [[ -z "$HARNESS_PLIST_ENTRY" ]]; then
+      echo "LOCALVOXTRAL_BUNDLE_ID=$APP_BUNDLE_ID is only for a harness build (LOCALVOXTRAL_E2E_HARNESS=1)." >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "LOCALVOXTRAL_BUNDLE_ID must be com.localvoxtral.app or com.localvoxtral.e2e-harness, not: $APP_BUNDLE_ID" >&2
+    exit 1
+    ;;
+esac
+echo "Bundle id: $APP_BUNDLE_ID"
+
 swift build --build-system native -c "$CONFIGURATION" --product localvoxtral -Xswiftc -g
 
 BINARY_PATH="$(find "$ROOT_DIR/.build" -type f -path "*/${CONFIGURATION}/localvoxtral" | head -n 1)"
@@ -353,7 +374,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
   <key>CFBundleExecutable</key>
   <string>localvoxtral</string>
   <key>CFBundleIdentifier</key>
-  <string>com.localvoxtral.app</string>
+  <string>${APP_BUNDLE_ID}</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
@@ -656,7 +677,8 @@ cp -R "$SPEECH_HELPER_DSYM_SOURCE" "$ROOT_DIR/dist/localvoxtral-speechd.dSYM"
 fi # LOCALVOXTRAL_SKIP_SPEECHD
 
 # --- Desktop widgets (WidgetKit extension, #630) ---------------------------
-"$ROOT_DIR/scripts/packaging/package-widgets.sh" build "$APP_DIR" "$CONFIGURATION" "$APP_VERSION" "$BUILD_NUMBER"
+LOCALVOXTRAL_APP_BUNDLE_ID="$APP_BUNDLE_ID" \
+  "$ROOT_DIR/scripts/packaging/package-widgets.sh" build "$APP_DIR" "$CONFIGURATION" "$APP_VERSION" "$BUILD_NUMBER"
 # ---------------------------------------------------------------------------
 
 # Remove filesystem metadata from copied assets (e.g. FinderInfo/resource fork)

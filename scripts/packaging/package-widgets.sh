@@ -22,7 +22,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 APPEX_NAME="localvoxtralWidgets"
-BUNDLE_ID="com.localvoxtral.app.widgets"
+# An extension's id extends its host app's; package_app.sh names the host.
+BUNDLE_ID="${LOCALVOXTRAL_APP_BUNDLE_ID:-com.localvoxtral.app}.widgets"
 MODULE="localvoxtralWidgets"
 
 VERB="${1:-}"
