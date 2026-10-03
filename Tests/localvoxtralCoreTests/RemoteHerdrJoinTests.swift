@@ -1088,6 +1088,43 @@ final class RemoteHerdrJoinTests: XCTestCase, RemoteHerdrJoinFixture {
         XCTAssertEqual(forwards.openCount, 1)
     }
 
+    /// `herdr --session review` shows the review server, not the one the sole
+    /// registered agent lives on: the argv fallback must not join across
+    /// sessions, in either direction. A client of the session the socket
+    /// belongs to still joins.
+    func testTheArgvFallbackJoinsOnlyTheSessionTheClientNamed() async {
+        let defaultSocket = "/home/dev/.config/herdr/herdr.sock"
+        let reviewSocket = "/home/dev/.config/herdr/sessions/review/herdr.sock"
+        let cases: [(selector: String?, socket: String, joins: Bool)] = [
+            ("review", remoteSocketPath, false),
+            ("review", defaultSocket, false),
+            (nil, reviewSocket, false),
+            ("ci", reviewSocket, false),
+            ("review", reviewSocket, true),
+            (nil, defaultSocket, true),
+            ("default", defaultSocket, true),
+        ]
+        for (selector, socket, joins) in cases {
+            let registry = makeRegistry()
+            ingestRemoteHerdrSession(into: registry, socketPath: socket)
+
+            let join = await resolver(
+                registry: registry,
+                panes: RemoteJoinHerdrPanes(focused: focusedPane()),
+                forwards: RecordingForwards(),
+                sshResult: .connection(
+                    SSHSurfaceConnection(
+                        destination: "builder",
+                        hasCompetingHerdrClient: false,
+                        herdr: .plainClient(sessionSelector: selector)
+                    )
+                )
+            ).resolve(target: ghostty)
+
+            XCTAssertEqual(join != nil, joins, "--session \(selector ?? "(none)") on \(socket)")
+        }
+    }
+
     // MARK: herdr-or-nothing starts at CONFIRMATION (review round 3, blocker 1b)
 
     func testAPaneThatIsNotConfirmedJoinsNothing() async {

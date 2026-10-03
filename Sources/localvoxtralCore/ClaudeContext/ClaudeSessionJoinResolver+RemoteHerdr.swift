@@ -162,8 +162,15 @@ extension ClaudeSessionJoinResolver {
                 outcome: "this terminal attaches a partial or different herdr view"
             )
             return .declined
-        case .plainClient:
-            break
+        case .plainClient(let selector):
+            // `herdr --session review` shows the review server: the sole
+            // registered socket may belong to another session on this host.
+            guard Self.plainClient(selector: selector, mayShow: remoteSocketPath) else {
+                Self.abstainedRemoteHerdrJoin(
+                    outcome: "this terminal's herdr client names another session than the agent's"
+                )
+                return .declined
+            }
         }
         guard !connection.hasCompetingHerdrClient else {
             Self.abstainedRemoteHerdrJoin(
@@ -210,6 +217,19 @@ extension ClaudeSessionJoinResolver {
         }
         forward.close()
         return .declined
+    }
+
+    /// Whether a plain herdr client started with `--session <selector>` (nil:
+    /// none) may be showing the server at `socketPath`. A socket in herdr's
+    /// layout must belong to the named session. A relocated socket outside
+    /// that layout names no session, so only the default client may join it,
+    /// as before.
+    private static func plainClient(selector: String?, mayShow socketPath: String) -> Bool {
+        let session = selector ?? HerdrMachineProfile.defaultSessionName
+        if HerdrSessionSocket.isSocket(socketPath, ofSessionNamed: session) { return true }
+        guard session == HerdrMachineProfile.defaultSessionName else { return false }
+        let normalized = HerdrSessionSocket.normalizedSocketPath(socketPath)
+        return !normalized.hasSuffix("/" + HerdrSessionSocket.socketFileName)
     }
 
     /// Asked after an over-the-forward arm's last await, just before it
