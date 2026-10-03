@@ -443,11 +443,12 @@ final class SpeakerTermSuggestionModelTests: XCTestCase {
         XCTAssertEqual(model.startedAt, start)
         model.start()  // a second click while loading sends nothing more
 
+        let run = model.debugTask
         model.stop()
         XCTAssertEqual(model.phase, .idle)
 
         await service.release(with: #"["Qwen"]"#)
-        await Task.yield()
+        await run?.value
         XCTAssertEqual(model.suggestions, [])
         XCTAssertEqual(model.phase, .idle)
         let requestCount = await service.requestCount

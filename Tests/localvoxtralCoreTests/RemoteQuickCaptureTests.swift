@@ -71,6 +71,7 @@ final class RemoteQuickCaptureTests: XCTestCase {
     private var store: FakeStore!
     private var requests: RemoteQuickCaptureRequests!
     private var usage: UsageLedger!
+    private let checksDecided = EventCount()
     private var listener: ClaudeRemoteContextListener!
     private var port: UInt16 = 0
     private var token = ""
@@ -103,6 +104,8 @@ final class RemoteQuickCaptureTests: XCTestCase {
             makeID: { "0123456789abcdef0123456789abcdef" },
             usageRecorder: usage
         )
+        let checksDecided = checksDecided
+        requests.debugCheckDecided.withLock { $0 = { checksDecided.increment() } }
         port = try unusedLoopbackPort()
         listener = ClaudeRemoteContextListener(
             registry: sessions,
@@ -618,15 +621,11 @@ final class RemoteQuickCaptureTests: XCTestCase {
         )
     }
 
-    /// Polls `/v1/draft/check` as the host does, without a clock: each 202
-    /// yields to the first draft's task.
-    private func pollCheck(session: String) async throws -> RemoteListenerResponse {
-        for _ in 0..<1_000 {
-            let reply = try answer(RemoteQuickCaptureRequests.draftCheckPath, session: session, draftID: draftID, body: "")
-            if reply.status != 202 { return reply }
-            await Task.yield()
-        }
-        throw XCTSkip("the first draft never finished")
+    /// Asks `/v1/draft/check` as the host's poll does, once the first
+    /// draft's task has decided the check: earlier, it answers 202.
+    private func checkOnceDecided(session: String) async throws -> RemoteListenerResponse {
+        await checksDecided.waitFor(1)
+        return try answer(RemoteQuickCaptureRequests.draftCheckPath, session: session, draftID: draftID, body: "")
     }
 
     func testAHostsContextGivesTheFirstDraftThenTheCheckStartsFromIt() async throws {
@@ -678,7 +677,7 @@ final class RemoteQuickCaptureTests: XCTestCase {
         XCTAssertEqual(firstDrafter.contexts.withLock { $0.first?.readme }, "# Quill")
         firstDrafter.gate!.wakeAll()
 
-        let check = try await pollCheck(session: "s1")
+        let check = try await checkOnceDecided(session: "s1")
         XCTAssertEqual(check.status, 200)
         XCTAssertEqual(shown.withLock { $0 }, [.draft(first, usage: nil)], "the Inbox has the first draft before the check runs")
         XCTAssertEqual(
@@ -722,7 +721,7 @@ final class RemoteQuickCaptureTests: XCTestCase {
         firstDrafter.gate!.wakeAll()
         let outcome = await task.value
         XCTAssertNil(outcome, "no check due")
-        let done = try await pollCheck(session: "s1")
+        let done = try await checkOnceDecided(session: "s1")
         XCTAssertEqual(done.status, 204, "the host hears it is done")
         XCTAssertEqual(
             try answer(RemoteQuickCaptureRequests.draftCheckPath, session: "s1", draftID: draftID, body: "").status,

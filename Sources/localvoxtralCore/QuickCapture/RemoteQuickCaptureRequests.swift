@@ -517,7 +517,16 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
             Log.backends.notice("Quick capture draft: no check due for the remote draft")
             ended.continuation.resume(returning: nil)
         }
+        #if DEBUG
+        debugCheckDecided.withLock { $0 }()
+        #endif
     }
+
+    #if DEBUG
+    /// Test seam: runs once a remote draft's check is decided, so a suite
+    /// awaits it instead of polling `/v1/draft/check`.
+    package let debugCheckDecided = Mutex<@Sendable () -> Void>({})
+    #endif
 
     package enum CheckReply: Equatable, Sendable {
         /// Not asked, or the host skipped a step: refused.

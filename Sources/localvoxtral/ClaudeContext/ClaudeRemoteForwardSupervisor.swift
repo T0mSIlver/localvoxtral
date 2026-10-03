@@ -304,6 +304,14 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
     /// observation tracking, whose `onChange` fires before the write lands.
     @ObservationIgnored public var onStateChange: (@MainActor (State) -> Void)?
 
+    #if DEBUG
+    /// Test seams: run when a settle window's task or a supervise loop ends,
+    /// however it ends, so a suite waits for a stale one to finish instead of
+    /// yielding and hoping it ran.
+    @ObservationIgnored var debugSettleWindowEnded: (@MainActor () -> Void)?
+    @ObservationIgnored var debugSuperviseLoopEnded: (@MainActor () -> Void)?
+    #endif
+
     @ObservationIgnored public let configuration: Configuration
     @ObservationIgnored private let launch: Launch
     /// Asked, on a refused bind, whether the port that refused us is already
@@ -372,6 +380,9 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
         let run = superviseRun
         superviseTask = Task { @MainActor [weak self] in
             await self?.supervise(run: run)
+            #if DEBUG
+            self?.debugSuperviseLoopEnded?()
+            #endif
         }
     }
 
@@ -564,6 +575,9 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
             let generation = runGeneration
             let settle = Task { @MainActor [weak self] in
                 guard let self else { return }
+                #if DEBUG
+                defer { self.debugSettleWindowEnded?() }
+                #endif
                 do { try await self.sleepFor(self.configuration.settleDelay) } catch { return }
                 // Cancellation is checked AFTER a sleep that already returned,
                 // so it is not enough on its own: the generation is. Without
