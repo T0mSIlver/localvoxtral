@@ -127,6 +127,11 @@ final class BackendManager: ManagedBackendManaging {
     // share a slot.
     @ObservationIgnored private var dictationEnsureTask: Task<Void, Error>?
     @ObservationIgnored private var polishingEnsureTask: Task<Void, Error>?
+    /// Callers parked on each shared ensure task. A cancelled caller leaves at
+    /// once; the task itself is cancelled only when its last caller leaves, so
+    /// turning voice memos off no longer aborts a dictation start waiting on
+    /// the same helper (#1511).
+    @ObservationIgnored private var ensureWaiters: [Task<Void, Error>: [UUID: CheckedContinuation<Void, Error>]] = [:]
     /// Backend ids whose in-flight ensure is being cancelled BY a pause, so the
     /// download's unwinding knows to land on `.pausedModelDownload` instead of
     /// `.stopped`. Held only for the duration of `pauseModelDownload`.
@@ -232,11 +237,54 @@ final class BackendManager: ManagedBackendManaging {
     }
 
     private func awaitEnsureReadyTask(_ task: Task<Void, Error>) async throws {
+        let waiterID = UUID()
         try await withTaskCancellationHandler {
-            try await task.value
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                // The cancel hop below runs on the main actor after this
+                // closure, so a cancel that landed earlier is only visible here.
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    // A superseded caller can arrive cancelled with the task
+                    // it just created; with nobody else waiting, stop it.
+                    if ensureWaiters[task]?.isEmpty ?? true {
+                        task.cancel()
+                    }
+                    return
+                }
+                ensureWaiters[task, default: [:]][waiterID] = continuation
+                Task { @MainActor in
+                    let result = await task.result
+                    self.resumeEnsureWaiter(waiterID, of: task, with: result)
+                }
+            }
         } onCancel: {
-            task.cancel()
+            Task { @MainActor in
+                self.cancelEnsureWaiter(waiterID, of: task)
+            }
         }
+    }
+
+    private func resumeEnsureWaiter(
+        _ waiterID: UUID,
+        of task: Task<Void, Error>,
+        with result: Result<Void, Error>
+    ) {
+        guard let continuation = ensureWaiters[task]?.removeValue(forKey: waiterID) else { return }
+        if ensureWaiters[task]?.isEmpty == true {
+            ensureWaiters[task] = nil
+        }
+        continuation.resume(with: result)
+    }
+
+    private func cancelEnsureWaiter(_ waiterID: UUID, of task: Task<Void, Error>) {
+        guard let continuation = ensureWaiters[task]?.removeValue(forKey: waiterID) else { return }
+        continuation.resume(throwing: CancellationError())
+        guard ensureWaiters[task]?.isEmpty == true else {
+            Log.backends.info("ensure waiter cancelled; the shared ensure keeps running for its other waiters")
+            return
+        }
+        ensureWaiters[task] = nil
+        task.cancel()
     }
 
     func stopAll() async {

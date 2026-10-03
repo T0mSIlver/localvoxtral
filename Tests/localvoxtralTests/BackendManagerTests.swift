@@ -395,6 +395,46 @@ final class BackendManagerTests: XCTestCase {
         )
     }
 
+    /// A voice memo and a dictation share one cold speechd start. Turning memos
+    /// off cancels only the memo's wait: it returns at once, and the dictation
+    /// still reaches ready (#1511).
+    func testCancellingMemoWaiterPreservesDictationWaiter() async throws {
+        let modelPreparer = FakeModelPreparer(suspendBackendIDs: [BackendCatalog.speechd.id])
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
+        let manager = makeManager(
+            modelPreparer: modelPreparer,
+            supervisorFactory: supervisorFactory
+        )
+
+        let dictation = Task { @MainActor in
+            try await manager.ensureReady(dictation: true, polishing: false)
+        }
+        await modelPreparer.waitUntilPrepareStarted()
+        let memo = Task { @MainActor in
+            try await manager.ensureReady(dictation: true, polishing: false)
+        }
+        await Task.yield()
+
+        memo.cancel()
+        do {
+            try await memo.value
+            XCTFail("expected the cancelled memo wait to throw")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+        XCTAssertTrue(modelPreparer.terminatedBackendIDs.isEmpty)
+
+        modelPreparer.resumePrepare()
+        try await dictation.value
+        XCTAssertEqual(manager.speechdStatus, .ready)
+        XCTAssertEqual(
+            supervisorFactory.supervisors[BackendCatalog.speechd.displayName]?.startCallCount,
+            1
+        )
+    }
+
     /// Each stop scope tears down exactly its own supervisors and leaves the
     /// other backend running.
     func testStopScopeStopsExactlyItsOwnSupervisors() async throws {
