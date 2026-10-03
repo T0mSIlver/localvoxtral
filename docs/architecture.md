@@ -50,7 +50,8 @@ through it or called as a pure step:
 AppKit:
 
 - `TranscriptAccumulator`, `TextMergingAlgorithms`, the overlay text
-  assembler, `PolishTokenGuard`, `ClipboardPayloadMacro`,
+  assembler and `OverlayBufferStateMachine`, `PolishTokenGuard`,
+  `ClipboardPayloadMacro`,
   `PolishOutcomeClassifier`, the connection-failure classifier, `SessionClock`
 - the vocabulary matching: `RepoVocabulary`, `RepoIndexing`,
   `RepoVocabularyMatcher`, `ClipboardVocabulary`, `DoubleMetaphone`
