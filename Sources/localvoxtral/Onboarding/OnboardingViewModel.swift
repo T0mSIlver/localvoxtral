@@ -41,9 +41,16 @@ final class OnboardingViewModel {
     var mistralAPIKeyDraft = "" {
         didSet {
             // A verdict belongs to the key it checked (#1626).
-            if mistralAPIKeyDraft != oldValue { mistralAPIKeyCheckState = .idle }
+            guard mistralAPIKeyDraft != oldValue else { return }
+            mistralAPIKeyCheckGeneration += 1
+            mistralAPIKeyCheckState = .idle
         }
     }
+
+    /// Bumped by every edit and every check, so only the latest check
+    /// publishes: an edit lets a new check start while an old one is still
+    /// out, even for the same key typed again.
+    @ObservationIgnored private var mistralAPIKeyCheckGeneration = 0
 
     /// Result of the `.engine` page's own "Check key" press. Advisory — a
     /// rejected key does not block Continue, because the check can be wrong
@@ -164,11 +171,13 @@ final class OnboardingViewModel {
         guard !mistralAPIKeyCheckState.isChecking else { return }
         let apiKey = mistralAPIKeyDraft
         guard !apiKey.trimmed.isEmpty else { return }
+        mistralAPIKeyCheckGeneration += 1
+        let generation = mistralAPIKeyCheckGeneration
         mistralAPIKeyCheckState = .checking
         mistralAPIKeyCheckTask = Task { @MainActor [weak self] in
             guard let self else { return }
             let verification = await self.viewModel.engines.verifyMistralAPIKey(apiKey)
-            guard self.mistralAPIKeyDraft == apiKey else { return }
+            guard self.mistralAPIKeyCheckGeneration == generation else { return }
             self.mistralAPIKeyCheckState = .finished(verification)
         }
     }
