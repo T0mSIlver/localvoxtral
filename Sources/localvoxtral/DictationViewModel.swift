@@ -1119,6 +1119,10 @@ extension DictationViewModel {
             return Self.voiceMemoSharesTheEngine(
                 memo: self.voiceMemoBackendMode, dictation: self.settings.dictationBackendMode)
         }
+        session.yieldVoiceMemoEngine = { [weak self, weak controller] in
+            guard let self, self.session.voiceMemoHoldsTheEngine() else { return }
+            controller?.yieldToDictation()
+        }
         voiceMemos = controller
         controller.apply()
     }

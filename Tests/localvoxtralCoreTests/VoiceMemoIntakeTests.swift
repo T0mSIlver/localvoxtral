@@ -17,6 +17,8 @@ final class VoiceMemoIntakeTests: XCTestCase {
             let name = url.lastPathComponent
             calls.withLock { $0.append(name) }
             if let observe = whileTranscribing.withLock({ $0 }) { await observe() }
+            // A cancelled memo closes its socket, and the stream ends without a transcript.
+            try Task.checkCancellation()
             let result = results.withLock { $0[name] } ?? .success("words of \(name)")
             return VoiceMemoTranscript(text: try result.get(), pcm16: Data(name.utf8))
         }
@@ -44,6 +46,7 @@ final class VoiceMemoIntakeTests: XCTestCase {
     /// The Inbox turned the capture down, as a refused Inbox does.
     private var captureRefused = false
     private var streamingSeen: [Bool] = []
+    private var dictating = false
 
     override func setUp() async throws {
         workDirectory = FileManager.default.temporaryDirectory
@@ -238,6 +241,40 @@ final class VoiceMemoIntakeTests: XCTestCase {
         XCTAssertEqual(streamingSeen, [true, true])
         XCTAssertEqual(captured.map(\.text), ["words of a.m4a"])
         XCTAssertFalse(intake.isTranscribing, "after a capture and after a failure")
+    }
+
+    /// #1317: a dictation that starts on the memo's engine cancels the memo,
+    /// so its text streams live. The memo goes back for a later scan, and the
+    /// popover says nothing about it.
+    func testAMemoCancelledByADictationStartIsTranscribedOnALaterScanWithNoStatus() async {
+        let intake = intake()
+        var statuses: [String] = []
+        intake.onStatus = { statuses.append($0) }
+        intake.canTranscribe = { [unowned self] in !dictating }
+        transcriber.whileTranscribing.withLock {
+            $0 = { [unowned self] in
+                guard streamingSeen.isEmpty else { return }
+                dictating = true
+                intake.yieldToDictation()
+                streamingSeen.append(intake.isTranscribing)
+            }
+        }
+        files = [memo("a.m4a", minute: 1), memo("b.m4a", minute: 2)]
+        _ = await intake.scan()
+        _ = await intake.scan()
+        XCTAssertEqual(streamingSeen, [false], "the dictation does not wait behind it")
+        XCTAssertEqual(transcriber.calls.withLock { $0 }, ["a.m4a"], "b waits too")
+        XCTAssertEqual(captured, [])
+        XCTAssertEqual(trashed, [])
+
+        _ = await intake.scan()
+        XCTAssertEqual(transcriber.calls.withLock { $0 }, ["a.m4a"], "not while the dictation runs")
+
+        dictating = false
+        _ = await intake.scan()
+        XCTAssertEqual(captured.map(\.text), ["words of a.m4a", "words of b.m4a"])
+        XCTAssertEqual(trashed, ["a.m4a", "b.m4a"])
+        XCTAssertEqual(statuses, [])
     }
 
     /// Voice memos turned off mid-memo: the memo in flight is finished, since

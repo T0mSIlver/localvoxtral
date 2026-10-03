@@ -154,18 +154,43 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
     private func receive(_ connection: NWConnection, _ ctx: Connection) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 16) {
             [weak self] data, _, isComplete, error in
-            guard let self else { connection.cancel(); return }
+            guard let self else { ctx.feed.close(); connection.cancel(); return }
             if let data, !data.isEmpty {
                 ctx.buffer.append(data)
                 do {
                     try self.drain(connection, ctx)
                 } catch {
-                    connection.cancel()
+                    self.close(connection, ctx)
                     return
                 }
             }
-            if error != nil || isComplete { connection.cancel(); return }
+            guard !ctx.feed.isClosed else { return }
+            if error != nil || isComplete { self.close(connection, ctx); return }
             self.receive(connection, ctx)
+        }
+    }
+
+    /// The connection is done, by a close frame or a dropped socket: its queued
+    /// appends skip their steps, so a dictation behind a cancelled voice memo waits
+    /// for one step at most (#1317).
+    private func close(_ connection: NWConnection, _ ctx: Connection, sendingCloseFrame: Bool = false) {
+        guard !ctx.feed.isClosed else { return }
+        ctx.feed.close()
+        if sendingCloseFrame {
+            rawSend(connection, WebSocketFrameCodec.close(), thenClose: true)
+        } else {
+            connection.cancel()
+        }
+        // A health probe never touched the engine.
+        guard ctx.phase == .webSocket else { return }
+        // A client that disconnects without a final commit (mid-utterance
+        // cancel) would otherwise release its session's buffers into the
+        // pool with no clear behind them. Serial queue: this lands after
+        // the connection's already-queued work, which the closed feed skips.
+        inferenceQueue.async {
+            ctx.session = nil
+            ctx.stopReporter.reset()
+            Memory.clearCache()
         }
     }
 
@@ -195,7 +220,7 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         }
 
         // WebSocket phase: decode every complete frame currently buffered.
-        while ctx.phase == .webSocket {
+        while ctx.phase == .webSocket, !ctx.feed.isClosed {
             let result = try WebSocketFrameCodec.decode(ctx.buffer)
             guard case .frame(let frame, let consumed) = result else { break }
             ctx.buffer.removeFirst(consumed)
@@ -208,16 +233,7 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         case .ping:
             rawSend(connection, WebSocketFrameCodec.pong(frame.payload))
         case .close:
-            rawSend(connection, WebSocketFrameCodec.close(), thenClose: true)
-            // A client that disconnects without a final commit (mid-utterance
-            // cancel) would otherwise release its session's buffers into the
-            // pool with no clear behind them. Serial queue: this lands after
-            // any already-queued steps for this connection.
-            inferenceQueue.async {
-                ctx.session = nil
-                ctx.stopReporter.reset()
-                Memory.clearCache()
-            }
+            close(connection, ctx, sendingCloseFrame: true)
         case .pong, .continuation:
             break
         case .text, .binary:
@@ -265,9 +281,9 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
                 break  // queued above
             case .commit(let final):
                 guard final else { return }  // non-final commit is a no-op, matching voxmlx
+                guard !ctx.feed.isClosed else { return }  // nobody to answer
                 let session = self.ensureSession(ctx)
-                let remainder = ctx.feed.flushRemainder()
-                if !remainder.isEmpty { session.step(remainder) }
+                for batch in ctx.feed.flushRemainder() { session.step(batch) }
                 self.reportGrownSteps(ctx)
                 // The remainder can be what crosses the limit (Nemotron then drops it).
                 // Check before finish(), which ends every Voxtral stream and would

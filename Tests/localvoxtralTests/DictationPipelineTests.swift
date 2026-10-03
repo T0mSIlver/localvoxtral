@@ -274,6 +274,27 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
     }
 
+    /// #1317: the start cancels a voice memo streaming through the engine
+    /// before it asks whether one holds it, so the stop keeps its usual rules.
+    func testADictationStartCancelsAVoiceMemoOnItsEngine() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        var memoTranscribing = true
+        var yields = 0
+        pipeline.viewModel.session.voiceMemoHoldsTheEngine = { memoTranscribing }
+        pipeline.viewModel.session.yieldVoiceMemoEngine = {
+            yields += 1
+            memoTranscribing = false
+        }
+
+        await startAndSpeak(pipeline)
+        XCTAssertEqual(yields, 1)
+        XCTAssertNil(pipeline.viewModel.session.sessionStartedBehindVoiceMemoAt, "not behind the memo")
+
+        await stopAndFinalize(pipeline, finalText: Self.phrase)
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
+        XCTAssertEqual(yields, 1, "only the start yields")
+    }
+
     /// A settled sentence past 30 words, the first piece early polish takes.
     private static let settledPiece =
         "the first part of this dictation is long enough to settle into a piece of its own "

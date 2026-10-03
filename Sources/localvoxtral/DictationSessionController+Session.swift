@@ -546,6 +546,7 @@ extension DictationSessionController {
         requestedQuickCapture = false
         requestedDraftReview = nil
         sessionStartedAt = Date()
+        yieldVoiceMemoEngine()
         sessionStartedBehindVoiceMemoAt = voiceMemoHoldsTheEngine() ? dependencies.clock.now() : nil
         sessionCaptureTimeline = CaptureTimeline(
             pressedAt: dependencies.clock.now(), now: dependencies.clock.now)

@@ -121,6 +121,13 @@ final class VoiceMemoController {
         intake?.isTranscribing == true || finishingIntake?.isTranscribing == true
     }
 
+    /// A dictation starts on the engine the memo streams through: the memo
+    /// is cancelled and taken again on a later scan (#1317).
+    func yieldToDictation() {
+        intake?.yieldToDictation()
+        finishingIntake?.yieldToDictation()
+    }
+
     init(
         settings: SettingsStore,
         inbox: QuickCaptureInboxViewModel,
@@ -173,9 +180,7 @@ final class VoiceMemoController {
             startTask?.cancel()
             startTask = nil
             if let intake, intake.isTranscribing {
-                // The memo in flight finishes, whichever scan runs it: the
-                // helper decodes its queued audio whether or not its socket
-                // stays open (#1313).
+                // The memo in flight finishes, whichever scan runs it (#1313).
                 intake.stopAfterCurrentMemo()
                 finishingIntake = intake
                 intake.onTranscriptionEnded = { [weak self, weak intake] in
