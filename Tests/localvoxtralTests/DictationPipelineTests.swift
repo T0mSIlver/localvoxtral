@@ -219,6 +219,55 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertFalse(pipeline.viewModel.session.escapeCancelHandler.debugIsRegistered, "the commit releases Escape")
     }
 
+    /// The Mac sleeps mid-dictation while the bundled helper still holds the
+    /// last words in its decoder. The sleep stop sends the final commit and
+    /// takes its answer before the socket closes, so History holds the whole
+    /// dictation (#1584).
+    func testSleepFinalizesTheDictationBeforeTheSocketCloses() async throws {
+        let workspace = NotificationCenter()
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, workspaceCenter: workspace)
+        let head = "hello from localvoxtral."
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.delta", "delta": head])
+        workspace.post(name: NSWorkspace.willSleepNotification, object: nil)
+
+        let finalCommit = await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        XCTAssertNotNil(finalCommit, "the sleep stop asks the helper for its tail")
+        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
+        let recorded = await pipeline.records.waitForCount(1)
+
+        XCTAssertTrue(recorded)
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
+        XCTAssertFalse(pipeline.viewModel.isDictating)
+    }
+
+    /// The sleep stop waits for the helper's answer for a short bound only:
+    /// macOS promises no time before it suspends the process (#1584).
+    func testSleepFinalizationGivesUpAfterItsShortBound() async throws {
+        let workspace = NotificationCenter()
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, workspaceCenter: workspace)
+        let head = "hello from localvoxtral."
+        let shown = BoundedWait()
+        pipeline.overlay.onRefresh = { if $0.displayText == head { shown.resolve() } }
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.delta", "delta": head])
+        let arrived = await shown.value(failAfter: 10)
+        XCTAssertTrue(arrived)
+        workspace.post(name: NSWorkspace.willSleepNotification, object: nil)
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        // The socket's keepalive, the stop's watchdog and its finalization
+        // loop. The helper never answers.
+        await pipeline.clock.waitForSleepers(3)
+        pipeline.clock.advance(by: TimingConstants.sleepStopFinalizationTimeout)
+        let recorded = await pipeline.records.waitForCount(1)
+
+        XCTAssertTrue(recorded)
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [head])
+        XCTAssertFalse(pipeline.viewModel.isFinalizingStop)
+    }
+
     /// The Mac loses its network while dictating to a speech server on
     /// loopback, as the bundled one is: the socket is unaffected, so the
     /// dictation keeps listening and its stop still sends the final commit
@@ -4053,7 +4102,8 @@ final class DictationPipelineTests: XCTestCase {
         polishEndpoint: String = "http://127.0.0.1:8080/v1/chat/completions",
         earlyPolish: Bool = true,
         contextBudget: RealtimeContextBudget? = nil,
-        overlayCoordinator: (any OverlayBufferSessionCoordinating)? = nil
+        overlayCoordinator: (any OverlayBufferSessionCoordinating)? = nil,
+        workspaceCenter: NotificationCenter? = nil
     ) async throws -> Pipeline {
         let server = try FakeRealtimeServer()
         addTeardownBlock { server.stop() }
@@ -4081,6 +4131,7 @@ final class DictationPipelineTests: XCTestCase {
             startRuntimeServices: false,
             dependencies: DictationViewModel.Dependencies(
                 microphone: { microphone },
+                workspaceNotificationCenter: workspaceCenter,
                 connectionFailurePresenter: presenter,
                 onSessionRecord: { records.append($0) },
                 clock: clock.clock,

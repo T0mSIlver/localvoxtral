@@ -108,6 +108,12 @@ extension DictationSessionController {
             return
         }
 
+        if isReconnectingRealtimeSession {
+            // This is the answer to the attempt in flight, not a fresh drop,
+            // also for a stop that waits on the run.
+            reconnectAttemptDidFail = true
+            return
+        }
         if isFinalizingStop {
             finishStoppedSession(promotePendingSegment: true)
             return
@@ -119,11 +125,6 @@ extension DictationSessionController {
             if realtimeSessionIndicatorState != .recentFailure {
                 setRealtimeIndicatorIdle()
             }
-            return
-        }
-        if isReconnectingRealtimeSession {
-            // This is the answer to the attempt in flight, not a fresh drop.
-            reconnectAttemptDidFail = true
             return
         }
         guard !beginRealtimeReconnectIfPossible() else { return }

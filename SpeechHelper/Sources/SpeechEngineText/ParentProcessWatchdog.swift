@@ -26,6 +26,21 @@ public final class ParentProcessWatchdog: @unchecked Sendable {
         }
     }
 
+    /// Runs `operation` under a watchdog for `parentPID` (none when nil),
+    /// installed before the operation starts so a parent that dies during a
+    /// model load is noticed then (#1586). The watchdog lives until the
+    /// operation returns: its deinit cancels the kqueue source, and a local
+    /// whose last use comes early may be released early.
+    public static func guarding<T>(
+        parentPID: pid_t?,
+        onParentExit: @escaping @Sendable () -> Void,
+        _ operation: () async throws -> T
+    ) async rethrows -> T {
+        let watchdog = parentPID.map { ParentProcessWatchdog(parentPID: $0, onParentExit: onParentExit) }
+        defer { withExtendedLifetime(watchdog) {} }
+        return try await operation()
+    }
+
     private func fireOnce() {
         let first = fired.withLock { value in
             let previous = value
