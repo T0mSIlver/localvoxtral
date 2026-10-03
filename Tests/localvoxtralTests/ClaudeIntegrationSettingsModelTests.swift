@@ -3001,7 +3001,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             "only the install call carries the token"
         )
         XCTAssertTrue(scripts.contains {
-            $0.contains("--config 'token=\(token)' --config 'port=28542'")
+            $0.contains("--config 'port=28542'\n") && $0.contains("--values-stdin") && $0.contains("{\"token\":\"\(token)\"}\n")
         })
         for invocation in recorder.all {
             XCTAssertFalse(invocation.argv.joined(separator: " ").contains(token), "\(invocation.argv)")
