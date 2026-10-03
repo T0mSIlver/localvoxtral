@@ -74,6 +74,13 @@ enum ViewSnapshot {
         alert.window.appearance = NSAppearance(named: appearance)
         alert.layout()
         guard let content = alert.window.contentView else { throw SnapshotError.noBitmap(name) }
+        // The window's material draws only on screen; without a fill the
+        // dark alert's text sits on transparent pixels.
+        let theme = alert.window.appearance ?? NSAppearance(named: .aqua)!
+        content.wantsLayer = true
+        theme.performAsCurrentDrawingAppearance {
+            content.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        }
         settle(content)
         return try write(content, name: name)
     }
