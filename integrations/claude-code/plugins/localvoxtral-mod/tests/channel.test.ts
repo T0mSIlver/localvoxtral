@@ -207,11 +207,16 @@ describe('channel', () => {
     expect(spawns).toBe(1)
   })
 
-  for (const [reason, respawned] of [
-    ['clear', [[PUBLISHER, '--attach', '--session', 'sess-1'], [PUBLISHER, '--attach', '--session', 'sess-2']]],
-    ['prompt_input_exit', [[PUBLISHER, '--attach', '--session', 'sess-1']]],
+  const moved = [[PUBLISHER, '--attach', '--session', 'sess-1'], [PUBLISHER, '--attach', '--session', 'sess-2']]
+  for (const [reason, appAnswers, respawned] of [
+    ['clear', true, moved],
+    // An app that is down never answers the bye: the mod ends the child
+    // itself, or it would attach as the cleared session later.
+    ['clear', false, moved],
+    ['prompt_input_exit', true, [[PUBLISHER, '--attach', '--session', 'sess-1']]],
   ] as const) {
-    test(`session.end says bye, and the channel follows only a /clear: ${reason}`, async ($, on) => {
+    const label = `${reason}${appAnswers ? '' : ', the app does not answer'}`
+    test(`session.end says bye, and the channel follows only a /clear: ${label}`, async ($, on) => {
       const clock = mock.clock(on)
       mock.env(on, { HOME: '/Users/tom' })
       let sessionID = 'sess-1'
@@ -229,7 +234,7 @@ describe('channel', () => {
       on('ui.status', () => ({ value: undefined }))
       on('process.spawn', async function* ($, e): AsyncGenerator<ProcessSpawnChunk, { value: ProcessSpawnResult }> {
         spawned.push(e.argv)
-        if (spawned.length === 1) {
+        if (spawned.length === 1 && appAnswers) {
           // The app answers the bye down the channel, then closes it.
           await byeTaken
           yield { stream: 'stdout', text: '{"id":"z","kind":"bye","mod_message":1}\n' }

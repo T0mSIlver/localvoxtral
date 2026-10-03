@@ -63,6 +63,9 @@ async function settingsShowIndicator($: EngineInterface): Promise<boolean> {
 // loop reads it.
 let endingSession: string | undefined
 let processEnds = false
+// Resolves when `session.end` cuts the channel of a `/clear`, so the read
+// loop stops waiting on a child the app may never close.
+let cutChannel: () => void = () => {}
 
 /**
  * Keeps `--attach` running for the session's life and answers each message
@@ -81,7 +84,18 @@ async function runChannel(
     try {
       let buffered = ''
       const child = $.process.spawn({ argv: [publisher, '--attach', '--session', sessionID] })
-      read: for await (const { stream, text } of child) {
+      const cut = new Promise<'cut'>((resolve) => {
+        cutChannel = () => resolve('cut')
+      })
+      read: for (;;) {
+        const piece = await Promise.race([child.next(), cut])
+        if (piece === 'cut') {
+          // Ends the child; not awaited, since a pull may still be pending.
+          void child.return(undefined as never).catch(() => {})
+          break
+        }
+        if (piece.done === true) break
+        const { stream, text } = piece.value
         if (stream !== 'stdout') continue
         buffered += text
         let newline = buffered.indexOf('\n')
@@ -92,6 +106,7 @@ async function runChannel(
             // The app ended this session's channel; leaving the loop ends
             // the child.
             saidBye = true
+            void child.return(undefined as never).catch(() => {})
             break read
           }
           if (message?.kind === 'state') void showBand($, message)
@@ -236,6 +251,10 @@ export const register: Register = (on, options) => {
       endingSession = e.sessionId
       processEnds = e.reason !== 'clear'
       await sayBye($, channelPublisher, e.sessionId)
+      // Without the app's answer (an app that is down or predates the bye)
+      // the child would go on attaching as the cleared session: end it, so
+      // the channel moves to the new id.
+      if (!processEnds) cutChannel()
     }
     return next(e)
   })
