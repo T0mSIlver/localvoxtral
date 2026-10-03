@@ -143,7 +143,10 @@ chmod 600 "$HOME/.ssh/config"
 assert_account_is_pristine "after a current run"
 port="$("$RUN_DIR/bin/ssh" -G -- lvx-herdr-fixture 2>/dev/null | awk '$1 == "port" { print $2 }')"
 [[ "$port" == 24601 ]] || fail "the wrapper did not resolve the alias through the run's config (port '$port')"
-printf '%s\n' /bin/true > "$RUN_DIR/herdr.bin"
+# A stub of our own, not /bin/true: macOS has only /usr/bin/true.
+printf '#!/bin/sh\n' > "$TMP_DIR/herdr-stand-in"
+chmod +x "$TMP_DIR/herdr-stand-in"
+printf '%s\n' "$TMP_DIR/herdr-stand-in" > "$RUN_DIR/herdr.bin"
 [[ "$(load_context "$RUN_DIR"; command -v ssh)" == "$RUN_DIR/bin/ssh" ]] \
   || fail "herdr started by the fixture would not find the run's ssh wrapper first"
 
