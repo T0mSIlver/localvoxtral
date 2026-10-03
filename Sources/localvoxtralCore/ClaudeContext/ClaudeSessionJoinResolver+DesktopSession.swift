@@ -9,7 +9,9 @@ import Foundation
 extension ClaudeSessionJoinResolver {
     /// The Claude Desktop arm: the `local_…` id in the address of the web view
     /// holding keyboard focus, matched by exact equality against the
-    /// `CLAUDE_CODE_HOST_SESSION_ID` a live session's own hooks published.
+    /// `CLAUDE_CODE_HOST_SESSION_ID` a live session's own hooks published, or
+    /// the bridge `session_…` id of a Remote Control session's page, matched
+    /// against `CLAUDE_CODE_BRIDGE_SESSION_ID`.
     ///
     /// The browser arm's shape with a different reader. Claude Desktop hosts
     /// each Code-tab session in a web view at
@@ -31,16 +33,45 @@ extension ClaudeSessionJoinResolver {
             Self.abstainedDesktopSessionJoin(outcome: "focused web view address unavailable")
             return ClaudeJoinResolution(join: nil)
         }
-        guard let desktopSessionID = ClaudeDesktopSessionURL.sessionID(inWebAreaURL: address) else {
-            // Never the address itself: it names what the user is looking at.
-            Self.abstainedDesktopSessionJoin(outcome: "focus is not in a Claude Code session")
-            return ClaudeJoinResolution(join: nil)
+        if let desktopSessionID = ClaudeDesktopSessionURL.sessionID(inWebAreaURL: address) {
+            return joinDesktopSession(
+                target: target,
+                lookup: registry.resolve(desktopSessionID: desktopSessionID),
+                via: "its desktop session id",
+                desktopBinding: ClaudeDesktopSessionBinding(desktopSessionID: desktopSessionID)
+            )
         }
+        // A Remote Control session opened in Claude Desktop (#1065): the web
+        // view shows the claude.ai page for it, `/code/session_…`, and the id
+        // is the bridge id the session's hooks export, so the browser arm's
+        // lookup and abstentions apply unchanged.
+        if let bridgeSessionID = ClaudeBridgeSessionURL.sessionID(inTabURL: address) {
+            return joinDesktopSession(
+                target: target,
+                lookup: registry.resolve(bridgeSessionID: bridgeSessionID),
+                via: "its Remote Control bridge session id",
+                bridgeBinding: ClaudeBrowserTabBinding(bridgeSessionID: bridgeSessionID)
+            )
+        }
+        // Never the address itself: it names what the user is looking at.
+        Self.abstainedDesktopSessionJoin(outcome: "focus is not in a Claude Code session")
+        return ClaudeJoinResolution(join: nil)
+    }
 
-        switch registry.resolve(desktopSessionID: desktopSessionID) {
+    /// One registry answer for the session the focused web view names. Exactly
+    /// one binding is set: the `local_…` id for a Code-tab session, the bridge
+    /// id for a Remote Control one; commit-time liveness re-resolves that one.
+    private func joinDesktopSession(
+        target: TerminalScreenTarget,
+        lookup: ClaudeSessionResolution,
+        via idName: String,
+        desktopBinding: ClaudeDesktopSessionBinding? = nil,
+        bridgeBinding: ClaudeBrowserTabBinding? = nil
+    ) -> ClaudeJoinResolution {
+        switch lookup {
         case .resolved(let snapshot):
             Log.claudeContext.info(
-                "Claude Desktop joined to a live Claude session via its desktop session id"
+                "Claude Desktop joined to a live Claude session via \(idName, privacy: .public)"
             )
             return ClaudeJoinResolution(join: ClaudeSessionJoin(
                 target: target,
@@ -49,7 +80,8 @@ extension ClaudeSessionJoinResolver {
                 // SCREEN capture with its join, and this mechanism has none.
                 windowID: nil,
                 mechanism: .desktopSession,
-                desktopSession: ClaudeDesktopSessionBinding(desktopSessionID: desktopSessionID)
+                browserTab: bridgeBinding,
+                desktopSession: desktopBinding
             ))
         case .unknown:
             Self.abstainedDesktopSessionJoin(outcome: "no live session reports this desktop session")

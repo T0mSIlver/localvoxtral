@@ -614,6 +614,11 @@ package struct ClaudeSessionJoinResolver {
         // abstention rules identical at both ends: unique fresh reporter, or no
         // join. It subsumes the identity check too — `.resolved` can only name
         // a session that still reports the bound id.
+        return bridgeSessionStillResolves(binding, for: join)
+    }
+
+    /// `binding`'s bridge id still resolves to `join`'s session alone.
+    private func bridgeSessionStillResolves(_ binding: ClaudeBrowserTabBinding, for join: ClaudeSessionJoin) -> Bool {
         guard case .resolved(let current) =
             registry.resolve(bridgeSessionID: binding.bridgeSessionID),
             current.sessionID == join.snapshot.sessionID
@@ -633,7 +638,12 @@ package struct ClaudeSessionJoinResolver {
     /// Unlike the bridge id the desktop id never goes away while the session
     /// runs, so this adds no disconnect signal; the registry's freshness still
     /// covers a session that ended.
+    /// A Remote Control session opened in Desktop is bound by its bridge id
+    /// instead, and re-resolves it as a browser join does.
     private func desktopSessionStillResolves(_ join: ClaudeSessionJoin) -> Bool {
+        if join.desktopSession == nil, let bridge = join.browserTab {
+            return bridgeSessionStillResolves(bridge, for: join)
+        }
         guard let binding = join.desktopSession else {
             // Unreachable through `resolveViaDesktopSession`, which always
             // binds. Fail closed anyway.
