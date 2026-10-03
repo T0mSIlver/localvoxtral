@@ -142,6 +142,11 @@ jobs:
         # it tags anything instead of holding the Mac into the owner's day.
         # Stable, nightly and rehearsal runs, and a daily dispatched in the
         # day, keep the full 3 h waits.
+        #
+        # The release machinery this file calls after the daily detach
+        # (night-deadline.sh, publish-release.sh) runs from a copy of this
+        # ref's scripts/ci in $RELEASE_CI, taken first: the picked commit can
+        # predate those scripts.
         id: plan
         env:
           CHANNEL_INPUT: ${{ inputs.channel }}
@@ -149,6 +154,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          rm -rf "$RUNNER_TEMP/release-ci"
+          cp -R scripts/ci "$RUNNER_TEMP/release-ci"
+          echo "RELEASE_CI=$RUNNER_TEMP/release-ci" >> "$GITHUB_ENV"
 
           if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
             CHANNEL="daily"
@@ -200,7 +208,7 @@ jobs:
 
           NIGHT_DEADLINE=""
           if [[ "$CHANNEL" == "daily" && "$PUBLISH" == "true" ]]; then
-            NIGHT_DEADLINE="$(./scripts/ci/night-deadline.sh deadline | sed -n 's/^deadline=//p')"
+            NIGHT_DEADLINE="$("$RELEASE_CI/night-deadline.sh" deadline | sed -n 's/^deadline=//p')"
           fi
           echo "night_deadline=$NIGHT_DEADLINE" >> "$GITHUB_OUTPUT"
 
@@ -445,7 +453,7 @@ jobs:
           NIGHT_DEADLINE: ${{ steps.plan.outputs.night_deadline }}
         run: |
           set -euo pipefail
-          TIMEOUT="$(./scripts/ci/night-deadline.sh timeout "$NIGHT_DEADLINE" 180 20)"
+          TIMEOUT="$("$RELEASE_CI/night-deadline.sh" timeout "$NIGHT_DEADLINE" 180 20)"
           ditto -c -k --keepParent dist/localvoxtral.app "$RUNNER_TEMP/notarize-app.zip"
           NOTARIZE_TIMEOUT="$TIMEOUT" ./scripts/ci/notarize.sh "$RUNNER_TEMP/notarize-app.zip" "$NOTARY_PROFILE"
           xcrun stapler staple dist/localvoxtral.app
@@ -481,7 +489,7 @@ jobs:
             # the DMG. v0.11.1's DMG was still In Progress after 1 h
             # (run 37121470049). A night-bound wait holds 10 min back for the
             # publish.
-            TIMEOUT="$(./scripts/ci/night-deadline.sh timeout "$NIGHT_DEADLINE" 180 10)"
+            TIMEOUT="$("$RELEASE_CI/night-deadline.sh" timeout "$NIGHT_DEADLINE" 180 10)"
             NOTARIZE_TIMEOUT="$TIMEOUT" ./scripts/ci/notarize.sh "dist/localvoxtral-$TAG.dmg" "$NOTARY_PROFILE"
             xcrun stapler staple "dist/localvoxtral-$TAG.dmg"
             xcrun stapler validate "dist/localvoxtral-$TAG.dmg"
@@ -633,7 +641,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.meta.outputs.tag }}
           NOTES: ${{ steps.notes.outputs.path }}
-        run: ./scripts/ci/publish-release.sh "$TAG" dist "$NOTES"
+        run: '"$RELEASE_CI/publish-release.sh" "$TAG" dist "$NOTES"'
 
       - name: Keep the assets of a release that did not publish
         # A failure or cancel after the tag went up leaves a tagged commit
