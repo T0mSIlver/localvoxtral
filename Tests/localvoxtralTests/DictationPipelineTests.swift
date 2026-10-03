@@ -97,6 +97,52 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
     }
 
+    /// Secure Keyboard Entry turns on mid-dictation: macOS swallows the keys
+    /// while posting them reports success, so the words after it are not
+    /// typed, and the stop saves the dictation as not inserted.
+    func testSecureInputTurnedOnMidLiveAutoPasteKeepsTheTextNotInserted() async throws {
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        addTeardownBlock { TerminalTargetDetector.debugSecureEventInputOverride = nil }
+        let typed = TypedText()
+        var secureInput = false
+        let offered = BoundedWait()
+        pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        pipeline.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { chunk in
+                guard !secureInput else {
+                    offered.resolve()
+                    return true
+                }
+                typed.append(chunk)
+                return true
+            },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in
+                offered.resolve()
+                return false
+            }
+        )
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.delta", "delta": "First part"])
+        pipeline.server.send(["type": "transcription.done", "text": "First part."])
+        let typedFirst = await typed.waitFor("First part.")
+        XCTAssertTrue(typedFirst, "typed so far: \(typed.text.debugDescription)")
+        secureInput = true
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+        pipeline.server.send(["type": "transcription.done", "text": " Second part."])
+        let attempted = await offered.value(failAfter: 10)
+        XCTAssertTrue(attempted, "the second segment was never offered to the field")
+
+        await stopAndFinalize(
+            pipeline, finalText: "",
+            expectedError: "Some realtime text could not be inserted into the focused app."
+        )
+
+        XCTAssertEqual(typed.text, "First part.")
+        XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
+    }
+
     /// A cancel while the stream still holds the last word back (a speaker
     /// term gives it rules) types nothing more (#1222).
     func testACancelTypesNothingTheLiveStreamStillHolds() async throws {
@@ -1662,6 +1708,32 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertTrue(appended, "calls: \(relay.calls)")
         XCTAssertEqual(relay.calls.map(\.text), ["that's what I was doing.", "/compact"])
         XCTAssertEqual(typed.text, "", "no key went to the terminal")
+    }
+
+    /// The relay answers 409, the pane shows another session now: the words
+    /// stay in History, nothing is typed, and the record says not inserted.
+    func testLiveAutoPasteTextTheRelayKeptInHistoryIsSavedAsNotInserted() async throws {
+        let relay = try FakeOpencodePromptRelay { _ in 409 }
+        addTeardownBlock { relay.stop() }
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        joinOpencodePane(pipeline, relay: relay.relay(sessionID: "ses_a").address)
+        let typed = recordTypedText(pipeline)
+
+        await startAndSpeak(pipeline)
+        let sink = try XCTUnwrap(pipeline.viewModel.textInsertion.promptRelaySink)
+        sendPartials(pipeline)
+        let refused = await relay.waitForCalls(1)
+        XCTAssertTrue(refused)
+        await sink.waitUntilIdle()
+        XCTAssertFalse(sink.isHealthy, "precondition: the refusal arrived before the stop")
+
+        await stopAndFinalize(
+            pipeline, expectedError: DictationViewModel.StatusStrings.agentPromptTextKeptInHistory
+        )
+
+        XCTAssertEqual(typed.text, "", "nothing is typed")
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
+        XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
     }
 
     /// A relay that refuses the connection: the dictation types, as it

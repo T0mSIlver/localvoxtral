@@ -197,7 +197,8 @@ there is not.
   (`tell application id` would launch one that is not), and the tty is
   spliced into AppleScript only when it is `/dev/tty` plus letters and
   digits. The result is read back with the join's focused-pane reader:
-  `.focused` only when that tty is the session's. A Return after a focus
+  `.focused` only when that tty is the session's and the terminal is still
+  frontmost after the read (#1465). A Return after a focus
   (#723 step 3) or #717's answer hotkey must require `.focused`, never
   `.unverified`.
 - **A session's title is a name, never evidence** (#1013, #1020). Claude
@@ -814,7 +815,8 @@ there is not.
     tab, workspace or pane creation, no `agent.focus`, no machine switch.
     *Confirmed by reading back:* `.focused`, the only outcome that starts a
     dictation, needs herdr's `pane.current` to name that pane AND the
-    terminal's focused tty to be the window raised; the answer to
+    terminal's focused tty, read again after herdr answered with the
+    terminal still frontmost (#1465), to be the window raised; the answer to
     `pane.focus` alone never is. *Window first* (#1033): `pane.focus` is sent
     only after the window reads back in front, so a window that does not
     come up leaves herdr's pane as it was, and a failure after the raise is

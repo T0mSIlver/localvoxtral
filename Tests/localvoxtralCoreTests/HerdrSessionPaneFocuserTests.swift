@@ -79,7 +79,8 @@ final class HerdrSessionPaneFocuserTests: XCTestCase {
         herdr: FakeHerdrSocket,
         window: String? = "/dev/ttys007",
         raised: SessionPaneFocusOutcome? = nil,
-        raises: Raises = Raises()
+        raises: Raises = Raises(),
+        windowReadBack: String?? = .none
     ) -> HerdrSessionPaneFocuser {
         let bundleID = ghostty
         return HerdrSessionPaneFocuser(
@@ -94,7 +95,7 @@ final class HerdrSessionPaneFocuserTests: XCTestCase {
                 raises.ttys.withLock { $0.append(tty) }
                 return raised ?? .focused(bundleID: bundleID)
             },
-            focusedTTY: { _ in window }
+            focusedTTY: { _ in windowReadBack ?? window }
         )
     }
 
@@ -122,6 +123,18 @@ final class HerdrSessionPaneFocuserTests: XCTestCase {
         defer { herdr.stop() }
 
         let outcome = await focuser(herdr: herdr).focusPane(of: localSession(socket: herdr.socketPath))
+
+        XCTAssertEqual(outcome, .unverified(bundleID: ghostty))
+    }
+
+    /// The user switched the terminal to another tab while herdr was asked:
+    /// herdr still reports its pane, but keys would go to the other tab.
+    func testATabSwitchDuringTheHerdrReadBackIsUnverified() async throws {
+        let herdr = try herdr()
+        defer { herdr.stop() }
+
+        let outcome = await focuser(herdr: herdr, windowReadBack: "/dev/ttys008")
+            .focusPane(of: localSession(socket: herdr.socketPath))
 
         XCTAssertEqual(outcome, .unverified(bundleID: ghostty))
     }
