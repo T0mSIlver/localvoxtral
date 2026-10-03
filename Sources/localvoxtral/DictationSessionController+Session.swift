@@ -374,7 +374,7 @@ extension DictationSessionController {
         realtimeFinalizationLastActivityAt = nil
         // The previous dictation's relay may still answer: its refusals must
         // not reach this dictation's buffers (#1466).
-        textInsertion.retirePromptRelay()
+        textInsertion.retirePromptRelay(endingDictation: true)
         textInsertion.clearPendingText()
         textInsertion.resetDiagnostics()
 

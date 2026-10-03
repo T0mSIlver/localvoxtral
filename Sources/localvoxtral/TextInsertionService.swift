@@ -188,6 +188,10 @@ final class TextInsertionService {
     /// still serve its dictation.
     @ObservationIgnored
     private var promptRelayGeneration = 0
+    /// Moves when another dictation starts: a sink's kept text marks its
+    /// dictation's landing and record only while that dictation runs.
+    @ObservationIgnored
+    private var promptRelayDictation = 0
 
 #if DEBUG
     @ObservationIgnored
@@ -424,21 +428,24 @@ final class TextInsertionService {
     ) {
         promptRelayKeptText = false
         promptRelayGeneration += 1
+        promptRelayDictation += 1
         guard let route else {
             promptRelaySink = nil
             return
         }
         let generation = promptRelayGeneration
-        promptRelaySink = AgentPromptSink(route: route, kept: { [weak self] text in
-            // Kept text landed nowhere: no keyboard Return may follow it.
-            // Once the relay was retired, these flags describe another
-            // dictation.
-            if let self, self.promptRelayGeneration == generation {
+        let dictation = promptRelayDictation
+        // Kept text landed nowhere: no keyboard Return may follow it, and
+        // the dictation's record says not inserted. Only while it is the
+        // dictation running; a go-to within it does not change that.
+        let noteKept: @MainActor (String) -> Void = { [weak self] text in
+            if let self, self.promptRelayDictation == dictation {
                 self.liveInsertionTargetPIDs.append(nil)
                 self.promptRelayKeptText = true
             }
             kept(text)
-        }) { [weak self] text in
+        }
+        promptRelaySink = AgentPromptSink(route: route, kept: noteKept) { [weak self] text in
             if let fallback {
                 fallback(text)
                 return
@@ -449,7 +456,7 @@ final class TextInsertionService {
             // would carry this text there (#1466). It stays in History.
             guard self.promptRelayGeneration == generation else {
                 Log.insertion.notice("\(route.name, privacy: .public) refused a call after its relay was retired; text stays in History")
-                kept(text)
+                noteKept(text)
                 return
             }
             self.typeLiveTextThePromptRelayRefused(text)
@@ -467,9 +474,10 @@ final class TextInsertionService {
     /// The keys and the pending buffers serve something else from now on:
     /// the next dictation, or the pane a go-to moved to. A refusal of a call
     /// already handed to the route stays in History.
-    func retirePromptRelay() {
+    func retirePromptRelay(endingDictation: Bool = false) {
         promptRelaySink = nil
         promptRelayGeneration += 1
+        if endingDictation { promptRelayDictation += 1 }
     }
 
     /// Whether text goes to the route now, to be delivered or kept in
