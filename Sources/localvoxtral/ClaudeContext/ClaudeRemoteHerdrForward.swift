@@ -645,8 +645,9 @@ struct ClaudeRemoteHerdrForwardSpawner: ClaudeRemoteHerdrForwardSpawning {
     var willAttemptTeardownLock: @Sendable () -> Void = {}
     var exitEventQueue: DispatchQueue = .global(qos: .utility)
 
-    func spawn(argv: [String]) throws -> any ClaudeRemoteHerdrForwardProcess {
-        guard !argv.isEmpty else { throw SpawnError.emptyArgv }
+    func spawn(argv requestedArgv: [String]) throws -> any ClaudeRemoteHerdrForwardProcess {
+        guard !requestedArgv.isEmpty else { throw SpawnError.emptyArgv }
+        let argv = SSHConfigOverride.argv(requestedArgv, environment: environment)
 
         // Every one of these is checked. A silently failed SETPGROUP is the
         // dangerous one (review round 5b): the child would then share OUR

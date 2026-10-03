@@ -1159,6 +1159,41 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         XCTAssertFalse(process.isRunning)
     }
 
+    /// `LOCALVOXTRAL_SSH_CONFIG` in the spawner's environment reaches the
+    /// herdr `ssh -L` as `-F` (#1029); the other launchers are covered in
+    /// `SSHConfigOverrideTests`.
+    func testSpawnerPassesTheSSHConfigOverride() throws {
+        let directory = NSTemporaryDirectory()
+            .appending("lvx-forward-ssh-config-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            atPath: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let argumentsFile = (directory as NSString).appendingPathComponent("arguments")
+        let fakeSSH = (directory as NSString).appendingPathComponent("ssh")
+        try Data("#!/bin/sh\nprintf '%s\\n' \"$@\" > '\(argumentsFile).tmp'; mv '\(argumentsFile).tmp' '\(argumentsFile)'\n".utf8)
+            .write(to: URL(fileURLWithPath: fakeSSH))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeSSH)
+        let configPath = (directory as NSString).appendingPathComponent("ssh_config")
+
+        let spawner = ClaudeRemoteHerdrForwardSpawner(
+            executablePath: fakeSSH,
+            environment: ["PATH": "/usr/bin:/bin", SSHConfigOverride.environmentKey: configPath]
+        )
+        let process = try spawner.spawn(argv: ["ssh", "-N", "--", "builder"])
+        defer { process.terminate() }
+
+        // Bounded wait for the child to record its argv; the kernel's clock
+        // cannot be injected.
+        var recorded: String?
+        for _ in 0..<300 {
+            recorded = try? String(contentsOfFile: argumentsFile, encoding: .utf8)
+            if recorded != nil { break }
+            usleep(10_000)
+        }
+        XCTAssertEqual(recorded, "-F\n\(configPath)\n-N\n--\nbuilder\n")
+    }
+
     // MARK: - Never signal a group after reaping it (review round 4)
 
     func testAForwardThatExitsOnItsOwnIsNotReapedUntilTeardown() throws {

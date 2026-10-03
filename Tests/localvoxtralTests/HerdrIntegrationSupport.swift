@@ -1,6 +1,7 @@
 import Foundation
 import Synchronization
 import XCTest
+import localvoxtralCore
 
 #if canImport(Darwin)
 
@@ -422,11 +423,25 @@ final class HerdrLiveFixture {
         let paneID: String
         let primarySurfaceLog: String
         let provisionedSSH: Bool
+        /// The run's own ssh config. The lane hands it to the app's ssh as
+        /// `LOCALVOXTRAL_SSH_CONFIG`, so nothing reads or writes the
+        /// account's `~/.ssh/config` (#1029).
+        let sshConfig: String
         let workdir: String
     }
 
     let info: Info
     let primarySurface: HerdrSurfaceLog
+
+    /// The environment every live ssh constructor in the lane gets: this
+    /// process's, plus `LOCALVOXTRAL_SSH_CONFIG` naming the run's config.
+    /// Passed explicitly because `setenv` need not reach
+    /// `ProcessInfo.processInfo.environment` once it has been read.
+    var sshEnvironment: [String: String] {
+        ProcessInfo.processInfo.environment.merging(
+            [SSHConfigOverride.environmentKey: info.sshConfig], uniquingKeysWith: { _, run in run }
+        )
+    }
     private let scriptURL: URL
     private let repoRoot: URL
     private let diagnosticsRoot: URL
@@ -488,6 +503,7 @@ final class HerdrLiveFixture {
                 "`up` printed no fixture description\n\(result.standardOutput)\(result.standardError)"
             )
         }
+        print("[herdr-fixture] ssh.config=\(info.sshConfig)")
         return HerdrLiveFixture(
             info: info,
             scriptURL: scriptURL,
@@ -505,10 +521,11 @@ final class HerdrLiveFixture {
             arguments: [scriptURL.path, "down", info.workdir],
             currentDirectory: repoRoot
         )
-        // The account's own herdr after the run, next to the `before` line in
-        // environment.txt: the evidence the lane left it alone.
+        // The account's own herdr and ssh config after the run, next to the
+        // `before` lines in environment.txt: the evidence the lane left them
+        // alone.
         for line in (result?.standardError ?? "").split(separator: "\n")
-        where line.contains("herdr.account.after") {
+        where line.contains("herdr.account.after") || line.contains("ssh.account.after") {
             print(line)
         }
     }

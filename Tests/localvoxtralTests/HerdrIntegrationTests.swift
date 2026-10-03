@@ -79,7 +79,7 @@ final class HerdrIntegrationTests: XCTestCase {
     /// Nothing here is stubbed: this spawns OpenSSH and waits for the local
     /// end to answer.
     private func openForward(
-        spawner: any ClaudeRemoteHerdrForwardSpawning = ClaudeRemoteHerdrForwardSpawner(),
+        spawner: (any ClaudeRemoteHerdrForwardSpawning)? = nil,
         clock: AcceleratedClock = AcceleratedClock(),
         idleTimeout: TimeInterval = 5 * 60
     ) async throws -> (
@@ -87,7 +87,7 @@ final class HerdrIntegrationTests: XCTestCase {
         handle: ClaudeRemoteHerdrForwardHandle
     ) {
         let service = ClaudeRemoteHerdrForwardService(
-            spawner: spawner,
+            spawner: spawner ?? ClaudeRemoteHerdrForwardSpawner(environment: fixture.sshEnvironment),
             workspaces: ClaudeRemoteHerdrForwardWorkspaces(),
             now: clock.now,
             sleepFor: clock.sleep,
@@ -517,7 +517,7 @@ final class HerdrIntegrationTests: XCTestCase {
     /// releasing the last lease must eventually retire the process — proven
     /// on the injected clock, not on wall time.
     func testForwardLeaseIsReusedAcrossDictationsAndTornDownWhenIdle() async throws {
-        let spawner = CountingHerdrForwardSpawner()
+        let spawner = CountingHerdrForwardSpawner(environment: fixture.sshEnvironment)
         let clock = AcceleratedClock()
         let service = ClaudeRemoteHerdrForwardService(
             spawner: spawner,
@@ -561,12 +561,13 @@ final class HerdrIntegrationTests: XCTestCase {
 
     // MARK: - ssh -G canonicalization
 
-    /// The alias fallback resolves both sides through the user's REAL ssh
-    /// config and compares `(hostname, port)` — never `user`. Two live
+    /// The alias fallback resolves both sides through the real `ssh -G`, on
+    /// the run's ssh config, and compares `(hostname, port)` — never `user`. Two live
     /// aliases make that concrete: one that differs only in `User` must match,
     /// one that differs in port must not.
     func testSSHDestinationCanonicalizationMatchesThroughRealSSHConfig() async throws {
-        let canonicalizer = SSHDestinationCanonicalizer.live()
+        let environment = fixture.sshEnvironment
+        let canonicalizer = SSHDestinationCanonicalizer.live(environment: { environment })
         let enrolled = Self.enrolledHost(alias: fixture.info.alias)
 
         let sameHost = await canonicalizer.matchingHosts(
@@ -633,7 +634,9 @@ final class HerdrIntegrationTests: XCTestCase {
         }
 
         let service = ClaudeRemoteEnrollmentService(
-            runner: ClaudeRemoteEnrollmentService.processRunner()
+            runner: ClaudeRemoteEnrollmentService.processRunner(
+                environment: { [environment = fixture.sshEnvironment] in environment }
+            )
         )
         let alias = fixture.info.alias
 
@@ -1278,8 +1281,12 @@ final class HerdrIntegrationTests: XCTestCase {
 /// bookkeeping is added, so "was the lease reused" is answerable without
 /// weakening what the lane exercises.
 private final class CountingHerdrForwardSpawner: ClaudeRemoteHerdrForwardSpawning, @unchecked Sendable {
-    private let inner = ClaudeRemoteHerdrForwardSpawner()
+    private let inner: ClaudeRemoteHerdrForwardSpawner
     private let count = Mutex(0)
+
+    init(environment: [String: String]) {
+        inner = ClaudeRemoteHerdrForwardSpawner(environment: environment)
+    }
 
     var spawnCount: Int { count.withLock { $0 } }
 

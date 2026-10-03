@@ -296,8 +296,11 @@ against the Mac fixture):
 - A starting client honors the selection file; a RUNNING client never re-reads
   it (only the profile list is polled, every 1 s) — so the fixture writes the
   file before starting a surface, mirroring what a UI switch persists.
-- `machine add` needs the alias in the REAL ssh config (the federated bridges
-  spawn plain `ssh`), daemon-starts the remote server itself (a
+- `machine add` needs the alias in the config the `ssh` on herdr's PATH reads
+  (the federated bridges spawn it too). The fixture puts a `-F` wrapper first
+  on that PATH (#1029) and sets `[remote] manage_ssh_config = false`: by
+  default herdr adds a `-F` of its own that includes only `~/.ssh/config`,
+  and ssh keeps the last `-F`. `machine add` daemon-starts the remote server itself (a
   directly-started server is refused as not ready), and must run with stdin
   closed (an open stdin parked it past 120 s on an approval prompt). The lane
   federates the DEFAULT remote session at an explicit short socket: a named

@@ -74,11 +74,14 @@ package final class ClaudeRemoteForwardLiveProcess: ClaudeRemoteForwardProcess, 
 
     /// - Parameter argv: complete, including `ssh` at index 0 (the shape
     ///   `Configuration.argv` produces and the enrollment service already uses).
+    ///   `SSHConfigOverride` adds `-F` to it when `environment` sets one.
     package init(
-        argv: [String],
+        argv requestedArgv: [String],
         sshExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/ssh"),
+        environment: [String: String] = ProcessInfo.processInfo.environment,
         hooks: Hooks = Hooks()
     ) throws {
+        let argv = SSHConfigOverride.argv(requestedArgv, environment: environment)
         precondition(!argv.isEmpty)
         self.hooks = hooks
         let (stream, continuation) = AsyncStream<String>.makeStream(of: String.self)
@@ -88,7 +91,7 @@ package final class ClaudeRemoteForwardLiveProcess: ClaudeRemoteForwardProcess, 
         process = Process()
         process.executableURL = sshExecutableURL
         process.arguments = Array(argv.dropFirst())
-        process.environment = Self.childEnvironment(from: ProcessInfo.processInfo.environment)
+        process.environment = Self.childEnvironment(from: environment)
         stderrPipe = Pipe()
         process.standardError = stderrPipe
         // ssh -N produces no stdout; discarding it keeps the app out of the
