@@ -40,11 +40,12 @@ extension DictationSessionController {
     }
 
     /// The text of a fill the mod did not confirm. One that may have landed
-    /// stays in History rather than going in twice. One that surely did not
-    /// is typed, but only while the commit's terminal is frontmost and its
-    /// focused pane still shows the session: a pid cannot tell two tabs
-    /// apart, and the user may have switched since the stop. Unless keys
-    /// put the text in the prompt, the next commit does not continue it.
+    /// is kept (`keepUndeliveredAgentText`) rather than going in twice. One
+    /// that surely did not is typed, but only while the commit's terminal is
+    /// frontmost and its focused pane still shows the session: a pid cannot
+    /// tell two tabs apart, and the user may have switched since the stop.
+    /// Unless keys put the text in the prompt, the next commit does not
+    /// continue it.
     func commitOverlayTextTheModDidNotFill(
         _ text: String,
         preferredAppPID pid: pid_t?,
@@ -54,14 +55,14 @@ extension DictationSessionController {
     ) async {
         var inserted = false
         if mayHaveLanded {
-            lastError = StatusStrings.agentPromptTextKeptInHistory
+            lastError = keepUndeliveredAgentText(text)
         } else if await keysReachModSession(sessionID, terminalPID: terminalPID) {
             inserted = commitOverlayTextThePromptRelayRefused(text, preferredAppPID: pid, sessionID: sessionID)
         } else {
             Log.overlay.notice(
-                "overlay commit: the mod did not fill and the session's pane is not in front; text kept in History"
+                "overlay commit: the mod did not fill and the session's pane is not in front; text kept"
             )
-            lastError = StatusStrings.agentPromptTextKeptInHistory
+            lastError = keepUndeliveredAgentText(text)
         }
         if !inserted, lastOverlayCommitLanding?.sessionID == sessionID {
             lastOverlayCommitLanding = nil
@@ -138,7 +139,7 @@ final class ModChannelOverlayCommitter: OverlayTextCommitting {
                 Log.overlay.notice("overlay commit: the fill never reached the mod; keyboard instead")
                 await notFilled(text, preferredAppPID, false)
             case .unanswered:
-                Log.overlay.error("overlay commit: the mod did not answer the fill; text kept in History")
+                Log.overlay.error("overlay commit: the mod did not answer the fill; text kept")
                 await notFilled(text, preferredAppPID, true)
             }
             #if DEBUG

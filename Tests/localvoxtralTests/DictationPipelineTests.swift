@@ -1185,6 +1185,36 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.map(\.rawText), ["run the tests."])
     }
 
+    /// The same with History off, where Copy last dictation is all that
+    /// holds the text until the next dictation replaces it: the text goes
+    /// on the clipboard, the popover says so, and the next dictation leaves
+    /// it there (#1499).
+    func testAnUnansweredModFillWithHistoryOffSurvivesTheNextDictation() async throws {
+        let answered = BoundedWait()
+        let (pipeline, typed, fills) = try await modChannelPipeline(answers: [.silent], answerGate: answered)
+        pipeline.viewModel.settings.dictationHistoryRetention = .off
+        pipeline.viewModel.settings.autoCopyEnabled = false
+        let copied = pipeline.viewModel.recordPasteboardWrites()
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "run the tests.")
+        answered.resolve()
+        let done = await settled.wait(for: 1)
+        XCTAssertTrue(done)
+        XCTAssertEqual(fills.texts, ["run the tests."])
+        XCTAssertEqual(pipeline.viewModel.lastError, DictationViewModel.StatusStrings.overlayCopiedToClipboard)
+        XCTAssertEqual(copied.values, ["run the tests."])
+
+        // The next dictation goes in by keys: the mod is gone.
+        pipeline.viewModel.context.claudeModChannels = nil
+        await dictate(pipeline, "/compact")
+
+        XCTAssertEqual(typed.text, "/compact", "precondition: the next dictation committed, and A was never typed")
+        XCTAssertEqual(copied.values, ["run the tests."], "the next dictation leaves the clipboard alone")
+    }
+
     /// The joined session's band follows the dictation: listening with the
     /// words so far, then finishing, then done, which clears it (#1411).
     func testTheJoinedSessionsBandFollowsTheDictationAndClearsAtTheEnd() async throws {
