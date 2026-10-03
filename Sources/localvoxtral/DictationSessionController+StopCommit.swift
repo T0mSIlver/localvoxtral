@@ -698,7 +698,8 @@ extension DictationSessionController {
             )
         }
         // Read before the cleanup below drops text the field refused (#1176).
-        let allTextInserted = !textInsertion.hasPendingInsertionText
+        // Text the relay kept in History did not land either.
+        let allTextInserted = !textInsertion.hasPendingInsertionText && !textInsertion.promptRelayKeptText
         if allTextInserted {
             proposeProjectTermsIfNew(join: context.claudeSessionJoin, inserted: liveTypedText())
         }

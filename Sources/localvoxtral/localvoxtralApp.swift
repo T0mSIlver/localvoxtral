@@ -566,7 +566,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// forward, the window raised with the terminal focuser's tty path.
     private func liveHerdrFocuser(
         terminal: TerminalSessionPaneFocuser,
-        ttyReader: AppleScriptTerminalTTYReader,
         herdrClient: HerdrSocketClient,
         canonicalizer: SSHDestinationCanonicalizer
     ) -> HerdrSessionPaneFocuser {
@@ -606,7 +605,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             focuser: HerdrSocketClient(timeout: 2),
             panes: herdrClient,
             raiseTTY: { await terminal.focus(tty: $0, termProgram: $1) },
-            focusedTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) }
+            focusedTTY: { await terminal.frontmostTTY(bundleID: $0) }
         )
     }
 
@@ -820,7 +819,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     ),
                     herdr: liveHerdrFocuser(
                         terminal: terminalFocuser,
-                        ttyReader: ttyReader,
                         herdrClient: herdrClient,
                         canonicalizer: sshDestinationCanonicalizer
                     )

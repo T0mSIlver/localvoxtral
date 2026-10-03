@@ -50,6 +50,25 @@ final class TerminalSessionPaneFocuserTests: XCTestCase {
         XCTAssertEqual(outcome, .unverified(bundleID: Self.ghostty))
     }
 
+    /// The user switched to another app while the terminal read the pane
+    /// back: a dictation started now would go to that app.
+    func testAnAppSwitchDuringTheReadBackIsUnverified() async {
+        let fake = FakeTerminals(running: [Self.ghostty], holding: Self.ghostty, switchesAppDuringReadBack: true)
+        let outcome = await fake.focuser.focusPane(of: session(termProgram: "ghostty"))
+
+        XCTAssertEqual(outcome, .unverified(bundleID: Self.ghostty))
+    }
+
+    /// What the herdr focuser re-reads after herdr's awaits: no tty once
+    /// another app came forward during the read.
+    func testTheFrontmostTTYIsNilOnceAnotherAppCameForward() async {
+        let fake = FakeTerminals(running: [Self.ghostty], holding: Self.ghostty, switchesAppDuringReadBack: true)
+        _ = await fake.focuser.focusPane(of: session(termProgram: "ghostty"))
+
+        let tty = await fake.focuser.frontmostTTY(bundleID: Self.ghostty)
+        XCTAssertNil(tty)
+    }
+
     func testATerminalThatFailsOrLacksThePaneHandsOverToTheNext() async {
         let fake = FakeTerminals(
             running: [Self.ghostty, Self.iterm, Self.terminal],
@@ -129,6 +148,8 @@ final class TerminalSessionPaneFocuserTests: XCTestCase {
         private(set) var activated: [String] = []
         /// Terminals whose focus script ran far enough to select the pane.
         private(set) var selected: [String] = []
+        /// The app the user brought forward, over the terminal activated.
+        private var switchedTo: String?
         /// Settled for each terminal by the first Apple event it gets.
         private var granted: Set<String>
         private(set) var focuser: TerminalSessionPaneFocuser!
@@ -140,7 +161,8 @@ final class TerminalSessionPaneFocuserTests: XCTestCase {
             readBack: String = "/dev/ttys004",
             cancelsWhileAnswering: Bool = false,
             consentGranted: Bool = true,
-            cancelsOnConsentSheet: Bool = false
+            cancelsOnConsentSheet: Bool = false,
+            switchesAppDuringReadBack: Bool = false
         ) {
             granted = consentGranted ? running : []
             focuser = TerminalSessionPaneFocuser(
@@ -165,8 +187,12 @@ final class TerminalSessionPaneFocuserTests: XCTestCase {
                     self.activated.append(bundleID)
                     return true
                 },
-                focusedTTY: { _ in readBack },
-                isConsentGranted: { [unowned self] in self.granted.contains($0) }
+                focusedTTY: { [unowned self] _ in
+                    if switchesAppDuringReadBack { self.switchedTo = "com.example.editor" }
+                    return readBack
+                },
+                isConsentGranted: { [unowned self] in self.granted.contains($0) },
+                frontmostBundleID: { [unowned self] in self.switchedTo ?? self.activated.last }
             )
         }
     }
