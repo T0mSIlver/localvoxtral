@@ -122,12 +122,21 @@ recover_previous_defaults_backup() {
     record_fail "Could not restore the previous defaults backup at $oldest; refusing to run the app."
     return 1
   }
+  # A backup left behind would be restored over the owner's later changes,
+  # so a failed removal fails the lane, with the oldest kept while any other
+  # backup remains.
   for lane in $DEFAULTS_BACKUP_LANES; do
     for found in "${HOME}/.localvoxtral-${lane}.defaults-backup" "${HOME}/.localvoxtral-${lane}.pre.plist"; do
-      [[ "$found" == "$oldest" ]] || rm -f "$found" "${found}.had-domain"
+      [[ "$found" == "$oldest" ]] || rm -f "$found" "${found}.had-domain" || {
+        record_fail "Could not remove the defaults backup at $found; refusing to run the app."
+        return 1
+      }
     done
   done
-  rm -f "$oldest" "${oldest}.had-domain"
+  rm -f "$oldest" "${oldest}.had-domain" || {
+    record_fail "Could not remove the restored defaults backup at $oldest; refusing to run the app."
+    return 1
+  }
   printf 'WARNING: previous defaults backup restored; every backup removed.\n' >&2
 }
 

@@ -56,9 +56,11 @@ cat >"$BIN/plutil" <<'STUB'
 #!/bin/sh
 head -n 3 "$3" | grep -q '<plist'
 STUB
+# STUB_RM_FAIL=<path>: `rm` of that path fails and removes nothing.
 cat >"$BIN/rm" <<STUB
 #!/bin/sh
 . "\$STEP_LIB"
+for arg in "\$@"; do [ "\$arg" != "\$STUB_RM_FAIL" ] || exit 1; done
 exec $(command -v rm) "\$@"
 STUB
 chmod +x "$BIN"/*
@@ -204,6 +206,17 @@ for oldest_kind in current legacy; do
   assert_no_leftovers "$oldest_kind: after an unkilled recovery"
 done
 pass "a recovery killed before any of its steps is finished from the oldest backup"
+
+# 2d. A newer backup that cannot be removed fails the lane and keeps the
+#     oldest, so the next recovery still restores from it.
+two_backups current
+newer="$WORK/home/.localvoxtral-capture-assets.defaults-backup"
+[[ "$(STUB_RM_FAIL="$newer" lane)" == 11 ]] || fail "recovery passed with a backup it could not remove"
+[[ -f "$WORK/home/.localvoxtral-ui-smoke.defaults-backup" ]] || fail "the oldest backup was removed while a newer one remained"
+[[ "$(lane)" == 0 ]] || fail "recovery after a failed removal failed: $(cat "$WORK/lane.out")"
+assert_live_is_golden "after a failed removal"
+assert_no_leftovers "after a failed removal"
+pass "a backup recovery cannot remove fails the lane and keeps the oldest"
 
 # 3. A damaged backup stops recovery before the live domain is deleted.
 fresh_account
