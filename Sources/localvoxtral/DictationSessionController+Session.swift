@@ -372,6 +372,9 @@ extension DictationSessionController {
         firstChunkPreprocessor.reset()
         overlayBufferCoordinator.reset()
         realtimeFinalizationLastActivityAt = nil
+        // The previous dictation's relay may still answer: its refusals must
+        // not reach this dictation's buffers (#1466).
+        textInsertion.retirePromptRelay()
         textInsertion.clearPendingText()
         textInsertion.resetDiagnostics()
 

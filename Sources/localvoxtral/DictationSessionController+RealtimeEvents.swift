@@ -271,11 +271,14 @@ extension DictationSessionController {
             return
         }
         if isFinalizingStop {
-            // The stop's final commit may be what failed; the text so far still
-            // commits, so the log is the only trace of a lost tail.
+            // The stop's final commit may be what failed. The text so far
+            // still commits; the stop then reports that its end may be
+            // missing instead of Ready (#1482).
             Log.backends.error(
                 "realtime error while finalizing the stop: \(RealtimeConnectionFailureClassifier.publicLogDescription(of: message), privacy: .public) \(message, privacy: .private)"
             )
+            realtimeErrorDuringStop = true
+            holdFailureIndicatorUntilStopCompletes = true
             return
         }
 

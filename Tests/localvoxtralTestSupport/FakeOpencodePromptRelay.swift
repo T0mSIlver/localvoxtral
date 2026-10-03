@@ -12,8 +12,9 @@ import Glibc
 /// listener on 127.0.0.1, port 0, that records every call and answers each
 /// with the status `status` picks (200 by default; 0 reads the call and
 /// closes the connection without answering). One connection at a time, as
-/// the app's client makes them. `location` adds a Location header, for a
-/// redirect.
+/// one dictation's client makes them, unless `concurrent`: two dictations'
+/// sinks can each have a call open. `location` adds a Location header, for
+/// a redirect.
 package final class FakeOpencodePromptRelay: @unchecked Sendable {
     package struct Call: Sendable, Equatable {
         package var method: String
@@ -29,15 +30,18 @@ package final class FakeOpencodePromptRelay: @unchecked Sendable {
     private let listener: Int32
     private let status: @Sendable (Call) -> Int
     private let location: @Sendable (Call) -> String?
+    private let concurrent: Bool
     private typealias Watch = (reached: @Sendable ([Call]) -> Bool, wait: BoundedWait)
     private let state = Mutex<(calls: [Call], watches: [Watch], stopped: Bool)>(([], [], false))
 
     package init(
         status: @escaping @Sendable (Call) -> Int = { _ in 200 },
-        location: @escaping @Sendable (Call) -> String? = { _ in nil }
+        location: @escaping @Sendable (Call) -> String? = { _ in nil },
+        concurrent: Bool = false
     ) throws {
         self.status = status
         self.location = location
+        self.concurrent = concurrent
         let descriptor = socket(AF_INET, POSIXSocket.stream, 0)
         guard descriptor >= 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
         var address = sockaddr_in()
@@ -125,6 +129,13 @@ package final class FakeOpencodePromptRelay: @unchecked Sendable {
                 return
             }
             guard connection >= 0 else { return }
+            if concurrent {
+                Thread { [self] in
+                    handle(connection)
+                    close(connection)
+                }.start()
+                continue
+            }
             handle(connection)
             close(connection)
         }

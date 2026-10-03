@@ -411,6 +411,10 @@ final class DictationSessionController {
     /// otherwise turn the red icon back to idle as soon as it completes.
     @ObservationIgnored
     var holdFailureIndicatorUntilStopCompletes = false
+    /// Set when the backend answered the stop with an error: what the
+    /// final commit was to return may be lost, so the stop is not Ready.
+    @ObservationIgnored
+    var realtimeErrorDuringStop = false
     @ObservationIgnored
     var finalizationWatchdogTask: Task<Void, Never>?
     @ObservationIgnored
@@ -616,6 +620,7 @@ final class DictationSessionController {
         self.audio = audio
         self.overlayBufferCoordinator = overlayBufferCoordinator
         self.dependencies = dependencies
+        textInsertion.pasteRestoreSleep = dependencies.clock.sleep
         self.realtimeAPIClient = RealtimeAPIWebSocketClient(clock: dependencies.clock)
         self.mistralRealtimeClient = MistralRealtimeWebSocketClient(clock: dependencies.clock)
     }
@@ -1023,11 +1028,15 @@ final class DictationSessionController {
     /// Live Auto-Paste with "Copy on stop" on: after each final, the
     /// dictation so far goes to the clipboard, so it holds the whole
     /// dictation once the session stops. Silent, since the status line
-    /// belongs to the running session.
+    /// belongs to the running session. A segment pasted with Cmd+V (a code
+    /// fence in Claude Desktop) is read from the clipboard after this
+    /// returns, so the copy waits for the paste's restore (#1467).
     func autoCopyDictationSoFar() {
         let segment = lastFinalSegment.trimmed
         guard !segment.isEmpty else { return }
-        writeToPasteboard(segment)
+        textInsertion.writeClipboardAfterPendingPastes { [weak self] in
+            self?.writeToPasteboard(segment)
+        }
     }
 
     /// Copies the RAW (pre-polish) transcript of the last polish-changed commit

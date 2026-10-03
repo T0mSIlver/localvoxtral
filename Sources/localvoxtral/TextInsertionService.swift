@@ -103,6 +103,18 @@ final class TextInsertionService {
     /// keeps this snapshot, or it would restore the earlier paste's text.
     @ObservationIgnored
     private var pendingPasteboardRestore: (snapshot: PasteboardSnapshot, changeCount: Int)?
+    /// What a paste's restore window sleeps on: the session clock.
+    @ObservationIgnored
+    var pasteRestoreSleep: @Sendable (Duration) async -> Void = SessionClock.live.sleep
+    /// Pastes whose restore has not run. The target reads the clipboard when
+    /// it handles Cmd+V, after the post returned, so until then the
+    /// clipboard is the paste's (#1467).
+    @ObservationIgnored
+    private var pastesAwaitingRestore = 0
+    /// The latest clipboard write held back until no paste awaits its
+    /// restore.
+    @ObservationIgnored
+    private var clipboardWriteAfterPastes: (@MainActor () -> Void)?
     private var insertionRetryTask: Task<Void, Never>?
     private var axInsertionSuccessCount = 0
     private var keyboardFallbackSuccessCount = 0
@@ -171,6 +183,11 @@ final class TextInsertionService {
     /// after `endPromptRelay`.
     @ObservationIgnored
     private(set) var promptRelayKeptText = false
+    /// Moves when another dictation starts or the keys go to another pane,
+    /// so a sink can tell whether the live buffers and the keyboard path
+    /// still serve its dictation.
+    @ObservationIgnored
+    private var promptRelayGeneration = 0
 
 #if DEBUG
     @ObservationIgnored
@@ -266,12 +283,36 @@ final class TextInsertionService {
         return postCommandVPaste(text)
     }
 
+    /// Runs `write`, which replaces the clipboard, once no paste's Cmd+V may
+    /// still read it: now, or after the last pending restore. A later call
+    /// replaces a write still held.
+    func writeClipboardAfterPendingPastes(_ write: @escaping @MainActor () -> Void) {
+        guard pastesAwaitingRestore > 0 else {
+            write()
+            return
+        }
+        clipboardWriteAfterPastes = write
+    }
+
+    private func pasteRestoreDidRun() {
+        pastesAwaitingRestore -= 1
+        guard pastesAwaitingRestore == 0, let write = clipboardWriteAfterPastes else { return }
+        clipboardWriteAfterPastes = nil
+        write()
+    }
+
     /// Puts `text` on the clipboard and presses Cmd+V in the frontmost app.
     /// The clipboard is restored 150 ms later unless someone changed it.
     private func postCommandVPaste(_ text: String) -> Bool {
 #if DEBUG
         if let debugCommandVPaster {
-            return debugCommandVPaster(text)
+            guard debugCommandVPaster(text) else { return false }
+            pastesAwaitingRestore += 1
+            Task { @MainActor [weak self, sleep = pasteRestoreSleep] in
+                await sleep(.milliseconds(150))
+                self?.pasteRestoreDidRun()
+            }
+            return true
         }
         // A test that did not pin the hook must never paste into whatever
         // the host has focused.
@@ -306,14 +347,15 @@ final class TextInsertionService {
         keyDown.post(tap: .cgAnnotatedSessionEventTap)
         keyUp.post(tap: .cgAnnotatedSessionEventTap)
         // Restore clipboard only if the user did not change it after our temporary write.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, snapshot] in
-            MainActor.assumeIsolated {
-                if self?.pendingPasteboardRestore?.changeCount == insertedChangeCount {
-                    self?.pendingPasteboardRestore = nil
-                }
+        pastesAwaitingRestore += 1
+        Task { @MainActor [weak self, snapshot, sleep = pasteRestoreSleep] in
+            await sleep(.milliseconds(150))
+            if self?.pendingPasteboardRestore?.changeCount == insertedChangeCount {
+                self?.pendingPasteboardRestore = nil
             }
             let pasteboard = NSPasteboard.general
             Self.restorePasteboardSnapshot(snapshot, to: pasteboard, expectedChangeCount: insertedChangeCount)
+            self?.pasteRestoreDidRun()
         }
         return true
     }
@@ -381,27 +423,53 @@ final class TextInsertionService {
         fallback: (@MainActor (String) -> Void)? = nil
     ) {
         promptRelayKeptText = false
+        promptRelayGeneration += 1
         guard let route else {
             promptRelaySink = nil
             return
         }
+        let generation = promptRelayGeneration
         promptRelaySink = AgentPromptSink(route: route, kept: { [weak self] text in
             // Kept text landed nowhere: no keyboard Return may follow it.
-            self?.liveInsertionTargetPIDs.append(nil)
-            self?.promptRelayKeptText = true
+            // Once the relay was retired, these flags describe another
+            // dictation.
+            if let self, self.promptRelayGeneration == generation {
+                self.liveInsertionTargetPIDs.append(nil)
+                self.promptRelayKeptText = true
+            }
             kept(text)
         }) { [weak self] text in
             if let fallback {
                 fallback(text)
-            } else {
-                self?.typeLiveTextThePromptRelayRefused(text)
+                return
             }
+            guard let self else { return }
+            // A refusal answered after the relay was retired: the pending
+            // buffers and the keys now serve another dictation or pane, and
+            // would carry this text there (#1466). It stays in History.
+            guard self.promptRelayGeneration == generation else {
+                Log.insertion.notice("\(route.name, privacy: .public) refused a call after its relay was retired; text stays in History")
+                kept(text)
+                return
+            }
+            self.typeLiveTextThePromptRelayRefused(text)
         }
         Log.insertion.notice("\(route.name, privacy: .public) armed for this dictation")
     }
 
+    /// The stop: no new text goes to the route. Calls already handed to it
+    /// still land, and a refusal is still typed, until the next dictation
+    /// starts.
     func endPromptRelay() {
         promptRelaySink = nil
+    }
+
+    /// The keys and the pending buffers serve something else from now on:
+    /// the next dictation, or the pane a go-to moved to. A refusal of a call
+    /// already handed to the route stays in History.
+    func retirePromptRelay() {
+        promptRelaySink = nil
+        promptRelayGeneration += 1
     }
 
     /// Whether text goes to the route now, to be delivered or kept in
