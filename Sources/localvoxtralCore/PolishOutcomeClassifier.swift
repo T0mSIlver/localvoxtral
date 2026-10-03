@@ -43,7 +43,7 @@ package enum PolishOutcomeClassifier {
             {
                 committedText = groundedWorkingText
                 CoreLog.polishing.warning(
-                    "Clipboard payload macro: polish changed placeholder count (\(expectedPlaceholders, privacy: .public) -> \(actualPlaceholders, privacy: .public)); polish discarded"
+                    "Clipboard payload macro: polish changed placeholder count (standalone \(expectedPlaceholders, privacy: .public) -> \(actualPlaceholders, privacy: .public), all \(expectedOccurrences, privacy: .public) -> \(actualOccurrences, privacy: .public)); polish discarded"
                 )
             }
         }

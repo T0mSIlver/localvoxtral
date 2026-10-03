@@ -77,6 +77,21 @@ final class RepoVocabularyMatcherTests: XCTestCase {
         }
     }
 
+    /// The dictation terms file's spelling still owns its normalized form
+    /// when a path-derived term collides with it.
+    func testAPreferredTermWinsItsCollision() {
+        let transcript = "ask vox tral now"
+        let outcome = RepoVocabularyMatcher.groundedCandidates(
+            transcript: transcript,
+            vocabulary: RepoVocabulary(
+                terms: ["Voxtral", "vox-tral"], branch: nil, preferredTermCount: 1)
+        )
+        XCTAssertEqual(
+            RepoVocabularyMatcher.preapplying(entries: outcome.entries, to: transcript),
+            "ask Voxtral now"
+        )
+    }
+
     func testEditDistanceOneNearMiss() {
         // "use auth s" -> "useauths" (8), one deletion from "useauthts".
         let result = entries("please use auth s now", terms: ["useAuth.ts"])
