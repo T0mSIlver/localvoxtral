@@ -106,9 +106,9 @@ final class HFModelDownloaderTests: XCTestCase {
                 includePatterns: ["model*.safetensors"]
             )
         ) { progress.append($0) }
-        // In-flight reports hop to the main actor as unstructured tasks;
-        // drain them before asserting.
-        for _ in 0..<10 { await Task.yield() }
+        // In-flight reports hop to the main actor as unstructured tasks, each
+        // enqueued before the report that ends its file, so all of them have
+        // run by the time `prepare` returns.
 
         let bytes = progress.map(\.downloadedBytes)
         XCTAssertEqual(bytes.first, 0)
@@ -149,7 +149,6 @@ final class HFModelDownloaderTests: XCTestCase {
                 includePatterns: ["model*.safetensors"]
             )
         ) { progress.append($0) }
-        for _ in 0..<10 { await Task.yield() }
 
         // The pre-download report cannot know a total (HEAD gave none)...
         XCTAssertEqual(progress.first, ModelDownloadProgress(downloadedBytes: 0, totalBytes: nil))
@@ -197,7 +196,6 @@ final class HFModelDownloaderTests: XCTestCase {
                 includePatterns: ["model*.safetensors"]
             )
         ) { progress.append($0) }
-        for _ in 0..<10 { await Task.yield() }
 
         XCTAssertEqual(progress.first, ModelDownloadProgress(downloadedBytes: 0, totalBytes: 15))
         XCTAssertTrue(

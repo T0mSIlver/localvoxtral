@@ -44,6 +44,7 @@ private final class HeldForwardTestClock: @unchecked Sendable {
     }
 
     private let state = Mutex(State())
+    private let parked = EventCount()
 
     var now: @Sendable () -> Date {
         { [self] in state.withLock { $0.now } }
@@ -55,7 +56,20 @@ private final class HeldForwardTestClock: @unchecked Sendable {
                 state.withLock { $0.pending.append(PendingSleep(
                     seconds: seconds, continuation: continuation
                 )) }
+                parked.increment()
             }
+        }
+    }
+
+    /// Returns once `count` sleeps of `seconds` are parked.
+    func waitForPending(
+        _ count: Int, for seconds: TimeInterval, file: StaticString = #filePath, line: UInt = #line
+    ) async {
+        while true {
+            let seen = parked.value
+            if pendingCount(for: seconds) >= count { return }
+            await parked.waitFor(seen + 1, file: file, line: line)
+            if parked.value == seen { return }
         }
     }
 
@@ -192,6 +206,8 @@ private final class ForwardTestSpawner: ClaudeRemoteHerdrForwardSpawning, @unche
     struct Failure: Error {}
 
     let argv = Mutex<[[String]]>([])
+    /// Every spawn, for a test that waits on one a task makes.
+    let spawns = EventCount()
     private let currentProcess: Mutex<ForwardTestProcess>
     let processes = Mutex<[ForwardTestProcess]>([])
     private let fails: Bool
@@ -226,6 +242,7 @@ private final class ForwardTestSpawner: ClaudeRemoteHerdrForwardSpawning, @unche
         }
         let spawned = process
         processes.withLock { $0.append(spawned) }
+        spawns.increment()
         return spawned
     }
 
@@ -237,6 +254,8 @@ private final class ForwardTestWorkspaces: ClaudeRemoteHerdrWorkspaceProviding, 
 
     let made = Mutex(0)
     let removed = Mutex<[ClaudeRemoteHerdrForwardWorkspace]>([])
+    /// Every removal, for a test that waits on a teardown a task runs.
+    let removals = EventCount()
     private let socketPath: String
     private let fails: Bool
 
@@ -256,6 +275,7 @@ private final class ForwardTestWorkspaces: ClaudeRemoteHerdrWorkspaceProviding, 
 
     func remove(_ workspace: ClaudeRemoteHerdrForwardWorkspace) {
         removed.withLock { $0.append(workspace) }
+        removals.increment()
     }
 
     var removeCount: Int { removed.withLock { $0.count } }
@@ -424,8 +444,9 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         handle.close()
 
         // A lease release retains the healthy process; the injected idle clock
-        // advances without wall time and performs the bounded teardown.
-        for _ in 0..<10 { await Task.yield() }
+        // advances without wall time and performs the bounded teardown, which
+        // signals the child before it removes the workspace.
+        await workspaces.removals.waitFor(1)
 
         XCTAssertGreaterThanOrEqual(spawner.process.terminations.withLock { $0 }, 1)
         XCTAssertEqual(workspaces.removed.withLock { $0.map(\.socketPath) }, [localSocketPath])
@@ -513,7 +534,12 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         let replacementProcess = spawner.process
 
         oldLease.close()
-        for _ in 0..<10 { await Task.yield() }
+        // The release runs on a main-actor task queued by `close()`, ahead of
+        // the first barrier. An idle teardown it armed by mistake would queue
+        // behind it and finish before the second: the test clock's sleep
+        // returns without suspending.
+        await Task { @MainActor in }.value
+        await Task { @MainActor in }.value
 
         XCTAssertEqual(
             replacementProcess.terminations.withLock { $0 },
@@ -537,7 +563,8 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         await service.prepare(
             hostID: "host", alias: "builder", remoteSocketPath: remoteSocketPath
         )
-        await Task.yield()
+        // The supervisor spawns from its own launch task.
+        await spawner.spawns.waitFor(1)
 
         XCTAssertEqual(spawner.spawnCount, 1)
     }
@@ -612,7 +639,9 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         await service.prepare(
             hostID: "host", alias: "builder", remoteSocketPath: remoteSocketPath
         )
-        await Task.yield()
+        // A refresh arms the idle teardown of the entry it kept; a replacement
+        // would have torn that entry down instead.
+        await clock.waitForPending(1, for: 5 * 60)
 
         XCTAssertEqual(spawner.spawnCount, 1, "the supervisor owns completing its handshake")
         XCTAssertEqual(startingProcess.terminations.withLock { $0 }, 0)
