@@ -3,7 +3,7 @@
 # night window while it waits on Apple's notary service (#1554).
 #
 # night-window-guard.sh decides whether a scheduled run may START. A release
-# then waits on two notarizations bounded at 3 h and 1 h, far longer than the
+# then waits on two notarizations bounded at 3 h each, far longer than the
 # rest of the run, so no start-time budget fits: the run's worst case would
 # skip every 03:15 release, and the typical case lets a slow Apple hold the
 # Mac into the owner's day. So a daily release that starts inside the window

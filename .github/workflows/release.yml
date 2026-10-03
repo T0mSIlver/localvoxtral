@@ -141,7 +141,7 @@ jobs:
         # (scripts/ci/night-deadline.sh), so a slow Apple fails the run before
         # it tags anything instead of holding the Mac into the owner's day.
         # Stable, nightly and rehearsal runs, and a daily dispatched in the
-        # day, keep the full 3 h and 1 h waits.
+        # day, keep the full 3 h waits.
         id: plan
         env:
           CHANNEL_INPUT: ${{ inputs.channel }}
