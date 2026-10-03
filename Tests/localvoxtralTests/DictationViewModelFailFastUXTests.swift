@@ -1845,9 +1845,10 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         // Secure input turns on while the dialog is up; then the user grants.
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
         viewModel.fakeMicrophone.resolvePendingAccess(granted: true)
-        // The continuation hops to the main actor and runs synchronously to
-        // completion once started, clearing the flag first.
-        await awaitCondition { !viewModel.isAwaitingMicrophonePermission }
+        // The grant queues its main-actor hop before this barrier, and
+        // same-priority jobs run FIFO: once the barrier runs, the hop has.
+        await Task { @MainActor in }.value
+        XCTAssertFalse(viewModel.isAwaitingMicrophonePermission, "the grant was handled")
 
         XCTAssertFalse(viewModel.isDictating, "the doomed live session is still refused")
         XCTAssertTrue(backendManager.ensureCalls.isEmpty, "still no backend boot for a refused start")

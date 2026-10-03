@@ -350,12 +350,13 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
     }
 
     /// Blocks until the live child's exit event lands. The bound only turns
-    /// a child that never exits into a failure instead of a hang.
+    /// a child that never exits into a failure instead of a hang. Detached:
+    /// the caller blocks the main thread.
     private func waitForExit(
         of process: LiveHerdrForwardProcess, file: StaticString = #filePath, line: UInt = #line
     ) {
         let exited = DispatchSemaphore(value: 0)
-        Task {
+        Task.detached {
             _ = await process.waitUntilExit()
             exited.signal()
         }
