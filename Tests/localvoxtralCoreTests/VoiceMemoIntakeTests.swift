@@ -420,6 +420,22 @@ final class VoiceMemoIntakeTests: XCTestCase {
         XCTAssertEqual(ledgerEntry("shopping.m4a")?.name, "shopping.m4a")
     }
 
+    /// A new memo on a reused inode under another name is not the captured
+    /// one renamed: it is transcribed, not trashed unheard.
+    func testANewMemoOnAReusedInodeIsTranscribed() async {
+        files = [memo("walk.m4a")]
+        let intake = intake()
+        _ = await intake.scan()
+        _ = await intake.scan()
+        XCTAssertEqual(trashed, ["walk.m4a"])
+
+        files = [memo("shopping.m4a", size: 2_000, minute: 9, inode: inodes["walk.m4a"])]
+        _ = await intake.scan()
+        XCTAssertEqual(trashed, ["walk.m4a"], "not trashed unheard")
+        _ = await intake.scan()
+        XCTAssertEqual(captured.map(\.text), ["words of walk.m4a", "words of shopping.m4a"])
+    }
+
     /// iCloud downloading a memo again may give it a new inode; the same
     /// name, size and date are still the same memo.
     func testAMemoWhoseInodeChangedUnderTheSameNameIsNotCapturedAgain() async {

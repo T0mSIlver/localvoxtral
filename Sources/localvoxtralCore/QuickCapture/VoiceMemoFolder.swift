@@ -197,7 +197,8 @@ package struct VoiceMemoLedger: Codable, Equatable, Sendable {
     /// Rekeys each listed file's entry to its current key before `prune`,
     /// and returns the keys of entries whose file was renamed.
     ///
-    /// An entry keyed by the file's identity follows a rename. One keyed
+    /// An entry keyed by the file's identity, same size and date, follows a
+    /// rename. One keyed
     /// otherwise moves over when its name, size and date match: a format-1
     /// entry, or a file whose inode changed when iCloud downloaded it again.
     /// An entry still keyed by another listed file's inode stays with it.
@@ -208,7 +209,9 @@ package struct VoiceMemoLedger: Codable, Equatable, Sendable {
         for file in files {
             let key = Self.key(for: file)
             if var entry = entries[key] {
-                if entry.name != file.name {
+                // A rename keeps size and date; otherwise the inode was
+                // reused, and the entry is not this file's.
+                if entry.name != file.name, entry.describes(file) {
                     entry.name = file.name
                     entries[key] = entry
                     renamed.insert(key)
