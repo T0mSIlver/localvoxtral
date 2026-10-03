@@ -654,6 +654,39 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(manager.polishdStatus, .ready)
     }
 
+    /// The retry ran the port defense after the model check, by which time
+    /// the restarting helper had bound its port; the defense knows only the
+    /// retired voxmlx paths, so it called the app's own speechd foreign.
+    func testRetryDoesNotTreatItsOwnRestartingSpeechdAsAPortConflict() async throws {
+        let modelPreparer = FakeModelPreparer()
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
+        let portDefense = SwitchableLegacyPortDefense()
+        let manager = makeManager(
+            modelPreparer: modelPreparer,
+            legacyPortDefense: portDefense,
+            supervisorFactory: supervisorFactory
+        )
+        try await manager.ensureReady(dictation: true, polishing: false)
+        let supervisor = try XCTUnwrap(supervisorFactory.supervisors[BackendCatalog.speechd.displayName])
+
+        supervisor.emit(.restarting(attempt: 1))
+        portDefense.outcome = .occupiedByOther(ListeningProcess(
+            pid: 4242,
+            executableURL: URL(fileURLWithPath: "/Applications/localvoxtral.app/Contents/Helpers/localvoxtral-speechd")
+        ))
+        modelPreparer.holdNextPrepare()
+        let retry = Task { @MainActor in
+            try await manager.ensureReady(dictation: true, polishing: false)
+        }
+        await modelPreparer.waitUntilPrepareStarted(calls: 2)
+        supervisor.emit(.running)
+        modelPreparer.resumePrepare()
+
+        try await retry.value
+        XCTAssertEqual(manager.speechdStatus, .ready)
+    }
+
     func testBundledBackendConfigurationsUseModelLoadReadinessTimeouts() async throws {
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
@@ -1211,6 +1244,19 @@ private final class SpeechModelBox {
 
 private struct FixedLegacyPortDefense: LegacyVoxmlxPortDefending {
     let outcome: LegacyVoxmlxPortOutcome
+
+    func clearLegacyOccupantIfNeeded(port: Int) async -> LegacyVoxmlxPortOutcome {
+        outcome
+    }
+}
+
+private final class SwitchableLegacyPortDefense: LegacyVoxmlxPortDefending, @unchecked Sendable {
+    private let state = Mutex<LegacyVoxmlxPortOutcome>(.available)
+
+    var outcome: LegacyVoxmlxPortOutcome {
+        get { state.withLock { $0 } }
+        set { state.withLock { $0 = newValue } }
+    }
 
     func clearLegacyOccupantIfNeeded(port: Int) async -> LegacyVoxmlxPortOutcome {
         outcome

@@ -492,7 +492,12 @@ final class BackendManager: ManagedBackendManaging {
         try await prepareModel(for: spec, speechModel: speechModel)
         try Task.checkCancellation()
 
-        if spec.id == BackendCatalog.speechd.id {
+        // A supervisor that is launching, restarting or running owns the
+        // port's likely occupant: its own helper, which binds while the model
+        // is checked and which the defense would call foreign.
+        if spec.id == BackendCatalog.speechd.id,
+           !Self.ownsLiveProcess(supervisorIfCreated(for: spec))
+        {
             let outcome = await legacyPortDefense.clearLegacyOccupantIfNeeded(port: spec.port)
             if case .occupiedByOther = outcome {
                 let summary = "\(spec.displayName) port already in use; refusing to adopt an existing backend process."
@@ -509,6 +514,15 @@ final class BackendManager: ManagedBackendManaging {
         try Task.checkCancellation()
         let supervisor = supervisor(for: spec, speechModel: speechModel)
         try await startAndWaitUntilReady(supervisor, spec: spec)
+    }
+
+    private static func ownsLiveProcess(_ supervisor: (any ManagedBackendSupervising)?) -> Bool {
+        switch supervisor?.state {
+        case .launching, .waitingForReady, .running, .restarting:
+            return true
+        case .idle, .stopped, .failed, nil:
+            return false
+        }
     }
 
     /// `stopBackend` without the ensure-task cancellation, for a caller that is
