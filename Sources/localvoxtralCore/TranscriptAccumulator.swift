@@ -113,16 +113,21 @@ package struct TranscriptAccumulator: Equatable, Sendable {
 
     /// Promotes the buffered partial into the dictation event, as if a final
     /// had delivered it. Returns the promoted segment, or nil when nothing
-    /// was buffered.
-    package mutating func promotePendingToLatestSegment() -> String? {
+    /// was buffered. `keepingOverlayMerge` makes the event the overlay's
+    /// commit text, so an Overlay Buffer commit holds what the overlay
+    /// showed: its merge drops a partial that replays the final with only
+    /// formatting changes, which the final's merge would append (#1479).
+    package mutating func promotePendingToLatestSegment(keepingOverlayMerge: Bool = false) -> String? {
         let pendingSegment = resolvedFinalizedSegment(from: "")
         guard !pendingSegment.isEmpty else { return nil }
 
-        currentDictationEventText = TextMergingAlgorithms.appendToCurrentDictationEvent(
-            segment: pendingSegment,
-            existingText: currentDictationEventText,
-            segmentStartsMidWord: pendingStartsMidWord
-        )
+        currentDictationEventText = keepingOverlayMerge
+            ? overlayCommitText.trimmed
+            : TextMergingAlgorithms.appendToCurrentDictationEvent(
+                segment: pendingSegment,
+                existingText: currentDictationEventText,
+                segmentStartsMidWord: pendingStartsMidWord
+            )
         lastFinalSegment = currentDictationEventText
         livePartialText = ""
         pendingSegmentText = ""
