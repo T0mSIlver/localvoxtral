@@ -506,7 +506,7 @@ final class BackendManager: ManagedBackendManaging {
         }
 
         try await prepareModel(for: spec, speechModel: speechModel)
-        try Task.checkCancellation()
+        try checkCancellationLeavingStopped(spec)
 
         // A supervisor that is launching, restarting or running owns the
         // port's likely occupant: its own helper, which binds while the model
@@ -527,9 +527,29 @@ final class BackendManager: ManagedBackendManaging {
         }
 
         setStatus(.starting, for: spec)
-        try Task.checkCancellation()
+        try checkCancellationLeavingStopped(spec)
         let supervisor = supervisor(for: spec, speechModel: speechModel)
-        try await startAndWaitUntilReady(supervisor, spec: spec)
+        do {
+            try await startAndWaitUntilReady(supervisor, spec: spec)
+        } catch where Task.isCancelled {
+            // The state stream ends on cancellation, which reads as a helper
+            // that stopped reporting. Nobody waits for this one any more:
+            // stop it, so `.stopped` is true.
+            await stopSupervisorKeepingEnsureTask(for: spec)
+            setStatus(.stopped, for: spec)
+            Log.backends.info("\(spec.displayName, privacy: .public) start cancelled; helper stopped")
+            throw CancellationError()
+        }
+    }
+
+    /// A cancel that lands between the phases of `ensureReady` leaves
+    /// `.stopped`, not the last phase's status (#1614). A pause caught in the
+    /// download sets `.pausedModelDownload` there; one that lands here found
+    /// the download done, and `pauseModelDownload` stops the backend.
+    private func checkCancellationLeavingStopped(_ spec: ManagedBackendSpec) throws {
+        guard Task.isCancelled else { return }
+        setStatus(.stopped, for: spec)
+        throw CancellationError()
     }
 
     private static func ownsLiveProcess(_ supervisor: (any ManagedBackendSupervising)?) -> Bool {
