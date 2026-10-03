@@ -402,6 +402,25 @@ nothing to migrate, and you can drop
 Claude Code's bottom bar can show whether localvoxtral is connected to this
 session.
 
+### From the mod plugin
+
+The **Install** button also installs a third plugin, `localvoxtral-mod`. It is
+a Claude Code mod: a plugin whose hooks are functions running inside Claude
+Code. It shows the indicator below as its own status line, with no entry in
+~/.claude/settings.json, beside your own status line. It skips the indicator
+when your settings already show it.
+
+Mods are early access in Claude Code, and load only where Claude Code enables
+them. Where they do not load, this plugin does nothing and the `localvoxtral`
+plugin keeps working; use the setting below instead. By hand:
+
+```sh
+claude plugin install localvoxtral-mod@localvoxtral \
+  --config 'publisher_path=/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook'
+```
+
+### From your settings
+
 1. In the app, open **Settings → Claude Code → Status line**.
 2. Press **Set Up…**. A one-sentence consent names ~/.claude/settings.json,
    and **Details** opens this section.

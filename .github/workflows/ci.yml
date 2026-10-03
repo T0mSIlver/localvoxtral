@@ -620,6 +620,9 @@ jobs:
       - name: Shell suites
         run: ./scripts/ci/run-shell-suites.sh scripts/ci/test-*.sh
 
+      - name: Claude Code mod tests
+        run: ./scripts/ci/claude-mod-tests.sh
+
       # VibeRemoteShimTests run the real remote Vibe shim, which needs python3
       # and ps, and the usage tests run the shipped terms.sh and capture.sh,
       # which need curl; the image ships none of them.

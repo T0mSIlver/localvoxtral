@@ -41,6 +41,13 @@ final class ClaudePluginInstallServiceArgumentsTests: XCTestCase {
              ["plugin", "uninstall", "localvoxtral@localvoxtral"]),
             ("removeMarketplace", .removeMarketplace, nil,
              ["plugin", "marketplace", "remove", "localvoxtral"]),
+            ("installMod passes the same publisher path", .installMod, publisher,
+             ["plugin", "install", "localvoxtral-mod@localvoxtral",
+              "--config", "publisher_path=\(publisher)"]),
+            ("updateMod", .updateMod, publisher,
+             ["plugin", "update", "localvoxtral-mod@localvoxtral"]),
+            ("uninstallMod", .uninstallMod, nil,
+             ["plugin", "uninstall", "localvoxtral-mod@localvoxtral"]),
         ]
         for row in rows {
             XCTAssertEqual(
@@ -100,6 +107,7 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
         XCTAssertEqual(plain.argumentLists, [
             ["plugin", "marketplace", "add", marketplace.path],
             ["plugin", "install", "localvoxtral@localvoxtral"],
+            ["plugin", "install", "localvoxtral-mod@localvoxtral"],
         ])
 
         let runner = RecordingRunner()
@@ -108,6 +116,7 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
         XCTAssertEqual(runner.argumentLists, [
             ["plugin", "marketplace", "add", marketplace.path],
             ["plugin", "install", "localvoxtral@localvoxtral", "--config", "publisher_path=\(publisher.path)"],
+            ["plugin", "install", "localvoxtral-mod@localvoxtral", "--config", "publisher_path=\(publisher.path)"],
         ])
     }
 
@@ -125,6 +134,8 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
             ["plugin", "marketplace", "add", marketplace.path],
             ["plugin", "uninstall", "localvoxtral@localvoxtral"],
             ["plugin", "install", "localvoxtral@localvoxtral", "--config", "publisher_path=/A/hook"],
+            ["plugin", "uninstall", "localvoxtral-mod@localvoxtral"],
+            ["plugin", "install", "localvoxtral-mod@localvoxtral", "--config", "publisher_path=/A/hook"],
         ])
     }
 
@@ -139,7 +150,7 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
                 : .init(exitCode: 0, message: "ok")
         }
         try makeService(runner: runner).updatePlugin()
-        XCTAssertEqual(runner.argumentLists.last, ["plugin", "install", "localvoxtral@localvoxtral"])
+        XCTAssertTrue(runner.argumentLists.contains(["plugin", "install", "localvoxtral@localvoxtral"]))
     }
 
     func testLaunchUpdateUpdatesInPlaceAndNeverUninstalls() throws {
@@ -153,6 +164,7 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
         XCTAssertEqual(runner.argumentLists, [
             ["plugin", "marketplace", "add", marketplace.path],
             ["plugin", "update", "localvoxtral@localvoxtral"],
+            ["plugin", "update", "localvoxtral-mod@localvoxtral"],
         ])
     }
 
@@ -160,9 +172,41 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
         let runner = RecordingRunner()
         try makeService(runner: runner).uninstallPlugin()
         XCTAssertEqual(runner.argumentLists, [
+            ["plugin", "uninstall", "localvoxtral-mod@localvoxtral"],
             ["plugin", "uninstall", "localvoxtral@localvoxtral"],
             ["plugin", "marketplace", "remove", "localvoxtral"],
         ])
+    }
+
+    /// The mod needs a Claude Code build that loads mods. Wherever its step
+    /// fails, every flow carries on as if it were not there: the context
+    /// hooks are the plugin that matters.
+    func testAFailingModStepNeverFailsTheFlow() throws {
+        let runner = RecordingRunner()
+        runner.resultFor = { invocation in
+            invocation.arguments.contains("localvoxtral-mod@localvoxtral")
+                ? .init(exitCode: 1, message: "hooks modules are not enabled")
+                : .init(exitCode: 0, message: "ok")
+        }
+        let service = makeService(runner: runner)
+        XCTAssertNoThrow(try service.installPlugin())
+        XCTAssertNoThrow(try service.updatePlugin())
+        XCTAssertNoThrow(try service.updateInstalledPlugin())
+        XCTAssertNoThrow(try service.uninstallPlugin())
+        XCTAssertEqual(runner.argumentLists.last, ["plugin", "marketplace", "remove", "localvoxtral"])
+    }
+
+    /// A failed install of the plugin itself stops before the mod: a mod
+    /// with no context hooks beside it has nothing to show.
+    func testAFailedPluginInstallInstallsNoMod() {
+        let runner = RecordingRunner()
+        runner.resultFor = { invocation in
+            invocation.arguments == ["plugin", "install", "localvoxtral@localvoxtral"]
+                ? .init(exitCode: 1, message: "boom")
+                : .init(exitCode: 0, message: "ok")
+        }
+        XCTAssertThrowsError(try makeService(runner: runner).installPlugin())
+        XCTAssertFalse(runner.argumentLists.contains { $0.contains("localvoxtral-mod@localvoxtral") })
     }
 
     func testNothingRunsWithoutAnExplicitCall() {
