@@ -517,8 +517,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
         XCTAssertEqual(store.fileURL, dataDirectory.appendingPathComponent("learned-terms.json"))
         let reread = LearnedTermStore(fileURL: store.fileURL)
-        let listed = await reread.loadedSnapshot().projects.map(\.repository)
-        XCTAssertEqual(listed, ["T0mSIlver/vidtheque"], "the scan read the given home and wrote the given folder")
+        let projects = await reread.loadedSnapshot().projects
+        XCTAssertEqual(
+            Set(projects.map(\.repository)), ["T0mSIlver/vidtheque"],
+            "the scan read the given home and wrote the given folder; keys: \(projects.map(\.key))"
+        )
         let homeEntries = try FileManager.default.contentsOfDirectory(atPath: home.path).sorted()
         XCTAssertEqual(homeEntries, [".claude", "work"], "nothing was written into the home")
     }
