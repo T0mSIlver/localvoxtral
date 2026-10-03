@@ -110,8 +110,8 @@ extension DictationSessionController {
     /// new dictation cancelled it before the text was handed over: the
     /// canceller saves it to History. Cancelled after, it is `superseded`,
     /// and its record is saved here. The text never goes to the focused
-    /// app: a route that refuses keeps it in History, and a pane that is not
-    /// the session's gets no key.
+    /// app: a route that refuses keeps it (`keepUndeliveredAgentText`), and
+    /// a pane that is not the session's gets no key.
     func commitOverlayAddressed(to session: ClaudeSessionSnapshot) async -> AddressedCommit? {
         var route = AddressedSessionRoute.unsupported(.noTTY)
         if let resolver = context.claudeSessionJoinResolver {
@@ -138,12 +138,16 @@ extension DictationSessionController {
         if case .failed(let message)? = addressed.outcome {
             lastError = message
         }
+        var status = addressed.status
+        if status == AddressedSendStatus.notSent {
+            status = keepUndeliveredAgentText(transcript.currentDictationEventText)
+        }
         completeStoppedSessionCleanup(
             sessionMode: sessionMode,
             overlayCommitOutcome: addressed.outcome,
             shouldCommitOverlay: true
         )
-        if let status = addressed.status {
+        if let status {
             statusText = status
         }
     }

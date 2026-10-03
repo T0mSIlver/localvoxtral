@@ -1999,6 +1999,7 @@ final class DictationPipelineTests: XCTestCase {
         let relay = try FakeOpencodePromptRelay { _ in 409 }
         addTeardownBlock { relay.stop() }
         let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
         joinOpencodePane(pipeline, relay: relay.relay(sessionID: "ses_a").address)
         let typed = recordTypedText(pipeline)
 
@@ -2088,6 +2089,7 @@ final class DictationPipelineTests: XCTestCase {
             return .delivered
         }
         let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
         let typed = recordTypedText(pipeline)
 
         await dictate(pipeline, "First.") { armPromptRoute(pipeline, firstRoute) }
@@ -2655,6 +2657,7 @@ final class DictationPipelineTests: XCTestCase {
         let cmux = try FakeCmuxSocket(answer: { _ in .accepted(queued: nil) })
         addTeardownBlock { cmux.stop() }
         let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
         joinCmuxSurface(pipeline, cmux: cmux)
         let typed = recordTypedText(pipeline)
 
@@ -2671,6 +2674,87 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(cmux.writes.count, 1, "nothing is sent after an unconfirmed write")
         XCTAssertEqual(typed.text, "", "nothing is typed into another surface or app")
         XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase], "the text is in History")
+    }
+
+    /// The same with History off, where Copy last dictation is all that
+    /// holds the text until the next dictation replaces it: the whole text
+    /// goes on the clipboard, the popover says so, and the next dictation
+    /// leaves it there (#1499).
+    func testAnUnconfirmedDeliveryWithHistoryOffIsCopiedAndOutlivesTheNextDictation() async throws {
+        let cmux = try FakeCmuxSocket(answer: { _ in .accepted(queued: nil) })
+        addTeardownBlock { cmux.stop() }
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
+        pipeline.viewModel.settings.dictationHistoryRetention = .off
+        pipeline.viewModel.settings.autoCopyEnabled = false
+        let copied = pipeline.viewModel.recordPasteboardWrites()
+        joinCmuxSurface(pipeline, cmux: cmux)
+        let typed = recordTypedText(pipeline)
+
+        await startAndSpeak(pipeline)
+        cmux.setSurfaceFocused(false)
+        sendPartials(pipeline)
+        let sent = await cmux.waitUntil { !$0.isEmpty }
+        XCTAssertTrue(sent)
+        await pipeline.viewModel.textInsertion.promptRelaySink?.waitUntilIdle()
+        await stopAndFinalize(pipeline, expectedError: DictationViewModel.StatusStrings.overlayCopiedToClipboard)
+        XCTAssertEqual(copied.values.last, Self.phrase, "both appends, not the last one alone")
+        let copiesAfterFirst = copied.values.count
+
+        // The next dictation goes to a plain terminal, by keys.
+        pipeline.viewModel.context.claudeSessionJoinResolver = nil
+        pipeline.server.forgetFrames()
+        await startAndSpeak(pipeline)
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline)
+
+        XCTAssertEqual(typed.text, Self.phrase, "precondition: the second dictation committed")
+        XCTAssertEqual(copied.values.count, copiesAfterFirst, "the next dictation leaves the clipboard alone")
+        XCTAssertEqual(copied.values.last, Self.phrase)
+    }
+
+    /// Kept text copied with History off waits, like Copy on stop, until no
+    /// Cmd+V paste may still read the clipboard: Claude Desktop reads a
+    /// fenced segment's paste after the post returned (#1467, #1499).
+    func testKeptTextWithHistoryOffDoesNotReplaceAnInFlightFencePaste() async throws {
+        let fenced = "see:\n```\nline one\n```"
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        pipeline.viewModel.settings.dictationHistoryRetention = .off
+        pipeline.viewModel.settings.autoCopyEnabled = false
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { ClaudeDesktopAllowlist.bundleID }
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .noFocusedElement }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        addTeardownBlock { @MainActor in
+            TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
+            TerminalTargetDetector.debugFocusedElementProbeOverride = nil
+            TerminalTargetDetector.debugSecureEventInputOverride = nil
+        }
+        let clipboard = FakeClipboard()
+        pipeline.viewModel.dependencies.pasteboardWriter = { clipboard.write($0) }
+        pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        pipeline.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { _ in true },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false },
+            shiftReturnPoster: { true },
+            commandVPaster: { text in
+                clipboard.write(text)
+                return true
+            }
+        )
+
+        await startAndSpeak(pipeline)
+        await stopAndFinalize(pipeline, finalText: fenced)
+        XCTAssertEqual(clipboard.text.trimmingCharacters(in: .whitespaces), fenced, "precondition: pasted")
+
+        let status = pipeline.viewModel.session.keepUndeliveredAgentText("kept text")
+
+        XCTAssertEqual(status, DictationViewModel.StatusStrings.overlayCopiedToClipboard)
+        XCTAssertEqual(clipboard.text.trimmingCharacters(in: .whitespaces), fenced, "the paste still owns the clipboard")
+        await pipeline.clock.waitForSleepers(1)
+        pipeline.clock.advance(by: 1)
+        let copied = await clipboard.waitFor { $0 == "kept text" }
+        XCTAssertTrue(copied, "clipboard: \(clipboard.text.debugDescription)")
     }
 
     // MARK: - Stopping by voice (#839)

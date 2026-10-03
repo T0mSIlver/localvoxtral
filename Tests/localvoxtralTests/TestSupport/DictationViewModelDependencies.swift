@@ -15,3 +15,19 @@ extension DictationViewModel {
         dependencies.bundleIdentifier = { _ in bundleID() }
     }
 }
+
+/// What a view model wrote to the clipboard, in order.
+@MainActor
+final class PasteboardWrites {
+    fileprivate(set) var values: [String] = []
+}
+
+extension DictationViewModel {
+    /// Records every clipboard write instead of making it.
+    @MainActor
+    func recordPasteboardWrites() -> PasteboardWrites {
+        let written = PasteboardWrites()
+        dependencies.pasteboardWriter = { written.values.append($0) }
+        return written
+    }
+}

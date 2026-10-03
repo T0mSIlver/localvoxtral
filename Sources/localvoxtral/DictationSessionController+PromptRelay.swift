@@ -14,9 +14,12 @@ extension DictationSessionController {
     func armPromptRelayForSession() {
         let sessionID = context.agentPromptRoute == nil ? nil : context.claudeSessionJoin?.snapshot.sessionID
         promptRelaySessionID = sessionID
-        textInsertion.beginPromptRelay(context.agentPromptRoute, kept: { [weak self] _ in
-            self?.lastError = StatusStrings.agentPromptTextKeptInHistory
-            self?.forgetLanding(ofSession: sessionID)
+        let kept = UndeliveredAgentText()
+        textInsertion.beginPromptRelay(context.agentPromptRoute, kept: { [weak self] text in
+            kept.text += text
+            guard let self else { return }
+            self.lastError = self.keepUndeliveredAgentText(kept.text)
+            self.forgetLanding(ofSession: sessionID)
         })
     }
 
