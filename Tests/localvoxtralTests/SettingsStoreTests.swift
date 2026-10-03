@@ -937,6 +937,33 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertTrue(reloadedStore.replacementDictionaryEnabled)
     }
 
+    // MARK: - Global terms with two running copies (#1575)
+
+    /// Two copies launched on the same terms each add one; neither write
+    /// drops the other's term, and a removal in one survives the other's add.
+    func testTwoRunningCopiesKeepEachOthersTerms() {
+        makeStore().polishSpeakerTerms = ["Qwen", "Claude Code"]
+        let first = makeStore()
+        let second = makeStore()
+
+        first.polishSpeakerTerms.append("Ghostty")
+        second.polishSpeakerTerms.append("Voxtral")
+        XCTAssertEqual(makeStore().polishSpeakerTerms, ["Qwen", "Claude Code", "Voxtral", "Ghostty"])
+
+        first.polishSpeakerTerms.removeAll { $0 == "Claude Code" }
+        second.polishSpeakerTerms.append("MLX")
+        XCTAssertEqual(makeStore().polishSpeakerTerms, ["Qwen", "Voxtral", "Ghostty", "MLX"])
+    }
+
+    func testTwoRunningCopiesKeepEachOthersDismissedSuggestions() {
+        let first = makeStore()
+        let second = makeStore()
+
+        first.dismissTermSuggestion("SessionStart")
+        second.dismissTermSuggestion("herdr")
+        XCTAssertEqual(makeStore().polishDismissedTermSuggestions, ["herdr", "SessionStart"])
+    }
+
     // MARK: - debugLogRealtimeDeltas (issue #13 instrumentation)
 
     func testDebugLogRealtimeDeltas_defaultsToFalse() {
