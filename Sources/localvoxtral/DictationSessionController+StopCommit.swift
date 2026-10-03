@@ -164,7 +164,9 @@ extension DictationSessionController {
         // Before the dictionary and the polisher: the trigger is a command,
         // not text, so neither may see it. An addressed dictation is
         // submitted by its own delivery, in the named session.
-        let spokenSend = addressedTo == nil ? stripOverlaySpokenSendTrigger() : nil
+        let spokenSend = addressedTo == nil
+            ? stripOverlaySpokenSendTrigger(join: sample.capture?.claudeJoin ?? context.claudeSessionJoin)
+            : nil
         let preparation = StopCommitCoordinator.prepare(
             originalText: transcript.currentDictationEventText,
             polishingConfig: sample.polishingConfig,
