@@ -498,6 +498,17 @@ extension DictationSessionController {
         }
     }
 
+    /// The microphone runs while the socket opens (`startSessionMicrophone`),
+    /// so a device or channel picked then must restart it: nothing else
+    /// re-applies the selection once the session listens (#1628). The
+    /// connect goes on; what was captured so far stays in the buffer.
+    func restartConnectingSessionMicrophone(reason: String) {
+        guard isConnectingRealtimeSession, audio.captureDeviceID != nil, audio.capturesFromMicrophone else { return }
+        Log.dictation.info("restarting the microphone while connecting: \(reason, privacy: .public)")
+        audio.stopSessionAudioCapture()
+        startSessionMicrophone()
+    }
+
     /// Feeds the overlay's level bars (#1074) from the capture queue: the
     /// meter smooths each chunk there and posts to the main actor at most
     /// `MicLevelMeter.postsPerSecond` times a second of audio.
@@ -678,7 +689,8 @@ extension DictationSessionController {
             audio.healthMonitor.start(
                 microphone: audio.microphone,
                 callbacks: makeHealthMonitorCallbacks(),
-                clock: dependencies.clock
+                clock: dependencies.clock,
+                captureInputID: audio.captureDeviceID
             )
         }
     }
@@ -687,6 +699,7 @@ extension DictationSessionController {
         let chunkBuffer = audio.audioChunkBuffer
         let recording = audio.sessionRecording
         let mic = audio.microphone
+        let audio = audio
         let micLevel = micLevelFeed()
         return AudioCaptureHealthMonitor.Callbacks(
             refreshMicrophoneInputs: { [weak self] in
@@ -724,6 +737,7 @@ extension DictationSessionController {
                     recording.append(chunk)
                     micLevel(chunk)
                 }
+                audio.noteCaptureRestarted(on: preferredInputID)
             }
         )
     }

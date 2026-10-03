@@ -777,12 +777,16 @@ final class DictationSessionController {
         audio.refreshMicrophoneInputs()
     }
 
-    /// Saves and selects the input; a running dictation restarts on it.
+    /// Saves and selects the input; a running dictation restarts on it,
+    /// and a connecting one moves its microphone onto it.
     func selectMicrophoneInput(id: String) {
         guard audio.selectMicrophoneInput(id: id) else { return }
 
-        guard isDictating else { return }
-        restartOnNewInput(reason: "input device changed by user")
+        if isDictating {
+            restartOnNewInput(reason: "input device changed by user")
+        } else {
+            restartConnectingSessionMicrophone(reason: "input device changed by user")
+        }
     }
 
     var selectedInputDeviceChannelCount: UInt32 { audio.selectedInputDeviceChannelCount }
@@ -792,8 +796,11 @@ final class DictationSessionController {
     func selectMicrophoneInputChannel(_ channel: Int) {
         guard audio.selectMicrophoneInputChannel(channel) else { return }
 
-        guard isDictating else { return }
-        restartOnNewInput(reason: "input channel changed by user")
+        if isDictating {
+            restartOnNewInput(reason: "input channel changed by user")
+        } else {
+            restartConnectingSessionMicrophone(reason: "input channel changed by user")
+        }
     }
 
     /// Stops the running session and starts the same kind again: a quick

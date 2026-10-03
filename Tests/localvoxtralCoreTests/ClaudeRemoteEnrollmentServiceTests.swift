@@ -240,18 +240,17 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertFalse(snippet.contains("RemoteForward 8473"), "the shared bind is what #215 removes")
     }
 
-    func testTheInstallCommandCarriesBothTheTokenAndTheMatchingPort() throws {
+    func testTheInstallScriptCarriesBothTheTokenAndTheMatchingPort() throws {
         // Two halves of one setting. A block that forwards 28511 while the
         // plugin still posts to 8473 fails open — the silent state this whole
         // change exists to prevent — so they are emitted together, always.
+        // The token goes in a here-document, never on a command line (#1621).
         let install = try pluginSetupScripts(before: nil, token: token)[1]
         XCTAssertTrue(install.contains(
-            "--config '\(ClaudeRemoteEnrollmentService.tokenConfigKey)=\(token)'"
-                + " --config '\(ClaudeRemoteEnrollmentService.portConfigKey)=28511'"
+            "claude plugin install localvoxtral-remote@localvoxtral --config '\(ClaudeRemoteEnrollmentService.portConfigKey)=28511'\n"
+                + "claude plugin configure localvoxtral-remote@localvoxtral --values-stdin <<'LVX_EOF_TOKEN'"
         ))
-        // Repeatable `--config` is documented by `claude plugin install --help`
-        // and verified on 2.1.220; a comma-joined single flag is NOT the syntax.
-        XCTAssertFalse(install.contains("token=\(token),"))
+        XCTAssertTrue(install.contains("\n{\"\(ClaudeRemoteEnrollmentService.tokenConfigKey)\":\"\(token)\"}\nLVX_EOF_TOKEN"))
     }
 
     func testTheTunnelProbeChecksTheAllocatedPortNotTheLegacyOne() throws {
@@ -831,7 +830,11 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             "set -eu\n" + ClaudeRemoteEnrollmentService.claudePathResolverPreamble
                 + (try marketplaceWrite())
                 + "claude plugin marketplace add \"$M\"\n"
-                + "claude plugin install localvoxtral-remote@localvoxtral --config 'token=\(token)' --config 'port=28511'"
+                + "claude plugin install localvoxtral-remote@localvoxtral --config 'port=28511'\n"
+                + "claude plugin configure localvoxtral-remote@localvoxtral --values-stdin <<'LVX_EOF_TOKEN' "
+                + "|| { claude plugin uninstall localvoxtral-remote@localvoxtral >/dev/null 2>&1 || true; exit 48; }\n"
+                + "{\"token\":\"\(token)\"}\n"
+                + "LVX_EOF_TOKEN"
         )
         for script in scripts {
             XCTAssertFalse(try commands(of: script).contains("settings.json"), "never touch the user's Claude config")
@@ -941,6 +944,8 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         let scripts = try pluginMutationScripts()
         for script in [scripts.update, scripts.current] {
             XCTAssertFalse(script.contains(token))
+        }
+        for script in [scripts.install, scripts.update, scripts.current] {
             XCTAssertFalse(try commands(of: script).contains(ClaudeRemoteEnrollmentService.tokenConfigKey + "="))
             // Not a blanket ban on `--config` any more: the port migration is a
             // config write, and it is the whole point of this path since #215.
@@ -1057,9 +1062,9 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         let commands = Set(
             try scripts.map { try self.commands(of: $0) }.flatMap { $0.components(separatedBy: "\n") }
                 .filter { $0.hasPrefix("claude ") }
-                .map { $0.components(separatedBy: " --config ")[0] }
+                .map { $0.components(separatedBy: " --config ")[0].components(separatedBy: " <<")[0] }
         )
-        XCTAssertEqual(commands.count, 5, "list, marketplace add/update, plugin update/install: \(commands)")
+        XCTAssertEqual(commands.count, 6, "list, marketplace add/update, plugin update/install/configure: \(commands)")
         for command in commands {
             XCTAssertTrue(documentation.contains(command), "missing command documentation: \(command)")
         }
@@ -1287,10 +1292,8 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
 
         XCTAssertTrue(calls.all.allSatisfy { !$0.argv.joined(separator: " ").contains(token) })
         XCTAssertTrue(calls.scripts.contains { $0.contains(token) })
-        // …and the remote-side exposure is stated where a user will meet it,
-        // rather than being implied away.
+        // …and what the host still keeps is stated where a user will meet it.
         let documentation = try documentation()
-        XCTAssertTrue(documentation.contains("local and only local"))
         XCTAssertTrue(documentation.contains("/proc/<pid>/cmdline"))
         XCTAssertTrue(documentation.lowercased().contains("rotate"))
     }
@@ -2553,7 +2556,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             ("PluginSetupUpdatesAStalePluginAndReadsTheNewVersionBack", "1.4.0", nil, .updated,
              ["claude plugin marketplace update", "claude plugin update"]),
             ("PluginSetupInstallsAnAbsentPluginWhenItHasAToken", nil, "t0k", .installed,
-             ["claude plugin marketplace add", "--config 'token=t0k'"]),
+             ["claude plugin marketplace add", "--values-stdin <<'LVX_EOF_TOKEN'", "{\"token\":\"t0k\"}"]),
         ]
         for row in rows {
             let calls = PluginSetupCalls()

@@ -3500,6 +3500,73 @@ final class DictationPipelineTests: XCTestCase {
         await stopAndFinalize(pipeline)
     }
 
+    // MARK: - Picking a microphone mid-session
+
+    private static let builtInMic = MicrophoneInputDevice(
+        id: "BuiltInMicrophoneDevice", name: "MacBook Pro Microphone", channelCount: 1)
+    private static let usbMic = MicrophoneInputDevice(
+        id: "AppleUSBAudioEngine:Rode:NT-USB:1", name: "NT-USB", channelCount: 1)
+
+    /// #1628: a microphone picked while the socket opens is the one the
+    /// dictation captures, not just the one the menu checks.
+    func testAMicrophonePickedWhileConnectingIsTheOneCaptured() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.microphone.configureDevices([Self.builtInMic, Self.usbMic], defaultInputDeviceID: Self.builtInMic.id)
+        pipeline.server.holdConnections()
+
+        pipeline.viewModel.startDictation()
+        await pipeline.server.awaitHeldConnection()
+        await pipeline.microphone.waitUntilCapturing()
+        XCTAssertEqual(pipeline.microphone.capturingDeviceID, Self.builtInMic.id)
+
+        pipeline.viewModel.selectMicrophoneInput(id: Self.usbMic.id)
+        XCTAssertTrue(pipeline.viewModel.isConnectingRealtimeSession, "the pick does not restart the connect")
+        XCTAssertEqual(pipeline.microphone.capturingDeviceID, Self.usbMic.id)
+
+        pipeline.server.releaseHeldConnections()
+        await pipeline.server.awaitFrame("session.update") { $0.type == "session.update" }
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers)
+        let words = Self.speech(seed: 6)
+        XCTAssertTrue(pipeline.microphone.deliver(words, from: Self.usbMic.id))
+        pipeline.clock.advance(by: TimingConstants.audioSendInterval)
+        let sent = await pipeline.server.awaitFrame("the captured audio") { $0.audio != nil }
+        XCTAssertEqual(sent?.audio, words)
+
+        await stopAndFinalize(pipeline)
+    }
+
+    /// #1629: a saved microphone plugged back in mid-dictation is not shown
+    /// selected while capture stays on the fallback, and picking it moves
+    /// the capture onto it.
+    func testAPluggedBackSavedMicrophoneIsCapturedOnceItIsPicked() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.settings.selectedInputDeviceUID = Self.usbMic.id
+        pipeline.microphone.configureDevices([Self.builtInMic], defaultInputDeviceID: Self.builtInMic.id)
+
+        await startAndSpeak(pipeline)
+        XCTAssertEqual(pipeline.microphone.capturingDeviceID, Self.builtInMic.id, "the fallback stands in")
+
+        pipeline.microphone.configureDevices([Self.builtInMic, Self.usbMic], defaultInputDeviceID: Self.builtInMic.id)
+        pipeline.viewModel.audio.handleMicrophoneInputDevicesChanged()
+        pipeline.viewModel.audio.healthMonitor.debugEvaluateAudioChangeNow()
+        XCTAssertEqual(
+            pipeline.viewModel.selectedInputDeviceID, Self.builtInMic.id,
+            "the menu shows the device the capture runs on"
+        )
+        XCTAssertEqual(pipeline.viewModel.settings.selectedInputDeviceUID, Self.usbMic.id, "and keeps the saved one")
+
+        pipeline.server.forgetFrames()
+        await startAndSpeak(pipeline, start: { $0.selectMicrophoneInput(id: Self.usbMic.id) })
+        XCTAssertEqual(pipeline.microphone.capturingDeviceID, Self.usbMic.id)
+        let words = Self.speech(seed: 7)
+        XCTAssertTrue(pipeline.microphone.deliver(words, from: Self.usbMic.id))
+        pipeline.clock.advance(by: TimingConstants.audioSendInterval)
+        await pipeline.server.awaitFrame("the plugged-back mic's audio") { $0.audio == words }
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers)
+
+        await stopAndFinalize(pipeline)
+    }
+
     // MARK: - Reviewing a ready draft (#927)
 
     /// A finished draft waits for a break: nothing shows while the user is

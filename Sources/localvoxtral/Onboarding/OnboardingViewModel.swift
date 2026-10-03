@@ -44,8 +44,14 @@ final class OnboardingViewModel {
             guard mistralAPIKeyDraft != oldValue else { return }
             mistralAPIKeyCheckGeneration += 1
             mistralAPIKeyCheckState = .idle
+            mistralAPIKeySaveFailure = nil
         }
     }
+
+    /// Set when Continue could not save the key. The wizard stays on the
+    /// engine page with it shown, since a key that is not saved is gone at
+    /// the next launch (#1624).
+    private(set) var mistralAPIKeySaveFailure: String?
 
     /// Bumped by every edit and every check, so only the latest check
     /// publishes: an edit lets a new check start while an old one is still
@@ -127,7 +133,10 @@ final class OnboardingViewModel {
         // the key and switches both engines, so nothing needs downloading and
         // the driver must never be started.
         if page == .engine, engineChoice == .mistralAPI {
-            applyMistralEngineChoice()
+            guard applyMistralEngineChoice() else {
+                mistralAPIKeySaveFailure = SettingsStore.secretStoreWriteFailureSummary
+                return
+            }
         }
 
         let order = pageOrder
@@ -150,7 +159,13 @@ final class OnboardingViewModel {
     /// cancelled rather than left alone: a user who started the local download,
     /// went back, and switched to Mistral must not keep a download running for
     /// an engine nothing will use.
-    private func applyMistralEngineChoice() {
+    /// Returns false, changing nothing, when the key was not saved.
+    private func applyMistralEngineChoice() -> Bool {
+        if polishingBeforeMistralChoice == nil {
+            polishingBeforeMistralChoice = (settings.polishingBackendMode, settings.llmPolishingEnabled)
+        }
+        guard viewModel.engines.applyMistralQuickSetup(apiKey: mistralAPIKeyDraft) else { return false }
+        mistralAPIKeySaveFailure = nil
         driver.cancel()
         // A cancelled download is no download: clearing the flag re-offers
         // "Begin download" if the user comes back and picks Local again, and
@@ -159,10 +174,7 @@ final class OnboardingViewModel {
         // → Finish reads "runs on this Mac" while both engines are still on
         // Mistral (GLM review, 2026-09-16).
         downloadsStarted = false
-        if polishingBeforeMistralChoice == nil {
-            polishingBeforeMistralChoice = (settings.polishingBackendMode, settings.llmPolishingEnabled)
-        }
-        viewModel.engines.applyMistralQuickSetup(apiKey: mistralAPIKeyDraft)
+        return true
     }
 
     /// The `.engine` page's "Check key" button. Advisory only — see

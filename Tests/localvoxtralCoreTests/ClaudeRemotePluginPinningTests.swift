@@ -8,7 +8,9 @@ import XCTest
 /// `claude` that models the CLI behaviour measured on 2.1.283: `marketplace
 /// add` replaces a name's source and keeps the installed plugin, `plugin
 /// update` installs whatever the marketplace offers (older included), and a
-/// GitHub marketplace offers main's head.
+/// GitHub marketplace offers main's head. It also logs every argv it gets,
+/// which is what a host's process list shows every account (#1621), and
+/// `plugin configure --values-stdin` stores the token it reads from stdin.
 final class ClaudeRemotePluginPinningTests: XCTestCase {
     private static let mainHead = "1.99.0"
 
@@ -16,6 +18,7 @@ final class ClaudeRemotePluginPinningTests: XCTestCase {
         #!/bin/sh
         S="$HOME/fake-claude"
         mkdir -p "$S"
+        printf '%s\\n' "$*" >>"$S/argv"
         offered() {
           src=$(cat "$S/source" 2>/dev/null || true)
           case "$src" in
@@ -33,6 +36,10 @@ final class ClaudeRemotePluginPinningTests: XCTestCase {
             case "$4" in /*) echo "$4" >"$S/source" ;; *) echo github >"$S/source" ;; esac ;;
           "plugin marketplace update") [ -f "$S/source" ] ;;
           "plugin marketplace remove") rm -f "$S/source" "$S/installed" "$S/token" ;;
+          "plugin uninstall "*) rm -f "$S/installed" "$S/token" ;;
+          "plugin configure "*)
+            [ -f "$S/installed" ] && [ "${4-}" = --values-stdin ] && [ ! -f "$S/no-configure" ] || exit 1
+            sed -n 's/^{"token":"\\(.*\\)"}$/\\1/p' >"$S/token" ;;
           "plugin update "*) [ -f "$S/installed" ] && offered >"$S/installed.new" && mv "$S/installed.new" "$S/installed" ;;
           "plugin install "*)
             [ -f "$S/installed" ] || { offered >"$S/installed.new" && mv "$S/installed.new" "$S/installed"; }
@@ -173,6 +180,47 @@ final class ClaudeRemotePluginPinningTests: XCTestCase {
             ["claude-marketplace"],
             "no staging tree survives the swap"
         )
+    }
+
+    /// #1621: the token reaches the CLI on stdin, and no argv carries it.
+    func testTheTokenReachesTheHostsCLIOutsideEveryArgv() throws {
+        let secret = "host-token-\(UUID().uuidString)"
+        XCTAssertEqual(
+            try localShellService().setupRemotePlugin(sshHostAlias: "builder", token: secret, remoteForwardPort: 28_511),
+            .installed
+        )
+        XCTAssertEqual(state("token"), secret)
+        let argv = try XCTUnwrap(state("argv"))
+        XCTAssertTrue(argv.contains("plugin install"), argv)
+        XCTAssertFalse(argv.contains(secret), "the token was on a command line")
+
+        // A rotation on an installed plugin takes the same route.
+        try FileManager.default.removeItem(at: home.appendingPathComponent("fake-claude/argv"))
+        let rotated = "host-token-\(UUID().uuidString)"
+        XCTAssertEqual(
+            try localShellService().setupRemotePlugin(sshHostAlias: "builder", token: rotated, remoteForwardPort: 28_511),
+            .alreadyCurrent
+        )
+        XCTAssertEqual(state("token"), rotated)
+        XCTAssertFalse(try XCTUnwrap(state("argv")).contains(rotated))
+    }
+
+    /// A CLI that cannot take the token from stdin fails setup with its own
+    /// exit code, and a fresh install it left tokenless is removed again, so
+    /// a later run installs it with a token instead of reporting it current.
+    func testACLIThatCannotStoreTheTokenLeavesNoTokenlessInstall() throws {
+        let state = home.appendingPathComponent("fake-claude")
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: state.appendingPathComponent("no-configure").path, contents: nil)
+        XCTAssertThrowsError(
+            try localShellService().setupRemotePlugin(sshHostAlias: "builder", token: "t0k", remoteForwardPort: 28_511)
+        ) { error in
+            guard case ClaudeRemoteEnrollmentService.ServiceError.commandFailed(_, _, 48, _) = error else {
+                return XCTFail("expected exit 48, got \(error)")
+            }
+        }
+        XCTAssertNil(self.state("installed"))
+        XCTAssertFalse(try XCTUnwrap(self.state("argv")).contains("t0k"))
     }
 
     func testABuildWhoseCopyCarriesAnotherVersionChangesNothing() throws {
