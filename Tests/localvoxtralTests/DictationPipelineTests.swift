@@ -2640,6 +2640,7 @@ final class DictationPipelineTests: XCTestCase {
 
         // The next dictation goes to a plain terminal, by keys.
         pipeline.viewModel.context.claudeSessionJoinResolver = nil
+        pipeline.server.forgetFrames()
         await startAndSpeak(pipeline)
         sendPartials(pipeline)
         await stopAndFinalize(pipeline)
