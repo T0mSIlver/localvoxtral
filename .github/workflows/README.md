@@ -257,7 +257,11 @@ in the repo or in GitHub secrets: the "Developer ID Application" identity
 either is missing or does not authenticate; a nightly falls back to ad-hoc
 signing with a warning in its summary and its release notes.
 `scripts/ci/notarize.sh` submits the app, then the DMG, and prints Apple's log
-on a rejection.
+on a rejection. It prints each submission id as soon as Apple assigns it and
+waits up to 3 h for the app and 1 h for the DMG, because Apple can hold a
+team's first submissions for hours; a run that times out fails with the id,
+and `xcrun notarytool info <id> --keychain-profile localvoxtral-notary` on the
+Mac follows it from there.
 
 ## `cask.yml`
 

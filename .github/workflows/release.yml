@@ -74,10 +74,13 @@ jobs:
     # notarytool profile live in the owner's login keychain on that Mac (#1430).
     runs-on: [self-hosted, macOS, ARM64]
     # This checkout is clean, so every run rebuilds from cold: observed
-    # releases ran 7-20 min before notarization, which adds two Apple
-    # submissions (the app, then the DMG) of a few minutes each. The unit gate
-    # has its own 900 s supervisor, so a hang is caught long before this bound.
-    timeout-minutes: 60
+    # releases ran 7-20 min before notarization. Notarization adds two Apple
+    # submissions (the app, then the DMG), usually minutes each, but Apple can
+    # hold a team's first submissions for hours. notarize.sh's own bounds (3 h
+    # for the app, 1 h for the DMG) must expire before this one, so a stuck
+    # run fails with the submission id instead of being cancelled. The unit
+    # gate has its own 900 s supervisor, so a hang is caught long before this.
+    timeout-minutes: 300
     env:
       # Not a secret: the name and team ID are in every signature it makes.
       DEVELOPER_ID_IDENTITY: "Developer ID Application: Tom Vaucourt (3N63N7U9R3)"
@@ -409,7 +412,7 @@ jobs:
         run: |
           set -euo pipefail
           ditto -c -k --keepParent dist/localvoxtral.app "$RUNNER_TEMP/notarize-app.zip"
-          ./scripts/ci/notarize.sh "$RUNNER_TEMP/notarize-app.zip" "$NOTARY_PROFILE"
+          NOTARIZE_TIMEOUT=3h ./scripts/ci/notarize.sh "$RUNNER_TEMP/notarize-app.zip" "$NOTARY_PROFILE"
           xcrun stapler staple dist/localvoxtral.app
           xcrun stapler validate dist/localvoxtral.app
           SPCTL="$(spctl -a -vv --type execute dist/localvoxtral.app 2>&1)"
@@ -438,7 +441,8 @@ jobs:
             # Gatekeeper checks a downloaded disk image before it mounts, so
             # the DMG is signed, notarized and stapled too.
             codesign --sign "$DEVELOPER_ID_IDENTITY" --timestamp "dist/localvoxtral-$TAG.dmg"
-            ./scripts/ci/notarize.sh "dist/localvoxtral-$TAG.dmg" "$NOTARY_PROFILE"
+            # 1 h, not 3: Apple has just accepted the app from this team.
+            NOTARIZE_TIMEOUT=1h ./scripts/ci/notarize.sh "dist/localvoxtral-$TAG.dmg" "$NOTARY_PROFILE"
             xcrun stapler staple "dist/localvoxtral-$TAG.dmg"
             xcrun stapler validate "dist/localvoxtral-$TAG.dmg"
             spctl -a -vv --type open --context context:primary-signature "dist/localvoxtral-$TAG.dmg"
