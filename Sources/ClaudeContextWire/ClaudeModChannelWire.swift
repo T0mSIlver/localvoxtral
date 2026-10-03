@@ -66,6 +66,17 @@ public enum ClaudeModChannelWire {
         /// (`$.model.fork`, #1410). `ok` with the answer in the reply's
         /// `text`.
         case terms
+        /// The joined dictation's state, for the band above the prompt
+        /// (#1411): `phase` and the words so far in `text`. Not answered.
+        case state
+    }
+
+    /// What a `state` message says the dictation is doing.
+    public enum Phase: String, Codable, Sendable {
+        case listening
+        case finishing
+        /// Over: the band clears.
+        case done
     }
 
     /// One request from the app to the mod.
@@ -74,14 +85,23 @@ public enum ClaudeModChannelWire {
         public var kind: Kind
         /// Matches the `Reply`. The hub assigns it.
         public var id: String
-        /// What `fill` puts in the box; the question `terms` asks.
+        /// What `fill` puts in the box; the question `terms` asks; the
+        /// words so far for `state`.
         public var text: String?
+        public var phase: Phase?
 
-        public init(kind: Kind, id: String = "", text: String? = nil, version: Int = ClaudeModChannelWire.version) {
+        public init(
+            kind: Kind,
+            id: String = "",
+            text: String? = nil,
+            phase: Phase? = nil,
+            version: Int = ClaudeModChannelWire.version
+        ) {
             self.modMessage = version
             self.kind = kind
             self.id = id
             self.text = text
+            self.phase = phase
         }
 
         enum CodingKeys: String, CodingKey {
@@ -89,6 +109,7 @@ public enum ClaudeModChannelWire {
             case kind
             case id
             case text
+            case phase
         }
     }
 

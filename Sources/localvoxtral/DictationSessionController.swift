@@ -254,6 +254,12 @@ final class DictationSessionController {
     /// still be unsent; the next commit there starts with a space (#802).
     @ObservationIgnored
     var lastOverlayCommitLanding: OverlayCommitLanding?
+    /// Where this dictation's band went and what it last said (#1411).
+    @ObservationIgnored
+    var modChannelBand: ModChannelBand?
+    /// Sends `modChannelBand` again while it stays unchanged.
+    @ObservationIgnored
+    var modChannelBandHeartbeatTask: Task<Void, Never>?
     /// Asks a new project's coding agent for its terms after the first
     /// joined dictation there (#609). Nil without runtime services; tests
     /// inject one over a fake runner.

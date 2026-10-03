@@ -1,6 +1,10 @@
+import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
+import type { Band } from '../types'
 import {
+  BAND_STALE_MS,
+  bandOf,
   type ChannelMessage,
   type ChannelReply,
   type Outcome,
@@ -72,7 +76,8 @@ async function runChannel(
         while (newline >= 0) {
           const message = parseMessage(buffered.slice(0, newline))
           buffered = buffered.slice(newline + 1)
-          if (message !== null) void answer($, publisher, sessionID, message)
+          if (message?.kind === 'state') void showBand($, message)
+          else if (message !== null) void answer($, publisher, sessionID, message)
           newline = buffered.indexOf('\n')
         }
       }
@@ -101,6 +106,22 @@ async function answer(
     await $.process.run([publisher, '--mod-reply'], { stdin: `${JSON.stringify(reply)}\n`, timeoutMs: 3000 })
   } catch {
     // The app waits out its own timeout.
+  }
+}
+
+const band = atom({ plugin: 'localvoxtral-mod', key: 'band' } as const, null)
+let bandUpdatedAt = 0
+
+/** Shows what a `state` message says; the app waits for no answer. */
+async function showBand($: EngineInterface, message: ChannelMessage): Promise<void> {
+  const next: Band = bandOf(message)
+  const at = await $.clock.now()
+  bandUpdatedAt = at
+  await update($, band, () => next)
+  if (next !== null) {
+    $.clock.after(BAND_STALE_MS, async () => {
+      if (bandUpdatedAt === at) await update($, band, () => null)
+    })
   }
 }
 
@@ -138,6 +159,22 @@ async function handle($: EngineInterface, message: ChannelMessage): Promise<Outc
 // for a Claude Desktop session, where the indicator and the channel matter
 // most.
 export const register: Register = (on, options) => {
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const shown = await read($, band)
+    if (shown === null || e.props.hasSurvey) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    // Two lines at most: the tail of the words, as wide as the box.
+    const room = Math.max(20, (e.props.bodyColumns ?? 80) * 2 - 16)
+    const words = shown.text.length > room ? `…${shown.text.slice(-(room - 1))}` : shown.text
+    return (
+      <Box>
+        <Text color="red">● </Text>
+        <Text bold>{shown.phase === 'listening' ? 'Listening' : 'Finishing'} </Text>
+        <Text dimColor>{words}</Text>
+      </Box>
+    )
+  })
+
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     const publisher = await findPublisher($, String(options.publisher_path ?? ''))

@@ -1193,6 +1193,7 @@ extension DictationSessionController {
             displayBufferText: currentOverlayDisplayText(),
             commitBufferText: currentOverlayCommitText()
         )
+        postModChannelBand(.finishing)
     }
 
     func refreshOverlayBufferSession() {
@@ -1201,6 +1202,7 @@ extension DictationSessionController {
             displayBufferText: currentOverlayDisplayText(),
             commitBufferText: currentOverlayCommitText()
         )
+        postModChannelBand(isFinalizingStop ? .finishing : .listening)
     }
 }
 
