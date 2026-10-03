@@ -1,5 +1,3 @@
-import AppKit
-import Carbon.HIToolbox
 import Foundation
 
 /// The one behavioral quality signal a capture record cannot derive from its own
@@ -17,43 +15,19 @@ import Foundation
 /// guarantees that: the enum has two cases, and the only other things recorded
 /// are bucketed. No key content, no text, no timestamps finer than a bucket, and
 /// nothing at all about keys that are neither of these two.
-enum EditSignal: String, Codable, Equatable, Sendable {
+package enum EditSignal: String, Codable, Equatable, Sendable {
     /// Backspace / forward delete: the user is erasing what we inserted.
     case backspace
     /// ⌘A: almost always the first half of select-all-then-retype or
     /// select-all-then-delete.
     case selectAll
-
-    /// The ONLY mapping from a key event to a signal. Pure and total: anything
-    /// that is not one of the two gestures returns nil and is forgotten
-    /// immediately — the monitor never retains, forwards, or counts it.
-    ///
-    /// ⌘A only with Command held and no other command-class modifier: ⌥⌘A /
-    /// ⌃⌘A / ⇧⌘A are app shortcuts, not select-all, and counting them would
-    /// inflate the signal with ordinary navigation.
-    static func from(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> EditSignal? {
-        let relevant = modifiers.intersection(.deviceIndependentFlagsMask)
-        switch Int(keyCode) {
-        case kVK_Delete, kVK_ForwardDelete:
-            // A modifier'd delete (⌥⌫ deletes a word, ⌘⌫ a line) is still the
-            // user erasing what we inserted, so no modifier condition here.
-            return .backspace
-        case kVK_ANSI_A where relevant.contains(.command)
-            && !relevant.contains(.option)
-            && !relevant.contains(.control)
-            && !relevant.contains(.shift):
-            return .selectAll
-        default:
-            return nil
-        }
-    }
 }
 
 /// How a watch window ended. Every armed watch reaches exactly one of these and
 /// patches its record with it, including the negative — without the "clean"
 /// denominator an edit rate is not computable, and "no behavior block" would be
 /// indistinguishable from "the watch never armed".
-enum EditSignalOutcome: String, Codable, Equatable, Sendable {
+package enum EditSignalOutcome: String, Codable, Equatable, Sendable {
     case edited
     case clean
     /// The window was cut short — a new dictation began, or the app quit.
@@ -64,7 +38,7 @@ enum EditSignalOutcome: String, Codable, Equatable, Sendable {
 
 /// The window ladder and the buckets. Pure, so the boundaries are testable
 /// without a clock, a monitor, or a record.
-enum EditSignalPolicy {
+package enum EditSignalPolicy {
     /// How long to watch after a commit, by transcript length.
     ///
     /// The ladder scales with how long the insertion takes to READ: a five-word
@@ -80,7 +54,7 @@ enum EditSignalPolicy {
     /// | 6–15 | 4 s |
     /// | 16–40 | 8 s |
     /// | 41+ | 15 s |
-    static func windowSeconds(wordCount: Int) -> Double {
+    package static func windowSeconds(wordCount: Int) -> Double {
         switch wordCount {
         case ..<6: return 2
         case ..<16: return 4
@@ -93,7 +67,7 @@ enum EditSignalPolicy {
     /// away from the transcript itself, and the record already carries the text
     /// stages under the same gate — but the behavior block is meant to stay
     /// readable as an aggregate, and a bucket is what an aggregate wants.
-    static func wordCountBucket(_ wordCount: Int) -> String {
+    package static func wordCountBucket(_ wordCount: Int) -> String {
         switch wordCount {
         case ..<6: return "1-5"
         case ..<16: return "6-15"
@@ -104,7 +78,7 @@ enum EditSignalPolicy {
 
     /// Seconds since the commit, bucketed. The top bucket is open-ended only in
     /// name: nothing past the longest window can be reported.
-    static func secondsSinceCommitBucket(_ seconds: Double) -> String {
+    package static func secondsSinceCommitBucket(_ seconds: Double) -> String {
         switch seconds {
         case ..<1: return "0-1"
         case ..<2: return "1-2"
@@ -114,7 +88,7 @@ enum EditSignalPolicy {
     }
 
     /// Words, by whitespace. The count never leaves this type unbucketed.
-    static func wordCount(of text: String) -> Int {
+    package static func wordCount(of text: String) -> Int {
         text.split(whereSeparator: { $0.isWhitespace }).count
     }
 }
@@ -126,7 +100,7 @@ enum EditSignalPolicy {
 /// worth testing, and none of them should need a real event stream or a real
 /// Accessibility grant.
 @MainActor
-protocol EditKeyMonitoring: AnyObject {
+package protocol EditKeyMonitoring: AnyObject {
     /// Begins delivering recognized signals, reporting whether an observer
     /// actually went up. Called at most once per watch; `stop()` always follows
     /// a `true`, including when the window closed unobserved.
@@ -136,80 +110,6 @@ protocol EditKeyMonitoring: AnyObject {
     /// reporting an unwatched window as clean.
     func start(_ handler: @escaping @MainActor (EditSignal) -> Void) -> Bool
     func stop()
-}
-
-/// The production observer: one GLOBAL `NSEvent` keyDown monitor, installed when
-/// a watch window opens and removed the moment it closes.
-///
-/// Design decisions worth keeping:
-///
-/// * **Global only, never local.** A local monitor sees keys typed into
-///   localvoxtral's OWN windows (Settings, the shortcut recorder), which is not
-///   the user reacting to an insertion. The insertion lands in another app, so
-///   the reaction does too.
-/// * **A new monitor rather than a tap on `ModifierOnlyHotKeyManager`'s.** That
-///   manager already holds a keyDown monitor, but only while the modifier-only
-///   hotkey mode is active, and its handler deliberately discards the event
-///   (it needs "a key happened", not which). Widening its callback would fork a
-///   production signature for a capture that shipped builds do not compile —
-///   the same trade `DiagnosticCaptureTap` documents, decided the same way.
-/// * **No new permission.** Global `NSEvent` monitors need the Accessibility
-///   trust the app already holds for insertion; without it, this reports
-///   `false` and the dictation gets NO behavior block at all — see
-///   `EditSignalWatcher.arm`.
-@MainActor
-final class EditKeyNSEventMonitor: EditKeyMonitoring {
-    private var monitor: Any?
-
-    func start(_ handler: @escaping @MainActor (EditSignal) -> Void) -> Bool {
-        stop()
-
-        #if DEBUG
-        // Never install a real monitor under XCTest. Same rule (and the same
-        // 2026-07-24 incident) as `ModifierOnlyHotKeyManager.start`: a live
-        // monitor here would read the HOST's keyboard while the suite runs, and
-        // an unattended CI machine is not a test fixture. The watcher's own
-        // tests inject a fake monitor.
-        if TerminalTargetDetector.isRunningUnderXCTest { return false }
-        #endif
-
-        guard AXIsProcessTrusted() else {
-            // Loud, per the repo's rule about silent failure paths: a watcher
-            // that quietly never observes an edit would read as "the user
-            // never edits".
-            Log.diagnostics.notice(
-                "Edit signal: Accessibility not trusted; no watch installed"
-            )
-            return false
-        }
-
-        monitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
-            // Nothing about the event survives this closure except the verdict:
-            // an unrecognized key is not retained, forwarded, or counted.
-            let keyCode = event.keyCode
-            let rawFlags = event.modifierFlags.rawValue
-            guard let signal = EditSignal.from(
-                keyCode: keyCode,
-                modifiers: NSEvent.ModifierFlags(rawValue: rawFlags)
-            ) else { return }
-            Task { @MainActor in handler(signal) }
-        }
-
-        guard monitor != nil else {
-            Log.diagnostics.notice(
-                "Edit signal: keyDown monitor installation failed; no watch"
-            )
-            return false
-        }
-        return true
-    }
-
-    func stop() {
-        if let monitor {
-            NSEvent.removeMonitor(monitor)
-        }
-        monitor = nil
-    }
 }
 
 /// Opens a bounded post-commit watch window, and patches that dictation's record
@@ -240,9 +140,9 @@ final class EditKeyNSEventMonitor: EditKeyMonitoring {
 /// generation, arrived at the same way — a late producer must not describe a
 /// session that has ended.
 @MainActor
-final class EditSignalWatcher {
-    typealias DateProvider = () -> Date
-    typealias SleepClosure = (Duration) async -> Void
+package final class EditSignalWatcher {
+    package typealias DateProvider = () -> Date
+    package typealias SleepClosure = (Duration) async -> Void
 
     private struct Watch {
         let generation: UInt64
@@ -277,14 +177,14 @@ final class EditSignalWatcher {
     /// The open window's timer, and the in-flight record patch. Retained so
     /// tests can await them the way they await `polishAndCommitTask`; nothing in
     /// production reads either.
-    private(set) var windowTask: Task<Void, Never>?
-    private(set) var flushTask: Task<Void, Never>?
+    package private(set) var windowTask: Task<Void, Never>?
+    package private(set) var flushTask: Task<Void, Never>?
     /// Told each verdict with the History id its record is named by, so the
     /// History entry carries it too (`DictationSessionRecord.editOutcome`).
-    var onOutcome: ((UUID, EditSignalOutcome) -> Void)?
+    package var onOutcome: ((UUID, EditSignalOutcome) -> Void)?
 
-    init(
-        monitor: any EditKeyMonitoring = EditKeyNSEventMonitor(),
+    package init(
+        monitor: any EditKeyMonitoring,
         now: @escaping DateProvider = Date.init,
         sleepFor: @escaping SleepClosure = { duration in
             try? await Task.sleep(for: duration)
@@ -305,7 +205,7 @@ final class EditSignalWatcher {
 
     /// True while a window is open. Tests assert the monitor is not left
     /// installed; production never branches on it.
-    var isWatching: Bool {
+    package var isWatching: Bool {
         guard let watch else { return false }
         return watch.result == nil
     }
@@ -317,7 +217,7 @@ final class EditSignalWatcher {
     ///
     /// Not an `Int` and not `Equatable` by accident — it exists to be compared
     /// against the watcher's own state and nothing else.
-    struct WatchToken: Equatable, Sendable {
+    package struct WatchToken: Equatable, Sendable {
         fileprivate let generation: UInt64
     }
 
@@ -331,7 +231,7 @@ final class EditSignalWatcher {
     /// `committedText` is measured, never stored: only its word-count bucket
     /// reaches the record.
     @discardableResult
-    func arm(committedText: String, outputMode: String) -> WatchToken? {
+    package func arm(committedText: String, outputMode: String) -> WatchToken? {
         supersede()
         parkClosedWatchAwaitingAttach()
 
@@ -394,7 +294,7 @@ final class EditSignalWatcher {
     /// record write is `await`ed, so a second dictation can arm in between, and
     /// without the token this call would hand session A's record to session B's
     /// open window — which would then patch A's record with B's behavior.
-    func attachRecord(url: URL, store: DiagnosticRecordStore, token: WatchToken) {
+    package func attachRecord(url: URL, store: DiagnosticRecordStore, token: WatchToken) {
         if var watch, watch.generation == token.generation {
             watch.recordURL = url
             watch.store = store
@@ -414,7 +314,7 @@ final class EditSignalWatcher {
 
     /// Closes an open window because a new dictation began. Safe to call with
     /// nothing armed.
-    func supersede() {
+    package func supersede() {
         guard let watch, watch.result == nil else { return }
         closeWindow(outcome: .superseded, signal: nil, generation: watch.generation)
     }
@@ -427,7 +327,7 @@ final class EditSignalWatcher {
     /// all (the backend shutdown next to it is best-effort for the same
     /// reason). One small JSON rewrite on the main actor is cheap enough to pay
     /// at quit, and the alternative is losing the window's answer entirely.
-    func flushForTermination() {
+    package func flushForTermination() {
         guard let watch, watch.result == nil else { return }
         closeWindow(
             outcome: .superseded, signal: nil, generation: watch.generation, inline: true

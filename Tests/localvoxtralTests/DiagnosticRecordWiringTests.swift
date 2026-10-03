@@ -3,6 +3,7 @@ import ClaudeContextWire
 import Foundation
 import Synchronization
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 /// The wiring that turns one polished dictation into one on-disk diagnostic

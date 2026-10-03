@@ -9,13 +9,13 @@ import Foundation
 /// with no recognisable shape, and it masks some strings that are not
 /// secrets (a full git commit hash is long hex). The guarantee is that
 /// records never leave the Mac.
-enum DiagnosticRecordRedaction {
-    static let placeholder = ClaudeRemoteTokenRedaction.placeholder
+package enum DiagnosticRecordRedaction {
+    package static let placeholder = ClaudeRemoteTokenRedaction.placeholder
     /// Stands in for the lines of the prompt the user last sent to their
     /// agent (`withholdPrompt`).
-    static let withheldPromptPlaceholder = "<prior prompt withheld>"
+    package static let withheldPromptPlaceholder = "<prior prompt withheld>"
     /// The remote-enrollment token: 43 base64url characters with no prefix.
-    static let tokenLength = 43
+    package static let tokenLength = 43
 
     /// Pattern and replacement template, applied in order. A replacement
     /// keeps the label in front of the secret (`Bearer `, `API_KEY=`) so a
@@ -49,7 +49,7 @@ enum DiagnosticRecordRedaction {
     }
 
     /// Redacts in place, returning how many runs were replaced.
-    static func redact(_ record: inout DiagnosticRecord) -> Int {
+    package static func redact(_ record: inout DiagnosticRecord) -> Int {
         var count = 0
         forEachString(in: &record) { redacting($0, count: &count) }
         return count
@@ -57,7 +57,7 @@ enum DiagnosticRecordRedaction {
 
     /// Replaces every secret-shaped run in `text`, adding the number replaced
     /// to `count`.
-    static func redacting(_ text: String, count: inout Int) -> String {
+    package static func redacting(_ text: String, count: inout Int) -> String {
         // The shortest shape above is a ten-character `KEY=` assignment.
         guard text.utf16.count >= 10 else { return text }
         var output = text
@@ -138,7 +138,7 @@ enum DiagnosticRecordRedaction {
     /// The screen gets one more pass first (`withholdingWrapped`): a terminal
     /// soft-wraps a long prompt line at the pane width and expands its tabs,
     /// so a row there can hold any stretch of a line (#1121).
-    static func withholdPrompt(_ prompt: String?, from record: inout DiagnosticRecord) {
+    package static func withholdPrompt(_ prompt: String?, from record: inout DiagnosticRecord) {
         guard let prompt, !prompt.isEmpty else { return }
         let withhold = promptWithholder(prompt)
 
@@ -167,7 +167,7 @@ enum DiagnosticRecordRedaction {
     /// `softWrapped` adds the screen's pass (`withholdingWrapped`). It walks
     /// the text once per prompt anchor, so only screen text, which is capped,
     /// takes it; the clipboard can hold millions of characters.
-    static func withholdingPrompt(_ prompt: String?, in text: String, softWrapped: Bool) -> String {
+    package static func withholdingPrompt(_ prompt: String?, in text: String, softWrapped: Bool) -> String {
         guard let prompt, !prompt.isEmpty else { return text }
         return promptWithholder(prompt)(softWrapped ? withholdingWrapped(prompt, in: text) : text)
     }
@@ -237,7 +237,7 @@ enum DiagnosticRecordRedaction {
     /// found is extended both ways for as long as the line goes on matching.
     /// A line shorter than an anchor must match whole; one shorter than
     /// `minimumLineLength` is not looked for, as in `withholdPrompt`.
-    static func withholdingWrapped(_ prompt: String, in text: String) -> String {
+    package static func withholdingWrapped(_ prompt: String, in text: String) -> String {
         let needles = prompt.split(whereSeparator: \.isNewline)
             .map { $0.filter(isSpelled) }
             .filter { $0.count >= minimumLineLength }
@@ -297,8 +297,8 @@ enum DiagnosticRecordRedaction {
             && !character.unicodeScalars.contains { $0.properties.generalCategory == .control }
     }
 
-    static let minimumLineLength = 8
-    static let truncatedPrefixLength = 24
+    package static let minimumLineLength = 8
+    package static let truncatedPrefixLength = 24
 
     /// Every string a record carries, not just the bulky ones: a proposal's
     /// `term` comes out of the harvest and its `heard` spans out of the

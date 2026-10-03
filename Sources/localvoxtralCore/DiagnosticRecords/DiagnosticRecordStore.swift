@@ -5,7 +5,7 @@ import Synchronization
 /// protocol for the same reason the registry splits its own IO: the pruning
 /// rules are the part worth testing, and they should be testable without a real
 /// directory or a real clock.
-protocol DiagnosticRecordDirectoryIO: Sendable {
+package protocol DiagnosticRecordDirectoryIO: Sendable {
     /// File names directly inside `url`, or nil when the directory is absent.
     func contents(of url: URL) throws -> [String]?
     func remove(at url: URL) throws
@@ -14,22 +14,22 @@ protocol DiagnosticRecordDirectoryIO: Sendable {
     func size(of url: URL) -> Int?
 }
 
-struct DiagnosticRecordFileDirectoryIO: DiagnosticRecordDirectoryIO {
-    func contents(of url: URL) throws -> [String]? {
+package struct DiagnosticRecordFileDirectoryIO: DiagnosticRecordDirectoryIO {
+    package func contents(of url: URL) throws -> [String]? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         return try FileManager.default.contentsOfDirectory(atPath: url.path)
     }
 
-    func remove(at url: URL) throws {
+    package func remove(at url: URL) throws {
         try FileManager.default.removeItem(at: url)
     }
 
-    func read(from url: URL) throws -> Data? {
+    package func read(from url: URL) throws -> Data? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         return try Data(contentsOf: url)
     }
 
-    func size(of url: URL) -> Int? {
+    package func size(of url: URL) -> Int? {
         let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size]
         return (size as? NSNumber)?.intValue
     }
@@ -53,20 +53,28 @@ struct DiagnosticRecordFileDirectoryIO: DiagnosticRecordDirectoryIO {
 ///   same handling as the token store.
 /// * **The capture time lives in the FILE NAME**, so a retention pass is a
 ///   directory listing and never reads a record back off disk.
-struct DiagnosticRecordStore: Sendable {
-    struct Retention: Sendable, Equatable {
+package struct DiagnosticRecordStore: Sendable {
+    package struct Retention: Sendable, Equatable {
         /// Records kept, newest first.
-        var maximumRecords: Int
+        package var maximumRecords: Int
         /// Records older than this are removed.
-        var maximumAge: TimeInterval
+        package var maximumAge: TimeInterval
 
-        static let `default` = Retention(
+        package static let `default` = Retention(
             maximumRecords: 500,
             maximumAge: 14 * 24 * 60 * 60
         )
+
+        package init(
+            maximumRecords: Int,
+            maximumAge: TimeInterval
+        ) {
+            self.maximumRecords = maximumRecords
+            self.maximumAge = maximumAge
+        }
     }
 
-    enum StoreError: Error, Equatable {
+    package enum StoreError: Error, Equatable {
         case encodingFailed
         /// Every record was deleted after the writer decided to write.
         case deletedSinceDecision
@@ -99,7 +107,7 @@ struct DiagnosticRecordStore: Sendable {
     private let retention: Retention
     private let now: @Sendable () -> Date
 
-    init(
+    package init(
         directoryURL: URL? = nil,
         io: ClaudeRemoteHostStoreIO = ClaudeRemoteHostFileStoreIO(),
         directoryIO: DiagnosticRecordDirectoryIO = DiagnosticRecordFileDirectoryIO(),
@@ -113,17 +121,17 @@ struct DiagnosticRecordStore: Sendable {
         self.now = now
     }
 
-    static func defaultDirectoryURL() -> URL {
+    package static func defaultDirectoryURL() -> URL {
         LocalvoxtralDataDirectory.url()
             .appendingPathComponent("diagnostic-records", isDirectory: true)
     }
 
-    var directory: URL { directoryURL }
+    package var directory: URL { directoryURL }
 
     // MARK: - Writing
 
     /// The folder's deletion epoch now. See `deletionEpochs`.
-    func deletionEpoch() -> UInt64 {
+    package func deletionEpoch() -> UInt64 {
         Self.deletionEpochs.withLock { $0[directoryURL.path] ?? 0 }
     }
 
@@ -131,7 +139,7 @@ struct DiagnosticRecordStore: Sendable {
     /// With `epoch`, refuses when every record was deleted since the caller
     /// read it.
     @discardableResult
-    func write(_ record: DiagnosticRecord, unlessDeletedSince epoch: UInt64? = nil) throws -> URL {
+    package func write(_ record: DiagnosticRecord, unlessDeletedSince epoch: UInt64? = nil) throws -> URL {
         try exclusively {
             if let epoch, epoch != deletionEpoch() { throw StoreError.deletedSinceDecision }
             return try writeLocked(record)
@@ -174,7 +182,7 @@ struct DiagnosticRecordStore: Sendable {
     ///
     /// The behavior block is fixed slugs and numbers, so no re-redaction is
     /// needed.
-    func attachBehavior(_ behavior: DiagnosticRecord.Behavior, toRecordAt url: URL) throws {
+    package func attachBehavior(_ behavior: DiagnosticRecord.Behavior, toRecordAt url: URL) throws {
         try exclusively {
             guard
                 let data = try directoryIO.read(from: url),
@@ -200,15 +208,25 @@ struct DiagnosticRecordStore: Sendable {
 
     // MARK: - Listing, pruning, deleting
 
-    struct Entry: Sendable, Equatable {
-        var id: UUID
-        var url: URL
-        var capturedAt: Date
+    package struct Entry: Sendable, Equatable {
+        package var id: UUID
+        package var url: URL
+        package var capturedAt: Date
+
+        package init(
+            id: UUID,
+            url: URL,
+            capturedAt: Date
+        ) {
+            self.id = id
+            self.url = url
+            self.capturedAt = capturedAt
+        }
     }
 
     /// Every record in the directory, newest first. Files that do not parse as
     /// record names are ignored, not deleted.
-    func listRecords() throws -> [Entry] {
+    package func listRecords() throws -> [Entry] {
         guard let names = try directoryIO.contents(of: directoryURL) else { return [] }
         return names.compactMap { name -> Entry? in
             guard let parsed = DiagnosticRecordFileName.parse(name) else { return nil }
@@ -222,20 +240,20 @@ struct DiagnosticRecordStore: Sendable {
     }
 
     /// The ids that have a record.
-    func storedIDs() -> Set<UUID> {
+    package func storedIDs() -> Set<UUID> {
         Set(((try? listRecords()) ?? []).map(\.id))
     }
 
     /// How many records there are and their size on disk, for the Settings row.
     /// Throws when the folder will not list: that is not zero (#1166).
-    func summary() throws -> (records: Int, bytes: Int) {
+    package func summary() throws -> (records: Int, bytes: Int) {
         let records = try listRecords()
         let bytes = records.reduce(0) { $0 + (directoryIO.size(of: $1.url) ?? 0) }
         return (records.count, bytes)
     }
 
     /// Applies the retention rules.
-    func prune() {
+    package func prune() {
         exclusively { pruneLocked() }
     }
 
@@ -250,7 +268,7 @@ struct DiagnosticRecordStore: Sendable {
 
     /// Deletes the records of these ids. Returns how many it deleted.
     @discardableResult
-    func remove(_ ids: some Sequence<UUID>) -> Int {
+    package func remove(_ ids: some Sequence<UUID>) -> Int {
         let ids = Set(ids)
         return exclusively {
             removeLocked(((try? listRecords()) ?? []).filter { ids.contains($0.id) })
@@ -259,7 +277,7 @@ struct DiagnosticRecordStore: Sendable {
 
     /// Deletes every record whose dictation is not in `kept`.
     @discardableResult
-    func removeAll(except kept: Set<UUID>) -> Int {
+    package func removeAll(except kept: Set<UUID>) -> Int {
         exclusively {
             removeLocked(((try? listRecords()) ?? []).filter { !kept.contains($0.id) })
         }
@@ -269,7 +287,7 @@ struct DiagnosticRecordStore: Sendable {
     /// sweeps, which never delete what they find outright (#985). Returns how
     /// many moved.
     @discardableResult
-    func quarantine(_ ids: Set<UUID>, into folder: URL) -> Int {
+    package func quarantine(_ ids: Set<UUID>, into folder: URL) -> Int {
         exclusively {
             var moved = 0
             for record in ((try? listRecords()) ?? []) where ids.contains(record.id) {
@@ -300,7 +318,7 @@ struct DiagnosticRecordStore: Sendable {
     /// names them `.<record name>.<pid>.<random>.tmp`); they hold a whole
     /// record that no sweep would otherwise find. Launch only, on the History
     /// write queue, where no record write is in flight.
-    func removeStrayFiles() {
+    package func removeStrayFiles() {
         exclusively {
             let names = ((try? directoryIO.contents(of: directoryURL)) ?? nil) ?? []
             for name in names
@@ -319,7 +337,7 @@ struct DiagnosticRecordStore: Sendable {
     /// Deletes every record, and whatever else is in the folder: a temporary
     /// file a write left when the app died mid-write holds a record too.
     @discardableResult
-    func removeAll() -> Int {
+    package func removeAll() -> Int {
         exclusively {
             Self.deletionEpochs.withLock { $0[directoryURL.path, default: 0] += 1 }
             let names = ((try? directoryIO.contents(of: directoryURL)) ?? nil) ?? []
@@ -383,15 +401,15 @@ struct DiagnosticRecordStore: Sendable {
 /// Record file naming: `dictation-<UTC stamp>-<History id>.json`. The stamp
 /// lets retention run on a listing; the id joins the record to its History
 /// entry and its audio.
-enum DiagnosticRecordFileName {
-    static let prefix = "dictation-"
-    static let suffix = ".json"
+package enum DiagnosticRecordFileName {
+    package static let prefix = "dictation-"
+    package static let suffix = ".json"
 
-    static func name(id: UUID, capturedAt: Date) -> String {
+    package static func name(id: UUID, capturedAt: Date) -> String {
         "\(prefix)\(makeStampFormatter().string(from: capturedAt))-\(id.uuidString)\(suffix)"
     }
 
-    static func parse(_ name: String) -> (capturedAt: Date, id: UUID)? {
+    package static func parse(_ name: String) -> (capturedAt: Date, id: UUID)? {
         guard name.hasPrefix(prefix), name.hasSuffix(suffix) else { return nil }
         let body = name.dropFirst(prefix.count).dropLast(suffix.count)
         // `<stamp>-<id>`; the stamp itself contains no hyphen.
@@ -406,7 +424,7 @@ enum DiagnosticRecordFileName {
 
     /// Sortable, hyphen-free, fixed to UTC. A factory rather than a shared
     /// instance: `DateFormatter` is not `Sendable`.
-    static func makeStampFormatter() -> DateFormatter {
+    package static func makeStampFormatter() -> DateFormatter {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd'T'HHmmss.SSS'Z'"
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
