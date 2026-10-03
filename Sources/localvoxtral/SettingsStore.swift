@@ -191,6 +191,10 @@ final class SettingsStore {
     /// this property exists to prevent.
     var secretStoreFailureSummary: String?
 
+    /// Keys whose latest write the store refused: the value lives in this
+    /// process only and is gone at the next launch.
+    var unsavedSecretKeys: Set<SecretKey> = []
+
     static let defaultDictationShortcut = DictationShortcut(
         keyCode: UInt32(kVK_Space),
         carbonModifierFlags: UInt32(optionKey)

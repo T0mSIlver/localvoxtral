@@ -185,15 +185,25 @@ final class EnginesModel {
     /// One press of "Use Mistral for dictation and polishing": store the key,
     /// move BOTH engines to the hosted API, and turn polishing on — it is the
     /// half of the offer a user cannot see a switch for.
-    func applyMistralQuickSetup(apiKey: String) {
+    ///
+    /// Returns false, and moves no engine, when the key was not saved: both
+    /// engines on Mistral with no key after the next launch is worse than
+    /// staying where they are (#1624).
+    @discardableResult
+    func applyMistralQuickSetup(apiKey: String) -> Bool {
         settings.mistralAPIKey = apiKey.trimmed
         Log.backends.info("mistral quick setup requested for dictation and polishing")
+        guard !settings.unsavedSecretKeys.contains(.mistralAPIKey) else {
+            Log.backends.error("mistral quick setup stopped: the API key was not saved")
+            return false
+        }
         applyDictationBackendModeChange(.mistralAPI)
         applyPolishingBackendModeChange(.mistralAPI)
         settings.llmPolishingEnabled = true
         Log.backends.info(
             "mistral quick setup applied dictation=\(self.settings.dictationBackendMode.rawValue, privacy: .public) polishing=\(self.settings.polishingBackendMode.rawValue, privacy: .public)"
         )
+        return true
     }
 
     /// Ask Mistral whether a key works. Returns the verdict rather than storing

@@ -228,10 +228,12 @@ extension SettingsStore {
         loadedSecretKeys.insert(key)
         do {
             try secretStore.setSecret(value.trimmed, for: key)
+            unsavedSecretKeys.remove(key)
             // A plist copy a failed migration left would be migrated back
             // at the next launch, undoing a clear (#1570).
             defaults.removeObject(forKey: Self.legacyDefaultsKey(for: key))
         } catch {
+            unsavedSecretKeys.insert(key)
             secretStoreFailureSummary = Self.secretStoreWriteFailureSummary
             Log.secrets.error(
                 "Storing \(key.rawValue, privacy: .public) in the keychain failed: \(String(describing: error), privacy: .public)"

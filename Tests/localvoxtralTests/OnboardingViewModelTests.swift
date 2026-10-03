@@ -26,7 +26,8 @@ final class OnboardingViewModelTests: XCTestCase {
     // MARK: - Fixture
 
     private func makeModel(
-        keyVerification: MistralAPIKeyVerification = .accepted
+        keyVerification: MistralAPIKeyVerification = .accepted,
+        secretStore: any SecretStoring = InMemorySecretStore()
     ) -> (
         model: OnboardingViewModel,
         settings: SettingsStore,
@@ -34,7 +35,7 @@ final class OnboardingViewModelTests: XCTestCase {
         closeCount: () -> Int,
         openEndpointsCount: () -> Int
     ) {
-        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
+        let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: secretStore)
         let manager = OnboardingTestBackendManager()
         let viewModel = DictationViewModel(
             settings: settings,
@@ -222,6 +223,31 @@ final class OnboardingViewModelTests: XCTestCase {
         XCTAssertEqual(driver.startCallCount, 0, "a hosted engine downloads nothing")
         XCTAssertEqual(driver.cancelCallCount, 1, "any local download in flight is cancelled")
         XCTAssertEqual(model.page, .finish)
+    }
+
+    /// #1624: a key the Keychain refused keeps the wizard on the engine page
+    /// with the failure shown, and moves no engine.
+    func testEnginePage_aKeyTheKeychainRefusesStopsOnTheEnginePage() {
+        let (model, settings, driver, _, _) = makeModel(
+            secretStore: FakeSecretStore(writeFailures: [.mistralAPIKey])
+        )
+        model.advance()  // permissions
+        model.advance()  // engine
+        let before = (settings.dictationBackendMode, settings.polishingBackendMode)
+        model.engineChoice = .mistralAPI
+        model.mistralAPIKeyDraft = "mk-mistral"
+
+        model.advance()
+
+        XCTAssertEqual(model.page, .engine)
+        XCTAssertEqual(model.mistralAPIKeySaveFailure, SettingsStore.secretStoreWriteFailureSummary)
+        XCTAssertEqual(settings.dictationBackendMode, before.0)
+        XCTAssertEqual(settings.polishingBackendMode, before.1)
+        XCTAssertEqual(driver.cancelCallCount, 0)
+
+        // Editing the key clears the failure; the next Continue tries again.
+        model.mistralAPIKeyDraft = "mk-mistral-2"
+        XCTAssertNil(model.mistralAPIKeySaveFailure)
     }
 
     /// Local → Begin download → back → Mistral → Continue → back → Local →
