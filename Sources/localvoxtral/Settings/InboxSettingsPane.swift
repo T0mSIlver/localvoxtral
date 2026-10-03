@@ -199,12 +199,12 @@ private struct InboxCaptureRow: View {
                 }
                 .accessibilityIdentifier("inbox.row.sendAnyway")
             }
-            if item.isIssue {
+            if item.isIssue, item.unconfirmedFiling == nil {
                 Button("File") { _ = model.file(item.id) }
                     .disabled(!item.canFile)
                     .accessibilityIdentifier("inbox.row.file")
             }
-            if item.relation == .extends, let issue = item.relatedIssue, item.isIssue {
+            if item.relation == .extends, let issue = item.relatedIssue, item.isIssue, item.unconfirmedFiling == nil {
                 Button("Comment on #\(issue)") { _ = model.comment(item.id) }
                     .disabled(!item.canComment)
                     .accessibilityIdentifier("inbox.row.comment")
