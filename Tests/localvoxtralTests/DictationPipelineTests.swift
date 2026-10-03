@@ -332,6 +332,63 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.first?.polishedText, "<\(Self.settledPiece)> <\(Self.tail)>")
     }
 
+    /// A stop that skips finalization (network lost, a new microphone,
+    /// sleep) pins the commit target at the stop, as a finalizing stop does:
+    /// focus that moves while the polish runs does not take the text (#1478).
+    /// Against the real overlay coordinator, which owns the target.
+    func testAStopWithoutFinalizationCommitsIntoTheAppFocusedAtTheStop() async throws {
+        let focus = MockOverlayAnchorResolver()
+        focus.focusedPID = 4242
+        let renderer = MockOverlayRenderer()
+        let overlay = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: focus,
+            now: { Date(timeIntervalSince1970: 0) },
+            sleepFor: { _ in },
+            copyToPasteboard: { _ in true }
+        )
+        let polish = FakePolishingService()
+        let pipeline = try await makePipeline(
+            outputMode: .overlayBuffer, polish: polish, earlyPolish: false, overlayCoordinator: overlay
+        )
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        addTeardownBlock { TerminalTargetDetector.debugSecureEventInputOverride = nil }
+        var inserted: [(text: String, pid: pid_t?)] = []
+        pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        pipeline.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { _ in false },
+            modifierStateReader: { false },
+            // The keyboard path needs a real app to activate: the text lands
+            // through Accessibility, which reports the pid it targeted.
+            accessibilityInserter: { text, pid in
+                inserted.append((text, pid))
+                return true
+            },
+            returnKeyPoster: { _ in false },
+            frontmostPIDReader: { focus.focusedPID },
+            commandVPaster: { _ in false }
+        )
+        let shown = BoundedWait()
+        renderer.onRender = { if $0?.bufferText == Self.phrase { shown.resolve() } }
+
+        await startAndSpeak(pipeline)
+        sendPartials(pipeline)
+        let shownWhileDictating = await shown.value(failAfter: 10)
+        XCTAssertTrue(shownWhileDictating)
+        renderer.onRender = nil
+        await polish.holdNextRequest()
+        pipeline.viewModel.stopDictation(reason: "network lost", finalizeRemainingAudio: false)
+        let polishing = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(polishing)
+        focus.focusedPID = 5151
+        await polish.releaseHeldRequest()
+        await awaitStoppedSessionCommit(pipeline.viewModel)
+
+        XCTAssertEqual(inserted.map(\.text), [Self.phrase])
+        XCTAssertEqual(inserted.map(\.pid), [4242], "the app focused at the stop")
+    }
+
     /// A new microphone restarts the dictation while the stopped text still
     /// waits on its polish: that text is saved as not inserted, and the next
     /// dictation's stop commits (#1055).
@@ -2982,7 +3039,8 @@ final class DictationPipelineTests: XCTestCase {
         polish: (any LLMPolishingServicing)? = nil,
         polishEndpoint: String = "http://127.0.0.1:8080/v1/chat/completions",
         earlyPolish: Bool = true,
-        contextBudget: RealtimeContextBudget? = nil
+        contextBudget: RealtimeContextBudget? = nil,
+        overlayCoordinator: (any OverlayBufferSessionCoordinating)? = nil
     ) async throws -> Pipeline {
         let server = try FakeRealtimeServer()
         addTeardownBlock { server.stop() }
@@ -3006,7 +3064,7 @@ final class DictationPipelineTests: XCTestCase {
         let records = SessionRecords()
         let viewModel = DictationViewModel(
             settings: settings,
-            overlayBufferCoordinator: overlay,
+            overlayBufferCoordinator: overlayCoordinator ?? overlay,
             startRuntimeServices: false,
             dependencies: DictationViewModel.Dependencies(
                 microphone: { microphone },

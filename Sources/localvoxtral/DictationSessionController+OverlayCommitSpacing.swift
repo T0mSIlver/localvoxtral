@@ -27,6 +27,19 @@ extension DictationSessionController {
         return LeadingSpaceOverlayCommitter(base: committer)
     }
 
+    /// The committer for "send that to <name>" in a terminal pane: the same
+    /// evidence, judged against the pane's pid and the named session. The
+    /// send presses Return, so no later commit continues it (#1480).
+    func addressedOverlayCommitter(
+        _ committer: any OverlayTextCommitting, session: ClaudeSessionSnapshot, targetPID: pid_t
+    ) -> any OverlayTextCommitting {
+        let landing = lastOverlayCommitLanding
+        lastOverlayCommitLanding = nil
+        guard let landing, landing == currentLanding(session: session, targetPID: targetPID) else { return committer }
+        Log.overlay.info("send to session: continues the unsent prompt; leading space")
+        return LeadingSpaceOverlayCommitter(base: committer)
+    }
+
     /// Remembers where a commit landed, or forgets the last one: a failed
     /// commit, a commit with no join, or one the spoken trigger sent leaves
     /// nothing the next commit may continue. A commit of nothing changed no
@@ -49,14 +62,19 @@ extension DictationSessionController {
     /// resolved when the dictation started, and a prompt submitted while it
     /// ran must count (Vibe review of #806). Nil once the session is gone.
     private func currentLanding(join: ClaudeSessionJoin?, targetPID: pid_t?) -> OverlayCommitLanding? {
-        guard let join, let targetPID else { return nil }
-        let sessionID = join.snapshot.sessionID
+        guard let join else { return nil }
+        return currentLanding(session: join.snapshot, targetPID: targetPID)
+    }
+
+    private func currentLanding(session: ClaudeSessionSnapshot, targetPID: pid_t?) -> OverlayCommitLanding? {
+        guard let targetPID else { return nil }
+        let sessionID = session.sessionID
         let promptsSubmitted: Int
         if let registry = context.claudeSessionJoinResolver?.registry {
             guard let live = registry.snapshot(sessionID: sessionID) else { return nil }
             promptsSubmitted = live.promptsSubmitted
         } else {
-            promptsSubmitted = join.snapshot.promptsSubmitted
+            promptsSubmitted = session.promptsSubmitted
         }
         return OverlayCommitLanding(
             targetPID: targetPID, sessionID: sessionID, promptsSubmitted: promptsSubmitted

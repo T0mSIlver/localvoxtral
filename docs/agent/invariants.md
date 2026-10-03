@@ -30,7 +30,9 @@ there is not.
   submit count (`ClaudeSessionSnapshot.promptsSubmitted`, every
   `UserPromptSubmit` with or without text) has not moved since. A failed
   commit, one the spoken trigger sent, one with no join, or a Live Auto-Paste
-  dictation clears it. Anything looser puts a space in front of `/compact`
+  dictation clears it. "Send that to <name>" into a terminal pane is judged
+  the same way against the pane's pid and the named session, and clears it,
+  since its Return sends the prompt (#1480). Anything looser puts a space in front of `/compact`
   in a fresh prompt. No trailing space after a commit.
 - **A mid-dictation reconnect resumes the session; it never replays it.**
   When the realtime socket drops without the user asking

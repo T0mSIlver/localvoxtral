@@ -313,7 +313,9 @@ extension DictationSessionController {
     @discardableResult
     func promotePendingRealtimeTextToLatestSegment() -> String? {
         let startsMidWord = transcript.pendingStartsMidWord
-        guard let pendingSegment = transcript.promotePendingToLatestSegment() else { return nil }
+        guard let pendingSegment = transcript.promotePendingToLatestSegment(
+            keepingOverlayMerge: isOverlayBufferModeEnabled
+        ) else { return nil }
 
         // Withheld partials are typed nowhere else: a promotion (stop,
         // dropped socket) stands in for the final they never got.

@@ -43,6 +43,35 @@ final class AddressedSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.viewModel.statusText, "Ready")
     }
 
+    /// The last commit went into this pane's unsent prompt and the session
+    /// has submitted nothing since: the addressed text continues it with a
+    /// space, as an ordinary commit does (#802). Its Return sends the
+    /// prompt, so nothing after it continues it (#1480).
+    func testAnAddressedSendSpacesTheUnsentPromptItContinues() async {
+        let registry = ClaudeSessionRegistry(now: { Date(timeIntervalSince1970: 3_000_000) }, isProcessAlive: { _ in true })
+        registry.ingest(
+            ClaudeHookRecord(
+                event: .sessionStart, sessionID: "pay", timestamp: 0, rawCwd: "/r/payments", prompt: nil, files: [],
+                process: ClaudeHookProcessInfo(hookPID: 1, claudePID: Self.agentPID, tty: "/dev/ttys001", termProgram: "ghostty")
+            ),
+            origin: local
+        )
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.", sessions: registry.liveSessions(), registry: registry
+        )
+        harness.viewModel.session.lastOverlayCommitLanding = OverlayCommitLanding(
+            targetPID: Self.namedTerminalPID, sessionID: "pay",
+            promptsSubmitted: registry.snapshot(sessionID: "pay")?.promptsSubmitted ?? -1
+        )
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.inserted.value.map(\.text), [" Run the tests"])
+        XCTAssertEqual(harness.inserted.value.map(\.pid), [Self.namedTerminalPID])
+        XCTAssertEqual(harness.returns.value, [Self.namedTerminalPID])
+        XCTAssertNil(harness.viewModel.session.lastOverlayCommitLanding)
+    }
+
     func testANameNoSessionHasIsCommittedAsText() async {
         let harness = makeHarness(
             text: "fix it, send that to nowhere",

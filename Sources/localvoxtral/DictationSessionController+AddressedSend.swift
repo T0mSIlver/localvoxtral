@@ -207,7 +207,9 @@ extension DictationSessionController {
         }
         let commit = StopCommitCoordinator.commit(
             overlay: overlayBufferCoordinator,
-            textInsertion: PinnedAppOverlayCommitter(textInsertion: textInsertion, pid: pid),
+            textInsertion: addressedOverlayCommitter(
+                PinnedAppOverlayCommitter(textInsertion: textInsertion, pid: pid), session: session, targetPID: pid
+            ),
             autoCopyEnabled: settings.autoCopyEnabled
         )
         guard commit.outcome == .succeeded else {
