@@ -491,6 +491,69 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         XCTAssertEqual(destination, target.path, "a suspicious link must never be unlinked")
     }
 
+    // Two copies start over one stale socket file (#1603). The second copy
+    // runs its whole start while the first sits between its probe and its
+    // unlink. Whichever binds, the copy that ends up without the socket must
+    // not take the other's down when it stops.
+    func testTwoCopiesRecoveringOneStaleSocketLeaveTheSurvivorReachable() throws {
+        try ClaudeSocketGuard.prepareDirectory(at: directory.path)
+        XCTAssertTrue(FileManager.default.createFile(atPath: socketPath, contents: Data()))
+        let contender = ClaudeContextBroker(
+            socketPath: socketPath,
+            registry: ClaudeSessionRegistry(now: { Date(timeIntervalSince1970: 5_000_000) }, isProcessAlive: { _ in true })
+        )
+        defer { contender.stop() }
+        // Signalled when the contender waits for the bind lock, or has
+        // finished starting.
+        let contenderMoved = DispatchSemaphore(value: 0)
+        let contenderFinished = expectation(description: "contender's start returned")
+        contender.debugConfigureBindLockHook { contenderMoved.signal() }
+        broker.debugConfigureStaleRecoveryHook {
+            Thread.detachNewThread {
+                _ = try? contender.start()
+                contenderMoved.signal()
+                contenderFinished.fulfill()
+            }
+            contenderMoved.wait()
+        }
+
+        try broker.start()
+        wait(for: [contenderFinished], timeout: 5)
+        let survivor = broker.isRunning && !contender.isRunning ? broker! : contender
+        let loser = survivor === broker ? contender : broker!
+        loser.stop()
+
+        let ingested = expectation(description: "survivor ingested the record")
+        survivor.debugConfigureIngestHook { _ in ingested.fulfill() }
+        let record = ClaudeHookRecord(
+            event: .userPromptSubmit,
+            sessionID: "after-race",
+            timestamp: 1,
+            rawCwd: "/repo",
+            prompt: "still reachable",
+            process: ClaudeHookProcessInfo(hookPID: 31_337, claudePID: getpid())
+        )
+        XCTAssertNil(send(try XCTUnwrap(ClaudeHookWireCodec.encodeLine(record))))
+        wait(for: [ingested], timeout: 5)
+    }
+
+    // A copy that stops after another bound the path since must leave that
+    // socket in place (#1603).
+    func testStopLeavesASocketAnotherCopyBoundAtThePath() throws {
+        try broker.start()
+        XCTAssertEqual(unlink(socketPath), 0)
+        let successor = ClaudeContextBroker(
+            socketPath: socketPath,
+            registry: ClaudeSessionRegistry(now: { Date(timeIntervalSince1970: 5_000_000) }, isProcessAlive: { _ in true })
+        )
+        defer { successor.stop() }
+        try successor.start()
+
+        broker.stop()
+
+        XCTAssertTrue(ClaudeContextBroker.isSocketLive(atPath: socketPath))
+    }
+
     // MARK: Ingest
 
     func testPublisherRecordReachesRegistryWithLocalOrigin() throws {
