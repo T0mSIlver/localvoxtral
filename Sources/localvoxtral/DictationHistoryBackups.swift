@@ -142,6 +142,10 @@ struct DictationHistoryBackups: Sendable {
         }
     }
 
+    /// Whether a snapshot still holds a dictation. A daily copy of an
+    /// empty store holds nothing a user could want back.
+    var holdDictations: Bool { snapshots().contains { $0.dictations > 0 } }
+
     // MARK: - Names
 
     /// `history-20260928T114325Z-migration-n652.store`.
@@ -205,6 +209,18 @@ struct DictationHistoryQuarantine: Sendable {
             .appendingPathComponent(kind, isDirectory: true)
     }
 
+    /// Whether any day folder holds a file of `kind`.
+    func holdsFiles(of kind: String) -> Bool {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directoryURL.path)) ?? []
+        return names.contains { name in
+            guard name.count == 8, Int(name) != nil else { return false }
+            let folder = directoryURL.appendingPathComponent(name, isDirectory: true)
+                .appendingPathComponent(kind, isDirectory: true)
+            let files = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+            return !files.isEmpty
+        }
+    }
+
     /// Deletes what every day folder holds of `kind`.
     func removeAll(of kind: String) {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: directoryURL.path)) ?? []
@@ -247,4 +263,16 @@ struct DictationHistoryQuarantine: Sendable {
         formatter.dateFormat = "yyyyMMdd"
         return formatter.string(from: date)
     }
+}
+
+/// Which of the backups hold something.
+struct DictationHistoryBackupsSummary: Equatable, Sendable {
+    /// A History snapshot holds a dictation.
+    var dictations = false
+    /// The quarantine holds a recording.
+    var audio = false
+    /// The quarantine holds a diagnostic record.
+    var diagnosticRecords = false
+
+    var holdsAnything: Bool { dictations || audio || diagnosticRecords }
 }

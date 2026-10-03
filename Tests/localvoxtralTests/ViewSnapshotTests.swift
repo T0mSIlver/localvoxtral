@@ -282,8 +282,9 @@ final class ViewSnapshotTests: XCTestCase {
     }
 
     /// The History pane's delete questions: the four that ask whether the
-    /// backups go too, one with the box ticked, and a retention trim, which
-    /// does not ask (#1574).
+    /// backups go too, one with the box ticked, a retention trim, which
+    /// does not ask, and the questions an empty History asks while backups
+    /// hold something (#1574).
     func testHistoryDeleteAlerts() throws {
         let questions: [(String, HistoryDeleteAlert)] = [
             ("delete-all", .deleteAll(count: 128)),
@@ -291,6 +292,9 @@ final class ViewSnapshotTests: XCTestCase {
             ("audio-off", .audioOff(count: 42)),
             ("records-off", .recordsOff(count: 42)),
             ("trim", .retention(.days7, count: 12)),
+            ("delete-backups", .deleteAll(count: 0)),
+            ("dont-keep-empty", .retention(.off, count: 0)),
+            ("audio-off-empty", .audioOff(count: 0)),
         ]
         for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             for (name, question) in questions {

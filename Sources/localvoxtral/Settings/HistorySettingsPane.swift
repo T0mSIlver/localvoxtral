@@ -119,7 +119,7 @@ struct HistorySettingsPane: View {
                             Task { await model.deleteAll(removingBackups: removingBackups) }
                         }
                     }
-                    .disabled(model.totalCount == 0)
+                    .disabled(!model.canDeleteAll)
                     .accessibilityIdentifier("history.storage.deleteAll")
                 }
             }
@@ -233,7 +233,7 @@ struct HistorySettingsPane: View {
         Task {
             let deletedCount = await model.countDeleted(by: retention, now: Date())
             guard pick == retentionPick else { return }
-            if deletedCount == 0 {
+            if deletedCount == 0, retention.savesDictations || !model.dontKeepAsksWithNothingToDelete {
                 applyRetention(retention)
             } else {
                 HistoryDeleteAlert.retention(retention, count: deletedCount).present(on: NSApp.keyWindow) {

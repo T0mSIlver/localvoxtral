@@ -635,6 +635,19 @@ final class DictationSessionStore {
     }
 
 
+    /// Which backups hold something: what Delete All and the switches offer
+    /// to delete even when nothing else is left (#1574).
+    func backupsSummary() async -> DictationHistoryBackupsSummary? {
+        let backups = backups
+        let quarantine = quarantine
+        return await read("summarize the backups") { _ in
+            DictationHistoryBackupsSummary(
+                dictations: backups?.holdDictations ?? false,
+                audio: quarantine?.holdsFiles(of: "dictation-audio") ?? false,
+                diagnosticRecords: quarantine?.holdsFiles(of: "diagnostic-records") ?? false)
+        }
+    }
+
     /// Nil when the audio folder would not list, like the records'.
     func audioSummary() async -> (recordings: Int, bytes: Int)? {
         guard let audioStore else { return (0, 0) }
