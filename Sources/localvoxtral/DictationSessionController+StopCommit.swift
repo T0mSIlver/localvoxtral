@@ -901,13 +901,12 @@ extension DictationSessionController {
         let sessionAudio = audio.sessionRecording.finish()
         let text = quickCaptureTextWithoutSpokenStopPhrase(transcript.currentDictationEventText)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let recordID = UUID()
-        let keptInHistory = !text.isEmpty && settings.dictationHistoryRetention.savesDictations && sessionStore != nil
         // Read before the cleanup lets the join go: the capture is polished
         // and routed among its group's projects only (#1005).
         let group = learnedTermStore?.snapshot().group(ofJoin: context.claudeSessionJoin)
-        saveSessionRecord(
-            id: recordID,
+        // The id the save returns, not one decided before it: the save
+        // re-reads History's setting, which another copy may have changed.
+        let historyRecordID = saveSessionRecord(
             startedAt: sessionStartedAt ?? Date(),
             rawText: text,
             polishedText: nil,
@@ -930,7 +929,7 @@ extension DictationSessionController {
         }
         Log.dictation.info("quick capture: \(text.count, privacy: .public) chars to the inbox")
         statusText = StatusStrings.quickCaptureSaved
-        onQuickCapture?(text, keptInHistory ? recordID : nil, group)
+        onQuickCapture?(text, sessionStore == nil ? nil : historyRecordID, group)
     }
 
     /// Returns the saved entry's id, or nil when nothing was saved.
