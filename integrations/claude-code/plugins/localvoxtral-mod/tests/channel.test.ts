@@ -82,6 +82,126 @@ describe('channel', () => {
     })
   }
 
+  type SendCase = {
+    label: string
+    box: string
+    fill?: { isFilled: boolean }
+    submit?: 'enters' | 'drops' | 'waits'
+    turnRunning?: boolean
+    expected: Record<string, unknown>
+    fills: { text: string; mode: string }[]
+    submits: string[]
+  }
+  const sendCases: SendCase[] = [
+    {
+      label: 'fills at the cursor, submits the whole box as the person, and empties it',
+      box: 'fix the flaky',
+      submit: 'enters',
+      expected: { ok: true, submitted: true },
+      fills: [{ text: ' reconnect test', mode: 'insert' }, { text: '', mode: 'replace' }],
+      submits: ['fix the flaky reconnect test'],
+    },
+    {
+      label: 'behind a running turn it answers queued at once',
+      box: '',
+      submit: 'waits',
+      turnRunning: true,
+      expected: { ok: true, submitted: true, queued: true },
+      fills: [{ text: ' reconnect test', mode: 'insert' }, { text: '', mode: 'replace' }],
+      submits: ['fix the flaky reconnect test'],
+    },
+    {
+      label: 'a submit that has not entered in time answers queued',
+      box: '',
+      submit: 'waits',
+      expected: { ok: true, submitted: true, queued: true },
+      fills: [{ text: ' reconnect test', mode: 'insert' }, { text: '', mode: 'replace' }],
+      submits: ['fix the flaky reconnect test'],
+    },
+    {
+      label: 'a dropped submit puts the text back and says it was not sent',
+      box: '',
+      submit: 'drops',
+      expected: { ok: true, submitted: false, reason: 'dropped' },
+      fills: [
+        { text: ' reconnect test', mode: 'insert' },
+        { text: '', mode: 'replace' },
+        { text: 'fix the flaky reconnect test', mode: 'insert' },
+      ],
+      submits: ['fix the flaky reconnect test'],
+    },
+    {
+      label: 'a refused fill changes nothing and submits nothing',
+      box: 'fix the flaky',
+      fill: { isFilled: false },
+      expected: { ok: false, reason: 'refused' },
+      fills: [{ text: ' reconnect test', mode: 'insert' }],
+      submits: [],
+    },
+    {
+      label: 'a box holding a paste is left to the keyboard',
+      box: 'see [Pasted text #1 +30 lines]',
+      expected: { ok: false, reason: 'placeholder' },
+      fills: [],
+      submits: [],
+    },
+    {
+      label: 'a slash command is left to the keyboard',
+      box: '/compact',
+      expected: { ok: false, reason: 'command' },
+      fills: [],
+      submits: [],
+    },
+  ]
+  for (const c of sendCases) {
+    test(`send: ${c.label}`, async ($, on) => {
+      const clock = mock.clock(on)
+      mock.env(on, { HOME: '/Users/tom' })
+      let box = c.box === '' ? 'fix the flaky' : c.box
+      const fills: { text: string; mode: string }[] = []
+      const submits: string[] = []
+      const replies: unknown[] = []
+      on('session.start', ($, e) => ({ cwd: e.cwd }))
+      on('session.id', () => ({ value: 'sess-1' }))
+      on('settings.read', () => ({ value: {} }))
+      on('fs.exists', ($, e) => ({ value: e.path === PUBLISHER }))
+      on('ui.status', () => ({ value: undefined }))
+      on('turn.start', ($, e) => ({ turnId: e.turnId }))
+      on('prompt.read', () => ({ value: { text: box, cursor: box.length } }))
+      on('prompt.fill', ($, e) => {
+        fills.push({ text: e.text, mode: e.mode })
+        if (c.fill !== undefined && !c.fill.isFilled) return c.fill
+        box = e.mode === 'replace' ? e.text : box + e.text
+        return { isFilled: true }
+      })
+      on('prompt.submit', async ($, e) => {
+        submits.push(e.text)
+        if (c.submit === 'drops') return { drop: 'a hook said no' }
+        if (c.submit === 'waits') await clock.sleep(600000)
+        return { text: e.text }
+      })
+      on('process.spawn', async function* (): AsyncGenerator<ProcessSpawnChunk, { value: ProcessSpawnResult }> {
+        yield { stream: 'stdout', text: '{"id":"s","kind":"send","mod_message":1,"text":" reconnect test"}\n' }
+        await clock.sleep(900000)
+        return { value: EXITED }
+      })
+      on('process.run', ($, e) => {
+        if (e.argv[1] === '--mod-reply') replies.push(JSON.parse(e.init?.stdin ?? ''))
+        return {
+          value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+        }
+      })
+
+      if (c.turnRunning) await $.turn.start({ text: 'earlier', turnId: 't1' })
+      await $.session.start(STARTED)
+      await clock.advance(c.turnRunning ? 100 : 2000)
+
+      expect(replies).toEqual([{ mod_reply: 1, session_id: 'sess-1', id: 's', ...c.expected }])
+      expect(fills).toEqual(c.fills)
+      expect(submits).toEqual(c.submits)
+    })
+  }
+
   test('terms asks the session itself and returns its answer and usage', async ($, on) => {
     const clock = mock.clock(on)
     mock.env(on, { HOME: '/Users/tom' })

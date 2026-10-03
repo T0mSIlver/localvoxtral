@@ -26,16 +26,21 @@ extension DictationSessionController {
     /// or, without one, when the evidence says the last commit is still in
     /// the prompt.
     ///
-    /// A spoken send presses Return right after the commit, which a fill
-    /// handed off to the mod could arrive behind, so it keeps the keyboard.
+    /// A spoken send by Return keeps the keyboard, since a fill handed off
+    /// to the mod could arrive behind the key; one the mod submits asks the
+    /// mod to submit after its fill (#1644).
     func overlayCommitter(
         join: ClaudeSessionJoin?,
         targetPID: pid_t?,
         spokenSend: OverlaySpokenSend?,
         draft: ClaudePromptDraft? = nil
     ) -> any OverlayTextCommitting {
-        let committer: any OverlayTextCommitting =
-            (spokenSend == nil ? modChannelCommitter(join: join, targetPID: targetPID) : nil) ?? overlayTextCommitter
+        let modCommitter: ModChannelOverlayCommitter? = switch spokenSend {
+        case nil: modChannelCommitter(join: join, targetPID: targetPID)
+        case .modSubmit: modChannelCommitter(join: join, targetPID: targetPID, submits: true)
+        case .returnKey, .promptRelaySubmit: nil
+        }
+        let committer: any OverlayTextCommitting = modCommitter ?? overlayTextCommitter
         if let join, let draft, draft.decidesLeadingSpace(for: join) {
             guard draft.commitNeedsLeadingSpace else {
                 Log.overlay.info("overlay commit: the prompt box is empty or ends in whitespace; no leading space")

@@ -12,6 +12,10 @@ enum OverlaySpokenSend: Equatable {
     case returnKey(pid_t)
     /// The opencode prompt relay's submit, after its append (#719).
     case promptRelaySubmit
+    /// The joined Claude Code session's mod fills and submits (#1644): no
+    /// key, so neither focus nor Secure Keyboard Entry matters. A refusal
+    /// falls back to typing and Return under the `returnKey` gates.
+    case modSubmit
 }
 
 extension DictationSessionController {
@@ -43,6 +47,15 @@ extension DictationSessionController {
         if textInsertion.promptRelayTakesText {
             return .send(.promptRelaySubmit, remainder: remainder)
         }
+        if modChannelSessionID(join: context.claudeSessionJoin) != nil {
+            return .send(.modSubmit, remainder: remainder)
+        }
+        return keyboardSpokenSendPlan(remainder: remainder)
+    }
+
+    /// The spoken send by keys: Return in the commit's target app, only
+    /// where Return submits and never under Secure Keyboard Entry.
+    func keyboardSpokenSendPlan(remainder: String) -> OverlaySpokenSendPlan {
         guard let pid = overlayBufferCoordinator.commitTargetAppPID else {
             return .keep(reason: "no target app")
         }
@@ -76,6 +89,10 @@ extension DictationSessionController {
                 Log.dictation.notice(
                     "spoken send: trigger removed before commit; the prompt relay submits text_empty=\(remainder.isEmpty, privacy: .public)"
                 )
+            case .modSubmit:
+                Log.dictation.notice(
+                    "spoken send: trigger removed before commit; the session's mod submits text_empty=\(remainder.isEmpty, privacy: .public)"
+                )
             case .returnKey(let pid):
                 Log.dictation.notice(
                     "spoken send: trigger removed before commit; Return follows in pid=\(pid, privacy: .public) text_empty=\(remainder.isEmpty, privacy: .public)"
@@ -104,6 +121,29 @@ extension DictationSessionController {
         case .promptRelaySubmit:
             textInsertion.promptRelaySink?.submit()
             Log.dictation.notice("spoken send: submit handed to the prompt relay")
+        case .modSubmit:
+            // The mod's committer submits, or presses Return itself after a
+            // refusal it typed.
+            break
+        }
+    }
+
+    /// The spoken send for a commit into `join`: a mod submit planned at
+    /// the stop whose channel is gone by the commit becomes the keyboard's,
+    /// judged now.
+    func spokenSendForCommit(_ spokenSend: OverlaySpokenSend?, join: ClaudeSessionJoin?) -> OverlaySpokenSend? {
+        guard spokenSend == .modSubmit, modChannelSessionID(join: join) == nil else { return spokenSend }
+        switch keyboardSpokenSendPlan(remainder: "") {
+        case .send(let keyboard, _):
+            Log.dictation.notice("spoken send: the session's mod went away before the commit; Return instead")
+            return keyboard
+        case .keep(let reason):
+            Log.dictation.notice(
+                "spoken send: the session's mod went away before the commit; \(reason, privacy: .public); no Return"
+            )
+            return nil
+        case .noTrigger:
+            return nil
         }
     }
 

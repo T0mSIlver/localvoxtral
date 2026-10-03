@@ -415,8 +415,11 @@ in a terminal goes into Claude Code's prompt box through the mod instead of
 being typed: no key is posted, so Secure Keyboard Entry and a focus change
 cannot drop it. If the mod cannot take the text (a dialog holds the keys, the
 session ended), the app types it as before. A dictation that ends in the
-spoken send word, and sessions in Claude Desktop or a browser tab, are still
-typed.
+spoken send word is sent by the mod too, with no Return key: it submits the
+whole prompt box, your typed words included. While Claude is still working,
+the prompt waits for that turn, and the menu bar says so. A box holding a
+paste, an image, an `@` mention or a slash command is still typed and sent
+with Return. Sessions in Claude Desktop or a browser tab are still typed.
 
 When an Overlay Buffer dictation into such a session is polished, the app
 also asks the mod what the prompt box already holds, in a terminal or the
