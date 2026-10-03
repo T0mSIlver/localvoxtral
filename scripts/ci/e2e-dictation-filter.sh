@@ -33,7 +33,7 @@ set -euo pipefail
 PATTERNS=(
   'Sources/localvoxtral/DictationSessionController+StopCommit.swift'
   'Sources/localvoxtral/StopCommitCoordinator*.swift'      # the stop-commit, in both modes
-  'Sources/localvoxtral/LiveTerminalNewlineGuard.swift'
+  'Sources/localvoxtralCore/LiveTerminalNewlineGuard.swift'
   'Sources/localvoxtral/TUIAutocompleteTrailingSpace.swift'
   'Sources/localvoxtral/TextInsertionService.swift'
   'Sources/localvoxtral/SystemAccessibilityFocus.swift'

@@ -18,7 +18,7 @@
 /// is already in the field, so `a␣␣` then `\nb` reaches the terminal as
 /// `a␣␣b`, not `a␣b`. And an inconclusive AX probe reads as non-terminal,
 /// the same verdict a session started in that app gets.
-struct LiveTerminalNewlineGuard {
+package struct LiveTerminalNewlineGuard {
     /// Whether the last typed character was whitespace. Starts true, like the
     /// stream, so a collapse run opening the session types no leading space.
     private var lastTypedWasWhitespace = true
@@ -27,16 +27,24 @@ struct LiveTerminalNewlineGuard {
     /// dropped in its favor.
     private var owesSpace = false
 
-    struct Prepared {
-        let text: String
-        let collapsedRunCount: Int
+    package init() {}
+
+    package struct Prepared {
+        package let text: String
+        package let collapsedRunCount: Int
         /// The guard state to keep once `text` is typed. A failed insertion
         /// keeps the old state, and the retry prepares the raw text again.
-        let stateAfterTyping: LiveTerminalNewlineGuard
+        package let stateAfterTyping: LiveTerminalNewlineGuard
+
+        package init(text: String, collapsedRunCount: Int, stateAfterTyping: LiveTerminalNewlineGuard) {
+            self.text = text
+            self.collapsedRunCount = collapsedRunCount
+            self.stateAfterTyping = stateAfterTyping
+        }
     }
 
     /// `targetIsTerminalLike` runs only when `text` holds a newline or tab.
-    func prepare(_ text: String, targetIsTerminalLike: () -> Bool) -> Prepared {
+    package func prepare(_ text: String, targetIsTerminalLike: () -> Bool) -> Prepared {
         var owes = owesSpace
         var input = Substring(text)
         if owes {
