@@ -323,7 +323,7 @@ package final class VoiceMemoIntake {
             // is not the memo listed, so it says nothing about that memo.
             guard await isStillListed(file) else {
                 Log.backends.notice("Voice memos: a memo changed while it was read; retrying on a later scan")
-                ledger.entries[file.name] = nil
+                ledger.entries[VoiceMemoLedger.key(for: file)] = nil
                 saveLedger()
                 return .left
             }
