@@ -213,14 +213,21 @@ package final class VoiceMemoIntake {
         let previous = lastSeen
         lastSeen = Dictionary(files.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
         let before = ledger
-        ledger.prune(keeping: Set(lastSeen.keys))
+        let renamed = ledger.adopt(files)
+        ledger.prune(keeping: Set(files.map(VoiceMemoLedger.key(for:))))
         if ledger != before { saveLedger() }
+        // Renamed after its capture, so the Trash missed it (#1508).
+        for file in files where renamed.contains(VoiceMemoLedger.key(for: file)) {
+            guard case .captured = ledger.entry(for: file)?.state else { continue }
+            Log.backends.info("Voice memos: a captured memo was renamed; moving it to the Trash")
+            removeQuietly(directory.appendingPathComponent(file.name))
+        }
 
         var captured = 0
         for file in files.sorted(by: { $0.modifiedAt < $1.modifiedAt }) {
             // A capture whose save failed, or a quit interrupted: done once
             // the Inbox file holds its words, or the user's discard of them.
-            if let entry = ledger.entries[file.name], entry.describes(file),
+            if let entry = ledger.entry(for: file), entry.describes(file),
                case .transcribing(let itemID) = entry.state,
                inboxHas(itemID) || unsavedCaptures.contains(itemID)
             {
@@ -303,12 +310,12 @@ package final class VoiceMemoIntake {
         } catch where yieldedToDictation {
             // Before the unreadable case: a cancelled decode can still fail.
             Log.backends.info("Voice memos: the memo stopped for the dictation (\(String(describing: error), privacy: .public)); retrying on the next scan")
-            ledger.entries[file.name] = nil
+            ledger.entries[VoiceMemoLedger.key(for: file)] = nil
             saveLedger()
             return .stopPass
         } catch where isStopped || Task.isCancelled {
             Log.backends.info("Voice memos: the memo stopped with voice memos (\(String(describing: error), privacy: .public)); retrying on the next scan")
-            ledger.entries[file.name] = nil
+            ledger.entries[VoiceMemoLedger.key(for: file)] = nil
             saveLedger()
             return .stopPass
         } catch is VoiceMemoUnreadable {
@@ -316,7 +323,7 @@ package final class VoiceMemoIntake {
             // is not the memo listed, so it says nothing about that memo.
             guard await isStillListed(file) else {
                 Log.backends.notice("Voice memos: a memo changed while it was read; retrying on a later scan")
-                ledger.entries[file.name] = nil
+                ledger.entries[VoiceMemoLedger.key(for: file)] = nil
                 saveLedger()
                 return .left
             }
@@ -326,7 +333,7 @@ package final class VoiceMemoIntake {
             return .left
         } catch {
             Log.backends.error("Voice memos: transcription failed, retrying on the next scan: \(String(describing: error), privacy: .public)")
-            ledger.entries[file.name] = nil
+            ledger.entries[VoiceMemoLedger.key(for: file)] = nil
             saveLedger()
             onStatus?("Voice memo waits for the speech engine.")
             return .stopPass
@@ -350,7 +357,7 @@ package final class VoiceMemoIntake {
             // The Inbox refused it since the scan began (another running copy
             // left a file this build cannot read): the memo stays.
             Log.persistence.error("Voice memos: the Inbox did not take a memo; left in the folder")
-            ledger.entries[file.name] = nil
+            ledger.entries[VoiceMemoLedger.key(for: file)] = nil
             saveLedger()
             onStatus?(Self.inboxRefusedStatus)
             return .left
@@ -381,6 +388,10 @@ package final class VoiceMemoIntake {
     private func finish(_ file: VoiceMemoFile, itemID: UUID, at url: URL) {
         unsavedCaptures.remove(itemID)
         record(file, .captured(itemID: itemID))
+        removeQuietly(url)
+    }
+
+    private func removeQuietly(_ url: URL) {
         do {
             try removeTranscribed(url)
         } catch {
@@ -390,7 +401,7 @@ package final class VoiceMemoIntake {
     }
 
     private func record(_ file: VoiceMemoFile, _ state: VoiceMemoLedger.State) {
-        ledger.entries[file.name] = VoiceMemoLedger.Entry(size: file.size, modifiedAt: file.modifiedAt, state: state)
+        ledger.entries[VoiceMemoLedger.key(for: file)] = VoiceMemoLedger.Entry(file, state: state)
         saveLedger()
     }
 
