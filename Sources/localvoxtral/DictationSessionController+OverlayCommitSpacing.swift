@@ -28,16 +28,24 @@ extension DictationSessionController {
     }
 
     /// The committer for "send that to <name>" in a terminal pane: the same
-    /// evidence, judged against the pane's pid and the named session. The
-    /// send presses Return, so no later commit continues it (#1480).
+    /// evidence, judged against the pane's pid and the named session (#1480).
     func addressedOverlayCommitter(
         _ committer: any OverlayTextCommitting, session: ClaudeSessionSnapshot, targetPID: pid_t
     ) -> any OverlayTextCommitting {
-        let landing = lastOverlayCommitLanding
-        lastOverlayCommitLanding = nil
-        guard let landing, landing == currentLanding(session: session, targetPID: targetPID) else { return committer }
+        guard let landing = lastOverlayCommitLanding,
+              landing == currentLanding(session: session, targetPID: targetPID)
+        else { return committer }
         Log.overlay.info("send to session: continues the unsent prompt; leading space")
         return LeadingSpaceOverlayCommitter(base: committer)
+    }
+
+    /// An addressed send that pressed Return, or failed to type, leaves
+    /// nothing in the named session's prompt to continue. A landing in
+    /// another session is that prompt's evidence and stays, as does one
+    /// whose text was typed but not submitted.
+    func forgetOverlayCommitLanding(inSession sessionID: String) {
+        guard lastOverlayCommitLanding?.sessionID == sessionID else { return }
+        lastOverlayCommitLanding = nil
     }
 
     /// Remembers where a commit landed, or forgets the last one: a failed

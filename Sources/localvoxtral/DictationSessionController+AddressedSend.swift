@@ -213,6 +213,7 @@ extension DictationSessionController {
             autoCopyEnabled: settings.autoCopyEnabled
         )
         guard commit.outcome == .succeeded else {
+            forgetOverlayCommitLanding(inSession: session.sessionID)
             Log.dictation.notice("send to session: the text did not land in the pane; no Return")
             return AddressedCommit(outcome: commit.outcome, inserted: false, status: nil)
         }
@@ -239,6 +240,7 @@ extension DictationSessionController {
                 status: AddressedSendStatus.typedNotSubmitted
             )
         }
+        forgetOverlayCommitLanding(inSession: session.sessionID)
         return AddressedCommit(outcome: commit.outcome, inserted: true, status: nil)
     }
 }

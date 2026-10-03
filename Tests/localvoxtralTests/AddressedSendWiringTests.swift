@@ -72,6 +72,23 @@ final class AddressedSendWiringTests: XCTestCase {
         XCTAssertNil(harness.viewModel.session.lastOverlayCommitLanding)
     }
 
+    /// A landing in another session is that prompt's evidence: an addressed
+    /// send elsewhere neither continues it nor erases it.
+    func testAnAddressedSendKeepsTheLandingOfAnotherSession() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001"), session("web", cwd: "/r/web")]
+        )
+        let elsewhere = OverlayCommitLanding(targetPID: Self.focusedAppPID, sessionID: "web", promptsSubmitted: 0)
+        harness.viewModel.session.lastOverlayCommitLanding = elsewhere
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.inserted.value.map(\.text), ["Run the tests"])
+        XCTAssertEqual(harness.returns.value, [Self.namedTerminalPID])
+        XCTAssertEqual(harness.viewModel.session.lastOverlayCommitLanding, elsewhere)
+    }
+
     func testANameNoSessionHasIsCommittedAsText() async {
         let harness = makeHarness(
             text: "fix it, send that to nowhere",
