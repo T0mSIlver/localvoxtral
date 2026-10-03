@@ -273,10 +273,14 @@ async function send($: EngineInterface, text: string): Promise<Outcome> {
   return first === 'sent' ? { ok: true, submitted: true } : { ok: true, submitted: true, queued: true }
 }
 
-/** A submit that did not go: its text back in the box, where it was. */
+/**
+ * A submit that did not go: its text back in the box, after anything typed
+ * since, so neither is cut into the other.
+ */
 async function putBack($: EngineInterface, text: string): Promise<void> {
   try {
-    await $.prompt.fill({ text, mode: 'insert' })
+    const box = await $.prompt.read()
+    await $.prompt.fill({ text: box.text === '' ? text : ` ${text}`, mode: 'append' })
   } catch {
     // The engine shows the drop's reason; nothing else to do.
   }
@@ -316,6 +320,8 @@ export const register: Register = (on, options) => {
   })
 
   on('session.end', async ($, e, next) => {
+    // A turn the end cut short raises no `turn.complete` the mod sees.
+    runningTurn = undefined
     if (channelPublisher !== undefined) {
       endingSession = e.sessionId
       processEnds = e.reason !== 'clear'
