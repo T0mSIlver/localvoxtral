@@ -161,7 +161,7 @@ The terms come from:
 If the answer comes back within 2.5 seconds plus one second per minute of
 audio, its text replaces the realtime text and polishing runs on it. When
 it left out a stretch of four or more words the realtime text had, that
-stretch is put back. Otherwise the realtime text stays.
+stretch is put back. A later answer leaves the realtime text as it is.
 
 The app writes the audio to disk only if History keeps audio.
 
