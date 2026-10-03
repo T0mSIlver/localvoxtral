@@ -39,6 +39,12 @@ public struct ClaudeModAttachClient: Sendable {
     public var sleep: @Sendable (TimeInterval) -> Void
     /// How often a quiet channel checks that its parent is alive.
     public var parentCheckInterval: TimeInterval
+    /// How long the app may take to answer the attach. The publisher's
+    /// deadline ends at the write; an app that took the bytes and then hung
+    /// would otherwise hold the attach forever, past every retry.
+    public var attachReplyTimeout: TimeInterval
+    /// Monotonic seconds, for `attachReplyTimeout`.
+    public var now: @Sendable () -> TimeInterval
     public static let firstRetryDelay: TimeInterval = 1
     public static let maxRetryDelay: TimeInterval = 30
 
@@ -50,7 +56,9 @@ public struct ClaudeModAttachClient: Sendable {
         output: @escaping @Sendable (Data) -> Void,
         isParentAlive: @escaping @Sendable () -> Bool,
         sleep: @escaping @Sendable (TimeInterval) -> Void,
-        parentCheckInterval: TimeInterval = 5
+        parentCheckInterval: TimeInterval = 5,
+        attachReplyTimeout: TimeInterval = 5,
+        now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) {
         self.socketPath = socketPath
         self.sessionID = sessionID
@@ -60,6 +68,8 @@ public struct ClaudeModAttachClient: Sendable {
         self.isParentAlive = isParentAlive
         self.sleep = sleep
         self.parentCheckInterval = parentCheckInterval
+        self.attachReplyTimeout = attachReplyTimeout
+        self.now = now
     }
 
     /// Attaches until the parent is gone, waiting longer after each refusal.
@@ -92,9 +102,16 @@ public struct ClaudeModAttachClient: Sendable {
         var pending = Data()
         var isAttached = false
         var chunk = [UInt8](repeating: 0, count: 16 * 1024)
+        let replyDeadline = now() + attachReplyTimeout
         while true {
+            var wait = parentCheckInterval
+            if !isAttached {
+                let remaining = replyDeadline - now()
+                guard remaining > 0 else { return .refused }
+                wait = min(wait, remaining)
+            }
             var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-            let ready = poll(&descriptor, 1, Int32(parentCheckInterval * 1000))
+            let ready = poll(&descriptor, 1, Int32(wait * 1000))
             if ready < 0 {
                 if errno == EINTR { continue }
                 return isAttached ? .closed : .refused
