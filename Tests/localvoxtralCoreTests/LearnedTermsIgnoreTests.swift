@@ -102,6 +102,9 @@ final class LearnedTermsIgnoreTests: XCTestCase {
             store.importProjects(seeded.projects) { continuation.resume(returning: $0) }
         }
         XCTAssertGreaterThan(importSummary.terms, 0)
+        // The summary arrives from inside the change, before the store
+        // holds its result.
+        store.waitForPendingWrites()
         let before = store.snapshot()
         let others = before.projects.filter { !$0.key.contains("quill") }
 
@@ -407,6 +410,31 @@ final class LearnedTermsIgnoreTests: XCTestCase {
         store.record(observations("Kern"), project: mac)
         store.waitForPendingWrites()
         XCTAssertNotNil(store.snapshot().projects.first { $0.key == mac.key }, "learning resumes")
+    }
+
+    /// Start Over deletes the original once it is linked aside: without the
+    /// lock another copy's write could land in between and be lost (#1432).
+    func testStartOverOnTheListRefusesWithoutTheLock() async throws {
+        let fileURL = makeFileURL()
+        let seeded = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        seeded.waitForPendingWrites()
+        let ignoredURL = try XCTUnwrap(seeded.ignoredFileURL)
+        let damaged = Data("{ not json".utf8)
+        try FileManager.default.createDirectory(at: ignoredURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try damaged.write(to: ignoredURL)
+        let store = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        store.waitForPendingWrites()
+        XCTAssertEqual(store.ignoredListProblem, .unreadable)
+        let lockURL = StoredFileLock.lockURL(beside: ignoredURL)
+        try? FileManager.default.removeItem(at: lockURL)
+        try FileManager.default.createDirectory(at: lockURL, withIntermediateDirectories: true)
+
+        do {
+            _ = try await store.moveIgnoredListAsideAndStartOver()
+            XCTFail("Start Over moved the list without the lock")
+        } catch {}
+        XCTAssertEqual(try Data(contentsOf: ignoredURL), damaged)
+        XCTAssertEqual(store.ignoredListProblem, .unreadable)
     }
 
     /// Start Over on a refused learned-terms file keeps the ignore list,

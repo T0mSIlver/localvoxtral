@@ -3,12 +3,13 @@
 # quit the owner's running instance and bring it back afterwards, and keep the
 # lane's settings out of the owner's defaults.
 #
-# Every lane runs the app on a defaults suite of its own (#1029, #1450) and
-# never writes the owner's domain. Before that, each lane snapshotted the
-# owner's domain into a backup file, forced its settings into the domain and
-# restored the backup on exit. A lane killed mid-run left its backup on disk
-# and its settings in the owner's domain, so every lane still restores such a
-# backup before it starts.
+# UI Smoke, capture-readme-assets.sh and record-demo.sh run the app on a
+# defaults suite of their own (#1029, #1450), and e2e on a bundle id of its
+# own (#1198); none writes the owner's domain. Before that, each lane
+# snapshotted the owner's domain into a backup file, forced its settings into
+# the domain and restored the backup on exit. A lane killed mid-run left its
+# backup on disk and its settings in the owner's domain, so every lane still
+# restores such a backup before it starts.
 #
 # Source it after setting:
 #   APP_PROCESS, BUNDLE_ID, OWNER_APP_BUNDLE (empty), OSASCRIPT_TIMEOUT_BIN,

@@ -134,6 +134,31 @@ final class QuickCaptureDraftReviewTests: XCTestCase {
         XCTAssertEqual(model.applySpokenReview(.drop, to: current).status, QuickCaptureReviewStatus.gone)
     }
 
+    /// A move keeps the title and body but changes where File sends them:
+    /// "file it" files only into the repository the overlay showed.
+    func testFileItRefusesADraftMovedToAnotherRepositorySinceItWasShown() async throws {
+        let projects = QuickCaptureFixture.projects + [
+            QuickCaptureProject(key: "/w/other", name: "other", summary: nil, terms: [], userLine: nil, issueRepository: "o/other"),
+        ]
+        let model = QuickCaptureFixture.model(
+            fileURL: nil, answer: ["reach": 0.9], github: github, runner: runner, projects: projects)
+        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        let shown = try XCTUnwrap(model.reviewSnapshot(id))
+
+        await model.move(id, toProjectKey: "/w/other")?.value
+        let moved = try XCTUnwrap(model.items.first)
+        XCTAssertEqual(moved.repository, "o/other")
+        XCTAssertEqual(moved.title, shown.title)
+        XCTAssertEqual(moved.body, shown.body)
+
+        let outcome = model.applySpokenReview(.file, to: shown)
+        await outcome.task?.value
+        XCTAssertEqual(outcome.status, QuickCaptureReviewStatus.changedSinceShown)
+        XCTAssertTrue(github.created.withLock { $0.isEmpty }, "never files where the overlay did not show")
+        XCTAssertEqual(model.items.first?.state, .ready)
+    }
+
     func testDropItDiscards() async throws {
         let (model, id, _) = try await draftedModel()
         let outcome = model.applySpokenReview(.drop, to: try XCTUnwrap(model.reviewSnapshot(id)))

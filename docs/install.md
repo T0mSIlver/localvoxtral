@@ -18,9 +18,9 @@ brew install --cask T0mSIlver/localvoxtral/localvoxtral
 ```
 
 You can also download the latest DMG from
-[Releases](https://github.com/T0mSIlver/localvoxtral/releases/latest). The
-script and the cask get past Gatekeeper for you; a DMG you install by hand
-may need the steps in [Fix a blocked first launch](#fix-a-blocked-first-launch).
+[Releases](https://github.com/T0mSIlver/localvoxtral/releases/latest).
+Releases are signed with Developer ID and notarized by Apple, so all three
+open without a Gatekeeper prompt.
 
 ## Set up on first launch
 
@@ -32,29 +32,6 @@ an API key and downloads nothing.
 
 You can dictate as soon as the wizard finishes. To run it again later, open
 it from Settings.
-
-## Fix a blocked first launch
-
-Releases are ad-hoc signed and not notarized yet (see the
-[roadmap](roadmap.md)). The installer script and the Homebrew cask handle
-Gatekeeper for you.
-
-If you installed the DMG by hand, macOS may block or stall the first launch.
-It may call the app "damaged", ask you to click **Open Anyway**, or hang on
-macOS 26. Clear the quarantine flag:
-
-```bash
-xattr -cr /Applications/localvoxtral.app
-```
-
-On macOS 26, a first launch that hangs forever means Gatekeeper's first-run
-scan has stalled on the downloaded ad-hoc signature. Clearing the quarantine
-flag alone does not fix this. Re-signing the app on your Mac does, and the
-installer script already does it for you:
-
-```bash
-codesign --force --deep --preserve-metadata=entitlements --sign - /Applications/localvoxtral.app
-```
 
 ## Update localvoxtral
 
@@ -73,11 +50,11 @@ Updates keep your settings, your downloaded models and the config files you
 edited ([how new defaults arrive](dictation.md#edit-the-polishing-prompts-and-dictionary)).
 
 > [!NOTE]
-> Because releases are ad-hoc signed, macOS may silently drop the
-> Accessibility grant after an update. If the dictation hotkey stops
-> working, toggle localvoxtral off and on in **System Settings → Privacy &
-> Security → Accessibility** (**Device Control and Data Access** on macOS
-> 27).
+> Releases before October 2026 were ad-hoc signed. After your first update
+> from one of them, macOS asks for the Accessibility permission again, once.
+> If the dictation hotkey does nothing, remove localvoxtral from **System
+> Settings → Privacy & Security → Accessibility** (**Device Control and Data
+> Access** on macOS 27) and add it back. Later updates keep the grant.
 
 ## Uninstall with Homebrew
 
@@ -103,9 +80,8 @@ The tap is
 The release pipeline points it at each stable release once that release is
 public.
 
-The cask is not in Homebrew's own repository, because that repository
-requires a notarized app. [@achembarpu](https://github.com/achembarpu) wrote
-the first version of the cask.
+[@achembarpu](https://github.com/achembarpu) wrote the first version of the
+cask.
 
 ## Try a nightly build
 
@@ -134,5 +110,7 @@ curl -fsSL https://raw.githubusercontent.com/T0mSIlver/localvoxtral/main/scripts
 ```
 
 Only the seven most recent nightlies are kept, so pin a tag only for a build
-you are testing now. Nightlies are ad-hoc signed like stable releases, so
-[Fix a blocked first launch](#fix-a-blocked-first-launch) applies to them too.
+you are testing now. Nightlies are notarized like stable releases. The rare
+nightly built while signing was unavailable says so at the top of its
+release notes; install it with the installer script, which re-signs it on
+your Mac.

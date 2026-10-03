@@ -70,13 +70,21 @@ concurrency:
 jobs:
   release:
     # Self-hosted for speed (warm build cache, live speechd STT service for the
-    # integration gate). Releases stay ad-hoc signed: the runner's localvoxtral-dev cert
-    # is meaningless on users' machines, so we don't set the identity here.
+    # integration gate), and because the Developer ID identity and the
+    # notarytool profile live in the owner's login keychain on that Mac (#1430).
     runs-on: [self-hosted, macOS, ARM64]
-    # 45, not the old 30: this checkout is clean, so every run rebuilds from
-    # cold, and observed releases ran 7-20 min. The unit gate has its own
-    # 900 s supervisor, so a hang is caught long before this bound.
-    timeout-minutes: 45
+    # This checkout is clean, so every run rebuilds from cold: observed
+    # releases ran 7-20 min before notarization. Notarization adds two Apple
+    # submissions (the app, then the DMG), usually minutes each, but Apple can
+    # hold a team's first submissions for hours. notarize.sh's own bounds (3 h
+    # for the app, 1 h for the DMG) must expire before this one, so a stuck
+    # run fails with the submission id instead of being cancelled. The unit
+    # gate has its own 900 s supervisor, so a hang is caught long before this.
+    timeout-minutes: 300
+    env:
+      # Not a secret: the name and team ID are in every signature it makes.
+      DEVELOPER_ID_IDENTITY: "Developer ID Application: Tom Vaucourt (3N63N7U9R3)"
+      NOTARY_PROFILE: localvoxtral-notary
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
@@ -100,9 +108,9 @@ jobs:
         # carries a single `if:`. A run stops here, green, when:
         #   * it is scheduled and scheduled-run-guard.sh says skip, which
         #     chains three guards (tested by test-scheduled-run-guard.sh):
-        #     - night-window-guard.sh 20: the run must end by 07:00 UTC, when
-        #       the owner starts work on the Mac. 20 is the longest observed
-        #       release (7-20 min);
+        #     - night-window-guard.sh 30: the run must end by 07:00 UTC, when
+        #       the owner starts work on the Mac. 30 is the longest observed
+        #       release (7-20 min) plus notarization;
         #     - recent-run-guard.sh release.yml 20: a release run on main
         #       succeeded, or is queued or running, in the last 20 h, most
         #       often the scheduler's 03:15 dispatch;
@@ -151,7 +159,7 @@ jobs:
           echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
 
           PROCEED=true
-          DECISION="$(./scripts/ci/scheduled-run-guard.sh release.yml 20 20)"
+          DECISION="$(./scripts/ci/scheduled-run-guard.sh release.yml 30 20)"
           REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
           if [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" != "true" ]]; then
             PROCEED=false
@@ -344,13 +352,48 @@ jobs:
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Gate — package app bundle
-        # Releases stay ad-hoc signed on purpose: the runner's localvoxtral-dev
-        # cert is meaningless on end users' machines (install.sh re-signs for
-        # them; Developer ID + notarization is the roadmapped real fix), so we
-        # deliberately do NOT set or require the identity here. The TCC-grant
-        # stability this patch protects is a try-pr / same-repo-CI concern only.
+      - name: Check the signing credentials
+        # Stable and daily releases (and their rehearsals) must ship signed with
+        # Developer ID and notarized, so a missing identity or notarytool
+        # profile fails them here, before packaging. A nightly falls back to
+        # ad-hoc signing with a warning, and its release notes say so;
+        # install.sh still re-signs an ad-hoc download for the macOS 26 launch
+        # stall. Both checks name what is missing: the identity in the login
+        # keychain (security find-identity), the profile through a notarytool
+        # call that authenticates with it.
         if: steps.plan.outputs.proceed != 'false'
+        id: signing
+        env:
+          CHANNEL: ${{ steps.plan.outputs.channel }}
+        run: |
+          set -euo pipefail
+          missing=""
+          if ! security find-identity -v -p codesigning | grep -qF "\"$DEVELOPER_ID_IDENTITY\""; then
+            missing="the identity '$DEVELOPER_ID_IDENTITY' is not in $(id -un)'s keychain"
+          # --keychain as in notarize.sh: without it the profile comes from the
+          # data-protection keychain, which a locked screen makes unreadable.
+          elif ! NOTARY_OUT="$(xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" \
+              --keychain "$HOME/Library/Keychains/login.keychain-db" 2>&1)"; then
+            missing="the notarytool profile '$NOTARY_PROFILE' in the login keychain file does not authenticate: $(tail -n 3 <<<"$NOTARY_OUT" | tr '\n' ' ')"
+          fi
+          if [[ -z "$missing" ]]; then
+            echo "notarize=true" >> "$GITHUB_OUTPUT"
+            echo "Signing: $DEVELOPER_ID_IDENTITY, notarized with profile $NOTARY_PROFILE" | tee -a "$GITHUB_STEP_SUMMARY"
+          elif [[ "$CHANNEL" == "nightly" ]]; then
+            echo "notarize=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Nightly falls back to ad-hoc signing: $missing"
+            echo "Signing: **ad-hoc, not notarized** ($missing)" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::A $CHANNEL release must be signed with Developer ID and notarized, but $missing."
+            exit 1
+          fi
+
+      - name: Gate — package app bundle
+        if: steps.plan.outputs.proceed != 'false'
+        env:
+          # Empty for an ad-hoc nightly, so package_app.sh signs ad-hoc.
+          LOCALVOXTRAL_CODESIGN_IDENTITY: ${{ steps.signing.outputs.notarize == 'true' && env.DEVELOPER_ID_IDENTITY || '' }}
+          LOCALVOXTRAL_REQUIRE_CODESIGN_IDENTITY: ${{ steps.signing.outputs.notarize == 'true' && '1' || '0' }}
         run: ./scripts/package_app.sh release "${{ steps.meta.outputs.version }}" "${{ github.run_number }}"
 
       - name: Gate — packaged app launch smoke test
@@ -365,8 +408,25 @@ jobs:
           SMOKE_HOME="$(mktemp -d)"
           SMOKE_APP=dist/localvoxtral.app SMOKE_HOME="$SMOKE_HOME" python3 scripts/ci/launch-smoke.py
 
+      - name: Notarize and staple the app
+        # The ticket is stapled into the bundle, so the zip and the DMG built
+        # below carry it and Gatekeeper accepts the app offline.
+        if: steps.plan.outputs.proceed != 'false' && steps.signing.outputs.notarize == 'true'
+        run: |
+          set -euo pipefail
+          ditto -c -k --keepParent dist/localvoxtral.app "$RUNNER_TEMP/notarize-app.zip"
+          NOTARIZE_TIMEOUT=3h ./scripts/ci/notarize.sh "$RUNNER_TEMP/notarize-app.zip" "$NOTARY_PROFILE"
+          xcrun stapler staple dist/localvoxtral.app
+          xcrun stapler validate dist/localvoxtral.app
+          SPCTL="$(spctl -a -vv --type execute dist/localvoxtral.app 2>&1)"
+          echo "$SPCTL"
+          grep -q 'source=Notarized Developer ID' <<<"$SPCTL" \
+            || { echo "::error::spctl does not accept the stapled app as Notarized Developer ID"; exit 1; }
+
       - name: Create release artifacts (zip + dmg)
         if: steps.plan.outputs.proceed != 'false'
+        env:
+          NOTARIZE: ${{ steps.signing.outputs.notarize }}
         run: |
           set -euo pipefail
           TAG="${{ steps.meta.outputs.tag }}"
@@ -380,6 +440,16 @@ jobs:
             -s scripts/dmg_settings.py \
             -D app=dist/localvoxtral.app \
             "localvoxtral" "dist/localvoxtral-$TAG.dmg"
+          if [[ "$NOTARIZE" == "true" ]]; then
+            # Gatekeeper checks a downloaded disk image before it mounts, so
+            # the DMG is signed, notarized and stapled too.
+            codesign --sign "$DEVELOPER_ID_IDENTITY" --timestamp "dist/localvoxtral-$TAG.dmg"
+            # 1 h, not 3: Apple has just accepted the app from this team.
+            NOTARIZE_TIMEOUT=1h ./scripts/ci/notarize.sh "dist/localvoxtral-$TAG.dmg" "$NOTARY_PROFILE"
+            xcrun stapler staple "dist/localvoxtral-$TAG.dmg"
+            xcrun stapler validate "dist/localvoxtral-$TAG.dmg"
+            spctl -a -vv --type open --context context:primary-signature "dist/localvoxtral-$TAG.dmg"
+          fi
           ditto -c -k --keepParent \
             "dist/localvoxtral.dSYM" "dist/localvoxtral-$TAG.dSYM.zip"
           # Helper dSYMs: MLX C++/Metal crashes are the likeliest helper field
@@ -454,20 +524,37 @@ jobs:
         # to install it, because a prerelease of main needs that context far
         # more than a stable release does. A hand-written nightly file (rare)
         # lands under that header.
+        #
+        # Every release says how it is signed. A notarized one tells users
+        # coming from an ad-hoc build (every release before #1430) to re-grant
+        # Accessibility once: the new signature changes the designated
+        # requirement macOS keys that grant on.
         if: steps.plan.outputs.proceed != 'false' && steps.plan.outputs.publish == 'true'
         id: notes
         env:
           CHANNEL: ${{ steps.plan.outputs.channel }}
           TAG: ${{ steps.meta.outputs.tag }}
+          NOTARIZE: ${{ steps.signing.outputs.notarize }}
         run: |
           set -euo pipefail
           DECISION="$(./scripts/ci/resolve-release-notes.sh "$TAG")"
           RESOLVED="$(sed -n 's/^path=//p' <<<"$DECISION")"
           REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
 
-          BODY_PATH="$RESOLVED"
+          BODY_PATH="$RUNNER_TEMP/release-body.md"
+          {
+            if [[ "$NOTARIZE" == "true" ]]; then
+              echo "Signed with Developer ID and notarized by Apple."
+              echo ""
+              echo "> [!NOTE]"
+              echo "> Upgrading from a release built before October 2026? Those were ad-hoc signed, so macOS asks for the Accessibility permission again, once. If the dictation shortcut does nothing after the upgrade, remove localvoxtral from **System Settings → Privacy & Security → Accessibility** and add it back."
+            else
+              echo "> [!WARNING]"
+              echo "> This build is ad-hoc signed and **not notarized**. Install it with the installer script below, which re-signs it on your Mac; a DMG opened by hand may be blocked by Gatekeeper."
+            fi
+            echo ""
+          } > "$BODY_PATH"
           if [[ "$CHANNEL" == "nightly" ]]; then
-            BODY_PATH="$RUNNER_TEMP/release-body.md"
             {
               echo "Nightly build of \`main\` at \`$(git rev-parse --short HEAD)\`, built and gated by the same pipeline as a stable release."
               echo ""
@@ -481,11 +568,10 @@ jobs:
               echo ""
               echo "Re-run that line to update. To go back to stable, run the installer without \`LOCALVOXTRAL_CHANNEL\`."
               echo ""
-              if [[ -n "$RESOLVED" ]]; then
-                cat "$RESOLVED"
-                echo ""
-              fi
-            } > "$BODY_PATH"
+            } >> "$BODY_PATH"
+          fi
+          if [[ -n "$RESOLVED" ]]; then
+            { cat "$RESOLVED"; echo ""; } >> "$BODY_PATH"
           fi
 
           echo "path=$BODY_PATH" >> "$GITHUB_OUTPUT"
@@ -516,7 +602,6 @@ jobs:
           # "append the generated notes to mine". Setting it here would be a
           # different feature that happens to sound right.
           #
-          # An empty body_path is the no-notes case and is simply ignored.
           body_path: ${{ steps.notes.outputs.path }}
           generate_release_notes: true
           files: |

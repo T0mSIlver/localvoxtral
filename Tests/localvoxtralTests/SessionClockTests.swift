@@ -221,37 +221,8 @@ final class SessionClockTests: XCTestCase {
         XCTAssertFalse(viewModel.isFinalizingStop)
     }
 
-    /// A 20 s dictation that started behind a voice memo (#1313): once the
-    /// memo is done, the helper still has those 20 s to decode, so the stop
-    /// waits 7 s more than that, then closes a socket that never answered.
-    func testAStopBehindAVoiceMemoWaitsTheDictationsLengthMoreThenCloses() async {
-        let clock = ManualSessionClock()
-        let viewModel = makeViewModel(clock: clock)
-        let client = FakeRealtimeClient()
-        client.setConnected(true)
-        viewModel.session.activeRealtimeClient = client
-        viewModel.session.sessionStartedBehindVoiceMemoAt = clock.now.addingTimeInterval(-20)
-        viewModel.isFinalizingStop = true
-        viewModel.session.sessionOutputMode = .liveAutoPaste
-
-        viewModel.session.scheduleStopFinalization()
-        let finalization = viewModel.session.stopFinalizationTask
-
-        await clock.waitForSleepers(1)
-        clock.advance(by: TimingConstants.stopFinalizationTimeout + 20 - 1)
-        await clock.waitForSleepers(1)
-        XCTAssertEqual(client.disconnectCount, 0, "a second short of the limit, silence is not the end")
-        XCTAssertTrue(viewModel.isFinalizingStop)
-
-        clock.advance(by: 1.1)
-        await finalization?.value
-
-        XCTAssertEqual(client.disconnectCount, 1)
-        XCTAssertFalse(viewModel.isFinalizingStop)
-    }
-
     /// Only the bundled helper serves one connection at a time.
-    func testOnlyAMemoOnTheBundledHelperHoldsUpADictationThere() {
+    func testOnlyAMemoOnTheBundledHelperYieldsToADictationThere() {
         XCTAssertTrue(DictationViewModel.voiceMemoSharesTheEngine(memo: .managedLocal, dictation: .managedLocal))
         XCTAssertFalse(DictationViewModel.voiceMemoSharesTheEngine(memo: .managedLocal, dictation: .mistralAPI))
         XCTAssertFalse(DictationViewModel.voiceMemoSharesTheEngine(memo: .externalURL, dictation: .managedLocal))
@@ -277,6 +248,33 @@ final class SessionClockTests: XCTestCase {
         XCTAssertEqual(client.sentAudioBytes, 320, "one tick sends what was buffered")
 
         viewModel.audio.cancelSendAndCommitTasks()
+    }
+
+    /// A socket that dies after the tick read it connected drops the chunk;
+    /// the chunk stays buffered, ahead of later audio, for the reconnect to
+    /// replay (#1458).
+    func testAChunkTheClientDropsStaysBufferedAheadOfLaterAudio() async {
+        let clock = ManualSessionClock()
+        let viewModel = makeViewModel(clock: clock)
+        let client = FakeRealtimeClient()
+        client.setConnected(true)
+        client.setRefusesAudio(true)
+        let buffer = viewModel.audio.audioChunkBuffer
+        buffer.append(Data(repeating: 1, count: 320))
+
+        viewModel.audio.restartAudioSendTask(
+            client: client, debugLoggingEnabled: false, sleep: clock.clock.sleep
+        )
+        await clock.waitForSleepers(1)
+        clock.advance(by: TimingConstants.audioSendInterval)
+        await clock.waitForSleepers(1)
+        viewModel.audio.cancelSendAndCommitTasks()
+        buffer.append(Data(repeating: 2, count: 320))
+
+        XCTAssertEqual(client.sentAudioBytes, 0)
+        XCTAssertEqual(
+            buffer.takeAll(), Data(repeating: 1, count: 320) + Data(repeating: 2, count: 320),
+            "the dropped chunk was lost")
     }
 
     func testPeriodicCommitLoopCommitsOnTheClock() async {

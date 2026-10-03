@@ -33,6 +33,12 @@ public enum ClaudePluginAssets {
     /// the context it delivers is opaque. One plugin with a switch would put
     /// those two trust models one config typo apart.
     public static let remotePluginName = "localvoxtral-remote"
+    /// The third plugin, installed beside `pluginName` on the same machine:
+    /// a Claude Code mod (a hooks module, no command hooks).
+    ///
+    /// Separate from `pluginName` so a Claude Code build that cannot load
+    /// mods fails this plugin alone and keeps the context hooks working.
+    public static let modPluginName = "localvoxtral-mod"
     /// Marketplace name, as it appears in marketplace.json.
     public static let marketplaceName = "localvoxtral"
 

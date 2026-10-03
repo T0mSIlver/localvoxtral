@@ -97,6 +97,52 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
     }
 
+    /// Secure Keyboard Entry turns on mid-dictation: macOS swallows the keys
+    /// while posting them reports success, so the words after it are not
+    /// typed, and the stop saves the dictation as not inserted.
+    func testSecureInputTurnedOnMidLiveAutoPasteKeepsTheTextNotInserted() async throws {
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        addTeardownBlock { TerminalTargetDetector.debugSecureEventInputOverride = nil }
+        let typed = TypedText()
+        var secureInput = false
+        let offered = BoundedWait()
+        pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        pipeline.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { chunk in
+                guard !secureInput else {
+                    offered.resolve()
+                    return true
+                }
+                typed.append(chunk)
+                return true
+            },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in
+                offered.resolve()
+                return false
+            }
+        )
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.delta", "delta": "First part"])
+        pipeline.server.send(["type": "transcription.done", "text": "First part."])
+        let typedFirst = await typed.waitFor("First part.")
+        XCTAssertTrue(typedFirst, "typed so far: \(typed.text.debugDescription)")
+        secureInput = true
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+        pipeline.server.send(["type": "transcription.done", "text": " Second part."])
+        let attempted = await offered.value(failAfter: 10)
+        XCTAssertTrue(attempted, "the second segment was never offered to the field")
+
+        await stopAndFinalize(
+            pipeline, finalText: "",
+            expectedError: "Some realtime text could not be inserted into the focused app."
+        )
+
+        XCTAssertEqual(typed.text, "First part.")
+        XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
+    }
+
     /// A cancel while the stream still holds the last word back (a speaker
     /// term gives it rules) types nothing more (#1222).
     func testACancelTypesNothingTheLiveStreamStillHolds() async throws {
@@ -235,43 +281,28 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.session.handleNetworkChange(connected: false)
     }
 
-    /// A voice memo was streaming through the engine when the dictation
-    /// started: the bundled helper decodes the dictation's audio only after
-    /// the memo's, so the final commit is answered long after every usual
-    /// limit. Its words are still committed and saved.
-    func testAFinalHeldUpBehindAVoiceMemoIsStillCommittedAndSaved() async throws {
+    /// #1317, #1423: the start cancels a voice memo streaming through the
+    /// engine, so the stop keeps its usual rules: a final that never comes is
+    /// given up on once the stream has been idle, long before the 7 s limit.
+    func testADictationStartedDuringAVoiceMemoCancelsItAndStopsOnTheIdleRule() async throws {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
-        var memoTranscribing = true
-        pipeline.viewModel.session.voiceMemoHoldsTheEngine = { memoTranscribing }
+        var yields = 0
+        pipeline.viewModel.session.yieldVoiceMemoEngine = { yields += 1 }
 
         await startAndSpeak(pipeline)
+        XCTAssertEqual(yields, 1)
+
         pipeline.viewModel.stopDictation(reason: "test")
         await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
         // The stop's two polls: the finalization and its watchdog.
         await pipeline.clock.waitForSleepers(2)
-        let armed = pipeline.clock.pendingSleepers
+        XCTAssertTrue(pipeline.viewModel.isFinalizingStop)
 
-        // The memo runs past the idle rule and the stop's time limit.
-        pipeline.clock.advance(by: TimingConstants.stopFinalizationTimeout + 3)
-        await pipeline.clock.waitForSleepers(armed)
-        XCTAssertTrue(pipeline.viewModel.isFinalizingStop, "the stop waits while the memo holds the engine")
-
-        // The memo is done; the dictation's audio is decoded in one long step
-        // that streams nothing until it ends.
-        memoTranscribing = false
-        pipeline.clock.advance(by: TimingConstants.finalizationPollInterval)
-        await pipeline.clock.waitForSleepers(armed)
-        pipeline.clock.advance(by: TimingConstants.stopFinalizationTimeout - 1)
-        await pipeline.clock.waitForSleepers(armed)
-        XCTAssertTrue(pipeline.viewModel.isFinalizingStop, "no idle rule behind a memo")
-
-        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
-        let recorded = await pipeline.records.waitForCount(1)
-        XCTAssertTrue(recorded, "the session never finished and wrote its record")
+        pipeline.clock.advance(by: TimingConstants.finalizationMinimumOpen + TimingConstants.finalizationPollInterval)
         await pipeline.server.awaitClose()
 
-        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
-        XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
+        XCTAssertFalse(pipeline.viewModel.isFinalizingStop, "closed on the idle rule")
+        XCTAssertEqual(yields, 1, "only the start yields")
     }
 
     /// A settled sentence past 30 words, the first piece early polish takes.
@@ -299,6 +330,63 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(Self.settledPiece)> <\(Self.tail)>"])
         XCTAssertEqual(pipeline.records.all.map(\.rawText), ["\(Self.settledPiece) \(Self.tail)"])
         XCTAssertEqual(pipeline.records.all.first?.polishedText, "<\(Self.settledPiece)> <\(Self.tail)>")
+    }
+
+    /// A stop that skips finalization (network lost, a new microphone,
+    /// sleep) pins the commit target at the stop, as a finalizing stop does:
+    /// focus that moves while the polish runs does not take the text (#1478).
+    /// Against the real overlay coordinator, which owns the target.
+    func testAStopWithoutFinalizationCommitsIntoTheAppFocusedAtTheStop() async throws {
+        let focus = MockOverlayAnchorResolver()
+        focus.focusedPID = 4242
+        let renderer = MockOverlayRenderer()
+        let overlay = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: focus,
+            now: { Date(timeIntervalSince1970: 0) },
+            sleepFor: { _ in },
+            copyToPasteboard: { _ in true }
+        )
+        let polish = FakePolishingService()
+        let pipeline = try await makePipeline(
+            outputMode: .overlayBuffer, polish: polish, earlyPolish: false, overlayCoordinator: overlay
+        )
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        addTeardownBlock { TerminalTargetDetector.debugSecureEventInputOverride = nil }
+        var inserted: [(text: String, pid: pid_t?)] = []
+        pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        pipeline.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { _ in false },
+            modifierStateReader: { false },
+            // The keyboard path needs a real app to activate: the text lands
+            // through Accessibility, which reports the pid it targeted.
+            accessibilityInserter: { text, pid in
+                inserted.append((text, pid))
+                return true
+            },
+            returnKeyPoster: { _ in false },
+            frontmostPIDReader: { focus.focusedPID },
+            commandVPaster: { _ in false }
+        )
+        let shown = BoundedWait()
+        renderer.onRender = { if $0?.bufferText == Self.phrase { shown.resolve() } }
+
+        await startAndSpeak(pipeline)
+        sendPartials(pipeline)
+        let shownWhileDictating = await shown.value(failAfter: 10)
+        XCTAssertTrue(shownWhileDictating)
+        renderer.onRender = nil
+        await polish.holdNextRequest()
+        pipeline.viewModel.stopDictation(reason: "network lost", finalizeRemainingAudio: false)
+        let polishing = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(polishing)
+        focus.focusedPID = 5151
+        await polish.releaseHeldRequest()
+        await awaitStoppedSessionCommit(pipeline.viewModel)
+
+        XCTAssertEqual(inserted.map(\.text), [Self.phrase])
+        XCTAssertEqual(inserted.map(\.pid), [4242], "the app focused at the stop")
     }
 
     /// A new microphone restarts the dictation while the stopped text still
@@ -1679,6 +1767,32 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(typed.text, "", "no key went to the terminal")
     }
 
+    /// The relay answers 409, the pane shows another session now: the words
+    /// stay in History, nothing is typed, and the record says not inserted.
+    func testLiveAutoPasteTextTheRelayKeptInHistoryIsSavedAsNotInserted() async throws {
+        let relay = try FakeOpencodePromptRelay { _ in 409 }
+        addTeardownBlock { relay.stop() }
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        joinOpencodePane(pipeline, relay: relay.relay(sessionID: "ses_a").address)
+        let typed = recordTypedText(pipeline)
+
+        await startAndSpeak(pipeline)
+        let sink = try XCTUnwrap(pipeline.viewModel.textInsertion.promptRelaySink)
+        sendPartials(pipeline)
+        let refused = await relay.waitForCalls(1)
+        XCTAssertTrue(refused)
+        await sink.waitUntilIdle()
+        XCTAssertFalse(sink.isHealthy, "precondition: the refusal arrived before the stop")
+
+        await stopAndFinalize(
+            pipeline, expectedError: DictationViewModel.StatusStrings.agentPromptTextKeptInHistory
+        )
+
+        XCTAssertEqual(typed.text, "", "nothing is typed")
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
+        XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
+    }
+
     /// A relay that refuses the connection: the dictation types, as it
     /// would with no relay, and nothing is lost or doubled.
     func testLiveAutoPasteFallsBackToKeystrokesWhenTheRelayRefusesTheConnection() async throws {
@@ -2925,7 +3039,8 @@ final class DictationPipelineTests: XCTestCase {
         polish: (any LLMPolishingServicing)? = nil,
         polishEndpoint: String = "http://127.0.0.1:8080/v1/chat/completions",
         earlyPolish: Bool = true,
-        contextBudget: RealtimeContextBudget? = nil
+        contextBudget: RealtimeContextBudget? = nil,
+        overlayCoordinator: (any OverlayBufferSessionCoordinating)? = nil
     ) async throws -> Pipeline {
         let server = try FakeRealtimeServer()
         addTeardownBlock { server.stop() }
@@ -2949,7 +3064,7 @@ final class DictationPipelineTests: XCTestCase {
         let records = SessionRecords()
         let viewModel = DictationViewModel(
             settings: settings,
-            overlayBufferCoordinator: overlay,
+            overlayBufferCoordinator: overlayCoordinator ?? overlay,
             startRuntimeServices: false,
             dependencies: DictationViewModel.Dependencies(
                 microphone: { microphone },

@@ -4,8 +4,6 @@ Planned work on localvoxtral, then smaller issues that are ready for a PR.
 
 ## Planned
 
-- [ ] Developer ID signing and notarization, so installing needs no
-      Gatekeeper workarounds
 - [ ] Hotword boosting in the speech model itself, to bias transcription
       toward your repo's vocabulary, not only polishing
       ([#316](https://github.com/T0mSIlver/localvoxtral/issues/316), waiting on

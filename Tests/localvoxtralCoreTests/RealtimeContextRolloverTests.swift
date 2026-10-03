@@ -106,13 +106,41 @@ final class RealtimeContextRolloverTests: XCTestCase {
         }
     }
 
+    /// Once armed, holds the next thread that reads the client's clock until
+    /// `open`: the place the `done` handler sits between taking the rollover
+    /// and emitting its final.
+    private final class NowGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var armed = false
+        private let released = DispatchSemaphore(value: 0)
+        let reached = BoundedWait()
+
+        func arm() {
+            lock.lock()
+            armed = true
+            lock.unlock()
+        }
+
+        func pass() {
+            lock.lock()
+            let holds = armed
+            armed = false
+            lock.unlock()
+            guard holds else { return }
+            reached.resolve()
+            released.wait()
+        }
+
+        func open() { released.signal() }
+    }
+
     // MARK: - The harness
 
     /// The client wired to the server, and to a session that follows the
     /// handover the way `DictationSessionController.handle(event:from:)`
     /// does: it hears only the connection it is on.
     private final class Harness: @unchecked Sendable {
-        let clock = ManualSessionClock()
+        let clock: ManualSessionClock
         let client: RealtimeAPIWebSocketClient
         let server: LimitedServer
         private let urlSession = URLSession(configuration: .ephemeral)
@@ -133,9 +161,20 @@ final class RealtimeContextRolloverTests: XCTestCase {
 
         /// `dials`: a rollover dials a real socket (to a closed loopback
         /// port) instead of taking one from the harness.
-        init(budget: RealtimeContextBudget? = RealtimeContextRolloverTests.budget, dials: Bool = false) {
+        init(
+            budget: RealtimeContextBudget? = RealtimeContextRolloverTests.budget, dials: Bool = false,
+            nowGate: NowGate? = nil
+        ) {
             server = LimitedServer(limitBytes: (budget ?? RealtimeContextRolloverTests.budget).capacityBytes)
-            client = RealtimeAPIWebSocketClient(clock: clock.clock)
+            let manual = ManualSessionClock()
+            clock = manual
+            client = RealtimeAPIWebSocketClient(
+                clock: SessionClock(
+                    sleep: manual.clock.sleep,
+                    now: {
+                        nowGate?.pass()
+                        return manual.now
+                    }))
             let first = urlSession.webSocketTask(with: URL(string: "ws://127.0.0.1:65535/v1/realtime")!)
             sockets.append(first)
             client.debugObserveTransmits { [weak self] task, text in
@@ -516,6 +555,40 @@ final class RealtimeContextRolloverTests: XCTestCase {
         XCTAssertEqual(harness.rollovers, 1)
         XCTAssertTrue(harness.errorsOrDrops.isEmpty, "\(harness.errorsOrDrops)")
         XCTAssertEqual(harness.server.audioPerSession.last, 3 * Self.chunkBytes, "the carried audio")
+    }
+
+    /// The retiring socket's `done`, once taken, ends the rollover even when
+    /// the other end (the watchdog, or the socket closing) comes in before
+    /// its final is out: that final would arrive after the handover and be
+    /// refused (#1459). The close drives it here because it runs in the
+    /// test's own call; the watchdog races the same window on the pool.
+    func testAnAcceptedDoneKeepsItsFinalWhenTheRolloverEndsMeanwhile() async {
+        let gate = NowGate()
+        let harness = Harness(nowGate: gate)
+        harness.holdDones(true)
+        harness.speak(seconds: 0.1)
+        harness.client.sendCommit(final: false)
+        harness.speak(seconds: 6.7)
+        let retiring = harness.client.connectionGeneration
+        XCTAssertEqual(harness.rollovers, 0, "the rollover waits on the retiring socket's done")
+
+        gate.arm()
+        let doneHandled = BoundedWait()
+        let client = harness.client
+        DispatchQueue.global().async {
+            client.debugHandleFrameForTesting(json: ["type": "transcription.done", "text": "tail"], from: retiring)
+            doneHandled.resolve()
+        }
+        let held = await gate.reached.value(failAfter: 10)
+        XCTAssertTrue(held, "the done never read the clock")
+        harness.client.debugHandleTerminalSocketErrorForTesting(
+            task: harness.currentSocket, errorMessage: "WebSocket closed (1012).")
+        gate.open()
+        let handled = await doneHandled.value(failAfter: 10)
+
+        XCTAssertTrue(handled)
+        XCTAssertEqual(harness.finals.last, "tail", "the final came after the handover and was refused")
+        XCTAssertEqual(harness.rollovers, 1)
     }
 
     /// A `done` the retiring socket was read for after the handover clears

@@ -575,6 +575,8 @@ goes to its drafts.
 terms, on every checkout of its repository. It comes back the next time you
 dictate there or a session on an ssh host reports it; Claude Code working
 in it is not enough. `forgotten-projects.json` remembers it until then.
+If that file can't be read, **Settings → Projects** says so and agents add
+no project until you choose **Start Over…**, which renames the file.
 **Ignore Project…** also forgets it, then keeps it out: localvoxtral learns
 nothing there, its coding agent is never asked for its terms, and quick
 capture no longer lists it. Dictation there works as

@@ -60,13 +60,14 @@ package final class VoiceMemoIntake {
     /// Set, the ledger could not be loaded: it is left as it is and no memo
     /// is taken, since each would be taken again (#989).
     package private(set) var ledgerProblem: StoredFileProblem?
-    /// A memo is streaming through the engine. The bundled helper decodes
-    /// one connection's queued audio at a time, so a dictation started now
-    /// waits behind the memo for its text.
+    /// A memo is streaming through the engine. The bundled helper runs one
+    /// connection's step at a time, so a dictation starting on it calls
+    /// `yieldToDictation()`.
     package private(set) var isTranscribing = false
-    /// Called each time `isTranscribing` turns false.
-    package var onTranscriptionEnded: (@MainActor () -> Void)?
-    private var isStopping = false
+    /// The memo in flight, cancelled by `yieldToDictation()`.
+    private var transcription: Task<VoiceMemoTranscript, Error>?
+    private var yieldedToDictation = false
+    private var isStopped = false
     private var reportedLedgerProblem = false
     private var reportedInboxProblem = false
     private var lastSeen: [String: VoiceMemoFile] = [:]
@@ -123,32 +124,47 @@ package final class VoiceMemoIntake {
 
     /// Settings' Start Over: moves the refused ledger aside
     /// (`StoredFile.moveAside`) and starts an empty one. Every memo still in
-    /// the folder becomes a capture on the next scan.
+    /// the folder becomes a capture on the next scan. Throws while another
+    /// running copy holds the folder: that copy writes the ledger (#1432).
     @discardableResult
     package func moveLedgerAsideAndStartOver() throws -> URL {
         guard ledgerProblem != nil, let ledgerURL else { throw StoredFile.MoveAsideFailed() }
-        let aside = try StoredFile.moveAside(ledgerURL)
+        guard let lock = folderLock ?? StoredFileLock.tryHolding(beside: ledgerURL) else {
+            Log.persistence.error("Voice memos: ledger not moved aside, another running copy holds the folder")
+            throw StoredFile.MoveAsideFailed()
+        }
+        let aside = try withExtendedLifetime(lock) { try StoredFile.moveAside(ledgerURL) }
         ledger = VoiceMemoLedger()
         ledgerProblem = nil
         return aside
     }
 
-    /// Scans now and every `scanInterval` after, until the task is cancelled
-    /// or `stopAfterCurrentMemo()`.
+    /// Scans now and every `scanInterval` after, until the task is
+    /// cancelled or `stop()`.
     package func run() async {
-        while !Task.isCancelled, !isStopping {
+        while !Task.isCancelled, !isStopped {
             await scan()
-            guard !isStopping else { return }
             await clock.sleep(Self.scanInterval)
         }
     }
 
-    /// Takes no further memo and lets `run` return once the memo in flight
-    /// is done. Cancelling would close the memo's socket, but the bundled
-    /// helper still decodes the audio it queued, and a dictation waiting
-    /// behind it would stop waiting too early.
-    package func stopAfterCurrentMemo() {
-        isStopping = true
+    /// Voice memos turned off: cancels the memo in flight, whichever scan
+    /// runs it, and takes no other. The memo goes back for a later scan, and
+    /// the bundled helper skips the audio it queued.
+    package func stop() {
+        isStopped = true
+        transcription?.cancel()
+    }
+
+    /// A dictation starts on the engine the memo streams through: cancels the
+    /// memo, which goes back for the next scan. The bundled helper then skips
+    /// the memo's queued audio, so the dictation's text streams live (#1317).
+    package func yieldToDictation() {
+        guard isTranscribing, let transcription else { return }
+        Log.backends.info("Voice memos: a dictation started; the memo waits for the next scan")
+        yieldedToDictation = true
+        isTranscribing = false
+        transcription.cancel()
     }
 
     /// One pass over the folder. Returns how many memos became captures.
@@ -197,14 +213,21 @@ package final class VoiceMemoIntake {
         let previous = lastSeen
         lastSeen = Dictionary(files.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
         let before = ledger
-        ledger.prune(keeping: Set(lastSeen.keys))
+        let renamed = ledger.adopt(files)
+        ledger.prune(keeping: Set(files.map(VoiceMemoLedger.key(for:))))
         if ledger != before { saveLedger() }
+        // Renamed after its capture, so the Trash missed it (#1508).
+        for file in files where renamed.contains(VoiceMemoLedger.key(for: file)) {
+            guard case .captured = ledger.entry(for: file)?.state else { continue }
+            Log.backends.info("Voice memos: a captured memo was renamed; moving it to the Trash")
+            removeQuietly(directory.appendingPathComponent(file.name))
+        }
 
         var captured = 0
         for file in files.sorted(by: { $0.modifiedAt < $1.modifiedAt }) {
             // A capture whose save failed, or a quit interrupted: done once
             // the Inbox file holds its words, or the user's discard of them.
-            if let entry = ledger.entries[file.name], entry.describes(file),
+            if let entry = ledger.entry(for: file), entry.describes(file),
                case .transcribing(let itemID) = entry.state,
                inboxHas(itemID) || unsavedCaptures.contains(itemID)
             {
@@ -223,7 +246,7 @@ package final class VoiceMemoIntake {
                 continue
             }
             guard file.size > 0, previous[file.name] == file else { continue }
-            guard canTranscribe(), !isStopping else { break }
+            guard canTranscribe(), !isStopped else { break }
             let outcome = await take(file, at: url)
             if outcome == .captured { captured += 1 }
             // The engine or the disk failed; the rest would fail the same way.
@@ -271,19 +294,46 @@ package final class VoiceMemoIntake {
         let transcript: VoiceMemoTranscript
         do {
             isTranscribing = true
+            yieldedToDictation = false
+            let transcriber = transcriber
+            let task = Task { try await transcriber.transcribe(url) }
+            transcription = task
             defer {
+                transcription = nil
                 isTranscribing = false
-                onTranscriptionEnded?()
             }
-            transcript = try await transcriber.transcribe(url)
+            transcript = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
+        } catch where yieldedToDictation {
+            // Before the unreadable case: a cancelled decode can still fail.
+            Log.backends.info("Voice memos: the memo stopped for the dictation (\(String(describing: error), privacy: .public)); retrying on the next scan")
+            ledger.entries[VoiceMemoLedger.key(for: file)] = nil
+            saveLedger()
+            return .stopPass
+        } catch where isStopped || Task.isCancelled {
+            Log.backends.info("Voice memos: the memo stopped with voice memos (\(String(describing: error), privacy: .public)); retrying on the next scan")
+            ledger.entries[VoiceMemoLedger.key(for: file)] = nil
+            saveLedger()
+            return .stopPass
         } catch is VoiceMemoUnreadable {
+            // Renamed, replaced or evicted while it was opened: the file read
+            // is not the memo listed, so it says nothing about that memo.
+            guard await isStillListed(file) else {
+                Log.backends.notice("Voice memos: a memo changed while it was read; retrying on a later scan")
+                ledger.entries[VoiceMemoLedger.key(for: file)] = nil
+                saveLedger()
+                return .left
+            }
             Log.backends.error("Voice memos: a memo is not audio this Mac can decode; left in the folder")
             record(file, .unreadable)
             onStatus?("A voice memo could not be read.")
             return .left
         } catch {
             Log.backends.error("Voice memos: transcription failed, retrying on the next scan: \(String(describing: error), privacy: .public)")
-            ledger.entries[file.name] = nil
+            ledger.entries[VoiceMemoLedger.key(for: file)] = nil
             saveLedger()
             onStatus?("Voice memo waits for the speech engine.")
             return .stopPass
@@ -307,14 +357,30 @@ package final class VoiceMemoIntake {
             // The Inbox refused it since the scan began (another running copy
             // left a file this build cannot read): the memo stays.
             Log.persistence.error("Voice memos: the Inbox did not take a memo; left in the folder")
-            ledger.entries[file.name] = nil
+            ledger.entries[VoiceMemoLedger.key(for: file)] = nil
             saveLedger()
             onStatus?(Self.inboxRefusedStatus)
             return .left
         }
         Log.backends.info("Voice memos: \(transcript.text.count, privacy: .public) chars to the inbox")
+        // A recording iCloud put under the name while this one was
+        // transcribed has not been heard. The ledger keeps `.transcribing`,
+        // so a later scan trashes the file only if it is still this memo,
+        // and otherwise takes it as a new one (#1098).
+        guard await isStillListed(file) else {
+            Log.backends.notice("Voice memos: the memo changed while it was transcribed; the file stays for the next scan")
+            return .captured
+        }
         finish(file, itemID: itemID, at: url)
         return .captured
+    }
+
+    /// Whether the folder still lists `file` as it was when it was taken:
+    /// same name, size and date, its bytes on this Mac. False when the
+    /// folder cannot be listed.
+    private func isStillListed(_ file: VoiceMemoFile) async -> Bool {
+        guard let files = try? await list(directory) else { return false }
+        return files.contains(file)
     }
 
     /// The memo's capture is on disk: marks it captured and moves it to the
@@ -322,6 +388,10 @@ package final class VoiceMemoIntake {
     private func finish(_ file: VoiceMemoFile, itemID: UUID, at url: URL) {
         unsavedCaptures.remove(itemID)
         record(file, .captured(itemID: itemID))
+        removeQuietly(url)
+    }
+
+    private func removeQuietly(_ url: URL) {
         do {
             try removeTranscribed(url)
         } catch {
@@ -331,7 +401,7 @@ package final class VoiceMemoIntake {
     }
 
     private func record(_ file: VoiceMemoFile, _ state: VoiceMemoLedger.State) {
-        ledger.entries[file.name] = VoiceMemoLedger.Entry(size: file.size, modifiedAt: file.modifiedAt, state: state)
+        ledger.entries[VoiceMemoLedger.key(for: file)] = VoiceMemoLedger.Entry(file, state: state)
         saveLedger()
     }
 

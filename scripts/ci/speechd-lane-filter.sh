@@ -31,6 +31,7 @@ PATTERNS=(
   'Sources/localvoxtral/Backends/BackendManager.swift'
   'Sources/localvoxtralCore/SpeechModelCatalog.swift'
   'scripts/package_app.sh'
+  'scripts/packaging/sign-bundle.sh'
   'scripts/ci/speechd-lane-filter.sh'
   'Tests/localvoxtralTests/SpeechHelperIntegrationTests.swift'
 )

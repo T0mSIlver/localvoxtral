@@ -417,16 +417,10 @@ final class DictationSessionController {
     var isShowingConnectionFailureAlert = false
     @ObservationIgnored
     var realtimeFinalizationLastActivityAt: Date?
-    /// True while a voice memo streams through the bundled helper this
-    /// dictation also uses.
+    /// Cancels a voice memo streaming through the bundled helper this
+    /// dictation also uses, so the dictation's text streams live (#1317).
     @ObservationIgnored
-    var voiceMemoHoldsTheEngine: @MainActor () -> Bool = { false }
-    /// When this session started, on the session clock, if a voice memo was
-    /// streaming then. The bundled helper runs one inference queue, so this
-    /// session's audio is decoded only after the memo's, and its final can
-    /// come long after the stop.
-    @ObservationIgnored
-    var sessionStartedBehindVoiceMemoAt: Date?
+    var yieldVoiceMemoEngine: @MainActor () -> Void = {}
     @ObservationIgnored
     var isAwaitingMicrophonePermission = false
     /// Gives up on a microphone prompt nobody answers.
@@ -994,10 +988,15 @@ final class DictationSessionController {
     /// as a finalizing stop does: a start meanwhile (a new microphone,
     /// #1055) must go through `cancelPolishingForNewSessionIfNeeded`, which
     /// saves the text. The socket is gone, so nothing it still emits may
-    /// reach the transcript the commit is using.
+    /// reach the transcript the commit is using. The overlay pins its target
+    /// here too: left buffering, every refresh, the one after the polish
+    /// included, would retarget the commit to whatever app has focus (#1478).
     func ownStopWithoutFinalization() {
         sessionConnectionGeneration = .none
         isFinalizingStop = true
+        if !wasCancelled {
+            beginOverlayFinalization()
+        }
     }
 
     func clearTranscript() {

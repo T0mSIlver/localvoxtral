@@ -1,0 +1,23 @@
+{
+  "name": "localvoxtral-mod",
+  "description": "Shows whether localvoxtral is connected to this Claude Code session, as the plugin's status line. A Claude Code mod: needs a Claude Code build that loads hooks modules, and does nothing on one that does not.",
+  "version": "1.0.0",
+  "author": {
+    "name": "localvoxtral"
+  },
+  "homepage": "https://github.com/T0mSIlver/localvoxtral",
+  "license": "MIT",
+  "keywords": [
+    "dictation",
+    "voice",
+    "status"
+  ],
+  "userConfig": {
+    "publisher_path": {
+      "type": "string",
+      "title": "Publisher path",
+      "description": "Absolute path to the localvoxtral-claude-hook publisher. Set automatically when localvoxtral installs the plugin; only needed by hand if the app lives somewhere unusual.",
+      "default": ""
+    }
+  }
+}

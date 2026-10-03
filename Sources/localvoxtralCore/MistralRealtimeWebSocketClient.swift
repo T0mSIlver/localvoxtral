@@ -305,10 +305,11 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
         }
     }
 
-    package func sendAudioChunk(_ pcm16Data: Data) {
-        guard !pcm16Data.isEmpty else { return }
+    @discardableResult
+    package func sendAudioChunk(_ pcm16Data: Data) -> Bool {
+        guard !pcm16Data.isEmpty else { return true }
         debugLog("send input_audio.append bytes=\(pcm16Data.count)")
-        send(
+        return send(
             event: [
                 "type": "input_audio.append",
                 "audio": pcm16Data.base64EncodedString(),
@@ -541,12 +542,14 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
         case dropped
     }
 
-    private func send(event: [String: Any], audioBytes: Int = 0, levelDBFS: Double? = nil) {
-        guard let text = encodedFrame(event) else { return }
+    /// False when the frame went nowhere: no socket, or no frame to send.
+    @discardableResult
+    private func send(event: [String: Any], audioBytes: Int = 0, levelDBFS: Double? = nil) -> Bool {
+        guard let text = encodedFrame(event) else { return false }
         #if DEBUG
         recordFrameForTesting(text)
         #endif
-        sendText(text, audioBytes: audioBytes, levelDBFS: levelDBFS)
+        return sendText(text, audioBytes: audioBytes, levelDBFS: levelDBFS)
     }
 
     #if DEBUG
@@ -599,7 +602,8 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
         }
     }
 
-    private func sendText(_ text: String, audioBytes: Int, levelDBFS: Double? = nil) {
+    @discardableResult
+    private func sendText(_ text: String, audioBytes: Int, levelDBFS: Double? = nil) -> Bool {
         let action: SendAction = state.withLock { s in
             switch s.base.socketState {
             case .connected:
@@ -622,10 +626,15 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
             }
         }
 
-        guard case .send(let task, let payloadText, let stall) = action else {
-            return
+        switch action {
+        case .send(let task, let payloadText, let stall):
+            transmit(payloadText, audioBytes: audioBytes, stall: stall, on: task)
+            return true
+        case .queued:
+            return true
+        case .dropped:
+            return false
         }
-        transmit(payloadText, audioBytes: audioBytes, stall: stall, on: task)
     }
 
     /// Sends the declaration and what queued before `session.created`, then

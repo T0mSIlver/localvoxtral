@@ -5,7 +5,7 @@ its code.
 
 ## Using localvoxtral
 
-- [Install](install.md): install, update, Gatekeeper fixes, nightly builds
+- [Install](install.md): install, update, nightly builds
 - [Dictating](dictation.md): shortcuts, output modes, settings reference,
   screenshots
 - [Terminals & coding agents](coding-agents.md): dictating into Claude Code

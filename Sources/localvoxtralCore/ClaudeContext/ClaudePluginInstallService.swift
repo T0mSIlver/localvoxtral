@@ -33,6 +33,14 @@ public struct ClaudePluginInstallService: Sendable {
         case uninstall
         /// Deregister the marketplace.
         case removeMarketplace
+        /// Install, update or remove the mod plugin
+        /// (`ClaudePluginAssets.modPluginName`). Every flow runs these
+        /// best-effort, after or before the plugin's own step: the mod needs a
+        /// Claude Code build that loads mods, and its failure must never cost
+        /// the context hooks.
+        case installMod
+        case updateMod
+        case uninstallMod
     }
 
     /// One CLI invocation.
@@ -162,6 +170,11 @@ public struct ClaudePluginInstallService: Sendable {
         "\(ClaudePluginAssets.pluginName)@\(ClaudePluginAssets.marketplaceName)"
     }
 
+    /// `localvoxtral-mod@localvoxtral`.
+    public static var modPluginReference: String {
+        "\(ClaudePluginAssets.modPluginName)@\(ClaudePluginAssets.marketplaceName)"
+    }
+
     /// The argv for an action. Pure and public so tests pin the exact commands
     /// — this is the surface where a typo silently uninstalls the wrong thing.
     ///
@@ -184,6 +197,12 @@ public struct ClaudePluginInstallService: Sendable {
             return ["plugin", "uninstall", pluginReference]
         case .removeMarketplace:
             return ["plugin", "marketplace", "remove", ClaudePluginAssets.marketplaceName]
+        case .installMod:
+            return ["plugin", "install", modPluginReference] + configArguments(publisherPath: publisherPath)
+        case .updateMod:
+            return ["plugin", "update", modPluginReference]
+        case .uninstallMod:
+            return ["plugin", "uninstall", modPluginReference]
         }
     }
 
@@ -276,11 +295,13 @@ public struct ClaudePluginInstallService: Sendable {
     public func installPlugin() throws {
         try perform(.addMarketplace)
         try perform(.install)
+        _ = try? perform(.installMod)
     }
 
     /// The user-facing uninstall. The marketplace is deregistered too so we
     /// leave nothing of ours behind in the user's Claude Code config.
     public func uninstallPlugin() throws {
+        _ = try? perform(.uninstallMod)
         try perform(.uninstall)
         try perform(.removeMarketplace)
     }
@@ -297,6 +318,8 @@ public struct ClaudePluginInstallService: Sendable {
         try perform(.addMarketplace)
         _ = try? perform(.uninstall)
         try perform(.install)
+        _ = try? perform(.uninstallMod)
+        _ = try? perform(.installMod)
     }
 
     /// The unattended update at launch: refresh the marketplace, then
@@ -307,9 +330,14 @@ public struct ClaudePluginInstallService: Sendable {
     /// already running, and the saved `publisher_path` carries over. That pin
     /// is not refreshed, which is why the shim tries the app's publisher link
     /// (`ClaudePublisherPointer`) first.
+    ///
+    /// The mod is updated only where it is installed: `plugin update` on a
+    /// plugin that is not installed fails, and that failure is ignored, so
+    /// the unattended path never installs it.
     public func updateInstalledPlugin() throws {
         try perform(.addMarketplace)
         try perform(.update)
+        _ = try? perform(.updateMod)
     }
 }
 

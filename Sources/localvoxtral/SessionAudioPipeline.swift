@@ -210,7 +210,12 @@ final class SessionAudioPipeline {
                     continue
                 }
                 emptyBufferTicks = 0
-                client.sendAudioChunk(bufferedChunk)
+                // The socket can still die between the read above and this
+                // send; the client then drops the chunk, so it waits here for
+                // the reconnect to replay it (#1458).
+                if !client.sendAudioChunk(bufferedChunk) {
+                    chunkBuffer.putBack(bufferedChunk)
+                }
             }
         }
     }

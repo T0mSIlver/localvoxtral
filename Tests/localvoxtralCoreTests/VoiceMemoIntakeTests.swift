@@ -17,6 +17,8 @@ final class VoiceMemoIntakeTests: XCTestCase {
             let name = url.lastPathComponent
             calls.withLock { $0.append(name) }
             if let observe = whileTranscribing.withLock({ $0 }) { await observe() }
+            // A cancelled memo closes its socket, and the stream ends without a transcript.
+            try Task.checkCancellation()
             let result = results.withLock { $0[name] } ?? .success("words of \(name)")
             return VoiceMemoTranscript(text: try result.get(), pcm16: Data(name.utf8))
         }
@@ -44,6 +46,7 @@ final class VoiceMemoIntakeTests: XCTestCase {
     /// The Inbox turned the capture down, as a refused Inbox does.
     private var captureRefused = false
     private var streamingSeen: [Bool] = []
+    private var dictating = false
 
     override func setUp() async throws {
         workDirectory = FileManager.default.temporaryDirectory
@@ -54,14 +57,26 @@ final class VoiceMemoIntakeTests: XCTestCase {
         try? FileManager.default.removeItem(at: workDirectory)
     }
 
-    private func memo(_ name: String, size: Int = 1_000, minute: Double = 0, downloaded: Bool = true) -> VoiceMemoFile {
-        VoiceMemoFile(
+    /// Each name's inode, handed out on first use.
+    private var inodes: [String: UInt64] = [:]
+
+    private func memo(
+        _ name: String, size: Int = 1_000, minute: Double = 0, downloaded: Bool = true, inode: UInt64? = nil
+    ) -> VoiceMemoFile {
+        let number = inode ?? inodes[name] ?? UInt64(100 + inodes.count)
+        inodes[name] = inodes[name] ?? number
+        return VoiceMemoFile(
             name: name, size: size, modifiedAt: Date(timeIntervalSince1970: 1_000_000 + minute * 60),
-            isDownloaded: downloaded)
+            isDownloaded: downloaded, fileNumber: number)
+    }
+
+    private func ledgerEntry(_ name: String) -> VoiceMemoLedger.Entry? {
+        VoiceMemoLedger.load(from: ledgerURL).value?.entry(for: memo(name))
     }
 
     /// A fresh intake over the same ledger file: what a relaunch sees.
     private func intake(
+        clock: SessionClock = .live,
         inboxHas: (@MainActor (UUID) -> Bool)? = nil,
         capture: (@MainActor (UUID, String, Date, Data) throws -> Void)? = nil
     ) -> VoiceMemoIntake {
@@ -69,10 +84,14 @@ final class VoiceMemoIntakeTests: XCTestCase {
             directory: directory,
             ledgerURL: ledgerURL,
             transcriber: transcriber,
+            clock: clock,
             list: { [unowned self] _ in files },
             requestDownload: { [unowned self] in downloadRequests.append($0.lastPathComponent) },
             removeTranscribed: { [unowned self] url in
                 if trashFails { throw CocoaError(.fileWriteNoPermission) }
+                guard files.contains(where: { $0.name == url.lastPathComponent }) else {
+                    throw CocoaError(.fileNoSuchFile)
+                }
                 trashed.append(url.lastPathComponent)
                 files.removeAll { $0.name == url.lastPathComponent }
             },
@@ -133,7 +152,7 @@ final class VoiceMemoIntakeTests: XCTestCase {
         _ = await intake.scan()
         _ = await intake.scan()
         XCTAssertEqual(trashed, [])
-        XCTAssertNil(VoiceMemoLedger.load(from: ledgerURL).value?.entries["walk.m4a"])
+        XCTAssertNil(ledgerEntry("walk.m4a"))
 
         captureRefused = false
         _ = await intake.scan()
@@ -224,8 +243,8 @@ final class VoiceMemoIntakeTests: XCTestCase {
         XCTAssertEqual(captured.map(\.text), ["words of a.m4a", "words of b.m4a"])
     }
 
-    /// A dictation started while a memo streams gets its text only after the
-    /// memo's, so its stop asks whether one is streaming.
+    /// A dictation starting on the bundled helper asks whether a memo streams
+    /// through it, to cancel the memo (#1317).
     func testTheIntakeSaysWhileAMemoStreamsThroughTheEngine() async {
         let intake = intake()
         transcriber.whileTranscribing.withLock {
@@ -240,23 +259,75 @@ final class VoiceMemoIntakeTests: XCTestCase {
         XCTAssertFalse(intake.isTranscribing, "after a capture and after a failure")
     }
 
-    /// Voice memos turned off mid-memo: the memo in flight is finished, since
-    /// the helper decodes its audio anyway, and no other memo is taken.
-    func testStoppingFinishesTheMemoInFlightAndTakesNoOther() async {
+    /// #1317: a dictation that starts on the memo's engine cancels the memo,
+    /// so its text streams live. The memo goes back for a later scan, and the
+    /// popover says nothing about it.
+    func testAMemoCancelledByADictationStartIsTranscribedOnALaterScanWithNoStatus() async {
         let intake = intake()
+        var statuses: [String] = []
+        intake.onStatus = { statuses.append($0) }
+        intake.canTranscribe = { [unowned self] in !dictating }
         transcriber.whileTranscribing.withLock {
             $0 = { [unowned self] in
-                intake.stopAfterCurrentMemo()
+                guard streamingSeen.isEmpty else { return }
+                dictating = true
+                intake.yieldToDictation()
                 streamingSeen.append(intake.isTranscribing)
             }
         }
-        intake.onTranscriptionEnded = { [unowned self] in streamingSeen.append(intake.isTranscribing) }
         files = [memo("a.m4a", minute: 1), memo("b.m4a", minute: 2)]
         _ = await intake.scan()
-        await intake.run()
-        XCTAssertEqual(streamingSeen, [true, false], "still streaming after the stop, then told it ended")
-        XCTAssertEqual(captured.map(\.text), ["words of a.m4a"])
-        XCTAssertEqual(transcriber.calls.withLock { $0 }, ["a.m4a"])
+        _ = await intake.scan()
+        XCTAssertEqual(streamingSeen, [false], "the dictation does not wait behind it")
+        XCTAssertEqual(transcriber.calls.withLock { $0 }, ["a.m4a"], "b waits too")
+        XCTAssertEqual(captured, [])
+        XCTAssertEqual(trashed, [])
+
+        _ = await intake.scan()
+        XCTAssertEqual(transcriber.calls.withLock { $0 }, ["a.m4a"], "not while the dictation runs")
+
+        dictating = false
+        _ = await intake.scan()
+        XCTAssertEqual(captured.map(\.text), ["words of a.m4a", "words of b.m4a"])
+        XCTAssertEqual(trashed, ["a.m4a", "b.m4a"])
+        XCTAssertEqual(statuses, [])
+    }
+
+    /// #1423: voice memos turned off mid-memo cancel the memo in flight,
+    /// even on a scan the wake started rather than `run`. It goes back for a
+    /// later scan, no other is taken, and the popover says nothing about it.
+    func testTurningMemosOffCancelsTheMemoInFlightAndRequeuesIt() async {
+        let clock = ManualSessionClock()
+        var first: VoiceMemoIntake? = intake(clock: clock.clock)
+        var statuses: [String] = []
+        first?.onStatus = { statuses.append($0) }
+        transcriber.whileTranscribing.withLock {
+            $0 = { [unowned self] in
+                guard streamingSeen.isEmpty else { return }
+                streamingSeen.append(first?.isTranscribing == true)
+                first?.stop()
+            }
+        }
+        files = [memo("a.m4a", minute: 1), memo("b.m4a", minute: 2)]
+        _ = await first?.scan()
+        let wakeScan = Task { [first] in await first?.scan() }
+        let taken = await wakeScan.value
+        await first?.run()
+        XCTAssertEqual(taken, 0)
+        XCTAssertEqual(streamingSeen, [true])
+        XCTAssertEqual(first?.isTranscribing, false)
+        XCTAssertEqual(transcriber.calls.withLock { $0 }, ["a.m4a"], "b is not taken")
+        XCTAssertEqual(captured, [])
+        XCTAssertEqual(trashed, [])
+        XCTAssertEqual(statuses, [])
+
+        // Back on: the controller dropped the intake, and takes a fresh one.
+        first = nil
+        let second = intake()
+        _ = await second.scan()
+        _ = await second.scan()
+        XCTAssertEqual(captured.map(\.text), ["words of a.m4a", "words of b.m4a"])
+        XCTAssertEqual(trashed, ["a.m4a", "b.m4a"])
     }
 
     /// #988: a capture whose audio or words could not be written leaves
@@ -294,6 +365,56 @@ final class VoiceMemoIntakeTests: XCTestCase {
         XCTAssertEqual(trashed, [])
     }
 
+    /// iCloud replaced the memo with another recording while the first was
+    /// transcribed: the replacement is not trashed unheard, and becomes its
+    /// own capture.
+    func testAMemoReplacedWhileItWasTranscribedIsNotTrashedAndIsTakenNext() async {
+        let intake = intake()
+        files = [memo("walk.m4a")]
+        transcriber.whileTranscribing.withLock {
+            $0 = { [unowned self] in
+                files = [memo("walk.m4a", size: 2_000, minute: 1)]
+                transcriber.whileTranscribing.withLock { $0 = nil }
+            }
+        }
+        _ = await intake.scan()
+        _ = await intake.scan()
+        XCTAssertEqual(captured.map(\.text), ["words of walk.m4a"])
+        XCTAssertEqual(trashed, [], "the replacement was not transcribed")
+
+        transcriber.results.withLock { $0["walk.m4a"] = .success("the second recording") }
+        _ = await intake.scan()
+        _ = await intake.scan()
+        XCTAssertEqual(captured.map(\.text), ["words of walk.m4a", "the second recording"])
+        XCTAssertEqual(trashed, ["walk.m4a"])
+    }
+
+    /// The memo vanished between the listing and the read (a rename, an
+    /// eviction): the failed open is not the memo's verdict, and the memo is
+    /// taken once it is back unchanged.
+    func testAMemoThatVanishedWhileItWasOpenedIsTakenOnceItIsBack() async {
+        let intake = intake()
+        let walk = memo("walk.m4a")
+        files = [walk]
+        transcriber.results.withLock { $0["walk.m4a"] = .failure(VoiceMemoUnreadable()) }
+        transcriber.whileTranscribing.withLock {
+            $0 = { [unowned self] in
+                files = []
+                transcriber.whileTranscribing.withLock { $0 = nil }
+            }
+        }
+        _ = await intake.scan()
+        _ = await intake.scan()
+        XCTAssertEqual(captured, [])
+
+        transcriber.results.withLock { $0["walk.m4a"] = nil }
+        files = [walk]
+        _ = await intake.scan()
+        _ = await intake.scan()
+        XCTAssertEqual(captured.map(\.text), ["words of walk.m4a"])
+        XCTAssertEqual(trashed, ["walk.m4a"])
+    }
+
     func testAfterARelaunchAMemoThatCouldNotBeTrashedIsNotCapturedAgain() async {
         trashFails = true
         files = [memo("walk.m4a")]
@@ -308,12 +429,146 @@ final class VoiceMemoIntakeTests: XCTestCase {
         XCTAssertEqual(captured.count, 1)
     }
 
+    /// #1508: a memo renamed while the engine has it keeps its inode. The
+    /// Trash misses the old name, and the renamed file is the same memo:
+    /// it goes to the Trash on the next scan, not into a second capture.
+    func testRenameDuringTranscriptionProducesOneCapture() async {
+        let intake = intake()
+        files = [memo("walk.m4a")]
+        let inode = inodes["walk.m4a"]
+        transcriber.whileTranscribing.withLock {
+            $0 = { [unowned self] in files = [memo("shopping.m4a", inode: inode)] }
+        }
+        _ = await intake.scan()
+        _ = await intake.scan()
+        XCTAssertEqual(captured.count, 1)
+        XCTAssertEqual(trashed, [], "the old name is gone")
+
+        _ = await intake.scan()
+        _ = await intake.scan()
+        XCTAssertEqual(captured.map(\.text), ["words of walk.m4a"])
+        XCTAssertEqual(transcriber.calls.withLock { $0 }, ["walk.m4a"])
+        XCTAssertEqual(trashed, ["shopping.m4a"])
+    }
+
+    /// A relaunch between the rename and the next scan finds the memo
+    /// through the ledger file alone.
+    func testAMemoRenamedAfterItsCaptureIsNotCapturedAgainAfterARelaunch() async {
+        trashFails = true
+        files = [memo("walk.m4a")]
+        do {
+            let first = intake()
+            _ = await first.scan()
+            _ = await first.scan()
+        }
+        files = [memo("shopping.m4a", inode: inodes["walk.m4a"])]
+
+        let relaunched = intake()
+        _ = await relaunched.scan()
+        _ = await relaunched.scan()
+        XCTAssertEqual(captured.count, 1)
+        XCTAssertEqual(ledgerEntry("shopping.m4a")?.name, "shopping.m4a")
+    }
+
+    /// A new memo on a reused inode under another name is not the captured
+    /// one renamed: it is transcribed, not trashed unheard.
+    func testANewMemoOnAReusedInodeIsTranscribed() async {
+        files = [memo("walk.m4a")]
+        let intake = intake()
+        _ = await intake.scan()
+        _ = await intake.scan()
+        XCTAssertEqual(trashed, ["walk.m4a"])
+
+        files = [memo("shopping.m4a", size: 2_000, minute: 9, inode: inodes["walk.m4a"])]
+        _ = await intake.scan()
+        XCTAssertEqual(trashed, ["walk.m4a"], "not trashed unheard")
+        _ = await intake.scan()
+        XCTAssertEqual(captured.map(\.text), ["words of walk.m4a", "words of shopping.m4a"])
+    }
+
+    /// iCloud downloading a memo again may give it a new inode; the same
+    /// name, size and date are still the same memo.
+    func testAMemoWhoseInodeChangedUnderTheSameNameIsNotCapturedAgain() async {
+        trashFails = true
+        files = [memo("walk.m4a")]
+        let intake = intake()
+        _ = await intake.scan()
+        _ = await intake.scan()
+        files = [memo("walk.m4a", inode: 9_999)]
+        _ = await intake.scan()
+        _ = await intake.scan()
+        XCTAssertEqual(captured.count, 1)
+        XCTAssertEqual(
+            VoiceMemoLedger.load(from: ledgerURL).value?.entries.keys.sorted(), ["inode:9999"], "rekeyed")
+    }
+
+    /// Format 1, keyed by file name, migrates to format 2 with every entry:
+    /// the next scan rekeys each to its file's inode, so no handled memo is
+    /// taken again, and the one interrupted mid-transcription is retried.
+    func testAFormatOneLedgerMigratesWithoutLosingAnEntry() async throws {
+        try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
+        let savedID = UUID()
+        let capturedID = UUID()
+        // `modifiedAt` as JSONEncoder writes it: seconds since 2001.
+        let date = Date(timeIntervalSince1970: 1_000_000).timeIntervalSinceReferenceDate
+        let v1 = """
+            {"version":1,"entries":{
+              "kept.m4a":{"size":1000,"modifiedAt":\(date),"state":{"captured":{"itemID":"\(capturedID)"}}},
+              "old.m4a":{"size":1000,"state":{"noSpeech":{}}},
+              "broken.m4a":{"size":1000,"modifiedAt":\(date),"state":{"unreadable":{}}},
+              "saved.m4a":{"size":1000,"modifiedAt":\(date),"state":{"transcribing":{"itemID":"\(savedID)"}}},
+              "lost.m4a":{"size":1000,"modifiedAt":\(date),"state":{"transcribing":{"itemID":"\(UUID())"}}},
+              "gone.m4a":{"size":1000,"modifiedAt":\(date),"state":{"noSpeech":{}}}
+            }}
+            """
+        try Data(v1.utf8).write(to: ledgerURL)
+        let loaded = try XCTUnwrap(VoiceMemoLedger.load(from: ledgerURL).value)
+        XCTAssertEqual(loaded.entries.count, 6)
+        XCTAssertEqual(loaded.entries["name:kept.m4a"]?.state, .captured(itemID: capturedID))
+        XCTAssertNil(loaded.entries["name:old.m4a"]?.modifiedAt, "written before #1098")
+
+        files = ["kept.m4a", "old.m4a", "broken.m4a", "saved.m4a", "lost.m4a"].map { memo($0) }
+        captured = [Captured(id: savedID, text: "words of saved.m4a", recordedAt: .distantPast, pcm16: Data())]
+        let intake = intake()
+        _ = await intake.scan()
+        _ = await intake.scan()
+
+        XCTAssertEqual(transcriber.calls.withLock { $0 }, ["lost.m4a"])
+        XCTAssertEqual(trashed.sorted(), ["lost.m4a", "saved.m4a"])
+        let migrated = try XCTUnwrap(VoiceMemoLedger.load(from: ledgerURL).value)
+        XCTAssertEqual(migrated.entry(for: memo("kept.m4a"))?.state, .captured(itemID: capturedID))
+        XCTAssertEqual(migrated.entry(for: memo("old.m4a"))?.state, .noSpeech)
+        XCTAssertEqual(migrated.entry(for: memo("broken.m4a"))?.state, .unreadable)
+        XCTAssertEqual(migrated.entry(for: memo("lost.m4a"))?.state.isCaptured, true)
+        XCTAssertTrue(migrated.entries.keys.allSatisfy { $0.hasPrefix("inode:") }, "\(migrated.entries.keys)")
+        XCTAssertEqual(migrated.entries.count, 4, "gone.m4a and the trashed saved.m4a left the folder")
+        let written = try JSONSerialization.jsonObject(with: Data(contentsOf: ledgerURL)) as? [String: Any]
+        XCTAssertEqual(written?["version"] as? Int, 2)
+    }
+
+    /// A format 1 ledger whose JSON parses but whose entry does not is
+    /// refused like any corrupt ledger (#989), not migrated as empty.
+    func testACorruptFormatOneLedgerKeepsItsBytesAndTakesNoMemo() async throws {
+        try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
+        let data = Data(#"{"version":1,"entries":{"walk.m4a":{"size":"big","state":{"noSpeech":{}}}}}"#.utf8)
+        try data.write(to: ledgerURL)
+        let intake = intake()
+        files = [memo("walk.m4a")]
+        _ = await intake.scan()
+        _ = await intake.scan()
+
+        XCTAssertEqual(intake.ledgerProblem, .unreadable)
+        XCTAssertTrue(captured.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: ledgerURL), data)
+    }
+
     func testAQuitMidTranscriptionRetriesTheMemoUnlessItsItemWasSaved() async throws {
         files = [memo("saved.m4a"), memo("lost.m4a")]
         var ledger = VoiceMemoLedger()
         let savedID = UUID()
-        ledger.entries["saved.m4a"] = .init(size: 1_000, state: .transcribing(itemID: savedID))
-        ledger.entries["lost.m4a"] = .init(size: 1_000, state: .transcribing(itemID: UUID()))
+        for (file, itemID) in [(files[0], savedID), (files[1], UUID())] {
+            ledger.entries[VoiceMemoLedger.key(for: file)] = .init(file, state: .transcribing(itemID: itemID))
+        }
         try ledger.save(to: ledgerURL)
         captured = [Captured(id: savedID, text: "words of saved.m4a", recordedAt: .distantPast, pcm16: Data())]
 
@@ -354,7 +609,7 @@ final class VoiceMemoIntakeTests: XCTestCase {
 
         XCTAssertEqual(taken, 0)
         XCTAssertEqual(trashed, [], "the original stays until its capture is on disk")
-        let entry = try XCTUnwrap(VoiceMemoLedger.load(from: ledgerURL).value?.entries["walk.m4a"])
+        let entry = try XCTUnwrap(ledgerEntry("walk.m4a"))
         guard case .transcribing(let itemID) = entry.state else {
             return XCTFail("the ledger says \(entry.state), not transcribing")
         }
@@ -364,7 +619,7 @@ final class VoiceMemoIntakeTests: XCTestCase {
         model.setTitle("A walk", for: itemID)
         _ = await intake.scan()
         XCTAssertEqual(trashed, ["walk.m4a"])
-        XCTAssertEqual(VoiceMemoLedger.load(from: ledgerURL).value?.entries["walk.m4a"]?.state, .captured(itemID: itemID))
+        XCTAssertEqual(ledgerEntry("walk.m4a")?.state, .captured(itemID: itemID))
         XCTAssertEqual(transcriber.calls.withLock { $0 }, ["walk.m4a"], "transcribed once")
     }
 
@@ -470,7 +725,8 @@ final class VoiceMemoIntakeTests: XCTestCase {
         refusing.onListFailure = { _ in failures += 1 }
         _ = await refusing.scan()
         XCTAssertEqual(failures, 1)
-        XCTAssertEqual(VoiceMemoLedger.load(from: ledgerURL).value?.entries.keys.sorted(), ["walk.m4a"])
+        XCTAssertEqual(
+            VoiceMemoLedger.load(from: ledgerURL).value?.entries.keys.sorted(), [VoiceMemoLedger.key(for: memo("walk.m4a"))])
     }
 
     /// A ledger this build cannot load is left as it is and no memo is
@@ -497,6 +753,24 @@ final class VoiceMemoIntakeTests: XCTestCase {
         _ = await intake.scan()
         _ = await intake.scan()
         XCTAssertEqual(captured.map(\.text), ["words of walk.m4a"])
+    }
+
+    /// The copy that holds the folder writes the ledger; Start Over waits
+    /// for it to let go rather than delete a ledger it may have just
+    /// written (#1432).
+    func testStartOverOnTheLedgerRefusesWhileAnotherCopyHoldsTheFolder() async throws {
+        try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
+        let data = Data(#"{"version":\#(VoiceMemoLedger.currentVersion + 1),"entries":{}}"#.utf8)
+        try data.write(to: ledgerURL)
+        let intake = intake()
+        _ = await intake.scan()
+        XCTAssertNotNil(intake.ledgerProblem)
+        let otherCopy = try XCTUnwrap(StoredFileLock.tryHolding(beside: ledgerURL))
+
+        XCTAssertThrowsError(try intake.moveLedgerAsideAndStartOver())
+        XCTAssertEqual(try Data(contentsOf: ledgerURL), data)
+        XCTAssertNotNil(intake.ledgerProblem)
+        withExtendedLifetime(otherCopy) {}
     }
 
     func testACorruptLedgerKeepsItsBytesAndTakesNoMemo() async throws {
@@ -539,7 +813,7 @@ final class VoiceMemoIntakeTests: XCTestCase {
         _ = await intake.scan()
 
         XCTAssertTrue(trashed.isEmpty, "the memo stays in the folder")
-        XCTAssertNil(VoiceMemoLedger.load(from: ledgerURL).value?.entries["walk.m4a"])
+        XCTAssertNil(ledgerEntry("walk.m4a"))
         XCTAssertEqual(statuses, [VoiceMemoIntake.inboxRefusedStatus])
 
         try inbox.moveAsideAndStartOver()
@@ -564,5 +838,37 @@ final class VoiceMemoIntakeTests: XCTestCase {
         XCTAssertEqual(listed.map(\.name), ["Kitchen.WAV", "walk.m4a"])
         XCTAssertEqual(listed.map(\.size), [12, 12])
         XCTAssertTrue(listed.allSatisfy(\.isDownloaded))
+        XCTAssertTrue(listed.allSatisfy { $0.fileNumber != nil })
+    }
+
+    /// The identity the ledger keys by (#1508), on this machine's file
+    /// system: a rename keeps the inode, an atomic replace or a copy under
+    /// the old name does not.
+    func testTheFolderListingsInodeSurvivesARenameNotAReplace() throws {
+        let folder = workDirectory.appendingPathComponent("memos", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let walk = folder.appendingPathComponent("walk.m4a")
+        let shopping = folder.appendingPathComponent("shopping.m4a")
+        try Data(repeating: 7, count: 12).write(to: walk)
+        let first = try XCTUnwrap(VoiceMemoFolder.list(folder).first?.fileNumber)
+
+        try FileManager.default.moveItem(at: walk, to: shopping)
+        XCTAssertEqual(try VoiceMemoFolder.list(folder).map(\.fileNumber), [first], "renamed")
+
+        try Data(repeating: 8, count: 12).write(to: shopping, options: .atomic)
+        let replaced = try XCTUnwrap(VoiceMemoFolder.list(folder).first?.fileNumber)
+        XCTAssertNotEqual(replaced, first, "replaced")
+
+        try FileManager.default.copyItem(at: shopping, to: walk)
+        try FileManager.default.removeItem(at: shopping)
+        XCTAssertNotEqual(try VoiceMemoFolder.list(folder).first?.fileNumber, replaced, "copied")
+        print("voice memo inode probe: rename kept \(first), atomic replace gave \(replaced)")
+    }
+}
+
+private extension VoiceMemoLedger.State {
+    var isCaptured: Bool {
+        if case .captured = self { return true }
+        return false
     }
 }

@@ -64,7 +64,7 @@ final class CoalescingStepFeedTests: XCTestCase {
                 if let batch { stepped += batch }
             }
         }
-        stepped += feed.flushRemainder()
+        stepped += feed.flushRemainder().flatMap { $0 }
 
         XCTAssertEqual(stepped, samples(count: sent, startingAt: 0))
     }
@@ -77,7 +77,7 @@ final class CoalescingStepFeedTests: XCTestCase {
         feed.audioQueued()  // first append of utterance B, queued after A's commit
 
         XCTAssertNil(feed.receive(samples(count: chunk, startingAt: 0)))
-        XCTAssertEqual(feed.flushRemainder(), samples(count: chunk, startingAt: 0))
+        XCTAssertEqual(feed.flushRemainder(), [samples(count: chunk, startingAt: 0)])
         XCTAssertEqual(
             feed.receive(samples(count: chunk, startingAt: 10_000)),
             samples(count: chunk, startingAt: 10_000)
@@ -97,6 +97,49 @@ final class CoalescingStepFeedTests: XCTestCase {
             feed.receive(samples(count: chunk, startingAt: 0)),
             samples(count: chunk, startingAt: 0)
         )
+    }
+
+    /// A voice memo queues its whole backlog at once. Each step stops at the cap, so
+    /// a dictation queued behind the memo waits for one capped step, not the memo
+    /// (#1317); every sample still reaches the engine once, in order.
+    func testNoBatchExceedsTheCap() {
+        let feed = CoalescingStepFeed(minimumMilliseconds: 80, maximumMilliseconds: 1_000)
+        XCTAssertEqual(feed.maximumSamples, 16_000)
+        let sizes = Array(repeating: 1_600, count: 40) + [20_000, 7, 1_600]
+        for _ in sizes { feed.audioQueued() }
+
+        var batches: [[Float]] = []
+        var sent = 0
+        for size in sizes {
+            if let batch = feed.receive(samples(count: size, startingAt: sent)) { batches.append(batch) }
+            sent += size
+        }
+        batches += feed.flushRemainder()
+
+        XCTAssertGreaterThan(batches.count, 1)
+        XCTAssertEqual(batches.map(\.count).max(), feed.maximumSamples)
+        XCTAssertEqual(batches.flatMap { $0 }, samples(count: sent, startingAt: 0))
+        XCTAssertEqual(feed.takeLargestStepSamples(), feed.maximumSamples)
+        XCTAssertEqual(
+            CoalescingStepFeed(minimumMilliseconds: 2_500).maximumSamples, 40_000,
+            "a minimum step above the cap raises the cap")
+    }
+
+    /// A closed connection's queued appends step nothing, and its commit flushes
+    /// nothing: the next connection's audio runs next.
+    func testAClosedFeedHandsOutNothing() {
+        let feed = CoalescingStepFeed(minimumMilliseconds: 80, maximumMilliseconds: 1_000)
+        for _ in 0..<3 { feed.audioQueued() }
+        XCTAssertNil(feed.receive(samples(count: chunk, startingAt: 0)))
+
+        feed.close()
+
+        XCTAssertTrue(feed.isClosed)
+        XCTAssertNil(feed.receive(samples(count: 16_000, startingAt: chunk)))
+        XCTAssertNil(feed.receive(samples(count: chunk, startingAt: 17_280)))
+        XCTAssertEqual(feed.flushRemainder(), [])
+        feed.audioQueued()
+        XCTAssertNil(feed.receive(samples(count: chunk, startingAt: 0)))
     }
 
     private func samples(count: Int, startingAt start: Int) -> [Float] {
