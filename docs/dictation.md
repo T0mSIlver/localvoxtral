@@ -273,8 +273,10 @@ is gone moves to `localvoxtral/quarantine/` for 30 days instead of being
 deleted. What you delete yourself leaves History, and the copies keep it.
 Delete All, Don't keep, and turning off audio or diagnostic records ask first.
 Tick **Also delete the backups** there, and Delete All and Don't keep also
-delete every copy, and the switches empty their quarantine. A dictation
-you delete on its own stays in the copies until they rotate away.
+delete every copy, and the switches empty their quarantine. Once History is
+empty, Delete All stays available while the copies hold something, and deletes
+them. A dictation you delete on its own stays in the copies until they rotate
+away.
 
 ### History
 
