@@ -37,9 +37,20 @@ package enum HerdrMachineFederation: Sendable, Equatable {
     /// The more abstaining of two readings, used to merge the release and
     /// development state directories. A user runs one of them; the other is
     /// absent, which reads as `notFederated` and never masks the live one.
+    /// Two catalogs whose selections disagree read as `unreadable`: nothing
+    /// says which client is on screen, and a dormant one left selecting a
+    /// machine must not route dictation there.
     package static func moreAbstaining(
         _ first: HerdrMachineFederation, _ second: HerdrMachineFederation
     ) -> HerdrMachineFederation {
+        switch (first, second) {
+        case (.showingLocal, .showingMachine), (.showingMachine, .showingLocal):
+            return .unreadable
+        case (.showingMachine(let one), .showingMachine(let other)) where one != other:
+            return .unreadable
+        default:
+            break
+        }
         func rank(_ value: HerdrMachineFederation) -> Int {
             switch value {
             case .notFederated: return 0

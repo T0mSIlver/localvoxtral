@@ -182,6 +182,34 @@ final class HerdrMachineFederationTests: XCTestCase {
         XCTAssertEqual(federation, .showingMachine(machine(profileA)))
     }
 
+    // A dormant development catalog left selecting machine A must not
+    // outvote the release client showing Local, or another machine: nothing
+    // says which of the two clients is the one on screen.
+    func testTwoCatalogsThatDisagreeOnTheSelectionAbstain() {
+        let development = URL(fileURLWithPath: "/state/herdr-dev/client", isDirectory: true)
+        let files: [String: HerdrStateFile] = [
+            directory.appendingPathComponent("endpoints.json").path:
+                catalog(profiles: [(profileA, true), (profileB, true)]),
+            development.appendingPathComponent("endpoints.json").path:
+                catalog(profiles: [(profileA, true), (profileB, true)]),
+            development.appendingPathComponent("endpoint-selection.json").path:
+                json("{\"version\":1,\"selected_profile\":\"\(profileA)\"}"),
+        ]
+        func reading(releaseSelects release: String?) -> HerdrMachineFederation {
+            var withRelease = files
+            withRelease[directory.appendingPathComponent("endpoint-selection.json").path] =
+                json("{\"version\":1,\"selected_profile\":\(release.map { "\"\($0)\"" } ?? "null")}")
+            let state = withRelease
+            return HerdrMachineFederationReader(clientDirectories: [directory, development]) { url in
+                state[url.path] ?? .absent
+            }.federation()
+        }
+
+        XCTAssertEqual(reading(releaseSelects: nil), .unreadable, "release shows Local")
+        XCTAssertEqual(reading(releaseSelects: profileB), .unreadable, "release shows machine B")
+        XCTAssertEqual(reading(releaseSelects: profileA), .showingMachine(machine(profileA)), "both agree")
+    }
+
     // MARK: - The catalog itself (Settings import, federated join arm)
 
     func testNoCatalogReadsAbsent() {
