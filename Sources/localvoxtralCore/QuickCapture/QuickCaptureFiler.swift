@@ -146,7 +146,10 @@ package enum QuickCaptureFiling {
         guard let url = urls.first else { return .notFound }
         let expected: Bool
         if let issue {
-            expected = url.hasPrefix("https://github.com/\(repository)/issues/\(issue)#issuecomment-")
+            let parts = url.components(separatedBy: "#issuecomment-")
+            expected = parts.count == 2 && parts[1].range(of: #"^[1-9][0-9]*$"#, options: .regularExpression) != nil
+                && parts[0].hasSuffix("/issues/\(issue)")
+                && QuickCaptureInbox.issueRepository(parts[0])?.caseInsensitiveCompare(repository) == .orderedSame
         } else {
             expected = QuickCaptureInbox.issueRepository(url)?.caseInsensitiveCompare(repository) == .orderedSame
         }

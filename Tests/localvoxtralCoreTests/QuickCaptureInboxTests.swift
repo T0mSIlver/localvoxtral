@@ -238,7 +238,8 @@ final class QuickCaptureInboxTests: XCTestCase {
             item.relation = .extends
             item.relatedIssue = commentOn
         }
-        item.filingClaim = QuickCaptureItem.FilingClaim(processID: 1, launch: UUID(), at: at, commentOn: commentOn)
+        item.filingClaim = QuickCaptureItem.FilingClaim(
+            processID: 1, launch: UUID(), at: at, commentOn: commentOn, repository: at == nil ? nil : "o/reach")
         try QuickCaptureInboxFile.save(QuickCaptureInbox(items: [item]), to: fileURL)
         return item
     }
@@ -308,6 +309,26 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertNotNil(relaunched.items.first?.unconfirmedFiling)
         XCTAssertNil(relaunched.checkInterruptedFilingAgain(seeded.id))
         XCTAssertTrue(github.lookups.withLock { $0.isEmpty })
+
+        // It may have been a comment: nothing is sent, File comes back.
+        XCTAssertNil(relaunched.sendInterruptedFilingAgain(seeded.id))
+        XCTAssertEqual(relaunched.items.first?.canFile, true)
+        XCTAssertEqual(github.created.withLock { $0.count }, 0)
+    }
+
+    /// Moved after its filing went unconfirmed (#1509): Check Again looks
+    /// where the filing was sent, not where the capture files now.
+    func testCheckAgainLooksWhereTheInterruptedFilingWasSent() async throws {
+        let seeded = try seedInterruptedFiling()
+        github.lookupResult = .unknown
+        let relaunched = relaunch()
+        await relaunched.reconcileInterruptedFilings().value
+        await relaunched.move(seeded.id, toProjectKey: "remote:website")?.value
+        XCTAssertNil(relaunched.items.first?.repository)
+
+        await relaunched.checkInterruptedFilingAgain(seeded.id)?.value
+
+        XCTAssertEqual(github.lookups.withLock { $0.map(\.[0]) }, ["o/reach", "o/reach"])
     }
 
     /// An interrupted Comment on #N is looked for among that issue's
@@ -339,6 +360,9 @@ final class QuickCaptureInboxTests: XCTestCase {
             lookup("https://github.com/o/reach/issues/7#issuecomment-5\n", issue: 7),
             .found(url: "https://github.com/o/reach/issues/7#issuecomment-5"))
         XCTAssertEqual(lookup("https://github.com/o/reach/issues/8#issuecomment-5\n", issue: 7), .unknown)
+        XCTAssertEqual(
+            lookup("https://github.com/O/Reach/issues/7#issuecomment-5\n", issue: 7),
+            .found(url: "https://github.com/O/Reach/issues/7#issuecomment-5"), "GitHub's spelling of the name")
     }
 
     /// "File it" files the draft the overlay showed (#927), also when

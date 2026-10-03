@@ -51,8 +51,8 @@ package struct QuickCaptureCodeCheck: Codable, Equatable, Sendable {
 /// - `commentedOn` (#965): the issue a comment was posted on instead of
 ///   filing; `filedURL` is then the comment's URL.
 /// - `filingClaim` (#1288): the running copy whose File or Comment set
-///   `state` to filing; its `launch` since #1507, its `at` and `commentOn`
-///   since #1509.
+///   `state` to filing; its `launch` since #1507, its `at`, `commentOn`
+///   and `repository` since #1509.
 /// - `unconfirmedFiling` (#1509): a filing a quit interrupted that GitHub
 ///   could not confirm or rule out; File and Comment wait for the user.
 /// - `runOwner` (#1507): the running copy whose run set it routing,
@@ -158,18 +158,25 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
         package let at: Date?
         /// The issue Comment on #N posted to; nil for File.
         package let commentOn: Int?
+        /// Where it was sent, which a move may change on the capture since.
+        package let repository: String?
 
-        package init(id: UUID = UUID(), processID: Int32, launch: UUID? = nil, at: Date? = nil, commentOn: Int? = nil) {
+        package init(
+            id: UUID = UUID(), processID: Int32, launch: UUID? = nil, at: Date? = nil, commentOn: Int? = nil,
+            repository: String? = nil
+        ) {
             self.id = id
             self.processID = processID
             self.launch = launch
             self.at = at
             self.commentOn = commentOn
+            self.repository = repository
         }
 
         /// The same claim, now `copy`'s to finish.
         package func owned(by copy: QuickCaptureRunningCopy) -> FilingClaim {
-            FilingClaim(id: id, processID: copy.processID, launch: copy.launch, at: at, commentOn: commentOn)
+            FilingClaim(
+                id: id, processID: copy.processID, launch: copy.launch, at: at, commentOn: commentOn, repository: repository)
         }
 
         package var copy: QuickCaptureRunningCopy {

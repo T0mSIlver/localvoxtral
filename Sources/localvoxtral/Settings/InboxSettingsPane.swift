@@ -189,7 +189,12 @@ private struct InboxCaptureRow: View {
                     Button("Check GitHub Again") { _ = model.checkInterruptedFilingAgain(item.id) }
                         .accessibilityIdentifier("inbox.row.checkFiling")
                 }
-                Button(unconfirmed.commentOn == nil ? "File Anyway" : "Comment Anyway") {
+                // A claim from before #1509 does not say whether it filed
+                // or commented: File and Comment come back instead.
+                Button(
+                    unconfirmed.at == nil
+                        ? "Allow Sending Again" : unconfirmed.commentOn == nil ? "File Anyway" : "Comment Anyway"
+                ) {
                     _ = model.sendInterruptedFilingAgain(item.id)
                 }
                 .accessibilityIdentifier("inbox.row.sendAnyway")

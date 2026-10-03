@@ -158,7 +158,8 @@ package final class QuickCaptureInboxModel {
         let owner = self.owner
         for item in inbox.items where item.state == .filing {
             guard let claim = item.filingClaim, claim.copy == owner, let at = claim.at,
-                  !sending.contains(claim.id), lookups[claim.id] == nil, let repository = item.repository
+                  !sending.contains(claim.id), lookups[claim.id] == nil,
+                  let repository = claim.repository ?? item.repository
             else { continue }
             lookups[claim.id] = Task { @MainActor [weak self] in
                 await self?.reconcile(item.id, claim: claim, at: at, repository: repository)
@@ -228,7 +229,9 @@ package final class QuickCaptureInboxModel {
     }
 
     /// Send Anyway: the user checked GitHub and found nothing, so File or
-    /// Comment on #N, as the interrupted filing was, sends again.
+    /// Comment on #N, as the interrupted filing was, sends again. A claim
+    /// from before #1509 does not say which it was: File and Comment come
+    /// back, and the user picks.
     @discardableResult
     package func sendInterruptedFilingAgain(_ id: UUID) -> Task<Void, Never>? {
         guard let claim = inbox.items.first(where: { $0.id == id })?.unconfirmedFiling else { return nil }
@@ -240,6 +243,7 @@ package final class QuickCaptureInboxModel {
             }
         }
         Log.backends.notice("Quick capture: the user sends an unconfirmed filing again")
+        guard claim.at != nil else { return nil }
         return claim.commentOn == nil ? file(id) : comment(id)
     }
 
@@ -874,17 +878,23 @@ package final class QuickCaptureInboxModel {
     private func claim(
         _ id: UUID, when eligible: @escaping (QuickCaptureItem) -> Bool, commentOn: Int?
     ) -> (QuickCaptureItem, QuickCaptureItem.FilingClaim)? {
-        let token = QuickCaptureItem.FilingClaim(processID: processID, launch: launch, at: now(), commentOn: commentOn)
+        let moment = now()
+        let claimID = UUID()
         var claimed: QuickCaptureItem?
-        let failure = mutate { inbox in
+        var token: QuickCaptureItem.FilingClaim?
+        let failure = mutate { [processID, launch] inbox in
             inbox.update(id) { item in
                 guard eligible(item) else { return }
                 claimed = item
+                // The repository it sends to, as the file has it now.
+                token = QuickCaptureItem.FilingClaim(
+                    id: claimID, processID: processID, launch: launch, at: moment, commentOn: commentOn,
+                    repository: item.repository)
                 item.state = .filing
                 item.filingClaim = token
             }
         }
-        guard let claimed else {
+        guard let claimed, let token else {
             Log.backends.notice("Quick capture: not sent, another running copy filed or changed it")
             return nil
         }
@@ -894,7 +904,7 @@ package final class QuickCaptureInboxModel {
             // copy's write, it leaves that copy's filing alone.
             mutate { inbox in
                 inbox.update(id) {
-                    guard $0.state == .filing, $0.filingClaim == token else { return }
+                    guard $0.state == .filing, $0.filingClaim?.id == claimID else { return }
                     $0.state = .ready
                     $0.note = "Not sent: the Inbox could not be saved."
                 }
