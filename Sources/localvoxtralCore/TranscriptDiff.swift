@@ -3,14 +3,14 @@ import Foundation
 /// Which words polishing took out of a transcript and which it put in, as
 /// ranges into the two original strings, so each can be drawn as it was
 /// written (line breaks included) with only the changed words marked.
-enum TranscriptDiff {
-    struct Result: Equatable, Sendable {
+package enum TranscriptDiff {
+    package struct Result: Equatable, Sendable {
         /// Words of `before` that `after` does not keep.
-        var removed: [Range<String.Index>] = []
+        package var removed: [Range<String.Index>] = []
         /// Words of `after` that `before` did not have.
-        var added: [Range<String.Index>] = []
+        package var added: [Range<String.Index>] = []
 
-        var isEmpty: Bool { removed.isEmpty && added.isEmpty }
+        package var isEmpty: Bool { removed.isEmpty && added.isEmpty }
     }
 
     /// Past this many differing words on either side the comparison stops
@@ -20,18 +20,18 @@ enum TranscriptDiff {
 
     /// One stretch where the texts part ways: the words `before` had there
     /// and the words `after` has instead. Either side may be empty.
-    struct Hunk: Equatable, Sendable {
-        var removed: [Range<String.Index>]
-        var added: [Range<String.Index>]
+    package struct Hunk: Equatable, Sendable {
+        package var removed: [Range<String.Index>]
+        package var added: [Range<String.Index>]
     }
 
-    static func words(from before: String, to after: String) -> Result {
+    package static func words(from before: String, to after: String) -> Result {
         let hunks = hunks(from: before, to: after)
         return Result(removed: hunks.flatMap(\.removed), added: hunks.flatMap(\.added))
     }
 
     /// In reading order. Two hunks always have a kept word between them.
-    static func hunks(from before: String, to after: String) -> [Hunk] {
+    package static func hunks(from before: String, to after: String) -> [Hunk] {
         let beforeWords = wordRanges(in: before)
         let afterWords = wordRanges(in: after)
 
@@ -78,7 +78,7 @@ enum TranscriptDiff {
     }
 
     /// Runs of non-whitespace, in order.
-    static func wordRanges(in text: String) -> [Range<String.Index>] {
+    package static func wordRanges(in text: String) -> [Range<String.Index>] {
         var ranges: [Range<String.Index>] = []
         var wordStart: String.Index?
         for index in text.indices {
