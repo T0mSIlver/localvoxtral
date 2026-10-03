@@ -1185,6 +1185,63 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.map(\.rawText), ["run the tests."])
     }
 
+    /// The joined session's band follows the dictation: listening with the
+    /// words so far, then finishing, then done, which clears it (#1411).
+    func testTheJoinedSessionsBandFollowsTheDictationAndClearsAtTheEnd() async throws {
+        let (pipeline, _, recorder) = try await modChannelPipeline(answers: [.fill])
+        let shown = BoundedWait()
+        pipeline.overlay.onRefresh = { call in
+            if call.displayText == Self.phrase { shown.resolve() }
+        }
+
+        await startAndSpeak(pipeline)
+        sendPartials(pipeline)
+        let shownWhileDictating = await shown.value(failAfter: 10)
+        XCTAssertTrue(shownWhileDictating)
+        await stopAndFinalize(pipeline)
+
+        let states = recorder.states
+        let phases = states.map(\.phase)
+        XCTAssertEqual(phases.first, .listening, "phases: \(phases)")
+        XCTAssertEqual(phases.last, .done)
+        XCTAssertTrue(phases.contains(.finishing), "phases: \(phases)")
+        XCTAssertTrue(
+            states.contains { $0.phase == .listening && $0.text == Self.phrase },
+            "the band showed the words: \(states.map(\.text))"
+        )
+        XCTAssertNil(states.last?.text, "done carries no words")
+        XCTAssertEqual(phases.filter { $0 == .done }.count, 1)
+    }
+
+    /// The band says the same thing for longer than the mod keeps a band it
+    /// has not heard about (30 s): the user paused, or a polish runs long.
+    /// The app sends it again in time, so the band goes only when the app
+    /// does.
+    func testAnUnchangedBandIsSentAgainBeforeTheModWouldClearIt() async throws {
+        let (pipeline, _, recorder) = try await modChannelPipeline(answers: [.fill])
+        let shown = BoundedWait()
+        pipeline.overlay.onRefresh = { call in
+            if call.displayText == Self.phrase { shown.resolve() }
+        }
+
+        await startAndSpeak(pipeline)
+        sendPartials(pipeline)
+        let shownWhileDictating = await shown.value(failAfter: 10)
+        XCTAssertTrue(shownWhileDictating)
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
+        let resent = BoundedWait()
+        recorder.onState = { resent.resolve() }
+        pipeline.clock.advance(by: 10)
+        let repeated = await resent.value(failAfter: 10)
+        recorder.onState = nil
+
+        XCTAssertTrue(repeated, "the unchanged band was sent again")
+        XCTAssertEqual(recorder.states.last?.phase, .listening)
+        XCTAssertEqual(recorder.states.last?.text, Self.phrase)
+        await stopAndFinalize(pipeline)
+        XCTAssertEqual(recorder.states.last?.phase, .done)
+    }
+
     /// The mod could not fill (a dialog held the keys): the words go in by
     /// keyboard, once.
     func testAFillTheModRefusesIsTypedInstead() async throws {
@@ -1280,7 +1337,12 @@ final class DictationPipelineTests: XCTestCase {
             write: { line in
                 guard let message = ClaudeModChannelWire.decode(
                     ClaudeModChannelWire.Message.self, from: line.dropLast()
-                ), message.kind == .fill else { return false }
+                ) else { return false }
+                if message.kind == .state {
+                    fills.appendState(message.phase, message.text)
+                    return true
+                }
+                guard message.kind == .fill else { return false }
                 let answer = answers[min(fills.texts.count, answers.count - 1)]
                 fills.append(message.text ?? "")
                 beforeAnswer()
@@ -3784,13 +3846,30 @@ private final class FocusedPane: @unchecked Sendable {
     }
 }
 
-/// The texts a fake mod was asked to fill, from any thread.
+/// The texts a fake mod was asked to fill, and the band states it was
+/// sent, from any thread.
 private final class FillRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var recorded: [String] = []
+    private var recordedStates: [(phase: ClaudeModChannelWire.Phase?, text: String?)] = []
 
     func append(_ text: String) { lock.withLock { recorded.append(text) } }
     var texts: [String] { lock.withLock { recorded } }
+
+    private var stateObserver: (@Sendable () -> Void)?
+
+    /// Runs after each band state arrives.
+    var onState: (@Sendable () -> Void)? {
+        get { lock.withLock { stateObserver } }
+        set { lock.withLock { stateObserver = newValue } }
+    }
+
+    func appendState(_ phase: ClaudeModChannelWire.Phase?, _ text: String?) {
+        lock.withLock { recordedStates.append((phase, text)) }
+        onState?()
+    }
+
+    var states: [(phase: ClaudeModChannelWire.Phase?, text: String?)] { lock.withLock { recordedStates } }
 }
 
 /// What the insertion hooks would have typed, in order.

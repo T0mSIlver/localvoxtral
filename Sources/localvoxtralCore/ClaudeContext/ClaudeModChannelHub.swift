@@ -149,6 +149,20 @@ public final class ClaudeModChannelHub: Sendable {
         }
     }
 
+    /// Writes `message` to the mod of `sessionID` and waits for nothing:
+    /// for messages the mod does not answer, such as `state`.
+    ///
+    /// - Returns: whether the line was written.
+    @discardableResult
+    public func post(_ message: ClaudeModChannelWire.Message, to sessionID: String) -> Bool {
+        var message = message
+        message.id = makeID()
+        guard let line = ClaudeModChannelWire.encodeLine(message),
+              let channel = state.withLock({ $0.channels[sessionID]?.channel })
+        else { return false }
+        return channel.write(line)
+    }
+
     // MARK: Broker side
 
     /// Takes `channel` for `sessionID`.
