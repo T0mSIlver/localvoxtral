@@ -223,6 +223,23 @@ final class QuickCaptureFollowUpTests: XCTestCase {
         XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.map(\.id), [followUp, id])
     }
 
+    /// The capture Split takes out routes for this copy (#1507): a copy
+    /// launched meanwhile leaves it routing.
+    func testASplitCaptureStillRoutingIsNotEndedByARelaunch() async throws {
+        let classifier = ScriptedQuickCaptureClassifier([["reach": 0.95], ["inbox": 0.9]])
+        let model = model(classifier: classifier, runner: FakeQuickCaptureDraftRunner())
+        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        let followUp = UUID()
+        await model.capture(text: "Also a new logo", historyRecordID: nil, id: followUp).value
+
+        let routing = model.split(followUp, from: id)
+        let relaunched = self.model(classifier: classifier, runner: FakeQuickCaptureDraftRunner())
+        await routing?.value
+
+        XCTAssertEqual(relaunched.items.first { $0.id == followUp }?.state, .routing)
+    }
+
     /// Split after "File issues here" changed: the draft it gives back
     /// links no issue of the repository the capture no longer files in.
     func testSplitAfterAFilingChangeGivesBackNoIssueOfTheOldRepository() async throws {

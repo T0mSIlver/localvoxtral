@@ -399,7 +399,12 @@ package final class QuickCaptureInboxModel {
         guard let item = inbox.items.first(where: { $0.id == id }), item.state == .ready || item.state == .drafting
         else { return nil }
         var result: (capture: QuickCaptureItem, restored: Bool)?
-        mutate { result = $0.split(followUpID, from: id) }
+        // The capture split out routes now, a run this copy owns (#1507).
+        let owner = self.owner
+        mutate { inbox in
+            result = inbox.split(followUpID, from: id)
+            if let capture = result?.capture { inbox.update(capture.id) { $0.runOwner = owner } }
+        }
         guard let result else { return nil }
         // A draft running now holds the split words.
         draftRuns[id] = nil
