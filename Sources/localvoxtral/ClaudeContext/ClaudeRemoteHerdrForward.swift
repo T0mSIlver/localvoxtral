@@ -643,6 +643,7 @@ struct ClaudeRemoteHerdrForwardSpawner: ClaudeRemoteHerdrForwardSpawning {
     /// Test seams, passed straight through. See `LiveHerdrForwardProcess`.
     var reapEffortDidFinish: @Sendable () -> Void = {}
     var willAttemptTeardownLock: @Sendable () -> Void = {}
+    var exitEventQueue: DispatchQueue = .global(qos: .utility)
 
     func spawn(argv: [String]) throws -> any ClaudeRemoteHerdrForwardProcess {
         guard !argv.isEmpty else { throw SpawnError.emptyArgv }
@@ -705,7 +706,8 @@ struct ClaudeRemoteHerdrForwardSpawner: ClaudeRemoteHerdrForwardSpawning {
             reapPollAttempts: reapPollAttempts,
             reapPollInterval: reapPollInterval,
             reapEffortDidFinish: reapEffortDidFinish,
-            willAttemptTeardownLock: willAttemptTeardownLock
+            willAttemptTeardownLock: willAttemptTeardownLock,
+            exitEventQueue: exitEventQueue
         )
     }
 
@@ -779,7 +781,10 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
         reapPollAttempts: Int = LiveHerdrForwardProcess.defaultReapPollAttempts,
         reapPollInterval: TimeInterval = LiveHerdrForwardProcess.defaultReapPollInterval,
         reapEffortDidFinish: @escaping @Sendable () -> Void = {},
-        willAttemptTeardownLock: @escaping @Sendable () -> Void = {}
+        willAttemptTeardownLock: @escaping @Sendable () -> Void = {},
+        /// Where the exit event is delivered. Injected so a test can hold the
+        /// event back and reap first.
+        exitEventQueue: DispatchQueue = .global(qos: .utility)
     ) {
         let (stderrLines, stderrContinuation) = AsyncStream<String>.makeStream(of: String.self)
         self.standardErrorLines = stderrLines
@@ -794,7 +799,7 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
             label: "com.localvoxtral.claude.herdr-forward-reap.\(pid)", qos: .utility
         )
         let source = DispatchSource.makeProcessSource(
-            identifier: pid, eventMask: .exit, queue: .global(qos: .utility)
+            identifier: pid, eventMask: .exit, queue: exitEventQueue
         )
         self.source = source
         source.setEventHandler { [weak self] in self?.noteExit() }
@@ -987,6 +992,10 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
 
         switch outcome {
         case .reaped:
+            // The cancel drops an exit event still queued, and the event is
+            // what completes the waiters: a reap that wins that race records
+            // the exit itself.
+            noteExit()
             source.cancel()
             return .reaped
         case .pending:
@@ -1062,13 +1071,14 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
     private func noteExit() {
         let unavailable = ClaudeRemoteForwardExitStatus.unavailable
         let waiters = state.withLock {
-            current -> [CheckedContinuation<ClaudeRemoteForwardExitStatus, Never>] in
-            guard current.exitStatus == nil else { return [] }
+            current -> [CheckedContinuation<ClaudeRemoteForwardExitStatus, Never>]? in
+            guard current.exitStatus == nil else { return nil }
             current.leaderExited = true
             current.exitStatus = unavailable
             defer { current.exitWaiters = [] }
             return current.exitWaiters
         }
+        guard let waiters else { return }
         stderrContinuation.finish()
         for waiter in waiters { waiter.resume(returning: unavailable) }
         exited.signal()

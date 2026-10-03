@@ -821,6 +821,9 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         exit "${FAKE_CURL_EXIT:-0}"
         """
 
+    /// The epoch seconds the `date` stub prints.
+    private static let fixedEpoch = 2_000_000_000
+
     /// The `date` that pins the renderer's clock, in a directory of its own
     /// under the stub root. Byte-identical on every call, so it is written once
     /// for the class, for the reason `stubCurlDirectory()` gives: each of the
@@ -832,7 +835,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         let stub = directory.appendingPathComponent("date")
         guard !FileManager.default.fileExists(atPath: stub.path) else { return directory }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try "#!/bin/sh\nprintf '%s\\n' 2000000000\n".write(to: stub, atomically: true, encoding: .utf8)
+        try "#!/bin/sh\nprintf '%s\\n' \(Self.fixedEpoch)\n".write(to: stub, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
         return directory
     }
@@ -2006,10 +2009,14 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("shim-backoff-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // The shim reads the time from `date`: the stub pins it, so the stamp a
+        // test writes cannot expire while a loaded runner is between two hooks.
+        let systemPath = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
+        let path = [try fixedDateDirectory().path, try stubCurlDirectory().path, systemPath]
         return (
             dir,
             dir.appendingPathComponent("localvoxtral/hook-backoff"),
-            ["XDG_RUNTIME_DIR": dir.path]
+            ["XDG_RUNTIME_DIR": dir.path, "PATH": path.joined(separator: ":")]
         )
     }
 
@@ -2021,7 +2028,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     }
 
     private func freshEpochStamp(secondsAgo: Int = 0) -> String {
-        "\(Int(Date().timeIntervalSince1970) - secondsAgo)\n"
+        "\(Self.fixedEpoch - secondsAgo)\n"
     }
 
     func testTransportFailureArmsTheBackoffAndLaterEventsSkipTheDialEntirely() throws {

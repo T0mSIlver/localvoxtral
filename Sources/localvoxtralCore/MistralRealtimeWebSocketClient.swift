@@ -529,7 +529,13 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
     // MARK: - Post-Connect
 
     override func didOpenConnection(on webSocketTask: URLSessionWebSocketTask) {
-        startPingTimer()
+        state.withLock { s in
+            // A disconnect between the open and this call has already stopped
+            // the timers; arming them now would leave a ping loop running on a
+            // closed client.
+            guard s.base.webSocketTask === webSocketTask, s.base.socketState == .connected else { return }
+            startPingTimerLocked(&s)
+        }
     }
 
     // MARK: - Send Helpers
@@ -712,10 +718,6 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
     }
 
     // MARK: - Timers
-
-    private func startPingTimer() {
-        state.withLock { startPingTimerLocked(&$0) }
-    }
 
     private func startPingTimerLocked(_ s: inout State) {
         stopPingTimerLocked(&s)
