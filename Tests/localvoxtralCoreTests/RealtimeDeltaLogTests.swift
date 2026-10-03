@@ -1,5 +1,5 @@
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// The raw-delta log's own rules: nothing at all while the toggle is off, one
 /// record per event while it is on, and a sequence that restarts with each
