@@ -451,9 +451,10 @@ extension DictationSessionController {
         let saveNotInserted = saveInterruptedPolishCommit
         saveInterruptedPolishCommit = nil
         saveNotInserted?()
+        let text = transcript.currentDictationEventText
         overlayBufferCoordinator.reset()
         completeStoppedSessionCleanup(sessionMode: sessionMode, overlayCommitOutcome: nil, shouldCommitOverlay: true)
-        statusText = DestinationStatus.paneLeftFront
+        statusText = keepUntypedText(text, status: DestinationStatus.paneLeftFront)
         return false
     }
 
@@ -490,9 +491,10 @@ extension DictationSessionController {
             audio: fields.audio,
             joined: nil
         )
+        let text = transcript.currentDictationEventText
         overlayBufferCoordinator.reset()
         completeStoppedSessionCleanup(sessionMode: sessionMode, overlayCommitOutcome: nil, shouldCommitOverlay: true)
-        statusText = status
+        statusText = keepUntypedText(text, status: status)
     }
 
     /// The needs-you queue in answer order, empty while the cue is off.
