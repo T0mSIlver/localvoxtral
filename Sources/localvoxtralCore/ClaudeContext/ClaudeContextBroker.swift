@@ -85,6 +85,9 @@ public final class ClaudeContextBroker: Sendable {
     /// Answers the `localvoxtral` command's requests (#721). Nil answers every
     /// request with an error.
     private let agentCLI: (@Sendable (AgentCLIRequest) async -> AgentCLIResponse)?
+    /// Holds the channels sessions' mods attach (#1408). Nil refuses every
+    /// attach and drops every reply.
+    private let modChannels: ClaudeModChannelHub?
 
     #if DEBUG
     /// Test seam: fires after each record is accepted or rejected, so a socket
@@ -123,13 +126,15 @@ public final class ClaudeContextBroker: Sendable {
         registry: ClaudeSessionRegistry,
         limits: ClaudeBrokerLimits = .default,
         uptimeNanos: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
-        agentCLI: (@Sendable (AgentCLIRequest) async -> AgentCLIResponse)? = nil
+        agentCLI: (@Sendable (AgentCLIRequest) async -> AgentCLIResponse)? = nil,
+        modChannels: ClaudeModChannelHub? = nil
     ) {
         self.socketPath = socketPath
         self.registry = registry
         self.limits = limits
         self.uptimeNanos = uptimeNanos
         self.agentCLI = agentCLI
+        self.modChannels = modChannels
     }
 
     public enum StartFailure: Error, Equatable {
@@ -301,6 +306,7 @@ public final class ClaudeContextBroker: Sendable {
             return (wakeFD, exitSignal)
         }
         guard wakeFD >= 0 else { return }
+        modChannels?.closeAll()
         var byte: UInt8 = 1
         _ = retryingOnEINTRInt { write(wakeFD, &byte, 1) }
         close(wakeFD)
@@ -473,8 +479,10 @@ public final class ClaudeContextBroker: Sendable {
                     close(fd)
                     return
                 }
-                self.serve(connectionFD: fd)
-                self.state.withLock { $0.activeConnections -= 1 }
+                // A held mod channel gives its slot back when it attaches.
+                if !self.serve(connectionFD: fd) {
+                    self.state.withLock { $0.activeConnections -= 1 }
+                }
             }
             thread.name = "com.localvoxtral.claude-broker.conn"
             thread.stackSize = 512 * 1024
@@ -482,7 +490,10 @@ public final class ClaudeContextBroker: Sendable {
         }
     }
 
-    private func serve(connectionFD fd: Int32) {
+    /// - Returns: whether the connection already gave its slot back, which a
+    ///   mod channel does once it attaches.
+    @discardableResult
+    private func serve(connectionFD fd: Int32) -> Bool {
         defer { close(fd) }
         #if DEBUG
         debugServeHook.withLock { $0 }?()
@@ -493,17 +504,17 @@ public final class ClaudeContextBroker: Sendable {
         // once the peer has closed (#791). Nobody is left to answer then.
         guard POSIXSocket.suppressSIGPIPE(onSocket: fd) else {
             Log.claudeContext.error("Dropping Claude broker connection: the peer left before it was served")
-            return
+            return false
         }
 
         // Authenticate BEFORE reading a single byte.
         guard let peerUID = ClaudeSocketGuard.peerUID(ofDescriptor: fd) else {
             Log.claudeContext.error("Rejected connection: peer credentials unavailable")
-            return
+            return false
         }
         guard peerUID == UInt32(geteuid()) else {
             Log.claudeContext.error("Rejected connection from foreign uid \(peerUID, privacy: .public)")
-            return
+            return false
         }
         let origin = ClaudeTransportOrigin.localAuthenticated(peerUID: peerUID)
         // Kernel-verified peer pid, read once per connection. Used only for
@@ -532,25 +543,121 @@ public final class ClaudeContextBroker: Sendable {
             pending = remainder
             if pending.count > limits.wire.maxLineBytes {
                 Log.claudeContext.error("Dropping connection: unterminated line over cap")
-                return
+                return false
             }
 
             for line in lines where !line.isEmpty {
+                // A mod's channel holds the connection until it ends, and is
+                // the connection's only line.
+                if ClaudeModChannelWire.isAttach(line) {
+                    return holdModChannel(line: line, fd: fd)
+                }
                 // A command request is answered and ends the connection. It
                 // never reaches the registry: a hook record has no `cli` key.
                 if AgentCLIWire.isRequest(line) {
                     answerAgentCLI(line: line, fd: fd)
-                    return
+                    return false
                 }
                 recordCount += 1
                 if recordCount > limits.maxRecordsPerConnection {
                     Log.claudeContext.error("Dropping connection: too many records")
-                    return
+                    return false
+                }
+                if ClaudeModChannelWire.isReply(line) {
+                    deliverModReply(line)
+                    continue
                 }
                 let handled = handle(line: line, origin: origin, peerPID: peerPID)
                 reply(to: fd, accepted: handled.accepted, version: handled.replyVersion)
             }
         }
+        return false
+    }
+
+    // MARK: - Mod channels
+
+    /// Attaches the connection as `line`'s session's mod channel and holds
+    /// it until either end closes it. Only a session the registry already
+    /// has from a local hook may attach: the channel carries what the person
+    /// dictates, so it goes nowhere a hook did not first name.
+    ///
+    /// - Returns: whether the slot was given back (true once attached).
+    private func holdModChannel(line: Data, fd: Int32) -> Bool {
+        guard let modChannels,
+              let attach = ClaudeModChannelWire.decode(ClaudeModChannelWire.Attach.self, from: line)
+        else {
+            Log.claudeContext.error("Mod channel: refused an unreadable attach")
+            answerAttach(fd: fd, accepted: false)
+            return false
+        }
+        guard let snapshot = registry.snapshot(sessionID: attach.sessionID),
+              snapshot.origin.isLocalAuthenticated
+        else {
+            Log.claudeContext.info("Mod channel: refused an attach for a session no local hook has named")
+            answerAttach(fd: fd, accepted: false)
+            return false
+        }
+
+        // Writes come from the hub's callers. One at a time, so two lines
+        // never interleave, and bounded, so a mod that stops reading cannot
+        // hold a sender.
+        var sendTimeout = timeval(tv_sec: 2, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size))
+        let descriptor = HeldDescriptor(fd)
+        let channel = ClaudeModChannelHub.Channel(
+            write: { [weak self] data in
+                guard let self else { return false }
+                return descriptor.use { self.writeAll(fd: $0, data: data) == data.count } ?? false
+            },
+            close: { _ = descriptor.use { shutdown($0, Int32(SHUT_RDWR)) } }
+        )
+        // The answer must be the connection's first line: a send that starts
+        // the moment the hub has the channel waits for it on the lock.
+        let token: UInt64? = descriptor.use { fd in
+            // Admitted under the broker's lock, which `stop` takes to clear
+            // `isRunning` before it closes every channel: a channel registers
+            // before that sweep or not at all.
+            let token = state.withLock { state -> UInt64? in
+                guard state.isRunning else { return nil }
+                return modChannels.attach(sessionID: attach.sessionID, channel: channel)
+            }
+            guard let token else {
+                return nil
+            }
+            answerAttach(fd: fd, accepted: true)
+            return token
+        } ?? nil
+        guard let token else {
+            answerAttach(fd: fd, accepted: false)
+            return false
+        }
+        state.withLock { $0.activeConnections -= 1 }
+
+        // The publisher sends nothing after its attach, so any readable
+        // event is the end: EOF, an error, a shutdown, or a peer that broke
+        // the protocol.
+        var pollDescriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+        while retryingOnEINTRInt32({ poll(&pollDescriptor, 1, -1) }) == 0 {}
+        // Before `serve` closes the number: a send still holding the channel
+        // must not write to whatever connection gets it next.
+        descriptor.retire()
+        modChannels.detach(sessionID: attach.sessionID, token: token)
+        return true
+    }
+
+    private func answerAttach(fd: Int32, accepted: Bool) {
+        guard let line = ClaudeModChannelWire.encodeLine(ClaudeModChannelWire.AttachReply(accepted: accepted)) else {
+            return
+        }
+        _ = writeAll(fd: fd, data: line)
+    }
+
+    private func deliverModReply(_ line: Data) {
+        guard let reply = ClaudeModChannelWire.decode(ClaudeModChannelWire.Reply.self, from: line) else {
+            Log.claudeContext.error("Mod channel: dropped an unreadable reply")
+            return
+        }
+        modChannels?.deliver(reply)
     }
 
     /// Append one chunk under a whole-connection monotonic deadline. A
@@ -794,6 +901,25 @@ public final class ClaudeContextBroker: Sendable {
             #endif
             return (false, ClaudeHookWire.version)
         }
+    }
+}
+
+/// A held mod channel's descriptor, as the hub's callers reach it: one use
+/// at a time, and none once the connection's thread retires it, so a late
+/// send never touches a number the kernel gave to another connection.
+private final class HeldDescriptor: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fd: Int32?
+
+    init(_ fd: Int32) { self.fd = fd }
+
+    /// Runs `body` on the descriptor, or answers nil once it is retired.
+    func use<Value>(_ body: (Int32) -> Value) -> Value? {
+        lock.withLock { fd.map(body) }
+    }
+
+    func retire() {
+        lock.withLock { fd = nil }
     }
 }
 

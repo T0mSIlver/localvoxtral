@@ -74,6 +74,23 @@ public struct UnixSocketPublisher: Sendable {
         }
     }
 
+    /// Connects, writes `line`, and hands the open descriptor to the caller,
+    /// who reads the broker's answers and closes it. The descriptor is
+    /// non-blocking: read it through `poll`.
+    public func openStream(sending line: Data, to socketPath: String) -> Result<Int32, ClaudeHookPublishFailure> {
+        guard !socketPath.isEmpty else { return .failure(.noSocketPath) }
+        switch openConnection(to: socketPath) {
+        case .failure(let failure):
+            return .failure(failure)
+        case .success(let fd):
+            if let failure = writeAll(fd: fd, data: line) {
+                close(fd)
+                return .failure(failure)
+            }
+            return .success(fd)
+        }
+    }
+
     public func publish(line: Data, to socketPath: String) -> ClaudeHookPublishFailure? {
         switch publishAndReadReply(line: line, to: socketPath) {
         case .failure(let failure): return failure
