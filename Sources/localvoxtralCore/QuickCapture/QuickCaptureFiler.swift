@@ -102,6 +102,57 @@ package enum QuickCaptureFiling {
         return GitHubRepositoryFacts(description: description, topics: Array(topics.prefix(20)), parent: parent)
     }
 
+    /// What File and Comment append to what they send (#1509): invisible
+    /// on GitHub, and what a relaunch looks for when the copy that sent it
+    /// quit before it saved the result.
+    package static func marker(claim: UUID) -> String {
+        "<!-- localvoxtral-capture \(claim.uuidString.lowercased()) -->"
+    }
+
+    /// How long after its claim a filing can still reach GitHub: `gh`'s
+    /// 60 s timeout, with room for a `gh` the quit left running.
+    package static let settleSeconds: TimeInterval = 180
+
+    /// The issues of `repository`, or the comments on `issue`, changed since
+    /// `since`, as the URLs of those whose body holds `marker`. Lists, not
+    /// search: an issue is listed as soon as it is created. `since` is an
+    /// hour early, for a clock that runs ahead of GitHub's.
+    package static func findArguments(repository: String, issue: Int?, marker: String, since: Date) -> [String] {
+        let formatter = ISO8601DateFormatter()
+        let from = formatter.string(from: since.addingTimeInterval(-3600))
+        let path = issue.map { "repos/\(repository)/issues/\($0)/comments" } ?? "repos/\(repository)/issues"
+        let query = issue == nil ? "state=all&since=\(from)&per_page=100" : "since=\(from)&per_page=100"
+        return [
+            "api", "--paginate", "\(path)?\(query)",
+            "--jq", ".[] | select((.body // \"\") | contains(\"\(marker)\")) | .html_url",
+        ]
+    }
+
+    /// Whether GitHub has what an interrupted File or Comment sent (#1509).
+    package enum Lookup: Equatable, Sendable {
+        case found(url: String)
+        case notFound
+        /// gh failed or answered something else: nobody can tell.
+        case unknown
+    }
+
+    /// The lookup `findArguments` answered, from its output: one URL of the
+    /// expected shape, or none.
+    package static func lookup(inOutput data: Data, repository: String, issue: Int?) -> Lookup {
+        let urls = String(decoding: data, as: UTF8.self)
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard let url = urls.first else { return .notFound }
+        let expected: Bool
+        if let issue {
+            expected = url.hasPrefix("https://github.com/\(repository)/issues/\(issue)#issuecomment-")
+        } else {
+            expected = QuickCaptureInbox.issueRepository(url)?.caseInsensitiveCompare(repository) == .orderedSame
+        }
+        return urls.count == 1 && expected ? .found(url: url) : .unknown
+    }
+
     package enum Failure: Error, Equatable, Sendable {
         case ghNotFound
         case failed(exitCode: Int32)
@@ -132,9 +183,17 @@ package protocol QuickCaptureGitHub: Sendable {
     func createIssue(repository: String, title: String, body: String) async -> Result<String, QuickCaptureFiling.Failure>
     /// Posts `body` on issue `issue`; the comment's URL.
     func commentOnIssue(repository: String, issue: Int, body: String) async -> Result<String, QuickCaptureFiling.Failure>
+    /// The issue, or comment on `issue`, that an interrupted File or
+    /// Comment sent with `marker` (#1509).
+    func findFiled(repository: String, issue: Int?, marker: String, since: Date) async -> QuickCaptureFiling.Lookup
 }
 
 extension QuickCaptureGitHub {
+    /// Nobody can tell, for a client that asks GitHub nothing.
+    package func findFiled(repository: String, issue: Int?, marker: String, since: Date) async -> QuickCaptureFiling.Lookup {
+        .unknown
+    }
+
     /// No list, for a client that asks GitHub for none.
     package func listRepositories() async -> [GitHubListedRepository]? { nil }
 
@@ -245,5 +304,20 @@ package struct QuickCaptureGHClient: QuickCaptureGitHub {
         }
         Log.backends.info("Quick capture: commented \(url, privacy: .public)")
         return .success(url)
+    }
+
+    package func findFiled(repository: String, issue: Int?, marker: String, since: Date) async -> QuickCaptureFiling.Lookup {
+        guard QuickCaptureInbox.isRepository(repository), let gh else { return .unknown }
+        guard let output = await BoundedProcess.run(
+            executableURL: gh,
+            arguments: QuickCaptureFiling.findArguments(repository: repository, issue: issue, marker: marker, since: since),
+            environment: environment, timeoutSeconds: 60, maxBytes: 65_536, label: "quick capture gh api find filed"
+        ), output.exitCode == 0, !output.timedOut, !output.capped else {
+            Log.backends.error("Quick capture: could not list \(repository, privacy: .public) to find an interrupted filing")
+            return .unknown
+        }
+        let lookup = QuickCaptureFiling.lookup(inOutput: output.data, repository: repository, issue: issue)
+        Log.backends.notice("Quick capture: looked for an interrupted filing in \(repository, privacy: .public): \(String(describing: lookup), privacy: .public)")
+        return lookup
     }
 }

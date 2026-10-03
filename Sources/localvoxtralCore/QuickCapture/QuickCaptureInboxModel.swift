@@ -46,6 +46,12 @@ package final class QuickCaptureInboxModel {
     private let launch = UUID()
     private let isProcessRunning: (Int32) -> Bool
     private let write: (Data, URL) throws -> Void
+    /// Waits out the time an interrupted filing may still reach GitHub.
+    private let sleep: @Sendable (TimeInterval) async -> Void
+    /// The filings this copy's File or Comment is sending now, by claim.
+    private var sending: Set<UUID> = []
+    /// The interrupted filings this copy is looking up, by claim (#1509).
+    private var lookups: [UUID: Task<Void, Never>] = [:]
     /// The latest draft run per capture: an older run's answer is dropped.
     private var draftRuns: [UUID: Int] = [:]
     private var draftRunCount = 0
@@ -82,8 +88,10 @@ package final class QuickCaptureInboxModel {
         now: @escaping @MainActor () -> Date = { Date() },
         processID: Int32 = getpid(),
         isProcessRunning: @escaping (Int32) -> Bool = QuickCaptureInboxModel.isRunning,
-        write: @escaping (Data, URL) throws -> Void = PrivateFile.write
+        write: @escaping (Data, URL) throws -> Void = PrivateFile.write,
+        sleep: @escaping @Sendable (TimeInterval) async -> Void = { try? await Task.sleep(for: .seconds($0)) }
     ) {
+        self.sleep = sleep
         self.processID = processID
         self.isProcessRunning = isProcessRunning
         self.write = write
@@ -107,6 +115,7 @@ package final class QuickCaptureInboxModel {
         inbox = loaded
         recoverAbandonedRuns()
         adoptProjects()
+        reconcileInterruptedFilings()
     }
 
     /// This copy, as the runs it starts name it.
@@ -128,12 +137,110 @@ package final class QuickCaptureInboxModel {
 
     /// Ends the runs and filings a quit left (#1507), as one transaction
     /// with every other running copy: a copy that still holds one of those
-    /// runs in memory then writes on top of the recovery, not over it.
+    /// runs in memory then writes on top of the recovery, not over it. An
+    /// interrupted filing becomes this copy's to look up on GitHub (#1509).
     private func recoverAbandonedRuns() {
         let isLive = self.isLive
-        guard QuickCaptureInboxFile.resumingInterrupted(inbox, isLive: isLive) != inbox else { return }
+        let owner = self.owner
+        guard QuickCaptureInboxFile.resumingInterrupted(inbox, isLive: isLive, reconciler: owner) != inbox else { return }
         Log.persistence.notice("Quick capture inbox: ending runs a quit left")
-        mutate { $0 = QuickCaptureInboxFile.resumingInterrupted($0, isLive: isLive) }
+        mutate { $0 = QuickCaptureInboxFile.resumingInterrupted($0, isLive: isLive, reconciler: owner) }
+    }
+
+    // MARK: Interrupted filings (#1509)
+
+    /// Looks up on GitHub each filing a quit interrupted that this copy
+    /// took over: found, the capture is filed with its URL; ruled out, it
+    /// can be filed again; neither, it waits for the user. Returns a task
+    /// that ends when every lookup has, for tests to await.
+    @discardableResult
+    package func reconcileInterruptedFilings() -> Task<Void, Never> {
+        let owner = self.owner
+        for item in inbox.items where item.state == .filing {
+            guard let claim = item.filingClaim, claim.copy == owner, let at = claim.at,
+                  !sending.contains(claim.id), lookups[claim.id] == nil, let repository = item.repository
+            else { continue }
+            lookups[claim.id] = Task { @MainActor [weak self] in
+                await self?.reconcile(item.id, claim: claim, at: at, repository: repository)
+                self?.lookups[claim.id] = nil
+            }
+        }
+        let pending = Array(lookups.values)
+        return Task { for task in pending { await task.value } }
+    }
+
+    private func reconcile(_ id: UUID, claim: QuickCaptureItem.FilingClaim, at: Date, repository: String) async {
+        let wait = at.addingTimeInterval(QuickCaptureFiling.settleSeconds).timeIntervalSince(now())
+        if wait > 0 {
+            Log.backends.notice("Quick capture: an interrupted filing may still reach GitHub, looking in \(Int(wait), privacy: .public) s")
+            await sleep(wait)
+        }
+        let lookup = await github.findFiled(
+            repository: repository, issue: claim.commentOn, marker: QuickCaptureFiling.marker(claim: claim.id), since: at)
+        let moment = now()
+        var filed: QuickCaptureItem?
+        let saveFailure = mutate { inbox in
+            inbox.update(id) { item in
+                guard item.state == .filing, item.filingClaim?.id == claim.id else { return }
+                switch lookup {
+                case .found(let url):
+                    item.state = .filed
+                    item.filedURL = url
+                    item.filedAt = moment
+                    item.commentedOn = claim.commentOn
+                    item.note = nil
+                    filed = item
+                case .notFound:
+                    item.state = .ready
+                    item.note = "The interrupted filing never reached GitHub."
+                case .unknown:
+                    item.state = .ready
+                    item.unconfirmedFiling = claim
+                    item.note = QuickCaptureInboxFile.unconfirmedNote
+                }
+            }
+        }
+        guard let filed else { return }
+        Log.backends.notice("Quick capture: an interrupted filing had reached GitHub, recorded")
+        if saveFailure == nil {
+            for captureID in filed.captureIDs { onDone?(captureID) }
+        }
+        let destination = claim.commentOn.map { "Commented on \(repository)#\($0)" } ?? "Filed in \(repository)"
+        for recordID in historyRecordIDs(filed) { onRouted?(recordID, destination) }
+    }
+
+    /// Check Again: looks up an unconfirmed filing once more. Nil when it
+    /// carried no marker to look for.
+    @discardableResult
+    package func checkInterruptedFilingAgain(_ id: UUID) -> Task<Void, Never>? {
+        guard let claim = inbox.items.first(where: { $0.id == id })?.unconfirmedFiling, claim.at != nil else { return nil }
+        let owner = self.owner
+        mutate { inbox in
+            inbox.update(id) {
+                guard $0.state == .ready, $0.unconfirmedFiling?.id == claim.id else { return }
+                $0.unconfirmedFiling = nil
+                $0.state = .filing
+                $0.filingClaim = claim.owned(by: owner)
+                $0.note = QuickCaptureInboxFile.checkingGitHubNote
+            }
+        }
+        return reconcileInterruptedFilings()
+    }
+
+    /// Send Anyway: the user checked GitHub and found nothing, so File or
+    /// Comment on #N, as the interrupted filing was, sends again.
+    @discardableResult
+    package func sendInterruptedFilingAgain(_ id: UUID) -> Task<Void, Never>? {
+        guard let claim = inbox.items.first(where: { $0.id == id })?.unconfirmedFiling else { return nil }
+        mutate { inbox in
+            inbox.update(id) {
+                guard $0.unconfirmedFiling?.id == claim.id else { return }
+                $0.unconfirmedFiling = nil
+                $0.note = nil
+            }
+        }
+        Log.backends.notice("Quick capture: the user sends an unconfirmed filing again")
+        return claim.commentOn == nil ? file(id) : comment(id)
     }
 
     package var items: [QuickCaptureItem] { inbox.items }
@@ -675,13 +782,15 @@ package final class QuickCaptureInboxModel {
             item.canFile && shown.map(item.matches) ?? true
         }
         guard inbox.items.first(where: { $0.id == id }).map(eligible) == true,
-              let item = claim(id, when: eligible), let repository = item.repository
+              case let (item, token)? = claim(id, when: eligible, commentOn: nil), let repository = item.repository
         else { return nil }
         let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let body = item.bodyToFile
+        let body = item.bodyToFile + "\n\n" + QuickCaptureFiling.marker(claim: token.id)
+        sending.insert(token.id)
         return Task { @MainActor [weak self] in
             guard let self else { return }
             let result = await self.github.createIssue(repository: repository, title: title, body: body)
+            defer { self.sending.remove(token.id) }
             let saveFailure = self.mutate { inbox in
                 inbox.update(id) { item in
                     guard item.state == .filing else { return }
@@ -713,14 +822,16 @@ package final class QuickCaptureInboxModel {
     /// that extends an open issue. Like File, only on the user's click.
     @discardableResult
     package func comment(_ id: UUID) -> Task<Void, Never>? {
-        guard inbox.items.first(where: { $0.id == id })?.canComment == true,
-              let item = claim(id, when: \.canComment),
-              let repository = item.repository, let issue = item.relatedIssue
+        guard let issue = inbox.items.first(where: { $0.id == id && $0.canComment })?.relatedIssue,
+              case let (item, token)? = claim(id, when: { $0.canComment && $0.relatedIssue == issue }, commentOn: issue),
+              let repository = item.repository
         else { return nil }
-        let body = item.commentBody
+        let body = item.commentBody + "\n\n" + QuickCaptureFiling.marker(claim: token.id)
+        sending.insert(token.id)
         return Task { @MainActor [weak self] in
             guard let self else { return }
             let result = await self.github.commentOnIssue(repository: repository, issue: issue, body: body)
+            defer { self.sending.remove(token.id) }
             let saveFailure = self.mutate { inbox in
                 inbox.update(id) { item in
                     guard item.state == .filing else { return }
@@ -757,8 +868,13 @@ package final class QuickCaptureInboxModel {
     /// copy reading the file would send it as well (#1288). Run again on
     /// another copy's write after a failed save, the change checks
     /// `eligible` again before it claims.
-    private func claim(_ id: UUID, when eligible: @escaping (QuickCaptureItem) -> Bool) -> QuickCaptureItem? {
-        let token = QuickCaptureItem.FilingClaim(processID: processID, launch: launch)
+    ///
+    /// The claim records when it was made and, for a comment, on which
+    /// issue: what a relaunch needs to find the send on GitHub (#1509).
+    private func claim(
+        _ id: UUID, when eligible: @escaping (QuickCaptureItem) -> Bool, commentOn: Int?
+    ) -> (QuickCaptureItem, QuickCaptureItem.FilingClaim)? {
+        let token = QuickCaptureItem.FilingClaim(processID: processID, launch: launch, at: now(), commentOn: commentOn)
         var claimed: QuickCaptureItem?
         let failure = mutate { inbox in
             inbox.update(id) { item in
@@ -785,7 +901,7 @@ package final class QuickCaptureInboxModel {
             }
             return nil
         }
-        return claimed
+        return (claimed, token)
     }
 
     // MARK: Spoken review (#927)
@@ -939,6 +1055,7 @@ package final class QuickCaptureInboxModel {
             // A copy that quit may have left runs no recovery has ended yet.
             recoverAbandonedRuns()
             adoptProjects()
+            reconcileInterruptedFilings()
         case .refused(let problem)?:
             Log.persistence.error("Quick capture inbox: another copy left a file this build cannot read")
             storeProblem = problem

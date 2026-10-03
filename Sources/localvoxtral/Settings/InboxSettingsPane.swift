@@ -182,6 +182,18 @@ private struct InboxCaptureRow: View {
                     .disabled(!isEditable)
                     .accessibilityIdentifier("inbox.row.addRepository")
             }
+            // A filing the app quit during, that GitHub did not confirm
+            // or rule out (#1509): the user decides.
+            if let unconfirmed = item.unconfirmedFiling {
+                if unconfirmed.at != nil {
+                    Button("Check GitHub Again") { _ = model.checkInterruptedFilingAgain(item.id) }
+                        .accessibilityIdentifier("inbox.row.checkFiling")
+                }
+                Button(unconfirmed.commentOn == nil ? "File Anyway" : "Comment Anyway") {
+                    _ = model.sendInterruptedFilingAgain(item.id)
+                }
+                .accessibilityIdentifier("inbox.row.sendAnyway")
+            }
             if item.isIssue {
                 Button("File") { _ = model.file(item.id) }
                     .disabled(!item.canFile)

@@ -41,6 +41,22 @@ package final class FakeQuickCaptureGitHub: QuickCaptureGitHub, @unchecked Senda
         comments.withLock { $0.append([repository, String(issue), body]) }
         return commentResult
     }
+
+    /// Set, every lookup answers it; else GitHub as the sends above left it.
+    package var lookupResult: QuickCaptureFiling.Lookup?
+    /// Every lookup of an interrupted filing: repository, issue, marker.
+    package let lookups = Mutex<[[String]]>([])
+
+    package func findFiled(repository: String, issue: Int?, marker: String, since: Date) async -> QuickCaptureFiling.Lookup {
+        lookups.withLock { $0.append([repository, issue.map(String.init) ?? "", marker]) }
+        if let lookupResult { return lookupResult }
+        if let issue {
+            let sent = comments.withLock { $0.contains { $0[0] == repository && $0[1] == String(issue) && $0[2].contains(marker) } }
+            return sent ? (try? commentResult.get()).map { .found(url: $0) } ?? .notFound : .notFound
+        }
+        let sent = created.withLock { $0.contains { $0[0] == repository && $0[2].contains(marker) } }
+        return sent ? (try? createResult.get()).map { .found(url: $0) } ?? .notFound : .notFound
+    }
 }
 
 /// A router's classifier that always gives `answer`.
@@ -183,7 +199,8 @@ package enum QuickCaptureFixture {
         now: @escaping @MainActor () -> Date = { Date(timeIntervalSince1970: 1_000_000) },
         processID: Int32? = nil,
         isProcessRunning: @escaping (Int32) -> Bool = { _ in true },
-        write: @escaping (Data, URL) throws -> Void = PrivateFile.write
+        write: @escaping (Data, URL) throws -> Void = PrivateFile.write,
+        sleep: @escaping @Sendable (TimeInterval) async -> Void = { _ in }
     ) -> QuickCaptureInboxModel {
         let classifier = classifier ?? FixedQuickCaptureClassifier(answer)
         return QuickCaptureInboxModel(
@@ -206,7 +223,8 @@ package enum QuickCaptureFixture {
             now: now,
             processID: processID ?? nextProcessID.withLock { $0 += 1; return $0 },
             isProcessRunning: isProcessRunning,
-            write: write
+            write: write,
+            sleep: sleep
         )
     }
 }

@@ -51,7 +51,10 @@ package struct QuickCaptureCodeCheck: Codable, Equatable, Sendable {
 /// - `commentedOn` (#965): the issue a comment was posted on instead of
 ///   filing; `filedURL` is then the comment's URL.
 /// - `filingClaim` (#1288): the running copy whose File or Comment set
-///   `state` to filing; its `launch` since #1507.
+///   `state` to filing; its `launch` since #1507, its `at` and `commentOn`
+///   since #1509.
+/// - `unconfirmedFiling` (#1509): a filing a quit interrupted that GitHub
+///   could not confirm or rule out; File and Comment wait for the user.
 /// - `runOwner` (#1507): the running copy whose run set it routing,
 ///   drafting or checking.
 /// - `repositorySuggestion` (#930): a GitHub repository offered to add as a
@@ -149,17 +152,35 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
         package let processID: Int32
         /// Nil in claims written before #1507.
         package let launch: UUID?
+        /// When it was claimed. Set, what it sent carries
+        /// `QuickCaptureFiling.marker(claim: id)` (#1509); nil in claims
+        /// written before, whose sends GitHub cannot be asked about.
+        package let at: Date?
+        /// The issue Comment on #N posted to; nil for File.
+        package let commentOn: Int?
 
-        package init(id: UUID = UUID(), processID: Int32, launch: UUID? = nil) {
+        package init(id: UUID = UUID(), processID: Int32, launch: UUID? = nil, at: Date? = nil, commentOn: Int? = nil) {
             self.id = id
             self.processID = processID
             self.launch = launch
+            self.at = at
+            self.commentOn = commentOn
+        }
+
+        /// The same claim, now `copy`'s to finish.
+        package func owned(by copy: QuickCaptureRunningCopy) -> FilingClaim {
+            FilingClaim(id: id, processID: copy.processID, launch: copy.launch, at: at, commentOn: commentOn)
         }
 
         package var copy: QuickCaptureRunningCopy {
             QuickCaptureRunningCopy(processID: processID, launch: launch)
         }
     }
+
+    /// A filing a quit interrupted, that GitHub neither confirmed nor ruled
+    /// out (#1509). Set, nothing is sent until the user checks again or
+    /// sends anyway.
+    package var unconfirmedFiling: FilingClaim?
 
     /// Which running copy routes, drafts or checks it (#1507). A copy that
     /// loads a run another live copy owns leaves it running. Nil in files
@@ -300,6 +321,7 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
     /// It does not wait for the check against the code.
     package var canFile: Bool {
         state == .ready
+            && unconfirmedFiling == nil
             && isIssue
             && QuickCaptureInbox.isRepository(repository)
             && !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -643,6 +665,7 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
             item.filedURL = url
             item.filedAt = now
             item.note = nil
+            item.unconfirmedFiling = nil
             if item.repository == nil { item.repository = repository }
             filed = item
         }
@@ -744,9 +767,15 @@ package enum QuickCaptureInboxFile {
     /// task or `gh` may still answer (#1288, #1507). The model writes what
     /// this returns as soon as it loads, so a copy that still holds the run
     /// cannot write it back (#1507).
+    ///
+    /// An interrupted filing may have reached GitHub (#1509), so it never
+    /// becomes fileable here. One whose send carried the marker stays
+    /// filing, now `reconciler`'s to look up; without a reconciler it is
+    /// left as it is. One without the marker waits for the user.
     package static func resumingInterrupted(
         _ inbox: QuickCaptureInbox,
-        isLive: (QuickCaptureRunningCopy) -> Bool = { _ in false }
+        isLive: (QuickCaptureRunningCopy) -> Bool = { _ in false },
+        reconciler: QuickCaptureRunningCopy? = nil
     ) -> QuickCaptureInbox {
         var result = inbox
         for index in result.items.indices {
@@ -760,6 +789,16 @@ package enum QuickCaptureInboxFile {
                 ? !(item.filingClaim.map { isLive($0.copy) } ?? false)
                 : runAbandoned && (item.state == .routing || item.state == .drafting)
             guard abandoned else { continue }
+            if item.state == .filing {
+                if let claim = item.filingClaim, claim.at != nil {
+                    guard let reconciler else { continue }
+                    result.items[index].filingClaim = claim.owned(by: reconciler)
+                    result.items[index].note = checkingGitHubNote
+                    continue
+                }
+                result.items[index].unconfirmedFiling = item.filingClaim ?? QuickCaptureItem.FilingClaim(processID: 0)
+                result.items[index].note = unconfirmedNote
+            }
             result.items[index].state = .ready
             if result.items[index].title.isEmpty,
                [nil, QuickCaptureInbox.waitingForHostNote].contains(result.items[index].note)
@@ -769,6 +808,9 @@ package enum QuickCaptureInboxFile {
         }
         return result
     }
+
+    package static let checkingGitHubNote = "Checking GitHub for the interrupted filing."
+    package static let unconfirmedNote = "The app quit while filing. Check GitHub before sending it again."
 
     package static func encode(_ inbox: QuickCaptureInbox) throws -> Data {
         let encoder = JSONEncoder()

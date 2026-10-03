@@ -108,8 +108,9 @@ final class ViewSnapshotTests: XCTestCase {
     }
 
     /// The Inbox with a drafted capture that has a follow-up and extends an
-    /// issue (#965), one no project took, one offering to add a GitHub
-    /// repository (#930), and one filed (#725). Made-up
+    /// issue (#965), one whose filing the app quit during (#1509), one no
+    /// project took, one offering to add a GitHub repository (#930), and
+    /// one filed (#725). Made-up
     /// words: the artifacts are public.
     func testInboxWithCaptures() async throws {
         try await recordSettings(pane: .inbox, name: "settings-inbox-captures", setUp: false) { viewModel in
@@ -146,7 +147,20 @@ final class ViewSnapshotTests: XCTestCase {
             filed.title = "Dark mode for the settings window"
             filed.repository = "example/demo"
             filed.filedURL = "https://github.com/example/demo/issues/12"
-            try QuickCaptureInboxFile.save(QuickCaptureInbox(items: [drafted, unplaced, suggested, filed]), to: fileURL)
+            // The app quit while filing it, and GitHub could not be asked (#1509).
+            var unconfirmed = QuickCaptureItem(
+                capturedAt: now.addingTimeInterval(-1_800), text: "the export menu should remember the last format")
+            unconfirmed.state = .ready
+            unconfirmed.projectKey = "/work/demo"
+            unconfirmed.projectName = "demo"
+            unconfirmed.repository = "example/demo"
+            unconfirmed.kind = .issue
+            unconfirmed.title = "Remember the last export format"
+            unconfirmed.body = "## Scope\nThe export menu preselects the format used last."
+            unconfirmed.unconfirmedFiling = .init(processID: 0, at: now.addingTimeInterval(-600))
+            unconfirmed.note = QuickCaptureInboxFile.unconfirmedNote
+            try QuickCaptureInboxFile.save(
+                QuickCaptureInbox(items: [drafted, unconfirmed, unplaced, suggested, filed]), to: fileURL)
             self.addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
             let learned = LearnedTerms(projects: [
                 LearnedTermProject(key: "/work/demo", name: "demo", terms: [], lastSeen: now),

@@ -2797,4 +2797,12 @@ there is not.
   a draft runs for it. Each route, draft, check and filing names the
   running copy that owns it (#1288, #1507): a launch ends only those whose
   copy is gone, and writes that at once, so a copy still holding one in
-  memory cannot write it back.
+  memory cannot write it back. A filing a quit interrupted never becomes
+  fileable by itself (#1509): File and Comment append an HTML comment
+  marker with the claim's id to what they send, and the relaunch, once
+  `gh` could no longer be sending, lists the repository's issues (or the
+  issue's comments) changed since the claim, read-only. The marker found,
+  the capture is filed with that URL; GitHub answering without it, the
+  capture can be filed again; anything else, or a claim from before the
+  marker, and nothing is sent until the user picks Check GitHub Again or
+  File Anyway.
