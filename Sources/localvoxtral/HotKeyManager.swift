@@ -45,6 +45,11 @@ final class HotKeyManager {
     var onPress: (() -> Void)?
     var onRelease: (() -> Void)?
 
+    /// The dictation hot key whose press is being held. Only its release ends
+    /// the hold: the other dictation key, pressed and released meanwhile,
+    /// must not end a push-to-talk session it did not start (#1630).
+    private var heldDictationHotKeyID: UInt32?
+
     /// Mode-aware callback for dual shortcuts. Used by `registerDual(overlay:livePaste:)`.
     var onPressWithMode: ((DictationOutputMode) -> Void)?
 
@@ -346,6 +351,7 @@ final class HotKeyManager {
         #if DEBUG
         Self.debugUnregisterCallCount += 1
         #endif
+        heldDictationHotKeyID = nil
         if isUsingModifierOnly {
             modifierOnlyManager.stop()
             isUsingModifierOnly = false
@@ -552,6 +558,7 @@ final class HotKeyManager {
         }
         switch kind {
         case UInt32(kEventHotKeyPressed):
+            if heldDictationHotKeyID == nil { heldDictationHotKeyID = hotKeyID }
             if let mode = hotKeyIDToMode[hotKeyID] {
                 onPressWithMode?(mode)
             } else {
@@ -559,6 +566,8 @@ final class HotKeyManager {
                 onPress?()
             }
         case UInt32(kEventHotKeyReleased):
+            if let held = heldDictationHotKeyID, held != hotKeyID { return }
+            heldDictationHotKeyID = nil
             onRelease?()
         default:
             break
