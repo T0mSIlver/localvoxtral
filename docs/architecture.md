@@ -52,7 +52,8 @@ AppKit:
 - `TranscriptAccumulator`, `TextMergingAlgorithms`, the overlay text
   assembler and `OverlayBufferStateMachine`, `PolishTokenGuard`,
   `ClipboardPayloadMacro`,
-  `PolishOutcomeClassifier`, the connection-failure classifier, `SessionClock`
+  `PolishOutcomeClassifier`, the connection-failure classifier, `SessionClock`,
+  `TranscriptDiff`
 - the vocabulary matching: `RepoVocabulary`, `RepoIndexing`,
   `RepoVocabularyMatcher`, `ClipboardVocabulary`, `DoubleMetaphone`
 - `MistralStreamHealth`, `AudioChunkBuffer`, `ClaudeStatuslineCombine`,
