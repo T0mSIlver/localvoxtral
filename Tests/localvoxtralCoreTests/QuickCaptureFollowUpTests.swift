@@ -420,9 +420,11 @@ final class QuickCaptureFollowUpTests: XCTestCase {
 
         await model.comment(id)?.value
 
+        let claim = try XCTUnwrap(model.items.first?.filingClaim?.id)
         XCTAssertEqual(github.comments.withLock { $0 }, [[
             "o/reach", "7",
-            "**Dark mode**\n\n## Scope\nAll pages.\n\nDictated:\n\n> Add a dark mode\n> \n> Also the popover",
+            "**Dark mode**\n\n## Scope\nAll pages.\n\nDictated:\n\n> Add a dark mode\n> \n> Also the popover\n\n"
+                + QuickCaptureFiling.marker(claim: claim),
         ]])
         XCTAssertTrue(github.created.withLock { $0.isEmpty })
         let item = try XCTUnwrap(model.items.first)

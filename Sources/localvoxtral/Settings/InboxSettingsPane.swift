@@ -182,12 +182,29 @@ private struct InboxCaptureRow: View {
                     .disabled(!isEditable)
                     .accessibilityIdentifier("inbox.row.addRepository")
             }
-            if item.isIssue {
+            // A filing the app quit during, that GitHub did not confirm
+            // or rule out (#1509): the user decides.
+            if let unconfirmed = item.unconfirmedFiling {
+                if unconfirmed.at != nil {
+                    Button("Check GitHub Again") { _ = model.checkInterruptedFilingAgain(item.id) }
+                        .accessibilityIdentifier("inbox.row.checkFiling")
+                }
+                // A claim from before #1509 does not say whether it filed
+                // or commented: File and Comment come back instead.
+                Button(
+                    unconfirmed.at == nil
+                        ? "Allow Sending Again" : unconfirmed.commentOn == nil ? "File Anyway" : "Comment Anyway"
+                ) {
+                    _ = model.sendInterruptedFilingAgain(item.id)
+                }
+                .accessibilityIdentifier("inbox.row.sendAnyway")
+            }
+            if item.isIssue, item.unconfirmedFiling == nil {
                 Button("File") { _ = model.file(item.id) }
                     .disabled(!item.canFile)
                     .accessibilityIdentifier("inbox.row.file")
             }
-            if item.relation == .extends, let issue = item.relatedIssue, item.isIssue {
+            if item.relation == .extends, let issue = item.relatedIssue, item.isIssue, item.unconfirmedFiling == nil {
                 Button("Comment on #\(issue)") { _ = model.comment(item.id) }
                     .disabled(!item.canComment)
                     .accessibilityIdentifier("inbox.row.comment")
