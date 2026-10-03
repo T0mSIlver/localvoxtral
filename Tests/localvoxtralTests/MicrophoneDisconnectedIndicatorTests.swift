@@ -52,7 +52,8 @@ final class MicrophoneDisconnectedIndicatorTests: XCTestCase {
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: MockOverlayCoordinator(),
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: .init(clock: ManualSessionClock().clock)
         )
         retainForTestProcessLifetime(viewModel)
         viewModel.session.sessionOutputMode = .liveAutoPaste

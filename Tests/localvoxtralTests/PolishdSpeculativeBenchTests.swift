@@ -161,7 +161,7 @@ final class PolishdSpeculativeBenchTests: XCTestCase {
         }
         try FileManager.default.createDirectory(
             at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try FileManager.default.moveItem(at: temporary, to: destination)
+        try SharedCacheFile.publish(temporary, at: destination)
     }
 
     static func report(
