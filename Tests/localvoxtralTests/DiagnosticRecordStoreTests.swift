@@ -476,6 +476,18 @@ final class DiagnosticRecordRedactionTests: XCTestCase {
         assertRedacts("vK8q2mZ9", in: "MISTRAL_API_KEY=vK8q2mZ9 vibe", keeping: "MISTRAL_API_KEY=")
     }
 
+    /// A variable named only for the secret, with nothing before the word
+    /// (#1571).
+    func testRedactsAnAssignmentToABareSecretName() {
+        for name in ["PASSWORD", "SECRET", "TOKEN", "KEY"] {
+            assertRedacts(
+                "s3cr3t-Pa55word",
+                in: "export \(name)=\"s3cr3t-Pa55word\"; npm start",
+                keeping: "export \(name)=\""
+            )
+        }
+    }
+
     /// Code that reads a key is not a secret: only an uppercase shell
     /// variable being assigned is.
     func testLeavesCodeThatNamesAKeyAlone() {
