@@ -306,8 +306,11 @@ there is not.
   the channel off. An Overlay Buffer fill the mod refused, or never got, is
   typed only while the commit's terminal is frontmost and its focused pane
   still shows the session (`ClaudeSessionJoinResolver.sessionShown`): a pid
-  cannot tell two tabs apart. Otherwise, and for a fill the mod got but never
-  answered, the text stays in History. Unless keys put it in, the next
+  cannot tell two tabs apart. For a local herdr pane the focused pane is read
+  again after its foreground query, as the last await before the keys, and
+  the frontmost app after that (#1498). Otherwise, and for a fill the mod got
+  but never answered, the text stays in History (on the clipboard with
+  History off). Unless keys put it in, the next
   commit gets no continuation space. Mod replies ride one-shot connections
   and carry a short reason code, never what the person typed or dictated;
   the one text a reply carries is the session model's answer to the

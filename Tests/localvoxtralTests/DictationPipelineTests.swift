@@ -1185,6 +1185,36 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.map(\.rawText), ["run the tests."])
     }
 
+    /// The same with History off, where Copy last dictation is all that
+    /// holds the text until the next dictation replaces it: the text goes
+    /// on the clipboard, the popover says so, and the next dictation leaves
+    /// it there (#1499).
+    func testAnUnansweredModFillWithHistoryOffSurvivesTheNextDictation() async throws {
+        let answered = BoundedWait()
+        let (pipeline, typed, fills) = try await modChannelPipeline(answers: [.silent], answerGate: answered)
+        pipeline.viewModel.settings.dictationHistoryRetention = .off
+        pipeline.viewModel.settings.autoCopyEnabled = false
+        let copied = pipeline.viewModel.recordPasteboardWrites()
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "run the tests.")
+        answered.resolve()
+        let done = await settled.wait(for: 1)
+        XCTAssertTrue(done)
+        XCTAssertEqual(fills.texts, ["run the tests."])
+        XCTAssertEqual(pipeline.viewModel.lastError, DictationViewModel.StatusStrings.overlayCopiedToClipboard)
+        XCTAssertEqual(copied.values, ["run the tests."])
+
+        // The next dictation goes in by keys: the mod is gone.
+        pipeline.viewModel.context.claudeModChannels = nil
+        await dictate(pipeline, "/compact")
+
+        XCTAssertEqual(typed.text, "/compact", "precondition: the next dictation committed, and A was never typed")
+        XCTAssertEqual(copied.values, ["run the tests."], "the next dictation leaves the clipboard alone")
+    }
+
     /// The joined session's band follows the dictation: listening with the
     /// words so far, then finishing, then done, which clears it (#1411).
     func testTheJoinedSessionsBandFollowsTheDictationAndClearsAtTheEnd() async throws {
@@ -1277,6 +1307,65 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.viewModel.lastError, DictationViewModel.StatusStrings.agentPromptTextKeptInHistory)
     }
 
+    /// The mod refused, and while the fallback asked herdr what runs in the
+    /// session's pane, the user moved to another pane of the same herdr.
+    /// The app pid still matches and the session still runs in its pane,
+    /// but keys would reach the other pane, so the words stay in History
+    /// (#1498).
+    func testARefusedModFillNeverTypesAfterAPaneSwitchDuringTheFocusLookup() async throws {
+        try await assertRefusedModFillNotTyped(switchingPanesDuring: .foreground)
+    }
+
+    /// The same switch during the lookup's second tty read, which follows
+    /// the pane's foreground query: a pane switch keeps the tty, so the
+    /// focused pane must be the last thing read before the keys.
+    func testARefusedModFillNeverTypesAfterAPaneSwitchDuringTheTTYReRead() async throws {
+        try await assertRefusedModFillNotTyped(switchingPanesDuring: .tty)
+    }
+
+    /// The fallback's lookup reads the tty, then herdr's focused pane and
+    /// its foreground, then the tty again. With `.tty` the switch lands on
+    /// the second tty read.
+    private func assertRefusedModFillNotTyped(
+        switchingPanesDuring switchDuring: HerdrFocus.Read
+    ) async throws {
+        let focus = HerdrFocus("w1:p2")
+        let sessionPane = FakeHerdrSocket.focusedPane("w1:p2") { [(9001, "claude")] }
+        let herdr = try FakeHerdrSocket(answer: { request in
+            switch request.method {
+            case "pane.current":
+                return .result(#"{"type":"pane_current","pane":{"pane_id":"\#(focus.pane)","focused":true}}"#)
+            case "pane.process_info":
+                defer { focus.read(.foreground) }
+                return sessionPane(request)
+            default:
+                return sessionPane(request)
+            }
+        })
+        addTeardownBlock { herdr.stop() }
+        let answered = BoundedWait()
+        let (pipeline, typed, fills) = try await modChannelPipeline(
+            answers: [.refuse], herdr: herdr, herdrFocus: focus, answerGate: answered,
+            beforeAnswer: { focus.switchTo("w1:p3", during: switchDuring, count: switchDuring == .tty ? 2 : 1) }
+        )
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "run the tests.") {
+            XCTAssertEqual(pipeline.viewModel.context.claudeSessionJoin?.mechanism, .herdrPane, "precondition")
+        }
+        answered.resolve()
+        let done = await settled.wait(for: 1)
+
+        XCTAssertTrue(done)
+        XCTAssertEqual(fills.texts, ["run the tests."])
+        XCTAssertEqual(focus.pane, "w1:p3", "precondition: the switch happened during the lookup")
+        XCTAssertEqual(typed.text, "", "nothing typed into the other pane")
+        XCTAssertEqual(pipeline.viewModel.lastError, DictationViewModel.StatusStrings.agentPromptTextKeptInHistory)
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), ["run the tests."])
+    }
+
     /// The mod refused a fill and Secure Keyboard Entry sent the words to
     /// the clipboard: the prompt is still empty, so the next dictation into
     /// it starts with no space.
@@ -1314,16 +1403,23 @@ final class DictationPipelineTests: XCTestCase {
     private func modChannelPipeline(
         answers: [FakeModAnswer],
         focus: FocusedPane? = nil,
+        herdr: FakeHerdrSocket? = nil,
+        herdrFocus: HerdrFocus? = nil,
         answerGate: BoundedWait? = nil,
         beforeAnswer: @escaping @Sendable () -> Void = {}
     ) async throws -> (Pipeline, TypedText, FillRecorder) {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
         pipeline.overlay.insertsThroughCommitter = true
         pipeline.overlay.commitTargetAppPID = 4343
         pipeline.overlay.passesTargetPIDToCommitter = false
-        var focusedTTY: (@Sendable () -> String)?
-        if let focus { focusedTTY = { focus.tty } }
-        _ = joinClaudeCodeTerminal(pipeline, focusedTTY: focusedTTY)
+        if let herdr {
+            joinHerdrPane(pipeline, herdr: herdr, ttyRead: { herdrFocus?.read(.tty) })
+        } else {
+            var focusedTTY: (@Sendable () -> String)?
+            if let focus { focusedTTY = { focus.tty } }
+            _ = joinClaudeCodeTerminal(pipeline, focusedTTY: focusedTTY)
+        }
         let typed = recordTypedText(pipeline)
 
         // A silent mod's fill times out at once, or when the gate opens;
@@ -2529,7 +2625,10 @@ final class DictationPipelineTests: XCTestCase {
     /// the way the app does: polishing on (a fake polisher, so nothing leaves
     /// the process) with screen context, a Ghostty surface bound to a herdr
     /// client, and a real `HerdrSocketClient` reading and writing `herdr`.
-    private func joinHerdrPane(_ pipeline: Pipeline, herdr: FakeHerdrSocket) {
+    /// `ttyRead` runs at each read of the terminal's focused tty.
+    private func joinHerdrPane(
+        _ pipeline: Pipeline, herdr: FakeHerdrSocket, ttyRead: @escaping @Sendable () -> Void = {}
+    ) {
         let settings = pipeline.viewModel.settings
         settings.llmPolishingEnabled = true
         settings.llmPolishingEndpointURL = "http://127.0.0.1:8080/v1/chat/completions"
@@ -2550,7 +2649,10 @@ final class DictationPipelineTests: XCTestCase {
         let client = HerdrSocketClient(timeout: 2)
         pipeline.viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
             registry: registry,
-            focusedTerminalTTY: { _ in "/dev/ttys-outer" },
+            focusedTerminalTTY: { _ in
+                ttyRead()
+                return "/dev/ttys-outer"
+            },
             herdrClientProbe: { _ in true },
             herdrPanes: client,
             herdrPaneWriter: client
@@ -3914,6 +4016,38 @@ private final class FillSettled {
         let wait = BoundedWait()
         watches.append((count, wait))
         return await wait.value(failAfter: failAfter)
+    }
+}
+
+/// A fake herdr's focused pane, which the user can be made to leave during
+/// a given read the app makes.
+private final class HerdrFocus: @unchecked Sendable {
+    enum Read { case tty, foreground }
+
+    private let lock = NSLock()
+    private var current: String
+    private var pending: (pane: String, read: Read, remaining: Int)?
+
+    init(_ pane: String) { current = pane }
+
+    var pane: String { lock.withLock { current } }
+
+    /// The `count`th `read` from now moves the focus to `pane`.
+    func switchTo(_ pane: String, during read: Read, count: Int = 1) {
+        lock.withLock { pending = (pane, read, count) }
+    }
+
+    func read(_ read: Read) {
+        lock.withLock {
+            guard var next = pending, next.read == read else { return }
+            next.remaining -= 1
+            if next.remaining == 0 {
+                current = next.pane
+                pending = nil
+            } else {
+                pending = next
+            }
+        }
     }
 }
 

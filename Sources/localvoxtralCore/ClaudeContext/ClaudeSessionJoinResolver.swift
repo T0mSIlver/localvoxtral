@@ -334,7 +334,20 @@ package struct ClaudeSessionJoinResolver {
         if case .resolved(let snapshot) = registry.resolve(tty: tty) {
             return snapshot.sessionID
         }
-        return await focusedLocalHerdrPane(surfaceTTY: tty, purpose: "needs-you pane check")?.snapshot.sessionID
+        guard let found = await focusedLocalHerdrPane(surfaceTTY: tty, purpose: "needs-you pane check") else {
+            return nil
+        }
+        // The pane's foreground query awaited herdr: the user may have moved
+        // to another pane or tab since, and the mod's keyboard fallback
+        // types on this answer (#1498). Both are read again, the pane last:
+        // a pane switch keeps the tty, so no slower read may follow it.
+        guard await focusedTerminalTTY(target.bundleID) == tty,
+              await herdrPanes?.focusedPane(socketPath: found.socketPath)?.paneID == found.pane.paneID
+        else {
+            Log.claudeContext.info("needs-you pane check: the focus moved during the herdr lookup")
+            return nil
+        }
+        return found.snapshot.sessionID
     }
 
     /// The herdr pane route for the focused pane of a LOCAL herdr, found
