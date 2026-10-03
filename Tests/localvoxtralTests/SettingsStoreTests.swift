@@ -955,6 +955,21 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(makeStore().polishSpeakerTerms, ["Qwen", "Voxtral", "Ghostty", "MLX"])
     }
 
+    /// The merge keeps the cap a launch applies: two copies each adding the
+    /// last term that fits save 80, not 81.
+    func testTwoRunningCopiesKeepTheTermCap() {
+        let start = (1..<SpeakerTerms.maxTerms).map { "Term\($0)" }
+        makeStore().polishSpeakerTerms = start
+        let first = makeStore()
+        let second = makeStore()
+
+        first.polishSpeakerTerms.append("Ghostty")
+        second.polishSpeakerTerms.append("Voxtral")
+
+        XCTAssertEqual(defaults.stringArray(forKey: "settings.polish_speaker_terms"), start + ["Voxtral"])
+        XCTAssertEqual(second.polishSpeakerTerms, start + ["Voxtral"])
+    }
+
     func testTwoRunningCopiesKeepEachOthersDismissedSuggestions() {
         let first = makeStore()
         let second = makeStore()
