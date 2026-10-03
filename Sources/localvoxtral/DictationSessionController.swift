@@ -426,6 +426,9 @@ final class DictationSessionController {
     /// final commit was to return may be lost, so the stop is not Ready.
     @ObservationIgnored
     var realtimeErrorDuringStop = false
+    /// How long the stop in progress waits for the server's last words.
+    @ObservationIgnored
+    var stopFinalizationTimeout = TimingConstants.stopFinalizationTimeout
     @ObservationIgnored
     var finalizationWatchdogTask: Task<Void, Never>?
     @ObservationIgnored
@@ -953,16 +956,28 @@ final class DictationSessionController {
         audio.microphoneAuthorizationStatus()
     }
 
-    func stopDictation(reason: String = "unspecified", finalizeRemainingAudio: Bool = true) {
+    /// `finalizationTimeout` bounds the wait for the server's last words:
+    /// the stop then keeps what arrived.
+    func stopDictation(
+        reason: String = "unspecified",
+        finalizeRemainingAudio: Bool = true,
+        finalizationTimeout: TimeInterval = TimingConstants.stopFinalizationTimeout
+    ) {
         guard isDictating else { return }
         debugLog("stopDictation reason=\(reason)")
         shortcuts.clearPushToTalkShortcutSessionAttempt()
         disarmSilenceAutoStop()
         disarmSpokenStop()
 
-        // Before anything else: a reconnect run still in flight must not be
-        // allowed to hand this session a socket after the user stopped it.
-        cancelRealtimeReconnect()
+        // The speech captured since the socket dropped waits in the buffer
+        // for the socket a reconnect run opens. A stop that finalizes keeps
+        // the run going, so that speech reaches the server with the final
+        // commit behind it (#1582); any other stop ends the run before it
+        // can hand the stopped session a socket.
+        let finalizesAcrossReconnect = finalizeRemainingAudio && isReconnectingRealtimeSession
+        if !finalizesAcrossReconnect {
+            cancelRealtimeReconnect()
+        }
         polishAndCommitTask?.cancel()
         polishAndCommitTask = nil
         audio.cancelSendAndCommitTasks()
@@ -971,7 +986,9 @@ final class DictationSessionController {
 
         audio.stopSessionAudioCapture()
         audio.audioDucking.restoreAfterSession()
-        audio.flushBufferedAudio(to: activeRealtimeClient)
+        if !finalizesAcrossReconnect {
+            audio.flushBufferedAudio(to: activeRealtimeClient)
+        }
         isDictating = false
         // An Overlay Buffer stop keeps Escape until its commit is done:
         // the text waits there on the final and the polish, and Escape
@@ -991,11 +1008,19 @@ final class DictationSessionController {
         }
 
         isFinalizingStop = true
+        stopFinalizationTimeout = finalizationTimeout
         statusText = StatusStrings.finalizing
-        setRealtimeIndicatorConnected()
         if isOverlayBufferModeEnabled {
             beginOverlayFinalization()
         }
+        if finalizesAcrossReconnect {
+            // The run finalizes once it is on a ready socket; the watchdog
+            // bounds how long the stop waits for that.
+            Log.backends.notice("stop during a reconnect; finalizing once the run reaches the server")
+            startStopFinalizationWatchdog()
+            return
+        }
+        setRealtimeIndicatorConnected()
         scheduleStopFinalization()
         startStopFinalizationWatchdog()
     }

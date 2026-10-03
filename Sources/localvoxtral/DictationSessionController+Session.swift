@@ -51,6 +51,7 @@ extension DictationSessionController {
         sessionModelName = nil
         sessionReplacementDictionary = nil
         sessionRealtimeConfiguration = nil
+        sessionUsesManagedSpeechHelper = false
         sessionStoresAudio = false
         sessionHasStopSecondPass = false
         earlyPolishRun?.cancel()
@@ -426,6 +427,7 @@ extension DictationSessionController {
         // Latched, not rebuilt: a mid-session reconnect (#380) dials exactly
         // what this session opened with, even if Settings moved on since.
         sessionRealtimeConfiguration = configuration
+        sessionUsesManagedSpeechHelper = settings.dictationBackendMode == .managedLocal
 
         do {
             try activeRealtimeClient.connect(configuration: configuration)
@@ -765,9 +767,9 @@ extension DictationSessionController {
                 let lastActivity = max(self.realtimeFinalizationLastActivityAt ?? startedAt, sentAt ?? now)
                 let inactivity = now.timeIntervalSince(lastActivity)
 
-                if elapsed >= TimingConstants.stopFinalizationTimeout {
+                if elapsed >= self.stopFinalizationTimeout {
                     Log.backends.error(
-                        "stop finalization timed out after \(TimingConstants.stopFinalizationTimeout, privacy: .public) s; disconnecting with what arrived"
+                        "stop finalization timed out after \(self.stopFinalizationTimeout, privacy: .public) s; disconnecting with what arrived"
                     )
                     self.activeRealtimeClient.disconnect()
                     self.finishStoppedSession(promotePendingSegment: true)
@@ -1135,7 +1137,8 @@ extension DictationSessionController {
 
     func startStopFinalizationWatchdog() {
         finalizationWatchdogTask?.cancel()
-        let timeout: TimeInterval = TimingConstants.stopFinalizationTimeout + 2.0
+        let finalizationTimeout = stopFinalizationTimeout
+        let timeout: TimeInterval = finalizationTimeout + 2.0
 
         finalizationWatchdogTask = Task { [weak self, clock = dependencies.clock] in
             let startedAt = clock.now()
@@ -1143,6 +1146,19 @@ extension DictationSessionController {
                 await clock.sleep(.seconds(TimingConstants.finalizationPollInterval))
                 guard let self else { return }
                 guard self.isFinalizingStop else { return }
+
+                // A stop during a reconnect waits for the run, which has no
+                // socket until it succeeds, for as long as a finalization may
+                // take; the run restarts this watchdog when it gets through.
+                if self.isReconnectingRealtimeSession {
+                    if clock.now().timeIntervalSince(startedAt) >= finalizationTimeout {
+                        self.finishStopWithoutTheReconnectGap(
+                            reason: "the reconnect did not reach the server within \(finalizationTimeout) s"
+                        )
+                        return
+                    }
+                    continue
+                }
 
                 if !self.activeRealtimeClient.isConnected {
                     self.debugLog("watchdog observed disconnected socket during finalization; finishing stop")

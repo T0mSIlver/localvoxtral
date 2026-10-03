@@ -772,6 +772,7 @@ extension DictationSessionController {
         let cancelled = wasCancelled
         wasCancelled = false
         isFinalizingStop = false
+        stopFinalizationTimeout = TimingConstants.stopFinalizationTimeout
         postModChannelBand(.done)
         isConnectingRealtimeSession = false
         isCompletingStoppedSession = false
