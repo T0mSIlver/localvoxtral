@@ -62,6 +62,10 @@ public enum ClaudeModChannelWire {
         /// Put `text` in the session's prompt box at the cursor (#1409).
         /// `ok` only once the box holds it.
         case fill
+        /// Ask the session's own model `text` over its transcript, tool-less
+        /// (`$.model.fork`, #1410). `ok` with the answer in the reply's
+        /// `text`.
+        case terms
     }
 
     /// One request from the app to the mod.
@@ -70,7 +74,7 @@ public enum ClaudeModChannelWire {
         public var kind: Kind
         /// Matches the `Reply`. The hub assigns it.
         public var id: String
-        /// What `fill` puts in the box.
+        /// What `fill` puts in the box; the question `terms` asks.
         public var text: String?
 
         public init(kind: Kind, id: String = "", text: String? = nil, version: Int = ClaudeModChannelWire.version) {
@@ -88,6 +92,33 @@ public enum ClaudeModChannelWire {
         }
     }
 
+    /// What a `terms` fork cost, as the API counted it.
+    public struct Usage: Codable, Equatable, Sendable {
+        public var inputTokens: Int?
+        public var cacheCreationInputTokens: Int?
+        public var cacheReadInputTokens: Int?
+        public var outputTokens: Int?
+
+        public init(
+            inputTokens: Int? = nil,
+            cacheCreationInputTokens: Int? = nil,
+            cacheReadInputTokens: Int? = nil,
+            outputTokens: Int? = nil
+        ) {
+            self.inputTokens = inputTokens
+            self.cacheCreationInputTokens = cacheCreationInputTokens
+            self.cacheReadInputTokens = cacheReadInputTokens
+            self.outputTokens = outputTokens
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case inputTokens = "input_tokens"
+            case cacheCreationInputTokens = "cache_creation_input_tokens"
+            case cacheReadInputTokens = "cache_read_input_tokens"
+            case outputTokens = "output_tokens"
+        }
+    }
+
     /// The mod's answer to one `Message`.
     public struct Reply: Codable, Equatable, Sendable {
         public var modReply: Int
@@ -97,12 +128,18 @@ public enum ClaudeModChannelWire {
         /// Why it was not done, as a short code (`dialog`, `no_composer`),
         /// never text the person typed or dictated.
         public var reason: String?
+        /// The model's answer to `terms`. Never set for `fill`.
+        public var text: String?
+        /// What a `terms` fork cost.
+        public var usage: Usage?
 
         public init(
             sessionID: String,
             id: String,
             ok: Bool,
             reason: String? = nil,
+            text: String? = nil,
+            usage: Usage? = nil,
             version: Int = ClaudeModChannelWire.version
         ) {
             self.modReply = version
@@ -110,6 +147,8 @@ public enum ClaudeModChannelWire {
             self.id = id
             self.ok = ok
             self.reason = reason
+            self.text = text
+            self.usage = usage
         }
 
         enum CodingKeys: String, CodingKey {
@@ -118,6 +157,8 @@ public enum ClaudeModChannelWire {
             case id
             case ok
             case reason
+            case text
+            case usage
         }
     }
 
