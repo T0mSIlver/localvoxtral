@@ -52,7 +52,7 @@ expect true "what the unavailable-device test calls runs the lane" \
 expect false "the view model's realtime event handling does not" \
   "Sources/localvoxtral/DictationSessionController+RealtimeEvents.swift"
 expect false "the reconnect policy does not" \
-  Sources/localvoxtral/RealtimeReconnectPolicy.swift
+  Sources/localvoxtralCore/RealtimeReconnectPolicy.swift
 expect true "the scorer's normalizer runs the lane" \
   Sources/localvoxtralCore/TextMergingAlgorithms.swift
 expect true "the suite's client half runs the lane" \
