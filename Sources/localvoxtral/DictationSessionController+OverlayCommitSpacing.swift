@@ -15,20 +15,35 @@ struct OverlayCommitLanding: Equatable {
 /// has submitted no prompt since. Anything less and the caret may sit in a
 /// fresh prompt, where a leading space turns `/compact` into text. No
 /// trailing space after a commit either.
+///
+/// Where the joined session's mod read its prompt box at the stop, the box
+/// decides instead of that guess (#1406): a space only when the cursor
+/// follows a character that is not whitespace.
 extension DictationSessionController {
     /// The committer for this commit: the usual one, or the session's mod
     /// when the commit sends no Return of its own, behind a leading space
-    /// when the evidence says the last commit is still in the prompt.
+    /// when `draft` (the session's prompt box at the stop) ends in a word,
+    /// or, without one, when the evidence says the last commit is still in
+    /// the prompt.
     ///
     /// A spoken send presses Return right after the commit, which a fill
     /// handed off to the mod could arrive behind, so it keeps the keyboard.
     func overlayCommitter(
         join: ClaudeSessionJoin?,
         targetPID: pid_t?,
-        spokenSend: OverlaySpokenSend?
+        spokenSend: OverlaySpokenSend?,
+        draft: ClaudePromptDraft? = nil
     ) -> any OverlayTextCommitting {
         let committer: any OverlayTextCommitting =
             (spokenSend == nil ? modChannelCommitter(join: join, targetPID: targetPID) : nil) ?? overlayTextCommitter
+        if let join, let draft, draft.decidesLeadingSpace(for: join) {
+            guard draft.commitNeedsLeadingSpace else {
+                Log.overlay.info("overlay commit: the prompt box is empty or ends in whitespace; no leading space")
+                return committer
+            }
+            Log.overlay.info("overlay commit: the prompt box ends in a word; leading space")
+            return LeadingSpaceOverlayCommitter(base: committer)
+        }
         guard let landing = lastOverlayCommitLanding,
               landing == currentLanding(join: join, targetPID: targetPID)
         else { return committer }

@@ -82,6 +82,10 @@ runs on every string before the write:
   also soft-wrapped across rows with whitespace ignored (#1121), because
   `docs/dictation.md` promises the app never saves that prompt. Earlier
   prompts can still be on the screen text, which the owner accepted in #792.
+- The unsent draft the joined session's mod read from its prompt box at
+  the stop (`ClaudePromptDraft`, #1406). It reaches the session context
+  behind its own labels; the builder takes it out by the same passes as the
+  prior prompt, under `<prompt draft withheld>`.
 - Never add a field that holds the prompt correction learning compares
   (`CorrectionLearning`), or the clipboard payload.
 

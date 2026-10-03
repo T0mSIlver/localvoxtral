@@ -66,6 +66,12 @@ public enum ClaudeModChannelWire {
         /// (`$.model.fork`, #1410). `ok` with the answer in the reply's
         /// `text`.
         case terms
+        /// Answer with the prompt box as the person left it: `ok` with the
+        /// draft around the cursor in the reply's `text` and the cursor's
+        /// UTF-16 offset into it in `cursor` (#1406). An empty box answers
+        /// `ok` with `""`, which is also all a surface that binds no box
+        /// can say.
+        case draft
         /// The joined dictation's state, for the band above the prompt
         /// (#1411): `phase` and the words so far in `text`. Not answered.
         case state
@@ -149,8 +155,12 @@ public enum ClaudeModChannelWire {
         /// Why it was not done, as a short code (`dialog`, `no_composer`),
         /// never text the person typed or dictated.
         public var reason: String?
-        /// The model's answer to `terms`. Never set for `fill`.
+        /// The model's answer to `terms`; the draft for `draft`. Never set
+        /// for `fill`.
         public var text: String?
+        /// Where the cursor sits in a `draft` reply's `text`, in UTF-16 code
+        /// units.
+        public var cursor: Int?
         /// What a `terms` fork cost.
         public var usage: Usage?
 
@@ -160,6 +170,7 @@ public enum ClaudeModChannelWire {
             ok: Bool,
             reason: String? = nil,
             text: String? = nil,
+            cursor: Int? = nil,
             usage: Usage? = nil,
             version: Int = ClaudeModChannelWire.version
         ) {
@@ -169,6 +180,7 @@ public enum ClaudeModChannelWire {
             self.ok = ok
             self.reason = reason
             self.text = text
+            self.cursor = cursor
             self.usage = usage
         }
 
@@ -179,6 +191,7 @@ public enum ClaudeModChannelWire {
             case ok
             case reason
             case text
+            case cursor
             case usage
         }
     }

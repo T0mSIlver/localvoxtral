@@ -1345,6 +1345,67 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded), [true, true])
     }
 
+    /// The prompt box already holds typed words when the dictation starts:
+    /// the mod reads it at the stop, so the first commit continues it with a
+    /// space instead of gluing to its last word, which no earlier commit
+    /// could have told the app (#1406).
+    func testAFillAfterWordsTypedInThePromptBoxStartsWithASpace() async throws {
+        let (pipeline, typed, fills) = try await modChannelPipeline(
+            answers: [.fill], drafts: [(text: "fix the flaky", cursor: 13)]
+        )
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "reconnect test.")
+        let filled = await settled.wait(for: 1)
+
+        XCTAssertTrue(filled)
+        XCTAssertEqual(fills.texts, [" reconnect test."])
+        XCTAssertEqual(typed.text, "")
+    }
+
+    /// The person cleared the box after the last commit without sending it:
+    /// the mod reads it empty, so `/compact` stays a command, where the
+    /// guess from the last commit would have put a space in front (#802).
+    func testAFillIntoABoxTheModReadsEmptyTakesNoSpaceAfterAnEarlierCommit() async throws {
+        let (pipeline, _, fills) = try await modChannelPipeline(
+            answers: [.fill], drafts: [(text: "", cursor: 0)]
+        )
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "run the tests.")
+        _ = await settled.wait(for: 1)
+        await dictate(pipeline, "/compact")
+        let both = await settled.wait(for: 2)
+
+        XCTAssertTrue(both)
+        XCTAssertEqual(fills.texts, ["run the tests.", "/compact"])
+    }
+
+    /// With session context on, the polish request carries the draft behind
+    /// its label, so the model sees what the dictation continues.
+    func testThePromptDraftReachesThePolishRequest() async throws {
+        let (pipeline, _, _) = try await modChannelPipeline(
+            answers: [.fill], drafts: [(text: "fix the flaky\nWebSocketClient", cursor: 29)]
+        )
+        let polish = FakePolishingService()
+        pipeline.viewModel.llmPolishingService = polish
+        pipeline.viewModel.settings.claudeRepoContextEnabled = true
+
+        await dictate(pipeline, "reconnect test.")
+        let sent = await waitForPolishRequests(polish, 1)
+
+        XCTAssertTrue(sent)
+        let prompts = await polish.lastRequest?.userPrompts.joined(separator: "\n") ?? ""
+        XCTAssertTrue(
+            prompts.contains(ClaudePromptDraft.beforeCursorLabel + "fix the flaky / WebSocketClient"),
+            prompts
+        )
+    }
+
     /// The mod got the fill and never answered: it may have filled the box,
     /// so the words stay in History instead of going in twice.
     func testAFillTheModNeverAnswersIsKeptNotTyped() async throws {
@@ -1587,6 +1648,7 @@ final class DictationPipelineTests: XCTestCase {
         herdr: FakeHerdrSocket? = nil,
         herdrFocus: HerdrFocus? = nil,
         answerGate: BoundedWait? = nil,
+        drafts: [(text: String, cursor: Int)] = [],
         beforeAnswer: @escaping @Sendable () -> Void = {}
     ) async throws -> (Pipeline, TypedText, FillRecorder) {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
@@ -1617,6 +1679,13 @@ final class DictationPipelineTests: XCTestCase {
                 ) else { return false }
                 if message.kind == .state {
                     fills.appendState(message.phase, message.text)
+                    return true
+                }
+                if message.kind == .draft {
+                    // A mod older than `draft` is one that is never asked.
+                    guard !drafts.isEmpty else { return false }
+                    let box = drafts[min(fills.takeDraftIndex(), drafts.count - 1)]
+                    hub.deliver(.init(sessionID: "s1", id: message.id, ok: true, text: box.text, cursor: box.cursor))
                     return true
                 }
                 guard message.kind == .fill else { return false }
@@ -4387,6 +4456,16 @@ private final class FillRecorder: @unchecked Sendable {
 
     func append(_ text: String) { lock.withLock { recorded.append(text) } }
     var texts: [String] { lock.withLock { recorded } }
+
+    private var draftsRead = 0
+
+    /// How many drafts the mod gave before this one.
+    func takeDraftIndex() -> Int {
+        lock.withLock {
+            defer { draftsRead += 1 }
+            return draftsRead
+        }
+    }
 
     private var stateObserver: (@Sendable () -> Void)?
 
