@@ -363,15 +363,23 @@ final class DictationSessionStore {
         }
     }
 
+    /// Delete All, and Don't keep: the snapshots and the quarantine go too,
+    /// or they would keep what the user deleted (#1574). Only once the rows
+    /// are gone: a delete that failed keeps every copy.
     @discardableResult
     func deleteAll() -> Task<Void, Never> {
         let audioStore = audioStore
         let diagnosticRecordStore = diagnosticRecordStore
+        let backups = backups
+        let quarantine = quarantine
         return enqueueWrite("delete all dictations") { context in
             let deleted = try Self.deleteRecords(matching: nil, in: context)
             try context.save()
             audioStore?.removeAll()
             diagnosticRecordStore?.removeAll()
+            backups?.removeAll()
+            quarantine?.removeAll(of: "dictation-audio")
+            quarantine?.removeAll(of: "diagnostic-records")
             return deleted.count
         }
     }
@@ -458,13 +466,15 @@ final class DictationSessionStore {
             quarantine: quarantine, storeURL: storeURL)
     }
 
-    /// Deletes every recording and keeps the dictations: the audio setting
-    /// turned off.
+    /// Deletes every recording, quarantined ones included, and keeps the
+    /// dictations: the audio setting turned off.
     @discardableResult
     func deleteAllAudio() -> Task<Void, Never> {
         let audioStore = audioStore
+        let quarantine = quarantine
         return enqueueWrite("delete all dictation audio") { _ in
             let removed = audioStore?.removeAll() ?? 0
+            quarantine?.removeAll(of: "dictation-audio")
             Log.persistence.info("History: deleted \(removed, privacy: .public) recording(s)")
             return 0
         }
@@ -509,13 +519,15 @@ final class DictationSessionStore {
         }
     }
 
-    /// Deletes every diagnostic record and keeps the dictations: the
-    /// diagnostic records setting turned off.
+    /// Deletes every diagnostic record, quarantined ones included, and
+    /// keeps the dictations: the diagnostic records setting turned off.
     @discardableResult
     func deleteAllDiagnosticRecords() -> Task<Void, Never> {
         let diagnosticRecordStore = diagnosticRecordStore
+        let quarantine = quarantine
         return enqueueWrite("delete all diagnostic records") { _ in
             let removed = diagnosticRecordStore?.removeAll() ?? 0
+            quarantine?.removeAll(of: "diagnostic-records")
             Log.persistence.info("History: deleted \(removed, privacy: .public) diagnostic record(s)")
             return 0
         }

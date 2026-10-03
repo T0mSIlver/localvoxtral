@@ -9,7 +9,8 @@ import os
 /// Rotation keeps the newest snapshot of each of the last seven days, the
 /// ten newest event snapshots, and always the newest snapshot that holds a
 /// dictation: a store that lost its rows must never rotate away the copy
-/// that still has them. Files it cannot parse are left alone.
+/// that still has them. Files it cannot parse are left alone. Delete All and
+/// Don't keep delete every snapshot (#1574).
 struct DictationHistoryBackups: Sendable {
     enum Reason: String, Sendable {
         case daily
@@ -129,6 +130,17 @@ struct DictationHistoryBackups: Sendable {
         }
     }
 
+    /// Deletes every snapshot: the user deleted all of History or chose
+    /// Don't keep, and a copy here would keep what they deleted (#1574).
+    /// Files it cannot parse are left alone, as rotation leaves them.
+    func removeAll() {
+        let snapshots = snapshots()
+        for snapshot in snapshots { Self.removeFiles(at: snapshot.url) }
+        if !snapshots.isEmpty {
+            Log.persistence.info("History: deleted \(snapshots.count, privacy: .public) snapshot(s)")
+        }
+    }
+
     // MARK: - Names
 
     /// `history-20260928T114325Z-migration-n652.store`.
@@ -167,7 +179,9 @@ struct DictationHistoryBackups: Sendable {
 /// Where the automatic sweeps put the recordings and diagnostic records they
 /// would have deleted: a folder per day, emptied after 30 days. A snapshot of
 /// the store cannot bring back a WAV; this can. What the user deletes
-/// (Delete, Delete All, turning a setting off) is deleted for real.
+/// (Delete, Delete All, turning a setting off) is deleted for real, and
+/// Delete All, Don't keep and turning a setting off also empty this of
+/// what they deleted (#1574).
 struct DictationHistoryQuarantine: Sendable {
     static let keptDays = 30
 
@@ -188,6 +202,24 @@ struct DictationHistoryQuarantine: Sendable {
     func folder(for kind: String) -> URL {
         directoryURL.appendingPathComponent(Self.day(now()), isDirectory: true)
             .appendingPathComponent(kind, isDirectory: true)
+    }
+
+    /// Deletes what every day folder holds of `kind`.
+    func removeAll(of kind: String) {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directoryURL.path)) ?? []
+        for name in names where name.count == 8 && Int(name) != nil {
+            let folder = directoryURL.appendingPathComponent(name, isDirectory: true)
+                .appendingPathComponent(kind, isDirectory: true)
+            guard FileManager.default.fileExists(atPath: folder.path) else { continue }
+            do {
+                try FileManager.default.removeItem(at: folder)
+                Log.persistence.info("History: emptied quarantined \(kind, privacy: .public) of \(name, privacy: .public)")
+            } catch {
+                Log.persistence.error(
+                    "History: could not empty quarantined \(kind, privacy: .public) of \(name, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+            }
+        }
     }
 
     /// Deletes the day folders older than `keptDays`. Names that are not a

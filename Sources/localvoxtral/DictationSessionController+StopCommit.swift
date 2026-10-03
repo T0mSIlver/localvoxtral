@@ -1035,6 +1035,12 @@ extension DictationSessionController {
         if !settings.dictationAudioEnabled {
             sessionStore?.deleteAllAudio()
         }
+        guard retention.savesDictations else {
+            // Not a trim: a trim snapshots the store first, and Don't keep
+            // keeps no copy (#1574).
+            sessionStore?.deleteAll()
+            return
+        }
         guard let cutoff = retention.cutoff(now: now) else { return }
         sessionStore?.trim(olderThan: cutoff)
     }

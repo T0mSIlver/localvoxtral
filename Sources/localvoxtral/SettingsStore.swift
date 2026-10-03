@@ -512,8 +512,15 @@ final class SettingsStore {
     /// The user's global terms, correct spelling only (`SpeakerTerms`).
     /// An ABSENT key means "never set", which is what lets the one-time import
     /// from the replacement dictionary tell a new install from an emptied list.
+    /// A change merges into the saved list, which another running copy may
+    /// have changed since (#1575).
     var polishSpeakerTerms: [String] {
         didSet {
+            if let saved = defaults.stringArray(forKey: Keys.polishSpeakerTerms) {
+                let merged = ListSettingMerge.merge(
+                    base: oldValue, ours: polishSpeakerTerms, saved: SpeakerTerms.sanitized(saved))
+                if merged != polishSpeakerTerms { polishSpeakerTerms = merged }
+            }
             defaults.set(polishSpeakerTerms, forKey: Keys.polishSpeakerTerms)
             // A term the user adds by hand is no longer a refusal.
             let added = Set(polishSpeakerTerms.map(SpeakerTermSuggestions.key))
@@ -529,8 +536,16 @@ final class SettingsStore {
 
     /// Suggested terms the user refused, oldest first. Never expires; only
     /// adding the term by hand or "Forget dismissed suggestions" removes one.
+    /// Merged into the saved list like `polishSpeakerTerms`.
     var polishDismissedTermSuggestions: [String] {
         didSet {
+            if let saved = defaults.stringArray(forKey: Keys.polishDismissedTermSuggestions) {
+                let merged = Array(
+                    ListSettingMerge.merge(
+                        base: oldValue, ours: polishDismissedTermSuggestions, saved: saved)
+                        .suffix(SpeakerTermSuggestions.maxDismissed))
+                if merged != polishDismissedTermSuggestions { polishDismissedTermSuggestions = merged }
+            }
             defaults.set(
                 polishDismissedTermSuggestions, forKey: Keys.polishDismissedTermSuggestions)
         }
