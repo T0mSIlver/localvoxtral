@@ -1,5 +1,7 @@
 import Foundation
+#if canImport(os)
 import os
+#endif
 
 /// A single raw realtime-delta log emission, captured before any
 /// merge/preprocess/insertion processing. Mirrors what `Log.deltas` records
@@ -10,8 +12,8 @@ import os
 /// `payload` is the exact, unprocessed string the backend delivered (quoted in
 /// the actual log via `.debugDescription` so whitespace is visible); it is nil
 /// for events that carry no string payload (session boundaries, finalized).
-struct DebugRealtimeDeltaLogRecord: Equatable, Sendable {
-    enum Kind: String, Sendable {
+package struct DebugRealtimeDeltaLogRecord: Equatable, Sendable {
+    package enum Kind: String, Sendable {
         case sessionConnected = "session.connected"
         case sessionDisconnected = "session.disconnected"
         case partialDelta = "partial"
@@ -21,17 +23,19 @@ struct DebugRealtimeDeltaLogRecord: Equatable, Sendable {
         case transcriptionFinalized = "finalized"
     }
 
-    let kind: Kind
-    let sequence: Int
-    let payload: String?
+    package let kind: Kind
+    package let sequence: Int
+    package let payload: String?
 }
 
 /// The opt-in raw-delta log (issue #13 instrumentation).
-struct RealtimeDeltaLog {
+package struct RealtimeDeltaLog {
     /// Per-session sequence counter. Reset to 0 when a new realtime session
     /// connects. Only advanced inside the gated logging path, so a value of 0
     /// while events are flowing proves the toggle is off.
-    private(set) var sequence = 0
+    package private(set) var sequence = 0
+
+    package init() {}
 
     /// Emit the raw payload of every received realtime event to `Log.deltas`
     /// (notice level) BEFORE any processing, when the hidden
@@ -46,7 +50,7 @@ struct RealtimeDeltaLog {
     /// rationale). No-op when the toggle is off: `sink` is called only on the
     /// same gated path, so "sink not called when disabled" proves the logging
     /// call path was not entered.
-    mutating func record(
+    package mutating func record(
         _ event: RealtimeEvent,
         isEnabled: Bool,
         sink: ((DebugRealtimeDeltaLogRecord) -> Void)?
