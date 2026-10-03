@@ -1937,6 +1937,7 @@ final class DictationPipelineTests: XCTestCase {
         let relay = try FakeOpencodePromptRelay { _ in 409 }
         addTeardownBlock { relay.stop() }
         let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
         joinOpencodePane(pipeline, relay: relay.relay(sessionID: "ses_a").address)
         let typed = recordTypedText(pipeline)
 
