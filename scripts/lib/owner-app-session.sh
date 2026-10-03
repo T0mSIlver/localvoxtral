@@ -61,18 +61,19 @@ apply_defaults_backup() {
 # restore_legacy_defaults_backup <plist>: a backup a pre-#991 lane left. Its
 # marker cannot be trusted: a lane killed between the export and the marker
 # left an export with no marker. Importing the plist is right either way,
-# since an absent domain was backed up as an empty dict.
+# since an absent domain was backed up as an empty dict. Leaves the backup on
+# disk; the caller removes it.
 restore_legacy_defaults_backup() {
   local legacy="$1"
   if ! plutil -lint -s "$legacy" >/dev/null 2>&1; then
     printf 'ERROR: %s is not a valid plist; leaving the %s domain untouched.\n' "$legacy" "$BUNDLE_ID" >&2
     return 1
   fi
-  apply_defaults_backup present "$legacy" || return 1
-  rm -f "$legacy" "${legacy}.had-domain"
+  apply_defaults_backup present "$legacy"
 }
 
-# restore_defaults_backup <backup>
+# restore_defaults_backup <backup>: leaves the backup on disk; the caller
+# removes it.
 restore_defaults_backup() {
   local backup="$1" payload state
   payload="$(mktemp "${backup}.payload.XXXXXX")" || return 1
@@ -85,15 +86,16 @@ restore_defaults_backup() {
     rm -f "$payload"
     return 1
   fi
-  rm -f "$payload" "$backup"
+  rm -f "$payload"
 }
 
 # Restores the owner's domain from a backup a killed run left. Only the
 # oldest backup holds the owner's own settings: an older lane recovered only
 # its own path, so a later backup on another path can hold the forced modes
-# of the run killed before it. The others are deleted once the oldest is
-# restored. A backup that does not validate fails the lane with every backup
-# and the domain left as they are.
+# of the run killed before it. The oldest is restored first and removed last,
+# after every other backup: a recovery killed at any step leaves the oldest
+# on disk, and the next one restores it again. A backup that does not
+# validate fails the lane with every backup and the domain left as they are.
 recover_previous_defaults_backup() {
   local lane backup legacy found oldest=""
   for lane in $DEFAULTS_BACKUP_LANES; do
@@ -121,9 +123,11 @@ recover_previous_defaults_backup() {
     return 1
   }
   for lane in $DEFAULTS_BACKUP_LANES; do
-    rm -f "${HOME}/.localvoxtral-${lane}.defaults-backup" \
-      "${HOME}/.localvoxtral-${lane}.pre.plist" "${HOME}/.localvoxtral-${lane}.pre.plist.had-domain"
+    for found in "${HOME}/.localvoxtral-${lane}.defaults-backup" "${HOME}/.localvoxtral-${lane}.pre.plist"; do
+      [[ "$found" == "$oldest" ]] || rm -f "$found" "${found}.had-domain"
+    done
   done
+  rm -f "$oldest" "${oldest}.had-domain"
   printf 'WARNING: previous defaults backup restored; every backup removed.\n' >&2
 }
 

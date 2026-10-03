@@ -25,12 +25,23 @@ pass() { printf 'PASS: %s\n' "$*"; }
 BIN="$WORK/bin"
 mkdir -p "$BIN"
 
+# STUB_KILL_AT_STEP=<n> SIGKILLs the lane before the n-th call to `defaults`
+# or `rm` has done anything; $STEPS counts them.
+cat >"$WORK/step.sh" <<'STUB'
+if [ -n "$STUB_KILL_AT_STEP" ]; then
+  n=$(($(cat "$STEPS" 2>/dev/null || echo 0) + 1))
+  echo "$n" >"$STEPS"
+  if [ "$n" = "$STUB_KILL_AT_STEP" ]; then kill -KILL "$LANE_PID"; exit 137; fi
+fi
+STUB
+
 # One file per domain under $DOMAINS. STUB_KILL_AT=delete SIGKILLs the lane
 # (the stub's parent shell) before `delete` has done anything. Every call is
 # logged.
 cat >"$BIN/defaults" <<'STUB'
 #!/bin/sh
 echo "defaults $1" >>"$CALLS"
+. "$STEP_LIB"
 store="$DOMAINS/$2.plist"
 case "$1" in
   import) cp "$3" "$store" ;;
@@ -45,6 +56,11 @@ cat >"$BIN/plutil" <<'STUB'
 #!/bin/sh
 head -n 3 "$3" | grep -q '<plist'
 STUB
+cat >"$BIN/rm" <<STUB
+#!/bin/sh
+. "\$STEP_LIB"
+exec $(command -v rm) "\$@"
+STUB
 chmod +x "$BIN"/*
 
 OWNER_PLIST='<plist version="1.0">
@@ -52,7 +68,7 @@ OWNER_PLIST='<plist version="1.0">
 </plist>
 '
 
-export DOMAINS="$WORK/domains" CALLS="$WORK/calls"
+export DOMAINS="$WORK/domains" CALLS="$WORK/calls" STEPS="$WORK/steps" STEP_LIB="$WORK/step.sh"
 LIVE="$DOMAINS/com.localvoxtral.app.plist"
 GOLDEN="$WORK/golden.plist"
 
@@ -94,6 +110,7 @@ lane() {
     set -uo pipefail
     BUNDLE_ID="${LANE_BUNDLE_ID:-com.localvoxtral.app}"
     record_fail() { echo "record_fail: $*" >&2; }
+    export LANE_PID=$$
     source "$1"
     recover_previous_defaults_backup || exit 11
   ' lane "$LIB" >>"$WORK/lane.out" 2>&1 || status=$?
@@ -149,6 +166,44 @@ force_live
 assert_live_is_golden "after recovering two backups"
 assert_no_leftovers "after recovering two backups"
 pass "with two backups on disk, the oldest is restored and the other dropped"
+
+# 2c. A recovery killed before any one of its steps leaves the oldest backup
+#     on disk, so the next lane restores the owner's domain from it, never
+#     from the forced modes in a newer backup. The oldest is a current backup,
+#     then a pre-#991 one.
+two_backups() {
+  fresh_account
+  if [[ "$1" == legacy ]]; then
+    cp "$GOLDEN" "$WORK/home/.localvoxtral-ui-smoke.pre.plist"
+    touch "$WORK/home/.localvoxtral-ui-smoke.pre.plist.had-domain"
+    touch -t 202609010000 "$WORK/home/.localvoxtral-ui-smoke.pre.plist"
+  else
+    write_backup ui-smoke present
+    touch -t 202609010000 "$WORK/home/.localvoxtral-ui-smoke.defaults-backup"
+  fi
+  force_live
+  write_backup capture-assets present
+  force_live
+}
+for oldest_kind in current legacy; do
+  step=1
+  while :; do
+    two_backups "$oldest_kind"
+    rm -f "$STEPS"
+    status="$(STUB_KILL_AT_STEP=$step lane)"
+    [[ "$status" == 0 ]] && break
+    [[ "$status" == 137 ]] || fail "$oldest_kind: recovery killed at step $step exited $status: $(cat "$WORK/lane.out")"
+    [[ "$(lane)" == 0 ]] || fail "$oldest_kind: recovery after a kill at step $step failed: $(cat "$WORK/lane.out")"
+    assert_live_is_golden "$oldest_kind: after a recovery killed at step $step"
+    assert_no_leftovers "$oldest_kind: after a recovery killed at step $step"
+    step=$((step + 1))
+    ((step < 100)) || fail "$oldest_kind: recovery never finished without a kill"
+  done
+  ((step > 3)) || fail "$oldest_kind: recovery ran only $((step - 1)) steps; the kill counter is not seeing them"
+  assert_live_is_golden "$oldest_kind: after an unkilled recovery"
+  assert_no_leftovers "$oldest_kind: after an unkilled recovery"
+done
+pass "a recovery killed before any of its steps is finished from the oldest backup"
 
 # 3. A damaged backup stops recovery before the live domain is deleted.
 fresh_account
