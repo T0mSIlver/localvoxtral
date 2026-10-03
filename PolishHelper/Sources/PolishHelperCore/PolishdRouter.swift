@@ -43,6 +43,15 @@ public struct PolishdRouter: Sendable {
         guard !completion.messages.isEmpty else {
             return errorResponse(400, "messages must not be empty", type: "invalid_request_error")
         }
+        // One model is loaded. A request for another one (a stop that read
+        // the selection before a model switch) must not be answered by this
+        // one under the name it asked for (#1591).
+        if let requested = completion.model, !requested.isEmpty, requested != modelName {
+            PolishdLog.error("chat.completion refused: requested model \(requested), loaded \(modelName)")
+            return errorResponse(
+                400, "model \(requested) is not loaded; this helper serves \(modelName)",
+                type: "invalid_request_error")
+        }
 
         do {
             let start = ContinuousClock.now
@@ -60,7 +69,7 @@ public struct PolishdRouter: Sendable {
             let response = ChatCompletionResponse(
                 id: "polishd-\(UUID().uuidString)",
                 created: Int(Date().timeIntervalSince1970),
-                model: completion.model ?? modelName,
+                model: modelName,
                 content: reply.content,
                 timings: reply.timings,
                 finishReason: reply.finishReason
