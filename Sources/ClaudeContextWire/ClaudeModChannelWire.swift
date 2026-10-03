@@ -8,10 +8,12 @@ import Foundation
 /// keeps the connection open; the broker writes `Message` lines down it, and
 /// the process copies each one that decodes to its stdout, where the mod
 /// reads it. The mod answers a message with `--mod-reply`, a one-shot
-/// connection carrying a `Reply` line.
+/// connection carrying a `Reply` line, and says the session ended with a
+/// `Bye` line the same way (#1646).
 ///
-/// Every line is one JSON object. The three shapes tell themselves apart by
-/// a key no hook record has: `mod_attach`, `mod_message` and `mod_reply`.
+/// Every line is one JSON object. The shapes tell themselves apart by a key
+/// no hook record has: `mod_attach`, `mod_message`, `mod_reply` and
+/// `mod_bye`.
 public enum ClaudeModChannelWire {
     public static let version = 1
     /// One message or reply, whole. Dictated text is the largest payload.
@@ -75,6 +77,10 @@ public enum ClaudeModChannelWire {
         /// The joined dictation's state, for the band above the prompt
         /// (#1411): `phase` and the words so far in `text`. Not answered.
         case state
+        /// The app took the mod's `Bye` and ended the channel (#1646): the
+        /// mod stops its `--attach` and, if the process goes on under a new
+        /// session id (`/clear`), attaches again for that one. Not answered.
+        case bye
     }
 
     /// What a `state` message says the dictation is doing.
@@ -196,8 +202,28 @@ public enum ClaudeModChannelWire {
         }
     }
 
+    /// The mod's word that its session is ending (#1646), sent on
+    /// `session.end` through `--mod-reply`. The app ends the session when the
+    /// session's channel detaches after it; with no channel attached it
+    /// changes nothing.
+    public struct Bye: Codable, Equatable, Sendable {
+        public var modBye: Int
+        public var sessionID: String
+
+        public init(sessionID: String, version: Int = ClaudeModChannelWire.version) {
+            self.modBye = version
+            self.sessionID = sessionID
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case modBye = "mod_bye"
+            case sessionID = "session_id"
+        }
+    }
+
     public static func isAttach(_ line: Data) -> Bool { hasKey("mod_attach", in: line) }
     public static func isReply(_ line: Data) -> Bool { hasKey("mod_reply", in: line) }
+    public static func isBye(_ line: Data) -> Bool { hasKey("mod_bye", in: line) }
 
     /// Decodes a line of this wire, or nil: over the size cap, not JSON, the
     /// wrong shape, or a version this build does not speak.
@@ -249,4 +275,8 @@ extension ClaudeModChannelWire.Message: ClaudeModChannelWire.Versioned {
 
 extension ClaudeModChannelWire.Reply: ClaudeModChannelWire.Versioned {
     public var wireVersion: Int { modReply }
+}
+
+extension ClaudeModChannelWire.Bye: ClaudeModChannelWire.Versioned {
+    public var wireVersion: Int { modBye }
 }

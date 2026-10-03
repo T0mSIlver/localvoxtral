@@ -432,6 +432,10 @@ session shows it above its prompt: **Listening** and the words so far, then
 wherever the session is drawn, a terminal, the Claude Desktop Code tab or the
 Claude app on a phone.
 
+While the mod is connected, the app keeps the session joinable however long
+it sits idle, and drops it the moment the session ends or `/clear` starts a
+new one.
+
 With **Ask the coding agent for each new project's terms** on, a session with
 the mod answers that question itself when it has had at least three prompts
 and was active in the last four minutes: the app asks the session's own model

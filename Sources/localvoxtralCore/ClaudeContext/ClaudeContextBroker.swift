@@ -644,6 +644,10 @@ public final class ClaudeContextBroker: Sendable {
                     deliverModReply(line)
                     continue
                 }
+                if ClaudeModChannelWire.isBye(line) {
+                    deliverModBye(line)
+                    continue
+                }
                 let handled = handle(line: line, origin: origin, peerPID: peerPID)
                 reply(to: fd, accepted: handled.accepted, version: handled.replyVersion)
             }
@@ -709,6 +713,7 @@ public final class ClaudeContextBroker: Sendable {
             return false
         }
         state.withLock { $0.admission.release() }
+        registry.modChannelAttached(sessionID: attach.sessionID, claudePID: attach.claudePID, token: token)
 
         // The publisher sends nothing after its attach, so any readable
         // event is the end: EOF, an error, a shutdown, or a peer that broke
@@ -718,7 +723,8 @@ public final class ClaudeContextBroker: Sendable {
         // Before `serve` closes the number: a send still holding the channel
         // must not write to whatever connection gets it next.
         descriptor.retire()
-        modChannels.detach(sessionID: attach.sessionID, token: token)
+        let ended = modChannels.detach(sessionID: attach.sessionID, token: token)
+        registry.modChannelDetached(sessionID: attach.sessionID, token: token, sessionEnded: ended)
         return true
     }
 
@@ -727,6 +733,14 @@ public final class ClaudeContextBroker: Sendable {
             return
         }
         _ = writeAll(fd: fd, data: line)
+    }
+
+    private func deliverModBye(_ line: Data) {
+        guard let bye = ClaudeModChannelWire.decode(ClaudeModChannelWire.Bye.self, from: line) else {
+            Log.claudeContext.error("Mod channel: dropped an unreadable bye")
+            return
+        }
+        modChannels?.bye(sessionID: bye.sessionID)
     }
 
     private func deliverModReply(_ line: Data) {

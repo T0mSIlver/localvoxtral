@@ -27,6 +27,9 @@ export type ChannelReply = {
   usage?: ChannelUsage
 }
 
+/** The mod's word that its session ends (#1646), sent like a reply. */
+export type ChannelBye = { mod_bye: number; session_id: string }
+
 /** Whether the mod did what a message asked, why not, and any answer. */
 export type Outcome = { ok: boolean; reason?: string; text?: string; cursor?: number; usage?: ChannelUsage }
 
@@ -34,6 +37,11 @@ export type Outcome = { ok: boolean; reason?: string; text?: string; cursor?: nu
 // does not know `--attach` (an app older than the mod): stop asking it.
 export const SHORTEST_LIFE_MS = 5000
 export const RESTART_DELAY_MS = 30000
+// After a `/clear` the process goes on under a new session id, which
+// `$.session.id()` answers only once `session.end` is over: how often and how
+// long the channel looks for it before it attaches again.
+export const NEW_SESSION_POLL_MS = 500
+export const NEW_SESSION_WAIT_MS = 10000
 // A band nobody updated for this long belongs to a dictation whose end never
 // arrived (the app quit mid-dictation): it clears itself. The app sends an
 // unchanged band again every 10 s, so a pause or a long polish keeps it.

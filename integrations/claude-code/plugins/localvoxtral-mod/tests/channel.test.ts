@@ -207,6 +207,57 @@ describe('channel', () => {
     expect(spawns).toBe(1)
   })
 
+  for (const [reason, respawned] of [
+    ['clear', [[PUBLISHER, '--attach', '--session', 'sess-1'], [PUBLISHER, '--attach', '--session', 'sess-2']]],
+    ['prompt_input_exit', [[PUBLISHER, '--attach', '--session', 'sess-1']]],
+  ] as const) {
+    test(`session.end says bye, and the channel follows only a /clear: ${reason}`, async ($, on) => {
+      const clock = mock.clock(on)
+      mock.env(on, { HOME: '/Users/tom' })
+      let sessionID = 'sess-1'
+      const spawned: (readonly string[])[] = []
+      const sent: unknown[] = []
+      let appSawBye = () => {}
+      const byeTaken = new Promise<void>((resolve) => {
+        appSawBye = resolve
+      })
+      on('session.start', ($, e) => ({ cwd: e.cwd }))
+      on('session.end', ($, e) => ({ sessionId: e.sessionId }))
+      on('session.id', () => ({ value: sessionID }))
+      on('settings.read', () => ({ value: {} }))
+      on('fs.exists', ($, e) => ({ value: e.path === PUBLISHER }))
+      on('ui.status', () => ({ value: undefined }))
+      on('process.spawn', async function* ($, e): AsyncGenerator<ProcessSpawnChunk, { value: ProcessSpawnResult }> {
+        spawned.push(e.argv)
+        if (spawned.length === 1) {
+          // The app answers the bye down the channel, then closes it.
+          await byeTaken
+          yield { stream: 'stdout', text: '{"id":"z","kind":"bye","mod_message":1}\n' }
+        }
+        await clock.sleep(600000)
+        return { value: EXITED }
+      })
+      on('process.run', ($, e) => {
+        if (e.argv[1] === '--mod-reply') {
+          sent.push(JSON.parse(e.init?.stdin ?? ''))
+          appSawBye()
+        }
+        return {
+          value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+        }
+      })
+
+      await $.session.start(STARTED)
+      await clock.advance(1000)
+      await $.session.end({ reason, sessionId: 'sess-1', resume: { id: 'sess-1' } })
+      if (reason === 'clear') sessionID = 'sess-2'
+      await clock.advance(2000)
+
+      expect(sent).toEqual([{ mod_bye: 1, session_id: 'sess-1' }])
+      expect(spawned).toEqual(respawned)
+    })
+  }
+
   test('parseMessage takes only this version of the wire', () => {
     expect(parseMessage('{"mod_message":1,"kind":"ping","id":"a"}')).toEqual({
       mod_message: 1,
