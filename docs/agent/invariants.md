@@ -297,7 +297,12 @@ there is not.
   carries the Claude pid the process runs under, but it is not checked
   against the hook's: both come from the same user, the residual threat the
   hook path already accepts below, and a mismatch would only silently turn
-  the channel off. Mod replies ride one-shot connections and carry only a
+  the channel off. An Overlay Buffer fill the mod refused, or never got, is
+  typed only while the commit's terminal is frontmost and its focused pane
+  still shows the session (`ClaudeSessionJoinResolver.sessionShown`): a pid
+  cannot tell two tabs apart. Otherwise, and for a fill the mod got but never
+  answered, the text stays in History. Unless keys put it in, the next
+  commit gets no continuation space. Mod replies ride one-shot connections and carry only a
   short reason code, never text.
 - **The Mistral second pass holds the text back, never the world** (#317).
   An Overlay Buffer dictation in Mistral API mode is sent whole to the batch

@@ -410,6 +410,14 @@ Code. It shows the indicator below as its own status line, with no entry in
 ~/.claude/settings.json, beside your own status line. It skips the indicator
 when your settings already show it.
 
+With the mod in a session, an Overlay Buffer dictation joined to that session
+in a terminal goes into Claude Code's prompt box through the mod instead of
+being typed: no key is posted, so Secure Keyboard Entry and a focus change
+cannot drop it. If the mod cannot take the text (a dialog holds the keys, the
+session ended), the app types it as before. A dictation that ends in the
+spoken send word, and sessions in Claude Desktop or a browser tab, are still
+typed.
+
 Mods are early access in Claude Code, and load only where Claude Code enables
 them. Where they do not load, this plugin does nothing and the `localvoxtral`
 plugin keeps working; use the setting below instead. By hand:

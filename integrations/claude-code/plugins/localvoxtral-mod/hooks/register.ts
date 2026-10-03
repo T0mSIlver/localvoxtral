@@ -92,7 +92,7 @@ async function answer(
 ): Promise<void> {
   let outcome: Outcome
   try {
-    outcome = await handle(message)
+    outcome = await handle($, message)
   } catch {
     outcome = { ok: false, reason: 'failed' }
   }
@@ -105,10 +105,17 @@ async function answer(
 }
 
 /** Does what one message asks. A kind this build does not know is not done. */
-async function handle(message: ChannelMessage): Promise<Outcome> {
+async function handle($: EngineInterface, message: ChannelMessage): Promise<Outcome> {
   switch (message.kind) {
     case 'ping':
       return { ok: true }
+    case 'fill': {
+      // At the cursor, as typing would put it (#1409). The app gives the
+      // text back to the keyboard on anything but ok.
+      if (message.text === undefined || message.text === '') return { ok: false, reason: 'no_text' }
+      const filled = await $.prompt.fill({ text: message.text, mode: 'insert' })
+      return filled.isFilled ? { ok: true } : { ok: false, reason: filled.refusal ?? 'refused' }
+    }
     default:
       return { ok: false, reason: 'unknown_kind' }
   }
