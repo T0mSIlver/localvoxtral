@@ -532,9 +532,8 @@ final class BackendManager: ManagedBackendManaging {
         do {
             try await startAndWaitUntilReady(supervisor, spec: spec)
         } catch where Task.isCancelled {
-            // The state stream ends on cancellation, which reads as a helper
-            // that stopped reporting. Nobody waits for this one any more:
-            // stop it, so `.stopped` is true.
+            // Nobody waits for this helper any more: stop it, so `.stopped`
+            // is true.
             await stopSupervisorKeepingEnsureTask(for: spec)
             setStatus(.stopped, for: spec)
             Log.backends.info("\(spec.displayName, privacy: .public) start cancelled; helper stopped")
@@ -654,6 +653,9 @@ final class BackendManager: ManagedBackendManaging {
             }
         }
 
+        // The stream also ends when the ensure is cancelled; its caller
+        // sets the status then.
+        try Task.checkCancellation()
         let message = "\(spec.displayName) stopped reporting status before it became ready."
         setStatus(.failed(summary: message, detail: nil), for: spec)
         throw ManagedBackendManagerError.backendFailed(
