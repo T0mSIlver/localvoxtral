@@ -743,6 +743,13 @@ extension DictationSessionController {
             let startedAt = clock.now()
             self.realtimeFinalizationLastActivityAt = startedAt
             self.activeRealtimeClient.sendCommit(final: true)
+            // When the final commit left for the server. Until the session is
+            // ready the commit and the audio before it wait in the client
+            // (a server that never sends `session.created` is reached only
+            // after the 3 s compatibility fallback, a rollover holds them
+            // until the retiring socket's `done`), and an idle close there
+            // drops the whole tail (#1456). Only the timeout bounds that wait.
+            var sentAt: Date?
             while self.isFinalizingStop {
                 if !self.activeRealtimeClient.isConnected {
                     Log.backends.notice("stop finalization: the socket closed; finishing the stop")
@@ -752,7 +759,10 @@ extension DictationSessionController {
 
                 let now = clock.now()
                 let elapsed = now.timeIntervalSince(startedAt)
-                let lastActivity = self.realtimeFinalizationLastActivityAt ?? startedAt
+                if sentAt == nil, self.activeRealtimeClient.isSessionReady {
+                    sentAt = now
+                }
+                let lastActivity = max(self.realtimeFinalizationLastActivityAt ?? startedAt, sentAt ?? now)
                 let inactivity = now.timeIntervalSince(lastActivity)
 
                 if elapsed >= TimingConstants.stopFinalizationTimeout {
@@ -764,7 +774,7 @@ extension DictationSessionController {
                     return
                 }
 
-                if elapsed >= TimingConstants.finalizationMinimumOpen,
+                if let sentAt, now.timeIntervalSince(sentAt) >= TimingConstants.finalizationMinimumOpen,
                    inactivity >= TimingConstants.finalizationInactivityThreshold
                 {
                     Log.backends.notice(

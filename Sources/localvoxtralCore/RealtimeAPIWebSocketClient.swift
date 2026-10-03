@@ -107,7 +107,10 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     }
     package var isSessionReady: Bool {
         state.withLock { s in
+            // A rollover holds the audio it carries until the retiring
+            // socket's `done`, up to `rolloverDoneTimeout`.
             s.base.socketState == .connected && (s.hasReceivedSessionCreated || s.hasBypassedSessionCreatedGate)
+                && s.rollover == nil
         }
     }
     package var connectionGeneration: RealtimeConnectionGeneration {

@@ -38,9 +38,10 @@ enum TimingConstants {
     /// text is promoted.
     static let stopFinalizationTimeout: TimeInterval = 7.0
 
-    /// Minimum time the finalization phase stays open before the inactivity
-    /// check kicks in. Prevents premature disconnect if the first transcript
-    /// delta arrives slowly.
+    /// Minimum time the finalization phase stays open, counted from when the
+    /// final commit left for the server, before the inactivity check kicks
+    /// in. Prevents premature disconnect if the first transcript delta
+    /// arrives slowly.
     static let finalizationMinimumOpen: TimeInterval = 1.5
 
     /// If no realtime event arrives within this window (after the minimum open
