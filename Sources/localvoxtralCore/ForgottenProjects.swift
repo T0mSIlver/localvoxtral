@@ -39,14 +39,18 @@ package struct ForgottenProjects: Codable, Equatable, Sendable {
     }
 
     /// Keeps `project` out, merged into any tombstone that shares a key.
+    /// The merge keeps the latest forget's time, the cutoff for the records
+    /// it removes, so a replayed older forget never moves it back.
     package mutating func add(_ project: ForgottenProject) {
         var keys = Set(project.keys)
+        var forgottenAt = project.forgottenAt
         projects.removeAll { tombstone in
             guard !keys.isDisjoint(with: tombstone.keys) else { return false }
             keys.formUnion(tombstone.keys)
+            forgottenAt = max(forgottenAt, tombstone.forgottenAt)
             return true
         }
-        projects.append(ForgottenProject(keys: keys.sorted(), forgottenAt: project.forgottenAt))
+        projects.append(ForgottenProject(keys: keys.sorted(), forgottenAt: forgottenAt))
     }
 
     /// Clears every tombstone that holds one of `keys`.
