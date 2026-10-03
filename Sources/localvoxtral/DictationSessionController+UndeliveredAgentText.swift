@@ -13,7 +13,12 @@ extension DictationSessionController {
             return StatusStrings.agentPromptTextKeptInHistory
         }
         Log.dictation.notice("agent text not delivered and History is off; text copied")
-        dependencies.pasteboardWriter(text)
+        // A Cmd+V paste may still read the clipboard (#1467). The relay
+        // keeps the whole text each time, so a later write may replace a
+        // held one.
+        textInsertion.writeClipboardAfterPendingPastes { [weak self] in
+            self?.dependencies.pasteboardWriter(text)
+        }
         return StatusStrings.overlayCopiedToClipboard
     }
 }

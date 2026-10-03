@@ -2650,6 +2650,50 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(copied.values.last, Self.phrase)
     }
 
+    /// Kept text copied with History off waits, like Copy on stop, until no
+    /// Cmd+V paste may still read the clipboard: Claude Desktop reads a
+    /// fenced segment's paste after the post returned (#1467, #1499).
+    func testKeptTextWithHistoryOffDoesNotReplaceAnInFlightFencePaste() async throws {
+        let fenced = "see:\n```\nline one\n```"
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        pipeline.viewModel.settings.dictationHistoryRetention = .off
+        pipeline.viewModel.settings.autoCopyEnabled = false
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { ClaudeDesktopAllowlist.bundleID }
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .noFocusedElement }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        addTeardownBlock { @MainActor in
+            TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
+            TerminalTargetDetector.debugFocusedElementProbeOverride = nil
+            TerminalTargetDetector.debugSecureEventInputOverride = nil
+        }
+        let clipboard = FakeClipboard()
+        pipeline.viewModel.dependencies.pasteboardWriter = { clipboard.write($0) }
+        pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        pipeline.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { _ in true },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false },
+            shiftReturnPoster: { true },
+            commandVPaster: { text in
+                clipboard.write(text)
+                return true
+            }
+        )
+
+        await startAndSpeak(pipeline)
+        await stopAndFinalize(pipeline, finalText: fenced)
+        XCTAssertEqual(clipboard.text.trimmingCharacters(in: .whitespaces), fenced, "precondition: pasted")
+
+        let status = pipeline.viewModel.session.keepUndeliveredAgentText("kept text")
+
+        XCTAssertEqual(status, DictationViewModel.StatusStrings.overlayCopiedToClipboard)
+        XCTAssertEqual(clipboard.text.trimmingCharacters(in: .whitespaces), fenced, "the paste still owns the clipboard")
+        await pipeline.clock.waitForSleepers(1)
+        pipeline.clock.advance(by: 1)
+        let copied = await clipboard.waitFor { $0 == "kept text" }
+        XCTAssertTrue(copied, "clipboard: \(clipboard.text.debugDescription)")
+    }
+
     // MARK: - Stopping by voice (#839)
 
     /// A trailing "send it" and three seconds without new words, the
