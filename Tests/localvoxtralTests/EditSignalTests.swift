@@ -18,6 +18,8 @@ final class EditSignalTestMonitor: EditKeyMonitoring {
     private(set) var startCount = 0
     private(set) var stopCount = 0
     private(set) var isInstalled = false
+    /// Every `stop()`, for a test that waits on a teardown it cannot await.
+    let stops = EventCount()
     /// Set false to stand in for the untrusted-Accessibility case, where the
     /// real monitor never goes up.
     var canInstall = true
@@ -34,6 +36,7 @@ final class EditSignalTestMonitor: EditKeyMonitoring {
     func stop() {
         stopCount += 1
         isInstalled = false
+        stops.increment()
     }
 
     func send(_ signal: EditSignal) {
@@ -557,12 +560,13 @@ final class EditSignalTests: XCTestCase {
         await sleeper.waitForSleepRequest()
         XCTAssertTrue(monitor.isInstalled)
 
+        let stopsBefore = monitor.stopCount
         watcher = nil
 
-        // `isolated deinit` runs on the main actor; give it a beat without
-        // resuming the sleep (the sleeper stays un-fired, so a strong capture
-        // in the timer would still be holding the watcher here).
-        await Task.yield()
+        // `isolated deinit` runs on the main actor and stops the monitor; wait
+        // for that stop without resuming the sleep (the sleeper stays un-fired,
+        // so a strong capture in the timer would still be holding the watcher).
+        await monitor.stops.waitFor(stopsBefore + 1)
         XCTAssertNil(
             released, "the window timer must not retain the watcher across its sleep"
         )
