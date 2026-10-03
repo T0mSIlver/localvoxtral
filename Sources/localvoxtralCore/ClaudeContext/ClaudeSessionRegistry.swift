@@ -1137,23 +1137,12 @@ public final class ClaudeSessionRegistry: Sendable {
 
     private func schedulePersistenceLocked(_ state: State) {
         guard let persistenceWriter else { return }
-        guard !state.sessions.isEmpty || !state.unverifiedRemoteRows.isEmpty else {
-            persistenceWriter.submit(.clear)
-            return
-        }
-        let file = StoredClaudeSessions(
+        persistenceWriter.submit(.save(StoredClaudeSessions(
             version: StoredClaudeSessions.currentVersion,
             bootIdentity: bootIdentity(),
             sessions: (state.sessions.values.map(Self.storedSession) + state.unverifiedRemoteRows)
                 .sorted { $0.sessionID < $1.sessionID }
-        )
-        do {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .millisecondsSince1970
-            persistenceWriter.submit(.save(try encoder.encode(file)))
-        } catch {
-            Log.claudeContext.error("Claude session store encode failed")
-        }
+        )))
     }
 
     private func restore(
@@ -1190,6 +1179,7 @@ public final class ClaudeSessionRegistry: Sendable {
             persistenceWriter?.keepRefusedFile()
             return
         }
+        persistenceWriter?.adoptRestoredRows(file.sessions.map(\.sessionID))
 
         var restored: [String: ClaudeSessionSnapshot] = [:]
         var unverified: [StoredClaudeSessions.Session] = []
