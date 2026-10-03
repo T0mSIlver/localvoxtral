@@ -22,6 +22,9 @@ final class DictationHistoryModel {
     /// zero is what lets a switch delete without asking (#1166).
     private(set) var audioSummary: (recordings: Int, bytes: Int)?
     private(set) var diagnosticRecordSummary: (records: Int, bytes: Int)?
+    /// Which backups hold something. Nil until the first read lands, and
+    /// after one fails; nil offers no backups to delete.
+    private(set) var backupsSummary: DictationHistoryBackupsSummary?
 
     var searchText = ""
     var filter = DictationHistoryQuery.Filter.all
@@ -104,17 +107,29 @@ final class DictationHistoryModel {
     func reloadStorageSummary() async {
         audioSummary = await store()?.audioSummary()
         diagnosticRecordSummary = await store()?.diagnosticRecordSummary()
+        backupsSummary = await store()?.backupsSummary()
     }
 
     /// Whether switching "Keep dictation audio" off asks before deleting.
-    /// Only a count known to be zero turns it off at once.
-    var turningAudioOffAsksFirst: Bool { audioSummary.map { $0.recordings > 0 } ?? true }
+    /// Only a count known to be zero turns it off at once, and only when
+    /// no quarantined recording is left to offer (#1574).
+    var turningAudioOffAsksFirst: Bool {
+        (audioSummary.map { $0.recordings > 0 } ?? true) || backupsSummary?.audio == true
+    }
 
     /// Whether switching "Keep diagnostic records" off asks before deleting,
     /// by the audio switch's rule.
     var turningRecordsOffAsksFirst: Bool {
-        diagnosticRecordSummary.map { $0.records > 0 } ?? true
+        (diagnosticRecordSummary.map { $0.records > 0 } ?? true) || backupsSummary?.diagnosticRecords == true
     }
+
+    /// Delete All stays available while backups hold something, so an empty
+    /// History can still delete them (#1574).
+    var canDeleteAll: Bool { totalCount > 0 || backupsSummary?.holdsAnything == true }
+
+    /// Whether Don't keep asks when it deletes no dictation: only to offer
+    /// the backups.
+    var dontKeepAsksWithNothingToDelete: Bool { backupsSummary?.holdsAnything == true }
 
     func showMore() async {
         limit += Self.pageSize
@@ -141,10 +156,13 @@ final class DictationHistoryModel {
         await reload()
     }
 
-    func deleteAll() async {
+    func deleteAll(removingBackups: Bool) async {
         entries = []
-        store()?.deleteAll()
+        store()?.deleteAll(removingBackups: removingBackups)
         await reload()
+        // Delete All of an empty History changes no row, so nothing else
+        // reloads what the backups hold.
+        await reloadStorageSummary()
     }
 
     /// How many dictations `retention` would delete if it applied at `now`.

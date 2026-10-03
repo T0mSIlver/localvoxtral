@@ -213,6 +213,83 @@ final class DictationHistoryBackupsTests: XCTestCase {
         XCTAssertEqual(audio.storedIDs().count, limit + 2)
     }
 
+    // MARK: - Explicit deletions (#1574)
+
+    /// A store with a snapshot holding a dictation, a quarantined recording
+    /// and a quarantined diagnostic record.
+    private func populatedRecoveryCopies(in directory: URL) async throws -> (
+        store: DictationSessionStore, audio: URL, record: URL
+    ) {
+        let store = try openStore(in: directory)
+        let audio = try XCTUnwrap(store.audioStore)
+        await store.save(record("private", startedAt: clock.now()), audio: pcm).value
+        try audio.write(pcm16: pcm, for: UUID())
+        await store.removeOrphanedAudio().value
+        backups(in: directory).snapshot(of: try XCTUnwrap(store.storeURL), reason: .daily)
+        let quarantine = try XCTUnwrap(store.quarantine)
+        let records = quarantine.folder(for: "diagnostic-records")
+        try FileManager.default.createDirectory(at: records, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: records.appendingPathComponent("dictation-x.json"))
+        XCTAssertTrue(backups(in: directory).snapshots().contains { $0.dictations == 1 })
+        return (store, quarantine.folder(for: "dictation-audio"), records)
+    }
+
+    /// Delete All keeps the snapshots and the quarantine unless the user
+    /// ticked "Also delete the backups".
+    func testDeleteAllKeepsTheBackups() async throws {
+        let directory = makeDirectory()
+        let (store, audioQuarantine, recordQuarantine) = try await populatedRecoveryCopies(in: directory)
+
+        await store.deleteAll().value
+
+        let count = await store.count()
+        XCTAssertEqual(count, 0)
+        XCTAssertTrue(backups(in: directory).snapshots().contains { $0.dictations == 1 })
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audioQuarantine.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recordQuarantine.path))
+    }
+
+    /// With the box ticked, Delete All leaves no copy of what it deleted: no
+    /// snapshot, nothing in quarantine.
+    func testDeleteAllWithTheBackupsLeavesNoCopy() async throws {
+        let directory = makeDirectory()
+        let (store, audioQuarantine, recordQuarantine) = try await populatedRecoveryCopies(in: directory)
+
+        await store.deleteAll(removingBackups: true).value
+
+        XCTAssertEqual(backups(in: directory).snapshots(), [])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: audioQuarantine.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recordQuarantine.path))
+    }
+
+    /// Turning a storage switch off keeps its quarantine unless the user
+    /// ticked the box. The launch retry (#1573) takes this path too.
+    func testTurningAStorageSwitchOffKeepsItsQuarantine() async throws {
+        let directory = makeDirectory()
+        let (store, audioQuarantine, recordQuarantine) = try await populatedRecoveryCopies(in: directory)
+
+        await store.deleteAllAudio().value
+        await store.deleteAllDiagnosticRecords().value
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audioQuarantine.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recordQuarantine.path))
+    }
+
+    /// With the box ticked, turning a storage switch off empties the
+    /// quarantine of that kind only, and keeps the History snapshots.
+    func testTurningAStorageSwitchOffWithTheBackupsEmptiesItsQuarantine() async throws {
+        let directory = makeDirectory()
+        let (store, audioQuarantine, recordQuarantine) = try await populatedRecoveryCopies(in: directory)
+
+        await store.deleteAllAudio(removingBackups: true).value
+        XCTAssertFalse(FileManager.default.fileExists(atPath: audioQuarantine.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recordQuarantine.path))
+
+        await store.deleteAllDiagnosticRecords(removingBackups: true).value
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recordQuarantine.path))
+        XCTAssertTrue(backups(in: directory).snapshots().contains { $0.dictations == 1 })
+    }
+
     /// The quarantine keeps a day's folder for 30 days.
     func testQuarantineEmptiesFoldersAfterThirtyDays() throws {
         let directory = makeDirectory()

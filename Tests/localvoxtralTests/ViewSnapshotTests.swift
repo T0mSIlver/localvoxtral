@@ -281,6 +281,31 @@ final class ViewSnapshotTests: XCTestCase {
         return store
     }
 
+    /// The History pane's delete questions: the four that ask whether the
+    /// backups go too, one with the box ticked, a retention trim, which
+    /// does not ask, and the questions an empty History asks while backups
+    /// hold something (#1574).
+    func testHistoryDeleteAlerts() throws {
+        let questions: [(String, HistoryDeleteAlert)] = [
+            ("delete-all", .deleteAll(count: 128)),
+            ("dont-keep", .retention(.off, count: 128)),
+            ("audio-off", .audioOff(count: 42)),
+            ("records-off", .recordsOff(count: 42)),
+            ("trim", .retention(.days7, count: 12)),
+            ("delete-backups", .deleteAll(count: 0)),
+            ("dont-keep-empty", .retention(.off, count: 0)),
+            ("audio-off-empty", .audioOff(count: 0)),
+        ]
+        for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            for (name, question) in questions {
+                try recordAlert(question.makeAlert(), name: "history-alert-\(name)-\(theme)", appearance: appearance)
+            }
+            let ticked = HistoryDeleteAlert.deleteAll(count: 128).makeAlert()
+            ticked.suppressionButton?.state = .on
+            try recordAlert(ticked, name: "history-alert-delete-all-ticked-\(theme)", appearance: appearance)
+        }
+    }
+
     /// The polish prompt's sizes (#1007): Global terms with a count and
     /// tokens, and the instructions under Advanced for both profiles, at the
     /// ratio twenty measured Mistral requests give.
@@ -843,6 +868,12 @@ final class ViewSnapshotTests: XCTestCase {
             herdrMachineCatalogReading: { herdrMachines },
             hasEnabledHerdrMachineReport: { setUp }
         )
+    }
+
+    private func recordAlert(_ alert: NSAlert, name: String, appearance: NSAppearance.Name) throws {
+        let url = try ViewSnapshot.record(alert, name: name, appearance: appearance)
+        let image = try XCTUnwrap(NSImage(contentsOf: url), "\(name).png does not read back")
+        XCTAssertGreaterThan(image.size.width, 0, name)
     }
 
     private func record<V: View>(

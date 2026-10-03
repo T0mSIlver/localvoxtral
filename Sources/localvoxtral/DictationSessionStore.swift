@@ -363,15 +363,25 @@ final class DictationSessionStore {
         }
     }
 
+    /// Delete All, and Don't keep when the user asked for the backups to go:
+    /// with `removingBackups` the snapshots and the quarantine go too (#1574).
+    /// Only once the rows are gone: a delete that failed keeps every copy.
     @discardableResult
-    func deleteAll() -> Task<Void, Never> {
+    func deleteAll(removingBackups: Bool = false) -> Task<Void, Never> {
         let audioStore = audioStore
         let diagnosticRecordStore = diagnosticRecordStore
+        let backups = backups
+        let quarantine = quarantine
         return enqueueWrite("delete all dictations") { context in
             let deleted = try Self.deleteRecords(matching: nil, in: context)
             try context.save()
             audioStore?.removeAll()
             diagnosticRecordStore?.removeAll()
+            if removingBackups {
+                backups?.removeAll()
+                quarantine?.removeAll(of: "dictation-audio")
+                quarantine?.removeAll(of: "diagnostic-records")
+            }
             return deleted.count
         }
     }
@@ -459,12 +469,14 @@ final class DictationSessionStore {
     }
 
     /// Deletes every recording and keeps the dictations: the audio setting
-    /// turned off.
+    /// turned off. With `removingBackups`, the quarantined ones too (#1574).
     @discardableResult
-    func deleteAllAudio() -> Task<Void, Never> {
+    func deleteAllAudio(removingBackups: Bool = false) -> Task<Void, Never> {
         let audioStore = audioStore
+        let quarantine = quarantine
         return enqueueWrite("delete all dictation audio") { _ in
             let removed = audioStore?.removeAll() ?? 0
+            if removingBackups { quarantine?.removeAll(of: "dictation-audio") }
             Log.persistence.info("History: deleted \(removed, privacy: .public) recording(s)")
             return 0
         }
@@ -510,12 +522,15 @@ final class DictationSessionStore {
     }
 
     /// Deletes every diagnostic record and keeps the dictations: the
-    /// diagnostic records setting turned off.
+    /// diagnostic records setting turned off. With `removingBackups`, the
+    /// quarantined ones too (#1574).
     @discardableResult
-    func deleteAllDiagnosticRecords() -> Task<Void, Never> {
+    func deleteAllDiagnosticRecords(removingBackups: Bool = false) -> Task<Void, Never> {
         let diagnosticRecordStore = diagnosticRecordStore
+        let quarantine = quarantine
         return enqueueWrite("delete all diagnostic records") { _ in
             let removed = diagnosticRecordStore?.removeAll() ?? 0
+            if removingBackups { quarantine?.removeAll(of: "diagnostic-records") }
             Log.persistence.info("History: deleted \(removed, privacy: .public) diagnostic record(s)")
             return 0
         }
@@ -619,6 +634,19 @@ final class DictationSessionStore {
         } ?? nil
     }
 
+
+    /// Which backups hold something: what Delete All and the switches offer
+    /// to delete even when nothing else is left (#1574).
+    func backupsSummary() async -> DictationHistoryBackupsSummary? {
+        let backups = backups
+        let quarantine = quarantine
+        return await read("summarize the backups") { _ in
+            DictationHistoryBackupsSummary(
+                dictations: backups?.holdDictations ?? false,
+                audio: quarantine?.holdsFiles(of: "dictation-audio") ?? false,
+                diagnosticRecords: quarantine?.holdsFiles(of: "diagnostic-records") ?? false)
+        }
+    }
 
     /// Nil when the audio folder would not list, like the records'.
     func audioSummary() async -> (recordings: Int, bytes: Int)? {

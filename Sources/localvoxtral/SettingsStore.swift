@@ -512,9 +512,21 @@ final class SettingsStore {
     /// The user's global terms, correct spelling only (`SpeakerTerms`).
     /// An ABSENT key means "never set", which is what lets the one-time import
     /// from the replacement dictionary tell a new install from an emptied list.
+    /// A change merges into the saved list, which another running copy may
+    /// have changed since (#1575).
     var polishSpeakerTerms: [String] {
         didSet {
-            defaults.set(polishSpeakerTerms, forKey: Keys.polishSpeakerTerms)
+            var terms = polishSpeakerTerms
+            if let saved = defaults.stringArray(forKey: Keys.polishSpeakerTerms) {
+                // Capped and deduplicated as a launch reads it, or the next
+                // launch's shorter base takes the overflow for another copy's.
+                terms = SpeakerTerms.sanitized(
+                    ListSettingMerge.merge(base: oldValue, ours: terms, saved: saved))
+            }
+            // Saved first: the assignment below re-enters this observer
+            // (`@Observable`), which must find the merge already saved.
+            defaults.set(terms, forKey: Keys.polishSpeakerTerms)
+            if terms != polishSpeakerTerms { polishSpeakerTerms = terms }
             // A term the user adds by hand is no longer a refusal.
             let added = Set(polishSpeakerTerms.map(SpeakerTermSuggestions.key))
             if polishDismissedTermSuggestions.contains(where: {
@@ -529,10 +541,17 @@ final class SettingsStore {
 
     /// Suggested terms the user refused, oldest first. Never expires; only
     /// adding the term by hand or "Forget dismissed suggestions" removes one.
+    /// Merged into the saved list like `polishSpeakerTerms`.
     var polishDismissedTermSuggestions: [String] {
         didSet {
-            defaults.set(
-                polishDismissedTermSuggestions, forKey: Keys.polishDismissedTermSuggestions)
+            var dismissed = polishDismissedTermSuggestions
+            if let saved = defaults.stringArray(forKey: Keys.polishDismissedTermSuggestions) {
+                dismissed = Array(
+                    ListSettingMerge.merge(base: oldValue, ours: dismissed, saved: saved)
+                        .suffix(SpeakerTermSuggestions.maxDismissed))
+            }
+            defaults.set(dismissed, forKey: Keys.polishDismissedTermSuggestions)
+            if dismissed != polishDismissedTermSuggestions { polishDismissedTermSuggestions = dismissed }
         }
     }
 

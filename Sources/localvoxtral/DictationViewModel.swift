@@ -276,7 +276,9 @@ final class DictationViewModel {
     func copyRawTranscript() { session.copyRawTranscript() }
     var canCopyLastDictation: Bool { session.canCopyLastDictation }
     func copyLastDictation() { session.copyLastDictation() }
-    func applyDictationHistoryRetention(now: Date = Date()) { session.applyDictationHistoryRetention(now: now) }
+    func applyDictationHistoryRetention(now: Date = Date(), removingBackups: Bool = false) {
+        session.applyDictationHistoryRetention(now: now, removingBackups: removingBackups)
+    }
     func prepareLLMPolishingPromptAccessIfNeeded() { session.prepareLLMPolishingPromptAccessIfNeeded() }
 
     /// What the Settings toggle and the Engines widget's "Turn off polish"
