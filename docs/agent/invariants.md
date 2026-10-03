@@ -2794,4 +2794,7 @@ there is not.
   label never becomes a working directory here. A capture keeps the
   checkout key it was routed to; when that checkout's repository gains a
   checkout on the Mac, the Inbox moves it to the Mac's (#971), except while
-  a draft runs for it.
+  a draft runs for it. Each route, draft, check and filing names the
+  running copy that owns it (#1288, #1507): a launch ends only those whose
+  copy is gone, and writes that at once, so a copy still holding one in
+  memory cannot write it back.
