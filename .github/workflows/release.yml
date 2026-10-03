@@ -77,10 +77,12 @@ jobs:
     # releases ran 7-20 min before notarization. Notarization adds two Apple
     # submissions (the app, then the DMG), usually minutes each, but Apple can
     # hold a team's first submissions for hours. notarize.sh's own bounds (3 h
-    # for the app, 1 h for the DMG) must expire before this one, so a stuck
-    # run fails with the submission id instead of being cancelled. The unit
-    # gate has its own 900 s supervisor, so a hang is caught long before this.
-    timeout-minutes: 300
+    # for each) must expire before this one, so a stuck run fails with the
+    # submission id instead of being cancelled: 20 min of gates, two 3 h
+    # waits and a few minutes of DMG building and stapling come to about
+    # 385 min. The unit gate has its own 900 s supervisor, so a hang is caught
+    # long before this. Self-hosted jobs may exceed GitHub's hosted 360 min cap.
+    timeout-minutes: 420
     env:
       # Not a secret: the name and team ID are in every signature it makes.
       DEVELOPER_ID_IDENTITY: "Developer ID Application: Tom Vaucourt (3N63N7U9R3)"
@@ -444,8 +446,10 @@ jobs:
             # Gatekeeper checks a downloaded disk image before it mounts, so
             # the DMG is signed, notarized and stapled too.
             codesign --sign "$DEVELOPER_ID_IDENTITY" --timestamp "dist/localvoxtral-$TAG.dmg"
-            # 1 h, not 3: Apple has just accepted the app from this team.
-            NOTARIZE_TIMEOUT=1h ./scripts/ci/notarize.sh "dist/localvoxtral-$TAG.dmg" "$NOTARY_PROFILE"
+            # 3 h, as for the app: Apple accepting the app does not speed up
+            # the DMG. v0.11.1's DMG was still In Progress after 1 h
+            # (run 37121470049).
+            NOTARIZE_TIMEOUT=3h ./scripts/ci/notarize.sh "dist/localvoxtral-$TAG.dmg" "$NOTARY_PROFILE"
             xcrun stapler staple "dist/localvoxtral-$TAG.dmg"
             xcrun stapler validate "dist/localvoxtral-$TAG.dmg"
             spctl -a -vv --type open --context context:primary-signature "dist/localvoxtral-$TAG.dmg"
