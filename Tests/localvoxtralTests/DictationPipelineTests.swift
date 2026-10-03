@@ -2866,6 +2866,8 @@ final class DictationPipelineTests: XCTestCase {
         // wait below could only time out.
         guard events.connected == 5 else { return }
 
+        // The restarted send loop drains the gap one interval after it arms.
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers)
         pipeline.clock.advance(by: TimingConstants.audioSendInterval)
         await pipeline.server.awaitFrame("the gap audio") { $0.audio == gap }
         let frames = pipeline.server.frames
