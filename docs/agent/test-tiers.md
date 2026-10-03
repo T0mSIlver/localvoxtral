@@ -482,8 +482,8 @@ Fixture and host requirements (`scripts/herdr-integration-fixture.sh`):
   the account's `~/.ssh/config` (#1029). The lane sets
   `LOCALVOXTRAL_SSH_CONFIG` to that file, so every ssh the app runs carries
   `-F <file>`, and herdr reaches it through `<workdir>/bin/ssh`, first on the
-  PATH of every herdr the fixture starts (its federated bridges run plain
-  `ssh`). In destination mode the file ends with an `Include` of the
+  PATH of every herdr the fixture starts, whose config sets `[remote]
+  manage_ssh_config = false` so herdr adds no `-F` of its own. In destination mode the file ends with an `Include` of the
   account's config, read only. `environment.txt` and teardown log the
   account config's hash as `ssh.account.before` / `ssh.account.after`;
   federated clients

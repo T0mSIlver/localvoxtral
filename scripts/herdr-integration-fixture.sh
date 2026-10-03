@@ -54,7 +54,9 @@
 # never the account's `~/.ssh/config` (#1029). The lane hands that file to the
 # app as `LOCALVOXTRAL_SSH_CONFIG`, which makes every ssh the app runs carry
 # `-F <file>`, and herdr gets it through `<workdir>/bin/ssh`, first on the PATH
-# of every herdr the fixture starts: herdr's federation bridge runs plain `ssh`.
+# of every herdr the fixture starts. That needs `[remote] manage_ssh_config =
+# false` in the run's herdr config: by default herdr adds `-F` of its own, a
+# file that includes only `~/.ssh/config`, and ssh keeps the last `-F` it gets.
 # In destination mode the file ends by including the account's config, read
 # only, so the caller's destination resolves as it always has.
 #
@@ -832,8 +834,8 @@ EOF
   # The federation alias: same loopback sshd, the federation key (whose entry
   # forces XDG_CONFIG_HOME and HERDR_SOCKET_PATH onto every remote herdr
   # invocation over the `-fed` alias — see the authorized_keys entry above).
-  # `machine add` and every federated bridge spawn plain `ssh` (measured
-  # 2026-09-13), which reaches this block through the run's wrapper.
+  # `machine add` and every federated bridge spawn `ssh` from PATH, which
+  # reaches this block through the run's wrapper.
   {
     printf '%s\n' "$SSH_CONFIG_FED_BEGIN"
     printf 'Host %s%s\n' "$FIXTURE_ALIAS" "$FEDERATION_ALIAS_SUFFIX"
@@ -1064,12 +1066,17 @@ command_up() {
   # no workspace and therefore no pane, so `pane.current` answers
   # pane_not_found forever and the fixture would never become ready. The
   # update checks are off so the lane makes no network requests.
+  # `manage_ssh_config = false` makes `machine add` and the federation bridge
+  # run the run's `ssh` wrapper as is (see "The ssh config is the run's own").
   cat > "$(fixture_config_file "$dir")" <<'EOF'
 onboarding = false
 
 [update]
 version_check = false
 manifest_check = false
+
+[remote]
+manage_ssh_config = false
 
 [ui.sidebar.agents]
 rows = [["state_icon", "workspace", "tab"], ["agent"], [{ token = "$lvmark", dim = true }]]
