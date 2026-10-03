@@ -516,12 +516,14 @@ final class SettingsStore {
     /// have changed since (#1575).
     var polishSpeakerTerms: [String] {
         didSet {
+            var terms = polishSpeakerTerms
             if let saved = defaults.stringArray(forKey: Keys.polishSpeakerTerms) {
-                let merged = ListSettingMerge.merge(
-                    base: oldValue, ours: polishSpeakerTerms, saved: SpeakerTerms.sanitized(saved))
-                if merged != polishSpeakerTerms { polishSpeakerTerms = merged }
+                terms = ListSettingMerge.merge(base: oldValue, ours: terms, saved: saved)
             }
-            defaults.set(polishSpeakerTerms, forKey: Keys.polishSpeakerTerms)
+            // Saved first: the assignment below re-enters this observer
+            // (`@Observable`), which must find the merge already saved.
+            defaults.set(terms, forKey: Keys.polishSpeakerTerms)
+            if terms != polishSpeakerTerms { polishSpeakerTerms = terms }
             // A term the user adds by hand is no longer a refusal.
             let added = Set(polishSpeakerTerms.map(SpeakerTermSuggestions.key))
             if polishDismissedTermSuggestions.contains(where: {
@@ -539,15 +541,14 @@ final class SettingsStore {
     /// Merged into the saved list like `polishSpeakerTerms`.
     var polishDismissedTermSuggestions: [String] {
         didSet {
+            var dismissed = polishDismissedTermSuggestions
             if let saved = defaults.stringArray(forKey: Keys.polishDismissedTermSuggestions) {
-                let merged = Array(
-                    ListSettingMerge.merge(
-                        base: oldValue, ours: polishDismissedTermSuggestions, saved: saved)
+                dismissed = Array(
+                    ListSettingMerge.merge(base: oldValue, ours: dismissed, saved: saved)
                         .suffix(SpeakerTermSuggestions.maxDismissed))
-                if merged != polishDismissedTermSuggestions { polishDismissedTermSuggestions = merged }
             }
-            defaults.set(
-                polishDismissedTermSuggestions, forKey: Keys.polishDismissedTermSuggestions)
+            defaults.set(dismissed, forKey: Keys.polishDismissedTermSuggestions)
+            if dismissed != polishDismissedTermSuggestions { polishDismissedTermSuggestions = dismissed }
         }
     }
 
