@@ -292,6 +292,33 @@ final class LearnedTermStoreTests: XCTestCase {
         XCTAssertEqual(reopened.confirmedTerms(projectKey: project.key), ["Voxtral"])
     }
 
+    /// Start Over deletes the original once it is linked aside: without the
+    /// lock another copy's write could land in between and be lost (#1432).
+    func testStartOverRefusesWithoutTheLock() async throws {
+        let fileURL = try makeFileURL()
+        try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let damaged = Data("{ not json".utf8)
+        try damaged.write(to: fileURL)
+        let store = LearnedTermStore(fileURL: fileURL, now: { Self.start })
+        store.waitForPendingWrites()
+        try blockLock(beside: fileURL)
+
+        do {
+            _ = try await store.moveAsideAndStartOver()
+            XCTFail("Start Over moved the file without the lock")
+        } catch {}
+        XCTAssertEqual(try Data(contentsOf: fileURL), damaged)
+        XCTAssertEqual(store.problem, .unreadable)
+    }
+
+    /// A directory where the lock file goes: open(2) fails, so the lock
+    /// cannot be taken.
+    private func blockLock(beside url: URL) throws {
+        let lockURL = StoredFileLock.lockURL(beside: url)
+        try? FileManager.default.removeItem(at: lockURL)
+        try FileManager.default.createDirectory(at: lockURL, withIntermediateDirectories: true)
+    }
+
     /// The store is also the read side of the feature, so what it hands back
     /// has to be the confirmed set, not everything it has ever seen.
     func testUnconfirmedTermsAreNotHandedOut() throws {

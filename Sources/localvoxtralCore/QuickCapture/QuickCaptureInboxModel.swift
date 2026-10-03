@@ -862,7 +862,7 @@ package final class QuickCaptureInboxModel {
     @discardableResult
     package func moveAsideAndStartOver() throws -> URL {
         guard storeProblem != nil, let fileURL else { throw StoredFile.MoveAsideFailed() }
-        let aside = try StoredFile.moveAside(fileURL)
+        let aside = try StoredFile.moveAside(fileURL, lockedBeside: fileURL)
         seen = StoredFileSeen()
         storeProblem = nil
         onChange?()

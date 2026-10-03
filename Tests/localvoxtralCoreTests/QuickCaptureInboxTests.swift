@@ -635,6 +635,20 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.map(\.text), ["Add a dark mode"])
     }
 
+    /// Start Over deletes the original once it is linked aside: without the
+    /// lock another copy's write could land in between and be lost (#1432).
+    func testStartOverRefusesWithoutTheLock() async throws {
+        let data = try writeInboxFile("{ not json")
+        let model = model(answer: ["reach": 0.9])
+        let lockURL = StoredFileLock.lockURL(beside: fileURL)
+        try? FileManager.default.removeItem(at: lockURL)
+        try FileManager.default.createDirectory(at: lockURL, withIntermediateDirectories: true)
+
+        XCTAssertThrowsError(try model.moveAsideAndStartOver())
+        XCTAssertEqual(try Data(contentsOf: fileURL), data)
+        XCTAssertNotNil(model.storeProblem)
+    }
+
     func testACaptureInterruptedByAQuitWaitsWithItsWords() throws {
         var inbox = QuickCaptureInbox()
         inbox.add(QuickCaptureItem(capturedAt: Date(), text: "Half done"))

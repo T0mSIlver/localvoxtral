@@ -124,11 +124,16 @@ package final class VoiceMemoIntake {
 
     /// Settings' Start Over: moves the refused ledger aside
     /// (`StoredFile.moveAside`) and starts an empty one. Every memo still in
-    /// the folder becomes a capture on the next scan.
+    /// the folder becomes a capture on the next scan. Throws while another
+    /// running copy holds the folder: that copy writes the ledger (#1432).
     @discardableResult
     package func moveLedgerAsideAndStartOver() throws -> URL {
         guard ledgerProblem != nil, let ledgerURL else { throw StoredFile.MoveAsideFailed() }
-        let aside = try StoredFile.moveAside(ledgerURL)
+        guard let lock = folderLock ?? StoredFileLock.tryHolding(beside: ledgerURL) else {
+            Log.persistence.error("Voice memos: ledger not moved aside, another running copy holds the folder")
+            throw StoredFile.MoveAsideFailed()
+        }
+        let aside = try withExtendedLifetime(lock) { try StoredFile.moveAside(ledgerURL) }
         ledger = VoiceMemoLedger()
         ledgerProblem = nil
         return aside
