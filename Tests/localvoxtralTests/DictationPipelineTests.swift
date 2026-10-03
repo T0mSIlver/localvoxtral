@@ -2027,6 +2027,7 @@ final class DictationPipelineTests: XCTestCase {
             return .delivered
         }
         let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
         let typed = recordTypedText(pipeline)
 
         await dictate(pipeline, "First.") { armPromptRoute(pipeline, firstRoute) }
