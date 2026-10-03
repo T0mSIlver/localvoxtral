@@ -279,6 +279,28 @@ final class AddressedSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.viewModel.statusText, DictationSessionController.AddressedSendStatus.notSent)
     }
 
+    /// The same with History off: nothing was typed, so the text goes on
+    /// the clipboard (#1499).
+    func testAnotherAppFrontmostWithHistoryOffCopiesTheText() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments")]
+        )
+        harness.viewModel.settings.dictationHistoryRetention = .off
+        harness.viewModel.settings.autoCopyEnabled = false
+        let copied = harness.viewModel.recordPasteboardWrites()
+        harness.frontmost.value = Self.focusedAppPID
+        harness.viewModel.dependencies.bundleIdentifier = { pid in
+            pid == Self.namedTerminalPID ? TerminalScreenAllowlist.ghosttyBundleID : "com.apple.Safari"
+        }
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.inserted.value.count, 0)
+        XCTAssertEqual(copied.values, ["Run the tests"])
+        XCTAssertEqual(harness.viewModel.statusText, DictationViewModel.StatusStrings.overlayCopiedToClipboard)
+    }
+
     func testSecureKeyboardEntryTypesNothing() async {
         let harness = makeHarness(
             text: "Run the tests, send that to payments.",
@@ -399,6 +421,28 @@ final class AddressedSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.viewModel.statusText, DictationSessionController.AddressedSendStatus.notSent)
     }
 
+    /// With History off, Copy last dictation alone holds the text until the
+    /// next dictation: a refused route's text goes on the clipboard, and the
+    /// popover says so (#1499).
+    func testARefusedHerdrWriteWithHistoryOffIsCopied() async throws {
+        let herdr = try FakeHerdrSocket(
+            answer: FakeHerdrSocket.focusedPane("w1:p2", foreground: { [(9001, "claude")] }) { _ in
+                .error("pane_send_failed")
+            }
+        )
+        addTeardownBlock { herdr.stop() }
+        let harness = makeHarness(text: "Run the tests, send that to payments.", herdr: herdr)
+        harness.viewModel.settings.dictationHistoryRetention = .off
+        harness.viewModel.settings.autoCopyEnabled = false
+        let copied = harness.viewModel.recordPasteboardWrites()
+
+        await harness.stop()
+
+        XCTAssertEqual(herdr.writes.map(\.method), ["pane.send_text"], "precondition: the route refused")
+        XCTAssertEqual(copied.values, ["Run the tests"])
+        XCTAssertEqual(harness.viewModel.statusText, DictationViewModel.StatusStrings.overlayCopiedToClipboard)
+    }
+
     func testTheStatusSentencesFitThePopoverLine() {
         for sentence in [
             DictationSessionController.AddressedSendStatus.unsupported,
@@ -482,6 +526,7 @@ final class AddressedSendWiringTests: XCTestCase {
             startRuntimeServices: false
         )
         viewModel.appConfigStore = MockAppConfigStore()
+        viewModel.sessionStore = DictationSessionStore.inMemory()
         if let polishingService {
             viewModel.llmPolishingService = polishingService
             viewModel.dependencies.clock = ManualSessionClock().clock

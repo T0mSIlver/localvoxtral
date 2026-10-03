@@ -2593,6 +2593,7 @@ final class DictationPipelineTests: XCTestCase {
         let cmux = try FakeCmuxSocket(answer: { _ in .accepted(queued: nil) })
         addTeardownBlock { cmux.stop() }
         let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
         joinCmuxSurface(pipeline, cmux: cmux)
         let typed = recordTypedText(pipeline)
 
@@ -2609,6 +2610,42 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(cmux.writes.count, 1, "nothing is sent after an unconfirmed write")
         XCTAssertEqual(typed.text, "", "nothing is typed into another surface or app")
         XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase], "the text is in History")
+    }
+
+    /// The same with History off, where Copy last dictation is all that
+    /// holds the text until the next dictation replaces it: the whole text
+    /// goes on the clipboard, the popover says so, and the next dictation
+    /// leaves it there (#1499).
+    func testAnUnconfirmedDeliveryWithHistoryOffIsCopiedAndOutlivesTheNextDictation() async throws {
+        let cmux = try FakeCmuxSocket(answer: { _ in .accepted(queued: nil) })
+        addTeardownBlock { cmux.stop() }
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
+        pipeline.viewModel.settings.dictationHistoryRetention = .off
+        pipeline.viewModel.settings.autoCopyEnabled = false
+        let copied = pipeline.viewModel.recordPasteboardWrites()
+        joinCmuxSurface(pipeline, cmux: cmux)
+        let typed = recordTypedText(pipeline)
+
+        await startAndSpeak(pipeline)
+        cmux.setSurfaceFocused(false)
+        sendPartials(pipeline)
+        let sent = await cmux.waitUntil { !$0.isEmpty }
+        XCTAssertTrue(sent)
+        await pipeline.viewModel.textInsertion.promptRelaySink?.waitUntilIdle()
+        await stopAndFinalize(pipeline, expectedError: DictationViewModel.StatusStrings.overlayCopiedToClipboard)
+        XCTAssertEqual(copied.values.last, Self.phrase, "both appends, not the last one alone")
+        let copiesAfterFirst = copied.values.count
+
+        // The next dictation goes to a plain terminal, by keys.
+        pipeline.viewModel.context.claudeSessionJoinResolver = nil
+        await startAndSpeak(pipeline)
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline)
+
+        XCTAssertEqual(typed.text, Self.phrase, "precondition: the second dictation committed")
+        XCTAssertEqual(copied.values.count, copiesAfterFirst, "the next dictation leaves the clipboard alone")
+        XCTAssertEqual(copied.values.last, Self.phrase)
     }
 
     // MARK: - Stopping by voice (#839)
