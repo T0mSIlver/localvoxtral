@@ -2,6 +2,7 @@ import ClaudeContextWire
 import ClaudeHookPublisherCore
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtralCore
 
 #if canImport(Darwin) || canImport(Glibc)
@@ -106,15 +107,21 @@ final class ClaudeModChannelHubTests: XCTestCase {
     }
 
     func testTheMatchingReplyAnswersTheSend() async {
-        // The timeout never fires before the reply, so only the reply can answer.
+        // The timeout never fires before the reply, so only the reply can
+        // answer. A reply that never comes fires it after the cap, so the
+        // test fails instead of hanging.
         let gate = GateSleep()
         let hub = ClaudeModChannelHub(sleep: gate.sleep, makeID: { "id-1" })
         let written = Received()
         written.onLine = { hub.deliver(.init(sessionID: "sess-1", id: "id-1", ok: false, reason: "dialog")) }
         _ = hub.attach(sessionID: "sess-1", channel: channel(written))
+        let answered = BoundedWait()
+        let watchdog = Task { if await !answered.value(failAfter: 10) { gate.fire() } }
 
         let reply = await hub.send(.init(kind: .ping), to: "sess-1", timeout: .seconds(60))
+        answered.resolve()
         gate.fire()
+        await watchdog.value
 
         XCTAssertEqual(reply, .init(sessionID: "sess-1", id: "id-1", ok: false, reason: "dialog"))
         let sent = try? XCTUnwrap(written.all.first)
