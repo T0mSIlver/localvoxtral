@@ -506,11 +506,9 @@ final class PolishPromptWarmupTests: XCTestCase {
         await clock.waitForSleepers(1)
         let firstSettle = try XCTUnwrap(coordinator.settleTask)
         inputs.systemPrompt = "system two"
-        // The change reaches the coordinator through a main-actor hop; a
-        // bounded wait that fails, rather than hangs, if it never arrives.
-        for _ in 0..<1000 where coordinator.settleTask == firstSettle {
-            await Task.yield()
-        }
+        // The change reaches the coordinator through a main-actor hop, which
+        // cancels the first settle before arming the next one.
+        await firstSettle.value
         XCTAssertNotEqual(coordinator.settleTask, firstSettle, "the second edit restarts the settle")
         XCTAssertTrue(firstSettle.isCancelled)
         await settle(coordinator, clock)

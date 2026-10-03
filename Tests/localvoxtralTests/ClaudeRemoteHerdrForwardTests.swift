@@ -73,6 +73,17 @@ private final class HeldForwardTestClock: @unchecked Sendable {
         }
     }
 
+    /// Counts an event the test drives the clock towards, such as a task
+    /// finishing, so `drive` wakes for it as it does for a parked sleep.
+    func note() { parked.increment() }
+
+    var events: Int { parked.value }
+
+    /// Returns once a sleep parks or `note()` runs after `seen` events.
+    func waitForEvent(after seen: Int, file: StaticString = #filePath, line: UInt = #line) async {
+        await parked.waitFor(seen + 1, file: file, line: line)
+    }
+
     func advance(by seconds: TimeInterval) {
         state.withLock { $0.now = $0.now.addingTimeInterval(seconds) }
     }
@@ -159,6 +170,8 @@ private final class ForwardTestProcess: ClaudeRemoteHerdrForwardProcess, @unchec
     private let stderrContinuation: AsyncStream<String>.Continuation
     let standardErrorLines: AsyncStream<String>
     let terminations = Mutex(0)
+    /// Every `terminate()`, for a test that waits on a teardown a task starts.
+    let terminated = EventCount()
 
     init(reportsRunning: Bool = true, ignoresSignals: Bool = false) {
         state = Mutex(State(reportsRunning: reportsRunning, ignoresSignals: ignoresSignals))
@@ -195,6 +208,7 @@ private final class ForwardTestProcess: ClaudeRemoteHerdrForwardProcess, @unchec
 
     func terminate() {
         terminations.withLock { $0 += 1 }
+        terminated.increment()
         guard !state.withLock({ $0.ignoresSignals }) else { return }
         exit()
     }
@@ -335,16 +349,21 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         )
     }
 
-    private func waitUntil(
-        _ description: String,
-        iterations: Int = 1_000,
-        _ condition: @escaping @MainActor () -> Bool
-    ) async {
-        for _ in 0..<iterations {
-            if condition() { return }
-            await Task.yield()
+    /// Blocks until the live child's exit event lands. The bound only turns
+    /// a child that never exits into a failure instead of a hang. Detached:
+    /// the caller blocks the main thread.
+    private func waitForExit(
+        of process: LiveHerdrForwardProcess, file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let exited = DispatchSemaphore(value: 0)
+        Task.detached {
+            _ = await process.waitUntilExit()
+            exited.signal()
         }
-        XCTFail("timed out waiting for \(description)")
+        XCTAssertEqual(
+            exited.wait(timeout: .now() + 10), .success, "the child never exited",
+            file: file, line: line
+        )
     }
 
     // MARK: - argv
@@ -584,16 +603,15 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         let coldOpen = Task { @MainActor in
             await service.open(alias: "builder", remoteSocketPath: remoteSocketPath)
         }
-        await waitUntil("cold readiness sleep") {
-            spawner.spawnCount == 1 && clock.pendingCount(for: 0.025) == 1
-        }
+        await spawner.spawns.waitFor(1)
+        await clock.waitForPending(1, for: 0.025)
         let firstProcess = try XCTUnwrap(spawner.processes.withLock { $0.first })
 
         let replacementPath = "/run/user/1000/herdr/replacement.sock"
         await service.prepare(
             hostID: "host", alias: "builder", remoteSocketPath: replacementPath
         )
-        await waitUntil("replacement spawn") { spawner.spawnCount == 2 }
+        await spawner.spawns.waitFor(2)
         let replacement = spawner.process
         XCTAssertGreaterThanOrEqual(firstProcess.terminations.withLock { $0 }, 1)
 
@@ -631,9 +649,8 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         let coldOpen = Task { @MainActor in
             await service.open(alias: "builder", remoteSocketPath: remoteSocketPath)
         }
-        await waitUntil("cold readiness sleep") {
-            spawner.spawnCount == 1 && clock.pendingCount(for: 0.025) == 1
-        }
+        await spawner.spawns.waitFor(1)
+        await clock.waitForPending(1, for: 0.025)
         let startingProcess = spawner.process
 
         await service.prepare(
@@ -667,9 +684,8 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
             await service.open(alias: "builder", remoteSocketPath: remoteSocketPath)
         }
 
-        await waitUntil("open attempt to park at the orphan-reap gate") {
-            clock.pendingCount(for: 0.025) == 1
-        }
+        // The open parks at the orphan-reap gate.
+        await clock.waitForPending(1, for: 0.025)
         XCTAssertEqual(spawner.spawnCount, 0, "no ssh may launch ahead of orphan cleanup")
 
         service.markOrphanReapComplete()
@@ -693,16 +709,9 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
             dialable: { _ in true },
             orphanReapInitiallyComplete: false
         )
-        let abstained = Mutex<Bool?>(nil)
-        Task { @MainActor in
-            let handle = await service.open(alias: "builder", remoteSocketPath: remoteSocketPath)
-            abstained.withLock { $0 = handle == nil }
-        }
+        let handle = await service.open(alias: "builder", remoteSocketPath: remoteSocketPath)
 
-        await waitUntil("open to give up on a reap that never runs") {
-            abstained.withLock { $0 } != nil
-        }
-        XCTAssertEqual(abstained.withLock { $0 }, true)
+        XCTAssertNil(handle, "open gives up on a reap that never runs")
         XCTAssertEqual(spawner.spawnCount, 0, "no ssh may launch ahead of orphan cleanup")
         XCTAssertEqual(clock.sleeps.withLock { $0.reduce(0, +) }, 2.0, accuracy: 0.05)
     }
@@ -727,6 +736,7 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
             now: { Date(timeIntervalSince1970: 1_700_000_000) }
         )
         let spawnsAtReap = Mutex<Int?>(nil)
+        let reaped = EventCount()
         let forwards = ClaudeRemoteForwardCoordinator(
             hosts: registry,
             remoteForwardPort: 28511,
@@ -734,12 +744,12 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
             reapOrphans: {
                 spawnsAtReap.withLock { $0 = spawner.spawnCount }
                 await MainActor.run { service.markOrphanReapComplete() }
+                reaped.increment()
             }
         )
 
         forwards.reconcile()
-        await waitUntil("the launch reap to finish") { spawnsAtReap.withLock { $0 } != nil }
-        for _ in 0..<50 { await Task.yield() }
+        await reaped.waitFor(1)
 
         let handle = try unwrapAsync(
             await service.open(alias: "builder", remoteSocketPath: remoteSocketPath)
@@ -752,9 +762,10 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
 
     func testPrepareRefusesAnAliasThatDoesNotUniquelyNameItsHostID() async {
         let spawner = ForwardTestSpawner()
+        let workspaces = ForwardTestWorkspaces()
         let service = service(
             spawner: spawner,
-            workspaces: ForwardTestWorkspaces(),
+            workspaces: workspaces,
             clock: ForwardTestClock(),
             dialable: { _ in true },
             hostIDForAlias: { _ in "a-different-host" }
@@ -763,8 +774,10 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         await service.prepare(
             hostID: "host", alias: "builder", remoteSocketPath: remoteSocketPath
         )
-        for _ in 0..<20 { await Task.yield() }
 
+        // A forward is spawned only for an entry, and an entry gets its
+        // workspace before prepare returns.
+        XCTAssertEqual(workspaces.made.withLock { $0 }, 0, "no forward entry")
         XCTAssertEqual(spawner.spawnCount, 0)
     }
 
@@ -1120,7 +1133,7 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
 
         // SIGTERM the leader ONLY (positive pid), and wait for it to go.
         _ = kill(process.leaderPID, SIGTERM)
-        for _ in 0..<300 where process.isRunning { usleep(10_000) }
+        waitForExit(of: process)
         XCTAssertFalse(process.isRunning, "the leader should have exited on its own")
         XCTAssertEqual(kill(descendant, 0), 0, "the descendant ignores SIGTERM and survives")
 
@@ -1238,8 +1251,7 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
             try spawner.spawn(argv: ["sh", "-c", "exit 0"]) as? LiveHerdrForwardProcess
         )
 
-        // Wait for the exit event, bounded.
-        for _ in 0..<300 where process.isRunning { usleep(10_000) }
+        waitForExit(of: process)
         XCTAssertFalse(process.isRunning, "the leader should have exited on its own")
 
         // Un-reaped: the zombie still holds the pid, which is what keeps
@@ -1271,7 +1283,7 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         let process = try unwrapAsync(
             try spawner.spawn(argv: ["sh", "-c", "exit 0"]) as? LiveHerdrForwardProcess
         )
-        for _ in 0..<300 where process.isRunning { usleep(10_000) }
+        waitForExit(of: process)
 
         process.terminate()
         let afterFirstTeardown = process.groupSignalsSent
@@ -1295,20 +1307,21 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
     /// injected `waitpid`. Real child, real group, scripted collection.
     private func spawnExitingChild(
         waitForChild: @escaping @Sendable (pid_t, UnsafeMutablePointer<Int32>?, Int32) -> pid_t,
+        reapEffortDidFinish: @escaping @Sendable () -> Void = {},
         file: StaticString = #filePath,
         line: UInt = #line
     ) throws -> LiveHerdrForwardProcess {
         let spawner = ClaudeRemoteHerdrForwardSpawner(
             executablePath: "/bin/sh",
             environment: ["PATH": "/usr/bin:/bin"],
-            waitForChild: waitForChild
+            waitForChild: waitForChild,
+            reapEffortDidFinish: reapEffortDidFinish
         )
         let process = try XCTUnwrap(
             try spawner.spawn(argv: ["sh", "-c", "exit 0"]) as? LiveHerdrForwardProcess,
             "the live spawner returns a LiveHerdrForwardProcess", file: file, line: line
         )
-        // Bounded wait for the exit event.
-        for _ in 0..<300 where process.isRunning { usleep(10_000) }
+        waitForExit(of: process, file: file, line: line)
         XCTAssertFalse(process.isRunning, "the child should have exited", file: file, line: line)
         return process
     }
@@ -1331,27 +1344,24 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         // caught signal left a zombie while the state insisted it was gone —
         // one leaked per dictation, forever.
         let calls = ReapCallCounter()
-        let process = try spawnExitingChild(waitForChild: { pid, status, options in
-            if calls.next() <= 2 {
-                errno = EINTR
-                return -1
-            }
-            return waitpid(pid, status, options)
-        })
+        let effortFinished = DispatchSemaphore(value: 0)
+        let process = try spawnExitingChild(
+            waitForChild: { pid, status, options in
+                if calls.next() <= 2 {
+                    errno = EINTR
+                    return -1
+                }
+                return waitpid(pid, status, options)
+            },
+            reapEffortDidFinish: { effortFinished.signal() }
+        )
 
         process.terminate()
 
         // The retry happens on the handle's own queue — nothing blocks — so the
         // collection lands asynchronously.
-        var collected = false
-        for _ in 0..<300 {
-            if process.hasBeenReaped {
-                collected = true
-                break
-            }
-            usleep(10_000)
-        }
-        XCTAssertTrue(collected)
+        XCTAssertEqual(effortFinished.wait(timeout: .now() + 10), .success)
+        XCTAssertTrue(process.hasBeenReaped)
         XCTAssertGreaterThanOrEqual(calls.value, 3, "EINTR must be retried, not swallowed")
         var isCollected = false
         for _ in 0..<300 {
@@ -1447,6 +1457,7 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         let releaseWaitpid = DispatchSemaphore(value: 0)
         let calls = ReapCallCounter()
         let signalAttempts = ReapCallCounter()
+        let attempted = DispatchSemaphore(value: 0)
         let spawner = ClaudeRemoteHerdrForwardSpawner(
             executablePath: "/bin/sh",
             environment: ["PATH": "/usr/bin:/bin"],
@@ -1461,12 +1472,15 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
                 }
                 return waitpid(pid, status, options)
             },
-            willAttemptTeardownLock: { _ = signalAttempts.next() }
+            willAttemptTeardownLock: {
+                _ = signalAttempts.next()
+                attempted.signal()
+            }
         )
         let process = try XCTUnwrap(
             try spawner.spawn(argv: ["sh", "-c", "exit 0"]) as? LiveHerdrForwardProcess
         )
-        for _ in 0..<300 where process.isRunning { usleep(10_000) }
+        waitForExit(of: process)
 
         // A: drives the collection and parks inside `waitpid`.
         let firstTeardownReturned = DispatchSemaphore(value: 0)
@@ -1497,15 +1511,11 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         // with the reap moved back outside the mutex. The seam fires on
         // `terminate()` entry — the guard immediately after it IS a lock
         // acquisition — so an increment means B is at the door.
-        var reachedTheLock = false
-        for _ in 0..<500 {
-            if signalAttempts.value > attemptsBeforeB {
-                reachedTheLock = true
-                break
-            }
-            usleep(10_000)
-        }
-        XCTAssertTrue(reachedTheLock, "the second teardown never reached the group signal")
+        for _ in 0..<attemptsBeforeB { attempted.wait() }
+        XCTAssertEqual(
+            attempted.wait(timeout: .now() + 10), .success,
+            "the second teardown never reached the group signal"
+        )
 
         // 1.2 s: longer than a teardown that gets through needs (≤0.5 s of
         // grace waits). The collection stays parked until the release below,
@@ -1584,7 +1594,7 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         let process = try XCTUnwrap(
             try spawner.spawn(argv: ["sh", "-c", "exit 0"]) as? LiveHerdrForwardProcess
         )
-        for _ in 0..<300 where process.isRunning { usleep(10_000) }
+        waitForExit(of: process)
 
         process.terminate()
 
@@ -1631,22 +1641,19 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         // this handle's OWN queue. Nothing here is allowed to block, so the
         // collection lands asynchronously.
         let calls = ReapCallCounter()
-        let process = try spawnExitingChild(waitForChild: { pid, status, options in
-            if calls.next() <= 3 { return 0 }
-            return waitpid(pid, status, options)
-        })
+        let effortFinished = DispatchSemaphore(value: 0)
+        let process = try spawnExitingChild(
+            waitForChild: { pid, status, options in
+                if calls.next() <= 3 { return 0 }
+                return waitpid(pid, status, options)
+            },
+            reapEffortDidFinish: { effortFinished.signal() }
+        )
 
         process.terminate()
 
-        var collected = false
-        for _ in 0..<300 {
-            if process.hasBeenReaped {
-                collected = true
-                break
-            }
-            usleep(10_000)
-        }
-        XCTAssertTrue(collected, "the background poll must finish the collection")
+        XCTAssertEqual(effortFinished.wait(timeout: .now() + 10), .success)
+        XCTAssertTrue(process.hasBeenReaped, "the background poll must finish the collection")
         XCTAssertGreaterThan(calls.value, 3)
     }
 
@@ -1733,6 +1740,7 @@ final class ClaudeRemoteHerdrForwardEnrollmentRaceTests: XCTestCase, RemoteHerdr
     private struct World {
         let service: ClaudeRemoteHerdrForwardService
         let spawner: ForwardTestSpawner
+        let workspaces: ForwardTestWorkspaces
         let switches: Switches
         let supervisorSleeps: ParkedSupervisorSleeps
     }
@@ -1748,9 +1756,10 @@ final class ClaudeRemoteHerdrForwardEnrollmentRaceTests: XCTestCase, RemoteHerdr
         let spawner = ForwardTestSpawner(freshProcessPerSpawn: true, ignoresSignals: true)
         let switches = Switches(enrolledHostID: hostID)
         let supervisorSleeps = ParkedSupervisorSleeps()
+        let workspaces = ForwardTestWorkspaces()
         let service = ClaudeRemoteHerdrForwardService(
             spawner: spawner,
-            workspaces: ForwardTestWorkspaces(),
+            workspaces: workspaces,
             isSocketDialable: { _ in switches.socketAnswers.withLock { $0 } },
             now: now,
             sleepFor: sleepFor,
@@ -1761,20 +1770,10 @@ final class ClaudeRemoteHerdrForwardEnrollmentRaceTests: XCTestCase, RemoteHerdr
         return World(
             service: service,
             spawner: spawner,
+            workspaces: workspaces,
             switches: switches,
             supervisorSleeps: supervisorSleeps
         )
-    }
-
-    private func waitUntil(
-        _ description: String,
-        _ condition: @escaping @MainActor () -> Bool
-    ) async {
-        for _ in 0..<1_000 {
-            if condition() { return }
-            await Task.yield()
-        }
-        XCTFail("timed out waiting for \(description)")
     }
 
     private func finish(_ world: World) {
@@ -1798,9 +1797,8 @@ final class ClaudeRemoteHerdrForwardEnrollmentRaceTests: XCTestCase, RemoteHerdr
         // it down and parks on that teardown.
         world.switches.socketAnswers.withLock { $0 = false }
         let secondJoin = Task { @MainActor in await resolver.resolve(target: ghostty) }
-        await waitUntil("the replacement to wait on the old teardown") {
-            firstProcess.terminations.withLock { $0 } >= 1
-        }
+        // The replacement waits on the old teardown.
+        await firstProcess.terminated.waitFor(1)
         world.switches.socketAnswers.withLock { $0 = true }
         let paneRequestsBeforeRelease = panes.requests.withLock { $0 }
 
@@ -1811,9 +1809,9 @@ final class ClaudeRemoteHerdrForwardEnrollmentRaceTests: XCTestCase, RemoteHerdr
         firstProcess.exit()
 
         let replacementJoin = await secondJoin.value
-        for _ in 0..<20 { await Task.yield() }
 
         XCTAssertNil(replacementJoin, "no join, so no route writes into the revoked host's pane")
+        XCTAssertEqual(world.workspaces.made.withLock { $0 }, 1, "no replacement entry")
         XCTAssertEqual(world.spawner.spawnCount, 1, "no replacement ssh for a revoked host")
         XCTAssertEqual(
             panes.requests.withLock { $0 }, paneRequestsBeforeRelease,
@@ -1833,7 +1831,7 @@ final class ClaudeRemoteHerdrForwardEnrollmentRaceTests: XCTestCase, RemoteHerdr
         await world.service.prepare(
             hostID: hostID, alias: "builder", remoteSocketPath: remoteSocketPath
         )
-        await waitUntil("the first spawn") { world.spawner.spawnCount == 1 }
+        await world.spawner.spawns.waitFor(1)
         let firstProcess = world.spawner.process
 
         let replacement = Task { @MainActor in
@@ -1842,14 +1840,13 @@ final class ClaudeRemoteHerdrForwardEnrollmentRaceTests: XCTestCase, RemoteHerdr
                 remoteSocketPath: "/run/user/1000/herdr/replacement.sock"
             )
         }
-        await waitUntil("the replacement to wait on the old teardown") {
-            firstProcess.terminations.withLock { $0 } >= 1
-        }
+        // The replacement waits on the old teardown.
+        await firstProcess.terminated.waitFor(1)
         world.service.reconcileEnrollment(activeHostIDs: [])
         firstProcess.exit()
         await replacement.value
-        for _ in 0..<20 { await Task.yield() }
 
+        XCTAssertEqual(world.workspaces.made.withLock { $0 }, 1, "no replacement entry")
         XCTAssertEqual(world.spawner.spawnCount, 1, "no replacement ssh for a revoked host")
         finish(world)
         clock.releaseAllSleeps()
@@ -1866,34 +1863,37 @@ final class ClaudeRemoteHerdrForwardEnrollmentRaceTests: XCTestCase, RemoteHerdr
         let replacement = Task { @MainActor in
             await world.service.open(alias: "builder", remoteSocketPath: remoteSocketPath)
         }
-        await waitUntil("the replacement to wait on the old teardown") {
-            firstProcess.terminations.withLock { $0 } >= 1
-        }
+        // The replacement waits on the old teardown.
+        await firstProcess.terminated.waitFor(1)
         world.switches.socketAnswers.withLock { $0 = true }
         world.service.stopAllForQuit()
         firstProcess.exit()
         let replacementLease = await replacement.value
-        for _ in 0..<20 { await Task.yield() }
 
         XCTAssertNil(replacementLease)
+        XCTAssertEqual(world.workspaces.made.withLock { $0 }, 1, "no replacement entry")
         XCTAssertEqual(world.spawner.spawnCount, 1, "no ssh may outlive the quit")
         lease.close()
         finish(world)
     }
 
     /// Lets a parked readiness poll run until `isDone` holds, releasing each
-    /// poll sleep it takes.
+    /// poll sleep it takes. The driven task calls `clock.note()` when it
+    /// finishes, so each pass waits on a parked sleep or on that.
     private func drive(
         _ clock: HeldForwardTestClock,
         until description: String,
         _ isDone: @escaping @MainActor () -> Bool
     ) async {
-        for _ in 0..<1_000 {
-            if isDone() { return }
-            clock.releaseOldestSleep(for: 0.025)
-            await Task.yield()
+        while !isDone() {
+            let seen = clock.events
+            if clock.pendingCount(for: 0.025) > 0 {
+                clock.releaseOldestSleep(for: 0.025)
+                continue
+            }
+            await clock.waitForEvent(after: seen)
+            if clock.events == seen { return XCTFail("timed out waiting for \(description)") }
         }
-        XCTFail("timed out waiting for \(description)")
     }
 
     /// Asserts that quitting signals every ssh the service ever spawned: one
@@ -1919,19 +1919,21 @@ final class ClaudeRemoteHerdrForwardEnrollmentRaceTests: XCTestCase, RemoteHerdr
         world.switches.socketAnswers.withLock { $0 = false }
         let finished = Mutex(false)
         let replacement = Task { @MainActor in
-            defer { finished.withLock { $0 = true } }
+            defer {
+                finished.withLock { $0 = true }
+                clock.note()
+            }
             return await world.service.open(alias: "builder", remoteSocketPath: remoteSocketPath)
         }
-        await waitUntil("the replacement to wait on the old teardown") {
-            firstProcess.terminations.withLock { $0 } >= 1
-        }
+        // The replacement waits on the old teardown.
+        await firstProcess.terminated.waitFor(1)
         world.switches.socketAnswers.withLock { $0 = true }
 
         // Host activity for the same target lands while the slot is empty.
         await world.service.prepare(
             hostID: hostID, alias: "builder", remoteSocketPath: remoteSocketPath
         )
-        await waitUntil("the prepared spawn") { world.spawner.spawnCount == 2 }
+        await world.spawner.spawns.waitFor(2)
         firstProcess.exit()
         await drive(clock, until: "the replacement open to return") {
             finished.withLock { $0 }
@@ -1953,7 +1955,7 @@ final class ClaudeRemoteHerdrForwardEnrollmentRaceTests: XCTestCase, RemoteHerdr
         await world.service.prepare(
             hostID: hostID, alias: "builder", remoteSocketPath: remoteSocketPath
         )
-        await waitUntil("the first spawn") { world.spawner.spawnCount == 1 }
+        await world.spawner.spawns.waitFor(1)
         let firstProcess = world.spawner.process
 
         let replacement = Task { @MainActor in
@@ -1962,14 +1964,16 @@ final class ClaudeRemoteHerdrForwardEnrollmentRaceTests: XCTestCase, RemoteHerdr
                 remoteSocketPath: "/run/user/1000/herdr/replacement.sock"
             )
         }
-        await waitUntil("the replacement to wait on the old teardown") {
-            firstProcess.terminations.withLock { $0 } >= 1
-        }
+        // The replacement waits on the old teardown.
+        await firstProcess.terminated.waitFor(1)
 
         // A dictation cold-opens into the empty slot and takes a lease.
         let finished = Mutex(false)
         let open = Task { @MainActor in
-            defer { finished.withLock { $0 = true } }
+            defer {
+                finished.withLock { $0 = true }
+                clock.note()
+            }
             return await world.service.open(alias: "builder", remoteSocketPath: remoteSocketPath)
         }
         await drive(clock, until: "the cold open to return") { finished.withLock { $0 } }
@@ -1978,8 +1982,8 @@ final class ClaudeRemoteHerdrForwardEnrollmentRaceTests: XCTestCase, RemoteHerdr
 
         firstProcess.exit()
         await replacement.value
-        for _ in 0..<20 { await Task.yield() }
 
+        XCTAssertEqual(world.workspaces.made.withLock { $0 }, 2, "the stale activity makes no third entry")
         XCTAssertEqual(world.spawner.spawnCount, 2, "the stale activity starts no third ssh")
         assertQuitStopsEverySpawn(world)
         lease.close()

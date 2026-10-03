@@ -798,7 +798,6 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.shortcuts.handleDictationShortcutRelease()
         backendManager.resumeEnsure()
         await viewModel.session.managedStartupTask?.value
-        await Task.yield()
 
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: false)])
         XCTAssertNil(viewModel.session.sessionProvider)
@@ -1098,14 +1097,15 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         // the stop to finish, or the stale stop kills the fresh speechd process
         // (review finding on rapid managed→external→managed flips).
         viewModel.engines.applyDictationBackendModeChange(.managedLocal)
-        await Task.yield()
-        XCTAssertTrue(backendManager.ensureCalls.isEmpty)
 
         backendManager.resumeStopDictation()
         await viewModel.engines.dictationWarmupTask?.value
 
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: false)])
         XCTAssertEqual(backendManager.stopDictationCallCount, 1)
+        XCTAssertEqual(
+            backendManager.finishedStopDictationsAtEnsure, [1], "the warmup ensured only after the stop finished"
+        )
     }
 
     // MARK: - Overlay Buffer reachability gating (polishing warmup follows triggers)
@@ -1141,9 +1141,10 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.engines.warmUpManagedBackendsAtLaunchIfNeeded()
-        await viewModel.engines.polishingWarmupTask?.value
-        await Task.yield()
 
+        // A warmup is armed synchronously, as the task that calls ensure.
+        XCTAssertNil(viewModel.engines.polishingWarmupTask)
+        XCTAssertNil(viewModel.engines.dictationWarmupTask)
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
     }
 
@@ -1160,8 +1161,9 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.engines.applyDictationOutputModeChange(.liveAutoPaste)
-        await Task.yield()
 
+        // A stop is armed synchronously, as the task that calls it.
+        XCTAssertNil(viewModel.engines.polishingShutdownTask)
         XCTAssertEqual(backendManager.stopPolishingCallCount, 0)
     }
 
@@ -1352,10 +1354,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.engines.applyDictationOutputModeChange(.liveAutoPaste)
-        await Task.yield()
         viewModel.engines.applyDictationOutputModeChange(.overlayBuffer)
-        await Task.yield()
 
+        // A start or stop is armed synchronously, as the task that calls it.
+        XCTAssertNil(viewModel.engines.polishingWarmupTask)
+        XCTAssertNil(viewModel.engines.polishingShutdownTask)
         XCTAssertEqual(viewModel.settings.dictationOutputMode, .overlayBuffer)
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
         XCTAssertEqual(backendManager.stopPolishingCallCount, 0)
@@ -1842,13 +1845,10 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         // Secure input turns on while the dialog is up; then the user grants.
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
         viewModel.fakeMicrophone.resolvePendingAccess(granted: true)
-        // The continuation hops to the main actor and runs synchronously to
-        // completion once started; drain the hop without wall-clock waits.
-        var spins = 0
-        while viewModel.isAwaitingMicrophonePermission, spins < 1_000 {
-            spins += 1
-            await Task.yield()
-        }
+        // The grant queues its main-actor hop before this barrier, and
+        // same-priority jobs run FIFO: once the barrier runs, the hop has.
+        await Task { @MainActor in }.value
+        XCTAssertFalse(viewModel.isAwaitingMicrophonePermission, "the grant was handled")
 
         XCTAssertFalse(viewModel.isDictating, "the doomed live session is still refused")
         XCTAssertTrue(backendManager.ensureCalls.isEmpty, "still no backend boot for a refused start")
@@ -1957,6 +1957,9 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
     private(set) var ensureCalls: [EnsureCall] = []
     private(set) var stopAllCallCount = 0
     private(set) var stopDictationCallCount = 0
+    private(set) var finishedStopDictationCount = 0
+    /// `finishedStopDictationCount` at each `ensureReady`, in order.
+    private(set) var finishedStopDictationsAtEnsure: [Int] = []
     private(set) var stopPolishingCallCount = 0
     private(set) var pausedDownloadSpecIDs: [String] = []
     private(set) var cancelledDownloadSpecIDs: [String] = []
@@ -1971,6 +1974,7 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
 
     func ensureReady(dictation: Bool, polishing: Bool) async throws {
         ensureCalls.append(.init(dictation: dictation, polishing: polishing))
+        finishedStopDictationsAtEnsure.append(finishedStopDictationCount)
         ensureStartedContinuation?.resume()
         ensureStartedContinuation = nil
 
@@ -2006,6 +2010,7 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
                 stopDictationResumeContinuation = continuation
             }
         }
+        finishedStopDictationCount += 1
     }
 
     func stopPolishing() async {

@@ -74,10 +74,9 @@ final class TextInsertionServiceRealtimeInsertionTests: XCTestCase {
         fieldAccepts = false
         service.enqueueRealtimeInsertion(" world")
         service.stopInsertionRetryTask()
-        XCTAssertEqual(clock.pendingSleepers, 0)
+        XCTAssertEqual(clock.pendingSleepers, 0, "no retry left to wake")
         fieldAccepts = true
         clock.advance(by: 60)
-        await Task.yield()
 
         XCTAssertEqual(posted.value, ["hello"])
         XCTAssertTrue(service.hasPendingInsertionText)

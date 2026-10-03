@@ -381,7 +381,9 @@ final class BackendManagerTests: XCTestCase {
         let second = Task { @MainActor in
             try await manager.ensureReady(dictation: true, polishing: false)
         }
-        await Task.yield()
+        // The second ensure was queued on the main actor ahead of this
+        // barrier, so it has joined or started a flight when the barrier runs.
+        await Task { @MainActor in }.value
 
         XCTAssertEqual(modelPreparer.prepareCalls.map(\.backendID), [BackendCatalog.speechd.id])
         XCTAssertTrue(supervisorFactory.createdConfigurations.isEmpty)
@@ -389,6 +391,9 @@ final class BackendManagerTests: XCTestCase {
         modelPreparer.resumePrepare()
         try await first.value
         try await second.value
+        // Only the first prepare parks, so a second flight would have
+        // prepared again by now.
+        XCTAssertEqual(modelPreparer.prepareCalls.map(\.backendID), [BackendCatalog.speechd.id])
         XCTAssertEqual(
             supervisorFactory.supervisors[BackendCatalog.speechd.displayName]?.startCallCount,
             1
@@ -414,7 +419,9 @@ final class BackendManagerTests: XCTestCase {
         let memo = Task { @MainActor in
             try await manager.ensureReady(dictation: true, polishing: false)
         }
-        await Task.yield()
+        // The memo's ensure was queued ahead of this barrier, so it waits on
+        // the shared flight before the cancel lands.
+        await Task { @MainActor in }.value
 
         memo.cancel()
         do {
@@ -1089,26 +1096,17 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertTrue(modelPreparer.discardedRepoIDs.isEmpty)
     }
 
-    /// Spins the main actor until the backend reaches the wanted status. The
-    /// preparer's scripted progress is delivered through a `@MainActor` hop, so
-    /// the condition is reached by yielding — no wall clock involved. Bounded so
-    /// a regression fails the test instead of hanging the runner.
+    /// Returns once the backend reaches the wanted status, re-reading it after
+    /// each write: the preparer's scripted progress arrives through a
+    /// `@MainActor` hop.
     private func waitUntilStatus(
         of spec: ManagedBackendSpec,
         on manager: BackendManager,
-        matching predicate: (ManagedBackendStatus) -> Bool,
+        matching predicate: @escaping (ManagedBackendStatus) -> Bool,
         file: StaticString = #filePath,
         line: UInt = #line
     ) async {
-        for _ in 0..<10_000 {
-            if predicate(manager.status(for: spec)) { return }
-            await Task.yield()
-        }
-        XCTFail(
-            "\(spec.displayName) never reached the expected status (last: \(manager.status(for: spec)))",
-            file: file,
-            line: line
-        )
+        await awaitCondition(file: file, line: line) { predicate(manager.status(for: spec)) }
     }
 
     func testModelPreparationFailureMarksBackendFailedWithDetails() async {

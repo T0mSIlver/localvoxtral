@@ -146,16 +146,21 @@ private final class ForwardHarness {
         clock = clock.addingTimeInterval(seconds)
     }
 
-    /// Yield until the main actor has nothing left to run.
-    ///
-    /// A fixed number of `Task.yield()`s is a guess about the scheduler, and a
-    /// wrong guess makes a test pass by not letting the buggy code run — which
-    /// is exactly how the settle-window regression hid. This keeps yielding
-    /// while anything is still making progress, so "nothing more happens" is
-    /// something the test observes rather than assumes. Bounded so a live-lock
-    /// fails the test instead of hanging the suite.
-    func drainMainActor(iterations: Int = 200) async {
-        for _ in 0..<iterations { await Task.yield() }
+    /// Returns once the supervisor has slept, or started sleeping, for
+    /// `duration`: how a test knows the loop reached a park.
+    func waitForSleep(_ duration: Duration, line: UInt = #line) async {
+        while !sleeps.contains(duration) {
+            let seen = sleepEvents.value
+            await sleepEvents.waitFor(seen + 1, line: line)
+            if sleepEvents.value == seen { return }
+        }
+    }
+
+    /// Returns once every main-actor job queued before this call has run.
+    /// Same-priority jobs run FIFO, so a write a job already queued ahead
+    /// of this one has landed when it returns.
+    func drainMainActorQueue() async {
+        await Task { @MainActor in }.value
     }
 
     /// When true, every injected sleep records its duration and then BLOCKS
@@ -164,8 +169,15 @@ private final class ForwardHarness {
     var holdSleeps = false
     private var heldSleeps: [CheckedContinuation<Void, Never>] = []
 
+    private let sleepEvents = EventCount()
+    /// Settle windows and supervise loops that ended, through the
+    /// supervisor's DEBUG seams.
+    let settleWindowsEnded = EventCount()
+    let superviseLoopsEnded = EventCount()
+
     func recordSleep(_ duration: Duration) async {
         sleeps.append(duration)
+        sleepEvents.increment()
         guard holdSleeps else { return }
         await withCheckedContinuation { heldSleeps.append($0) }
     }
@@ -227,6 +239,10 @@ private final class ForwardHarness {
             now: { [weak self] in self?.clock ?? Date(timeIntervalSince1970: 1_000_000) }
         )
         supervisor.onStateChange = { [weak self] state in self?.record(state) }
+        let settleWindowsEnded = settleWindowsEnded
+        let superviseLoopsEnded = superviseLoopsEnded
+        supervisor.debugSettleWindowEnded = { settleWindowsEnded.increment() }
+        supervisor.debugSuperviseLoopEnded = { superviseLoopsEnded.increment() }
         return supervisor
     }
 
@@ -467,7 +483,7 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
         )
 
         try await harness.waitForState { $0 == .portUnavailable }
-        await harness.drainMainActor()
+        await harness.waitForSleep(.seconds(300))
         XCTAssertEqual(supervisor.state, .portUnavailable)
         XCTAssertTrue(process.hasExited, "the supervisor ends the ssh it spawned once its port is refused")
         XCTAssertGreaterThanOrEqual(process.terminateCount, 1)
@@ -517,9 +533,8 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
         process.finish(status: 255)
 
         try await harness.waitForState { $0 == .externallyForwarded }
-        // Let the loop reach its park before reading the recorded sleeps: the
-        // state lands synchronously in `transition`, the sleep one hop later.
-        await harness.drainMainActor()
+        // The state lands synchronously in `transition`, the park one hop later.
+        await harness.waitForSleep(.seconds(300))
         XCTAssertEqual(supervisor.state, .externallyForwarded)
         XCTAssertFalse(
             supervisor.state.isFailure,
@@ -561,7 +576,7 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
         process.finish(status: 255)
 
         try await harness.waitForState { $0 == .portUnavailable }
-        await harness.drainMainActor()
+        await harness.waitForSleep(.seconds(300))
         XCTAssertEqual(supervisor.state, .portUnavailable)
         XCTAssertTrue(supervisor.state.isFailure)
         XCTAssertEqual(harness.ownershipProbeCalls.count, 1)
@@ -668,7 +683,9 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
         process.emitStandardError(
             "Warning: remote port forwarding failed for listen port 8473"
         )
-        await harness.drainMainActor()
+        // The stderr watcher was queued on the main actor when the process
+        // launched, and reads the line in the job it runs next.
+        await harness.drainMainActorQueue()
 
         XCTAssertFalse(process.hasExited, "a refusal of another port must not end this connection")
         XCTAssertEqual(process.terminateCount, 0)
@@ -778,14 +795,14 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
         // on its backoff, so nothing has left the loop-body scope and the old
         // `defer { settle.cancel() }` has not run.
         harness.releaseOldestSleep()
-        // Drain the main actor until it is quiet. TWO yields used to be enough
+        // Wait for the stale settle task to end. TWO yields used to be enough
         // to make this test pass — and that was the whole reason it passed:
         // the stale settle task simply had not been scheduled yet. Measured
         // with an instrumented copy of this scenario, at 50 yields the old code
         // published `.forwarding` on top of `.retrying(1)` and the final state
-        // was `forwarding`. Waiting for quiescence is what turns this from a
-        // test of the scheduler into a test of the guard.
-        await harness.drainMainActor()
+        // was `forwarding`. Waiting for the task itself is what turns this from
+        // a test of the scheduler into a test of the guard.
+        await harness.settleWindowsEnded.waitFor(1)
 
         XCTAssertFalse(
             harness.states.contains(.forwarding),
@@ -902,7 +919,7 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
             "Warning: remote port forwarding failed for listen port 28511"
         )
         try await harness.waitForState { $0 == .portUnavailable }
-        await harness.drainMainActor()
+        await harness.waitForSleep(.seconds(300))
         XCTAssertTrue(harness.sleeps.contains(.seconds(300)))
 
         supervisor.recover()
@@ -916,7 +933,7 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
         harness.holdSleeps = false
         harness.releaseSleeps()
         try await harness.waitForState { $0 == .forwarding }
-        await harness.drainMainActor()
+        await harness.superviseLoopsEnded.waitFor(1)
         XCTAssertEqual(harness.processes.count, 2, "the old loop dialed again: \(harness.states)")
         XCTAssertEqual(supervisor.state, .forwarding)
     }
@@ -930,8 +947,9 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
         let process = try await harness.process(0)
         try await harness.waitForState { $0 == .forwarding }
 
+        // A restart would SIGTERM the process in `stop()`, before `recover()`
+        // returns.
         supervisor.recover()
-        await harness.drainMainActor()
 
         XCTAssertEqual(process.terminateCount, 0)
         XCTAssertEqual(harness.processes.count, 1)

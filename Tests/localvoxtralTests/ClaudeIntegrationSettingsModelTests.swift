@@ -1546,20 +1546,20 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         _ = try registry.enroll(label: "buildhost", sshHostAlias: "builder")
         let listener = StubClaudeRemoteListener(hosts: registry)
         listener.bindError = ClaudeRemoteContextListener.StartFailure.bindFailed(errno: EADDRINUSE)
-        let reapCount = Mutex(0)
+        let reaps = EventCount()
         let forwards = makeForwardCoordinator(
             registry: registry,
             stubs: ForwardStubs(),
             isListenerBound: { listener.isListening },
-            reapOrphans: { reapCount.withLock { $0 += 1 } }
+            reapOrphans: { reaps.increment() }
         )
         let model = makeModel(registry: registry, listener: listener, forwards: forwards)
 
         model.synchronizeListenerAtLaunch()
-        for _ in 0..<50 { await Task.yield() }
+        await reaps.waitFor(1)
 
         XCTAssertEqual(model.listenerStatus, .portConflict(port: 8473))
-        XCTAssertEqual(reapCount.withLock { $0 }, 1)
+        XCTAssertEqual(reaps.value, 1)
     }
 
     // MARK: Last-heard and rejection diagnostics
@@ -2089,7 +2089,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         await model.enroll()
 
         let inFlight = Task { await model.runVerification() }
-        while !model.isPerformingVerification { await Task.yield() }
+        await awaitCondition { model.isPerformingVerification }
         XCTAssertTrue(model.isEnrollmentBusy)
 
         // Every write path must refuse while a check runs: they share the sheet,
@@ -2135,7 +2135,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let hostID = try XCTUnwrap(model.presentedPlan).host.id
 
         let inFlight = Task { await model.runVerification() }
-        while !model.isPerformingVerification { await Task.yield() }
+        await awaitCondition { model.isPerformingVerification }
 
         model.dismissPlan()
         await model.rotate(hostID: hostID)
@@ -2215,7 +2215,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertTrue(model.listenerIsBound, "bound when the probes are launched")
 
         let inFlight = Task { await model.runVerification() }
-        while !model.isPerformingVerification { await Task.yield() }
+        await awaitCondition { model.isPerformingVerification }
 
         // …and gone by the time they answer: our bind dropped and something
         // else now holds the port.
