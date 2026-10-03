@@ -90,7 +90,7 @@ public struct ClaudeRemoteListenerLimits: Sendable, Equatable {
 public final class ClaudeRemoteContextListener: Sendable {
     private struct State {
         var isRunning = false
-        var activeConnections = 0
+        var admission = ConnectionAdmission()
         var wakeWriteFD: Int32 = -1
         /// Signalled by the accept loop's `defer` on every exit. `stop()` waits
         /// on it, so a rebind after a revoke/enroll cannot race the outgoing
@@ -388,14 +388,23 @@ public final class ClaudeRemoteContextListener: Sendable {
                 continue
             }
 
-            let admitted = state.withLock { state -> Bool in
-                guard state.isRunning, state.activeConnections < limits.maxConcurrentConnections else {
-                    return false
-                }
-                state.activeConnections += 1
-                return true
+            let decision = state.withLock { state -> ConnectionAdmission.Decision? in
+                guard state.isRunning else { return nil }
+                return state.admission.admit(limit: limits.maxConcurrentConnections)
             }
-            guard admitted else {
+            switch decision {
+            case .refused(first: true):
+                Log.claudeContext.error(
+                    "Claude remote context listener at its cap of \(self.limits.maxConcurrentConnections, privacy: .public) connections: refusing new ones until one ends"
+                )
+            case .admitted(let refused) where refused > 0:
+                Log.claudeContext.error(
+                    "Claude remote context listener refused \(refused, privacy: .public) connections while at its cap; each lost a context update"
+                )
+            default:
+                break
+            }
+            guard case .admitted = decision else {
                 // Over the cap: drop. The hook fails open and the user loses one
                 // context update — the right trade against unbounded threads.
                 close(fd)
@@ -407,7 +416,7 @@ public final class ClaudeRemoteContextListener: Sendable {
                     return
                 }
                 self.serve(connectionFD: fd)
-                self.state.withLock { $0.activeConnections -= 1 }
+                self.state.withLock { $0.admission.release() }
             }
             thread.name = "com.localvoxtral.claude-remote.conn"
             thread.stackSize = 512 * 1024

@@ -742,7 +742,7 @@ extension DictationSessionController {
             self.activeRealtimeClient.sendCommit(final: true)
             while self.isFinalizingStop {
                 if !self.activeRealtimeClient.isConnected {
-                    self.debugLog("socket disconnected during finalization; finishing stop")
+                    Log.backends.notice("stop finalization: the socket closed; finishing the stop")
                     self.finishStoppedSession(promotePendingSegment: true)
                     return
                 }
@@ -753,7 +753,9 @@ extension DictationSessionController {
                 let inactivity = now.timeIntervalSince(lastActivity)
 
                 if elapsed >= TimingConstants.stopFinalizationTimeout {
-                    self.debugLog("stop finalization timeout (\(TimingConstants.stopFinalizationTimeout)s); forcing disconnect")
+                    Log.backends.error(
+                        "stop finalization timed out after \(TimingConstants.stopFinalizationTimeout, privacy: .public) s; disconnecting with what arrived"
+                    )
                     self.activeRealtimeClient.disconnect()
                     self.finishStoppedSession(promotePendingSegment: true)
                     return
@@ -762,8 +764,8 @@ extension DictationSessionController {
                 if elapsed >= TimingConstants.finalizationMinimumOpen,
                    inactivity >= TimingConstants.finalizationInactivityThreshold
                 {
-                    self.debugLog(
-                        "realtime finalization idle for \(String(format: "%.2f", inactivity))s; disconnecting"
+                    Log.backends.notice(
+                        "stop finalization idle for \(inactivity, format: .fixed(precision: 2), privacy: .public) s; disconnecting"
                     )
                     self.activeRealtimeClient.disconnect()
                     self.finishStoppedSession(promotePendingSegment: true)
