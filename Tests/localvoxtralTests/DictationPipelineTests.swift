@@ -1277,6 +1277,49 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.viewModel.lastError, DictationViewModel.StatusStrings.agentPromptTextKeptInHistory)
     }
 
+    /// The mod refused, and while the fallback asked herdr what runs in the
+    /// session's pane, the user moved to another pane of the same herdr.
+    /// The app pid still matches and the session still runs in its pane,
+    /// but keys would reach the other pane, so the words stay in History
+    /// (#1498).
+    func testARefusedModFillNeverTypesAfterAPaneSwitchDuringTheFocusLookup() async throws {
+        let focus = HerdrFocus("w1:p2")
+        let sessionPane = FakeHerdrSocket.focusedPane("w1:p2") { [(9001, "claude")] }
+        let herdr = try FakeHerdrSocket(answer: { request in
+            switch request.method {
+            case "pane.current":
+                return .result(#"{"type":"pane_current","pane":{"pane_id":"\#(focus.pane)","focused":true}}"#)
+            case "pane.process_info":
+                defer { focus.foregroundQueried() }
+                return sessionPane(request)
+            default:
+                return sessionPane(request)
+            }
+        })
+        addTeardownBlock { herdr.stop() }
+        let answered = BoundedWait()
+        let (pipeline, typed, fills) = try await modChannelPipeline(
+            answers: [.refuse], herdr: herdr, answerGate: answered,
+            beforeAnswer: { focus.switchDuringNextForegroundQuery(to: "w1:p3") }
+        )
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "run the tests.") {
+            XCTAssertEqual(pipeline.viewModel.context.claudeSessionJoin?.mechanism, .herdrPane, "precondition")
+        }
+        answered.resolve()
+        let done = await settled.wait(for: 1)
+
+        XCTAssertTrue(done)
+        XCTAssertEqual(fills.texts, ["run the tests."])
+        XCTAssertEqual(focus.pane, "w1:p3", "precondition: the switch happened during the lookup")
+        XCTAssertEqual(typed.text, "", "nothing typed into the other pane")
+        XCTAssertEqual(pipeline.viewModel.lastError, DictationViewModel.StatusStrings.agentPromptTextKeptInHistory)
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), ["run the tests."])
+    }
+
     /// The mod refused a fill and Secure Keyboard Entry sent the words to
     /// the clipboard: the prompt is still empty, so the next dictation into
     /// it starts with no space.
@@ -1314,16 +1357,22 @@ final class DictationPipelineTests: XCTestCase {
     private func modChannelPipeline(
         answers: [FakeModAnswer],
         focus: FocusedPane? = nil,
+        herdr: FakeHerdrSocket? = nil,
         answerGate: BoundedWait? = nil,
         beforeAnswer: @escaping @Sendable () -> Void = {}
     ) async throws -> (Pipeline, TypedText, FillRecorder) {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
         pipeline.overlay.insertsThroughCommitter = true
         pipeline.overlay.commitTargetAppPID = 4343
         pipeline.overlay.passesTargetPIDToCommitter = false
-        var focusedTTY: (@Sendable () -> String)?
-        if let focus { focusedTTY = { focus.tty } }
-        _ = joinClaudeCodeTerminal(pipeline, focusedTTY: focusedTTY)
+        if let herdr {
+            joinHerdrPane(pipeline, herdr: herdr)
+        } else {
+            var focusedTTY: (@Sendable () -> String)?
+            if let focus { focusedTTY = { focus.tty } }
+            _ = joinClaudeCodeTerminal(pipeline, focusedTTY: focusedTTY)
+        }
         let typed = recordTypedText(pipeline)
 
         // A silent mod's fill times out at once, or when the gate opens;
@@ -3914,6 +3963,29 @@ private final class FillSettled {
         let wait = BoundedWait()
         watches.append((count, wait))
         return await wait.value(failAfter: failAfter)
+    }
+}
+
+/// A fake herdr's focused pane, which the user can be made to leave while
+/// herdr answers a `pane.process_info`.
+private final class HerdrFocus: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: String
+    private var next: String?
+
+    init(_ pane: String) { current = pane }
+
+    var pane: String { lock.withLock { current } }
+
+    func switchDuringNextForegroundQuery(to pane: String) {
+        lock.withLock { next = pane }
+    }
+
+    func foregroundQueried() {
+        lock.withLock {
+            if let next { current = next }
+            next = nil
+        }
     }
 }
 

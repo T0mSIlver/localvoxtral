@@ -71,12 +71,15 @@ extension DictationSessionController {
     /// Whether a key typed now would reach `sessionID`'s prompt: `terminalPID`
     /// is frontmost and its focused pane shows the session. The local
     /// questions only (the focused tty, a local herdr's focused pane), so a
-    /// cmux surface answers no and keeps its text.
+    /// cmux surface answers no and keeps its text. The caller types without
+    /// awaiting again.
     private func keysReachModSession(_ sessionID: String, terminalPID: pid_t?) async -> Bool {
         guard let terminalPID, let resolver = context.claudeSessionJoinResolver,
-              let target = TerminalScreenContextSource.frontmostTarget(), target.pid == terminalPID
+              let target = TerminalScreenContextSource.frontmostTarget(), target.pid == terminalPID,
+              await resolver.sessionShown(target: target) == sessionID
         else { return false }
-        return await resolver.sessionShown(target: target) == sessionID
+        // The pane lookup awaited: another app may have come forward since.
+        return TerminalScreenContextSource.frontmostTarget()?.pid == terminalPID
     }
 }
 
