@@ -30,7 +30,10 @@ there is not.
   submit count (`ClaudeSessionSnapshot.promptsSubmitted`, every
   `UserPromptSubmit` with or without text) has not moved since. A failed
   commit, one the spoken trigger sent, one with no join, or a Live Auto-Paste
-  dictation clears it. Anything looser puts a space in front of `/compact`
+  dictation clears it. "Send that to <name>" into a terminal pane is judged
+  the same way against the pane's pid and the named session; its Return, or
+  a failed typing, clears a landing in that session and no other (#1480).
+  Anything looser puts a space in front of `/compact`
   in a fresh prompt. No trailing space after a commit.
 - **A mid-dictation reconnect resumes the session; it never replays it.**
   When the realtime socket drops without the user asking
@@ -2776,8 +2779,8 @@ there is not.
   is the one call to `gh issue create`, reached only from the Inbox's File
   button and from a spoken "file it" (#927). That one works only in a review
   dictation, whose overlay shows exactly one draft, and `applySpokenReview`
-  files only when the draft's title and body still match what the overlay
-  showed. `QuickCaptureInboxModel.comment` is the one call to `gh issue
+  files only when the draft's title, body and repository still match what
+  the overlay showed (#1510): a move keeps the text but not where it files. `QuickCaptureInboxModel.comment` is the one call to `gh issue
   comment` (#965), reached only from the Inbox's Comment on #N button, and
   only for a draft whose `relation` is `extends`: the issue number comes from
   the app's own open-issue list. A follow-up joins an open capture (not

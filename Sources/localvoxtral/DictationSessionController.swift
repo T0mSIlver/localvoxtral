@@ -988,10 +988,15 @@ final class DictationSessionController {
     /// as a finalizing stop does: a start meanwhile (a new microphone,
     /// #1055) must go through `cancelPolishingForNewSessionIfNeeded`, which
     /// saves the text. The socket is gone, so nothing it still emits may
-    /// reach the transcript the commit is using.
+    /// reach the transcript the commit is using. The overlay pins its target
+    /// here too: left buffering, every refresh, the one after the polish
+    /// included, would retarget the commit to whatever app has focus (#1478).
     func ownStopWithoutFinalization() {
         sessionConnectionGeneration = .none
         isFinalizingStop = true
+        if !wasCancelled {
+            beginOverlayFinalization()
+        }
     }
 
     func clearTranscript() {

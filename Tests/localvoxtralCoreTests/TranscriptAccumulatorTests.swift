@@ -149,6 +149,19 @@ final class TranscriptAccumulatorTests: XCTestCase {
         )
     }
 
+    func testOverlayPromotionKeepsTheReplayTheOverlayDropped() {
+        var transcript = TranscriptAccumulator()
+        _ = transcript.applyFinal("je vais simplement devoir attendre d'avoir tout recu")
+        transcript.appendPartial("je vais simplement devoir attendre d' avoir tout recu")
+        let shown = transcript.overlayCommitText
+        XCTAssertEqual(shown, "je vais simplement devoir attendre d'avoir tout recu")
+
+        _ = transcript.promotePendingToLatestSegment(keepingOverlayMerge: true)
+
+        XCTAssertEqual(transcript.currentDictationEventText, shown)
+        XCTAssertEqual(transcript.lastFinalSegment, shown)
+    }
+
     func testPromotionWithNothingBufferedChangesNothing() {
         var transcript = TranscriptAccumulator()
         _ = transcript.applyFinal("done.")

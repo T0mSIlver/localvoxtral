@@ -365,6 +365,56 @@ final class VoiceMemoIntakeTests: XCTestCase {
         XCTAssertEqual(trashed, [])
     }
 
+    /// iCloud replaced the memo with another recording while the first was
+    /// transcribed: the replacement is not trashed unheard, and becomes its
+    /// own capture.
+    func testAMemoReplacedWhileItWasTranscribedIsNotTrashedAndIsTakenNext() async {
+        let intake = intake()
+        files = [memo("walk.m4a")]
+        transcriber.whileTranscribing.withLock {
+            $0 = { [unowned self] in
+                files = [memo("walk.m4a", size: 2_000, minute: 1)]
+                transcriber.whileTranscribing.withLock { $0 = nil }
+            }
+        }
+        _ = await intake.scan()
+        _ = await intake.scan()
+        XCTAssertEqual(captured.map(\.text), ["words of walk.m4a"])
+        XCTAssertEqual(trashed, [], "the replacement was not transcribed")
+
+        transcriber.results.withLock { $0["walk.m4a"] = .success("the second recording") }
+        _ = await intake.scan()
+        _ = await intake.scan()
+        XCTAssertEqual(captured.map(\.text), ["words of walk.m4a", "the second recording"])
+        XCTAssertEqual(trashed, ["walk.m4a"])
+    }
+
+    /// The memo vanished between the listing and the read (a rename, an
+    /// eviction): the failed open is not the memo's verdict, and the memo is
+    /// taken once it is back unchanged.
+    func testAMemoThatVanishedWhileItWasOpenedIsTakenOnceItIsBack() async {
+        let intake = intake()
+        let walk = memo("walk.m4a")
+        files = [walk]
+        transcriber.results.withLock { $0["walk.m4a"] = .failure(VoiceMemoUnreadable()) }
+        transcriber.whileTranscribing.withLock {
+            $0 = { [unowned self] in
+                files = []
+                transcriber.whileTranscribing.withLock { $0 = nil }
+            }
+        }
+        _ = await intake.scan()
+        _ = await intake.scan()
+        XCTAssertEqual(captured, [])
+
+        transcriber.results.withLock { $0["walk.m4a"] = nil }
+        files = [walk]
+        _ = await intake.scan()
+        _ = await intake.scan()
+        XCTAssertEqual(captured.map(\.text), ["words of walk.m4a"])
+        XCTAssertEqual(trashed, ["walk.m4a"])
+    }
+
     func testAfterARelaunchAMemoThatCouldNotBeTrashedIsNotCapturedAgain() async {
         trashFails = true
         files = [memo("walk.m4a")]

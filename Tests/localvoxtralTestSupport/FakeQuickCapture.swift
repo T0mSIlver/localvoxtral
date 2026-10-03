@@ -57,11 +57,17 @@ package final class ScriptedQuickCaptureClassifier: QuickCaptureClassifying, @un
     private let answers: Mutex<[[String: Double]]>
     package let calls = Mutex<[[QuickCaptureOption]]>([])
     package let captures = Mutex<[String]>([])
-    package init(_ answers: [[String: Double]]) { self.answers = Mutex(answers) }
+    /// Set, each answer waits on it.
+    package let gate: ManualSleeper?
+    package init(_ answers: [[String: Double]], gated: Bool = false) {
+        self.answers = Mutex(answers)
+        gate = gated ? ManualSleeper() : nil
+    }
     package var kind: QuickCaptureRoute.Classifier { .chatModel }
     package func classify(capture: String, options: [QuickCaptureOption]) async throws -> [String: Double] {
         calls.withLock { $0.append(options) }
         captures.withLock { $0.append(capture) }
+        if let gate { await gate.sleep(0) }
         return answers.withLock { $0.count > 1 ? $0.removeFirst() : $0[0] }
     }
 }

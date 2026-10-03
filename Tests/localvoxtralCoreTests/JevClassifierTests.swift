@@ -141,6 +141,24 @@ final class QuickCaptureChatRoutingTests: XCTestCase {
         )
     }
 
+    /// A pick without a numeric confidence stays a suggestion: it never
+    /// passes the bars that place a capture in a project.
+    func testAPickWithoutANumericConfidenceIsOnlyASuggestion() throws {
+        for content in [
+            #"{"project": "localvoxtral"}"#,
+            #"{"project": "localvoxtral", "confidence": null}"#,
+            #"{"project": "localvoxtral", "confidence": "0.95"}"#,
+        ] {
+            let probabilities = try QuickCaptureChatRouting.probabilities(
+                status: 200, body: reply(content), options: options)
+            let answer = QuickCaptureRouting.answer(probabilities: probabilities, options: options, classifier: .chatModel)
+            guard case .route(let route) = answer else { return XCTFail(content) }
+            XCTAssertEqual(route.destination, .catchAll, content)
+            XCTAssertEqual(route.reason, .lowConfidence, content)
+            XCTAssertEqual(route.suggestion, "/w/localvoxtral", content)
+        }
+    }
+
     func testAnIdThatIsNoOptionIsAFailureNotAGuess() {
         XCTAssertThrowsError(
             try QuickCaptureChatRouting.probabilities(

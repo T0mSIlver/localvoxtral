@@ -122,6 +122,36 @@ final class QuickCaptureFollowUpTests: XCTestCase {
         XCTAssertEqual(runner.runs.withLock { $0 }, 0)
     }
 
+    /// Another running copy files the capture while the router decides that
+    /// a new one continues it: the join does not land on the filed capture,
+    /// whose words already went to GitHub. The new words stay a capture of
+    /// their own, with that project as the suggestion.
+    func testAFollowUpDoesNotJoinACaptureAnotherCopyFiledWhileRouting() async throws {
+        let runner = FakeQuickCaptureDraftRunner()
+        let filer = model(classifier: ScriptedQuickCaptureClassifier([["reach": 0.95]]), runner: runner)
+        await filer.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let filed = try XCTUnwrap(filer.items.first?.id)
+        let classifier = ScriptedQuickCaptureClassifier([["capture-1": 0.95, "reach": 0.05]], gated: true)
+        let other = model(classifier: classifier, runner: runner)
+
+        clock += 60
+        let capturing = other.capture(text: "It should follow the system setting", historyRecordID: nil)
+        await classifier.gate?.waitForSleepers(1)
+        await filer.file(filed)?.value
+        XCTAssertEqual(filer.items.first { $0.id == filed }?.state, .filed)
+        classifier.gate?.wakeAll()
+        await capturing.value
+
+        let saved = try XCTUnwrap(QuickCaptureInboxFile.load(from: fileURL).value)
+        XCTAssertEqual(saved.items.count, 2)
+        XCTAssertNil(saved.items.first { $0.id == filed }?.followUps)
+        let own = try XCTUnwrap(saved.items.first { $0.id != filed })
+        XCTAssertEqual(own.text, "It should follow the system setting")
+        XCTAssertEqual(own.state, .ready)
+        XCTAssertEqual(own.suggestion?.projectKey, "/w/reach")
+        XCTAssertEqual(github.created.withLock { $0.count }, 1)
+    }
+
     func testOnlyUnfiledCapturesFromTheLastHourAreOffered() async throws {
         let classifier = ScriptedQuickCaptureClassifier([["reach": 0.95]])
         let model = model(classifier: classifier, runner: FakeQuickCaptureDraftRunner())

@@ -319,6 +319,14 @@ package final class VoiceMemoIntake {
             saveLedger()
             return .stopPass
         } catch is VoiceMemoUnreadable {
+            // Renamed, replaced or evicted while it was opened: the file read
+            // is not the memo listed, so it says nothing about that memo.
+            guard await isStillListed(file) else {
+                Log.backends.notice("Voice memos: a memo changed while it was read; retrying on a later scan")
+                ledger.entries[file.name] = nil
+                saveLedger()
+                return .left
+            }
             Log.backends.error("Voice memos: a memo is not audio this Mac can decode; left in the folder")
             record(file, .unreadable)
             onStatus?("A voice memo could not be read.")
@@ -355,8 +363,24 @@ package final class VoiceMemoIntake {
             return .left
         }
         Log.backends.info("Voice memos: \(transcript.text.count, privacy: .public) chars to the inbox")
+        // A recording iCloud put under the name while this one was
+        // transcribed has not been heard. The ledger keeps `.transcribing`,
+        // so a later scan trashes the file only if it is still this memo,
+        // and otherwise takes it as a new one (#1098).
+        guard await isStillListed(file) else {
+            Log.backends.notice("Voice memos: the memo changed while it was transcribed; the file stays for the next scan")
+            return .captured
+        }
         finish(file, itemID: itemID, at: url)
         return .captured
+    }
+
+    /// Whether the folder still lists `file` as it was when it was taken:
+    /// same name, size and date, its bytes on this Mac. False when the
+    /// folder cannot be listed.
+    private func isStillListed(_ file: VoiceMemoFile) async -> Bool {
+        guard let files = try? await list(directory) else { return false }
+        return files.contains(file)
     }
 
     /// The memo's capture is on disk: marks it captured and moves it to the
