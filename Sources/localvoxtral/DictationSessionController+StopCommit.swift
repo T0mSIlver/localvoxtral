@@ -986,7 +986,7 @@ extension DictationSessionController {
         record.polishPromptTokens = polishPromptTokens
         lastDictationJoin = joined
         dependencies.onSessionRecord?(record)
-        let retention = settings.reloadDictationHistoryRetention()
+        let retention = settings.reloadHistoryStorageSettings()
         // The record holds the clipboard placeholder; the copy the user takes
         // gets the text as it was inserted.
         let entry = DictationHistoryEntry(record)
@@ -1018,7 +1018,7 @@ extension DictationSessionController {
     /// Brings the store in line with the retention setting: at launch, and
     /// when the setting changes. `off` deletes everything there is.
     func applyDictationHistoryRetention(now: Date = Date()) {
-        let retention = settings.reloadDictationHistoryRetention()
+        let retention = settings.reloadHistoryStorageSettings()
         if !retention.savesDictations {
             // A pass already reading the history would send it to the hosted
             // model after the user said not to keep it.

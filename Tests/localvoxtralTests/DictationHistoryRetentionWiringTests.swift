@@ -72,4 +72,29 @@ final class DictationHistoryRetentionWiringTests: XCTestCase {
         let entries = await store.entries()
         XCTAssertEqual(entries.map(\.rawText), ["kept"])
     }
+
+    /// The same for the audio switch: a copy that launched with it off
+    /// keeps the recordings another copy now saves.
+    func testAStaleCopyKeepsTheAudioAnotherCopyTurnedOn() async throws {
+        let defaults = makeSettingsDefaults()
+        let staleCopy = makeSettings(defaults: defaults)
+        staleCopy.dictationHistoryRetention = .forever
+        staleCopy.dictationAudioEnabled = false
+        let otherCopy = makeSettings(defaults: defaults)
+        otherCopy.dictationAudioEnabled = true
+        let (viewModel, store) = try makeViewModel(settings: staleCopy)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-audio-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let audio = DictationAudioStore(directoryURL: directory)
+        store.audioStore = audio
+        let saved = record("recorded by the other copy")
+        await store.save(saved, audio: pcm).value
+
+        viewModel.applyDictationHistoryRetention()
+        await store.pendingWrites?.value
+
+        XCTAssertEqual(audio.storedIDs(), [saved.id])
+        XCTAssertTrue(staleCopy.dictationAudioEnabled)
+    }
 }

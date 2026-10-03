@@ -567,14 +567,19 @@ final class SettingsStore {
         }
     }
 
-    /// The retention as saved now, which another running copy may have
-    /// changed since this one launched. What deletes by retention reads it
-    /// here, or a copy still holding Don't keep deletes what the other
-    /// copy keeps (#1569).
-    func reloadDictationHistoryRetention() -> DictationHistoryRetention {
+    /// The History storage settings as saved now: retention, audio and
+    /// diagnostic records, which another running copy may have changed
+    /// since this one launched. What deletes by them reads them here, or a
+    /// copy still holding Don't keep or a switch off deletes what the other
+    /// copy keeps (#1569). Returns the retention.
+    func reloadHistoryStorageSettings() -> DictationHistoryRetention {
         let saved = defaults.string(forKey: Keys.dictationHistoryRetention)
             .flatMap(DictationHistoryRetention.init(rawValue:)) ?? .forever
         if saved != dictationHistoryRetention { dictationHistoryRetention = saved }
+        let audio = Self.loadBool(defaults: defaults, key: Keys.dictationAudioEnabled, fallback: false)
+        if audio != dictationAudioEnabled { dictationAudioEnabled = audio }
+        let records = Self.loadBool(defaults: defaults, key: Keys.diagnosticRecordsEnabled, fallback: true)
+        if records != diagnosticRecordsEnabled { diagnosticRecordsEnabled = records }
         return saved
     }
 
