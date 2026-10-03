@@ -26,6 +26,10 @@ set -euo pipefail
 #                                             # the run instead. Any ref.
 #                                             # target defaults to patch and
 #                                             # may be daily or nightly.
+#   ./scripts/release.sh publish <tag>        # finish a release whose
+#                                             # publish step failed after
+#                                             # tagging, from that run's
+#                                             # artifact: no rebuild
 #   ./scripts/release.sh --dry-run ...        # check, print what would be
 #                                             # dispatched, dispatch nothing
 #
@@ -48,6 +52,44 @@ DRY_RUN=false
 if [[ "${1:-}" == "--dry-run" ]]; then
   DRY_RUN=true
   shift
+fi
+
+if [[ "${1:-}" == "publish" ]]; then
+  TAG="${2:-}"
+  if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+    echo "Usage: $0 [--dry-run] publish <tag>   (finish a release whose publish step failed)" >&2
+    exit 1
+  fi
+  # A release run whose publish failed after the Tag step uploads its
+  # notarized assets as this artifact; a run that failed earlier made no tag
+  # and has nothing to finish.
+  ARTIFACT="localvoxtral-release-$TAG"
+  RUN_ID="$(gh api "repos/{owner}/{repo}/actions/artifacts?name=$ARTIFACT&per_page=100" \
+    --jq '[.artifacts[] | select(.expired | not)][0].workflow_run.id // empty')"
+  if [[ -z "$RUN_ID" ]]; then
+    echo "No unexpired $ARTIFACT artifact. Only a release run that failed after tagging uploads one, and it expires after 14 days." >&2
+    exit 1
+  fi
+  if $DRY_RUN; then
+    echo "Dry run: would publish $TAG from run $RUN_ID's $ARTIFACT artifact"
+    exit 0
+  fi
+  ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
+  DIR="${LV_RELEASE_PUBLISH_DIR:-$ROOT_DIR/.build/release-publish/$TAG}"
+  rm -rf "$DIR"
+  mkdir -p "$DIR"
+  echo "Downloading $ARTIFACT from run $RUN_ID"
+  gh run download "$RUN_ID" -n "$ARTIFACT" -D "$DIR"
+  GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}" \
+    "$ROOT_DIR/scripts/ci/publish-release.sh" "$TAG" "$DIR" "$DIR/localvoxtral-$TAG.release-notes.md"
+  rm -rf "$DIR"
+  # The run's cask job never ran, so pin the tap here, as it would have.
+  if [[ "$TAG" != *-* ]]; then
+    gh workflow run cask.yml -f "tag=$TAG"
+    echo "Dispatched cask.yml to pin the Homebrew tap to $TAG"
+  fi
+  echo "Done. Release page: https://github.com/T0mSIlver/localvoxtral/releases/tag/$TAG"
+  exit 0
 fi
 
 PUBLISH=true
