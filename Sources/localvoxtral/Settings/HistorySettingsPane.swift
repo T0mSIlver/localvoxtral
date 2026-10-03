@@ -10,23 +10,10 @@ struct HistorySettingsPane: View {
 
     /// The app's, which outlives the pane: coming back shows the rows at once.
     let model: DictationHistoryModel
-    /// A shorter retention waiting for the user's yes, with what it deletes.
-    @State private var pendingRetention: PendingRetention?
-    @State private var isConfirmingDeleteAll = false
-    /// The yes that turning audio off waits for.
-    @State private var isConfirmingAudioOff = false
-    /// The yes that turning diagnostic records off waits for.
-    @State private var isConfirmingRecordsOff = false
 
     /// Bumped by every pick in the retention menu. A count that comes back
     /// for an older pick is dropped: two quick picks must end on the second.
     @State private var retentionPick = 0
-
-    private struct PendingRetention: Equatable {
-        let retention: DictationHistoryRetention
-        /// Nil when the store could not count them.
-        let deletedCount: Int?
-    }
 
     init(
         settings: SettingsStore, viewModel: DictationViewModel, model: DictationHistoryModel,
@@ -127,7 +114,10 @@ struct HistorySettingsPane: View {
                     .accessibilityIdentifier("history.storage.retention")
 
                     Button("Delete All…", role: .destructive) {
-                        isConfirmingDeleteAll = true
+                        HistoryDeleteAlert.deleteAll(count: model.totalCount).present(on: NSApp.keyWindow) {
+                            removingBackups in
+                            Task { await model.deleteAll(removingBackups: removingBackups) }
+                        }
                     }
                     .disabled(model.totalCount == 0)
                     .accessibilityIdentifier("history.storage.deleteAll")
@@ -154,51 +144,6 @@ struct HistorySettingsPane: View {
                     .accessibilityIdentifier("history.storage.diagnosticRecords")
             }
         }
-        .confirmationDialog(
-            Self.recordsOffTitle(count: model.diagnosticRecordSummary?.records),
-            isPresented: $isConfirmingRecordsOff
-        ) {
-            Button("Delete Records", role: .destructive) { turnRecordsOff() }
-        } message: {
-            Text("The dictations stay. This can't be undone.")
-        }
-        .confirmationDialog(
-            Self.audioOffTitle(count: model.audioSummary?.recordings),
-            isPresented: $isConfirmingAudioOff
-        ) {
-            Button("Delete Recordings", role: .destructive) { turnAudioOff() }
-        } message: {
-            Text("The dictations stay. This can't be undone.")
-        }
-        .confirmationDialog(
-            "Delete all \(model.totalCount.formatted()) dictations?",
-            isPresented: $isConfirmingDeleteAll
-        ) {
-            Button("Delete All", role: .destructive) {
-                Task { await model.deleteAll() }
-            }
-        } message: {
-            Text("This can't be undone.")
-        }
-        .confirmationDialog(
-            pendingRetentionTitle,
-            isPresented: Binding(
-                get: { pendingRetention != nil },
-                set: { if !$0 { pendingRetention = nil } }
-            ),
-            presenting: pendingRetention
-        ) { pending in
-            Button(Self.deleteButtonTitle(count: pending.deletedCount), role: .destructive) {
-                retentionPick += 1
-                applyRetention(pending.retention)
-            }
-        } message: { pending in
-            Text(
-                pending.retention.savesDictations
-                    ? "This can't be undone."
-                    : "New dictations won't be saved, and term suggestions stop. This can't be undone."
-            )
-        }
     }
 
     /// Nil when there is nothing kept; history off disables the switch and
@@ -211,24 +156,6 @@ struct HistorySettingsPane: View {
             : "\(summary.recordings.formatted()) recordings, \(size)."
     }
 
-    /// Without a count (not read yet, or the read failed) the question
-    /// names none.
-    private static func audioOffTitle(count: Int?) -> String {
-        switch count {
-        case nil: return "Delete every recording?"
-        case 1?: return "Delete 1 recording?"
-        case let count?: return "Delete \(count.formatted()) recordings?"
-        }
-    }
-
-    private static func recordsOffTitle(count: Int?) -> String {
-        switch count {
-        case nil: return "Delete every diagnostic record?"
-        case 1?: return "Delete 1 diagnostic record?"
-        case let count?: return "Delete \(count.formatted()) diagnostic records?"
-        }
-    }
-
     private var audioBinding: Binding<Bool> {
         Binding(
             get: { settings.dictationAudioEnabled && settings.dictationHistoryRetention.savesDictations },
@@ -236,9 +163,10 @@ struct HistorySettingsPane: View {
                 if keep {
                     settings.dictationAudioEnabled = true
                 } else if model.turningAudioOffAsksFirst {
-                    isConfirmingAudioOff = true
+                    HistoryDeleteAlert.audioOff(count: model.audioSummary?.recordings)
+                        .present(on: NSApp.keyWindow) { turnAudioOff(removingBackups: $0) }
                 } else {
-                    turnAudioOff()
+                    turnAudioOff(removingBackups: false)
                 }
             }
         )
@@ -262,46 +190,34 @@ struct HistorySettingsPane: View {
                 if keep {
                     settings.diagnosticRecordsEnabled = true
                 } else if model.turningRecordsOffAsksFirst {
-                    isConfirmingRecordsOff = true
+                    HistoryDeleteAlert.recordsOff(count: model.diagnosticRecordSummary?.records)
+                        .present(on: NSApp.keyWindow) { turnRecordsOff(removingBackups: $0) }
                 } else {
-                    turnRecordsOff()
+                    turnRecordsOff(removingBackups: false)
                 }
             }
         )
     }
 
-    private func turnRecordsOff() {
+    private func turnRecordsOff(removingBackups: Bool) {
         settings.diagnosticRecordsEnabled = false
-        let deleting = viewModel.sessionStore?.deleteAllDiagnosticRecords()
+        let deleting = viewModel.sessionStore?.deleteAllDiagnosticRecords(removingBackups: removingBackups)
         Task {
             await deleting?.value
             await model.reloadStorageSummary()
         }
     }
 
-    private func turnAudioOff() {
+    private func turnAudioOff(removingBackups: Bool) {
         settings.dictationAudioEnabled = false
         // A dictation in progress keeps nothing either, even if the switch
         // goes back on before it stops.
         viewModel.session.audio.sessionRecording.begin(enabled: false)
-        let deleting = viewModel.sessionStore?.deleteAllAudio()
+        let deleting = viewModel.sessionStore?.deleteAllAudio(removingBackups: removingBackups)
         Task {
             await deleting?.value
             await model.reloadStorageSummary()
         }
-    }
-
-    private static func deleteButtonTitle(count: Int?) -> String {
-        guard let count else { return "Delete" }
-        return count == 1 ? "Delete 1 Dictation" : "Delete \(count.formatted()) Dictations"
-    }
-
-    private var pendingRetentionTitle: String {
-        guard let pendingRetention else { return "" }
-        if let days = pendingRetention.retention.days {
-            return "Delete dictations older than \(days) days?"
-        }
-        return "Delete every saved dictation?"
     }
 
     /// A rule that deletes something asks first; one that deletes nothing
@@ -309,7 +225,6 @@ struct HistorySettingsPane: View {
     private func chooseRetention(_ retention: DictationHistoryRetention) {
         retentionPick += 1
         let pick = retentionPick
-        pendingRetention = nil
         guard retention != settings.dictationHistoryRetention else { return }
         guard settings.dictationHistoryRetention.keepsLonger(than: retention) else {
             applyRetention(retention)
@@ -321,14 +236,18 @@ struct HistorySettingsPane: View {
             if deletedCount == 0 {
                 applyRetention(retention)
             } else {
-                pendingRetention = PendingRetention(retention: retention, deletedCount: deletedCount)
+                HistoryDeleteAlert.retention(retention, count: deletedCount).present(on: NSApp.keyWindow) {
+                    removingBackups in
+                    retentionPick += 1
+                    applyRetention(retention, removingBackups: removingBackups)
+                }
             }
         }
     }
 
-    private func applyRetention(_ retention: DictationHistoryRetention) {
+    private func applyRetention(_ retention: DictationHistoryRetention, removingBackups: Bool = false) {
         settings.dictationHistoryRetention = retention
-        viewModel.applyDictationHistoryRetention()
+        viewModel.applyDictationHistoryRetention(removingBackups: removingBackups)
     }
 
     // MARK: - Dictations

@@ -1017,8 +1017,10 @@ extension DictationSessionController {
     }
 
     /// Brings the store in line with the retention setting: at launch, and
-    /// when the setting changes. `off` deletes everything there is.
-    func applyDictationHistoryRetention(now: Date = Date()) {
+    /// when the setting changes. `off` deletes everything there is; with
+    /// `removingBackups` (the user ticked it when choosing Don't keep) the
+    /// snapshots and the quarantine go too (#1574).
+    func applyDictationHistoryRetention(now: Date = Date(), removingBackups: Bool = false) {
         let retention = settings.reloadHistoryStorageSettings()
         if !retention.savesDictations {
             // A pass already reading the history would send it to the hosted
@@ -1035,10 +1037,9 @@ extension DictationSessionController {
         if !settings.dictationAudioEnabled {
             sessionStore?.deleteAllAudio()
         }
-        guard retention.savesDictations else {
-            // Not a trim: a trim snapshots the store first, and Don't keep
-            // keeps no copy (#1574).
-            sessionStore?.deleteAll()
+        if !retention.savesDictations, removingBackups {
+            // Not a trim: a trim snapshots the store first.
+            sessionStore?.deleteAll(removingBackups: true)
             return
         }
         guard let cutoff = retention.cutoff(now: now) else { return }

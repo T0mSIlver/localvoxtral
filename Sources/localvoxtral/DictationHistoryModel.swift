@@ -141,9 +141,9 @@ final class DictationHistoryModel {
         await reload()
     }
 
-    func deleteAll() async {
+    func deleteAll(removingBackups: Bool) async {
         entries = []
-        store()?.deleteAll()
+        store()?.deleteAll(removingBackups: removingBackups)
         await reload()
     }
 

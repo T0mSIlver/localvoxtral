@@ -120,7 +120,7 @@ final class DictationHistoryModelTests: XCTestCase {
         let model = makeModel(store)
         await model.reload()
 
-        await model.deleteAll()
+        await model.deleteAll(removingBackups: false)
 
         XCTAssertEqual(model.entries, [])
         XCTAssertEqual(model.totalCount, 0)

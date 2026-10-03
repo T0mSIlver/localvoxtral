@@ -64,11 +64,26 @@ enum ViewSnapshot {
             }
         }
 
-        let bounds = hosting.bounds
-        guard let bitmap = hosting.bitmapImageRepForCachingDisplay(in: bounds) else {
+        return try write(hosting, name: name)
+    }
+
+    /// An `NSAlert` as it would show, without running it: `layout()` builds
+    /// its window, whose content is drawn like any view.
+    @discardableResult
+    static func record(_ alert: NSAlert, name: String, appearance: NSAppearance.Name = .aqua) throws -> URL {
+        alert.window.appearance = NSAppearance(named: appearance)
+        alert.layout()
+        guard let content = alert.window.contentView else { throw SnapshotError.noBitmap(name) }
+        settle(content)
+        return try write(content, name: name)
+    }
+
+    private static func write(_ view: NSView, name: String) throws -> URL {
+        let bounds = view.bounds
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: bounds) else {
             throw SnapshotError.noBitmap(name)
         }
-        hosting.cacheDisplay(in: bounds, to: bitmap)
+        view.cacheDisplay(in: bounds, to: bitmap)
         guard let png = bitmap.representation(using: .png, properties: [:]) else {
             throw SnapshotError.noPNG(name)
         }

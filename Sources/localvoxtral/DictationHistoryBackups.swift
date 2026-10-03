@@ -10,7 +10,8 @@ import os
 /// ten newest event snapshots, and always the newest snapshot that holds a
 /// dictation: a store that lost its rows must never rotate away the copy
 /// that still has them. Files it cannot parse are left alone. Delete All and
-/// Don't keep delete every snapshot (#1574).
+/// Don't keep delete every snapshot when the user ticks "Also delete the
+/// backups" (#1574).
 struct DictationHistoryBackups: Sendable {
     enum Reason: String, Sendable {
         case daily
@@ -131,7 +132,7 @@ struct DictationHistoryBackups: Sendable {
     }
 
     /// Deletes every snapshot: the user deleted all of History or chose
-    /// Don't keep, and a copy here would keep what they deleted (#1574).
+    /// Don't keep, and asked for the backups to go too (#1574).
     /// Files it cannot parse are left alone, as rotation leaves them.
     func removeAll() {
         let snapshots = snapshots()
@@ -181,7 +182,7 @@ struct DictationHistoryBackups: Sendable {
 /// the store cannot bring back a WAV; this can. What the user deletes
 /// (Delete, Delete All, turning a setting off) is deleted for real, and
 /// Delete All, Don't keep and turning a setting off also empty this of
-/// what they deleted (#1574).
+/// what they deleted when the user ticks "Also delete the backups" (#1574).
 struct DictationHistoryQuarantine: Sendable {
     static let keptDays = 30
 
