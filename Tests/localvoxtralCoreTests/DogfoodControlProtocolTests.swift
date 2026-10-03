@@ -2,7 +2,7 @@
 
 import XCTest
 
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// The grammar and the reply shape, with no socket and no app.
 final class DogfoodControlProtocolTests: XCTestCase {
