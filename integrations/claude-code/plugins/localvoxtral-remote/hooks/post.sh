@@ -34,6 +34,12 @@
 # fails open). The event JSON body uses a second private file.
 set -u
 
+# Out of the environment before the first child starts (#1623): date, cat,
+# awk and curl have no use for the token, and curl reads it from a private
+# header file. The unexported shell variable is all the rest needs.
+TOKEN="${CLAUDE_PLUGIN_OPTION_TOKEN:-}"
+unset CLAUDE_PLUGIN_OPTION_TOKEN
+
 EVENT="${1:-Unknown}"
 
 # Fail open: consume stdin so Claude Code's writer never sees EPIPE, say
@@ -118,7 +124,7 @@ esac
 # its next hook. Written when the recorded version differs, and refreshed on
 # SessionStart and UserPromptSubmit so that a live session's record outlasts
 # the age-out below.
-PLUGIN_VERSION=1.37.0
+PLUGIN_VERSION=1.38.0
 VERSION_DIR="$STAMP_DIR/plugin-version"
 if [ -n "$STAMP_DIR" ] && [ -n "$SESSION_ID" ]; then
   if [ "$EVENT" = "SessionEnd" ]; then
@@ -214,7 +220,6 @@ write_session_status() {
   } 2>/dev/null || { rm -f "$SESSION_STAMP_DIR/$SESSION_ID.$$"; } 2>/dev/null || :
 }
 
-TOKEN="${CLAUDE_PLUGIN_OPTION_TOKEN:-}"
 # No token is the one misconfiguration worth naming before failing open: the
 # plugin was installed without `--config token=…`, every future dial would be
 # a guaranteed 401, and nothing else on this host will ever say so.
@@ -302,7 +307,7 @@ fi
 # the app validates the shape and trusts nothing else about it.
 cat 2>/dev/null >"$WORK/header" <<EOF || fail_open
 Authorization: Bearer $TOKEN
-X-Lvx-Plugin-Version: 1.37.0
+X-Lvx-Plugin-Version: 1.38.0
 EOF
 
 # --- Allowlisted environment enrichment --------------------------------------
