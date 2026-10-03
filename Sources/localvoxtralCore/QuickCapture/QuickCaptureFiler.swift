@@ -160,6 +160,17 @@ package enum QuickCaptureFiling {
         case ghNotFound
         case failed(exitCode: Int32)
         case noURL
+
+        /// Whether GitHub may have the issue or comment anyway (#1541): a
+        /// timeout, a kill or a failure after the request went out. Only a
+        /// missing gh and gh's exit 4, authentication required, refuse
+        /// before sending.
+        package var mayHaveSent: Bool {
+            switch self {
+            case .ghNotFound, .failed(exitCode: 4): false
+            case .failed, .noURL: true
+            }
+        }
     }
 
     /// The issue URL `gh issue create` prints last.

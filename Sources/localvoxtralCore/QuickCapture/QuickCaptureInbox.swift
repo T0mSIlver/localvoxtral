@@ -818,6 +818,7 @@ package enum QuickCaptureInboxFile {
 
     package static let checkingGitHubNote = "Checking GitHub for the interrupted filing."
     package static let unconfirmedNote = "The app quit while filing. Check GitHub before sending it again."
+    package static let uncertainNote = "Filing may have reached GitHub. Check GitHub before sending it again."
 
     package static func encode(_ inbox: QuickCaptureInbox) throws -> Data {
         let encoder = JSONEncoder()

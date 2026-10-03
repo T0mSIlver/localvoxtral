@@ -356,7 +356,8 @@ final class QuickCaptureTwoStageInboxTests: XCTestCase {
                 )
             },
             github: github,
-            now: { Date(timeIntervalSince1970: 1_000_000) }
+            now: { Date(timeIntervalSince1970: 1_000_000) },
+            sleep: { _ in }
         )
     }
 

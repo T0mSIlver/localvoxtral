@@ -7,6 +7,12 @@ import Synchronization
 package final class FakeQuickCaptureGitHub: QuickCaptureGitHub, @unchecked Sendable {
     package let created = Mutex<[[String]]>([])
     package var createResult: Result<String, QuickCaptureFiling.Failure> = .success("https://github.com/o/reach/issues/9")
+    /// Set, GitHub created the issue under this URL even when
+    /// `createResult` is a failure, as a `gh` killed after sending (#1541).
+    package var createdURL: String?
+    /// Set, GitHub posted the comment under this URL even when
+    /// `commentResult` is a failure.
+    package var commentedURL: String?
     /// Set, `gh issue create` waits on it before it answers.
     package var createGate: ManualSleeper?
 
@@ -52,10 +58,10 @@ package final class FakeQuickCaptureGitHub: QuickCaptureGitHub, @unchecked Senda
         if let lookupResult { return lookupResult }
         if let issue {
             let sent = comments.withLock { $0.contains { $0[0] == repository && $0[1] == String(issue) && $0[2].contains(marker) } }
-            return sent ? (try? commentResult.get()).map { .found(url: $0) } ?? .notFound : .notFound
+            return sent ? ((try? commentResult.get()) ?? commentedURL).map { .found(url: $0) } ?? .notFound : .notFound
         }
         let sent = created.withLock { $0.contains { $0[0] == repository && $0[2].contains(marker) } }
-        return sent ? (try? createResult.get()).map { .found(url: $0) } ?? .notFound : .notFound
+        return sent ? ((try? createResult.get()) ?? createdURL).map { .found(url: $0) } ?? .notFound : .notFound
     }
 }
 
