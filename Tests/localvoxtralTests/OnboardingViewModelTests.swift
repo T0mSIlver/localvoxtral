@@ -363,6 +363,36 @@ final class OnboardingViewModelTests: XCTestCase {
         XCTAssertEqual(settings.dictationBackendMode, .mistralAPI)
     }
 
+    /// A verdict belongs to the key it checked: editing the key clears it,
+    /// and a check still running for the old key does not publish (#1626).
+    func testEditingTheKeyDuringItsCheckDropsTheOldVerdict() async {
+        let (model, _, _, _, _) = makeModel()
+        let verifier = GatedOnboardingKeyVerifier()
+        model.viewModel.engines.mistralAPIKeyVerifier = verifier
+        model.engineChoice = .mistralAPI
+        model.mistralAPIKeyDraft = "mk-good"
+
+        model.checkMistralAPIKeyDraft()
+        model.mistralAPIKeyDraft = "mk-typo"
+        verifier.release.yield(.accepted)
+        await model.mistralAPIKeyCheckTask?.value
+
+        XCTAssertEqual(model.mistralAPIKeyCheckState, .idle)
+    }
+
+    func testEditingTheKeyAfterItsCheckClearsTheVerdict() async {
+        let (model, _, _, _, _) = makeModel(keyVerification: .accepted)
+        model.engineChoice = .mistralAPI
+        model.mistralAPIKeyDraft = "mk-good"
+        model.checkMistralAPIKeyDraft()
+        await model.mistralAPIKeyCheckTask?.value
+        XCTAssertEqual(model.mistralAPIKeyCheckState, .finished(.accepted))
+
+        model.mistralAPIKeyDraft = "mk-typo"
+
+        XCTAssertEqual(model.mistralAPIKeyCheckState, .idle)
+    }
+
     func testEngineSummaryNamesTheEngineThatWasSetUp() {
         let (model, _, _, _, _) = makeModel()
 
@@ -400,6 +430,22 @@ final class OnboardingViewModelTests: XCTestCase {
         XCTAssertEqual(driver.lastStart?.dictation, true)
         XCTAssertEqual(driver.lastStart?.polishing, false)
         XCTAssertFalse(settings.llmPolishingEnabled)
+    }
+
+    /// A first run that turned polishing on and was force-quit before the
+    /// wizard closed leaves it on. Declining it on the next run must turn it
+    /// off, or the warmup when the wizard closes downloads it anyway (#1625).
+    func testDecliningPolishingAfterAnInterruptedRunTurnsItOff() {
+        let (model, settings, driver, _, _) = makeModel()
+        settings.polishingBackendMode = .managedLocal
+        settings.llmPolishingEnabled = true
+        model.polishingConsent = false
+
+        model.startDownloads()
+
+        XCTAssertEqual(driver.lastStart?.polishing, false)
+        XCTAssertFalse(settings.llmPolishingEnabled)
+        XCTAssertFalse(model.viewModel.engines.isManagedPolishingWarmupWanted)
     }
 
     func testStartDownloads_isIdempotent() {
@@ -467,4 +513,19 @@ private final class FakeOnboardingKeyVerifier: MistralAPIKeyVerifying {
     }
 
     func verify(apiKey: String) async -> MistralAPIKeyVerification { result }
+}
+
+/// Answers the wizard's key check only when the test releases a verdict.
+private final class GatedOnboardingKeyVerifier: MistralAPIKeyVerifying {
+    let verdicts: AsyncStream<MistralAPIKeyVerification>
+    let release: AsyncStream<MistralAPIKeyVerification>.Continuation
+
+    init() {
+        (verdicts, release) = AsyncStream.makeStream()
+    }
+
+    func verify(apiKey: String) async -> MistralAPIKeyVerification {
+        for await verdict in verdicts { return verdict }
+        return .accepted
+    }
 }
