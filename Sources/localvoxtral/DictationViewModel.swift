@@ -1006,6 +1006,9 @@ final class DictationViewModel {
     /// which a test never reaches (headless CI has no pasteboard server, and
     /// clobbering the host clipboard is antisocial).
     static func writeToSystemPasteboard(_ text: String) {
+        #if DEBUG
+        if TerminalTargetDetector.isRunningUnderXCTest { return }
+        #endif
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)

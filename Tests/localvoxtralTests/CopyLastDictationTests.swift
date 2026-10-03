@@ -202,13 +202,9 @@ final class CopyLastDictationTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private final class Written {
-        var values: [String] = []
-    }
-
     private func makeViewModel(
         polishing: (any LLMPolishingServicing)?
-    ) -> (DictationViewModel, Written) {
+    ) -> (DictationViewModel, PasteboardWrites) {
         let settings = makeSettings(outputMode: .overlayBuffer)
         if polishing != nil {
             settings.llmPolishingEnabled = true
@@ -227,9 +223,7 @@ final class CopyLastDictationTests: XCTestCase {
         viewModel.session.isShowingConnectionFailureAlert = true
         retainForTestProcessLifetime(viewModel)
 
-        let written = Written()
-        viewModel.dependencies.pasteboardWriter = { written.values.append($0) }
-        return (viewModel, written)
+        return (viewModel, viewModel.recordPasteboardWrites())
     }
 
     private func finishOverlayDictation(_ viewModel: DictationViewModel, text: String) {
