@@ -236,6 +236,24 @@ final class ClipboardPayloadMacroTests: XCTestCase {
         )
     }
 
+    /// A reply that keeps the one standalone placeholder but adds a glued
+    /// copy passed the standalone count, and substitution then pasted the
+    /// payload twice.
+    func testCorruptedExtraPlaceholderDiscardsThePolish() {
+        let grounded = "here \(placeholder) end"
+        let polished = "here \(placeholder) end \(placeholder)_SUFFIX"
+        let committed = PolishOutcomeClassifier.committedText(
+            polished: polished,
+            groundedWorkingText: grounded,
+            clipboardPayload: "err.log"
+        )
+        XCTAssertEqual(committed, grounded)
+        XCTAssertEqual(
+            ClipboardPayloadMacro.substitutePayload(in: committed, payload: "err.log"),
+            "here `err.log` end"
+        )
+    }
+
     func testNoPlaceholderLeavesTextUnchanged() {
         let out = ClipboardPayloadMacro.substitutePayload(
             in: "no marker here", payload: "abc"

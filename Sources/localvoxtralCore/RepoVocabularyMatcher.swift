@@ -362,14 +362,17 @@ package enum RepoVocabularyMatcher {
                 let normalizedGram = normalize(spoken)
                 guard normalizedGram.count >= minNormalizedLength else { continue }
 
-                if let term = vocabulary.exactIndex[normalizedGram] {
-                    record(Hit(
-                        term: term,
-                        normalizedLength: normalizedGram.count,
-                        position: start,
-                        spoken: spoken,
-                        exact: true
-                    ))
+                if let terms = vocabulary.exactIndex[normalizedGram] {
+                    for term in terms
+                    where edgeSeparatorsAreSpelled(window: window, in: term) {
+                        record(Hit(
+                            term: term,
+                            normalizedLength: normalizedGram.count,
+                            position: start,
+                            spoken: spoken,
+                            exact: true
+                        ))
+                    }
                     continue
                 }
 
@@ -1027,6 +1030,22 @@ package enum RepoVocabularyMatcher {
 
     private static func stripJoiners(_ token: String) -> String {
         token.filter { $0 != "." && $0 != "/" && $0 != "_" && $0 != "-" }
+    }
+
+    /// A spoken separator at the edge of a window adds nothing to the
+    /// normalized form, so it counts as part of the term only when the term
+    /// spells a joiner at that edge (`dot github` -> `.github`). Otherwise
+    /// "a reference point" would match `reference` and lose "point".
+    private static func edgeSeparatorsAreSpelled(window: [String], in term: String) -> Bool {
+        func isSeparator(_ word: String) -> Bool {
+            spokenSeparators.contains(stripJoiners(word.lowercased()))
+        }
+        func isJoiner(_ character: Character?) -> Bool {
+            character.map { ".-_/".contains($0) } ?? false
+        }
+        if let first = window.first, isSeparator(first), !isJoiner(term.first) { return false }
+        if let last = window.last, isSeparator(last), !isJoiner(term.last) { return false }
+        return true
     }
 
     private static func isCommon(_ word: String) -> Bool {

@@ -1195,17 +1195,32 @@ extension DictationSessionController {
                     ?? memory.group(ofJoinedWorkspace: request.workspace, repositoryRoot: request.joinedRepositoryRoot)
             learnedTerms += memory.inGroup(group).confirmedEverywhere().map(\.term)
         }
+        // Settings stay live through the root lookup: a source turned off, or
+        // trust revoked, while it ran keeps its terms home, as the polish
+        // request does (#1293).
+        let contextTrusted = request.contextTrusted
+            && PolishContextClipboardReader.isPermittedContextEndpoint(
+                request.endpoint,
+                trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
+            )
+        if !contextTrusted {
+            context = StopSecondPass.ContextTerms()
+            learnedTerms = []
+        }
+        if !settings.repoVocabularyEnabled { context.repository = [] }
+        if !settings.claudeRepoContextEnabled { context.session = [] }
+        if !settings.terminalScreenContextEnabled { context.screen = [] }
         let candidates = StopSecondPass.candidates(
             userTerms: request.userTerms,
             dictionarySpellings: request.dictionarySpellings,
             learnedTerms: learnedTerms,
             context: context,
-            contextTrusted: request.contextTrusted
+            contextTrusted: contextTrusted
         )
         let contextBias = MistralBatchTranscription.contextBias(from: candidates)
         // Counts only: the terms are screen, session and repository content.
         Log.backends.info(
-            "second pass terms: context \(request.contextTrusted ? "trusted" : "not sent", privacy: .public), repository \(context.repository.count, privacy: .public), session \(context.session.count, privacy: .public), screen \(context.screen.count, privacy: .public), sent \(contextBias.count, privacy: .public)"
+            "second pass terms: context \(contextTrusted ? "trusted" : "not sent", privacy: .public), repository \(context.repository.count, privacy: .public), session \(context.session.count, privacy: .public), screen \(context.screen.count, privacy: .public), sent \(contextBias.count, privacy: .public)"
         )
         return StopSecondPassTerms(contextBias: contextBias, candidates: candidates)
     }

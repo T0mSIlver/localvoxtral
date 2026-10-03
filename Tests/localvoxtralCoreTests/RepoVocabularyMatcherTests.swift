@@ -41,6 +41,42 @@ final class RepoVocabularyMatcherTests: XCTestCase {
         }
     }
 
+    /// "point" normalizes away, so "reference point" matched the term
+    /// `reference` exactly, won as the longer span and lost the word.
+    func testSpokenSeparatorAtTheEdgeIsNotSwallowed() {
+        let vocabulary = RepoVocabulary(terms: ["reference"], branch: nil)
+        let transcript = "We need a reference point here."
+        let outcome = RepoVocabularyMatcher.groundedCandidates(
+            transcript: transcript, vocabulary: vocabulary
+        )
+        XCTAssertEqual(
+            RepoVocabularyMatcher.preapplying(entries: outcome.entries, to: transcript),
+            transcript
+        )
+        // A term that spells the joiner still takes the spoken separator.
+        XCTAssertEqual(
+            entries("open dot github workflows", terms: [".github"]).first?.matches,
+            ["dot github"]
+        )
+    }
+
+    /// Two tracked spellings with one normalized form: the index kept the
+    /// first, so the transcript became whichever file the tree listed first.
+    func testNormalizedCollisionAbstainsInEitherOrder() {
+        let transcript = "Open config dot t s."
+        for terms in [["config-ts", "config.ts"], ["config.ts", "config-ts"]] {
+            let outcome = RepoVocabularyMatcher.groundedCandidates(
+                transcript: transcript,
+                vocabulary: RepoVocabulary(terms: terms, branch: nil)
+            )
+            XCTAssertEqual(
+                RepoVocabularyMatcher.preapplying(entries: outcome.entries, to: transcript),
+                transcript,
+                "\(terms)"
+            )
+        }
+    }
+
     func testEditDistanceOneNearMiss() {
         // "use auth s" -> "useauths" (8), one deletion from "useauthts".
         let result = entries("please use auth s now", terms: ["useAuth.ts"])

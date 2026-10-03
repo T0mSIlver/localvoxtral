@@ -14,8 +14,10 @@ import Synchronization
 package struct RepoVocabulary: Sendable {
     package let terms: [String]
     package let branch: String?
-    /// Normalized form -> exact term (first appearance wins): the exact tier.
-    package let exactIndex: [String: String]
+    /// Normalized form -> every term with that form, in appearance order: the
+    /// exact tier. `config-ts` and `config.ts` share a key, and the matcher
+    /// abstains on the span rather than pick one.
+    package let exactIndex: [String: [String]]
     /// Fuzzy-tier candidates (normalized length >= the fuzzy threshold) keyed
     /// by normalized length, so an n-gram only edit-distance-checks terms
     /// within ±1 of its own length, with character arrays precomputed.
@@ -59,7 +61,7 @@ package struct RepoVocabulary: Sendable {
     package init(terms: [String], branch: String?) {
         self.terms = terms
         self.branch = branch
-        var exact: [String: String] = [:]
+        var exact: [String: [String]] = [:]
         var buckets: [Int: [FuzzyCandidate]] = [:]
         var phoneticIndex: [String: [Int]] = [:]
         var phoneticCandidates: [PhoneticCandidate] = []
@@ -69,7 +71,7 @@ package struct RepoVocabulary: Sendable {
         for term in terms {
             let normalized = RepoVocabularyMatcher.normalize(term)
             if normalized.count >= RepoVocabularyMatcher.minNormalizedLength {
-                if exact[normalized] == nil { exact[normalized] = term }
+                exact[normalized, default: []].append(term)
                 if normalized.count >= RepoVocabularyMatcher.fuzzyMinNormalizedLength {
                     buckets[normalized.count, default: []].append(
                         FuzzyCandidate(term: term, normalizedCharacters: Array(normalized))

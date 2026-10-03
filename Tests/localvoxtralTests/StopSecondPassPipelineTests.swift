@@ -304,6 +304,33 @@ final class StopSecondPassPipelineTests: XCTestCase {
         XCTAssertEqual(lookups.withLock { $0 }, 0)
     }
 
+    /// Consent withdrawn while the root lookup ran: the project's proposal
+    /// stayed in `context_bias`, sent under the consent latched at stop.
+    func testConsentWithdrawnDuringTheRootLookupKeepsTheProjectsTermsHome() async {
+        let withdrawals: [(String, (SettingsStore) -> Void)] = [
+            ("repository vocabulary off", { $0.repoVocabularyEnabled = false }),
+            ("trust revoked", { $0.polishContextTrustedEndpointEnabled = false }),
+        ]
+        for (name, withdraw) in withdrawals {
+            let started = BoundedWait()
+            let release = BoundedWait()
+            let (harness, transcriber, _) = unjoinedTerminal(trusted: true) {
+                started.resolve()
+                _ = await release.value(failAfter: 10)
+                return .root(Self.unjoinedRepository)
+            }
+
+            harness.stop()
+            let commit = harness.viewModel.session.polishAndCommitTask
+            _ = await started.value(failAfter: 10)
+            withdraw(harness.viewModel.settings)
+            release.resolve()
+            await commit?.value
+
+            XCTAssertEqual(transcriber.calls.first?.contextBias, ["localvoxtral", "Claude_Code"], name)
+        }
+    }
+
     /// A lookup parked in a `stat` on a dead mount: the pass leaves without
     /// the project's terms once the bound passes, and the polish, which has
     /// its own gate, still gets its vocabulary.
