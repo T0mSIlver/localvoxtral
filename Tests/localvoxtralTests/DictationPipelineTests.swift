@@ -2968,6 +2968,13 @@ final class DictationPipelineTests: XCTestCase {
             }
         }
 
+        // The session can still be dictating when the test ends, and the
+        // server's teardown then drops its socket: the run that starts must
+        // not wait on this test's sockets, or its failure lands in a later
+        // test.
+        let viewModel = pipeline.viewModel
+        addTeardownBlock { @MainActor in viewModel.dependencies.reconnectSleep = { _ in } }
+
         server.forgetFrames()
         server.closeConnection()
         await events.waitForDisconnected(1, file: file, line: line)
