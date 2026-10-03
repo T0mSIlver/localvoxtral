@@ -27,6 +27,12 @@ final class SessionAudioPipeline {
     /// authorization question itself.
     var hasInjectedMicrophone: Bool { makeMicrophone != nil }
 
+    /// The input the running session capture was started on ("" for the
+    /// system default), or nil when no session capture runs. The selection
+    /// is what the menu checks; this is what the microphone hears.
+    @ObservationIgnored
+    private(set) var captureDeviceID: String?
+
     @ObservationIgnored
     private(set) var hasInitializedMicrophone = false
     @ObservationIgnored
@@ -95,6 +101,7 @@ final class SessionAudioPipeline {
         #if DEBUG || LOCALVOXTRAL_E2E_HARNESS
         stopDogfoodAudioFileSource()
         #endif
+        captureDeviceID = nil
         guard hasInitializedMicrophone else { return }
         microphone.stop()
     }
@@ -126,6 +133,12 @@ final class SessionAudioPipeline {
             preferredInputChannel: selectedInputChannel,
             chunkHandler: chunkHandler
         )
+        captureDeviceID = preferredDeviceID ?? ""
+    }
+
+    /// The health monitor's recovery restarted the microphone on `deviceID`.
+    func noteCaptureRestarted(on deviceID: String?) {
+        captureDeviceID = deviceID ?? ""
     }
 
     /// Once this returns no further chunk reaches the session's handler.
@@ -134,6 +147,7 @@ final class SessionAudioPipeline {
         stopDogfoodAudioFileSource()
         guard capturesFromMicrophone else { return }
         #endif
+        captureDeviceID = nil
         microphone.stop()
     }
 
@@ -261,6 +275,18 @@ final class SessionAudioPipeline {
         let explicitSelection = !savedSelection.isEmpty ? savedSelection : currentSelection
 
         guard !devices.isEmpty else { return }
+
+        // While a capture runs, the selection stays the device it hears, as
+        // long as that device is still there. A saved mic plugged back in
+        // mid-dictation would otherwise show selected while the capture
+        // stays on the fallback, and picking it would change nothing
+        // (#1629). The next refresh with no capture running selects it.
+        if let captureDeviceID, !captureDeviceID.isEmpty,
+           selectedInputDeviceID == captureDeviceID,
+           devices.contains(where: { $0.id == captureDeviceID })
+        {
+            return
+        }
 
         if !explicitSelection.isEmpty,
            devices.contains(where: { $0.id == explicitSelection })
