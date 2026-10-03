@@ -82,14 +82,15 @@ struct HistoryDeleteAlert {
 extension HistoryDeleteAlert {
     private static let backupsKeepHistory = "The backups kept in case History is lost still hold them."
 
-    private static let backupsHoldEarlier = "The backups kept in case History is lost still hold earlier dictations."
+    private static let backupsHoldEarlier =
+        "Its backups still hold earlier dictations, recordings or diagnostic records."
 
     /// With no dictation left, Delete All deletes what the backups hold.
     static func deleteAll(count: Int) -> HistoryDeleteAlert {
         guard count > 0 else {
             return HistoryDeleteAlert(
                 title: "Delete the backups?",
-                message: "History is empty. Its backups still hold earlier dictations, recordings or diagnostic records.",
+                message: "History is empty. \(backupsHoldEarlier)",
                 deleteTitle: "Delete Backups",
                 backups: .delete)
         }
@@ -111,7 +112,7 @@ extension HistoryDeleteAlert {
         if !retention.savesDictations, count == 0 {
             return HistoryDeleteAlert(
                 title: "Stop keeping dictations?",
-                message: "New dictations won't be saved, and term suggestions stop. \(backupsHoldEarlier)",
+                message: "New dictations won't be saved, and term suggestions stop. History is empty. \(backupsHoldEarlier)",
                 deleteTitle: "Stop Keeping")
         }
         guard retention.savesDictations else {

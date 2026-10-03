@@ -248,6 +248,9 @@ struct HistorySettingsPane: View {
     private func applyRetention(_ retention: DictationHistoryRetention, removingBackups: Bool = false) {
         settings.dictationHistoryRetention = retention
         viewModel.applyDictationHistoryRetention(removingBackups: removingBackups)
+        // Don't keep on an empty History changes no row, so nothing else
+        // reloads what the backups hold. The read waits for the delete.
+        Task { await model.reloadStorageSummary() }
     }
 
     // MARK: - Dictations
