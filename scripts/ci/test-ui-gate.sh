@@ -3620,6 +3620,24 @@ fi
 grep -q "failed" "$TMP_DIR/say.log" || fail "batch: the failing GUI line did not say failed"
 pass "a batch stops at the first failing verb"
 
+# 4b. A verb's unchecked failure stops the batch as it stops the verb alone.
+# app.state is a directory, so launch's state write fails after the app
+# started; the batch used to print "launched", end status 0 and run on (#1492).
+mv "$GATE_STATE_DIR/app.state" "$TMP_DIR/app.state.saved"
+mkdir "$GATE_STATE_DIR/app.state"
+: >"$TMP_DIR/swift.log"
+run_gate 'batch' "${APP_ENV[@]}" STUB_PGREP_PID=4242 <<<"launch $CLEAN_APP"$'\nkey escape'
+rmdir "$GATE_STATE_DIR/app.state"
+mv "$TMP_DIR/app.state.saved" "$GATE_STATE_DIR/app.state"
+(( GATE_STATUS != 0 )) || fail "batch: a launch that could not record app.state ended status 0: $GATE_STDOUT"
+grep -q "line 1/2 end status=[1-9]" <<<"$GATE_STDOUT" \
+  || fail "batch: the failed launch's end frame is not a failure: $GATE_STDOUT"
+[[ "$GATE_STDOUT" != *"launched pid="* ]] || fail "batch: the failed launch reported launched: $GATE_STDOUT"
+if grep -q "line 2/2 begin" <<<"$GATE_STDOUT"; then
+  fail "batch: the line after the failed launch was started: $GATE_STDOUT"
+fi
+pass "a batch line runs with errexit: an unchecked failure inside a verb stops the batch"
+
 # 5. A runtime denial stops it too: a locked screen lets the read-only line
 # run and refuses the GUI line, in that order.
 : >"$TMP_DIR/swift.log"
