@@ -1,26 +1,7 @@
 import Foundation
-import Synchronization
+import localvoxtralTestSupport
 import XCTest
 @testable import localvoxtralCore
-
-/// A route that answers each call with the outcome `answer` picks and
-/// records what it was asked.
-private final class ScriptedRoute: AgentPromptRoute, @unchecked Sendable {
-    private let answer: @Sendable (AgentPromptCall) -> AgentPromptDelivery
-    private let received = Mutex<[AgentPromptCall]>([])
-
-    init(answer: @escaping @Sendable (AgentPromptCall) -> AgentPromptDelivery) {
-        self.answer = answer
-    }
-
-    var name: String { "scripted route" }
-    var calls: [AgentPromptCall] { received.withLock { $0 } }
-
-    func deliver(_ call: AgentPromptCall) async -> AgentPromptDelivery {
-        received.withLock { $0.append(call) }
-        return answer(call)
-    }
-}
 
 @MainActor
 final class AgentPromptSinkTests: XCTestCase {
@@ -28,7 +9,7 @@ final class AgentPromptSinkTests: XCTestCase {
     /// keys would land: that text and everything after it are typed
     /// nowhere, and the queued submit is dropped.
     func testKeepInHistoryTypesNothingForTheRestOfTheDictation() async {
-        let route = ScriptedRoute { $0 == .append("second ") ? .keepInHistory : .delivered }
+        let route = ScriptedPromptRoute { $0 == .append("second ") ? .keepInHistory : .delivered }
         var typed: [String] = []
         var kept: [String] = []
         let sink = AgentPromptSink(route: route, kept: { kept.append($0) }) { typed.append($0) }
@@ -51,7 +32,7 @@ final class AgentPromptSinkTests: XCTestCase {
     /// `typeInstead` keeps #719's behaviour: the refused text and what
     /// follows are typed, nothing is kept.
     func testTypeInsteadTypesTheRefusedTextAndWhatFollows() async {
-        let route = ScriptedRoute { _ in .typeInstead }
+        let route = ScriptedPromptRoute { _ in .typeInstead }
         var typed: [String] = []
         var kept: [String] = []
         let sink = AgentPromptSink(route: route, kept: { kept.append($0) }) { typed.append($0) }

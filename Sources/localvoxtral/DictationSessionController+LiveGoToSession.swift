@@ -249,10 +249,10 @@ extension DictationSessionController {
                 case .focused:
                     // The relay writes into the pane the dictation started
                     // in; from here on the words go where the user went.
-                    self.textInsertion.endPromptRelay()
+                    self.textInsertion.retirePromptRelay()
                     self.liveGoToLanding = .verified(sessionID: session.sessionID)
                 case .unverified:
-                    self.textInsertion.endPromptRelay()
+                    self.textInsertion.retirePromptRelay()
                     self.liveGoToLanding = .unverified
                 case .paneNotFound, .unsupported:
                     break

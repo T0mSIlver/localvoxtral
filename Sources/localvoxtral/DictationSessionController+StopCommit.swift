@@ -801,7 +801,12 @@ extension DictationSessionController {
             statusText = StatusStrings.overlayCopiedToClipboard
         default:
             statusText = "Ready"
+            if realtimeErrorDuringStop {
+                statusText = StatusStrings.dictationEndMayBeMissing
+                lastError = StatusStrings.dictationEndMayBeMissing
+            }
         }
+        realtimeErrorDuringStop = false
 
         textInsertion.stopInsertionRetryTask()
         textInsertion.logDiagnostics()

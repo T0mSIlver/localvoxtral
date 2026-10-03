@@ -391,7 +391,7 @@ extension DictationSessionController {
     /// gets them by keyboard, once it reads back.
     private func leaveStartSessionForPickedSession() {
         Log.dictation.notice("destination: a picked session; the start session's route and join are dropped")
-        textInsertion.endPromptRelay()
+        textInsertion.retirePromptRelay()
         context.discardTerminalScreenCapture()
     }
 

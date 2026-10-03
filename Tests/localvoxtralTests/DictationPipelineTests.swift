@@ -1844,6 +1844,170 @@ final class DictationPipelineTests: XCTestCase {
     /// session's resolver reads.
     /// With `inHerdr`, the session runs in that herdr's pane `w1:p2` and the
     /// focused TTY is herdr's client's, which no session reported.
+    /// Dictation 1's append is still open when dictation 2 appends to the
+    /// same prompt; then dictation 1's route refuses it, with keys allowed.
+    /// The late text stays in History and never rides dictation 2's route
+    /// or keys (#1466).
+    func testLateRelayRefusalCannotEnterTheNextDictation() async throws {
+        let firstArrived = BoundedWait()
+        let releaseFirst = BoundedWait()
+        let firstRoute = ScriptedPromptRoute { _ in
+            firstArrived.resolve()
+            _ = await releaseFirst.value(failAfter: 10)
+            return .typeInstead
+        }
+        let secondArrived = BoundedWait()
+        let secondRoute = ScriptedPromptRoute { _ in
+            secondArrived.resolve()
+            return .delivered
+        }
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        let typed = recordTypedText(pipeline)
+
+        await dictate(pipeline, "First.") { armPromptRoute(pipeline, firstRoute) }
+        let firstSink = pipeline.viewModel.textInsertion.promptRelaySink
+        let firstInFlight = await firstArrived.value(failAfter: 10)
+        XCTAssertTrue(firstInFlight, "precondition: dictation 1's append is still open")
+
+        pipeline.server.forgetFrames()
+        await startAndSpeak(pipeline)
+        armPromptRoute(pipeline, secondRoute)
+        let secondSink = try XCTUnwrap(pipeline.viewModel.textInsertion.promptRelaySink)
+        pipeline.server.send(["type": "transcription.delta", "delta": "Second."])
+        let secondDelivered = await secondArrived.value(failAfter: 10)
+        XCTAssertTrue(secondDelivered)
+
+        releaseFirst.resolve()
+        await firstSink?.waitUntilIdle()
+        await secondSink.waitUntilIdle()
+
+        await stopAndFinalize(
+            pipeline, finalText: "Second.",
+            expectedError: DictationViewModel.StatusStrings.agentPromptTextKeptInHistory
+        )
+        XCTAssertEqual(firstRoute.calls, [.append("First.")])
+        XCTAssertEqual(secondRoute.calls, [.append("Second.")], "dictation 2's route carries only its own text")
+        XCTAssertEqual(typed.text, "", "the late text is typed nowhere")
+    }
+
+    /// Arms `route` for the dictation running now, as its start would.
+    private func armPromptRoute(_ pipeline: Pipeline, _ route: any AgentPromptRoute) {
+        pipeline.viewModel.context.agentPromptRoute = route
+        pipeline.viewModel.session.armPromptRelayForSession()
+    }
+
+    // MARK: - A realtime error during the stop (#1482)
+
+    /// The backend answers the stop's final commit with an error and sends
+    /// nothing more: the stop says its end may be missing instead of Ready,
+    /// and the icon stays red.
+    func testBackendErrorDuringStopIsReported() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+
+        await startAndSpeak(pipeline)
+        await stopWithBackendError(pipeline)
+
+        let reported = await waitUntilObserved {
+            pipeline.viewModel.statusText == DictationViewModel.StatusStrings.dictationEndMayBeMissing
+        }
+        XCTAssertTrue(reported, "status: \(pipeline.viewModel.statusText)")
+        XCTAssertFalse(pipeline.viewModel.isFinalizingStop)
+        XCTAssertEqual(pipeline.viewModel.lastError, DictationViewModel.StatusStrings.dictationEndMayBeMissing)
+        XCTAssertEqual(pipeline.viewModel.session.realtimeSessionIndicatorState, .recentFailure)
+    }
+
+    /// The same error after words arrived: they are inserted and saved once,
+    /// and the stop still reports the failure.
+    func testBackendErrorDuringStopKeepsTheTextBeforeIt() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.overlay.insertsThroughCommitter = true
+        let typed = recordTypedText(pipeline)
+        let prefix = "the words before the error."
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.delta", "delta": prefix])
+        await stopWithBackendError(pipeline)
+
+        let recorded = await pipeline.records.waitForCount(1)
+        XCTAssertTrue(recorded, "the session never wrote its record")
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [prefix])
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 1)
+        XCTAssertEqual(typed.text, prefix)
+        XCTAssertEqual(pipeline.viewModel.statusText, DictationViewModel.StatusStrings.dictationEndMayBeMissing)
+        XCTAssertEqual(pipeline.viewModel.lastError, DictationViewModel.StatusStrings.dictationEndMayBeMissing)
+    }
+
+    /// Stops, answers the final commit with an error frame, and lets the
+    /// stop close on its idle rule.
+    private func stopWithBackendError(_ pipeline: Pipeline, file: StaticString = #filePath, line: UInt = #line) async {
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit", file: file, line: line) { $0.isFinalCommit }
+        pipeline.server.send(["type": "error", "message": "final commit failed"])
+        let errored = await waitUntilObserved { pipeline.viewModel.session.lastSocketErrorMessage != nil }
+        XCTAssertTrue(errored, "the error frame never arrived", file: file, line: line)
+        // The stop's two polls: the finalization and its watchdog.
+        await pipeline.clock.waitForSleepers(2, file: file, line: line)
+        pipeline.clock.advance(by: TimingConstants.finalizationMinimumOpen + TimingConstants.finalizationPollInterval)
+        await pipeline.server.awaitClose(file: file, line: line)
+    }
+
+    // MARK: - Copy on stop and a code-fence paste (#1467)
+
+    /// Claude Desktop reads the clipboard for a fenced segment's Cmd+V after
+    /// the final handler returned. Copy on stop must not have replaced it
+    /// with the dictation so far by then, or the earlier segment lands twice.
+    func testAutoCopyDoesNotReplaceAnInFlightFencePaste() async throws {
+        let firstSegment = "first segment."
+        let fenced = "see:\n```\nline one\n```"
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        pipeline.viewModel.settings.autoCopyEnabled = true
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { ClaudeDesktopAllowlist.bundleID }
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .noFocusedElement }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        addTeardownBlock { @MainActor in
+            TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
+            TerminalTargetDetector.debugFocusedElementProbeOverride = nil
+            TerminalTargetDetector.debugSecureEventInputOverride = nil
+        }
+        let clipboard = FakeClipboard()
+        pipeline.viewModel.dependencies.pasteboardWriter = { clipboard.write($0) }
+        let typed = TypedText()
+        var pasted: [String] = []
+        pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        pipeline.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { chunk in
+                typed.append(chunk)
+                return true
+            },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false },
+            shiftReturnPoster: {
+                typed.append("⇧⏎")
+                return true
+            },
+            commandVPaster: { text in
+                clipboard.write(text)
+                // The target handles Cmd+V once the main thread is free.
+                Task { @MainActor in pasted.append(clipboard.text) }
+                return true
+            }
+        )
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.done", "text": firstSegment])
+        let typedFirst = await typed.waitFor(firstSegment)
+        XCTAssertTrue(typedFirst, "typed: \(typed.text.debugDescription)")
+        await stopAndFinalize(pipeline, finalText: fenced)
+
+        XCTAssertEqual(pasted.map { $0.trimmingCharacters(in: .whitespaces) }, [fenced])
+        // Once the paste's restore window passed, the clipboard holds the
+        // whole dictation.
+        await pipeline.clock.waitForSleepers(1)
+        pipeline.clock.advance(by: 1)
+        let copied = await clipboard.waitFor { $0.contains(firstSegment) && $0.contains(fenced) }
+        XCTAssertTrue(copied, "clipboard: \(clipboard.text.debugDescription)")
+    }
+
     private func joinOpencodePane(
         _ pipeline: Pipeline, relay: OpencodePromptRelayAddress, inHerdr herdr: FakeHerdrSocket? = nil
     ) {
@@ -3005,6 +3169,16 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.presenter.presented.map(\.title), alerts, file: file, line: line)
     }
 
+    /// True once `condition` holds, re-read whenever an observed property it
+    /// read changes; false after `failAfter` seconds of wall time.
+    private func waitUntilObserved(
+        failAfter: TimeInterval = 10, _ condition: @escaping @MainActor () -> Bool
+    ) async -> Bool {
+        let observed = ObservedCondition(condition)
+        observed.check()
+        return await observed.wait.value(failAfter: failAfter)
+    }
+
     // MARK: - Harness
 
     private struct Pipeline {
@@ -3200,6 +3374,47 @@ private final class TypedText {
         if text == expected { return true }
         let wait = BoundedWait()
         watches.append((expected, wait))
+        return await wait.value(failAfter: failAfter)
+    }
+}
+
+/// A condition re-read each time an observed property it read changes.
+@MainActor
+private final class ObservedCondition {
+    let wait = BoundedWait()
+    private let condition: @MainActor () -> Bool
+
+    init(_ condition: @escaping @MainActor () -> Bool) {
+        self.condition = condition
+    }
+
+    func check() {
+        let holds = withObservationTracking(condition) { [weak self] in
+            Task { @MainActor in self?.check() }
+        }
+        if holds { wait.resolve() }
+    }
+}
+
+/// The clipboard a test's paste hook and copy actions share.
+@MainActor
+private final class FakeClipboard {
+    private(set) var text = ""
+    private var watches: [(reached: (String) -> Bool, wait: BoundedWait)] = []
+
+    func write(_ value: String) {
+        text = value
+        for watch in watches where watch.reached(value) {
+            watch.wait.resolve()
+        }
+    }
+
+    /// True once the clipboard satisfies `reached`; false if it does not
+    /// within `failAfter` seconds of wall time.
+    func waitFor(failAfter: TimeInterval = 10, _ reached: @escaping (String) -> Bool) async -> Bool {
+        if reached(text) { return true }
+        let wait = BoundedWait()
+        watches.append((reached, wait))
         return await wait.value(failAfter: failAfter)
     }
 }

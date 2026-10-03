@@ -1,3 +1,4 @@
+import localvoxtralTestSupport
 import XCTest
 @testable import localvoxtral
 
@@ -87,6 +88,33 @@ final class TextInsertionServiceRealtimeInsertionTests: XCTestCase {
     /// Claude Desktop dropped a newline that opened a unicode event and
     /// reordered multi-line text sent as consecutive events; Shift+Return
     /// gave a line break (measured 2026-09-26).
+    /// A go-to moves the keys mid-dictation; text the route then keeps in
+    /// History still belongs to this dictation, so it blocks a keyboard
+    /// Return and marks the record not inserted. Once the next dictation
+    /// starts, it no longer marks that one (#1466).
+    func testTextKeptAfterAGoToStillMarksItsOwnDictation() async {
+        for endingDictation in [false, true] {
+            let release = BoundedWait()
+            let route = ScriptedPromptRoute { _ in
+                _ = await release.value(failAfter: 10)
+                return .keepInHistory
+            }
+            let service = TextInsertionService()
+            var kept: [String] = []
+            service.beginPromptRelay(route, kept: { kept.append($0) })
+            let sink = service.promptRelaySink
+            service.enqueueRealtimeInsertion("hello")
+
+            service.retirePromptRelay(endingDictation: endingDictation)
+            release.resolve()
+            await sink?.waitUntilIdle()
+
+            XCTAssertEqual(kept, ["hello"])
+            XCTAssertEqual(service.promptRelayKeptText, !endingDictation, "ending: \(endingDictation)")
+            XCTAssertEqual(service.liveInsertionTargetPIDs, endingDictation ? [] : [nil], "ending: \(endingDictation)")
+        }
+    }
+
     func testClaudeDesktopGetsEachNewlineAsShiftReturn() {
         let (service, posted) = makeRecordingService(frontmostBundleID: ClaudeDesktopAllowlist.bundleID)
         defer { TerminalTargetDetector.debugFrontmostBundleIDOverride = nil }
