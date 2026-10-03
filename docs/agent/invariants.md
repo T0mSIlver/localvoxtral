@@ -2525,10 +2525,11 @@ there is not.
   would replace the link and desync a dotfiles setup — or when `~/.ssh` is not
   owned by the user or is group/world-writable. Remote execution spawns only `ssh -o
   BatchMode=yes <alias> /bin/sh -s` and sends the generated token-bearing script
-  through stdin — the token must never enter an argv ON THIS MAC (on the remote
-  host `claude plugin install` takes its config as a flag and has no stdin path,
-  so the token is in that one command's argv there, and in `~/.claude` after —
-  documented in `docs/remote-claude-context.md`, not defended). The read-only
+  through stdin — the token must never enter an argv on this Mac or on the
+  host. On the host it reaches `claude plugin configure --values-stdin` in a
+  here-document, never `install --config 'token=…'`, whose argv every account
+  there could read (#1621); it is in `~/.claude` after, as documented in
+  `docs/remote-claude-context.md`. The read-only
   verification probes (`executeVerification`) are the OTHER ssh-bearing path and
   obey the same rules: `BatchMode=yes` plus `--` before the alias on all,
   `ClearAllForwardings=yes` on the plugin probe and on the FIRST tunnel probe.

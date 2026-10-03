@@ -192,10 +192,15 @@ To install the plugin by hand, run this on the host:
 
 ```
 claude plugin marketplace add T0mSIlver/localvoxtral
- claude plugin install localvoxtral-remote@localvoxtral --config 'token=<token>' --config 'port=<this-Mac's-port>'
+claude plugin install localvoxtral-remote@localvoxtral --config 'port=<this-Mac's-port>'
+claude plugin configure localvoxtral-remote@localvoxtral --values-stdin
 ```
 
-Always pass both options together. The `port` option is the same number the
+The last command reads the token from stdin: type `{"token":"<token>"}`, press
+Return, then Control-D. A token typed there stays off the host's process list,
+where `--config 'token=<token>'` would show it to every account on the host.
+
+Always set the port and the token together. The `port` option is the same number the
 SSH config block binds. Change one without the other and every hook on that
 host posts into a port nothing forwards. The hooks fail open, so this looks
 exactly like nothing happening.
@@ -210,29 +215,23 @@ Its [hook script](../integrations/claude-code/plugins/localvoxtral-remote/hooks/
 needs only POSIX sh and curl. The host needs no localvoxtral binary, no jq and
 no Node.
 
-**What stays off this Mac's process list.** The app can run both commands for
-you over SSH, sending them through the remote shell's stdin. That guarantee is
-**local and only local**. The token never appears in the arguments of any
-process on your Mac, so ps here cannot show it, and the app never writes it to
-a file here.
+**What stays off this Mac's process list.** The app can run these commands for
+you over SSH, sending them through the remote shell's stdin. The token never
+appears in the arguments of any process on your Mac, so ps here cannot show it,
+and the app never writes it to a file here.
 
-**What the host can see.** The remote host is different, and nothing can change
-that. `claude plugin install` takes its config as a command-line flag and has
-no stdin path, so while that one command runs, the token sits in its
-arguments. Anyone who can read the host's process table (`/proc/<pid>/cmdline`
-on Linux) can see it.
+**What the host can see.** The token stays out of every argument list on the
+host too. The app hands it to `claude plugin configure --values-stdin` in a
+here-document, so the host's process table (`/proc/<pid>/cmdline` on Linux)
+never shows it. That command needs a recent Claude Code; on an older one setup
+stops and asks you to update Claude Code on the host.
 
-Afterwards, the plugin stores the token in its user config under `~/.claude`,
-readable by anything running as you on that host.
+The plugin stores the token in its user config under `~/.claude`, readable by
+anything running as you on that host.
 
 So the token limits what a remote host may ask localvoxtral for. It does not
-limit what someone with access to that host's processes and files can read. In
-practice:
-
-- On a shared or multi-user host, paste the command yourself, at a time and
-  place you choose, rather than letting setup run it. The exposure is brief
-  either way, but you pick the moment.
-- If you think someone saw the token, **rotate it** ([A token](#3-a-token)).
+limit what someone who can read your files on that host can read. If you think
+someone saw the token, **rotate it** ([A token](#3-a-token)).
 
 ### 3. A token
 
@@ -782,14 +781,15 @@ M="$HOME/.local/share/localvoxtral/claude-marketplace"
 claude plugin marketplace add "$M"
 claude plugin marketplace update localvoxtral
 claude plugin update localvoxtral-remote@localvoxtral
-claude plugin install localvoxtral-remote@localvoxtral --config 'token=<token>' --config 'port=<this-Mac's-port>'
-```
-
-An update with no new token uses this last line instead:
-
-```sh
 claude plugin install localvoxtral-remote@localvoxtral --config 'port=<this-Mac's-port>'
+claude plugin configure localvoxtral-remote@localvoxtral --values-stdin <<'LVX_EOF_TOKEN'
+{"token":"<token>"}
+LVX_EOF_TOKEN
 ```
+
+Only a run with a new token runs the last command. When it fails, setup stops
+with exit code 48, and a plugin this run installed is uninstalled again, so the
+next run installs it with a token.
 
 The plugin step finds claude the same way the plugin check does (see
 [The Check Setup step](#the-check-setup-step)).
