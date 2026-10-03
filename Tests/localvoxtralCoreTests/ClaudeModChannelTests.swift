@@ -47,6 +47,17 @@ private final class Flag: @unchecked Sendable {
     }
 }
 
+/// A clock the test moves by hand.
+private final class ManualSeconds: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: TimeInterval = 0
+
+    var now: TimeInterval {
+        get { lock.withLock { value } }
+        set { lock.withLock { value = newValue } }
+    }
+}
+
 /// Lines one end of a channel received, with an expectation per line.
 private final class Received: @unchecked Sendable {
     private let lock = NSLock()
@@ -209,7 +220,9 @@ final class ClaudeModChannelSocketTests: XCTestCase {
         broker.debugConfigureIngestHook(nil)
     }
 
-    private func client(_ sessionID: String, output: Received, parentAlive: Flag? = nil) -> ClaudeModAttachClient {
+    private func client(
+        _ sessionID: String, output: Received, parentAlive: Flag? = nil, clock: ManualSeconds = ManualSeconds()
+    ) -> ClaudeModAttachClient {
         ClaudeModAttachClient(
             socketPath: socketPath,
             sessionID: sessionID,
@@ -217,7 +230,9 @@ final class ClaudeModChannelSocketTests: XCTestCase {
             output: { output.append($0) },
             isParentAlive: { parentAlive?.isSet ?? true },
             sleep: { _ in },
-            parentCheckInterval: 0.05
+            parentCheckInterval: 0.05,
+            attachReplyTimeout: 5,
+            now: { clock.now }
         )
     }
 
@@ -290,6 +305,38 @@ final class ClaudeModChannelSocketTests: XCTestCase {
 
         let ended = await outcome.value
         XCTAssertEqual(ended, ClaudeModAttachClient.Outcome.closed)
+    }
+
+    /// An app that took the attach and never answered it: the attach gives
+    /// up at its deadline, so `run()` retries, instead of waiting for as
+    /// long as Claude Code lives.
+    func testAnUnacknowledgedAttachTimesOutAndRetries() async throws {
+        try announce("sess-1")
+        let entered = expectation(description: "the app took the attach")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        broker.debugConfigureServeHook {
+            entered.fulfill()
+            release.wait()
+        }
+        let answered = expectation(description: "the attach gave up")
+        let alive = Flag(true)
+        let clock = ManualSeconds()
+        let attach = client("sess-1", output: Received(), parentAlive: alive, clock: clock)
+        let outcome = Task.detached {
+            let outcome = attach.attachOnce()
+            answered.fulfill()
+            return outcome
+        }
+        await fulfillment(of: [entered], timeout: 5)
+
+        clock.now = 6
+        await fulfillment(of: [answered], timeout: 5)
+
+        // Ends the attach if it is still waiting, so a failure cannot hang.
+        alive.isSet = false
+        let ended = await outcome.value
+        XCTAssertEqual(ended, ClaudeModAttachClient.Outcome.refused)
     }
 
     /// A connection accepted before the stop and served after its sweep must
