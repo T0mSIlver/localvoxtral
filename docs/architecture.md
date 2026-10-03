@@ -69,8 +69,8 @@ AppKit:
 - the Settings sidebar's status dots (`SettingsStatusDot`,
   `IntegrationsSidebarStatus`); their rendering stays in the app
 - the Claude session snapshot and its reducer (`ClaudeSessionState`)
-- `DictationOutputMode`, and the dogfood control socket's grammar
-  (`Dogfood/DogfoodControlProtocol`); the socket stays in the app
+- `DictationOutputMode`, the dogfood control socket's grammar and the WAV
+  source the e2e check dictates from (`Dogfood/`); the socket stays in the app
 - the config store (`AppConfigStore`, `BundledConfigDefaultHistory`,
   `SpeakerTerms`). The app hands it the resource bundle, and on Linux it
   hashes with `PortableSHA256` instead of CryptoKit
