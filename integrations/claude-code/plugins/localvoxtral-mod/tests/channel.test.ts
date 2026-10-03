@@ -126,7 +126,7 @@ describe('channel', () => {
       fills: [
         { text: ' reconnect test', mode: 'insert' },
         { text: '', mode: 'replace' },
-        { text: 'fix the flaky reconnect test', mode: 'insert' },
+        { text: 'fix the flaky reconnect test', mode: 'append' },
       ],
       submits: ['fix the flaky reconnect test'],
     },
