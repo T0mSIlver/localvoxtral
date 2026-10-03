@@ -214,8 +214,11 @@ extension ClaudeRemoteEnrollmentService {
 
     /// `cat >path <<'DELIM'` for one file, written to a temporary name and
     /// renamed, so a reader never sees half a file. The quoted delimiter makes
-    /// the shell copy the body verbatim.
-    package static func writeFileScript(path: String, content: String, mode: String, seed: String) -> String {
+    /// the shell copy the body verbatim. `beforeRename` runs between the
+    /// write and the rename, and its failure leaves `path` as it was.
+    package static func writeFileScript(
+        path: String, content: String, mode: String, seed: String, beforeRename: String? = nil
+    ) -> String {
         let delimiter = heredocDelimiter(for: content, seed: seed)
         let body = content.hasSuffix("\n") ? content : content + "\n"
         // The temporary name gets the same distrust as the final one: a link
@@ -230,17 +233,22 @@ extension ClaudeRemoteEnrollmentService {
         \(body)\(delimiter)
         set +C
         chmod \(mode) "\(path).lvx-tmp"
-        mv -f "\(path).lvx-tmp" "\(path)"
+        \(beforeRename.map { "\($0) || { rm -f \"\(path).lvx-tmp\"; exit 45; }\n" } ?? "")mv -f "\(path).lvx-tmp" "\(path)"
 
         """
+    }
+
+    /// True on the host while `hooks.toml` is still the file the probe read.
+    package static func vibeHooksUnchangedTest(probe: VibeHostProbe) -> String {
+        probe.hooksChecksum.map {
+            "{ [ -f \"$H\" ] && [ \"$(cksum <\"$H\" | tr ' ' ':')\" = \"\($0)\" ]; }"
+        } ?? "[ ! -e \"$H\" ]"
     }
 
     /// The guard every mutation starts with: no symlinks on the way, and
     /// `hooks.toml` still the file the probe read.
     package static func vibeMutationPreamble(probe: VibeHostProbe) -> String {
-        let unchanged = probe.hooksChecksum.map {
-            "[ -f \"$H\" ] && [ \"$(cksum <\"$H\" | tr ' ' ':')\" = \"\($0)\" ] || exit 45"
-        } ?? "[ ! -e \"$H\" ] || exit 45"
+        let unchanged = vibeHooksUnchangedTest(probe: probe) + " || exit 45"
         return """
         set -eu
         umask 077
@@ -301,7 +309,13 @@ extension ClaudeRemoteEnrollmentService {
         if updated != probe.hooksText {
             // A new file is ours to create at 0600; an existing one keeps its mode.
             script += probe.hooksText == nil ? "" : "MODE=$(stat -c %a \"$H\" 2>/dev/null || stat -f %Lp \"$H\")\n"
-            script += Self.writeFileScript(path: "$H", content: updated, mode: probe.hooksText == nil ? "600" : "\"$MODE\"", seed: "HOOKS")
+            // Checked again right before the rename: a save during the
+            // support-file writes above must not be replaced (#1495). That
+            // leaves one `cksum` and one `mv` between check and write.
+            script += Self.writeFileScript(
+                path: "$H", content: updated, mode: probe.hooksText == nil ? "600" : "\"$MODE\"", seed: "HOOKS",
+                beforeRename: Self.vibeHooksUnchangedTest(probe: probe)
+            )
         }
         try runVibe(script, sshHostAlias: sshHostAlias, command: "install Vibe hooks", token: token, timeout: timeout)
 
@@ -399,7 +413,7 @@ extension ClaudeRemoteEnrollmentService {
         guard result.succeeded else {
             let message: String
             switch result.exitCode {
-            case 45: message = "The host's ~/.vibe/hooks.toml changed while this was running. Nothing was written; try again."
+            case 45: message = "The host's ~/.vibe/hooks.toml changed while this was running. It was left as it is; try again."
             case 46: message = "A path under ~/.vibe on the host is a symlink. See the docs for the manual install."
             default: message = "The remote Vibe hooks command failed."
             }

@@ -667,6 +667,8 @@ It then runs the Mac's drafting command in the project:
 - or Vibe with its read-only tools, hooks and MCP off, capped at $0.30.
 
 Both get 20 turns and a 6-minute watchdog (4 minutes before 1.24.0 and 1.9.0).
+From localvoxtral-remote 1.37.0 and Vibe hooks 1.18.0, the prompt goes to the
+agent on stdin, since other users on the host can read a command line from `ps`.
 The run posts the output, at most 60 KiB, to the listener with how the run
 ended. A Vibe run (hooks 1.4.0) adds its token counts in a header; Claude
 Code's output already carries its usage.
