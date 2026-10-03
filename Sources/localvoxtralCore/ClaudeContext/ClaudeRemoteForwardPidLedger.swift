@@ -168,8 +168,7 @@ public final class ClaudeRemoteForwardPidLedger: Sendable {
 
     private let fileURL: URL
     private let io: any ClaudeRemoteHostStoreIO
-    /// One lock around read-modify-write, so two supervisors remembering at
-    /// once cannot interleave and drop each other's record.
+    /// This process's half of `transact`'s lock.
     private let lock = Mutex<Void>(())
 
     public init(
@@ -193,13 +192,17 @@ public final class ClaudeRemoteForwardPidLedger: Sendable {
     }
 
     public func remember(hostID: String, record: ClaudeRemoteForwardPidRecord) {
-        lock.withLock { _ in
+        transact { lockHeld in
             var records: [String: ClaudeRemoteForwardPidRecord]
             switch load() {
             case .absent: records = [:]
             case .loaded(let loaded): records = loaded
             case .refused:
                 do {
+                    // Under the lock the writes take, or not at all: a write
+                    // another copy lands between the link and the removal
+                    // would be deleted (#1441).
+                    guard lockHeld else { throw StoredFile.MoveAsideFailed() }
                     _ = try io.moveAside(fileURL)
                 } catch {
                     Log.claudeContext.error(
@@ -217,10 +220,25 @@ public final class ClaudeRemoteForwardPidLedger: Sendable {
     /// Pid-scoped on purpose: a forget racing a fresh spawn for the same host
     /// must not erase the NEW process's record.
     public func forget(hostID: String, pid: Int32) {
-        lock.withLock { _ in
+        transact { _ in
             guard var records = load().value, records[hostID]?.pid == pid else { return }
             records[hostID] = nil
             store(records)
+        }
+    }
+
+    /// One read-modify-write, under the lock every running copy takes on the
+    /// file (#990), then this process's: two supervisors remembering at once
+    /// cannot drop each other's record, in one copy or across copies.
+    private func transact(_ body: (_ lockHeld: Bool) -> Void) {
+        do {
+            try io.withLockedAccess(to: fileURL) { lockHeld in
+                lock.withLock { _ in body(lockHeld) }
+            }
+        } catch {
+            Log.claudeContext.error(
+                "Claude remote forward pid ledger not updated: \(String(describing: error), privacy: .public)"
+            )
         }
     }
 

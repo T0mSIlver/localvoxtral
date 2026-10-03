@@ -215,6 +215,10 @@ public protocol ClaudeRemoteHostStoreIO: Sendable {
     /// Runs `body` as the only writer of `url` among the running copies of
     /// the app (#990).
     func withExclusiveAccess<T>(to url: URL, _ body: () throws -> T) throws -> T
+    /// `withExclusiveAccess`, telling `body` whether it holds the lock. A
+    /// step that must not run unlocked, such as a move-aside, refuses when
+    /// it does not (#1441).
+    func withLockedAccess<T>(to url: URL, _ body: (_ lockHeld: Bool) throws -> T) throws -> T
     /// What `url` is now, from one `lstat`: equal stamps mean the bytes have
     /// not been replaced since. Nil means it cannot tell, and the caller
     /// reads the file instead (#1046).
@@ -228,6 +232,10 @@ extension ClaudeRemoteHostStoreIO {
     /// A store no other process sees needs no lock.
     public func withExclusiveAccess<T>(to url: URL, _ body: () throws -> T) throws -> T {
         try body()
+    }
+
+    public func withLockedAccess<T>(to url: URL, _ body: (_ lockHeld: Bool) throws -> T) throws -> T {
+        try withExclusiveAccess(to: url) { try body(true) }
     }
 
     public func moveAside(_ url: URL) throws -> URL {
@@ -315,6 +323,19 @@ public struct ClaudeRemoteHostFileStoreIO: ClaudeRemoteHostStoreIO {
         try ClaudeSocketGuard.prepareDirectory(at: url.deletingLastPathComponent().path)
         #endif
         return try StoredFileLock.withLock(beside: url, body)
+    }
+
+    public func withLockedAccess<T>(to url: URL, _ body: (_ lockHeld: Bool) throws -> T) throws -> T {
+        #if canImport(Darwin) || canImport(Glibc)
+        try ClaudeSocketGuard.prepareDirectory(at: url.deletingLastPathComponent().path)
+        #endif
+        guard let lock = StoredFileLock.holding(beside: url) else {
+            Log.persistence.error(
+                "\(url.lastPathComponent, privacy: .public): could not take the lock shared with other running copies"
+            )
+            return try body(false)
+        }
+        return try withExtendedLifetime(lock) { try body(true) }
     }
 
     public func stamp(of url: URL) -> StoredFileStamp? {

@@ -1084,6 +1084,44 @@ final class ClaudeSessionPersistenceTests: XCTestCase {
         XCTAssertTrue(String(decoding: try Data(contentsOf: fileURL), as: UTF8.self).contains("local-session"))
     }
 
+    func testANewerSessionFileStaysPutWhenTheSharedLockCannotBeTaken() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("lvx-sessions-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("claude-sessions.json")
+        let newer = Data(#"{"v":2,"sessions":[],"from":"a later build"}"#.utf8)
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: fileURL.path,
+            contents: newer,
+            attributes: [.posixPermissions: NSNumber(value: Int16(0o600))]
+        ))
+        // A directory where the lock file goes: the lock cannot be opened.
+        try FileManager.default.createDirectory(
+            at: StoredFileLock.lockURL(beside: fileURL), withIntermediateDirectories: false)
+
+        let timestamp = epoch
+        let registry = ClaudeSessionRegistry(
+            store: ClaudeSessionFileStore(fileURL: fileURL),
+            now: { timestamp },
+            isProcessAlive: { _ in true },
+            bootIdentity: { "boot-a" },
+            localPeerUID: { 501 }
+        )
+        registry.ingest(localRecord(.sessionStart), origin: .localAuthenticated(peerUID: 501))
+        registry.flushPersistence()
+
+        XCTAssertEqual(try Data(contentsOf: fileURL), newer)
+        XCTAssertFalse(
+            try FileManager.default.contentsOfDirectory(atPath: directory.path)
+                .contains { $0.hasPrefix("claude-sessions.json.incompatible-") }
+        )
+    }
+
     func testUnknownRemoteChannelsKeepRemoteSessionsInTheFile() throws {
         let store = MemoryClaudeSessionStore()
         let first = registry(store: store)
