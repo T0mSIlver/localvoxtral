@@ -660,6 +660,65 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(mode?.intValue, 0o600)
     }
 
+    /// A copy that quit mid-draft (#1507): the relaunch's recovery is on
+    /// disk before a surviving copy, which still holds the run, writes
+    /// another capture.
+    func testRecoveredRunStateSurvivesAnotherCopyWritingUnrelatedCapture() async throws {
+        let surviving = QuickCaptureFixture.model(
+            fileURL: fileURL, answer: ["reach": 0.9], github: github, runner: runner, processID: 2)
+        var drafting = QuickCaptureItem(capturedAt: Date(timeIntervalSince1970: 1_000_000), text: "Half drafted")
+        drafting.state = .drafting
+        drafting.projectKey = "/w/reach"
+        var checking = QuickCaptureItem(capturedAt: Date(timeIntervalSince1970: 1_000_000), text: "Half checked")
+        checking.state = .ready
+        checking.projectKey = "/w/reach"
+        checking.title = "First draft"
+        checking.body = "Edited by the user"
+        checking.codeCheck = QuickCaptureCodeCheck(state: .checking)
+        var unrelated = QuickCaptureItem(capturedAt: Date(timeIntervalSince1970: 1_000_000), text: "Unrelated")
+        unrelated.state = .ready
+        // The copy that quit wrote its runs after the surviving copy loaded.
+        try QuickCaptureInboxFile.save(QuickCaptureInbox(items: [drafting, checking, unrelated]), to: fileURL)
+        surviving.reloadIfChanged()
+        let relaunched = QuickCaptureFixture.model(
+            fileURL: fileURL, answer: ["reach": 0.9], github: github, runner: runner, processID: 3)
+
+        surviving.setTitle("Unrelated title", for: unrelated.id)
+        relaunched.reloadIfChanged()
+
+        for items in [relaunched.items, try XCTUnwrap(QuickCaptureInboxFile.decode(Data(contentsOf: fileURL)).value).items] {
+            let draft = try XCTUnwrap(items.first { $0.id == drafting.id })
+            XCTAssertEqual(draft.state, .ready)
+            XCTAssertEqual(draft.text, "Half drafted")
+            let check = try XCTUnwrap(items.first { $0.id == checking.id })
+            XCTAssertEqual(check.codeCheck?.state, .failed)
+            XCTAssertEqual(check.body, "Edited by the user")
+            XCTAssertEqual(items.first { $0.id == unrelated.id }?.title, "Unrelated title")
+        }
+    }
+
+    /// A copy launched while another drafts (#1507): its recovery, now
+    /// written, leaves the live copy's run alone, and that run's draft lands.
+    func testARelaunchLeavesALiveCopysDraftRunning() async throws {
+        let agent = FakeQuickCaptureCheckRunner(
+            [.draft(.init(title: "Dark mode", body: "## Scope", relation: .none, issue: nil), usage: nil)], gated: true)
+        let running = QuickCaptureFixture.model(
+            fileURL: fileURL, answer: ["reach": 0.9], github: github, runner: agent, processID: 2)
+        let task = running.capture(text: "Add a dark mode", historyRecordID: nil)
+        await agent.gate?.waitForSleepers(1)
+
+        let relaunched = QuickCaptureFixture.model(
+            fileURL: fileURL, answer: ["reach": 0.9], github: github, runner: runner, processID: 3)
+        XCTAssertEqual(relaunched.items.first?.state, .drafting)
+        XCTAssertEqual(QuickCaptureInboxFile.decode(try Data(contentsOf: fileURL)).value?.items.first?.state, .drafting)
+
+        agent.gate?.wakeAll()
+        await task.value
+        relaunched.reloadIfChanged()
+        XCTAssertEqual(relaunched.items.first?.state, .ready)
+        XCTAssertEqual(relaunched.items.first?.title, "Dark mode")
+    }
+
     func testAFiledCaptureStaysAWeekFromItsFilingNotItsCapture() {
         let now = Date(timeIntervalSince1970: 10_000_000)
         var old = QuickCaptureItem(capturedAt: now.addingTimeInterval(-30 * 86_400), text: "old")

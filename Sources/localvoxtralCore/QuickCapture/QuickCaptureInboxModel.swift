@@ -40,8 +40,10 @@ package final class QuickCaptureInboxModel {
     /// unplaced; never the router's options.
     private let recentRepositories: @MainActor () async -> [GitHubListedRepository]
     private let now: @MainActor () -> Date
-    /// This running copy, as a filing claim names it.
+    /// This running copy, as a filing claim or a run owner names it.
     private let processID: Int32
+    /// This launch, against a later copy given the same process ID (#1507).
+    private let launch = UUID()
     private let isProcessRunning: (Int32) -> Bool
     private let write: (Data, URL) throws -> Void
     /// The latest draft run per capture: an older run's answer is dropped.
@@ -100,14 +102,38 @@ package final class QuickCaptureInboxModel {
             (load, seen) = StoredFile.loadShared(fileURL, decode: QuickCaptureInboxFile.decode)
         }
         storeProblem = load.problem
-        var loaded = load.value.map {
-            QuickCaptureInboxFile.resumingInterrupted($0) { claim in
-                claim.processID != processID && isProcessRunning(claim.processID)
-            }
-        } ?? QuickCaptureInbox()
+        var loaded = load.value ?? QuickCaptureInbox()
         loaded.prune(now: now())
         inbox = loaded
+        recoverAbandonedRuns()
         adoptProjects()
+    }
+
+    /// This copy, as the runs it starts name it.
+    private var owner: QuickCaptureRunningCopy {
+        QuickCaptureRunningCopy(processID: processID, launch: launch)
+    }
+
+    /// Whether `copy` still runs: this launch, or another process alive.
+    /// Asked again whenever a change replays, so a recovery replayed after
+    /// a failed save never ends a run this launch started since.
+    private var isLive: (QuickCaptureRunningCopy) -> Bool {
+        let processID = processID
+        let launch = launch
+        let isProcessRunning = isProcessRunning
+        return { copy in
+            copy.processID == processID ? copy.launch == launch : isProcessRunning(copy.processID)
+        }
+    }
+
+    /// Ends the runs and filings a quit left (#1507), as one transaction
+    /// with every other running copy: a copy that still holds one of those
+    /// runs in memory then writes on top of the recovery, not over it.
+    private func recoverAbandonedRuns() {
+        let isLive = self.isLive
+        guard QuickCaptureInboxFile.resumingInterrupted(inbox, isLive: isLive) != inbox else { return }
+        Log.persistence.notice("Quick capture inbox: ending runs a quit left")
+        mutate { $0 = QuickCaptureInboxFile.resumingInterrupted($0, isLive: isLive) }
     }
 
     package var items: [QuickCaptureItem] { inbox.items }
@@ -172,8 +198,9 @@ package final class QuickCaptureInboxModel {
             onStatus?(Self.refusedStatus)
             return Task {}
         }
-        let item = QuickCaptureItem(
+        var item = QuickCaptureItem(
             id: id, capturedAt: capturedAt ?? now(), text: text, historyRecordID: historyRecordID, group: group)
+        item.runOwner = owner
         mutate { $0.add(item) }
         guard storeProblem == nil else {
             // Another running copy left a file this build cannot read.
@@ -189,7 +216,8 @@ package final class QuickCaptureInboxModel {
     /// Inbox, and the next save that succeeds keeps them.
     package func captureVoiceMemo(text: String, historyRecordID: UUID?, id: UUID, capturedAt: Date) throws {
         guard storeProblem == nil else { throw StoreRefused() }
-        let item = QuickCaptureItem(id: id, capturedAt: capturedAt, text: text, historyRecordID: historyRecordID)
+        var item = QuickCaptureItem(id: id, capturedAt: capturedAt, text: text, historyRecordID: historyRecordID)
+        item.runOwner = owner
         let failure = mutate { $0.add(item) }
         // Refused by the write (another running copy's file): nothing to place.
         if failure is StoreRefused { throw StoreRefused() }
@@ -400,10 +428,12 @@ package final class QuickCaptureInboxModel {
         draftRunCount += 1
         let run = draftRunCount
         draftRuns[id] = run
+        let owner = self.owner
         mutate { inbox in
             inbox.update(id) {
                 guard !$0.isFilingOrFiled else { return }
                 $0.state = .drafting
+                $0.runOwner = owner
                 $0.note = nil
                 $0.codeCheck = nil
                 // A remote project's host drafts on its next session hook.
@@ -709,7 +739,7 @@ package final class QuickCaptureInboxModel {
     /// another copy's write after a failed save, the change checks
     /// `eligible` again before it claims.
     private func claim(_ id: UUID, when eligible: @escaping (QuickCaptureItem) -> Bool) -> QuickCaptureItem? {
-        let token = QuickCaptureItem.FilingClaim(processID: processID)
+        let token = QuickCaptureItem.FilingClaim(processID: processID, launch: launch)
         var claimed: QuickCaptureItem?
         let failure = mutate { inbox in
             inbox.update(id) { item in
@@ -801,11 +831,13 @@ package final class QuickCaptureInboxModel {
         let changes = (item.changes ?? []) + [change]
         // Drafting at once: the cue drops it, and a second review finds no
         // ready draft until the redraft lands.
+        let owner = self.owner
         mutate { inbox in
             inbox.update(id) {
                 guard !$0.isFilingOrFiled else { return }
                 $0.changes = changes
                 $0.state = .drafting
+                $0.runOwner = owner
             }
         }
         let text = QuickCaptureSpokenReview.redraftCapture(
@@ -883,6 +915,8 @@ package final class QuickCaptureInboxModel {
             loaded.prune(now: now())
             Log.persistence.notice("Quick capture inbox: another running copy wrote the file, read again")
             inbox = loaded
+            // A copy that quit may have left runs no recovery has ended yet.
+            recoverAbandonedRuns()
             adoptProjects()
         case .refused(let problem)?:
             Log.persistence.error("Quick capture inbox: another copy left a file this build cannot read")
