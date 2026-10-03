@@ -17,21 +17,15 @@ extension ClaudeRemoteEnrollmentService {
         "Added. Reload config in herdr to apply it."
 
     /// Whether a herdr config's contents already carry an agents
-    /// configuration. The SAME conservative rule the remote patch refuses on,
-    /// ported line-for-line from the remote script's grep: an
-    /// `[ui.sidebar.agents]` table header (optionally followed by a comment)
-    /// or a `rows =` key at any indent.
+    /// configuration. The SAME conservative rule the remote patch refuses on:
+    /// each line, cut at `#` and stripped of whitespace and quotes, is
+    /// matched against `herdrAgentsConfigPattern`.
     public static func localHerdrPanelConfigIsCustomized(_ content: String) -> Bool {
-        content.split(whereSeparator: \.isNewline).contains { line in
-            let trimmedHeader = line.trimmingCharacters(in: .whitespaces)
-            if trimmedHeader.hasPrefix("[ui.sidebar.agents]") {
-                let after = trimmedHeader.dropFirst("[ui.sidebar.agents]".count)
-                    .trimmingCharacters(in: .whitespaces)
-                return after.isEmpty || after.hasPrefix("#")
-            }
-            let fields = line.split(maxSplits: 1, whereSeparator: { $0 == "=" })
-            guard fields.count == 2 else { return false }
-            return fields[0].trimmingCharacters(in: .whitespaces) == "rows"
+        guard let pattern = try? Regex(herdrAgentsConfigPattern) else { return true }
+        return content.split(whereSeparator: \.isNewline).contains { line in
+            let normalized = line.prefix { $0 != "#" }
+                .filter { !$0.isWhitespace && $0 != "\"" && $0 != "'" }
+            return normalized.firstMatch(of: pattern) != nil
         }
     }
 
