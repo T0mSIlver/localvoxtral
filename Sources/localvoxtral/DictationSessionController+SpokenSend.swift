@@ -33,7 +33,9 @@ extension DictationSessionController {
         case noTrigger
     }
 
-    func planOverlaySpokenSend(for text: String) -> OverlaySpokenSendPlan {
+    /// `join` is the dictation's join: the context's while it runs, the
+    /// stop sample's once a polished stop took it from the context.
+    func planOverlaySpokenSend(for text: String, join: ClaudeSessionJoin? = nil) -> OverlaySpokenSendPlan {
         guard settings.overlaySpokenSendEnabled else { return .noTrigger }
         let remainder: String
         switch SendNowCommandParser.parse(text, triggerPhrases: settings.spokenSendTriggerPhrases) {
@@ -47,7 +49,7 @@ extension DictationSessionController {
         if textInsertion.promptRelayTakesText {
             return .send(.promptRelaySubmit, remainder: remainder)
         }
-        if modChannelSessionID(join: context.claudeSessionJoin) != nil {
+        if modChannelSessionID(join: join ?? context.claudeSessionJoin) != nil {
             return .send(.modSubmit, remainder: remainder)
         }
         return keyboardSpokenSendPlan(remainder: remainder)
@@ -74,8 +76,8 @@ extension DictationSessionController {
     /// Otherwise the text is left as dictated and nil returned. With a
     /// healthy prompt relay the commit goes to the pane's prompt, so no
     /// frontmost-app or Secure Keyboard Entry gate applies.
-    func stripOverlaySpokenSendTrigger() -> OverlaySpokenSend? {
-        switch planOverlaySpokenSend(for: transcript.currentDictationEventText) {
+    func stripOverlaySpokenSendTrigger(join: ClaudeSessionJoin?) -> OverlaySpokenSend? {
+        switch planOverlaySpokenSend(for: transcript.currentDictationEventText, join: join) {
         case .noTrigger:
             return nil
         case .keep(let reason):
