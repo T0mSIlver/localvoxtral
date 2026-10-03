@@ -800,6 +800,37 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(manager.speechdStatus, .stopped)
     }
 
+    /// A cancelled caller that was the ensure's only waiter throws only after
+    /// the ensure has unwound, so it reads `.stopped`. The fake parks the
+    /// cancelled prepare; before the fix the caller threw while the status
+    /// still read `.preparingModel` (#1611).
+    func testCancelledLastWaiterThrowsOnlyAfterTheEnsureUnwinds() async throws {
+        let modelPreparer = FakeModelPreparer(suspendBackendIDs: [BackendCatalog.speechd.id])
+        modelPreparer.holdCancelledPrepare()
+        let manager = makeManager(
+            modelPreparer: modelPreparer,
+            supervisorFactory: FakeSupervisorFactory()
+        )
+
+        let ensure = Task { @MainActor () -> ManagedBackendStatus? in
+            do {
+                try await manager.ensureReady(dictation: true, polishing: false)
+                return nil
+            } catch {
+                XCTAssertTrue(error is CancellationError, "expected CancellationError, got \(error)")
+                return manager.speechdStatus
+            }
+        }
+        await modelPreparer.waitUntilPrepareStarted()
+
+        ensure.cancel()
+        await modelPreparer.waitUntilCancelledPrepareParked()
+        modelPreparer.releaseCancelledPrepare()
+
+        let statusWhenCallerThrew = await ensure.value
+        XCTAssertEqual(statusWhenCallerThrew, ManagedBackendStatus.stopped)
+    }
+
     func testStopPolishingCancelsInFlightEnsureBeforeSupervisorCanStart() async throws {
         let modelPreparer = FakeModelPreparer(suspendBackendIDs: [BackendCatalog.polishd.id])
         let supervisorFactory = FakeSupervisorFactory()
@@ -1278,6 +1309,11 @@ private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
         var holdNextPrepare = false
         /// A `resumePrepare` that came before the held prepare parked.
         var resumeRequested = false
+        var holdCancelledPrepare = false
+        var cancelledPrepareWaiter: CheckedContinuation<Void, Never>?
+        var cancelledPrepareParked = false
+        var cancelledPrepareRelease: CheckedContinuation<Void, Never>?
+        var cancelledPrepareReleaseRequested = false
     }
 
     private let scriptedProgress: [String: [ModelDownloadProgress]]
@@ -1337,38 +1373,92 @@ private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
         let shouldSuspend = suspendBackendIDs.contains(request.backendID)
             && state.withLock { $0.alreadySuspendedBackendIDs.insert(request.backendID).inserted }
         if shouldSuspend {
-            try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { continuation in
-                    // Cancellation can land BEFORE this continuation exists:
-                    // `stop` cancels the ensure the moment the test sees the
-                    // prepare start, and on a loaded host the handler above
-                    // then runs first, finds nothing to resume, and the
-                    // continuation parked here would never be resumed (the
-                    // hosted unit-suite hang, run 34163270101). Park it only
-                    // when the task is still live; the check and the store
-                    // share the lock with the handler, so no interleaving
-                    // resumes twice or not at all.
-                    let orphaned: CheckedContinuation<Void, Error>? = state.withLock {
-                        if Task.isCancelled { return continuation }
-                        $0.prepareResumeContinuation = continuation
-                        return nil
-                    }
-                    orphaned?.resume(throwing: CancellationError())
-                }
-            } onCancel: {
-                let continuation: CheckedContinuation<Void, Error>? = self.state.withLock {
-                    $0.terminatedBackendIDs.append(request.backendID)
-                    let continuation = $0.prepareResumeContinuation
-                    $0.prepareResumeContinuation = nil
-                    return continuation
-                }
-                continuation?.resume(throwing: CancellationError())
+            do {
+                try await suspendUntilCancelled(request)
+            } catch is CancellationError where state.withLock({ $0.holdCancelledPrepare }) {
+                await parkCancelledPrepare()
+                throw CancellationError()
             }
         }
 
         if let failure = failures[request.backendID] {
             throw failure
         }
+    }
+
+    private func suspendUntilCancelled(_ request: ModelPreparationRequest) async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                // Cancellation can land BEFORE this continuation exists:
+                // `stop` cancels the ensure the moment the test sees the
+                // prepare start, and on a loaded host the handler above
+                // then runs first, finds nothing to resume, and the
+                // continuation parked here would never be resumed (the
+                // hosted unit-suite hang, run 34163270101). Park it only
+                // when the task is still live; the check and the store
+                // share the lock with the handler, so no interleaving
+                // resumes twice or not at all.
+                let orphaned: CheckedContinuation<Void, Error>? = state.withLock {
+                    if Task.isCancelled { return continuation }
+                    $0.prepareResumeContinuation = continuation
+                    return nil
+                }
+                orphaned?.resume(throwing: CancellationError())
+            }
+        } onCancel: {
+            let continuation: CheckedContinuation<Void, Error>? = self.state.withLock {
+                $0.terminatedBackendIDs.append(request.backendID)
+                let continuation = $0.prepareResumeContinuation
+                $0.prepareResumeContinuation = nil
+                return continuation
+            }
+            continuation?.resume(throwing: CancellationError())
+        }
+    }
+
+    /// Parks a cancelled prepare before it throws, until
+    /// `releaseCancelledPrepare`, so a test can look at the manager while the
+    /// ensure task has not unwound yet.
+    private func parkCancelledPrepare() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let (waiter, released): (CheckedContinuation<Void, Never>?, Bool) = state.withLock {
+                $0.cancelledPrepareParked = true
+                let waiter = $0.cancelledPrepareWaiter
+                $0.cancelledPrepareWaiter = nil
+                if $0.cancelledPrepareReleaseRequested { return (waiter, true) }
+                $0.cancelledPrepareRelease = continuation
+                return (waiter, false)
+            }
+            waiter?.resume()
+            if released { continuation.resume() }
+        }
+    }
+
+    /// Makes the suspended prepare park once cancelled instead of throwing.
+    func holdCancelledPrepare() {
+        state.withLock { $0.holdCancelledPrepare = true }
+    }
+
+    /// Returns once a cancelled prepare has parked.
+    func waitUntilCancelledPrepareParked() async {
+        await withCheckedContinuation { continuation in
+            let parked: Bool = state.withLock {
+                if $0.cancelledPrepareParked { return true }
+                $0.cancelledPrepareWaiter = continuation
+                return false
+            }
+            if parked { continuation.resume() }
+        }
+    }
+
+    func releaseCancelledPrepare() {
+        let continuation: CheckedContinuation<Void, Never>? = state.withLock {
+            let continuation = $0.cancelledPrepareRelease
+            $0.cancelledPrepareRelease = nil
+            if continuation == nil { $0.cancelledPrepareReleaseRequested = true }
+            return continuation
+        }
+        continuation?.resume()
     }
 
     func discardPartialDownloads(for request: ModelPreparationRequest) {
