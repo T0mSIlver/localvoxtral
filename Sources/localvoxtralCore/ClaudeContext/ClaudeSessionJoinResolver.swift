@@ -339,9 +339,10 @@ package struct ClaudeSessionJoinResolver {
         }
         // The pane's foreground query awaited herdr: the user may have moved
         // to another pane or tab since, and the mod's keyboard fallback
-        // types on this answer (#1498). Both are read again.
-        guard await herdrPanes?.focusedPane(socketPath: found.socketPath)?.paneID == found.pane.paneID,
-              await focusedTerminalTTY(target.bundleID) == tty
+        // types on this answer (#1498). Both are read again, the pane last:
+        // a pane switch keeps the tty, so no slower read may follow it.
+        guard await focusedTerminalTTY(target.bundleID) == tty,
+              await herdrPanes?.focusedPane(socketPath: found.socketPath)?.paneID == found.pane.paneID
         else {
             Log.claudeContext.info("needs-you pane check: the focus moved during the herdr lookup")
             return nil
