@@ -14,8 +14,11 @@ struct RealtimeReconnectPolicy: Sendable, Equatable {
     /// Ceiling for a single wait, so late attempts stay within a few seconds
     /// of each other instead of running away.
     let maxBackoff: TimeInterval
-    /// How long one attempt may sit in `connecting` before it is abandoned.
-    /// A socket that fails outright reports back sooner and cuts this short.
+    /// How long one attempt may take to reach a ready session before it is
+    /// abandoned. Above `RealtimeAPIWebSocketClient.sessionCreatedFallbackDelay`:
+    /// a server that never sends `session.created` is ready only when the
+    /// compatibility fallback fires. A socket that fails outright reports
+    /// back sooner and cuts this short.
     let attemptTimeout: TimeInterval
     /// Cadence at which an attempt re-reads the client's connection state.
     let pollInterval: TimeInterval
@@ -25,7 +28,7 @@ struct RealtimeReconnectPolicy: Sendable, Equatable {
         initialBackoff: 0.25,
         backoffMultiplier: 3,
         maxBackoff: 2.0,
-        attemptTimeout: 2.5,
+        attemptTimeout: 4.0,
         pollInterval: 0.05
     )
 
