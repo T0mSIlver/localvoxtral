@@ -78,8 +78,8 @@ extension DictationSessionController {
     private func handleConnectedEvent() {
         cancelConnectTimeout()
         if isReconnectingRealtimeSession {
-            // The run's own poll notices the open socket and owns what happens
-            // next (status line, audio and commit tasks). Only the indicator
+            // The run's own poll notices the ready session and owns what
+            // happens next (status line, audio and commit tasks). Only the indicator
             // turns green here, as early as the news arrives.
             setRealtimeIndicatorConnected()
             return

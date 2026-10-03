@@ -2843,6 +2843,115 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertNil(pipeline.viewModel.lastError, file: file, line: line)
     }
 
+    // MARK: - Reconnect onto a session that is not ready yet
+
+    /// A reconnect counts once the new server session is ready, not on the
+    /// WebSocket upgrade (#1457). Three replacement sockets are upgraded and
+    /// closed before their `session.created`: each fails an attempt of the
+    /// same run, and the gap audio waits in the chunk buffer for the fourth,
+    /// which is ready, instead of dying in a closed socket's queue.
+    func testUnreadyUpgradeDoesNotResetRetryBudgetOrConsumeGapAudio() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let events = observeSocketEvents(pipeline)
+        await startAndSpeak(pipeline)
+        let gap = Self.speech(seed: 4)
+
+        let run = await dropAndReconnect(pipeline, events, readyAttempt: 4, gap: gap)
+        await run?.value
+
+        XCTAssertEqual(events.connected, 5, "the first socket, then four attempts of one run")
+        XCTAssertTrue(pipeline.viewModel.isDictating)
+        XCTAssertFalse(pipeline.viewModel.session.isReconnectingRealtimeSession)
+        // Past a wrong count the gap went to a socket that is gone, and the
+        // wait below could only time out.
+        guard events.connected == 5 else { return }
+
+        pipeline.clock.advance(by: TimingConstants.audioSendInterval)
+        await pipeline.server.awaitFrame("the gap audio") { $0.audio == gap }
+        let frames = pipeline.server.frames
+        XCTAssertEqual(frames.filter { $0.audio == gap }.count, 1, "the gap goes out once")
+        XCTAssertEqual(frames.first?.type, "session.update", "on the ready session, behind its handshake")
+    }
+
+    /// Four replacement sockets upgraded and closed before their handshake
+    /// use up the run's four attempts, and the dictation ends as after any
+    /// failed reconnect (#1457).
+    func testUnreadyUpgradesExhaustTheReconnectRun() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let events = observeSocketEvents(pipeline)
+        await startAndSpeak(pipeline)
+
+        let run = await dropAndReconnect(pipeline, events, readyAttempt: nil, gap: Self.speech(seed: 4))
+        await run?.value
+
+        XCTAssertEqual(events.connected, 5, "the first socket, then four attempts of one run")
+        XCTAssertFalse(pipeline.viewModel.isDictating)
+        XCTAssertEqual(pipeline.viewModel.lastError, DictationViewModel.connectionLostMessage)
+    }
+
+    /// Closes the session's socket from the server, puts `gap` in the chunk
+    /// buffer while the session is down, and returns the reconnect run. The
+    /// sockets drive the run's sleeps: an attempt's first poll returns once
+    /// the session handled that attempt's socket opening; its second, once
+    /// the server closed the socket before any handshake, or, on
+    /// `readyAttempt`, once the handshake's `session.update` arrived.
+    private func dropAndReconnect(
+        _ pipeline: Pipeline, _ events: HandledSocketEvents, readyAttempt: Int?, gap: Data,
+        file: StaticString = #filePath, line: UInt = #line
+    ) async -> Task<Void, Never>? {
+        let server = pipeline.server
+        let pollInterval = RealtimeReconnectPolicy.default.pollInterval
+        var attempt = 0
+        var polls = 0
+        pipeline.viewModel.dependencies.reconnectSleep = { duration in
+            guard duration == pollInterval else {
+                // The backoff before an attempt: it dials at once.
+                attempt += 1
+                polls = 0
+                server.setWithholdsSessionCreated(attempt != readyAttempt)
+                return
+            }
+            polls += 1
+            switch polls {
+            case 1:
+                await events.waitForConnected(1 + attempt, file: file, line: line)
+            case 2 where attempt == readyAttempt:
+                await server.awaitFrame("the handshake's session.update", file: file, line: line) {
+                    $0.type == "session.update"
+                }
+            case 2:
+                server.closeConnection()
+                await events.waitForDisconnected(1 + attempt, file: file, line: line)
+            default:
+                await Task.yield()
+            }
+        }
+
+        server.forgetFrames()
+        server.closeConnection()
+        await events.waitForDisconnected(1, file: file, line: line)
+        let run = pipeline.viewModel.session.reconnectTask
+        XCTAssertNotNil(run, "the drop starts a reconnect run", file: file, line: line)
+        XCTAssertTrue(pipeline.microphone.deliver(gap), file: file, line: line)
+        return run
+    }
+
+    /// Hands the realtime client's events to the session as the app does,
+    /// and counts each one the session has handled.
+    private func observeSocketEvents(_ pipeline: Pipeline) -> HandledSocketEvents {
+        let events = HandledSocketEvents()
+        let session = pipeline.viewModel.session
+        session.realtimeAPIClient.setEventHandler { [weak session] event, generation in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    session?.handle(event: event, from: generation)
+                    events.record(event)
+                }
+            }
+        }
+        return events
+    }
+
     // MARK: - The two halves every scenario shares
 
     /// Start, open the microphone, connect, and get one captured chunk to the
@@ -3163,6 +3272,46 @@ private final class QuickCaptures {
 
 private final class QuickCaptureGroups {
     var all: [ProjectGroup?] = []
+}
+
+/// The socket openings and closes the session has handled, counted once
+/// its handler returned.
+@MainActor
+private final class HandledSocketEvents {
+    private(set) var connected = 0
+    private(set) var disconnected = 0
+    private var waits: [(isMet: () -> Bool, wait: BoundedWait)] = []
+
+    func record(_ event: RealtimeEvent) {
+        switch event {
+        case .connected: connected += 1
+        case .disconnected: disconnected += 1
+        default: return
+        }
+        for watch in waits where watch.isMet() {
+            watch.wait.resolve()
+        }
+        waits.removeAll { $0.isMet() }
+    }
+
+    func waitForConnected(_ count: Int, file: StaticString = #filePath, line: UInt = #line) async {
+        await waitUntil("\(count) socket openings", file: file, line: line) { self.connected >= count }
+    }
+
+    func waitForDisconnected(_ count: Int, file: StaticString = #filePath, line: UInt = #line) async {
+        await waitUntil("\(count) socket closes", file: file, line: line) { self.disconnected >= count }
+    }
+
+    /// Fails the test if `isMet` does not hold within 10 s of wall time.
+    private func waitUntil(
+        _ description: String, file: StaticString, line: UInt, _ isMet: @escaping () -> Bool
+    ) async {
+        if isMet() { return }
+        let wait = BoundedWait()
+        waits.append((isMet, wait))
+        if await wait.value(failAfter: 10) { return }
+        XCTFail("the session never handled \(description)", file: file, line: line)
+    }
 }
 
 /// Every record the sessions wrote, in order.

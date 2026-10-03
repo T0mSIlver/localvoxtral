@@ -103,6 +103,10 @@ package final class MistralRealtimeWebSocketClient: BaseRealtimeWebSocketClient,
         state.withLock { $0.base.socketState == .connected }
     }
 
+    package var isSessionReady: Bool {
+        state.withLock { $0.base.socketState == .connected && $0.hasReceivedSessionCreated }
+    }
+
     package var connectionGeneration: RealtimeConnectionGeneration {
         state.withLock { $0.base.connectionGeneration }
     }

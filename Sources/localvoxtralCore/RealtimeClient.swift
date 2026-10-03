@@ -87,6 +87,12 @@ package enum RealtimeEvent: Sendable {
 package protocol RealtimeClient: AnyObject, Sendable {
     var supportsPeriodicCommit: Bool { get }
     var isConnected: Bool { get }
+    /// The server session takes audio: the socket is open and its handshake,
+    /// or the compatibility fallback standing in for one, has opened the send
+    /// gate. `isConnected` turns true earlier, on the WebSocket upgrade, and
+    /// whatever is sent between the two waits in the client, lost if the
+    /// socket closes first (#1457).
+    var isSessionReady: Bool { get }
     /// The generation stamped on the socket the most recent `connect()` opened,
     /// `.none` before the first one. Read right after a successful `connect()`:
     /// that is the connection the session is now on.
