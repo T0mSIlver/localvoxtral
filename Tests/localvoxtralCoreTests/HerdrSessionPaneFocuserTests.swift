@@ -139,6 +139,62 @@ final class HerdrSessionPaneFocuserTests: XCTestCase {
         XCTAssertEqual(outcome, .unverified(bundleID: ghostty))
     }
 
+    /// A focuser whose window lookup and terminal read-back answer `first`
+    /// on their first call and `later` on every call after it: the client
+    /// switched machine, or the terminal switched tab, while herdr was asked.
+    private func focuser(
+        herdr: FakeHerdrSocket,
+        windowLater: String?,
+        readBackLater: String?
+    ) -> HerdrSessionPaneFocuser {
+        let bundleID = ghostty
+        let windowCalls = Box(0)
+        let readBackCalls = Box(0)
+        func answer(_ calls: Box<Int>, later: String?) -> String? {
+            let call = calls.get()
+            calls.set(call + 1)
+            return call == 0 ? "/dev/ttys007" : later
+        }
+        return HerdrSessionPaneFocuser(
+            windowTTY: { _ in answer(windowCalls, later: windowLater) },
+            openSocket: { _ in HerdrFocusSocket(path: herdr.socketPath, release: {}) },
+            focuser: client,
+            panes: client,
+            raiseTTY: { _, _ in .focused(bundleID: bundleID) },
+            focusedTTY: { _ in answer(readBackCalls, later: readBackLater) }
+        )
+    }
+
+    /// The lone federated client switched to another machine while the
+    /// forward opened and herdr was asked: herdr still reports the pane on
+    /// the machine asked for, on a terminal tty that did not change, but the
+    /// window no longer shows that machine.
+    func testAMachineSwitchWhileHerdrIsAskedIsUnverified() async throws {
+        let herdr = try herdr()
+        defer { herdr.stop() }
+        let session = localSession(socket: herdr.socketPath)
+
+        let outcome = await focuser(herdr: herdr, windowLater: nil, readBackLater: "/dev/ttys007")
+            .focusPane(of: session)
+        let shows = await focuser(herdr: herdr, windowLater: nil, readBackLater: "/dev/ttys007")
+            .focusedPaneShows(session, bundleID: ghostty)
+
+        XCTAssertEqual(outcome, .unverified(bundleID: ghostty))
+        XCTAssertFalse(shows)
+    }
+
+    /// The terminal switched tab while `pane.current` was pending: the
+    /// insertion check must not approve keys for the tab now in front.
+    func testATabSwitchDuringTheInsertionCheckDoesNotShowThePane() async throws {
+        let herdr = try herdr(focused: "w1:p2")
+        defer { herdr.stop() }
+
+        let shows = await focuser(herdr: herdr, windowLater: "/dev/ttys007", readBackLater: "/dev/ttys008")
+            .focusedPaneShows(localSession(socket: herdr.socketPath), bundleID: ghostty)
+
+        XCTAssertFalse(shows)
+    }
+
     func testAWindowTheTerminalDoesNotReadBackIsUnverified() async throws {
         let herdr = try herdr()
         defer { herdr.stop() }

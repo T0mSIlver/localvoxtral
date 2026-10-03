@@ -97,8 +97,9 @@ package final class HerdrSessionPaneFocuser: SessionPaneFocusing {
         }
         var paneFocused = await panes.focusedPane(socketPath: socket.path)?.paneID == target.paneID
         // The window again after herdr's awaits: the user may have switched
-        // the terminal to another tab, where keys would go instead.
-        if paneFocused { paneFocused = await focusedTTY(bundleID) == tty }
+        // the terminal to another tab, where keys would go instead, or the
+        // client to another machine on the same tty.
+        if paneFocused { paneFocused = await stillShows(target, on: tty, bundleID: bundleID) }
         Log.claudeContext.info(
             "go to session: herdr focus answered \(String(describing: focus), privacy: .public); verified=\(paneFocused, privacy: .public)"
         )
@@ -112,7 +113,16 @@ package final class HerdrSessionPaneFocuser: SessionPaneFocusing {
               let socket = await openSocket(target)
         else { return false }
         defer { socket.release() }
-        return await panes.focusedPane(socketPath: socket.path)?.paneID == target.paneID
+        guard await panes.focusedPane(socketPath: socket.path)?.paneID == target.paneID else { return false }
+        return await stillShows(target, on: tty, bundleID: bundleID)
+    }
+
+    /// Asked after herdr's awaits: the window that shows the target is still
+    /// `tty` (the client did not switch machine) and the terminal's front
+    /// tab is still that tty.
+    private func stillShows(_ target: HerdrPaneFocusTarget, on tty: String, bundleID: String) async -> Bool {
+        guard await windowTTY(target) == tty else { return false }
+        return await focusedTTY(bundleID) == tty
     }
 }
 
