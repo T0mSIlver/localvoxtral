@@ -51,7 +51,9 @@ package struct QuickCaptureCodeCheck: Codable, Equatable, Sendable {
 /// - `commentedOn` (#965): the issue a comment was posted on instead of
 ///   filing; `filedURL` is then the comment's URL.
 /// - `filingClaim` (#1288): the running copy whose File or Comment set
-///   `state` to filing.
+///   `state` to filing; its `launch` since #1507.
+/// - `runOwner` (#1507): the running copy whose run set it routing,
+///   drafting or checking.
 /// - `repositorySuggestion` (#930): a GitHub repository offered to add as a
 ///   project, while the capture waits unplaced.
 /// A draft is final once `state == .ready`, `title` is set and
@@ -145,11 +147,30 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
     package struct FilingClaim: Codable, Equatable, Sendable {
         package let id: UUID
         package let processID: Int32
+        /// Nil in claims written before #1507.
+        package let launch: UUID?
 
-        package init(id: UUID = UUID(), processID: Int32) {
+        package init(id: UUID = UUID(), processID: Int32, launch: UUID? = nil) {
             self.id = id
             self.processID = processID
+            self.launch = launch
         }
+
+        package var copy: QuickCaptureRunningCopy {
+            QuickCaptureRunningCopy(processID: processID, launch: launch)
+        }
+    }
+
+    /// Which running copy routes, drafts or checks it (#1507). A copy that
+    /// loads a run another live copy owns leaves it running. Nil in files
+    /// written before, read as left by a quit. Read only while it runs: a
+    /// finished run leaves it as it was.
+    package var runOwner: QuickCaptureRunningCopy?
+
+    /// Routing, drafting, or an issue's check against the code: a run some
+    /// copy's task answers for.
+    package var runs: Bool {
+        state == .routing || state == .drafting || codeCheck?.state == .checking
     }
 
     /// A later capture joined to this one (#965): it began "also", or the
@@ -684,6 +705,19 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
     }
 }
 
+/// A running copy of the app (#1507): its process, and which launch of it,
+/// since a later launch can get a process ID a dead copy had.
+package struct QuickCaptureRunningCopy: Codable, Equatable, Sendable {
+    package let processID: Int32
+    /// Nil only for a filing claim written before #1507.
+    package let launch: UUID?
+
+    package init(processID: Int32, launch: UUID?) {
+        self.processID = processID
+        self.launch = launch
+    }
+}
+
 package enum QuickCaptureInboxFile {
     /// An unreadable or future file is refused and left in place (#989):
     /// the model then refuses every write, since the next one would replace
@@ -706,20 +740,26 @@ package enum QuickCaptureInboxFile {
     /// A capture interrupted mid-route or mid-draft by a quit waits for the
     /// user with its words.
     ///
-    /// A capture filing for another running copy (`filingElsewhere`) stays
-    /// filing: that copy's `gh` may still answer (#1288).
+    /// A run or a filing a live copy owns (`isLive`) goes on: that copy's
+    /// task or `gh` may still answer (#1288, #1507). The model writes what
+    /// this returns as soon as it loads, so a copy that still holds the run
+    /// cannot write it back (#1507).
     package static func resumingInterrupted(
         _ inbox: QuickCaptureInbox,
-        filingElsewhere: (QuickCaptureItem.FilingClaim) -> Bool = { _ in false }
+        isLive: (QuickCaptureRunningCopy) -> Bool = { _ in false }
     ) -> QuickCaptureInbox {
         var result = inbox
-        for index in result.items.indices where result.items[index].codeCheck?.state == .checking {
-            result.items[index].codeCheck?.state = .failed
-            result.items[index].note = "Interrupted before the check against the code."
-        }
-        for index in result.items.indices where [.routing, .drafting, .filing].contains(result.items[index].state) {
+        for index in result.items.indices {
             let item = result.items[index]
-            if item.state == .filing, let claim = item.filingClaim, filingElsewhere(claim) { continue }
+            let runAbandoned = item.runs && !(item.runOwner.map(isLive) ?? false)
+            if runAbandoned, item.codeCheck?.state == .checking {
+                result.items[index].codeCheck?.state = .failed
+                result.items[index].note = "Interrupted before the check against the code."
+            }
+            let abandoned = item.state == .filing
+                ? !(item.filingClaim.map { isLive($0.copy) } ?? false)
+                : runAbandoned && (item.state == .routing || item.state == .drafting)
+            guard abandoned else { continue }
             result.items[index].state = .ready
             if result.items[index].title.isEmpty,
                [nil, QuickCaptureInbox.waitingForHostNote].contains(result.items[index].note)
