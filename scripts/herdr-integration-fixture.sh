@@ -407,6 +407,18 @@ append_fixture_ssh_config() {
 
 # The `ssh` herdr finds first on its PATH: the system client on the run's
 # config.
+# Destination mode reads the account's aliases through an `Include` of its
+# config. `Match all` puts the include back at top level. ssh unescapes the
+# path twice, splitting the line and then globbing it, and silently skips a
+# path it got wrong, so a HOME with a space, quote or backslash would lose
+# every alias. The path is glob-escaped, then double-quoted for the split.
+include_account_ssh_config() {
+  local path
+  path="$(printf '%s\n' "$SSH_CONFIG_FILE" \
+    | sed -e 's/[\\*?[]/\\&/g' -e 's/[\\"]/\\&/g')"
+  printf 'Match all\nInclude "%s"\n' "$path" | append_fixture_ssh_config "$1"
+}
+
 write_fixture_ssh_wrapper() {
   local dir="$1" bin
   bin="$(fixture_bin_dir "$dir")"
@@ -1024,9 +1036,8 @@ command_up() {
   fi
   write_canonicalization_aliases "$dir" "$alias_used" "$provisioned_ssh"
   if (( ! provisioned_ssh )) && [[ -f "$SSH_CONFIG_FILE" ]]; then
-    # After the fixture's own blocks, so they win; `Match all` puts the
-    # include back at top level.
-    printf 'Match all\nInclude %s\n' "$SSH_CONFIG_FILE" | append_fixture_ssh_config "$dir"
+    # After the fixture's own blocks, so they win.
+    include_account_ssh_config "$dir"
   fi
   touch "$(fixture_ssh_config "$dir")"
   chmod 600 "$(fixture_ssh_config "$dir")"

@@ -160,6 +160,29 @@ release_account_files 2>/dev/null
 [[ ! -e "$HOME/.ssh" ]] || fail "a current run created ~/.ssh for an account that had none"
 pass "a current run keeps its aliases in its own config and never opens ~/.ssh"
 
+# Destination mode reads the account's aliases through an Include of its
+# config. ssh skips an unquoted path with a space without a word, and fails on
+# one with quotes; glob characters and a backslash need escaping too.
+for owner in 'Build Owner' "Build \"Owner\" it's a\\b [1]*?"; do
+  export HOME="$TMP_DIR/$owner"
+  rm -rf "$HOME"
+  mkdir -p "$HOME/.ssh"
+  printf 'Host lvx-dest\n  HostName dest.example\n  Port 2222\n' > "$HOME/.ssh/config"
+  # shellcheck source=/dev/null
+  LOCALVOXTRAL_HERDR_FIXTURE_SOURCE_ONLY=1 source "$FIXTURE"
+  RUN_DIR="$TMP_DIR/lvx-herdr-fixture-dest"
+  rm -rf "$RUN_DIR"
+  mkdir -p "$RUN_DIR"
+  include_account_ssh_config "$RUN_DIR"
+  ssh_out="$(ssh -F "$RUN_DIR/ssh_config" -G -- lvx-dest 2>&1)" || :
+  resolved="$(awk '$1 == "hostname" || $1 == "port" { printf "%s=%s ", $1, $2 }' <<<"$ssh_out")"
+  [[ "$resolved" == "hostname=dest.example port=2222 " ]] \
+    || fail "the run's config lost the account's alias under HOME='$HOME' (got '$resolved'):
+$(cat "$RUN_DIR/ssh_config")
+$(grep -v '^[a-z0-9]* ' <<<"$ssh_out")"
+done
+pass "destination mode reads the account's aliases under a HOME with spaces, quotes and glob characters"
+
 # --- 1. A killed pre-#1029 run is detected and restored by the next `up` ---
 
 setup_home
