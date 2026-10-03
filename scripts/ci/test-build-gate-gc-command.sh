@@ -92,6 +92,16 @@ mkdir -p "$WORK/other-project"
 echo keep >"$WORK/other-project/file"
 age_tree "$WORK/other-project"
 
+# A work-dir name that is a link to a tree outside ~/work -> never followed:
+# the prune once emptied the target around its EvalRecordings (#1491).
+outside="$TMP_DIR/outside-project"
+mkdir -p "$outside/EvalRecordings"
+echo keep >"$outside/EvalRecordings/take.wav"
+echo keep >"$outside/notes.txt"
+mkdir -p "$outside/src"
+echo keep >"$outside/src/main.swift"
+ln -s "$outside" "$WORK/localvoxtral-linked-1"
+
 gc_output="$(run_gate 'gc')"
 
 [[ ! -e "$WORK/localvoxtral-stale-1" ]] \
@@ -109,6 +119,11 @@ gc_output="$(run_gate 'gc')"
   || fail "gc did not prune build state around EvalRecordings"
 [[ -f "$WORK/other-project/file" ]] \
   || fail "gc touched a non-localvoxtral dir"
+[[ -f "$outside/notes.txt" && -f "$outside/src/main.swift" \
+  && -f "$outside/EvalRecordings/take.wav" && -L "$WORK/localvoxtral-linked-1" ]] \
+  || fail "gc pruned through a symlinked work dir"
+grep -q 'localvoxtral-linked-1: a symlink' <<<"$gc_output" \
+  || fail "gc did not report the symlink it kept: $gc_output"
 grep -q 'deleted 1, pruned 1' <<<"$gc_output" \
   || fail "gc summary wrong: $gc_output"
 

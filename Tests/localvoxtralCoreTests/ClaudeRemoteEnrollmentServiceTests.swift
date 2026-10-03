@@ -1925,7 +1925,10 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
 
     // MARK: herdr agents-panel configuration
 
-    func testHerdrAgentsHeaderWithTrailingCommentIsRefusedWithoutEditingTheConfig() throws {
+    /// TOML names one table many ways; appending the snippet beside any of
+    /// them declares it twice and breaks the file (#1493). The remote script
+    /// and the local check share the rule, so both must refuse each spelling.
+    func testEveryTOMLSpellingOfTheAgentsTableIsRefusedWithoutEditingTheConfig() throws {
         let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
         let service = ClaudeRemoteEnrollmentService(runner: { invocation in
             calls.withLock { $0.append(invocation) }
@@ -1939,25 +1942,45 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let configURL = directory.appendingPathComponent("config.toml")
-        let original = "[ui.sidebar.agents] # keep my custom panel\n"
-        try Data(original.utf8).write(to: configURL)
         // The script checks for herdr before it reads the config; a stub that
         // fails if run proves the refusal comes first.
         let herdr = directory.appendingPathComponent("herdr")
         try Data("#!/bin/sh\nexit 99\n".utf8).write(to: herdr)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: herdr.path)
 
-        let result = try runShellScript(
-            invocation.standardInput,
-            environment: [
-                "HERDR_CONFIG_PATH": configURL.path,
-                "PATH": "\(directory.path):/usr/bin:/bin",
-            ]
-        )
+        let customized = [
+            "[ui.sidebar.agents] # keep my custom panel\n",
+            "[ui.sidebar.\"agents\"]\n\"rows\" = [[\"agent\"]]\n",
+            "[ 'ui' . sidebar . agents ]\r\nrows=[[\"agent\"]]\r\n",
+            "[ui]\nsidebar.agents.rows = [[\"agent\"]]\n",
+            "[ui.sidebar]\nagents = { rows = [[\"agent\"]] }\n",
+            "[ui]\nsidebar = { width = 30 }\n",
+            "ui.sidebar.agents.rows = [[\"agent\"]]\n",
+            "[ui.sidebar.agents.extra]\nshow = true\n",
+        ]
+        for original in customized {
+            try Data(original.utf8).write(to: configURL)
+            let result = try runShellScript(
+                invocation.standardInput,
+                environment: [
+                    "HERDR_CONFIG_PATH": configURL.path,
+                    "PATH": "\(directory.path):/usr/bin:/bin",
+                ]
+            )
 
-        XCTAssertEqual(result.status, 42, "the existing table must take the refusal path")
-        XCTAssertTrue(result.output.contains("LVX_HERDR_CUSTOMIZED"))
-        XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), original)
+            XCTAssertEqual(result.status, 42, "the existing table must take the refusal path: \(original)")
+            XCTAssertTrue(result.output.contains("LVX_HERDR_CUSTOMIZED"), original)
+            XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), original)
+            XCTAssertTrue(ClaudeRemoteEnrollmentService.localHerdrPanelConfigIsCustomized(original), original)
+        }
+
+        for unrelated in [
+            "[keys]\nprefix = \"ctrl-b\"\n",
+            "[ui.sidebar]\nwidth = 30\n",
+            "[theme]\naccent = \"#rows=1\" # agents = x\n",
+        ] {
+            XCTAssertFalse(ClaudeRemoteEnrollmentService.localHerdrPanelConfigIsCustomized(unrelated), unrelated)
+        }
     }
 
     /// A config whose last line has no newline gets the panel table on a line

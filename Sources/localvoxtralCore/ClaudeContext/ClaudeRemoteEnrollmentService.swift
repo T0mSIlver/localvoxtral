@@ -36,6 +36,17 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// fails open, which looks exactly like nothing happening.
     public static let portConfigKey = "port"
 
+    /// A herdr config line that already defines the agents panel, once cut
+    /// at `#` and stripped of whitespace and quotes: TOML lets
+    /// `[ui.sidebar."agents"]`, `"rows" = …`, a dotted
+    /// `sidebar.agents.rows = …` or an inline `agents = { rows = … }` all
+    /// name the table the snippet below declares, and a second declaration
+    /// makes the file invalid (#1493). Errs toward refusing. An ERE that
+    /// Swift's `Regex` also parses: the remote script greps with it, the
+    /// local check matches with it.
+    package static let herdrAgentsConfigPattern =
+        #"^(\[ui\.sidebar\.agents(]|\.)|ui=|(ui\.)?sidebar=|(ui\.)?(sidebar\.)?agents=|([A-Za-z0-9_-]+\.)*rows=)"#
+
     public static let herdrPanelConfigSnippet = """
         [ui.sidebar.agents]
         rows = [["state_icon", "workspace", "tab"], ["agent"], [{ token = "$lvmark", dim = true }]]
