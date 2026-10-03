@@ -66,6 +66,10 @@ package enum QuickCaptureChatRouting {
         return (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data()
     }
 
+    /// A pick with a missing or quoted confidence: the prompt's guess,
+    /// under the bars, so it can only be the router's suggestion.
+    package static let unstatedConfidence = 0.5
+
     package enum Failure: Error, Equatable, Sendable {
         case http(status: Int)
         case malformedResponse
@@ -87,7 +91,7 @@ package enum QuickCaptureChatRouting {
               let id = answer["project"] as? String
         else { throw Failure.malformedResponse }
         guard options.contains(where: { $0.id == id }) else { throw Failure.unknownOption }
-        let confidence = (answer["confidence"] as? NSNumber)?.doubleValue ?? 1
+        let confidence = (answer["confidence"] as? NSNumber)?.doubleValue ?? unstatedConfidence
         return [id: min(max(confidence, 0), 1)]
     }
 
