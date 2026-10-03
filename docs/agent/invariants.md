@@ -2821,4 +2821,6 @@ there is not.
   the capture is filed with that URL; GitHub answering without it, the
   capture can be filed again; anything else, or a claim from before the
   marker, and nothing is sent until the user picks Check GitHub Again or
-  File Anyway.
+  File Anyway. A `gh` that fails after it may have sent (a timeout, a kill, no URL,
+  any nonzero exit but 4, "not logged in") gets the same lookup in the
+  running copy (#1541): the capture stays claimed until GitHub answers.

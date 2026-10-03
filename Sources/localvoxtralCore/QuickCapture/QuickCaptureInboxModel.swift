@@ -161,16 +161,51 @@ package final class QuickCaptureInboxModel {
                   !sending.contains(claim.id), lookups[claim.id] == nil,
                   let repository = claim.repository ?? item.repository
             else { continue }
-            lookups[claim.id] = Task { @MainActor [weak self] in
-                await self?.reconcile(item.id, claim: claim, at: at, repository: repository)
-                self?.lookups[claim.id] = nil
-            }
+            lookUp(item.id, claim: claim, at: at, repository: repository)
         }
         let pending = Array(lookups.values)
         return Task { for task in pending { await task.value } }
     }
 
-    private func reconcile(_ id: UUID, claim: QuickCaptureItem.FilingClaim, at: Date, repository: String) async {
+    /// Starts the GitHub lookup of claim `claim`, which this copy holds.
+    @discardableResult
+    private func lookUp(
+        _ id: UUID, claim: QuickCaptureItem.FilingClaim, at: Date, repository: String,
+        notFoundNote: String = "The interrupted filing never reached GitHub.",
+        unknownNote: String = QuickCaptureInboxFile.unconfirmedNote
+    ) -> Task<Void, Never> {
+        let task = Task { @MainActor [weak self] in
+            await self?.reconcile(
+                id, claim: claim, at: at, repository: repository, notFoundNote: notFoundNote, unknownNote: unknownNote)
+            self?.lookups[claim.id] = nil
+        }
+        lookups[claim.id] = task
+        return task
+    }
+
+    /// A File or Comment whose `gh` failed after it may have sent (#1541):
+    /// the capture stays claimed until GitHub is asked, as after a relaunch.
+    private func lookUpUncertainFiling(
+        _ id: UUID, claim: QuickCaptureItem.FilingClaim, repository: String, failedNote: String
+    ) async {
+        guard let at = claim.at else { return }
+        Log.backends.notice("Quick capture: gh failed after it may have sent; looking on GitHub before sending again")
+        let lookup = lookUp(
+            id, claim: claim, at: at, repository: repository,
+            notFoundNote: failedNote, unknownNote: QuickCaptureInboxFile.uncertainNote)
+        mutate { inbox in
+            inbox.update(id) {
+                guard $0.state == .filing, $0.filingClaim?.id == claim.id else { return }
+                $0.note = QuickCaptureInboxFile.checkingGitHubNote
+            }
+        }
+        await lookup.value
+    }
+
+    private func reconcile(
+        _ id: UUID, claim: QuickCaptureItem.FilingClaim, at: Date, repository: String,
+        notFoundNote: String, unknownNote: String
+    ) async {
         let wait = at.addingTimeInterval(QuickCaptureFiling.settleSeconds).timeIntervalSince(now())
         if wait > 0 {
             Log.backends.notice("Quick capture: an interrupted filing may still reach GitHub, looking in \(Int(wait), privacy: .public) s")
@@ -193,11 +228,11 @@ package final class QuickCaptureInboxModel {
                     filed = item
                 case .notFound:
                     item.state = .ready
-                    item.note = "The interrupted filing never reached GitHub."
+                    item.note = notFoundNote
                 case .unknown:
                     item.state = .ready
                     item.unconfirmedFiling = claim
-                    item.note = QuickCaptureInboxFile.unconfirmedNote
+                    item.note = unknownNote
                 }
             }
         }
@@ -794,7 +829,12 @@ package final class QuickCaptureInboxModel {
         return Task { @MainActor [weak self] in
             guard let self else { return }
             let result = await self.github.createIssue(repository: repository, title: title, body: body)
-            defer { self.sending.remove(token.id) }
+            self.sending.remove(token.id)
+            if case .failure(let failure) = result, failure.mayHaveSent {
+                await self.lookUpUncertainFiling(
+                    id, claim: token, repository: repository, failedNote: "Filing failed. Check that gh is logged in.")
+                return
+            }
             let saveFailure = self.mutate { inbox in
                 inbox.update(id) { item in
                     guard item.state == .filing else { return }
@@ -835,7 +875,13 @@ package final class QuickCaptureInboxModel {
         return Task { @MainActor [weak self] in
             guard let self else { return }
             let result = await self.github.commentOnIssue(repository: repository, issue: issue, body: body)
-            defer { self.sending.remove(token.id) }
+            self.sending.remove(token.id)
+            if case .failure(let failure) = result, failure.mayHaveSent {
+                await self.lookUpUncertainFiling(
+                    id, claim: token, repository: repository,
+                    failedNote: "The comment failed. Check that gh is logged in.")
+                return
+            }
             let saveFailure = self.mutate { inbox in
                 inbox.update(id) { item in
                     guard item.state == .filing else { return }

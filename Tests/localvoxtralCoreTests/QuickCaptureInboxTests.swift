@@ -348,6 +348,59 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(github.comments.withLock { $0.count }, 1)
     }
 
+    /// `gh issue create` timed out after GitHub created the issue (#1541):
+    /// the capture is not fileable again until GitHub is asked, and ends
+    /// filed with the issue GitHub has.
+    func testAFilingWhoseGhTimedOutAfterCreatingTheIssueIsNotSentAgain() async throws {
+        let model = model(answer: ["reach": 0.9])
+        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        github.createResult = .failure(.failed(exitCode: -1))
+        github.createdURL = "https://github.com/o/reach/issues/9"
+
+        await model.file(id)?.value
+        XCTAssertNil(model.file(id))
+
+        XCTAssertEqual(github.created.withLock { $0.count }, 1)
+        XCTAssertEqual(github.lookups.withLock { $0.count }, 1)
+        XCTAssertEqual(model.items.first?.state, .filed)
+        XCTAssertEqual(model.items.first?.filedURL, "https://github.com/o/reach/issues/9")
+    }
+
+    /// The same for Comment on #N, and a lookup GitHub cannot answer waits
+    /// for the user instead of offering Comment again.
+    func testACommentWhoseGhTimedOutIsLookedUpBeforeItCanBeSentAgain() async throws {
+        let item = try seedInterruptedFiling(commentOn: 7)
+        var ready = item
+        ready.state = .ready
+        ready.filingClaim = nil
+        try QuickCaptureInboxFile.save(QuickCaptureInbox(items: [ready]), to: fileURL)
+        let model = model(answer: ["reach": 0.9])
+        github.commentResult = .failure(.failed(exitCode: -1))
+        github.lookupResult = .unknown
+
+        await model.comment(item.id)?.value
+
+        XCTAssertNil(model.comment(item.id))
+        XCTAssertEqual(github.comments.withLock { $0.count }, 1)
+        XCTAssertEqual(model.items.first?.unconfirmedFiling?.commentOn, 7)
+        XCTAssertEqual(model.items.first?.note, QuickCaptureInboxFile.uncertainNote)
+    }
+
+    /// gh missing or not logged in refuses before sending: the capture is
+    /// ready again at once, with nothing looked up.
+    func testAFilingGhRefusedBeforeSendingIsReadyAtOnce() async throws {
+        let model = model(answer: ["reach": 0.9])
+        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        for refusal in [QuickCaptureFiling.Failure.ghNotFound, .failed(exitCode: 4)] {
+            github.createResult = .failure(refusal)
+            await model.file(id)?.value
+            XCTAssertEqual(model.items.first?.state, .ready)
+        }
+        XCTAssertTrue(github.lookups.withLock { $0.isEmpty })
+    }
+
     func testALookupTrustsOnlyOneURLOfTheExpectedShape() {
         func lookup(_ output: String, issue: Int? = nil) -> QuickCaptureFiling.Lookup {
             QuickCaptureFiling.lookup(inOutput: Data(output.utf8), repository: "o/reach", issue: issue)
