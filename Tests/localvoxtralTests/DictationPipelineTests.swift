@@ -1468,6 +1468,7 @@ final class DictationPipelineTests: XCTestCase {
     /// longer shows the picked session, so the words stay in History.
     func testATabSwitchInTheSameTerminalAfterThePickKeepsTheWordsInHistory() async throws {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
         let waiting = installWaitingSessions(pipeline, ["pay": "/r/payments"])
         let terminalPID: pid_t = 5151
         pipeline.viewModel.dependencies.bundleIdentifier = {
@@ -1495,6 +1496,7 @@ final class DictationPipelineTests: XCTestCase {
     func testATabSwitchWhileThePolishRunsKeepsTheWordsInHistory() async throws {
         let polish = FakePolishingService { "<\($0.inputText)>" }
         let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish, earlyPolish: false)
+        pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
         let waiting = installWaitingSessions(pipeline, ["pay": "/r/payments"])
         let terminalPID: pid_t = 5151
         pipeline.viewModel.dependencies.bundleIdentifier = {
@@ -1532,6 +1534,7 @@ final class DictationPipelineTests: XCTestCase {
     /// popover says why.
     func testAPickedSessionWhoseAppLeftTheFrontKeepsTheWordsInHistory() async throws {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
         _ = installWaitingSessions(pipeline, ["pay": "/r/payments"])
         let otherAppPID: pid_t = 6262
         pipeline.viewModel.dependencies.bundleIdentifier = {
@@ -1552,6 +1555,64 @@ final class DictationPipelineTests: XCTestCase {
         let record = try XCTUnwrap(pipeline.records.all.first)
         XCTAssertFalse(record.commitSucceeded)
         XCTAssertEqual(record.rawText, Self.phrase)
+    }
+
+    /// With History off, the words the picked destination did not get go
+    /// on the clipboard: the next dictation would replace the only copy
+    /// (#1546).
+    func testAPickedSessionWhoseAppLeftTheFrontWithHistoryOffCopiesTheWords() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.settings.dictationHistoryRetention = .off
+        let copied = pipeline.viewModel.recordPasteboardWrites()
+        _ = installWaitingSessions(pipeline, ["pay": "/r/payments"])
+        let otherAppPID: pid_t = 6262
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == otherAppPID ? "com.apple.Safari" : TerminalScreenAllowlist.ghosttyBundleID
+        }
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.session.moveDestination(forward: false)
+        await pipeline.viewModel.session.destinationFocusTask?.value
+        pipeline.overlay.commitTargetAppPID = otherAppPID
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline, finalStatus: DictationViewModel.StatusStrings.overlayCopiedToClipboard)
+
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing reaches the app that took the focus")
+        XCTAssertEqual(copied.values, [Self.phrase])
+    }
+
+    /// The tab switch while the polish runs, with History off: the words go
+    /// on the clipboard (#1546).
+    func testATabSwitchWhileThePolishRunsWithHistoryOffCopiesTheWords() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish, earlyPolish: false)
+        pipeline.viewModel.settings.dictationHistoryRetention = .off
+        let copied = pipeline.viewModel.recordPasteboardWrites()
+        let waiting = installWaitingSessions(pipeline, ["pay": "/r/payments"])
+        let terminalPID: pid_t = 5151
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == terminalPID ? TerminalScreenAllowlist.ghosttyBundleID : nil
+        }
+        await polish.holdNextRequest()
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.session.moveDestination(forward: false)
+        await pipeline.viewModel.session.destinationFocusTask?.value
+        pipeline.overlay.commitTargetAppPID = terminalPID
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
+        let polishing = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(polishing, "the polish never started")
+
+        waiting.focuser.paneStillShowsSession = false
+        await polish.releaseHeldRequest()
+        let recorded = await pipeline.records.waitForCount(1)
+        XCTAssertTrue(recorded)
+
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0)
+        XCTAssertEqual(copied.values, ["<\(Self.phrase)>"], "the polished text, as it would have been inserted")
+        XCTAssertEqual(pipeline.viewModel.statusText, DictationViewModel.StatusStrings.overlayCopiedToClipboard)
     }
 
     /// A pane the terminal did not confirm never gets the words: the overlay
@@ -1616,6 +1677,7 @@ final class DictationPipelineTests: XCTestCase {
     /// window will be in front when the words go in: they stay in History.
     func testAStopWhileAPaneIsComingForwardKeepsTheWordsInHistory() async throws {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
         _ = installWaitingSessions(pipeline, ["pay": "/r/payments"])
         await startAndSpeak(pipeline)
         sendPartials(pipeline)
@@ -1670,6 +1732,7 @@ final class DictationPipelineTests: XCTestCase {
     /// commit target; here the pane's terminal is, so they stay in History.
     func testAnUnconfirmedPaneInFrontAtStopKeepsTheWordsInHistory() async throws {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
         _ = installWaitingSessions(
             pipeline, ["pay": "/r/payments"],
             outcome: .unverified(bundleID: TerminalScreenAllowlist.ghosttyBundleID)
@@ -1781,6 +1844,7 @@ final class DictationPipelineTests: XCTestCase {
     /// the words in History, as after a Tab.
     func testAStopWhileAClickedPaneIsComingForwardKeepsTheWordsInHistory() async throws {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
         _ = installWaitingSessions(pipeline, ["pay": "/r/payments"])
         await startAndSpeak(pipeline)
         sendPartials(pipeline)

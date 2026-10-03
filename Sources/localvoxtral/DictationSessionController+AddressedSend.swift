@@ -86,7 +86,7 @@ extension DictationSessionController {
                     overlayCommitOutcome: nil,
                     shouldCommitOverlay: true
                 )
-                self.statusText = GoToSessionStatus.ambiguous
+                self.statusText = self.keepUntypedText(addressed.text, status: GoToSessionStatus.ambiguous)
                 return
             case .resolved(let session):
                 Log.dictation.notice("send to session: name resolved; the phrase is cut before commit")
@@ -141,6 +141,8 @@ extension DictationSessionController {
         var status = addressed.status
         if status == AddressedSendStatus.notSent {
             status = keepUndeliveredAgentText(transcript.currentDictationEventText)
+        } else if status == AddressedSendStatus.unsupported {
+            status = keepUntypedText(transcript.currentDictationEventText, status: AddressedSendStatus.unsupported)
         }
         completeStoppedSessionCleanup(
             sessionMode: sessionMode,

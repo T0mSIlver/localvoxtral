@@ -121,6 +121,27 @@ final class AddressedSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.viewModel.statusText, DictationSessionController.GoToSessionStatus.ambiguous)
     }
 
+    /// With History off the next dictation would replace the only copy, so
+    /// the words before the phrase go on the clipboard (#1546).
+    func testAnAmbiguousNameWithHistoryOffCopiesTheText() async {
+        let harness = makeHarness(
+            text: "fix it, send that to localvoxtral",
+            sessions: [
+                session("a", cwd: "/r/localvoxtral", tty: "/dev/ttys001"),
+                session("b", cwd: "/r/localvoxtral", tty: "/dev/ttys002"),
+            ]
+        )
+        harness.viewModel.settings.dictationHistoryRetention = .off
+        harness.viewModel.settings.autoCopyEnabled = false
+        let copied = harness.viewModel.recordPasteboardWrites()
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.inserted.value.count, 0)
+        XCTAssertEqual(copied.values, ["fix it"])
+        XCTAssertEqual(harness.viewModel.statusText, DictationViewModel.StatusStrings.overlayCopiedToClipboard)
+    }
+
     /// The owner's ruling: no key without the pane's own evidence.
     func testAPaneThatDoesNotReadBackAsTheSessionGetsNoKey() async {
         for outcome in [
@@ -326,6 +347,22 @@ final class AddressedSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.returns.value, [])
         XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false])
         XCTAssertEqual(harness.viewModel.statusText, DictationSessionController.AddressedSendStatus.unsupported)
+    }
+
+    /// The same with History off: the text goes on the clipboard (#1546).
+    func testASessionWithNoRouteWithHistoryOffCopiesTheText() async {
+        var desktop = session("pay", cwd: "/r/payments")
+        desktop.process?.desktopSessionID = "local_x"
+        let harness = makeHarness(text: "Run the tests, send that to payments.", sessions: [desktop])
+        harness.viewModel.settings.dictationHistoryRetention = .off
+        harness.viewModel.settings.autoCopyEnabled = false
+        let copied = harness.viewModel.recordPasteboardWrites()
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.inserted.value.count, 0)
+        XCTAssertEqual(copied.values, ["Run the tests"])
+        XCTAssertEqual(harness.viewModel.statusText, DictationViewModel.StatusStrings.overlayCopiedToClipboard)
     }
 
     /// "send it" in the text is text: the addressed send is the only submit,
