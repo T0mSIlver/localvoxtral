@@ -244,6 +244,11 @@ final class BackendManager: ManagedBackendManaging {
                 // closure, so a cancel that landed earlier is only visible here.
                 guard !Task.isCancelled else {
                     continuation.resume(throwing: CancellationError())
+                    // A superseded caller can arrive cancelled with the task
+                    // it just created; with nobody else waiting, stop it.
+                    if ensureWaiters[task]?.isEmpty ?? true {
+                        task.cancel()
+                    }
                     return
                 }
                 ensureWaiters[task, default: [:]][waiterID] = continuation
