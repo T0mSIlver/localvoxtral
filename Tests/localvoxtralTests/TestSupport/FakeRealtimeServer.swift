@@ -42,6 +42,7 @@ final class FakeRealtimeServer: @unchecked Sendable {
         var holdsConnections = false
         var heldConnections: [NWConnection] = []
         var heldWaiters: [BoundedWait] = []
+        var withholdsSessionCreated = false
     }
 
     private let listener: NWListener
@@ -143,6 +144,18 @@ final class FakeRealtimeServer: @unchecked Sendable {
         held.forEach { accept($0) }
     }
 
+    /// From now on a new connection is upgraded but never sent
+    /// `session.created`, as by a server the client has to reach through its
+    /// compatibility fallback; false greets them again.
+    func setWithholdsSessionCreated(_ withholds: Bool) {
+        state.withLock { $0.withholdsSessionCreated = withholds }
+    }
+
+    /// Closes the connected client's socket from the server's side.
+    func closeConnection() {
+        state.withLock { $0.connection }?.cancel()
+    }
+
     /// Every frame received so far.
     var frames: [Frame] { state.withLock { $0.frames } }
 
@@ -222,7 +235,9 @@ final class FakeRealtimeServer: @unchecked Sendable {
             guard let self, let connection else { return }
             switch connectionState {
             case .ready:
-                self.send(["type": "session.created"], on: connection)
+                if !self.state.withLock({ $0.withholdsSessionCreated }) {
+                    self.send(["type": "session.created"], on: connection)
+                }
             case .failed, .cancelled:
                 self.markClosed(connection)
             default:

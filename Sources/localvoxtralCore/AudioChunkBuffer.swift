@@ -12,7 +12,7 @@ package final class AudioChunkBuffer: Sendable {
     /// transcribing is the speech closest to now. Sized above the worst case
     /// a `RealtimeReconnectPolicy` run can take, so a reconnect that lands
     /// within its retry cap replays the whole gap.
-    package static let maxRetainedSeconds = 20
+    package static let maxRetainedSeconds = 30
 
     package static let defaultMaxRetainedBytes = bytesPerSecond * maxRetainedSeconds
 
