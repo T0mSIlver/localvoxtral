@@ -73,17 +73,12 @@ final class DictationHistoryRetentionWiringTests: XCTestCase {
         XCTAssertEqual(entries.map(\.rawText), ["kept"])
     }
 
-    /// Don't keep deletes the History snapshots too, and takes none: a copy
-    /// would keep what the user asked not to keep (#1574).
-    func testDontKeepLeavesNoSnapshot() async throws {
-        let settings = makeSettings(outputMode: .overlayBuffer)
-        let (viewModel, _) = try makeViewModel(settings: settings)
+    /// A store holding one dictation and a daily snapshot of it.
+    private func storeWithASnapshot(now: Date) async throws -> DictationSessionStore {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("lv-history-\(UUID().uuidString)", isDirectory: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-        let now = Date(timeIntervalSince1970: 1_800_000_000)
         let store = try DictationSessionStore.open(directory: directory, now: { now }).get()
-        viewModel.sessionStore = store
         let started = now.addingTimeInterval(-60)
         await store.save(DictationSessionRecord(
             startedAt: started, finishedAt: started.addingTimeInterval(5), rawText: "private",
@@ -92,14 +87,43 @@ final class DictationHistoryRetentionWiringTests: XCTestCase {
         let backups = try XCTUnwrap(store.backups)
         backups.snapshot(of: try XCTUnwrap(store.storeURL), reason: .daily)
         XCTAssertTrue(backups.snapshots().contains { $0.dictations == 1 })
+        return store
+    }
+
+    /// Don't keep, and every launch under it, keeps the History snapshots
+    /// unless the user ticked "Also delete the backups" (#1574).
+    func testDontKeepKeepsTheSnapshots() async throws {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        let (viewModel, _) = try makeViewModel(settings: settings)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let store = try await storeWithASnapshot(now: now)
+        viewModel.sessionStore = store
 
         settings.dictationHistoryRetention = .off
         viewModel.applyDictationHistoryRetention(now: now)
         await store.pendingWrites?.value
 
-        XCTAssertEqual(backups.snapshots(), [])
         let count = await store.count()
         XCTAssertEqual(count, 0)
+        XCTAssertTrue(try XCTUnwrap(store.backups).snapshots().contains { $0.dictations == 1 })
+    }
+
+    /// With the box ticked, Don't keep deletes the History snapshots too, and
+    /// takes none.
+    func testDontKeepWithTheBackupsLeavesNoSnapshot() async throws {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        let (viewModel, _) = try makeViewModel(settings: settings)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let store = try await storeWithASnapshot(now: now)
+        viewModel.sessionStore = store
+
+        settings.dictationHistoryRetention = .off
+        viewModel.applyDictationHistoryRetention(now: now, removingBackups: true)
+        await store.pendingWrites?.value
+
+        let count = await store.count()
+        XCTAssertEqual(count, 0)
+        XCTAssertEqual(try XCTUnwrap(store.backups).snapshots(), [])
     }
 
     /// The same for the audio switch: a copy that launched with it off

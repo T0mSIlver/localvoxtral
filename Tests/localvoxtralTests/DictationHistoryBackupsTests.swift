@@ -234,30 +234,58 @@ final class DictationHistoryBackupsTests: XCTestCase {
         return (store, quarantine.folder(for: "dictation-audio"), records)
     }
 
-    /// Delete All leaves no copy of what it deleted: no snapshot, nothing in
-    /// quarantine.
-    func testDeleteAllLeavesNoSnapshotOrQuarantinedFile() async throws {
+    /// Delete All keeps the snapshots and the quarantine unless the user
+    /// ticked "Also delete the backups".
+    func testDeleteAllKeepsTheBackups() async throws {
         let directory = makeDirectory()
         let (store, audioQuarantine, recordQuarantine) = try await populatedRecoveryCopies(in: directory)
 
         await store.deleteAll().value
+
+        let count = await store.count()
+        XCTAssertEqual(count, 0)
+        XCTAssertTrue(backups(in: directory).snapshots().contains { $0.dictations == 1 })
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audioQuarantine.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recordQuarantine.path))
+    }
+
+    /// With the box ticked, Delete All leaves no copy of what it deleted: no
+    /// snapshot, nothing in quarantine.
+    func testDeleteAllWithTheBackupsLeavesNoCopy() async throws {
+        let directory = makeDirectory()
+        let (store, audioQuarantine, recordQuarantine) = try await populatedRecoveryCopies(in: directory)
+
+        await store.deleteAll(removingBackups: true).value
 
         XCTAssertEqual(backups(in: directory).snapshots(), [])
         XCTAssertFalse(FileManager.default.fileExists(atPath: audioQuarantine.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: recordQuarantine.path))
     }
 
-    /// Turning a storage switch off empties the quarantine of that kind only,
-    /// and keeps the History snapshots.
-    func testTurningAStorageSwitchOffEmptiesItsQuarantine() async throws {
+    /// Turning a storage switch off keeps its quarantine unless the user
+    /// ticked the box. The launch retry (#1573) takes this path too.
+    func testTurningAStorageSwitchOffKeepsItsQuarantine() async throws {
         let directory = makeDirectory()
         let (store, audioQuarantine, recordQuarantine) = try await populatedRecoveryCopies(in: directory)
 
         await store.deleteAllAudio().value
+        await store.deleteAllDiagnosticRecords().value
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audioQuarantine.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recordQuarantine.path))
+    }
+
+    /// With the box ticked, turning a storage switch off empties the
+    /// quarantine of that kind only, and keeps the History snapshots.
+    func testTurningAStorageSwitchOffWithTheBackupsEmptiesItsQuarantine() async throws {
+        let directory = makeDirectory()
+        let (store, audioQuarantine, recordQuarantine) = try await populatedRecoveryCopies(in: directory)
+
+        await store.deleteAllAudio(removingBackups: true).value
         XCTAssertFalse(FileManager.default.fileExists(atPath: audioQuarantine.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: recordQuarantine.path))
 
-        await store.deleteAllDiagnosticRecords().value
+        await store.deleteAllDiagnosticRecords(removingBackups: true).value
         XCTAssertFalse(FileManager.default.fileExists(atPath: recordQuarantine.path))
         XCTAssertTrue(backups(in: directory).snapshots().contains { $0.dictations == 1 })
     }
