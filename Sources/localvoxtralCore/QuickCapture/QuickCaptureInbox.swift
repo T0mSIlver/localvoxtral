@@ -522,12 +522,14 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
     }
 
     /// Moves capture `followUpID` into `target` as its follow-up (#965).
-    /// False, with nothing changed, when either is gone.
+    /// False, with nothing changed, when either is gone or the target is
+    /// filing or filed: another running copy may have filed it since this
+    /// one offered it to the router.
     @discardableResult
     package mutating func join(_ followUpID: UUID, into target: UUID) -> Bool {
         guard followUpID != target,
               let capture = items.first(where: { $0.id == followUpID }),
-              items.contains(where: { $0.id == target })
+              items.contains(where: { $0.id == target && ($0.state == .ready || $0.state == .drafting) })
         else { return false }
         items.removeAll { $0.id == followUpID }
         update(target) { item in

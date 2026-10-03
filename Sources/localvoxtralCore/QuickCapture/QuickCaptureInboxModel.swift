@@ -268,22 +268,30 @@ package final class QuickCaptureInboxModel {
     /// Either the polished or the raw words beginning "also" make a
     /// follow-up, so a polish that rewords the start cannot undo one.
     private func place(_ item: QuickCaptureItem, rawText: String) -> Placement {
-        let open = inbox.items
-            .filter { $0.id != item.id && $0.acceptsFollowUp(at: item.capturedAt) }
-            .filter { item.group == nil || $0.group == item.group }
-            .sorted { $0.lastCapturedAt > $1.lastCapturedAt }
         if QuickCaptureInbox.saysFollowUp(item.text) || QuickCaptureInbox.saysFollowUp(rawText),
-           let latest = open.first
+           let latest = openCaptures(for: item).first
         {
-            Log.backends.notice("Quick capture: saved, a follow-up by its first words")
-            let task = join(item.id, into: latest.id)
-            return Placement(placed: Task {}, done: Task { await task?.value })
+            if let task = join(item.id, into: latest.id) {
+                Log.backends.notice("Quick capture: saved, a follow-up by its first words")
+                return Placement(placed: Task {}, done: Task { await task.value })
+            }
+            Log.backends.notice("Quick capture: the capture it follows was filed meanwhile, routing")
         }
         Log.backends.notice("Quick capture: saved, routing")
+        // Read again: a refused join took in another copy's write.
+        let open = openCaptures(for: item)
         let openCaptures = open.prefix(QuickCaptureRouting.maxOpenCaptures).map {
             QuickCaptureOpenCapture(id: $0.id, projectKey: $0.projectKey, summary: $0.summary)
         }
         return route(item, openCaptures: Array(openCaptures))
+    }
+
+    /// The captures `item` may follow up, latest first.
+    private func openCaptures(for item: QuickCaptureItem) -> [QuickCaptureItem] {
+        inbox.items
+            .filter { $0.id != item.id && $0.acceptsFollowUp(at: item.capturedAt) }
+            .filter { item.group == nil || $0.group == item.group }
+            .sorted { $0.lastCapturedAt > $1.lastCapturedAt }
     }
 
     /// Routes `item` and drafts it where it lands, or joins it to the open
@@ -334,13 +342,19 @@ package final class QuickCaptureInboxModel {
     /// Joins capture `id` to `target` as its follow-up, and redrafts the
     /// target in its project: from the draft it has, which may hold the
     /// user's edits, else from all its words. Nil, with nothing changed, only
-    /// when the target was filed or discarded meanwhile.
+    /// when the target was filed or discarded meanwhile, also by another
+    /// running copy.
     private func join(_ id: UUID, into target: UUID) -> Task<Void, Never>? {
         guard let before = inbox.items.first(where: { $0.id == target }),
               before.state == .ready || before.state == .drafting,
               let capture = inbox.items.first(where: { $0.id == id })
         else { return nil }
-        mutate { $0.join(id, into: target) }
+        var joined = false
+        mutate { joined = $0.join(id, into: target) }
+        guard joined else {
+            Log.backends.notice("Quick capture: not joined, another running copy filed or discarded that capture")
+            return nil
+        }
         Log.backends.notice("Quick capture: joined an open capture as its follow-up")
         onStatus?(QuickCaptureFollowUpStatus.joined)
         if let recordID = capture.historyRecordID {
@@ -619,11 +633,11 @@ package final class QuickCaptureInboxModel {
     /// The only path to `gh issue create`.
     @discardableResult
     ///
-    /// With `shown`, it files that draft only: unchanged since, also by
-    /// another running copy.
+    /// With `shown`, it files that draft only: unchanged since and bound
+    /// for the same repository, also by another running copy.
     package func file(_ id: UUID, shown: QuickCaptureDraftSnapshot? = nil) -> Task<Void, Never>? {
         let eligible: (QuickCaptureItem) -> Bool = { item in
-            item.canFile && shown.map { item.title == $0.title && item.body == $0.body } ?? true
+            item.canFile && shown.map(item.matches) ?? true
         }
         guard inbox.items.first(where: { $0.id == id }).map(eligible) == true,
               let item = claim(id, when: eligible), let repository = item.repository
@@ -745,7 +759,9 @@ package final class QuickCaptureInboxModel {
     package func reviewSnapshot(_ id: UUID) -> QuickCaptureDraftSnapshot? {
         guard let item = inbox.items.first(where: { $0.id == id }), item.isReadyDraft, let projectName = item.projectName
         else { return nil }
-        return QuickCaptureDraftSnapshot(id: id, projectName: projectName, title: item.title, body: item.body)
+        return QuickCaptureDraftSnapshot(
+            id: id, projectName: projectName, title: item.title, body: item.body, repository: item.repository
+        )
     }
 
     /// What the review's words did, as the popover's sentence. "file it"
@@ -766,8 +782,8 @@ package final class QuickCaptureInboxModel {
             Log.backends.notice("Quick capture review: dropped")
             return (QuickCaptureReviewStatus.dropped, nil)
         case .file:
-            guard item.title == shown.title, item.body == shown.body else {
-                Log.backends.notice("Quick capture review: the draft changed since it was shown; not filed")
+            guard item.matches(shown) else {
+                Log.backends.notice("Quick capture review: the draft changed or moved since it was shown; not filed")
                 return (QuickCaptureReviewStatus.changedSinceShown, nil)
             }
             guard item.canFile, let task = file(shown.id, shown: shown) else {

@@ -122,6 +122,39 @@ final class QuickCaptureFollowUpTests: XCTestCase {
         XCTAssertEqual(runner.runs.withLock { $0 }, 0)
     }
 
+    /// Another running copy filed the capture after this copy last read the
+    /// file: neither "also" nor the router's pick joins the filed one, whose
+    /// words already went to GitHub. The follow-up stays a capture of its own.
+    func testAFollowUpDoesNotJoinACaptureAnotherCopyFiled() async throws {
+        let cases: [(text: String, answer: [String: Double])] = [
+            ("Also, the settings window", ["reach": 0.95]),
+            ("It should follow the system setting", ["capture-1": 0.95, "reach": 0.05]),
+        ]
+        for (text, answer) in cases {
+            try? FileManager.default.removeItem(at: fileURL)
+            github.created.withLock { $0 = [] }
+            let runner = FakeQuickCaptureDraftRunner()
+            let filer = model(classifier: ScriptedQuickCaptureClassifier([["reach": 0.95]]), runner: runner)
+            await filer.capture(text: "Add a dark mode", historyRecordID: nil).value
+            let filed = try XCTUnwrap(filer.items.first?.id)
+            let other = model(classifier: ScriptedQuickCaptureClassifier([answer]), runner: runner)
+            XCTAssertEqual(other.items.first?.state, .ready, text)
+            await filer.file(filed)?.value
+            XCTAssertEqual(filer.items.first?.state, .filed, text)
+
+            clock += 60
+            await other.capture(text: text, historyRecordID: nil).value
+
+            let saved = try XCTUnwrap(QuickCaptureInboxFile.load(from: fileURL).value, text)
+            XCTAssertEqual(saved.items.count, 2, text)
+            XCTAssertNil(saved.items.first { $0.id == filed }?.followUps, text)
+            let own = try XCTUnwrap(saved.items.first { $0.id != filed }, text)
+            XCTAssertEqual(own.text, text)
+            XCTAssertNotEqual(own.state, .filed, text)
+            XCTAssertEqual(github.created.withLock { $0.count }, 1, text)
+        }
+    }
+
     func testOnlyUnfiledCapturesFromTheLastHourAreOffered() async throws {
         let classifier = ScriptedQuickCaptureClassifier([["reach": 0.95]])
         let model = model(classifier: classifier, runner: FakeQuickCaptureDraftRunner())

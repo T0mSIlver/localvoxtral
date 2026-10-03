@@ -78,12 +78,15 @@ package struct QuickCaptureDraftSnapshot: Equatable, Sendable {
     package var projectName: String
     package var title: String
     package var body: String
+    /// Where "file it" files: the capture's repository when it was shown.
+    package var repository: String?
 
-    package init(id: UUID, projectName: String, title: String, body: String) {
+    package init(id: UUID, projectName: String, title: String, body: String, repository: String? = nil) {
         self.id = id
         self.projectName = projectName
         self.title = title
         self.body = body
+        self.repository = repository
     }
 
     /// The overlay's lines of the body: its prose without Markdown headings
@@ -166,5 +169,13 @@ package enum QuickCaptureDraftCueText {
     package static func sentence(_ entry: QuickCaptureDraftCue.Entry) -> String {
         let name = AgentAttentionText.shortened(entry.projectName, to: maxProjectNameLength)
         return "Draft ready: Inbox for \(name)"
+    }
+}
+
+extension QuickCaptureItem {
+    /// Still the draft `shown` showed: the same title and body, bound for the
+    /// same repository (a move keeps the text but changes where it files).
+    package func matches(_ shown: QuickCaptureDraftSnapshot) -> Bool {
+        title == shown.title && body == shown.body && repository == shown.repository
     }
 }
