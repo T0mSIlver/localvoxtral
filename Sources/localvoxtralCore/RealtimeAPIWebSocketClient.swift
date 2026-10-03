@@ -105,6 +105,11 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             s.base.socketState == .connected || (s.base.socketState == .connecting && s.isRolloverSocketOpening)
         }
     }
+    package var isSessionReady: Bool {
+        state.withLock { s in
+            s.base.socketState == .connected && (s.hasReceivedSessionCreated || s.hasBypassedSessionCreatedGate)
+        }
+    }
     package var connectionGeneration: RealtimeConnectionGeneration {
         state.withLock { $0.base.connectionGeneration }
     }

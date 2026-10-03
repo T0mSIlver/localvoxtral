@@ -3230,6 +3230,187 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertNil(pipeline.viewModel.lastError, file: file, line: line)
     }
 
+    // MARK: - Reconnect onto a session that is not ready yet
+
+    /// A reconnect counts once the new server session is ready, not on the
+    /// WebSocket upgrade (#1457). Three replacement sockets are upgraded and
+    /// closed before their `session.created`: each fails an attempt of the
+    /// same run, and the gap audio waits in the chunk buffer for the fourth,
+    /// which is ready, instead of dying in a closed socket's queue.
+    func testUnreadyUpgradeDoesNotResetRetryBudgetOrConsumeGapAudio() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let events = observeSocketEvents(pipeline)
+        await startAndSpeak(pipeline)
+        let gap = Self.speech(seed: 4)
+
+        let run = await dropAndReconnect(
+            pipeline, events, attempts: [.closedUnready, .closedUnready, .closedUnready, .handshake], gap: gap
+        )
+        await run?.value
+
+        await assertReconnected(pipeline, events, dials: 4, gap: gap)
+    }
+
+    /// Four replacement sockets upgraded and closed before their handshake
+    /// use up the run's four attempts, and the dictation ends as after any
+    /// failed reconnect (#1457).
+    func testUnreadyUpgradesExhaustTheReconnectRun() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let events = observeSocketEvents(pipeline)
+        await startAndSpeak(pipeline)
+
+        let run = await dropAndReconnect(
+            pipeline, events, attempts: Array(repeating: .closedUnready, count: 4), gap: Self.speech(seed: 4)
+        )
+        await run?.value
+
+        XCTAssertEqual(events.connected, 5, "the first socket, then four attempts of one run")
+        XCTAssertFalse(pipeline.viewModel.isDictating)
+        XCTAssertEqual(pipeline.viewModel.lastError, DictationViewModel.connectionLostMessage)
+    }
+
+    /// A reconnect to a server that never sends `session.created` is ready
+    /// when the compatibility fallback opens the send gate, 3 s after the
+    /// upgrade: the attempt waits that long rather than abandoning a healthy
+    /// socket (GLM review of #1457).
+    func testAReconnectToAServerWithoutAHandshakeIsReadyAtTheFallback() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let events = observeSocketEvents(pipeline)
+        await startAndSpeak(pipeline)
+        let gap = Self.speech(seed: 4)
+
+        let run = await dropAndReconnect(pipeline, events, attempts: [.fallback], gap: gap)
+        await run?.value
+
+        await assertReconnected(pipeline, events, dials: 1, gap: gap)
+    }
+
+    /// How a reconnect attempt's socket ends up in `dropAndReconnect`.
+    private enum ReconnectAttempt {
+        /// The server closes it after the upgrade, before any handshake.
+        case closedUnready
+        /// The server sends `session.created`.
+        case handshake
+        /// The server sends nothing; each poll moves the session clock by
+        /// its interval, so the compatibility fallback fires on schedule.
+        case fallback
+    }
+
+    /// Closes the session's socket from the server, puts `gap` in the chunk
+    /// buffer while the session is down, and returns the reconnect run. The
+    /// sockets drive the run's sleeps: an attempt's first poll returns once
+    /// the session handled that attempt's socket opening, and the later ones
+    /// play `attempts` (an attempt past its end is `.closedUnready`).
+    private func dropAndReconnect(
+        _ pipeline: Pipeline, _ events: HandledSocketEvents, attempts: [ReconnectAttempt], gap: Data,
+        file: StaticString = #filePath, line: UInt = #line
+    ) async -> Task<Void, Never>? {
+        let server = pipeline.server
+        let clock = pipeline.clock
+        let pollInterval = RealtimeReconnectPolicy.default.pollInterval
+        let fallbackDelay = TimeInterval(RealtimeAPIWebSocketClient.sessionCreatedFallbackDelay.components.seconds)
+        var attempt = 0
+        var polls = 0
+        var sinceOpen: TimeInterval = 0
+        var end = ReconnectAttempt.closedUnready
+        pipeline.viewModel.dependencies.reconnectSleep = { duration in
+            guard duration == pollInterval else {
+                // The backoff before an attempt: it dials at once.
+                attempt += 1
+                polls = 0
+                sinceOpen = 0
+                end = attempts.indices.contains(attempt - 1) ? attempts[attempt - 1] : .closedUnready
+                server.setWithholdsSessionCreated(end != .handshake)
+                return
+            }
+            polls += 1
+            if polls == 1 {
+                await events.waitForConnected(1 + attempt, file: file, line: line)
+                if end == .fallback {
+                    // The health poll, and the socket's keepalive and
+                    // fallback timers, armed when it opened.
+                    await clock.waitForSleepers(3, file: file, line: line)
+                }
+                return
+            }
+            switch end {
+            case .handshake:
+                await server.awaitFrame("the handshake's session.update", file: file, line: line) {
+                    $0.type == "session.update"
+                }
+            case .closedUnready where polls == 2:
+                server.closeConnection()
+                await events.waitForDisconnected(1 + attempt, file: file, line: line)
+            case .closedUnready:
+                await Task.yield()
+            case .fallback:
+                let before = sinceOpen
+                sinceOpen += duration
+                clock.advance(by: duration)
+                if before < fallbackDelay - 1e-6, sinceOpen >= fallbackDelay - 1e-6 {
+                    await server.awaitFrame("the fallback's session.update", file: file, line: line) {
+                        $0.type == "session.update"
+                    }
+                }
+            }
+        }
+
+        // The session can still be dictating when the test ends, and the
+        // server's teardown then drops its socket: the run that starts must
+        // not wait on this test's sockets, or its failure lands in a later
+        // test.
+        let viewModel = pipeline.viewModel
+        addTeardownBlock { @MainActor in viewModel.dependencies.reconnectSleep = { _ in } }
+
+        server.forgetFrames()
+        server.closeConnection()
+        await events.waitForDisconnected(1, file: file, line: line)
+        let run = pipeline.viewModel.session.reconnectTask
+        XCTAssertNotNil(run, "the drop starts a reconnect run", file: file, line: line)
+        XCTAssertTrue(pipeline.microphone.deliver(gap), file: file, line: line)
+        return run
+    }
+
+    /// The run ended on its `dials`-th attempt with the session listening,
+    /// and the restarted send loop replays `gap` once, on the ready session.
+    private func assertReconnected(
+        _ pipeline: Pipeline, _ events: HandledSocketEvents, dials: Int, gap: Data,
+        file: StaticString = #filePath, line: UInt = #line
+    ) async {
+        XCTAssertEqual(events.connected, 1 + dials, "the first socket, then the run's attempts", file: file, line: line)
+        XCTAssertTrue(pipeline.viewModel.isDictating, file: file, line: line)
+        XCTAssertFalse(pipeline.viewModel.session.isReconnectingRealtimeSession, file: file, line: line)
+        // Past a wrong count the gap went to a socket that is gone, and the
+        // wait below could only time out.
+        guard events.connected == 1 + dials, pipeline.viewModel.isDictating else { return }
+
+        // The restarted send loop drains the gap one interval after it arms.
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers, file: file, line: line)
+        pipeline.clock.advance(by: TimingConstants.audioSendInterval)
+        await pipeline.server.awaitFrame("the gap audio", file: file, line: line) { $0.audio == gap }
+        let frames = pipeline.server.frames
+        XCTAssertEqual(frames.filter { $0.audio == gap }.count, 1, "the gap goes out once", file: file, line: line)
+        XCTAssertEqual(
+            frames.first?.type, "session.update", "on the ready session, behind its handshake", file: file, line: line
+        )
+    }
+
+    /// Hands the realtime client's events to the session as the app does,
+    /// and counts each one the session has handled.
+    private func observeSocketEvents(_ pipeline: Pipeline) -> HandledSocketEvents {
+        let events = HandledSocketEvents()
+        let session = pipeline.viewModel.session
+        session.realtimeAPIClient.setEventHandler { [weak session] event, generation in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    session?.handle(event: event, from: generation)
+                    events.record(event)
+                }
+            }
+        }
+        return events
+    }
+
     // MARK: - The two halves every scenario shares
 
     /// Start, open the microphone, connect, and get one captured chunk to the
@@ -3647,6 +3828,46 @@ private final class QuickCaptures {
 
 private final class QuickCaptureGroups {
     var all: [ProjectGroup?] = []
+}
+
+/// The socket openings and closes the session has handled, counted once
+/// its handler returned.
+@MainActor
+private final class HandledSocketEvents {
+    private(set) var connected = 0
+    private(set) var disconnected = 0
+    private var waits: [(isMet: () -> Bool, wait: BoundedWait)] = []
+
+    func record(_ event: RealtimeEvent) {
+        switch event {
+        case .connected: connected += 1
+        case .disconnected: disconnected += 1
+        default: return
+        }
+        for watch in waits where watch.isMet() {
+            watch.wait.resolve()
+        }
+        waits.removeAll { $0.isMet() }
+    }
+
+    func waitForConnected(_ count: Int, file: StaticString = #filePath, line: UInt = #line) async {
+        await waitUntil("\(count) socket openings", file: file, line: line) { self.connected >= count }
+    }
+
+    func waitForDisconnected(_ count: Int, file: StaticString = #filePath, line: UInt = #line) async {
+        await waitUntil("\(count) socket closes", file: file, line: line) { self.disconnected >= count }
+    }
+
+    /// Fails the test if `isMet` does not hold within 10 s of wall time.
+    private func waitUntil(
+        _ description: String, file: StaticString, line: UInt, _ isMet: @escaping () -> Bool
+    ) async {
+        if isMet() { return }
+        let wait = BoundedWait()
+        waits.append((isMet, wait))
+        if await wait.value(failAfter: 10) { return }
+        XCTFail("the session never handled \(description)", file: file, line: line)
+    }
 }
 
 /// Every record the sessions wrote, in order.
