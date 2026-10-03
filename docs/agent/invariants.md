@@ -275,7 +275,8 @@ there is not.
   if it still matches, the registry still lists the session after that
   read-back, that pid is frontmost and on `ReturnSubmitsAppList`,
   and Secure Keyboard Entry is off. A failed check before the typing types
-  nothing and keeps the text in History; one after it leaves the text
+  nothing and keeps the text in History (on the clipboard with History
+  off, #1499); one after it leaves the text
   unsubmitted, and the popover says so. Right before the typing and
   again before the Return, the session's agent pid must be in its tty's
   foreground process group (the process table, the herdr route's
@@ -745,7 +746,10 @@ there is not.
   in the wrong app, or in twice. A refusal that answers after the next
   dictation started, or after a go-to moved the keys, stays in History
   too (#1466): the keyboard path and its pending text belong to that
-  dictation or pane now, and would carry the text into its route.
+  dictation or pane now, and would carry the text into its route. With
+  History off, every path below that keeps text puts all of it on the
+  clipboard instead and says so (`keepUndeliveredAgentText`, #1499): Copy
+  last dictation alone would lose it to the next dictation.
   - *opencode's prompt relay* (#719, `OpencodePromptRoute`).
     *Loopback only:* the wire carries a port and a token
     (`OpencodePromptRelayAddress`), never a host; `OpencodePromptRelayClient`
