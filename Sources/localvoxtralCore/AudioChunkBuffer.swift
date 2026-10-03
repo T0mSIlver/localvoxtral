@@ -34,6 +34,18 @@ package final class AudioChunkBuffer: Sendable {
         }
     }
 
+    /// Returns a drained chunk the client refused to the front, ahead of what
+    /// was captured since (#1458). Over the cap, the oldest audio goes first,
+    /// as in `append`.
+    package func putBack(_ chunk: Data) {
+        guard !chunk.isEmpty else { return }
+        buffer.withLock {
+            $0 = chunk + $0
+            guard $0.count > maxRetainedBytes else { return }
+            $0 = Data($0.suffix(maxRetainedBytes))
+        }
+    }
+
     package func takeAll() -> Data {
         buffer.withLock {
             let output = $0

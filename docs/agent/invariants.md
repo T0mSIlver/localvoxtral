@@ -30,7 +30,10 @@ there is not.
   submit count (`ClaudeSessionSnapshot.promptsSubmitted`, every
   `UserPromptSubmit` with or without text) has not moved since. A failed
   commit, one the spoken trigger sent, one with no join, or a Live Auto-Paste
-  dictation clears it. Anything looser puts a space in front of `/compact`
+  dictation clears it. "Send that to <name>" into a terminal pane is judged
+  the same way against the pane's pid and the named session; its Return, or
+  a failed typing, clears a landing in that session and no other (#1480).
+  Anything looser puts a space in front of `/compact`
   in a fresh prompt. No trailing space after a commit.
 - **A mid-dictation reconnect resumes the session; it never replays it.**
   When the realtime socket drops without the user asking
@@ -197,7 +200,8 @@ there is not.
   (`tell application id` would launch one that is not), and the tty is
   spliced into AppleScript only when it is `/dev/tty` plus letters and
   digits. The result is read back with the join's focused-pane reader:
-  `.focused` only when that tty is the session's. A Return after a focus
+  `.focused` only when that tty is the session's and the terminal is still
+  frontmost after the read (#1465). A Return after a focus
   (#723 step 3) or #717's answer hotkey must require `.focused`, never
   `.unverified`.
 - **A session's title is a name, never evidence** (#1013, #1020). Claude
@@ -282,6 +286,19 @@ there is not.
   proposals skip an addressed dictation: they key on the join of the pane
   it started in. Live Auto-Paste has no addressed send: its words are
   typed before the phrase at the end is heard.
+- **A mod channel opens only for a session a local hook named, and a send
+  names its session exactly** (#1408). The localvoxtral-mod plugin's
+  `--attach` process asks the broker for a channel to one session id; the
+  broker refuses unless the registry already holds that session from a
+  locally authenticated hook, so a channel can never be the first word about
+  a session. `ClaudeModChannelHub.send` writes only to the channel of the id
+  it is given: no channel, a failed write or no reply in time answers nil,
+  never another session, and the caller keeps its own path. The attach
+  carries the Claude pid the process runs under, but it is not checked
+  against the hook's: both come from the same user, the residual threat the
+  hook path already accepts below, and a mismatch would only silently turn
+  the channel off. Mod replies ride one-shot connections and carry only a
+  short reason code, never text.
 - **The Mistral second pass holds the text back, never the world** (#317).
   An Overlay Buffer dictation in Mistral API mode is sent whole to the batch
   endpoint on stop (`DictationSessionController+StopCommit.swift`,
@@ -814,7 +831,8 @@ there is not.
     tab, workspace or pane creation, no `agent.focus`, no machine switch.
     *Confirmed by reading back:* `.focused`, the only outcome that starts a
     dictation, needs herdr's `pane.current` to name that pane AND the
-    terminal's focused tty to be the window raised; the answer to
+    terminal's focused tty, read again after herdr answered with the
+    terminal still frontmost (#1465), to be the window raised; the answer to
     `pane.focus` alone never is. *Window first* (#1033): `pane.focus` is sent
     only after the window reads back in front, so a window that does not
     come up leaves herdr's pane as it was, and a failure after the raise is
@@ -2761,8 +2779,8 @@ there is not.
   is the one call to `gh issue create`, reached only from the Inbox's File
   button and from a spoken "file it" (#927). That one works only in a review
   dictation, whose overlay shows exactly one draft, and `applySpokenReview`
-  files only when the draft's title and body still match what the overlay
-  showed. `QuickCaptureInboxModel.comment` is the one call to `gh issue
+  files only when the draft's title, body and repository still match what
+  the overlay showed (#1510): a move keeps the text but not where it files. `QuickCaptureInboxModel.comment` is the one call to `gh issue
   comment` (#965), reached only from the Inbox's Comment on #N button, and
   only for a draft whose `relation` is `extends`: the issue number comes from
   the app's own open-issue list. A follow-up joins an open capture (not
@@ -2776,4 +2794,7 @@ there is not.
   label never becomes a working directory here. A capture keeps the
   checkout key it was routed to; when that checkout's repository gains a
   checkout on the Mac, the Inbox moves it to the Mac's (#971), except while
-  a draft runs for it.
+  a draft runs for it. Each route, draft, check and filing names the
+  running copy that owns it (#1288, #1507): a launch ends only those whose
+  copy is gone, and writes that at once, so a copy still holding one in
+  memory cannot write it back.

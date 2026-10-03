@@ -27,6 +27,27 @@ extension DictationSessionController {
         return LeadingSpaceOverlayCommitter(base: committer)
     }
 
+    /// The committer for "send that to <name>" in a terminal pane: the same
+    /// evidence, judged against the pane's pid and the named session (#1480).
+    func addressedOverlayCommitter(
+        _ committer: any OverlayTextCommitting, session: ClaudeSessionSnapshot, targetPID: pid_t
+    ) -> any OverlayTextCommitting {
+        guard let landing = lastOverlayCommitLanding,
+              landing == currentLanding(session: session, targetPID: targetPID)
+        else { return committer }
+        Log.overlay.info("send to session: continues the unsent prompt; leading space")
+        return LeadingSpaceOverlayCommitter(base: committer)
+    }
+
+    /// An addressed send that pressed Return, or failed to type, leaves
+    /// nothing in the named session's prompt to continue. A landing in
+    /// another session is that prompt's evidence and stays, as does one
+    /// whose text was typed but not submitted.
+    func forgetOverlayCommitLanding(inSession sessionID: String) {
+        guard lastOverlayCommitLanding?.sessionID == sessionID else { return }
+        lastOverlayCommitLanding = nil
+    }
+
     /// Remembers where a commit landed, or forgets the last one: a failed
     /// commit, a commit with no join, or one the spoken trigger sent leaves
     /// nothing the next commit may continue. A commit of nothing changed no
@@ -49,14 +70,19 @@ extension DictationSessionController {
     /// resolved when the dictation started, and a prompt submitted while it
     /// ran must count (Vibe review of #806). Nil once the session is gone.
     private func currentLanding(join: ClaudeSessionJoin?, targetPID: pid_t?) -> OverlayCommitLanding? {
-        guard let join, let targetPID else { return nil }
-        let sessionID = join.snapshot.sessionID
+        guard let join else { return nil }
+        return currentLanding(session: join.snapshot, targetPID: targetPID)
+    }
+
+    private func currentLanding(session: ClaudeSessionSnapshot, targetPID: pid_t?) -> OverlayCommitLanding? {
+        guard let targetPID else { return nil }
+        let sessionID = session.sessionID
         let promptsSubmitted: Int
         if let registry = context.claudeSessionJoinResolver?.registry {
             guard let live = registry.snapshot(sessionID: sessionID) else { return nil }
             promptsSubmitted = live.promptsSubmitted
         } else {
-            promptsSubmitted = join.snapshot.promptsSubmitted
+            promptsSubmitted = session.promptsSubmitted
         }
         return OverlayCommitLanding(
             targetPID: targetPID, sessionID: sessionID, promptsSubmitted: promptsSubmitted

@@ -100,7 +100,10 @@ package protocol RealtimeClient: AnyObject, Sendable {
         _ handler: @escaping @Sendable (RealtimeEvent, RealtimeConnectionGeneration) -> Void)
     func connect(configuration: RealtimeSessionConfiguration) throws
     func disconnect()
-    func sendAudioChunk(_ pcm16Data: Data)
+    /// False when the client dropped the chunk because its socket is gone:
+    /// the caller still holds the only copy (#1458).
+    @discardableResult
+    func sendAudioChunk(_ pcm16Data: Data) -> Bool
     func sendCommit(final: Bool)
     /// How much audio one server session may take before the client rolls it
     /// over (#1139). Nil, the default, never rolls over. Kept across

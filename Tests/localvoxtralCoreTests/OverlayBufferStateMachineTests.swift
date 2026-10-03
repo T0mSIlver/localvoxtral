@@ -1,10 +1,10 @@
-import CoreGraphics
+import Foundation
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 @MainActor
 final class OverlayBufferStateMachineTests: XCTestCase {
-    func testSecureInputMarkerSetsOnlyWhileBufferingAndResetsOnNewSession() {
+    func testSecureInputMarkerSetsOnlyWhileBufferingAndResetsOnNewSession() async {
         var machine = OverlayBufferStateMachine()
         let anchor = OverlayAnchor(
             targetRect: CGRect(x: 0, y: 0, width: 80, height: 24),
@@ -40,7 +40,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
         )
     }
 
-    func testStateMachine_happyPathTransitionsToIdleAfterReset() {
+    func testStateMachine_happyPathTransitionsToIdleAfterReset() async {
         var machine = OverlayBufferStateMachine()
         let anchor = OverlayAnchor(targetRect: CGRect(x: 10, y: 20, width: 100, height: 40), source: .windowCenter)
 
@@ -59,7 +59,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
         XCTAssertEqual(machine.bufferText, "")
     }
 
-    func testStateMachine_commitFailureEntersCommitFailedAndRetainsBuffer() {
+    func testStateMachine_commitFailureEntersCommitFailedAndRetainsBuffer() async {
         var machine = OverlayBufferStateMachine()
         let anchor = OverlayAnchor(targetRect: CGRect(x: 0, y: 0, width: 40, height: 20), source: .mouseLocation)
 
@@ -74,7 +74,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
         XCTAssertEqual(machine.snapshot?.anchor, anchor)
     }
 
-    func testStateMachine_resetReturnsToIdleFromAnyState() {
+    func testStateMachine_resetReturnsToIdleFromAnyState() async {
         var machine = OverlayBufferStateMachine()
         let anchor = OverlayAnchor(targetRect: CGRect(x: 5, y: 5, width: 80, height: 20), source: .windowCenter)
 
@@ -89,7 +89,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
         XCTAssertNil(machine.anchor)
     }
 
-    func testPolishedFlagSetsInFinalizingAndResetsOnNewSession() {
+    func testPolishedFlagSetsInFinalizingAndResetsOnNewSession() async {
         var machine = OverlayBufferStateMachine()
         let anchor = OverlayAnchor(
             targetRect: CGRect(x: 0, y: 0, width: 80, height: 24),
@@ -123,7 +123,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
 
     /// #1074: the marks compare the polished text with what was on screen
     /// when polish landed, and the sweep runs only while the request is out.
-    func testPolishingSweepsUntilTheReplyAndPolishedKeepsWhatWasShown() {
+    func testPolishingSweepsUntilTheReplyAndPolishedKeepsWhatWasShown() async {
         var machine = OverlayBufferStateMachine()
         let anchor = OverlayAnchor(
             targetRect: CGRect(x: 0, y: 0, width: 80, height: 24),
@@ -156,7 +156,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
         XCTAssertNil(machine.snapshot?.polishedFrom)
     }
 
-    func testOverlayAssembler_partialAndFinalMergeWithoutDuplication() {
+    func testOverlayAssembler_partialAndFinalMergeWithoutDuplication() async {
         let merged = OverlayBufferTextAssembler.displayText(
             committedText: "hello world",
             pendingText: "world again",
@@ -166,7 +166,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
         XCTAssertEqual(merged, "hello world again")
     }
 
-    func testOverlayAssembler_fallbackPendingUsedWhenPrimaryPendingEmpty() {
+    func testOverlayAssembler_fallbackPendingUsedWhenPrimaryPendingEmpty() async {
         let merged = OverlayBufferTextAssembler.displayText(
             committedText: "hello",
             pendingText: "",
@@ -176,7 +176,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
         XCTAssertEqual(merged, "hello there")
     }
 
-    func testOverlayAssembler_commitTextPreservesNewlines() {
+    func testOverlayAssembler_commitTextPreservesNewlines() async {
         let commitText = OverlayBufferTextAssembler.commitText(
             committedText: "line one\nline two",
             pendingText: "",
@@ -186,7 +186,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
         XCTAssertEqual(commitText, "line one\nline two\nline three")
     }
 
-    func testOverlayAssembler_insertionTextTrimsEdgesOnly() {
+    func testOverlayAssembler_insertionTextTrimsEdgesOnly() async {
         let commitText = OverlayBufferTextAssembler.insertionText(from: "  hello world  ")
         XCTAssertEqual(commitText, "hello world")
     }
@@ -196,7 +196,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
     // The badge arrives WITH the session and must ride every later snapshot:
     // the join it describes is resolved exactly once, so nothing downstream can
     // change what it should say.
-    func testClaudeJoinBadgeRidesTheWholeSession() {
+    func testClaudeJoinBadgeRidesTheWholeSession() async {
         var machine = OverlayBufferStateMachine()
         let anchor = OverlayAnchor(
             targetRect: CGRect(x: 0, y: 0, width: 80, height: 24),
@@ -224,7 +224,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
     // session ASSIGNS it rather than merely clearing it: there is no ordering
     // in which a stale `.joined` can reach the next session's panel, and no
     // setter that could put one there later.
-    func testEachSessionsBadgeIsItsOwn() {
+    func testEachSessionsBadgeIsItsOwn() async {
         var machine = OverlayBufferStateMachine()
         let anchor = OverlayAnchor(
             targetRect: CGRect(x: 0, y: 0, width: 80, height: 24),

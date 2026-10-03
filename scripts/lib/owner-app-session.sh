@@ -3,8 +3,8 @@
 # record-demo.sh: quit the owner's running instance and bring it back
 # afterwards, and keep the lane's settings out of the owner's defaults.
 #
-# UI Smoke and e2e run the app on a defaults suite of their own (#1029) and
-# never write the owner's domain. capture-readme-assets.sh and record-demo.sh
+# UI Smoke runs the app on a defaults suite of its own (#1029), and e2e on a
+# bundle id of its own (#1198); neither writes the owner's domain. capture-readme-assets.sh and record-demo.sh
 # still snapshot and restore it, on backup paths of their own, through the
 # backup functions below. Every lane restores a backup a killed run left
 # before it starts.
@@ -170,7 +170,7 @@ snapshot_defaults() {
   return 1
 }
 
-# The suite UI Smoke and e2e write their settings into, and the app reads
+# The suite UI Smoke writes its settings into, and the app reads
 # instead of $BUNDLE_ID when LOCALVOXTRAL_DEFAULTS_SUITE names it. Emptied
 # before and after a run, so a killed run's settings never reach the next.
 HARNESS_DEFAULTS_SUITE="com.localvoxtral.harness"

@@ -2098,7 +2098,7 @@ STEP_IF="$(awk '/^ *if: >-$/ { capture = 1; next } capture && /^ *run:/ { exit }
 [[ -n "$STEP_IF" ]] || fail "the UI-gate install step has no multi-line if: gate"
 for required in "runner.environment == 'self-hosted'" \
                 "github.event_name == 'workflow_dispatch'" \
-                "steps.package.outcome == 'success'"; do
+                "steps.gate_package.outcome == 'success'"; do
   grep -qF "$required" <<<"$STEP_IF" \
     || fail "the UI-gate install step is not gated on $required"
 done

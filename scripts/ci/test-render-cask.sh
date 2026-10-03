@@ -46,11 +46,13 @@ grep -qxF '  url "https://github.com/T0mSIlver/localvoxtral/releases/download/v#
   || fail "url does not name the contractual app zip, localvoxtral-v<version>.zip"
 pass "url names the app zip by its contractual name"
 
-# Both halves of install.sh's Gatekeeper handling; xattr alone leaves the
-# macOS 26 first-launch hang.
-grep -q '"/usr/bin/xattr"' "$CASK" || fail "postflight does not clear quarantine"
-grep -q '"--force", "--deep", "--sign", "-"' "$CASK" || fail "postflight does not re-sign locally"
-pass "postflight clears quarantine and re-signs"
+# Stable releases are notarized (#1430). A re-sign would replace the
+# Developer ID signature with an ad-hoc one and change the designated
+# requirement the Accessibility grant is keyed on.
+if grep -qE 'postflight|codesign|xattr' "$CASK"; then
+  fail "the cask touches the notarized app's signature or quarantine flag"
+fi
+pass "the cask installs the notarized app untouched"
 
 ZAP="$(sed -n '/^  zap trash: \[/,/^  \]/p' "$CASK")"
 [[ -n "$ZAP" ]] || fail "the cask has no zap stanza"

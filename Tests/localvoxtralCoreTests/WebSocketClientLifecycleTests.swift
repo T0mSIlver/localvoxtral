@@ -82,6 +82,29 @@ final class WebSocketClientLifecycleTests: XCTestCase {
         }
     }
 
+    /// Both clients say which chunks they dropped for a dead socket, so the
+    /// send loop can keep them for the reconnect (#1458).
+    func testAudioIsReportedDroppedOnlyOnceTheSocketIsGone() {
+        let (session, task) = makeWebSocketTask()
+        let (mistralSession, mistralTask) = makeWebSocketTask()
+        defer {
+            task.cancel(); session.invalidateAndCancel()
+            mistralTask.cancel(); mistralSession.invalidateAndCancel()
+        }
+        let realtime = RealtimeAPIWebSocketClient()
+        realtime.debugPrimeConnectedStateForTesting(task: task)
+        let mistral = MistralRealtimeWebSocketClient()
+        mistral.debugPrimeConnectedStateForTesting(task: mistralTask)
+
+        XCTAssertTrue(realtime.sendAudioChunk(Data([1, 2])), "queued for the handshake")
+        XCTAssertTrue(mistral.sendAudioChunk(Data([1, 2])), "queued for the handshake")
+        realtime.debugHandleTerminalSocketErrorForTesting(task: task, errorMessage: "socket failed")
+        mistral.debugHandleTerminalSocketErrorForTesting(task: mistralTask, errorMessage: "socket failed")
+
+        XCTAssertFalse(realtime.sendAudioChunk(Data([3, 4])))
+        XCTAssertFalse(mistral.sendAudioChunk(Data([3, 4])))
+    }
+
     func testRealtimeTerminalErrorSuppressesErrorForUserInitiatedDisconnect() {
         let client = RealtimeAPIWebSocketClient()
         let collector = EventCollector()

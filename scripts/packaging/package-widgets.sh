@@ -4,12 +4,9 @@
 # package_app.sh:
 #
 #   package-widgets.sh build <app-dir> <configuration> <version> <build-number>
-#   package-widgets.sh sign  <app-dir> <codesign-identity>
 #
-# `sign` runs after package_app.sh's `codesign --deep`, which signs nested
-# code without entitlements: the extension gets its sandbox entitlements
-# here, then the app is resealed around it. A widget extension without its
-# sandbox does not load.
+# sign-bundle.sh signs the extension with widgets.entitlements; a widget
+# extension without its sandbox does not load.
 #
 # What Xcode would do and SwiftPM does not, each measured in the #630 spike:
 # - link with `-e _NSExtensionMain`, as Apple's widgets are; with `@main`
@@ -22,7 +19,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 APPEX_NAME="localvoxtralWidgets"
-BUNDLE_ID="com.localvoxtral.app.widgets"
+# An extension's id extends its host app's; package_app.sh names the host.
+BUNDLE_ID="${LOCALVOXTRAL_APP_BUNDLE_ID:-com.localvoxtral.app}.widgets"
 MODULE="localvoxtralWidgets"
 
 VERB="${1:-}"
@@ -119,23 +117,10 @@ PLIST
   echo "Widget extension: $APPEX (App Intents metadata generated)"
 }
 
-sign() {
-  local identity="$1"
-  codesign --force --sign "$identity" \
-    --entitlements "$ROOT_DIR/scripts/packaging/widgets.entitlements" "$APPEX"
-  codesign --force --sign "$identity" "$APP_DIR"
-  if ! codesign -d --entitlements - "$APPEX" 2>/dev/null | grep -q 'com.apple.security.app-sandbox'; then
-    echo "The widget extension lost its sandbox entitlement while signing." >&2
-    exit 1
-  fi
-}
-
 case "$VERB" in
   build) build "$3" "$4" "$5" ;;
-  sign) sign "$3" ;;
   *)
     echo "usage: $0 build <app-dir> <configuration> <version> <build-number>" >&2
-    echo "       $0 sign <app-dir> <codesign-identity>" >&2
     exit 2
     ;;
 esac

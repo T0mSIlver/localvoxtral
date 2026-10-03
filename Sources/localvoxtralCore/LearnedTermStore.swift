@@ -36,6 +36,9 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
         /// The last ignore-list write failed: memory holds a change the file
         /// lacks, and every write tries it again before the terms' file.
         var ignoredListUnsaved = false
+        /// Set, `forgotten-projects.json` is left alone, and the
+        /// agent-activity listing adds no project (#1156, #1425).
+        var forgottenListProblem: StoredFileProblem?
     }
 
     package let fileURL: URL?
@@ -208,6 +211,13 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
     /// learned or recorded until the user moves it aside.
     package var ignoredListProblem: StoredFileProblem? {
         state.withLock { $0.ignoredListProblem }
+    }
+
+    /// Why `forgotten-projects.json` was not loaded (#1425). Set, agents
+    /// list no project until the file reads again or the user moves it
+    /// aside; dictation is not affected.
+    package var forgottenListProblem: StoredFileProblem? {
+        state.withLock { $0.forgottenListProblem }
     }
 
     /// Whether the last write of `ignored-projects.json` failed. The change
@@ -808,12 +818,15 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
             )
             pendingForgottenChanges = changes
             list = kept
-        case .refused:
+        case .refused(let problem):
             Log.persistence.error("forgotten projects: a change was refused, the file cannot be read by this build")
             pendingForgottenChanges = []
-            list = Self.unreadable(memory)
+            list = refuseForgottenList(problem, memory: memory)
         }
-        state.withLock { $0.terms?.forgotten = list }
+        state.withLock { state in
+            state.terms?.forgotten = list
+            if !list.isUnreadable { state.forgottenListProblem = nil }
+        }
         return list
     }
 
@@ -828,25 +841,33 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
             // Gone while unreadable: the user removed it.
             list = memory.isUnreadable ? ForgottenProjects() : memory
         case .unreadable:
-            list = Self.unreadable(memory)
+            list = refuseForgottenList(.unreadable, memory: memory)
         case .bytes(let data):
             guard data != seenForgotten.bytes || memory.isUnreadable else { return memory }
             switch Self.forgotten(fromFileContents: data) {
             case .loaded(let loaded):
                 seenForgotten = StoredFileSeen(bytes: data, stamp: stamp)
                 list = loaded
-            case .refused, .absent:
-                list = Self.unreadable(memory)
+            case .refused(let problem):
+                list = refuseForgottenList(problem, memory: memory)
+            case .absent:
+                list = refuseForgottenList(.unreadable, memory: memory)
             }
         }
-        if list != memory { state.withLock { $0.terms?.forgotten = list } }
+        state.withLock { state in
+            if list != memory { state.terms?.forgotten = list }
+            if !list.isUnreadable { state.forgottenListProblem = nil }
+        }
         return list
     }
 
-    private static func unreadable(_ memory: ForgottenProjects) -> ForgottenProjects {
+    /// The file is kept as it is, and the list answers `isUnreadable` until
+    /// it reads again or Start Over moves it aside.
+    private func refuseForgottenList(_ problem: StoredFileProblem, memory: ForgottenProjects) -> ForgottenProjects {
         if !memory.isUnreadable {
             Log.persistence.error("forgotten projects: the file cannot be read by this build; agents list no project until it can")
         }
+        state.withLock { $0.forgottenListProblem = problem }
         var unreadable = memory
         unreadable.isUnreadable = true
         return unreadable
@@ -863,7 +884,7 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
                     return
                 }
                 do {
-                    let aside = try StoredFile.moveAside(fileURL)
+                    let aside = try StoredFile.moveAside(fileURL, lockedBeside: fileURL)
                     seen = StoredFileSeen()
                     state.withLock { state in
                         // The ignore list has its own file, which still
@@ -897,7 +918,7 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
                     return
                 }
                 do {
-                    let aside = try StoredFile.moveAside(ignoredFileURL)
+                    let aside = try StoredFile.moveAside(ignoredFileURL, lockedBeside: ignoredFileURL)
                     seenIgnored = StoredFileSeen()
                     pendingListChanges = []
                     state.withLock { state in
@@ -910,6 +931,59 @@ package final class LearnedTermStore: AgentActivityRecording, ProjectTermProposa
                 } catch {
                     Log.persistence.error(
                         "ignored projects: could not move the file aside: \(String(describing: error), privacy: .public)"
+                    )
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Start Over for `forgotten-projects.json` (#1425): moves it aside, so
+    /// agents list projects again, and writes the tombstones this copy still
+    /// holds in memory. Throws, keeping the refusal, when the move could not
+    /// be verified or the lock not taken: the file is never read as empty and
+    /// written over (#989).
+    package func moveForgottenListAsideAndStartOver() async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            writeQueue.async { [self] in
+                guard let ignoredFileURL, let forgottenFileURL, state.withLock({ $0.forgottenListProblem }) != nil
+                else {
+                    continuation.resume(throwing: StoredFile.MoveAsideFailed())
+                    return
+                }
+                // The lock every write of the file takes. Unlike a write, the
+                // move never runs without it: another copy's file replacing
+                // this one between the link and the removal would be deleted.
+                guard let lock = StoredFileLock.holding(beside: ignoredFileURL) else {
+                    Log.persistence.error("forgotten projects: not moved aside, the lock shared with other running copies could not be taken")
+                    continuation.resume(throwing: StoredFile.MoveAsideFailed())
+                    return
+                }
+                defer { withExtendedLifetime(lock) {} }
+                do {
+                    let aside = try StoredFile.moveAside(forgottenFileURL)
+                    seenForgotten = StoredFileSeen()
+                    var kept = state.withLock { $0.terms?.forgotten } ?? ForgottenProjects()
+                    kept.isUnreadable = false
+                    state.withLock { state in
+                        state.forgottenListProblem = nil
+                        state.terms?.forgotten = kept
+                    }
+                    if !kept.projects.isEmpty || !pendingForgottenChanges.isEmpty {
+                        // A failed write waits in `pendingForgottenChanges`,
+                        // so the tombstones go in as a change: a retry adds
+                        // them to whatever file another copy wrote meanwhile.
+                        let restored = kept.projects
+                        _ = updateForgottenList(
+                            forgottenFileURL, memory: kept,
+                            change: restored.isEmpty ? nil : { list in for project in restored { list.add(project) } })
+                    }
+                    Log.polishing.info("Learned terms: forgotten-projects.json moved aside, agents list projects again")
+                    onChange?()
+                    continuation.resume(returning: aside)
+                } catch {
+                    Log.persistence.error(
+                        "forgotten projects: could not move the file aside: \(String(describing: error), privacy: .public)"
                     )
                     continuation.resume(throwing: error)
                 }

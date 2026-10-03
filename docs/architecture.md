@@ -50,7 +50,8 @@ through it or called as a pure step:
 AppKit:
 
 - `TranscriptAccumulator`, `TextMergingAlgorithms`, the overlay text
-  assembler, `PolishTokenGuard`, `ClipboardPayloadMacro`,
+  assembler and `OverlayBufferStateMachine`, `PolishTokenGuard`,
+  `ClipboardPayloadMacro`,
   `PolishOutcomeClassifier`, the connection-failure classifier, `SessionClock`
 - the vocabulary matching: `RepoVocabulary`, `RepoIndexing`,
   `RepoVocabularyMatcher`, `ClipboardVocabulary`, `DoubleMetaphone`
@@ -68,6 +69,8 @@ AppKit:
 - the Settings sidebar's status dots (`SettingsStatusDot`,
   `IntegrationsSidebarStatus`); their rendering stays in the app
 - the Claude session snapshot and its reducer (`ClaudeSessionState`)
+- `DictationOutputMode`, the dogfood control socket's grammar and the WAV
+  source the e2e check dictates from (`Dogfood/`); the socket stays in the app
 - the config store (`AppConfigStore`, `BundledConfigDefaultHistory`,
   `SpeakerTerms`). The app hands it the resource bundle, and on Linux it
   hashes with `PortableSHA256` instead of CryptoKit

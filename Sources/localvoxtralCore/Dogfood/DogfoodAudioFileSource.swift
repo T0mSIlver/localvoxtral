@@ -32,18 +32,19 @@ import Synchronization
 /// Mono 16-bit PCM at 16 kHz, the realtime client's wire format and the format
 /// `scripts/record-agent-eval.sh` writes. Anything else is refused rather than
 /// resampled, so a run never scores a conversion this file made up.
-final class DogfoodAudioFileSource: Sendable {
-    static let environmentKey = "LOCALVOXTRAL_DOGFOOD_AUDIO_FILE"
+package final class DogfoodAudioFileSource: Sendable {
+    package static let environmentKey = "LOCALVOXTRAL_DOGFOOD_AUDIO_FILE"
 
-    typealias ChunkHandler = MicrophoneCaptureService.ChunkHandler
-    typealias Sleep = @Sendable (Duration) async throws -> Void
+    /// `MicrophoneCaptureService.ChunkHandler`'s type, which the app passes in.
+    package typealias ChunkHandler = @Sendable (Data) -> Void
+    package typealias Sleep = @Sendable (Duration) async throws -> Void
 
-    static let sampleRate = 16_000
-    static let chunkDuration: Duration = .milliseconds(100)
+    package static let sampleRate = 16_000
+    package static let chunkDuration: Duration = .milliseconds(100)
     /// 100 ms of mono 16-bit samples.
-    static let chunkByteCount = sampleRate / 10 * 2
+    package static let chunkByteCount = sampleRate / 10 * 2
 
-    enum LoadError: Error, Equatable, LocalizedError {
+    package enum LoadError: Error, Equatable, LocalizedError {
         case unreadable
         case notWAV
         case truncatedChunk
@@ -51,7 +52,7 @@ final class DogfoodAudioFileSource: Sendable {
         case unsupportedFormat
         case noSamples
 
-        var errorDescription: String? {
+        package var errorDescription: String? {
             switch self {
             case .unreadable: return "The dogfood audio file could not be read."
             case .notWAV: return "The dogfood audio file is not a RIFF/WAVE file."
@@ -68,7 +69,7 @@ final class DogfoodAudioFileSource: Sendable {
     ///
     /// A relative path is refused: the app's working directory under
     /// LaunchServices is `/`, so it could only ever name the wrong file.
-    static func fileURL(fromEnvironment environment: [String: String]) -> URL? {
+    package static func fileURL(fromEnvironment environment: [String: String]) -> URL? {
         guard let path = environment[environmentKey], !path.isEmpty else { return nil }
         guard path.hasPrefix("/") else {
             Log.dictation.error(
@@ -87,12 +88,12 @@ final class DogfoodAudioFileSource: Sendable {
     private let sleep: Sleep
     private let state = Mutex(State())
 
-    init(pcm: Data, sleep: @escaping Sleep = { try await Task.sleep(for: $0) }) {
+    package init(pcm: Data, sleep: @escaping Sleep = { try await Task.sleep(for: $0) }) {
         self.pcm = pcm
         self.sleep = sleep
     }
 
-    convenience init(
+    package convenience init(
         contentsOf url: URL,
         sleep: @escaping Sleep = { try await Task.sleep(for: $0) }
     ) throws {
@@ -104,7 +105,7 @@ final class DogfoodAudioFileSource: Sendable {
     /// silence until `stop()`. A microphone never stops delivering either, and
     /// the stop path flushes whatever audio is buffered when the caller ends
     /// the dictation, so the session sees the shape it sees in production.
-    func start(chunkHandler: @escaping ChunkHandler) {
+    package func start(chunkHandler: @escaping ChunkHandler) {
         let pcm = pcm
         let sleep = sleep
         state.withLock { state in
@@ -140,12 +141,12 @@ final class DogfoodAudioFileSource: Sendable {
 
     /// The running producer, awaitable so the suite observes its exit without
     /// polling a clock.
-    var currentTask: Task<Void, Never>? { state.withLock { $0.task } }
+    package var currentTask: Task<Void, Never>? { state.withLock { $0.task } }
 
     /// Once this returns, the handler passed to `start` is never called again.
     /// `stopDictation` flushes the chunk buffer right after stopping capture,
     /// and a chunk landing after that flush would leak into the next session.
-    func stop() {
+    package func stop() {
         state.withLock { state in
             state.generation += 1
             state.task?.cancel()
@@ -164,7 +165,7 @@ final class DogfoodAudioFileSource: Sendable {
         }
     }
 
-    static func pcm16(fromWAV input: Data) throws -> Data {
+    package static func pcm16(fromWAV input: Data) throws -> Data {
         // Offsets below count from zero, which a slice's indices do not.
         let wav = Data(input)
         guard wav.count >= 12,

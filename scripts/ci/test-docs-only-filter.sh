@@ -70,6 +70,7 @@ expect true "the PR template keeps the fast path" .github/pull_request_template.
 expect false "the PR template with a workflow runs full CI" \
   .github/pull_request_template.md .github/workflows/ci.yml
 expect false "a Swift source edit runs full CI" Sources/localvoxtral/App.swift
+expect false "a packaging script edit runs full CI" scripts/packaging/sign-bundle.sh
 expect false "an empty diff fails open"
 
 # --- #707: Markdown the tests read --------------------------------------------

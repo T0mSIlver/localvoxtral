@@ -210,6 +210,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// records it exists to collect.
     private let claudeSessionRegistry: ClaudeSessionRegistry
     private var claudeContextBroker: ClaudeContextBroker?
+    /// The channels Claude Code sessions' mods hold open (#1408). Outlives
+    /// each broker: a restarted broker hands new attaches to the same hub.
+    private let claudeModChannels = ClaudeModChannelHub()
     /// Set only when launch lost a hook socket to another running copy.
     private var hookSocketTakeover: ClaudeHookSocketTakeover?
     private var terminalConsentPrewarmObserver:
@@ -563,7 +566,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// forward, the window raised with the terminal focuser's tty path.
     private func liveHerdrFocuser(
         terminal: TerminalSessionPaneFocuser,
-        ttyReader: AppleScriptTerminalTTYReader,
         herdrClient: HerdrSocketClient,
         canonicalizer: SSHDestinationCanonicalizer
     ) -> HerdrSessionPaneFocuser {
@@ -603,7 +605,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             focuser: HerdrSocketClient(timeout: 2),
             panes: herdrClient,
             raiseTTY: { await terminal.focus(tty: $0, termProgram: $1) },
-            focusedTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) }
+            focusedTTY: { await terminal.frontmostTTY(bundleID: $0) }
         )
     }
 
@@ -716,7 +718,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let broker = ClaudeContextBroker(
             socketPath: socketPath,
             registry: claudeSessionRegistry,
-            agentCLI: { await agentCLI.respond(to: $0) }
+            agentCLI: { await agentCLI.respond(to: $0) },
+            modChannels: claudeModChannels
         )
         do {
             try broker.start()
@@ -816,7 +819,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     ),
                     herdr: liveHerdrFocuser(
                         terminal: terminalFocuser,
-                        ttyReader: ttyReader,
                         herdrClient: herdrClient,
                         canonicalizer: sshDestinationCanonicalizer
                     )

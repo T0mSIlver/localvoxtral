@@ -38,9 +38,10 @@ PATTERNS=(
   'Sources/localvoxtral/TextInsertionService.swift'
   'Sources/localvoxtral/SystemAccessibilityFocus.swift'
   'Sources/localvoxtral/OverlayBufferSessionCoordinator.swift'
-  'Sources/localvoxtral/OverlayBufferStateMachine.swift'
+  'Sources/localvoxtralCore/OverlayBufferStateMachine.swift'
   'Sources/localvoxtralCore/OverlayBufferTextAssembler.swift'
-  'Sources/localvoxtral/Dogfood/*'                         # the WAV source the check dictates from
+  'Sources/localvoxtral/Dogfood/*'                         # the control socket and the WAV hook
+  'Sources/localvoxtralCore/Dogfood/*'                     # the socket grammar, the WAV source the check dictates from
   'scripts/e2e-dictation.sh'
   'scripts/e2e/*'
   'scripts/lib/word-accuracy.sh'

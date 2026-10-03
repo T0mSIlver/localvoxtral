@@ -9,7 +9,9 @@ them, a release build has neither, and `package_app.sh` checks every bundle's
 binary for them (`scripts/packaging/check-harness-symbols.sh`). The UI smoke
 workflow packages its app with `LOCALVOXTRAL_E2E_HARNESS=1`
 (`docs/agent/invariants.md`, "The dogfood control socket is an accepted
-tradeoff").
+tradeoff"), and for its e2e dictation under its own bundle id,
+`com.localvoxtral.e2e-harness`: its own defaults domain and its own
+Accessibility grant, apart from the owner's release (#1198).
 
 For the owner's UI gate to drive a harness build, dispatch UI Smoke on the
 branch (`scripts/ui-smoke-dispatch.sh --override "harness build for the UI gate" <branch>`): its e2e-dictation job

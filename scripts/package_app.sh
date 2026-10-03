@@ -36,7 +36,7 @@ BUILD_NUMBER="${3:-${GIT_BUILD_NUMBER:-1}}"
 # survive rebuilds; ad-hoc signatures change every build and invalidate them.
 CODESIGN_IDENTITY="${LOCALVOXTRAL_CODESIGN_IDENTITY:--}"
 if [[ "$CODESIGN_IDENTITY" != "-" ]] \
-  && ! security find-identity -v -p codesigning 2>/dev/null | grep -q "$CODESIGN_IDENTITY"; then
+  && ! security find-identity -v -p codesigning 2>/dev/null | grep -qF "$CODESIGN_IDENTITY"; then
   # A SILENT ad-hoc fallback here is exactly how the TCC-grant regression
   # shipped unnoticed: when a same-repo CI build runs as a user whose login
   # keychain can't see the localvoxtral-dev cert, packaging quietly produced an
@@ -135,6 +135,27 @@ if [[ "$CONFIGURATION" == debug || "${LOCALVOXTRAL_E2E_HARNESS:-}" == "1" ]]; th
 else
   echo "E2E harness: absent (release build)"
 fi
+
+# UI Smoke's e2e dictation packages the harness as com.localvoxtral.e2e-harness
+# (#1198). macOS keeps one Accessibility row per bundle id, tied to one
+# signature, so a harness under the release's id and the owner's ad-hoc
+# release kept taking the grant from each other. Only a harness may take the
+# other id; every other build is com.localvoxtral.app.
+APP_BUNDLE_ID="${LOCALVOXTRAL_BUNDLE_ID:-com.localvoxtral.app}"
+case "$APP_BUNDLE_ID" in
+  com.localvoxtral.app) ;;
+  com.localvoxtral.e2e-harness)
+    if [[ -z "$HARNESS_PLIST_ENTRY" ]]; then
+      echo "LOCALVOXTRAL_BUNDLE_ID=$APP_BUNDLE_ID is only for a harness build (LOCALVOXTRAL_E2E_HARNESS=1)." >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "LOCALVOXTRAL_BUNDLE_ID must be com.localvoxtral.app or com.localvoxtral.e2e-harness, not: $APP_BUNDLE_ID" >&2
+    exit 1
+    ;;
+esac
+echo "Bundle id: $APP_BUNDLE_ID"
 
 swift build --build-system native -c "$CONFIGURATION" --product localvoxtral -Xswiftc -g
 
@@ -353,7 +374,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
   <key>CFBundleExecutable</key>
   <string>localvoxtral</string>
   <key>CFBundleIdentifier</key>
-  <string>com.localvoxtral.app</string>
+  <string>${APP_BUNDLE_ID}</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
@@ -656,7 +677,8 @@ cp -R "$SPEECH_HELPER_DSYM_SOURCE" "$ROOT_DIR/dist/localvoxtral-speechd.dSYM"
 fi # LOCALVOXTRAL_SKIP_SPEECHD
 
 # --- Desktop widgets (WidgetKit extension, #630) ---------------------------
-"$ROOT_DIR/scripts/packaging/package-widgets.sh" build "$APP_DIR" "$CONFIGURATION" "$APP_VERSION" "$BUILD_NUMBER"
+LOCALVOXTRAL_APP_BUNDLE_ID="$APP_BUNDLE_ID" \
+  "$ROOT_DIR/scripts/packaging/package-widgets.sh" build "$APP_DIR" "$CONFIGURATION" "$APP_VERSION" "$BUILD_NUMBER"
 # ---------------------------------------------------------------------------
 
 # Remove filesystem metadata from copied assets (e.g. FinderInfo/resource fork)
@@ -664,19 +686,10 @@ fi # LOCALVOXTRAL_SKIP_SPEECHD
 chmod -R u+w "$APP_DIR"
 xattr -cr "$APP_DIR"
 
-# Sign the packaged app so Gatekeeper can evaluate a usable signature.
-# This does not replace Developer ID signing/notarization, but it avoids the
-# "no usable signature" path that breaks first-run open flows.
-if ! codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP_DIR"; then
-  echo "Failed to code-sign packaged app bundle."
-  exit 1
-fi
-# --deep signed the widget extension without its sandbox entitlements.
-"$ROOT_DIR/scripts/packaging/package-widgets.sh" sign "$APP_DIR" "$CODESIGN_IDENTITY"
-if ! codesign --verify --deep --strict --verbose=2 "$APP_DIR"; then
-  echo "Invalid code signature detected in packaged app bundle."
-  exit 1
-fi
+# Sign every Mach-O inside-out, each with its own entitlements
+# (scripts/packaging/sign-bundle.sh). A Developer ID identity adds the
+# hardened runtime and a secure timestamp, which notarization requires.
+"$ROOT_DIR/scripts/packaging/sign-bundle.sh" "$APP_DIR" "$CODESIGN_IDENTITY"
 
 # Prove we did not silently downgrade to ad-hoc when a stable identity was
 # requested. TCC keys the Accessibility grant on the designated requirement; an

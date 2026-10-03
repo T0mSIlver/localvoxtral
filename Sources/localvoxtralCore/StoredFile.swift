@@ -76,6 +76,20 @@ package enum StoredFile {
         package init() {}
     }
 
+    /// `moveAside` holding the lock every write of the file takes
+    /// (`StoredFileLock`, beside `lockedBeside`). Unlike a write, it never
+    /// runs without it: a write another copy lands between the link and the
+    /// removal would be deleted (#1432).
+    package static func moveAside(_ url: URL, lockedBeside lockFileURL: URL) throws -> URL {
+        guard let lock = StoredFileLock.holding(beside: lockFileURL) else {
+            Log.persistence.error(
+                "\(url.lastPathComponent, privacy: .public): not moved aside, the lock shared with other running copies could not be taken"
+            )
+            throw MoveAsideFailed()
+        }
+        return try withExtendedLifetime(lock) { try moveAside(url) }
+    }
+
     /// The user's way out of a refused file: renames it beside itself under a
     /// name no file has (`<name>.<label>-<id>`), and returns that name
     /// only once the moved file has the same size and the original is gone.

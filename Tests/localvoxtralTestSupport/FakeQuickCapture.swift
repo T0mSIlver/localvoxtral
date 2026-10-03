@@ -57,11 +57,17 @@ package final class ScriptedQuickCaptureClassifier: QuickCaptureClassifying, @un
     private let answers: Mutex<[[String: Double]]>
     package let calls = Mutex<[[QuickCaptureOption]]>([])
     package let captures = Mutex<[String]>([])
-    package init(_ answers: [[String: Double]]) { self.answers = Mutex(answers) }
+    /// Set, each answer waits on it.
+    package let gate: ManualSleeper?
+    package init(_ answers: [[String: Double]], gated: Bool = false) {
+        self.answers = Mutex(answers)
+        gate = gated ? ManualSleeper() : nil
+    }
     package var kind: QuickCaptureRoute.Classifier { .chatModel }
     package func classify(capture: String, options: [QuickCaptureOption]) async throws -> [String: Double] {
         calls.withLock { $0.append(options) }
         captures.withLock { $0.append(capture) }
+        if let gate { await gate.sleep(0) }
         return answers.withLock { $0.count > 1 ? $0.removeFirst() : $0[0] }
     }
 }
@@ -156,6 +162,9 @@ package enum QuickCaptureFixture {
         QuickCaptureProject(key: "remote:website", name: "website", summary: nil, terms: [], userLine: nil),
     ]
 
+    /// Each model is its own running copy unless a test names its process.
+    private static let nextProcessID = Mutex<Int32>(1000)
+
     /// An Inbox that routes by `answer` and drafts with `runner`. A checkout
     /// is any `/w/` path or a real directory. `currentProjects`, when set,
     /// is the project list as it is at each read, in place of `projects`.
@@ -172,7 +181,7 @@ package enum QuickCaptureFixture {
         polisher: (any QuickCapturePolishing)? = nil,
         polishVocabulary: @escaping @MainActor ([QuickCaptureProject]) -> [String] = { _ in [] },
         now: @escaping @MainActor () -> Date = { Date(timeIntervalSince1970: 1_000_000) },
-        processID: Int32 = 1,
+        processID: Int32? = nil,
         isProcessRunning: @escaping (Int32) -> Bool = { _ in true },
         write: @escaping (Data, URL) throws -> Void = PrivateFile.write
     ) -> QuickCaptureInboxModel {
@@ -195,7 +204,7 @@ package enum QuickCaptureFixture {
             polisher: { polisher },
             polishVocabulary: polishVocabulary,
             now: now,
-            processID: processID,
+            processID: processID ?? nextProcessID.withLock { $0 += 1; return $0 },
             isProcessRunning: isProcessRunning,
             write: write
         )

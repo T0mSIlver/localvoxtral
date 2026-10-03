@@ -263,18 +263,19 @@ main() {
   app_path="$(find "$INSTALL_TMP_DIR" -type d -name "$APP_NAME" -prune -print | sed -n '1p')"
   [ -n "$app_path" ] || die "Extracted zip did not contain ${APP_NAME}"
 
-  step "Clearing quarantine and local signing metadata"
-  xattr -cr "$app_path" || die "Could not clear extended attributes from ${APP_NAME}"
-
-  # macOS 26 can stall forever at _dyld_start while scanning downloaded foreign
-  # ad-hoc-signed binaries. Re-signing locally outside /Applications avoids that
-  # scan path. This should become unnecessary once releases are notarized.
-  # --deep is deprecated but field-verified working on macOS 26.5 (2026-07-04);
-  # if Apple removes it, sign nested executables explicitly instead.
-  step "Re-signing app locally before it enters /Applications"
-  # Keep the entitlements: the widget extension does not load without its
-  # sandbox, and a plain --deep re-sign strips it.
-  codesign --force --deep --preserve-metadata=entitlements --sign - "$app_path" || die "Local ad-hoc signing failed"
+  # Releases since #1430 are notarized, and curl sets no quarantine flag, so
+  # a Developer ID download installs as is. An ad-hoc one (an older release
+  # pinned with LOCALVOXTRAL_VERSION, or a nightly built while signing was
+  # unavailable) can stall forever at _dyld_start on macOS 26 while
+  # Gatekeeper scans the foreign ad-hoc signature; re-signing it locally
+  # outside /Applications avoids that scan path.
+  if codesign -dvv "$app_path" 2>&1 | grep -q '^Signature=adhoc'; then
+    step "Re-signing the ad-hoc build locally before it enters /Applications"
+    xattr -cr "$app_path" || die "Could not clear extended attributes from ${APP_NAME}"
+    # Keep the entitlements: the widget extension does not load without its
+    # sandbox, and a plain --deep re-sign strips it.
+    codesign --force --deep --preserve-metadata=entitlements --sign - "$app_path" || die "Local ad-hoc signing failed"
+  fi
 
   install_app_bundle "$app_path"
 

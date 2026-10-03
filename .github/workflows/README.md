@@ -245,10 +245,30 @@ because `GITHUB_TOKEN` may not push a tag whose commit touches
 `.github/workflows` (#964). The token expires; when it does, or when the
 secret is missing, the release fails at the Tag step with an error naming the
 secret, or with GitHub's "refusing to allow ... without workflows permission",
-and needs a new token. Releases are ad-hoc signed on purpose (a local signing cert
-means nothing on users' machines); proper distribution signing needs a
-Developer ID cert. Dispatch-only: pushing tags by hand no longer triggers a
+and needs a new token. Dispatch-only: pushing tags by hand no longer triggers a
 release.
+
+Releases are signed with the owner's Developer ID identity and notarized
+(#1430). Both credentials live in the owner's login keychain on the Mac, never
+in the repo or in GitHub secrets: the "Developer ID Application" identity
+(Always Allow for codesign) and the notarytool profile `localvoxtral-notary`.
+The profile must be stored in the login keychain file, with `xcrun notarytool
+store-credentials localvoxtral-notary --key <AuthKey .p8> --key-id <id>
+--issuer <id> --keychain ~/Library/Keychains/login.keychain-db`, and every
+call reads it with that `--keychain`. Without it, notarytool keeps the profile
+in the data-protection keychain, which macOS makes unreadable while the screen
+is locked, and fails with "No Keychain password item found" although the
+profile is still there. The job names both credentials in its `env`. The
+"Check the signing credentials" step fails a stable or daily release when
+either is missing or does not authenticate; a nightly falls back to ad-hoc
+signing with a warning in its summary and its release notes.
+`scripts/ci/notarize.sh` submits the app, then the DMG, and prints Apple's log
+on a rejection. It prints each submission id as soon as Apple assigns it and
+waits up to 3 h for the app and 1 h for the DMG, because Apple can hold a
+team's first submissions for hours; a run that times out fails with the id,
+and `xcrun notarytool info <id> --keychain-profile localvoxtral-notary
+--keychain ~/Library/Keychains/login.keychain-db` on the Mac follows it from
+there.
 
 ## `cask.yml`
 

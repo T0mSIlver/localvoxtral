@@ -48,6 +48,14 @@ package final class StoredFileLock: @unchecked Sendable {
         return try body()
     }
 
+    /// Waits for the lock and keeps it until the returned value is
+    /// released; nil when the lock file cannot be opened. For a step that
+    /// must not run unlocked, such as Start Over deleting a file once it is
+    /// linked aside.
+    package static func holding(beside url: URL) -> StoredFileLock? {
+        acquire(beside: url, blocking: true)
+    }
+
     /// Takes the lock only when no one holds it, and keeps it until the
     /// returned value is released. For a job exactly one running copy does,
     /// such as scanning the voice memo folder.

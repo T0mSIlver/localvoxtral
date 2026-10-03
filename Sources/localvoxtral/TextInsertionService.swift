@@ -166,6 +166,11 @@ final class TextInsertionService {
     /// agent's prompt wherever focus is.
     @ObservationIgnored
     private(set) var promptRelaySink: AgentPromptSink?
+    /// Whether the dictation's route kept any text in History. Set until
+    /// the next dictation arms or disarms a route, so the stop can read it
+    /// after `endPromptRelay`.
+    @ObservationIgnored
+    private(set) var promptRelayKeptText = false
 
 #if DEBUG
     @ObservationIgnored
@@ -375,6 +380,7 @@ final class TextInsertionService {
         kept: @escaping @MainActor (String) -> Void = { _ in },
         fallback: (@MainActor (String) -> Void)? = nil
     ) {
+        promptRelayKeptText = false
         guard let route else {
             promptRelaySink = nil
             return
@@ -382,6 +388,7 @@ final class TextInsertionService {
         promptRelaySink = AgentPromptSink(route: route, kept: { [weak self] text in
             // Kept text landed nowhere: no keyboard Return may follow it.
             self?.liveInsertionTargetPIDs.append(nil)
+            self?.promptRelayKeptText = true
             kept(text)
         }) { [weak self] text in
             if let fallback {
@@ -740,6 +747,9 @@ final class TextInsertionService {
         preferredAppPID: pid_t?,
         requirePreferredTargetActivation: Bool
     ) -> Bool {
+        // Secure Keyboard Entry swallows posted keys while posting reports
+        // success: the text would be counted typed and land nowhere.
+        guard !TerminalTargetDetector.isSecureKeyboardEntryEnabled() else { return false }
         let modifiersActive = hasActiveFallbackModifiers()
         if modifiersActive {
             activeModifierFallbackCount += 1

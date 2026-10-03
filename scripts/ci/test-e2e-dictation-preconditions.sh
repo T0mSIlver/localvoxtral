@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# e2e-dictation.sh borrows the owner's Mac: it quits their app, rewrites its
-# defaults and takes the keyboard. This pins the order of its refusals, so a
+# e2e-dictation.sh borrows the owner's Mac: it quits their app and takes the
+# keyboard, and it must never write the owner's defaults. This pins the order of its refusals, so a
 # run that cannot work never gets as far as touching any of that. Runs anywhere
 # (every macOS tool is stubbed); the dictation itself is proven on the Mac.
 set -euo pipefail
@@ -23,7 +23,10 @@ if [ "$1" = -m ]; then echo arm64; else echo Darwin; fi
 STUB
 stub plistbuddy <<'STUB'
 #!/bin/sh
-echo "$STUB_HARNESS_STAMP"
+case "$2" in
+  'Print :CFBundleIdentifier') echo "${STUB_BUNDLE_ID:-com.localvoxtral.e2e-harness}" ;;
+  *) echo "$STUB_HARNESS_STAMP" ;;
+esac
 STUB
 stub nc <<'STUB'
 #!/bin/sh
@@ -67,6 +70,13 @@ STUB_HARNESS_STAMP=false LV_SCREEN_LOCK_STATE=unlocked run "$WORK/app.app"
 grep -q "is not a harness build" "$WORK/out" || fail "a non-harness bundle was not named as the reason"
 untouched "non-harness bundle"
 echo "PASS: a non-harness bundle is refused"
+
+STUB_HARNESS_STAMP=true STUB_BUNDLE_ID=com.localvoxtral.app LV_SCREEN_LOCK_STATE=unlocked run "$WORK/app.app"
+[ "$STATUS" -eq 1 ] || fail "a harness under the release's bundle id exited $STATUS, want 1"
+grep -q "has bundle id 'com.localvoxtral.app', not com.localvoxtral.e2e-harness" "$WORK/out" \
+  || fail "a harness under the release's bundle id was not named as the reason"
+untouched "harness under the release's bundle id"
+echo "PASS: a harness under the release's bundle id is refused (#1198)"
 
 STUB_HARNESS_STAMP=true LV_SCREEN_LOCK_STATE=unlocked run "$WORK/missing.app"
 [ "$STATUS" -eq 1 ] || fail "a missing bundle exited $STATUS, want 1"
@@ -151,6 +161,55 @@ grep -q "NOT RUN: The speech service .* finished a clip [0-9.]* s after the spee
 # command-line match (#1011), so no pkill runs at all.
 untouched "lagging speech service" '^(swiftc |say -o )'
 echo "PASS: a speech service lagging before the app starts is 'not runnable', with its lag"
+
+# A run that gets as far as dictating writes the harness's defaults and never
+# the owner's (#1198). The stubs launch nothing, so each scenario fails to
+# start; what matters is which domain the run wrote.
+kill "$FAKE_PID" 2>/dev/null || true
+wait "$FAKE_PID" 2>/dev/null || true
+rm -f "$port_file"
+python3 "$ROOT_DIR/scripts/ci/fake-speech-service.py" "$port_file" 0 &
+FAKE_PID=$!
+while [ ! -s "$port_file" ]; do python3 -c 'import time; time.sleep(0.05)'; done
+# `open` stands in for both launches: the app under test opens its control
+# socket, the target reports itself focused.
+stub open <<'STUB'
+#!/bin/sh
+echo "open $*" >>"$EVENTS"
+for arg; do last="$arg"; done
+case "$*" in
+  *e2e-target.app*) printf 'active=1 key=1 focused=1' >"$last/state" ;;
+  # Bound from its folder: the full path is past AF_UNIX's length limit.
+  *) python3 -c 'import os, socket, sys
+os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)
+os.chdir(os.path.dirname(sys.argv[1]))
+socket.socket(socket.AF_UNIX).bind(os.path.basename(sys.argv[1]))' \
+    "$HOME/Library/Application Support/localvoxtral/dogfood/control/control.sock" ;;
+esac
+STUB
+# Only the newest-process query sees the app under test; no owner app runs.
+stub pgrep <<'STUB'
+#!/bin/sh
+[ "$1" = -xn ] && { echo 4242; exit 0; }
+exit 1
+STUB
+: >"$EVENTS"
+set +e
+HOME="$WORK/home" PATH="$BIN:$PATH" LV_E2E_PLISTBUDDY="$BIN/plistbuddy" LV_E2E_ANNOUNCE=0 \
+  STUB_HARNESS_STAMP=true LV_SCREEN_LOCK_STATE=unlocked STUB_NC_STATUS=0 \
+  LV_E2E_REALTIME_ENDPOINT="ws://127.0.0.1:$(cat "$port_file")/v1/realtime" \
+  "$ROOT_DIR/scripts/e2e-dictation.sh" "$WORK/app.app" >"$WORK/out" 2>&1
+set -e
+grep -q "FAIL: .*the dictation did not start" "$WORK/out" \
+  || fail "the run did not reach a dictation: $(cat "$WORK/out")"
+grep -q '^defaults write com.localvoxtral.e2e-harness debug.dogfood_control_socket_enabled ' "$EVENTS" \
+  || fail "the harness's defaults were not written"
+if grep -E '^defaults ' "$EVENTS" | grep -q 'com\.localvoxtral\.app'; then
+  fail "the run touched the owner's defaults domain"
+fi
+grep -q '^defaults delete com.localvoxtral.e2e-harness$' "$EVENTS" \
+  || fail "the run left the harness's defaults behind"
+echo "PASS: a run writes the harness's defaults and never the owner's"
 
 # The scenarios that ship must parse.
 for scenario in "$ROOT_DIR"/scripts/e2e/scenarios/*.scenario; do
