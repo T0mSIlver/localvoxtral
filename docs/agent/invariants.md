@@ -55,7 +55,12 @@ there is not.
   run that no longer owns the session and changes nothing.
   The audio spoken into the gap is kept, not dropped: the run cancels the
   send loop so the chunks pile up in `AudioChunkBuffer` and the restarted loop
-  replays them. That buffer's retention cap is sized above
+  replays them once the new server session is ready (#1457): its handshake,
+  or the compatibility fallback, has opened the client's send gate. The
+  WebSocket upgrade alone is not enough, because audio handed over before the
+  handshake waits in the client and dies with a socket that closes first; that
+  close fails the attempt inside the run's budget instead of ending the run.
+  The buffer's retention cap is sized above
   `RealtimeReconnectPolicy.worstCaseDuration`, so a run that reconnects within
   its retry cap loses nothing — past the cap the OLDEST audio goes first.
   What IS lost either way is audio that was already sent when the socket died

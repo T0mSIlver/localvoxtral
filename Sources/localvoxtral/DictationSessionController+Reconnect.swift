@@ -125,8 +125,8 @@ extension DictationSessionController {
 
     // MARK: - The run
 
-    /// Retry `configuration` on a bounded backoff until the socket opens or the
-    /// attempts run out. `sleepFor` is the only clock: tests drive the whole
+    /// Retry `configuration` on a bounded backoff until a server session is
+    /// ready or the attempts run out. `sleepFor` is the only clock: tests drive the whole
     /// run — including a stop landing mid-attempt — through it.
     func runRealtimeReconnect(
         runID: Int,
@@ -166,14 +166,20 @@ extension DictationSessionController {
                 // then reject the session on an open socket, which leaves
                 // `isConnected` true on a session that will never transcribe.
                 if reconnectAttemptDidFail { break }
-                if activeRealtimeClient.isConnected {
+                // Readiness, not the upgrade (#1457). Audio the restarted send
+                // loop hands an open socket before its handshake waits in the
+                // client, and a close before the handshake erases it there:
+                // until then the gap stays in `AudioChunkBuffer`, and such a
+                // close fails this attempt instead of ending the run and
+                // starting a fresh one with a fresh allowance.
+                if activeRealtimeClient.isSessionReady {
                     completeRealtimeReconnect(attempt: attempt)
                     return
                 }
                 waited += policy.pollInterval
             }
             Log.backends.error(
-                "realtime reconnect attempt \(attempt, privacy: .public) did not reach a connected socket"
+                "realtime reconnect attempt \(attempt, privacy: .public) did not reach a ready session"
             )
         }
 
