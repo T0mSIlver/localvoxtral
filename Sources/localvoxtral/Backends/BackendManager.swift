@@ -243,11 +243,12 @@ final class BackendManager: ManagedBackendManaging {
                 // The cancel hop below runs on the main actor after this
                 // closure, so a cancel that landed earlier is only visible here.
                 guard !Task.isCancelled else {
-                    continuation.resume(throwing: CancellationError())
                     // A superseded caller can arrive cancelled with the task
                     // it just created; with nobody else waiting, stop it.
                     if ensureWaiters[task]?.isEmpty ?? true {
-                        task.cancel()
+                        cancelAndResumeAfterUnwinding(task, continuation)
+                    } else {
+                        continuation.resume(throwing: CancellationError())
                     }
                     return
                 }
@@ -278,13 +279,28 @@ final class BackendManager: ManagedBackendManaging {
 
     private func cancelEnsureWaiter(_ waiterID: UUID, of task: Task<Void, Error>) {
         guard let continuation = ensureWaiters[task]?.removeValue(forKey: waiterID) else { return }
-        continuation.resume(throwing: CancellationError())
         guard ensureWaiters[task]?.isEmpty == true else {
+            continuation.resume(throwing: CancellationError())
             Log.backends.info("ensure waiter cancelled; the shared ensure keeps running for its other waiters")
             return
         }
         ensureWaiters[task] = nil
+        cancelAndResumeAfterUnwinding(task, continuation)
+    }
+
+    /// The last waiter cancels the shared task and throws only once it has
+    /// unwound, so a caller that sees `CancellationError` also sees the status
+    /// the unwinding set (`.stopped`), not the `.preparingModel` it replaces
+    /// (#1611).
+    private func cancelAndResumeAfterUnwinding(
+        _ task: Task<Void, Error>,
+        _ continuation: CheckedContinuation<Void, Error>
+    ) {
         task.cancel()
+        Task { @MainActor in
+            _ = await task.result
+            continuation.resume(throwing: CancellationError())
+        }
     }
 
     func stopAll() async {
