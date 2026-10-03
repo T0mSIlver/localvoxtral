@@ -16,10 +16,15 @@ package struct ClaudeJoinResolution: Sendable, Equatable {
     /// join, and never set by an arm that cannot tell a session view from
     /// anything else on screen.
     package var focusedSessionUnmatched: Bool
+    /// Claude Desktop focus is in a Claude project's page
+    /// (`ClaudeProjectPageURL`), which names no session: nothing joins, but
+    /// the dictation goes to coding agents. Never true with a join.
+    package var focusedClaudeProject: Bool
 
-    package init(join: ClaudeSessionJoin?, focusedSessionUnmatched: Bool = false) {
+    package init(join: ClaudeSessionJoin?, focusedSessionUnmatched: Bool = false, focusedClaudeProject: Bool = false) {
         self.join = join
         self.focusedSessionUnmatched = focusedSessionUnmatched
+        self.focusedClaudeProject = focusedClaudeProject
     }
 }
 

@@ -589,6 +589,7 @@ extension DictationSessionController {
             profile: StopCommitCoordinator.polishProfile(
                 forTargetBundleID: resolveTargetAppBundleID(),
                 claudeJoin: context.claudeSessionJoin,
+                claudeProjectFocused: context.claudeProjectFocused,
                 settings: settings
             ),
             settings: settings,
