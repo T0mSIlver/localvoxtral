@@ -59,7 +59,8 @@ AppKit:
 - `MistralStreamHealth`, `AudioChunkBuffer`, `ClaudeStatuslineCombine`,
   `FirstChunkPreprocessor`, `LaunchWindowPolicy`, `AppWindowOpener`, `POSIXPipeRead`,
   `PipeLineReader`, `OverlayStableLineWrapper`, `PolishContextExcerptSelector`,
-  `PolishContextPreparation`, `LiveTerminalNewlineGuard`
+  `PolishContextPreparation`, `LiveTerminalNewlineGuard`,
+  `TUIAutocompleteTrailingSpace`
 - the clipboard reader's rules (`PolishContextClipboardReader`; its
   pasteboard half stays in the app)
 - the model catalogs (`BackendCatalog`, `SpeechModelCatalog`, `PolishModelCatalog`)

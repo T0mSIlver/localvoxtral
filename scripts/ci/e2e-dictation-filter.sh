@@ -34,7 +34,7 @@ PATTERNS=(
   'Sources/localvoxtral/DictationSessionController+StopCommit.swift'
   'Sources/localvoxtral/StopCommitCoordinator*.swift'      # the stop-commit, in both modes
   'Sources/localvoxtralCore/LiveTerminalNewlineGuard.swift'
-  'Sources/localvoxtral/TUIAutocompleteTrailingSpace.swift'
+  'Sources/localvoxtralCore/TUIAutocompleteTrailingSpace.swift'
   'Sources/localvoxtral/TextInsertionService.swift'
   'Sources/localvoxtral/SystemAccessibilityFocus.swift'
   'Sources/localvoxtral/OverlayBufferSessionCoordinator.swift'
