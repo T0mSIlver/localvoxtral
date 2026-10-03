@@ -1110,12 +1110,14 @@ final class DictationPipelineTests: XCTestCase {
     /// The mod got the fill and never answered: it may have filled the box,
     /// so the words stay in History instead of going in twice.
     func testAFillTheModNeverAnswersIsKeptNotTyped() async throws {
-        let (pipeline, typed, fills) = try await modChannelPipeline(answers: [.silent])
+        let answered = BoundedWait()
+        let (pipeline, typed, fills) = try await modChannelPipeline(answers: [.silent], answerGate: answered)
         let settled = FillSettled()
         ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
         addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
 
         await dictate(pipeline, "run the tests.")
+        answered.resolve()
         let done = await settled.wait(for: 1)
 
         XCTAssertTrue(done)
@@ -1143,14 +1145,16 @@ final class DictationPipelineTests: XCTestCase {
     /// tab's prompt, so the words stay in History.
     func testAFillRefusedAfterATabSwitchIsKeptNotTyped() async throws {
         let focus = FocusedPane("/dev/ttys042")
+        let answered = BoundedWait()
         let (pipeline, typed, fills) = try await modChannelPipeline(
-            answers: [.refuse], focus: focus, beforeAnswer: { focus.tty = "/dev/ttys099" }
+            answers: [.refuse], focus: focus, answerGate: answered, beforeAnswer: { focus.tty = "/dev/ttys099" }
         )
         let settled = FillSettled()
         ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
         addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
 
         await dictate(pipeline, "run the tests.")
+        answered.resolve()
         let done = await settled.wait(for: 1)
 
         XCTAssertTrue(done)
@@ -1163,13 +1167,15 @@ final class DictationPipelineTests: XCTestCase {
     /// the clipboard: the prompt is still empty, so the next dictation into
     /// it starts with no space.
     func testAFillThatEndedOnTheClipboardLeavesNoLeadingSpaceForTheNext() async throws {
-        let (pipeline, _, fills) = try await modChannelPipeline(answers: [.refuse, .fill])
+        let answered = BoundedWait()
+        let (pipeline, _, fills) = try await modChannelPipeline(answers: [.refuse, .fill], answerGate: answered)
         let settled = FillSettled()
         ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
         addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
 
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
         await dictate(pipeline, "that's what I was doing.")
+        answered.resolve()
         let first = await settled.wait(for: 1)
         XCTAssertEqual(pipeline.viewModel.lastError, DictationViewModel.StatusStrings.overlayCopiedToClipboard)
         TerminalTargetDetector.debugSecureEventInputOverride = { false }
@@ -1187,9 +1193,14 @@ final class DictationPipelineTests: XCTestCase {
     /// mod answers the fills in turn with `answers`, the last one repeating.
     /// `focus` is the terminal's focused tty, and `beforeAnswer` runs as each
     /// fill arrives, before the mod answers it.
+    /// `answerGate`, when given, holds every answer (and a silent mod's
+    /// timeout) until it resolves: a test whose fill ends in a status line
+    /// opens it once the dictation's own checks are done, since the fill
+    /// settles on a task of its own.
     private func modChannelPipeline(
         answers: [FakeModAnswer],
         focus: FocusedPane? = nil,
+        answerGate: BoundedWait? = nil,
         beforeAnswer: @escaping @Sendable () -> Void = {}
     ) async throws -> (Pipeline, TypedText, FillRecorder) {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
@@ -1201,10 +1212,10 @@ final class DictationPipelineTests: XCTestCase {
         _ = joinClaudeCodeTerminal(pipeline, focusedTTY: focusedTTY)
         let typed = recordTypedText(pipeline)
 
-        // A silent mod's fill times out at once; the others' timer never
-        // fires before their reply cancels it.
+        // A silent mod's fill times out at once, or when the gate opens;
+        // the others' timer never fires before their reply cancels it.
         let sleep: @Sendable (Duration) async -> Void = answers.contains(.silent)
-            ? { @Sendable _ in }
+            ? { @Sendable _ in _ = await answerGate?.value(failAfter: 60) }
             : { @Sendable _ in try? await Task.sleep(for: .seconds(3600)) }
         let hub = ClaudeModChannelHub(sleep: sleep)
         let fills = FillRecorder()
@@ -1217,9 +1228,17 @@ final class DictationPipelineTests: XCTestCase {
                 fills.append(message.text ?? "")
                 beforeAnswer()
                 if answer != .silent {
-                    hub.deliver(.init(
+                    let reply = ClaudeModChannelWire.Reply(
                         sessionID: "s1", id: message.id, ok: answer == .fill, reason: answer == .fill ? nil : "dialog"
-                    ))
+                    )
+                    if let answerGate {
+                        Task {
+                            _ = await answerGate.value(failAfter: 60)
+                            hub.deliver(reply)
+                        }
+                    } else {
+                        hub.deliver(reply)
+                    }
                 }
                 return true
             },
