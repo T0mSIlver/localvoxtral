@@ -1313,6 +1313,22 @@ final class DictationPipelineTests: XCTestCase {
     /// but keys would reach the other pane, so the words stay in History
     /// (#1498).
     func testARefusedModFillNeverTypesAfterAPaneSwitchDuringTheFocusLookup() async throws {
+        try await assertRefusedModFillNotTyped(switchingPanesDuring: .foreground)
+    }
+
+    /// The same switch during the lookup's second tty read, which follows
+    /// the pane's foreground query: a pane switch keeps the tty, so the
+    /// focused pane must be the last thing read before the keys.
+    func testARefusedModFillNeverTypesAfterAPaneSwitchDuringTheTTYReRead() async throws {
+        try await assertRefusedModFillNotTyped(switchingPanesDuring: .tty)
+    }
+
+    /// The fallback's lookup reads the tty, then herdr's focused pane and
+    /// its foreground, then the tty again. With `.tty` the switch lands on
+    /// the second tty read.
+    private func assertRefusedModFillNotTyped(
+        switchingPanesDuring switchDuring: HerdrFocus.Read
+    ) async throws {
         let focus = HerdrFocus("w1:p2")
         let sessionPane = FakeHerdrSocket.focusedPane("w1:p2") { [(9001, "claude")] }
         let herdr = try FakeHerdrSocket(answer: { request in
@@ -1320,7 +1336,7 @@ final class DictationPipelineTests: XCTestCase {
             case "pane.current":
                 return .result(#"{"type":"pane_current","pane":{"pane_id":"\#(focus.pane)","focused":true}}"#)
             case "pane.process_info":
-                defer { focus.foregroundQueried() }
+                defer { focus.read(.foreground) }
                 return sessionPane(request)
             default:
                 return sessionPane(request)
@@ -1329,8 +1345,8 @@ final class DictationPipelineTests: XCTestCase {
         addTeardownBlock { herdr.stop() }
         let answered = BoundedWait()
         let (pipeline, typed, fills) = try await modChannelPipeline(
-            answers: [.refuse], herdr: herdr, answerGate: answered,
-            beforeAnswer: { focus.switchDuringNextForegroundQuery(to: "w1:p3") }
+            answers: [.refuse], herdr: herdr, herdrFocus: focus, answerGate: answered,
+            beforeAnswer: { focus.switchTo("w1:p3", during: switchDuring, count: switchDuring == .tty ? 2 : 1) }
         )
         let settled = FillSettled()
         ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
@@ -1388,6 +1404,7 @@ final class DictationPipelineTests: XCTestCase {
         answers: [FakeModAnswer],
         focus: FocusedPane? = nil,
         herdr: FakeHerdrSocket? = nil,
+        herdrFocus: HerdrFocus? = nil,
         answerGate: BoundedWait? = nil,
         beforeAnswer: @escaping @Sendable () -> Void = {}
     ) async throws -> (Pipeline, TypedText, FillRecorder) {
@@ -1397,7 +1414,7 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.overlay.commitTargetAppPID = 4343
         pipeline.overlay.passesTargetPIDToCommitter = false
         if let herdr {
-            joinHerdrPane(pipeline, herdr: herdr)
+            joinHerdrPane(pipeline, herdr: herdr, ttyRead: { herdrFocus?.read(.tty) })
         } else {
             var focusedTTY: (@Sendable () -> String)?
             if let focus { focusedTTY = { focus.tty } }
@@ -2608,7 +2625,10 @@ final class DictationPipelineTests: XCTestCase {
     /// the way the app does: polishing on (a fake polisher, so nothing leaves
     /// the process) with screen context, a Ghostty surface bound to a herdr
     /// client, and a real `HerdrSocketClient` reading and writing `herdr`.
-    private func joinHerdrPane(_ pipeline: Pipeline, herdr: FakeHerdrSocket) {
+    /// `ttyRead` runs at each read of the terminal's focused tty.
+    private func joinHerdrPane(
+        _ pipeline: Pipeline, herdr: FakeHerdrSocket, ttyRead: @escaping @Sendable () -> Void = {}
+    ) {
         let settings = pipeline.viewModel.settings
         settings.llmPolishingEnabled = true
         settings.llmPolishingEndpointURL = "http://127.0.0.1:8080/v1/chat/completions"
@@ -2629,7 +2649,10 @@ final class DictationPipelineTests: XCTestCase {
         let client = HerdrSocketClient(timeout: 2)
         pipeline.viewModel.context.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
             registry: registry,
-            focusedTerminalTTY: { _ in "/dev/ttys-outer" },
+            focusedTerminalTTY: { _ in
+                ttyRead()
+                return "/dev/ttys-outer"
+            },
             herdrClientProbe: { _ in true },
             herdrPanes: client,
             herdrPaneWriter: client
@@ -3996,25 +4019,34 @@ private final class FillSettled {
     }
 }
 
-/// A fake herdr's focused pane, which the user can be made to leave while
-/// herdr answers a `pane.process_info`.
+/// A fake herdr's focused pane, which the user can be made to leave during
+/// a given read the app makes.
 private final class HerdrFocus: @unchecked Sendable {
+    enum Read { case tty, foreground }
+
     private let lock = NSLock()
     private var current: String
-    private var next: String?
+    private var pending: (pane: String, read: Read, remaining: Int)?
 
     init(_ pane: String) { current = pane }
 
     var pane: String { lock.withLock { current } }
 
-    func switchDuringNextForegroundQuery(to pane: String) {
-        lock.withLock { next = pane }
+    /// The `count`th `read` from now moves the focus to `pane`.
+    func switchTo(_ pane: String, during read: Read, count: Int = 1) {
+        lock.withLock { pending = (pane, read, count) }
     }
 
-    func foregroundQueried() {
+    func read(_ read: Read) {
         lock.withLock {
-            if let next { current = next }
-            next = nil
+            guard var next = pending, next.read == read else { return }
+            next.remaining -= 1
+            if next.remaining == 0 {
+                current = next.pane
+                pending = nil
+            } else {
+                pending = next
+            }
         }
     }
 }
