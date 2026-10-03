@@ -1389,12 +1389,11 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
             waitForChild: { pid, status, options in
                 if calls.next() == 1 {
                     insideWaitpid.signal()
-                    // Held long enough that "B is still blocked" cannot be
-                    // confused with "B is merely slow": a teardown that DOES
-                    // get through costs at most two 0.25 s grace waits, well
-                    // under the window sampled below. Bounded so a failure
-                    // cannot hang the suite.
-                    _ = releaseWaitpid.wait(timeout: .now() + 3)
+                    // Held until the test releases it. A hold that expired on
+                    // its own let a slow runner's B through before the window
+                    // below closed, failing correct locking. The bound is only
+                    // there so a failure cannot hang the suite.
+                    _ = releaseWaitpid.wait(timeout: .now() + 60)
                 }
                 return waitpid(pid, status, options)
             },
@@ -1445,7 +1444,8 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         XCTAssertTrue(reachedTheLock, "the second teardown never reached the group signal")
 
         // 1.2 s: longer than a teardown that gets through needs (≤0.5 s of
-        // grace waits), shorter than the 3 s the collection is parked for.
+        // grace waits). The collection stays parked until the release below,
+        // so a slow runner can only make this pass, never fail.
         XCTAssertEqual(
             secondTeardownReturned.wait(timeout: .now() + 1.2), .timedOut,
             "a teardown must not proceed while a collection holds the lock"
@@ -1455,6 +1455,43 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         XCTAssertEqual(firstTeardownReturned.wait(timeout: .now() + 5), .success)
         XCTAssertEqual(secondTeardownReturned.wait(timeout: .now() + 5), .success)
         XCTAssertTrue(process.hasBeenReaped)
+    }
+
+    func testAReapThatBeatsTheExitEventStillCompletesTheWaiters() async throws {
+        // Collecting the child cancels the exit source, and the cancel drops
+        // an exit event still queued. That event was the only thing that
+        // completed the waiters: a stop that reaped first left the supervisor's
+        // exit wait parked forever and the forward reporting itself running.
+        let exitEvents = DispatchQueue(label: "test.herdr-exit-events.\(UUID().uuidString)")
+        exitEvents.suspend()
+        // A suspended queue must not be released.
+        defer { exitEvents.resume() }
+        let effortFinished = DispatchSemaphore(value: 0)
+        let spawner = ClaudeRemoteHerdrForwardSpawner(
+            executablePath: "/bin/sh",
+            environment: ["PATH": "/usr/bin:/bin"],
+            reapEffortDidFinish: { effortFinished.signal() },
+            exitEventQueue: exitEvents
+        )
+        let process = try XCTUnwrap(
+            try spawner.spawn(argv: ["sh", "-c", "exit 0"]) as? LiveHerdrForwardProcess
+        )
+        let earlyWaiter = Task { await process.waitUntilExit() }
+
+        process.terminate()
+        XCTAssertEqual(effortFinished.wait(timeout: .now() + 5), .success)
+        XCTAssertTrue(process.hasBeenReaped)
+
+        // Checked before awaiting anything: without the fix the waiters never
+        // resume, and awaiting them would hang the suite instead of failing.
+        guard !process.isRunning else {
+            return XCTFail("a reaped forward must not report itself running")
+        }
+        let early = await earlyWaiter.value
+        let late = await process.waitUntilExit()
+        XCTAssertEqual(early, .unavailable)
+        XCTAssertEqual(late, .unavailable)
+        for await _ in process.standardErrorLines {}
     }
 
     func testTheCollectionBudgetIsExhaustedAndThenReleased() throws {

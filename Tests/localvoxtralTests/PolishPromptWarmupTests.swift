@@ -91,18 +91,18 @@ final class PolishPromptWarmupTests: XCTestCase {
             request: LLMPolishingRequest,
             configuration: LLMPolishingConfiguration
         ) async throws -> LLMPolishingResult {
-            started.fulfill()
             try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { continuation in
-                    // The test cancels as soon as `started` fires; on a loaded
-                    // host that cancellation can precede this store, in which
-                    // case the handler below already ran and found nothing.
                     // Never park a continuation in a cancelled task (hosted
                     // unit-suite hang, 2026-09-07).
                     lock.lock()
                     let orphaned = Task.isCancelled
                     if !orphaned { self.continuation = continuation }
                     lock.unlock()
+                    // Announced only once the handler below is installed and
+                    // holds the continuation: the test cancels as soon as this
+                    // fires, and that cancel then runs the handler at once.
+                    started.fulfill()
                     if orphaned { continuation.resume(throwing: CancellationError()) }
                 }
             } onCancel: {
@@ -141,16 +141,15 @@ final class PolishPromptWarmupTests: XCTestCase {
                 return recordedRequests.count == 1
             }
             if isFirst {
-                started.fulfill()
                 await withTaskCancellationHandler {
                     await withCheckedContinuation { continuation in
-                        // Same rule as above: a task already cancelled when
-                        // it gets here has had its handler run; resume now
-                        // instead of parking a continuation nobody holds.
+                        // Same rules as above: never park a continuation in a
+                        // cancelled task, and announce once the handler holds it.
                         lock.lock()
                         let orphaned = Task.isCancelled
                         if !orphaned { self.continuation = continuation }
                         lock.unlock()
+                        started.fulfill()
                         if orphaned { continuation.resume() }
                     }
                 } onCancel: {
@@ -330,8 +329,11 @@ final class PolishPromptWarmupTests: XCTestCase {
 
         coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .ready))
         await fulfillment(of: [service.started], timeout: 5)
+        // Saved first: the stop clears the coordinator's slot, and awaiting
+        // that would return before the cancelled task had run on.
+        let warmup = coordinator.warmupTask
         coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .stopped))
-        await awaitWarmup(coordinator)
+        await warmup?.value
         XCTAssertEqual(
             service.requests.count, 1,
             "a cancelled warmup must not start the next profile's request"
@@ -439,8 +441,9 @@ final class PolishPromptWarmupTests: XCTestCase {
 
         // The helper this warmup targeted is going away — the request must
         // be cancelled, not left to land on (or race) the next launch.
+        let warmup = coordinator.warmupTask
         coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .stopped))
-        await awaitWarmup(coordinator)
+        await warmup?.value
         XCTAssertTrue(service.observedCancellation)
     }
 
