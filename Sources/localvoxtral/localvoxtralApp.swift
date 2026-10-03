@@ -606,7 +606,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             focuser: HerdrSocketClient(timeout: 2),
             panes: herdrClient,
             raiseTTY: { await terminal.focus(tty: $0, termProgram: $1) },
-            focusedTTY: { await terminal.frontmostTTY(bundleID: $0) }
+            focusedTTY: { await terminal.frontmostTTY(bundleID: $0) },
+            paneSessionID: { [claudeSessionRegistry] in claudeSessionRegistry.sessionID(shownIn: $0) }
         )
     }
 

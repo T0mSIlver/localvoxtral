@@ -852,8 +852,11 @@ there is not.
     *Confirmed by reading back:* `.focused`, the only outcome that starts a
     dictation, needs herdr's `pane.current` to name that pane AND the
     terminal's focused tty, read again after herdr answered with the
-    terminal still frontmost (#1465), to be the window raised; the answer to
-    `pane.focus` alone never is. *Window first* (#1033): `pane.focus` is sent
+    terminal still frontmost (#1465), to be the window raised, AND the
+    registry to still resolve that pane to the session asked for
+    (`ClaudeSessionRegistry.sessionID(shownIn:)`, #1601): one opencode TUI
+    hosts several sessions in a pane, and focusing the pane cannot pick the
+    one it shows. The answer to `pane.focus` alone never is. *Window first* (#1033): `pane.focus` is sent
     only after the window reads back in front, so a window that does not
     come up leaves herdr's pane as it was, and a failure after the raise is
     `.unverified`, never an outcome that reads as nothing moved. The
@@ -1001,7 +1004,9 @@ there is not.
     herdr intercepts OSC 2 per pane, so a title marker could neither reach
     Ghostty's title nor describe an inner pane). The arm runs
     only after the surface TTY positively binds to herdr (a `herdr` client
-    process on the focused terminal surface's TTY, `HerdrClientTTYProbe` —
+    process in the foreground process group of the focused terminal
+    surface's TTY, `HerdrClientTTYProbe`; a client suspended with Ctrl-Z
+    keeps the tty while its shell owns the screen, #1602 —
     herdr's socket has no client introspection, so the process table is the
     only binding; the probe needs only the surface TTY string, so the herdr
     arm works on all three supported terminals), and from that point the join
@@ -2561,6 +2566,10 @@ there is not.
   in-app revoke runs, so this copy's app-held forward, herdr forwards and,
   after the last host, its listener come down without a relaunch. No timer
   polls the file; the next hook or query is what notices.
+  Copies starting together cannot both take the broker socket: its probe,
+  stale-file unlink and bind run under a lock every copy shares, and a
+  broker's stop unlinks the path only while it still names the socket that
+  broker bound (#1603).
   A second copy of the app (a `try-pr.sh` build) loses this port and the
   broker socket to the running copy, and then waits:
   `ClaudeHookSocketTakeover` retries only the binds it lost, each time
