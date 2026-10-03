@@ -1844,55 +1844,56 @@ final class DictationPipelineTests: XCTestCase {
     /// session's resolver reads.
     /// With `inHerdr`, the session runs in that herdr's pane `w1:p2` and the
     /// focused TTY is herdr's client's, which no session reported.
-    /// Dictation 1's append hangs, dictation 2 appends to the same prompt,
-    /// and then dictation 1's relay refuses: the late text stays in History
-    /// and never rides dictation 2's relay or keys (#1466).
+    /// Dictation 1's append is still open when dictation 2 appends to the
+    /// same prompt; then dictation 1's route refuses it, with keys allowed.
+    /// The late text stays in History and never rides dictation 2's route
+    /// or keys (#1466).
     func testLateRelayRefusalCannotEnterTheNextDictation() async throws {
         let firstArrived = BoundedWait()
-        let answerFirst = DispatchSemaphore(value: 0)
-        let relay = try FakeOpencodePromptRelay(status: { call in
-            guard call.text == "First." else { return 200 }
+        let releaseFirst = BoundedWait()
+        let firstRoute = ScriptedPromptRoute { _ in
             firstArrived.resolve()
-            _ = answerFirst.wait(timeout: .now() + 10)
-            return 500
-        }, concurrent: true)
-        addTeardownBlock { relay.stop() }
-        addTeardownBlock { answerFirst.signal() }
+            _ = await releaseFirst.value(failAfter: 10)
+            return .typeInstead
+        }
+        let secondArrived = BoundedWait()
+        let secondRoute = ScriptedPromptRoute { _ in
+            secondArrived.resolve()
+            return .delivered
+        }
         let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
-        joinOpencodePane(pipeline, relay: relay.relay(sessionID: "ses_a").address)
         let typed = recordTypedText(pipeline)
 
-        var firstSink: AgentPromptSink?
-        await dictate(pipeline, "First.") {
-            firstSink = pipeline.viewModel.textInsertion.promptRelaySink
-        }
+        await dictate(pipeline, "First.") { armPromptRoute(pipeline, firstRoute) }
+        let firstSink = pipeline.viewModel.textInsertion.promptRelaySink
         let firstInFlight = await firstArrived.value(failAfter: 10)
         XCTAssertTrue(firstInFlight, "precondition: dictation 1's append is still open")
 
         pipeline.server.forgetFrames()
         await startAndSpeak(pipeline)
+        armPromptRoute(pipeline, secondRoute)
         let secondSink = try XCTUnwrap(pipeline.viewModel.textInsertion.promptRelaySink)
-        XCTAssertFalse(secondSink === firstSink)
         pipeline.server.send(["type": "transcription.delta", "delta": "Second."])
-        let secondDelivered = await relay.waitUntil { $0.contains { $0.text == "Second." } }
-        XCTAssertTrue(secondDelivered, "calls: \(relay.calls)")
+        let secondDelivered = await secondArrived.value(failAfter: 10)
+        XCTAssertTrue(secondDelivered)
 
-        answerFirst.signal()
+        releaseFirst.resolve()
         await firstSink?.waitUntilIdle()
         await secondSink.waitUntilIdle()
-        XCTAssertEqual(
-            pipeline.viewModel.lastError, DictationViewModel.StatusStrings.agentPromptTextKeptInHistory
-        )
 
         await stopAndFinalize(
             pipeline, finalText: "Second.",
             expectedError: DictationViewModel.StatusStrings.agentPromptTextKeptInHistory
         )
-        // The fake records a call once it answered it, so "First." comes last.
-        let bothRecorded = await relay.waitForCalls(2)
-        XCTAssertTrue(bothRecorded)
-        XCTAssertEqual(relay.calls.compactMap(\.text), ["Second.", "First."])
+        XCTAssertEqual(firstRoute.calls, [.append("First.")])
+        XCTAssertEqual(secondRoute.calls, [.append("Second.")], "dictation 2's route carries only its own text")
         XCTAssertEqual(typed.text, "", "the late text is typed nowhere")
+    }
+
+    /// Arms `route` for the dictation running now, as its start would.
+    private func armPromptRoute(_ pipeline: Pipeline, _ route: any AgentPromptRoute) {
+        pipeline.viewModel.context.agentPromptRoute = route
+        pipeline.viewModel.session.armPromptRelayForSession()
     }
 
     // MARK: - A realtime error during the stop (#1482)

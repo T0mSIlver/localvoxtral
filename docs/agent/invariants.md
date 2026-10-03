@@ -737,7 +737,10 @@ there is not.
   landed, or whose target is not where keys would go, answers
   `keepInHistory` instead: the text is typed nowhere for the rest of the
   dictation, and the popover says it is in History. Typing it would put it
-  in the wrong app, or in twice.
+  in the wrong app, or in twice. A refusal that answers after the next
+  dictation started, or after a go-to moved the keys, stays in History
+  too (#1466): the keyboard path and its pending text belong to that
+  dictation or pane now, and would carry the text into its route.
   - *opencode's prompt relay* (#719, `OpencodePromptRoute`).
     *Loopback only:* the wire carries a port and a token
     (`OpencodePromptRelayAddress`), never a host; `OpencodePromptRelayClient`
