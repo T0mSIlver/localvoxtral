@@ -20,7 +20,7 @@ final class HistoryDeleteAlertTests: XCTestCase {
             XCTAssertTrue(alert.showsSuppressionButton, question.title)
             XCTAssertEqual(alert.suppressionButton?.title, HistoryDeleteAlert.backupsCheckboxTitle)
             XCTAssertEqual(
-                HistoryDeleteAlert.answer(to: .alertFirstButtonReturn, in: alert),
+                question.answer(to: .alertFirstButtonReturn, in: alert),
                 .delete(removingBackups: false), question.title)
         }
     }
@@ -30,19 +30,38 @@ final class HistoryDeleteAlertTests: XCTestCase {
             let alert = question.makeAlert()
             alert.suppressionButton?.state = .on
             XCTAssertEqual(
-                HistoryDeleteAlert.answer(to: .alertFirstButtonReturn, in: alert),
+                question.answer(to: .alertFirstButtonReturn, in: alert),
                 .delete(removingBackups: true), question.title)
-            XCTAssertEqual(HistoryDeleteAlert.answer(to: .alertSecondButtonReturn, in: alert), .cancel)
+            XCTAssertEqual(question.answer(to: .alertSecondButtonReturn, in: alert), .cancel)
+        }
+    }
+
+    /// With nothing but backups left, Delete All deletes them and has no
+    /// box; Don't keep and the switches still have theirs, since turning
+    /// them off does something either way.
+    func testWithNothingLeftDeleteAllDeletesTheBackups() {
+        let deleteAll = HistoryDeleteAlert.deleteAll(count: 0)
+        let alert = deleteAll.makeAlert()
+        XCTAssertFalse(alert.showsSuppressionButton)
+        XCTAssertEqual(deleteAll.answer(to: .alertFirstButtonReturn, in: alert), .delete(removingBackups: true))
+        XCTAssertEqual(deleteAll.answer(to: .alertSecondButtonReturn, in: alert), .cancel)
+
+        for question in [HistoryDeleteAlert.retention(.off, count: 0), .audioOff(count: 0), .recordsOff(count: 0)] {
+            let alert = question.makeAlert()
+            XCTAssertTrue(alert.showsSuppressionButton, question.title)
+            XCTAssertEqual(
+                question.answer(to: .alertFirstButtonReturn, in: alert), .delete(removingBackups: false),
+                question.title)
         }
     }
 
     /// A trim to fewer days keeps its snapshot and the quarantine (#985), so
     /// it has no box to tick.
     func testARetentionTrimDoesNotAskAboutTheBackups() {
-        let alert = HistoryDeleteAlert.retention(.days7, count: 4).makeAlert()
+        let question = HistoryDeleteAlert.retention(.days7, count: 4)
+        let alert = question.makeAlert()
         XCTAssertFalse(alert.showsSuppressionButton)
         alert.suppressionButton?.state = .on
-        XCTAssertEqual(
-            HistoryDeleteAlert.answer(to: .alertFirstButtonReturn, in: alert), .delete(removingBackups: false))
+        XCTAssertEqual(question.answer(to: .alertFirstButtonReturn, in: alert), .delete(removingBackups: false))
     }
 }
