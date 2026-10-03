@@ -330,6 +330,35 @@ final class ClaudeSessionFocusResolutionTests: XCTestCase {
         )
     }
 
+    /// The TUI switched to a session the server half never announced (it
+    /// started before the plugin loaded): that declaration is refused, and
+    /// the terminal no longer shows the session it declared before, so that
+    /// one must not stay joined until its TTL runs out.
+    func testARefusedSwitchRetractsThePreviousDeclaration() {
+        let registry = makeRegistry()
+        registry.ingest(opencodeRecord(.sessionStart, session: "ses_a"), origin: local)
+        registry.ingest(focusRecord(session: "ses_a"), origin: local)
+        XCTAssertEqual(resolvedSessionID(registry.resolve(tty: tty)), "opencode:ses_a")
+
+        XCTAssertNil(registry.ingest(focusRecord(session: "ses_unannounced"), origin: local))
+
+        XCTAssertEqual(registry.resolve(tty: tty), .unknown)
+        XCTAssertNotNil(registry.snapshot(sessionID: "opencode:ses_a"))
+    }
+
+    /// Only a declaration that could have cleared the focus may retract it:
+    /// Claude's or a remote one is refused without effect.
+    func testARefusedDeclarationFromAnotherSourceLeavesTheFocusAlone() {
+        let registry = makeRegistry()
+        registry.ingest(opencodeRecord(.sessionStart, session: "ses_a"), origin: local)
+        registry.ingest(focusRecord(session: "ses_a"), origin: local)
+
+        registry.ingest(focusRecord(session: "ses_a", agent: .claude), origin: local)
+        registry.ingest(focusRecord(session: "ses_unannounced"), origin: .remote(channel: "h1"))
+
+        XCTAssertEqual(resolvedSessionID(registry.resolve(tty: tty)), "opencode:ses_a")
+    }
+
     func testFocusClearedRetractsTheDeclarationImmediately() {
         let registry = makeRegistry()
         registry.ingest(opencodeRecord(.sessionStart, session: "ses_a"), origin: local)

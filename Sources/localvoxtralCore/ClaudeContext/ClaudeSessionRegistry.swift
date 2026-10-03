@@ -274,6 +274,15 @@ public final class ClaudeSessionRegistry: Sendable {
             switch record.event {
             case .focusChanged:
                 guard isValidFocusDeclarationLocked(state, record: record, origin: origin) else {
+                    // The TUI now shows a session this registry cannot join
+                    // (one the server half never announced): whatever this
+                    // tty declared before is no longer on screen. Retracted
+                    // under the same gate as a clear, which only widens
+                    // abstention and never touches a Claude TTY claim.
+                    if record.agent == .opencode, origin.isLocalAuthenticated,
+                       let tty = record.process?.tty, !tty.isEmpty {
+                        state.focusByTTY.removeValue(forKey: tty)
+                    }
                     return nil
                 }
                 recordFocusLocked(&state, record: record, now: timestamp)
