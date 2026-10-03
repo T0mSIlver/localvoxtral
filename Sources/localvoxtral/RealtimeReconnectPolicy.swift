@@ -22,6 +22,13 @@ struct RealtimeReconnectPolicy: Sendable, Equatable {
     let attemptTimeout: TimeInterval
     /// Cadence at which an attempt re-reads the client's connection state.
     let pollInterval: TimeInterval
+    /// How long one run may wait, in all, for the bundled helper to finish
+    /// restarting before it dials anyway (#1583). speechd binds its port only
+    /// once its model is loaded, so until then every connect is refused at
+    /// once and would spend the attempts in seconds. Charged no attempt, and
+    /// short of `AudioChunkBuffer.maxRetainedSeconds` by the time the
+    /// attempts take when each is refused at once.
+    let managedHelperStartBudget: TimeInterval
 
     static let `default` = RealtimeReconnectPolicy(
         maxAttempts: 4,
@@ -29,7 +36,8 @@ struct RealtimeReconnectPolicy: Sendable, Equatable {
         backoffMultiplier: 3,
         maxBackoff: 2.0,
         attemptTimeout: 4.0,
-        pollInterval: 0.05
+        pollInterval: 0.05,
+        managedHelperStartBudget: 20.0
     )
 
     /// Wait preceding `attempt` (1-based).

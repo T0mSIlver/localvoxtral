@@ -380,11 +380,13 @@ final class RealtimeReconnectTests: XCTestCase {
 
     // MARK: - The user stops during a reconnect
 
-    func testStopDuringAReconnectEndsItAndStopsDialing() async {
+    /// A stop that skips finalization (a lost network) has no use for the
+    /// gap, so it ends the run where it stands.
+    func testAStopWithoutFinalizationDuringAReconnectEndsItAndStopsDialing() async {
         let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
         viewModel.dependencies.reconnectSleep = { [weak viewModel] _ in
             guard let viewModel, viewModel.isDictating else { return }
-            viewModel.stopDictation(reason: "manual toggle")
+            viewModel.stopDictation(reason: "network lost", finalizeRemainingAudio: false)
         }
 
         viewModel.session.handle(event: .disconnected)
@@ -394,6 +396,193 @@ final class RealtimeReconnectTests: XCTestCase {
         XCTAssertFalse(viewModel.session.isReconnectingRealtimeSession)
         XCTAssertEqual(client.connectCount, 0, "a stopped run must not dial again")
         XCTAssertNotEqual(viewModel.statusText, "Listening...")
+    }
+
+    /// The user stops while speechd restarts. The run goes on dialling, the
+    /// speech captured since the crash reaches the new server session once,
+    /// and the stop's final commit turns it into the end of the dictation
+    /// (#1582).
+    func testAStopDuringAReconnectReplaysTheGapAndFinalizesIt() async {
+        let clock = ManualSessionClock()
+        let records = RecordedSessions()
+        let (viewModel, client) = makeDictatingViewModel(
+            outputMode: .overlayBuffer, clock: clock, records: records)
+        viewModel.transcript.currentDictationEventText = "before the crash"
+        let gap = Data(repeating: 7, count: 3_200)
+        viewModel.audio.audioChunkBuffer.append(gap)
+        // No socket takes audio until the reconnect opens one.
+        client.setRefusesAudio(true)
+        client.setOnCommit { [weak viewModel] final in
+            guard final else { return }
+            MainActor.assumeIsolated {
+                viewModel?.session.handle(event: .finalTranscript("in the gap"))
+                viewModel?.session.handle(event: .transcriptionFinalized)
+            }
+        }
+        viewModel.dependencies.reconnectSleep = { [weak viewModel] _ in
+            guard let viewModel else { return }
+            if viewModel.isDictating {
+                viewModel.stopDictation(reason: "manual toggle")
+            } else if client.connectCount > 0 {
+                client.setRefusesAudio(false)
+                client.setConnected(true)
+            }
+        }
+
+        viewModel.session.handle(event: .disconnected)
+        await viewModel.session.reconnectTask?.value
+        await viewModel.session.stopFinalizationTask?.value
+        await awaitStoppedSessionCommit(viewModel)
+
+        XCTAssertEqual(client.connectCount, 1, "the stop let the run dial")
+        XCTAssertEqual(client.sentAudioBytes, gap.count, "the gap reaches the new session once")
+        XCTAssertEqual(client.commits, [true], "one final commit, after the replay")
+        XCTAssertEqual(records.all.map(\.rawText), ["before the crash in the gap"])
+        XCTAssertFalse(viewModel.isFinalizingStop)
+        XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.ready)
+    }
+
+    /// The helper never comes back: the stop finishes with the text received
+    /// before the crash and says its end may be missing (#1582).
+    func testAStopDuringAReconnectThatNeverSucceedsSaysTheEndMayBeMissing() async {
+        let clock = ManualSessionClock()
+        let records = RecordedSessions()
+        let (viewModel, client) = makeDictatingViewModel(
+            outputMode: .overlayBuffer, clock: clock, records: records)
+        viewModel.transcript.currentDictationEventText = "before the crash"
+        viewModel.audio.audioChunkBuffer.append(Data(count: 3_200))
+        viewModel.dependencies.reconnectSleep = { [weak viewModel] _ in
+            guard let viewModel else { return }
+            if viewModel.isDictating {
+                viewModel.stopDictation(reason: "manual toggle")
+            } else if client.connectCount > 0 {
+                viewModel.session.handle(event: .error("WebSocket failed: refused"))
+            }
+        }
+
+        viewModel.session.handle(event: .disconnected)
+        await viewModel.session.reconnectTask?.value
+        await awaitStoppedSessionCommit(viewModel)
+
+        XCTAssertEqual(client.connectCount, RealtimeReconnectPolicy.default.maxAttempts)
+        XCTAssertEqual(records.all.map(\.rawText), ["before the crash"])
+        XCTAssertFalse(viewModel.isFinalizingStop)
+        XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.dictationEndMayBeMissing)
+        XCTAssertEqual(viewModel.lastError, DictationViewModel.StatusStrings.dictationEndMayBeMissing)
+    }
+
+    /// The stop waits on the reconnect no longer than a finalization may
+    /// take: past it, the stop finishes with what arrived (#1582).
+    func testAStopDuringAReconnectGivesUpAtTheFinalizationTimeout() async {
+        let clock = ManualSessionClock()
+        let records = RecordedSessions()
+        let (viewModel, client) = makeDictatingViewModel(
+            outputMode: .overlayBuffer, clock: clock, records: records)
+        viewModel.transcript.currentDictationEventText = "before the crash"
+        // Every attempt hangs: the run outlives the stop's bound.
+        let held = BoundedWait()
+        viewModel.dependencies.reconnectSleep = { [weak viewModel] _ in
+            guard let viewModel else { return }
+            if viewModel.isDictating {
+                viewModel.stopDictation(reason: "manual toggle")
+                return
+            }
+            _ = await held.value(failAfter: 10)
+        }
+
+        viewModel.session.handle(event: .disconnected)
+        // The stop's watchdog is the only timer left on the clock.
+        await clock.waitForSleepers(1)
+        let watchdog = viewModel.session.finalizationWatchdogTask
+        clock.advance(by: TimingConstants.stopFinalizationTimeout)
+        await watchdog?.value
+        await awaitStoppedSessionCommit(viewModel)
+        held.resolve()
+        await viewModel.session.reconnectTask?.value
+
+        XCTAssertEqual(client.commits, [])
+        XCTAssertEqual(records.all.map(\.rawText), ["before the crash"])
+        XCTAssertFalse(viewModel.session.isReconnectingRealtimeSession)
+        XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.dictationEndMayBeMissing)
+    }
+
+    // MARK: - The bundled helper reloads (#1583)
+
+    /// speechd crashed and takes eight seconds to load its model again, so
+    /// every connect meanwhile is refused at once. The run waits on the
+    /// helper instead of spending its attempts, and the dictation recovers
+    /// with the gap intact.
+    func testAReconnectWaitsOutTheBundledHelpersReloadWithoutSpendingAttempts() async {
+        let helper = OnboardingTestBackendManager()
+        helper.speechdStatus = .starting
+        let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer, backendManager: helper)
+        viewModel.session.sessionUsesManagedSpeechHelper = true
+        viewModel.audio.audioChunkBuffer.append(Data(count: 3_200))
+        let elapsed = VirtualSeconds()
+        viewModel.dependencies.reconnectSleep = { [weak viewModel] duration in
+            guard let viewModel else { return }
+            elapsed.value += duration
+            if elapsed.value >= 8 { helper.speechdStatus = .ready }
+            guard client.connectCount > 0 else { return }
+            if helper.speechdStatus == .ready {
+                client.setConnected(true)
+            } else {
+                viewModel.session.handle(event: .error("WebSocket failed: refused"))
+            }
+        }
+
+        viewModel.session.handle(event: .disconnected)
+        await viewModel.session.reconnectTask?.value
+
+        XCTAssertTrue(viewModel.isDictating, "the dictation outlives the reload")
+        XCTAssertEqual(viewModel.statusText, "Listening...")
+        XCTAssertLessThanOrEqual(client.connectCount, 2, "attempts are not spent while the helper starts")
+        XCTAssertEqual(
+            viewModel.audio.audioChunkBuffer.bufferedByteCount, 3_200,
+            "the gap waits for the restarted send loop")
+    }
+
+    /// The wait on the helper is bounded: a helper that keeps starting does
+    /// not hold the dictation past what the audio buffer can replay.
+    func testAReconnectStopsWaitingOnAHelperThatNeverFinishesStarting() async {
+        let helper = OnboardingTestBackendManager()
+        helper.speechdStatus = .starting
+        let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer, backendManager: helper)
+        viewModel.session.sessionUsesManagedSpeechHelper = true
+        let elapsed = VirtualSeconds()
+        viewModel.dependencies.reconnectSleep = { [weak viewModel] duration in
+            guard let viewModel else { return }
+            elapsed.value += duration
+            guard client.connectCount > 0 else { return }
+            viewModel.session.handle(event: .error("WebSocket failed: refused"))
+        }
+
+        viewModel.session.handle(event: .disconnected)
+        await viewModel.session.reconnectTask?.value
+
+        XCTAssertFalse(viewModel.isDictating)
+        XCTAssertEqual(viewModel.statusText, DictationViewModel.connectionLostMessage)
+        XCTAssertLessThan(
+            elapsed.value, Double(AudioChunkBuffer.maxRetainedSeconds),
+            "the run gives up before the buffer would drop the gap's start")
+    }
+
+    /// External URL mode keeps its policy: a server's status is not ours to
+    /// wait on.
+    func testAnExternalServerReconnectDoesNotWaitOnTheHelper() async {
+        let helper = OnboardingTestBackendManager()
+        helper.speechdStatus = .starting
+        let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer, backendManager: helper)
+        viewModel.dependencies.reconnectSleep = { [weak viewModel] _ in
+            guard let viewModel, client.connectCount > 0 else { return }
+            viewModel.session.handle(event: .error("WebSocket failed: refused"))
+        }
+
+        viewModel.session.handle(event: .disconnected)
+        await viewModel.session.reconnectTask?.value
+
+        XCTAssertEqual(client.connectCount, RealtimeReconnectPolicy.default.maxAttempts)
+        XCTAssertFalse(viewModel.isDictating)
     }
 
     func testASocketThatOpensAfterTheUserCancelledDoesNotResurrectTheSession() async {
@@ -441,8 +630,8 @@ final class RealtimeReconnectTests: XCTestCase {
         // audio the stop flushed into its pending queue.
         let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
         viewModel.dependencies.reconnectSleep = { [weak viewModel] _ in
-            guard let viewModel, client.connectCount > 0 else { return }
-            viewModel.stopDictation(reason: "manual toggle")
+            guard let viewModel, viewModel.isDictating, client.connectCount > 0 else { return }
+            viewModel.stopDictation(reason: "network lost", finalizeRemainingAudio: false)
         }
 
         viewModel.session.handle(event: .disconnected)
@@ -611,7 +800,10 @@ final class RealtimeReconnectTests: XCTestCase {
     }
 
     private func makeDictatingViewModel(
-        outputMode: DictationOutputMode
+        outputMode: DictationOutputMode,
+        backendManager: (any ManagedBackendManaging)? = nil,
+        clock: ManualSessionClock? = nil,
+        records: RecordedSessions? = nil
     ) -> (DictationViewModel, FakeRealtimeClient) {
         let suiteName = "localvoxtral.RealtimeReconnectTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -627,10 +819,15 @@ final class RealtimeReconnectTests: XCTestCase {
         settings.llmPolishingEnabled = false
         settings.realtimeAPIEndpointURL = "ws://127.0.0.1:8000/v1/realtime"
 
+        var dependencies = DictationViewModel.Dependencies()
+        if let clock { dependencies.clock = clock.clock }
+        if let records { dependencies.onSessionRecord = { records.all.append($0) } }
         let viewModel = DictationViewModel(
             settings: settings,
+            backendManager: backendManager,
             overlayBufferCoordinator: MockOverlayCoordinator(),
-            startRuntimeServices: false
+            startRuntimeServices: false,
+            dependencies: dependencies
         )
         // Session start reads config through the store — never the real config
         // directory.
@@ -655,4 +852,16 @@ final class RealtimeReconnectTests: XCTestCase {
         )
         return (viewModel, client)
     }
+}
+
+/// Virtual time a test's reconnect sleep seam has handed out.
+@MainActor
+private final class VirtualSeconds {
+    var value: TimeInterval = 0
+}
+
+/// Every record the sessions wrote, in order.
+@MainActor
+private final class RecordedSessions {
+    var all: [DictationSessionRecord] = []
 }

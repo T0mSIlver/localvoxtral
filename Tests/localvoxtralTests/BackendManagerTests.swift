@@ -838,6 +838,69 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(statusWhenCallerThrew, ManagedBackendStatus.stopped)
     }
 
+    /// A cancel that lands just as the download finishes leaves `.stopped`,
+    /// not the `.preparingModel` the last progress reading set (#1614). The
+    /// fake's prepare returns normally once cancelled, as a download that
+    /// completed under the cancel does.
+    func testACancelAfterThePrepareFinishesLeavesStopped() async throws {
+        let modelPreparer = FakeModelPreparer(suspendBackendIDs: [BackendCatalog.speechd.id])
+        modelPreparer.completeSuspendedPrepareOnCancel()
+        let supervisorFactory = FakeSupervisorFactory()
+        let manager = makeManager(modelPreparer: modelPreparer, supervisorFactory: supervisorFactory)
+
+        let ensure = Task { @MainActor () -> ManagedBackendStatus? in
+            do {
+                try await manager.ensureReady(dictation: true, polishing: false)
+                return nil
+            } catch {
+                XCTAssertTrue(error is CancellationError, "expected CancellationError, got \(error)")
+                return manager.speechdStatus
+            }
+        }
+        await modelPreparer.waitUntilPrepareStarted()
+
+        ensure.cancel()
+
+        let statusWhenCallerThrew = await ensure.value
+        XCTAssertEqual(statusWhenCallerThrew, ManagedBackendStatus.stopped)
+        XCTAssertTrue(supervisorFactory.createdConfigurations.isEmpty, "no helper starts after the cancel")
+    }
+
+    /// A cancel while the helper starts stops it and leaves `.stopped`, not
+    /// the `.failed` an ended state stream used to report (#1614).
+    func testACancelDuringTheSupervisorStartStopsTheHelperAndLeavesStopped() async throws {
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.launching]
+        let manager = makeManager(supervisorFactory: supervisorFactory)
+        var updates = manager.statusUpdates.makeAsyncIterator()
+
+        let ensure = Task { @MainActor () -> ManagedBackendStatus? in
+            do {
+                try await manager.ensureReady(dictation: true, polishing: false)
+                return nil
+            } catch {
+                XCTAssertTrue(error is CancellationError, "expected CancellationError, got \(error)")
+                return manager.speechdStatus
+            }
+        }
+        // The ensure's own `.starting`, then the launching supervisor's.
+        var startingUpdates = 0
+        while startingUpdates < 2, let update = await updates.next() {
+            if update.spec.id == BackendCatalog.speechd.id, update.status == .starting {
+                startingUpdates += 1
+            }
+        }
+
+        ensure.cancel()
+
+        let statusWhenCallerThrew = await ensure.value
+        XCTAssertEqual(statusWhenCallerThrew, ManagedBackendStatus.stopped)
+        XCTAssertEqual(
+            supervisorFactory.supervisors[BackendCatalog.speechd.displayName]?.stopCallCount, 1,
+            "the half-started helper is stopped"
+        )
+    }
+
     func testStopPolishingCancelsInFlightEnsureBeforeSupervisorCanStart() async throws {
         let modelPreparer = FakeModelPreparer(suspendBackendIDs: [BackendCatalog.polishd.id])
         let supervisorFactory = FakeSupervisorFactory()
@@ -1312,6 +1375,7 @@ private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
         var cancelledPrepareParked = false
         var cancelledPrepareRelease: CheckedContinuation<Void, Never>?
         var cancelledPrepareReleaseRequested = false
+        var completeSuspendedPrepareOnCancel = false
     }
 
     private let scriptedProgress: [String: [ModelDownloadProgress]]
@@ -1376,6 +1440,8 @@ private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
             } catch is CancellationError where state.withLock({ $0.holdCancelledPrepare }) {
                 await parkCancelledPrepare()
                 throw CancellationError()
+            } catch is CancellationError where state.withLock({ $0.completeSuspendedPrepareOnCancel }) {
+                return
             }
         }
 
@@ -1430,6 +1496,12 @@ private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
             waiter?.resume()
             if released { continuation.resume() }
         }
+    }
+
+    /// Makes the suspended prepare return normally once cancelled: the
+    /// download finished as the cancel landed.
+    func completeSuspendedPrepareOnCancel() {
+        state.withLock { $0.completeSuspendedPrepareOnCancel = true }
     }
 
     /// Makes the suspended prepare park once cancelled instead of throwing.

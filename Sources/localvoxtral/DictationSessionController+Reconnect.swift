@@ -134,9 +134,23 @@ extension DictationSessionController {
         policy: RealtimeReconnectPolicy = .default,
         sleepFor: @MainActor (TimeInterval) async -> Void = DictationSessionController.sleepForReconnect
     ) async {
+        var helperStartBudget = sessionUsesManagedSpeechHelper ? policy.managedHelperStartBudget : 0
         for attempt in 1...max(1, policy.maxAttempts) {
             await sleepFor(policy.backoff(beforeAttempt: attempt))
             guard isReconnectRunCurrent(runID) else { return }
+            if helperStartBudget > 0, backendManager.speechdStatus == .starting {
+                Log.backends.notice(
+                    "realtime reconnect waiting for the bundled helper to finish starting before attempt \(attempt, privacy: .public)"
+                )
+                while helperStartBudget > 0, backendManager.speechdStatus == .starting {
+                    await sleepFor(policy.pollInterval)
+                    guard isReconnectRunCurrent(runID) else { return }
+                    helperStartBudget -= policy.pollInterval
+                }
+                Log.backends.notice(
+                    "realtime reconnect done waiting for the bundled helper: \(String(describing: self.backendManager.speechdStatus), privacy: .public)"
+                )
+            }
 
             reconnectAttemptDidFail = false
             Log.backends.notice(
@@ -190,7 +204,8 @@ extension DictationSessionController {
     /// Whether `runID` still owns the session. False once a stop, a cancel or a
     /// newer session has moved on — the run must then change nothing.
     private func isReconnectRunCurrent(_ runID: Int) -> Bool {
-        isReconnectingRealtimeSession && reconnectRunID == runID && isDictating
+        // A stop during the run keeps it, to finalize the gap (#1582).
+        isReconnectingRealtimeSession && reconnectRunID == runID && (isDictating || isFinalizingStop)
     }
 
     private func completeRealtimeReconnect(attempt: Int) {
@@ -205,6 +220,15 @@ extension DictationSessionController {
         )
 
         setRealtimeIndicatorConnected()
+        guard isDictating else {
+            // The user stopped while the run dialled: the gap goes to the new
+            // server session with the stop's final commit behind it, once.
+            statusText = StatusStrings.finalizing
+            audio.flushBufferedAudio(to: activeRealtimeClient)
+            scheduleStopFinalization()
+            startStopFinalizationWatchdog()
+            return
+        }
         statusText = "Listening..."
         // The buffer is deliberately NOT cleared: the first tick of the
         // restarted send loop is what replays the gap.
@@ -227,10 +251,29 @@ extension DictationSessionController {
         // The last attempt may still hold a half-open socket that would
         // otherwise connect into a session that no longer exists.
         activeRealtimeClient.disconnect()
+        guard isDictating else {
+            finishStopWithoutTheReconnectGap(
+                reason: "reconnect failed after \(policy.maxAttempts) attempts"
+            )
+            return
+        }
         endDictationAfterLostConnection(
             technicalDetails:
                 "Realtime websocket disconnected unexpectedly during active dictation; reconnect failed after \(policy.maxAttempts) attempts."
         )
+    }
+
+    /// A stop that waited on a reconnect run which never got through: it
+    /// finishes with the text received before the drop, and says its end may
+    /// be missing, since the speech since the drop was never transcribed.
+    func finishStopWithoutTheReconnectGap(reason: String) {
+        let lostSeconds =
+            Double(audio.audioChunkBuffer.takeAll().count) / Double(AudioChunkBuffer.bytesPerSecond)
+        Log.backends.error(
+            "stop finalization: \(reason, privacy: .public); \(String(format: "%.1f", lostSeconds), privacy: .public)s of speech since the drop not transcribed"
+        )
+        realtimeErrorDuringStop = true
+        finishStoppedSession(promotePendingSegment: true)
     }
 
     /// The end of the line for a dropped socket: tear the session down and say

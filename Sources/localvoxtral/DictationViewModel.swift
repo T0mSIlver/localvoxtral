@@ -256,8 +256,16 @@ final class DictationViewModel {
 
     func toggleDictation(outputMode: DictationOutputMode? = nil) { session.toggleDictation(outputMode: outputMode) }
     func startDictation(outputMode: DictationOutputMode? = nil) { session.startDictation(outputMode: outputMode) }
-    func stopDictation(reason: String = "unspecified", finalizeRemainingAudio: Bool = true) {
-        session.stopDictation(reason: reason, finalizeRemainingAudio: finalizeRemainingAudio)
+    func stopDictation(
+        reason: String = "unspecified",
+        finalizeRemainingAudio: Bool = true,
+        finalizationTimeout: TimeInterval = TimingConstants.stopFinalizationTimeout
+    ) {
+        session.stopDictation(
+            reason: reason,
+            finalizeRemainingAudio: finalizeRemainingAudio,
+            finalizationTimeout: finalizationTimeout
+        )
     }
     func cancelDictation() { session.cancelDictation() }
     func refreshMicrophoneInputs() { session.refreshMicrophoneInputs() }
@@ -926,7 +934,13 @@ final class DictationViewModel {
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self, self.isDictating else { return }
-                    self.stopDictation(reason: "system sleep", finalizeRemainingAudio: false)
+                    // The final commit is what makes the bundled helper flush
+                    // its last words; a closed socket drops them (#1584).
+                    // Bounded short, since sleep may suspend the app any time.
+                    self.stopDictation(
+                        reason: "system sleep",
+                        finalizationTimeout: TimingConstants.sleepStopFinalizationTimeout
+                    )
                 }
             }
             lifecycleObservers.append((workspace, sleepObserver))

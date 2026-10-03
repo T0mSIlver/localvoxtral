@@ -66,7 +66,7 @@ final class PolishdRouterTests: XCTestCase {
         let response = await router.handle(
             chatRequest(
                 """
-                {"model": "x", "temperature": 0.3,
+                {"model": "test-model", "temperature": 0.3,
                  "messages": [{"role": "system", "content": "sys"},
                               {"role": "user", "content": "raw one"},
                               {"role": "user", "content": "raw two"}]}
@@ -78,13 +78,45 @@ final class PolishdRouterTests: XCTestCase {
         let decoded = try JSONDecoder().decode(ChatCompletionResponse.self, from: response.body)
         XCTAssertEqual(decoded.choices.first?.message.content, "cleaned text")
         XCTAssertEqual(decoded.choices.first?.finishReason, "stop")
-        XCTAssertEqual(decoded.model, "x")
+        XCTAssertEqual(decoded.model, "test-model")
         XCTAssertEqual(responder.received?.messages.count, 3)
         XCTAssertEqual(responder.received?.messages[1].content, "raw one")
         XCTAssertNil(responder.received?.chatTemplateArguments)
         XCTAssertEqual(responder.received?.sampling.temperature, 0.3)
         XCTAssertNil(responder.received?.sampling.maxTokens)
         XCTAssertNil(decoded.timings)
+    }
+
+    /// A request naming another model than the one loaded is refused before
+    /// generation: the loaded model would answer under the requested name
+    /// (#1591).
+    func testAMismatchedModelIsRejectedBeforeGeneration() async throws {
+        let responder = StubResponder()
+        let router = PolishdRouter(responder: responder, modelName: "loaded-model")
+        let response = await router.handle(
+            chatRequest(#"{"model": "other-model", "messages": [{"role": "user", "content": "x"}]}"#)
+        )
+
+        XCTAssertEqual(response.status, 400)
+        XCTAssertNil(responder.received, "the responder is never called")
+        let body = String(decoding: response.body, as: UTF8.self)
+        XCTAssertTrue(body.contains("loaded-model"), body)
+    }
+
+    /// No model, or an empty one, is answered by the loaded model under its
+    /// own name.
+    func testAnOmittedModelIsAnsweredUnderTheLoadedName() async throws {
+        let router = PolishdRouter(responder: StubResponder(), modelName: "loaded-model")
+        for body in [
+            #"{"messages": [{"role": "user", "content": "x"}]}"#,
+            #"{"model": "", "messages": [{"role": "user", "content": "x"}]}"#,
+        ] {
+            let response = await router.handle(chatRequest(body))
+
+            XCTAssertEqual(response.status, 200, body)
+            let decoded = try JSONDecoder().decode(ChatCompletionResponse.self, from: response.body)
+            XCTAssertEqual(decoded.model, "loaded-model", body)
+        }
     }
 
     func testChatCompletionReportsAReplyCutOffAtTheTokenLimit() async throws {

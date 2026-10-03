@@ -44,15 +44,25 @@ there is not.
   (`sessionRealtimeConfiguration`), never a fresh read of Settings — a backend
   mode flipped mid-dictation would otherwise carry this session's audio, and
   its bearer token, to a server it never agreed to;
-  (2) it sends no commit, at any point — the reconnected backend holds no audio
-  buffer to commit;
+  (2) it sends no commit of its own — the reconnected backend holds no audio
+  buffer to commit. The one commit after a reconnect is a stop's final commit,
+  sent behind the replayed gap;
   (3) the partial in flight is promoted into the committed transcript at the
   drop, so the reconnected backend — which starts with an empty transcript of
   its own — can only produce text Live Auto-Paste has never typed. There are no
   backspaces in the insertion path, so anything typed twice stays typed twice;
-  (4) every resume point re-checks `reconnectRunID`, which every stop, cancel
-  and abort bumps. A socket that opens a moment after the user stopped finds a
-  run that no longer owns the session and changes nothing.
+  (4) every resume point re-checks `reconnectRunID`, which every cancel, abort
+  and stop without finalization bumps. A socket that opens a moment after them
+  finds a run that no longer owns the session and changes nothing. A stop that
+  finalizes keeps the run instead (#1582): once its socket is ready the gap is
+  flushed and the stop's final commit follows, and the stop's watchdog gives
+  the run no longer than a finalization may take. A run that does not get
+  through ends the stop with the text received before the drop, and the status
+  says its end may be missing.
+  For the bundled helper the run spends no attempt while speechd reads
+  `.starting` (#1583): the helper binds its port only once its model is
+  loaded, so every connect meanwhile is refused at once. That wait is bounded
+  by `managedHelperStartBudget`, inside the buffer's retention.
   The audio spoken into the gap is kept, not dropped: the run cancels the
   send loop so the chunks pile up in `AudioChunkBuffer` and the restarted loop
   replays them once the new server session is ready (#1457): its handshake,
