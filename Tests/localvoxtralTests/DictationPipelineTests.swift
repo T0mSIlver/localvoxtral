@@ -3296,6 +3296,52 @@ final class DictationPipelineTests: XCTestCase {
         case fallback
     }
 
+    /// A stop before the handshake, on a server that never sends
+    /// `session.created`, waits for the compatibility fallback to send the
+    /// audio and the final commit instead of closing the socket on the idle
+    /// rule while both still wait in the client (#1456).
+    func testAStopBeforeTheHandshakeFallbackKeepsTheDictation() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let events = observeSocketEvents(pipeline)
+        pipeline.server.setWithholdsSessionCreated(true)
+        let viewModel = pipeline.viewModel
+
+        viewModel.startDictation()
+        await pipeline.microphone.waitUntilCapturing()
+        await events.waitForConnected(1)
+        let spoken = Self.speech(seed: 1)
+        XCTAssertTrue(pipeline.microphone.deliver(spoken))
+        viewModel.stopDictation(reason: "test")
+        XCTAssertTrue(viewModel.isFinalizingStop)
+
+        // Past the idle rule (1.5 s open, 0.7 s quiet), short of the 3 s
+        // fallback. The finalization loop, its watchdog, and the client's
+        // keepalive and fallback timers are armed; once the woken ones sleep
+        // again, the loop has judged the quiet.
+        await pipeline.clock.waitForSleepers(4)
+        let armed = pipeline.clock.pendingSleepers
+        pipeline.clock.advance(by: 2)
+        await pipeline.clock.waitForSleepers(armed)
+        XCTAssertTrue(viewModel.isFinalizingStop, "the stop still waits for the handshake")
+        XCTAssertTrue(pipeline.server.frames.isEmpty, "nothing leaves before the send gate opens")
+
+        pipeline.clock.advance(by: 1)
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        let frames = pipeline.server.frames
+        let audio = frames.firstIndex { $0.audio == spoken }
+        let finalCommit = frames.firstIndex { $0.isFinalCommit }
+        XCTAssertNotNil(audio, "the audio goes out")
+        if let audio, let finalCommit {
+            XCTAssertLessThan(audio, finalCommit, "ahead of the final commit")
+        }
+
+        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
+        let recorded = await pipeline.records.waitForCount(1)
+        XCTAssertTrue(recorded, "the session never finished and wrote its record")
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
+    }
+
     /// Closes the session's socket from the server, puts `gap` in the chunk
     /// buffer while the session is down, and returns the reconnect run. The
     /// sockets drive the run's sleeps: an attempt's first poll returns once
