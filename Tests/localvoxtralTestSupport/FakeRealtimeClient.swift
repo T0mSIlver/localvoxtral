@@ -12,6 +12,7 @@ package final class FakeRealtimeClient: RealtimeClient, @unchecked Sendable {
         var connectConfigurations: [RealtimeSessionConfiguration] = []
         var commits: [Bool] = []
         var sentAudioBytes = 0
+        var refusesAudio = false
         var contextBudgets: [RealtimeContextBudget?] = []
         var connectionGeneration: RealtimeConnectionGeneration = .none
         var handler: (@Sendable (RealtimeEvent, RealtimeConnectionGeneration) -> Void)?
@@ -92,8 +93,19 @@ package final class FakeRealtimeClient: RealtimeClient, @unchecked Sendable {
         }
     }
 
-    package func sendAudioChunk(_ pcm16Data: Data) {
-        state.withLock { $0.sentAudioBytes += pcm16Data.count }
+    @discardableResult
+    package func sendAudioChunk(_ pcm16Data: Data) -> Bool {
+        state.withLock {
+            guard !$0.refusesAudio else { return false }
+            $0.sentAudioBytes += pcm16Data.count
+            return true
+        }
+    }
+
+    /// While set, audio is dropped as a client whose socket just died drops
+    /// it, whatever `isConnected` still says.
+    package func setRefusesAudio(_ refuses: Bool) {
+        state.withLock { $0.refusesAudio = refuses }
     }
 
     package func setContextBudget(_ budget: RealtimeContextBudget?) {

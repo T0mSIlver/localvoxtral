@@ -132,7 +132,7 @@ package struct RealtimeFileTranscriber: Sendable {
                         guard !sent else { break }
                         sent = true
                         // The client holds these until the session is ready.
-                        chunks.forEach(client.sendAudioChunk)
+                        for chunk in chunks { client.sendAudioChunk(chunk) }
                         client.sendCommit(final: true)
                     case .partialTranscript(let delta):
                         partials += delta

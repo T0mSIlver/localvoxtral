@@ -30,6 +30,9 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         var carried: [Data] = []
         /// The session's own final commit came in during the rollover.
         var stopRequested = false
+        /// The retiring socket's `done` is in: it ends the rollover once its
+        /// final is out, and nothing else may end it first (#1459).
+        var isDoneAccepted = false
         var watchdog: Task<Void, Never>?
     }
 
@@ -226,8 +229,9 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         }
     }
 
-    package func sendAudioChunk(_ pcm16Data: Data) {
-        guard !pcm16Data.isEmpty else { return }
+    @discardableResult
+    package func sendAudioChunk(_ pcm16Data: Data) -> Bool {
+        guard !pcm16Data.isEmpty else { return true }
         let now = clock.now()
         let next: ChunkAction = state.withLock { s in
             if s.rollover != nil {
@@ -239,12 +243,13 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             if s.lastTextAt == nil { s.lastTextAt = now }
             return rolloverReasonLocked(s, now: now).map(ChunkAction.sendThenRollOver) ?? .send
         }
-        if case .carry = next { return }
+        if case .carry = next { return true }
         debugLog("send append bytes=\(pcm16Data.count)")
-        send(event: Self.appendPayload(pcm16Data), audioBytes: pcm16Data.count)
+        guard send(event: Self.appendPayload(pcm16Data), audioBytes: pcm16Data.count) else { return false }
         if case .sendThenRollOver(let reason) = next {
             beginRollover(reason: reason)
         }
+        return true
     }
 
     private static func appendPayload(_ pcm16Data: Data) -> [String: Any] {
@@ -396,7 +401,8 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         let now = clock.now()
         let end: RolloverEnd? = state.withLock { s in
             guard let rollover = s.rollover, rollover.retiring == retiring,
-                  isCurrentConnectionLocked(s.base, retiring)
+                  isCurrentConnectionLocked(s.base, retiring),
+                  cause == nil || !rollover.isDoneAccepted
             else { return nil }
             rollover.watchdog?.cancel()
             s.rollover = nil
@@ -607,7 +613,10 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                 // commit gate its replacement is still waiting on.
                 guard isCurrentConnectionLocked(s.base, generation) else { return .none }
                 s.isGenerationInProgress = false
-                if s.rollover != nil { return .finishRollover }
+                if s.rollover != nil {
+                    s.rollover?.isDoneAccepted = true
+                    return .finishRollover
+                }
 
                 switch s.finalCommitCompletionGate {
                 case .idle:
@@ -661,31 +670,35 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         case dropped
     }
 
-    private func send(event: [String: Any], audioBytes: Int = 0) {
+    /// False when the frame went nowhere: no socket, or no frame to send.
+    @discardableResult
+    private func send(event: [String: Any], audioBytes: Int = 0) -> Bool {
         guard JSONSerialization.isValidJSONObject(event) else {
             emit(.error("Invalid JSON payload generated."), from: currentConnectionGeneration)
-            return
+            return false
         }
 
         do {
             let data = try JSONSerialization.data(withJSONObject: event)
             guard let text = String(data: data, encoding: .utf8) else {
                 emit(.error("Failed to encode WebSocket frame."), from: currentConnectionGeneration)
-                return
+                return false
             }
 
             if let type = event["type"] as? String {
                 debugLog("queue event type=\(type)")
             }
-            sendText(text, audioBytes: audioBytes)
+            return sendText(text, audioBytes: audioBytes)
         } catch {
             emit(
                 .error("Failed to serialize WebSocket payload: \(error.localizedDescription)"),
                 from: currentConnectionGeneration)
+            return false
         }
     }
 
-    private func sendText(_ text: String, audioBytes: Int = 0) {
+    @discardableResult
+    private func sendText(_ text: String, audioBytes: Int = 0) -> Bool {
         let action: SendAction = state.withLock { s in
             switch s.base.socketState {
             case .connected:
@@ -711,10 +724,15 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             }
         }
 
-        guard case .send(let task, let payloadText) = action else {
-            return
+        switch action {
+        case .send(let task, let payloadText):
+            transmit(payloadText, on: task)
+            return true
+        case .queued:
+            return true
+        case .dropped:
+            return false
         }
-        transmit(payloadText, on: task)
     }
 
     /// The handshake, or the compatibility timer standing in for it, opens
