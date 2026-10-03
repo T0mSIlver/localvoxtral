@@ -857,6 +857,85 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(store.summary().terms, 0, "a term from the withdrawn clipboard was learned")
     }
 
+    /// The joined session's host is revoked while the stop waits on the
+    /// piece in flight: the prompt gathered from that session, and every
+    /// spelling it grounded, stay out of every request (#1600).
+    func testARevokedHostsSessionContextIsNotSentAfterTheStopWaitsOnAPiece() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish)
+        let settings = pipeline.viewModel.settings
+        settings.claudeRepoContextEnabled = true
+        settings.repoVocabularyEnabled = true
+        // A remote Claude Desktop session, its last prompt naming the sentinel.
+        let registry = ClaudeSessionRegistry(
+            now: { Date(timeIntervalSince1970: 2_000_000) },
+            isProcessAlive: { _ in true }
+        )
+        let desktopID = "local_fb53459c-6a7b-43b1-a326-52258b970501"
+        XCTAssertNotNil(registry.ingest(
+            ClaudeHookRecord(
+                event: .userPromptSubmit, sessionID: "s1", timestamp: 0,
+                rawCwd: "/repo", prompt: "rename ZebraSentinel42 everywhere"
+            ),
+            origin: .remote(channel: "ssh:host-a"),
+            environment: ClaudeRemoteSessionEnvironment(desktopSessionID: desktopID)
+        ))
+        let resolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            focusedTerminalTTY: { _ in nil },
+            focusedBrowserTabURL: { _ in nil },
+            focusedDesktopSessionURL: { _ in "https://claude.ai/epitaxy/\(desktopID)" },
+            focusedWindowID: { _ in nil }
+        )
+        let resolved = await resolver.resolve(
+            target: TerminalScreenTarget(pid: 6060, bundleID: ClaudeDesktopAllowlist.bundleID)
+        )
+        let join = try XCTUnwrap(resolved)
+        pipeline.viewModel.context.claudeSessionJoinResolver = resolver
+        // The repository seam marks the end of the gather; the first clock
+        // read after it is the early polish's `finish()`, the stop's wait.
+        let gathered = Mutex(false)
+        pipeline.viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding { _ in
+            gathered.withLock { $0 = true }
+            return nil
+        }
+        let waitsOnPiece = BoundedWait()
+        let now = pipeline.viewModel.dependencies.clock.now
+        pipeline.viewModel.dependencies.clock.now = {
+            if gathered.withLock({ $0 }) { waitsOnPiece.resolve() }
+            return now()
+        }
+        await polish.holdNextRequest()
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.context.claudeSessionJoin = join
+        pipeline.server.send(["type": "transcription.done", "text": Self.settledPiece])
+        let pieceSent = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(pieceSent, "no piece was polished while dictating")
+
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        pipeline.server.send(["type": "transcription.done", "text": Self.tail])
+        let waiting = await waitsOnPiece.value(failAfter: 10)
+        XCTAssertTrue(waiting, "the stop never waited on the piece")
+
+        // What revoking the host does to its sessions.
+        XCTAssertEqual(registry.evictRemoteSessions(notIn: []), 1)
+        await polish.releaseHeldRequest()
+        let recorded = await pipeline.records.waitForCount(1)
+        XCTAssertTrue(recorded)
+        await pipeline.viewModel.session.polishAndCommitTask?.value
+
+        let requests = await polish.requests
+        XCTAssertFalse(
+            requests.contains { request in
+                ([request.systemPrompt, request.inputText] + request.userPrompts)
+                    .contains { $0.contains("ZebraSentinel42") }
+            },
+            "the revoked host's session context was sent"
+        )
+    }
+
     /// A quick capture is never polished, so no piece of it is sent to the
     /// polisher while the user speaks (#709).
     func testAQuickCaptureSendsNoPieceToThePolisher() async throws {

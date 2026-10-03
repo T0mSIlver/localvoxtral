@@ -518,6 +518,19 @@ final class SessionContextResolver {
         )
     }
 
+    /// Whether the stop's join still stands: no join, or one the resolver
+    /// still finds live. Asked again after the stop's last await (#1600): a
+    /// revoked host's sessions leave the registry, and the context gathered
+    /// from them must leave the request too.
+    func claudeJoinStillLive(_ join: ClaudeSessionJoin?) -> Bool {
+        guard let join else { return true }
+        guard let resolver = claudeSessionJoinResolver, resolver.isStillLive(join) else {
+            Log.claudeContext.info("Claude context withdrawn at stop: session no longer live")
+            return false
+        }
+        return true
+    }
+
     /// The Claude session block's text, re-gated at commit exactly like
     /// `claudeRepoSnapshotIfEnabled` — current setting, currently permitted
     /// endpoint, this exact join still live.
