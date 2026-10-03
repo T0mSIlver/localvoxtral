@@ -61,6 +61,14 @@ final class HerdrSessionPaneFocuserTests: XCTestCase {
         return session
     }
 
+    /// The registry's answer when the pane holds only the session asked for.
+    private nonisolated static func askedSessionID(_ target: HerdrPaneFocusTarget) -> String? {
+        switch target {
+        case .local: "s1"
+        case .remote(let hostID, _, _): "remote:\(hostID):s1"
+        }
+    }
+
     private final class Box<Value: Sendable>: Sendable {
         private let value: Mutex<Value>
         init(_ value: Value) { self.value = Mutex(value) }
@@ -80,7 +88,8 @@ final class HerdrSessionPaneFocuserTests: XCTestCase {
         window: String? = "/dev/ttys007",
         raised: SessionPaneFocusOutcome? = nil,
         raises: Raises = Raises(),
-        windowReadBack: String?? = .none
+        windowReadBack: String?? = .none,
+        paneSessionID: @escaping (HerdrPaneFocusTarget) -> String? = askedSessionID
     ) -> HerdrSessionPaneFocuser {
         let bundleID = ghostty
         return HerdrSessionPaneFocuser(
@@ -95,7 +104,8 @@ final class HerdrSessionPaneFocuserTests: XCTestCase {
                 raises.ttys.withLock { $0.append(tty) }
                 return raised ?? .focused(bundleID: bundleID)
             },
-            focusedTTY: { _ in windowReadBack ?? window }
+            focusedTTY: { _ in windowReadBack ?? window },
+            paneSessionID: paneSessionID
         )
     }
 
@@ -114,6 +124,45 @@ final class HerdrSessionPaneFocuserTests: XCTestCase {
         XCTAssertEqual(raises.ttys.withLock { $0 }, ["/dev/ttys007"], "the window the locator found")
         let shows = await focuser.focusedPaneShows(session, bundleID: ghostty)
         XCTAssertTrue(shows)
+    }
+
+    /// One opencode TUI hosts sessions A and B in one herdr pane and shows B
+    /// (#1601). Focusing the pane for A reads back the pane and the window,
+    /// but dictation would join B.
+    func testAnotherOpencodeSessionShownInThePaneIsNotFocused() async throws {
+        let herdr = try herdr()
+        defer { herdr.stop() }
+        let registry = ClaudeSessionRegistry(now: { Self.epoch }, isProcessAlive: { _ in true })
+        let local = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
+        for id in ["ses_a", "ses_b"] {
+            registry.ingest(
+                ClaudeHookRecord(
+                    event: .sessionStart, agent: .opencode, sessionID: id, timestamp: 0, rawCwd: "/repo",
+                    process: ClaudeHookProcessInfo(
+                        hookPID: 4242, claudePID: 4242, herdrPaneID: "w1:p2", herdrSocketPath: herdr.socketPath
+                    )
+                ),
+                origin: local
+            )
+        }
+        registry.ingest(
+            ClaudeHookRecord(
+                event: .focusChanged, agent: .opencode, sessionID: "ses_b", timestamp: 0,
+                process: ClaudeHookProcessInfo(hookPID: 4242, claudePID: 4242, tty: "/dev/ttys-inner")
+            ),
+            origin: local
+        )
+        let focuser = focuser(herdr: herdr, paneSessionID: { registry.sessionID(shownIn: $0) })
+        let queued = try XCTUnwrap(registry.snapshot(sessionID: "opencode:ses_a"))
+        let shown = try XCTUnwrap(registry.snapshot(sessionID: "opencode:ses_b"))
+
+        let queuedOutcome = await focuser.focusPane(of: queued)
+        let queuedShows = await focuser.focusedPaneShows(queued, bundleID: ghostty)
+        let shownOutcome = await focuser.focusPane(of: shown)
+
+        XCTAssertEqual(queuedOutcome, .unverified(bundleID: ghostty))
+        XCTAssertFalse(queuedShows)
+        XCTAssertEqual(shownOutcome, .focused(bundleID: ghostty))
     }
 
     /// herdr answered the focus, but its focused pane is still another one:
@@ -161,7 +210,8 @@ final class HerdrSessionPaneFocuserTests: XCTestCase {
             focuser: client,
             panes: client,
             raiseTTY: { _, _ in .focused(bundleID: bundleID) },
-            focusedTTY: { _ in answer(readBackCalls, later: readBackLater) }
+            focusedTTY: { _ in answer(readBackCalls, later: readBackLater) },
+            paneSessionID: Self.askedSessionID
         )
     }
 
