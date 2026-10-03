@@ -9,10 +9,20 @@ extension DictationSessionController {
     ///
     /// - Returns: the popover's sentence saying where it is.
     func keepUndeliveredAgentText(_ text: String) -> String {
-        guard !(settings.dictationHistoryRetention.savesDictations && sessionStore != nil) else {
-            return StatusStrings.agentPromptTextKeptInHistory
-        }
-        Log.dictation.notice("agent text not delivered and History is off; text copied")
+        keepUntypedText(text, status: StatusStrings.agentPromptTextKeptInHistory)
+    }
+
+    /// Keeps `text`, which a stop saved as not inserted and typed nowhere: a
+    /// send to a name several panes share or to a session with no route, or
+    /// a picked destination that left the front (#1546).
+    ///
+    /// - Returns: `status` while History keeps the text; the clipboard's
+    ///   sentence when it was copied instead.
+    func keepUntypedText(_ text: String, status: String) -> String {
+        guard !text.isEmpty,
+              !(settings.dictationHistoryRetention.savesDictations && sessionStore != nil)
+        else { return status }
+        Log.dictation.notice("text not inserted and History is off; text copied")
         // A Cmd+V paste may still read the clipboard (#1467). The relay
         // keeps the whole text each time, so a later write may replace a
         // held one.
