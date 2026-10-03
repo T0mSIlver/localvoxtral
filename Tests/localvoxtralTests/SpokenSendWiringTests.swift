@@ -353,15 +353,18 @@ final class SpokenSendWiringTests: XCTestCase {
     /// Codex review round 3 of #494 (High): keys posted under Secure Keyboard
     /// Entry are swallowed while posting reports success, so that text was
     /// recorded as landed in the terminal and a later "send it" submitted the
-    /// terminal's own prompt.
+    /// terminal's own prompt. No key is posted under it since #1468; text
+    /// that goes in by Accessibility meanwhile is still recorded as landing
+    /// nowhere.
     func testLiveTextTypedUnderSecureInputBlocksEveryLaterTrigger() {
-        let harness = makeLiveHarness()
+        let harness = makeLiveHarness(accessibilityAccepts: true)
         let secureInput = Box(false)
         TerminalTargetDetector.debugSecureEventInputOverride = { secureInput.value }
 
         secureInput.value = true
         harness.viewModel.session.handle(event: .partialTranscript("notes for later"))
         harness.viewModel.session.handle(event: .finalTranscript("notes for later"))
+        XCTAssertFalse(harness.events.value.contains { $0.hasPrefix("type:") }, "no key under Secure Keyboard Entry")
         secureInput.value = false
         harness.viewModel.session.handle(event: .partialTranscript("send"))
         harness.viewModel.session.handle(event: .finalTranscript("send it"))
@@ -530,7 +533,8 @@ final class SpokenSendWiringTests: XCTestCase {
         appBundleID: String = SpokenSendWiringTests.ghostty,
         frontmostBundleID: String? = nil,
         frontmostPID: pid_t = SpokenSendWiringTests.terminalPID,
-        commitTargetPID: pid_t = SpokenSendWiringTests.terminalPID
+        commitTargetPID: pid_t = SpokenSendWiringTests.terminalPID,
+        accessibilityAccepts: Bool = false
     ) -> Harness {
         let settings = makeSettings(outputMode: .liveAutoPaste)
         settings.liveSpokenSendEnabled = enabled
@@ -559,7 +563,7 @@ final class SpokenSendWiringTests: XCTestCase {
                 return true
             },
             modifierStateReader: { false },
-            accessibilityInserter: { _, _ in false },
+            accessibilityInserter: { _, _ in accessibilityAccepts },
             returnKeyPoster: { pid in
                 events.value.append("return:\(pid)")
                 return true

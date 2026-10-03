@@ -95,7 +95,10 @@ package final class HerdrSessionPaneFocuser: SessionPaneFocusing {
             Log.claudeContext.info("go to session: herdr refused the focus")
             return .unverified(bundleID: bundleID)
         }
-        let paneFocused = await panes.focusedPane(socketPath: socket.path)?.paneID == target.paneID
+        var paneFocused = await panes.focusedPane(socketPath: socket.path)?.paneID == target.paneID
+        // The window again after herdr's awaits: the user may have switched
+        // the terminal to another tab, where keys would go instead.
+        if paneFocused { paneFocused = await focusedTTY(bundleID) == tty }
         Log.claudeContext.info(
             "go to session: herdr focus answered \(String(describing: focus), privacy: .public); verified=\(paneFocused, privacy: .public)"
         )
