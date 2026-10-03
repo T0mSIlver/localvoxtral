@@ -567,6 +567,17 @@ final class SettingsStore {
         }
     }
 
+    /// The retention as saved now, which another running copy may have
+    /// changed since this one launched. What deletes by retention reads it
+    /// here, or a copy still holding Don't keep deletes what the other
+    /// copy keeps (#1569).
+    func reloadDictationHistoryRetention() -> DictationHistoryRetention {
+        let saved = defaults.string(forKey: Keys.dictationHistoryRetention)
+            .flatMap(DictationHistoryRetention.init(rawValue:)) ?? .forever
+        if saved != dictationHistoryRetention { dictationHistoryRetention = saved }
+        return saved
+    }
+
     /// Keep each saved dictation's audio on this Mac, for the replay eval.
     /// Off by default: audio is the most sensitive thing the app could keep.
     var dictationAudioEnabled: Bool {

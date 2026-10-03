@@ -13,13 +13,24 @@ package struct DurableFileSystem: Sendable {
     package var sync: @Sendable (_ descriptor: Int32, _ path: String) -> Int32
     /// `rename(2)`. 0 or -1 with errno.
     package var rename: @Sendable (_ source: String, _ destination: String) -> Int32
+    /// `link(2)`, which fails with EEXIST where `rename` would replace.
+    /// 0 or -1 with errno.
+    package var link: @Sendable (_ source: String, _ destination: String) -> Int32
 
     package init(
         sync: @escaping @Sendable (_ descriptor: Int32, _ path: String) -> Int32,
-        rename: @escaping @Sendable (_ source: String, _ destination: String) -> Int32
+        rename: @escaping @Sendable (_ source: String, _ destination: String) -> Int32,
+        link: @escaping @Sendable (_ source: String, _ destination: String) -> Int32 = { source, destination in
+            #if canImport(Darwin)
+            Darwin.link(source, destination)
+            #else
+            Glibc.link(source, destination)
+            #endif
+        }
     ) {
         self.sync = sync
         self.rename = rename
+        self.link = link
     }
 
     package static let live = DurableFileSystem(
@@ -63,9 +74,11 @@ package enum DurableFile {
     }
 
     /// The directory must exist; callers create or validate it with their
-    /// own rules first.
+    /// own rules first. With `replacing` false, a file already at `url`
+    /// stays and the write throws EEXIST: a seed must not replace a file
+    /// another copy created after this one looked (#1576).
     package static func write(
-        _ data: Data, to url: URL, fileSystem: DurableFileSystem = .live
+        _ data: Data, to url: URL, replacing: Bool = true, fileSystem: DurableFileSystem = .live
     ) throws {
         let directory = url.deletingLastPathComponent().path
         let temporary = url.deletingLastPathComponent().appendingPathComponent(temporaryName(for: url)).path
@@ -96,10 +109,17 @@ package enum DurableFile {
         guard fileSystem.sync(fd, temporary) == 0 else {
             throw Failure(operation: "sync", path: temporary, code: errno)
         }
-        guard fileSystem.rename(temporary, url.path) == 0 else {
-            throw Failure(operation: "rename", path: url.path, code: errno)
+        if replacing {
+            guard fileSystem.rename(temporary, url.path) == 0 else {
+                throw Failure(operation: "rename", path: url.path, code: errno)
+            }
+            renamed = true
+        } else {
+            // The deferred unlink drops the temporary name either way.
+            guard fileSystem.link(temporary, url.path) == 0 else {
+                throw Failure(operation: "link", path: url.path, code: errno)
+            }
         }
-        renamed = true
         syncDirectory(directory, fileSystem: fileSystem)
     }
 

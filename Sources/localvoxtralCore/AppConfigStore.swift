@@ -747,7 +747,11 @@ package struct AppConfigStore: AppConfigServing {
 
             do {
                 let data = try Data(contentsOf: sourceURL)
-                try replaceFile(at: destinationURL, with: data)
+                // Not a replace: another copy may have created the file, and
+                // the user edited it, since the check above (#1576).
+                try DurableFile.write(data, to: destinationURL, replacing: false, fileSystem: durableFileSystem)
+            } catch let failure as DurableFile.Failure where failure.code == EEXIST {
+                Log.config.info("\(file.fileName, privacy: .public) appeared while seeding it; kept as is")
             } catch {
                 Log.config.error(
                     "Failed to bootstrap \(file.fileName, privacy: .public): \(error.localizedDescription, privacy: .public)"

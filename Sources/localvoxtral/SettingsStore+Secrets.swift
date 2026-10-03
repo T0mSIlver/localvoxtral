@@ -11,7 +11,8 @@ extension SettingsStore {
         "Keychain unavailable; the API key was not saved."
 
     /// Where each secret used to live in UserDefaults. Read ONLY by the
-    /// one-time migration below — nothing else may touch these keys again.
+    /// one-time migration below; a successful `persistSecret` also removes
+    /// the copy a failed migration left.
     private static func legacyDefaultsKey(for key: SecretKey) -> String {
         switch key {
         case .realtimeAPIKey: return Keys.apiKey
@@ -227,6 +228,9 @@ extension SettingsStore {
         loadedSecretKeys.insert(key)
         do {
             try secretStore.setSecret(value.trimmed, for: key)
+            // A plist copy a failed migration left would be migrated back
+            // at the next launch, undoing a clear (#1570).
+            defaults.removeObject(forKey: Self.legacyDefaultsKey(for: key))
         } catch {
             secretStoreFailureSummary = Self.secretStoreWriteFailureSummary
             Log.secrets.error(
