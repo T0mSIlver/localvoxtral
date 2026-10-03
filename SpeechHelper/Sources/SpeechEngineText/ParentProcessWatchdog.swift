@@ -26,6 +26,18 @@ public final class ParentProcessWatchdog: @unchecked Sendable {
         }
     }
 
+    /// Runs `operation` while a watchdog for `parentPID` (none when nil) is alive.
+    public static func guarding<T>(
+        parentPID: pid_t?,
+        onParentExit: @escaping @Sendable () -> Void,
+        _ operation: () async throws -> T
+    ) async rethrows -> T {
+        let result = try await operation()
+        let watchdog = parentPID.map { ParentProcessWatchdog(parentPID: $0, onParentExit: onParentExit) }
+        withExtendedLifetime(watchdog) {}
+        return result
+    }
+
     private func fireOnce() {
         let first = fired.withLock { value in
             let previous = value

@@ -402,6 +402,11 @@ final class DictationSessionController {
     /// line and the outcome of every realtime event the dying socket emits.
     @ObservationIgnored
     var isReconnectingRealtimeSession = false
+    /// Whether this session dials the bundled speechd, latched at connect.
+    /// A reconnect waits on that helper's restart instead of spending its
+    /// attempts on a port nobody listens on yet (#1583).
+    @ObservationIgnored
+    var sessionUsesManagedSpeechHelper = false
     /// Bumped by every start and every cancel. A run compares it against the
     /// value it was launched with, so a stop, a cancel or a newer session can
     /// never be undone by an attempt that was already in flight.
