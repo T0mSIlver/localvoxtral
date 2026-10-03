@@ -43,7 +43,7 @@ import Foundation
 ///
 /// Nothing else is ever modified, and no character the user dictated is ever
 /// removed.
-enum TUIAutocompleteTrailingSpace {
+package enum TUIAutocompleteTrailingSpace {
     /// Characters a slash-command NAME may contain. `/` is deliberately absent:
     /// that is what separates `/compact` from the path `/usr/bin`.
     private static let slashCommandNameCharacters = Set(
@@ -70,7 +70,7 @@ enum TUIAutocompleteTrailingSpace {
     /// single-component-path abstention (tests inject a fixed set so they do
     /// not depend on the host filesystem); production uses the default, one
     /// `FileManager` stat on the stop flush.
-    static func stripped(
+    package static func stripped(
         _ text: String,
         isExistingAbsolutePath: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
     ) -> String {
