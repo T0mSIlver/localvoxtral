@@ -139,21 +139,36 @@ public struct VibeHooksBlockEditor: Sendable, Equatable {
     /// Does a marker line sit inside a TOML multi-line string, or is a string
     /// still open at the end of the file? A marker inside a string is the
     /// user's data, not a delimiter, and a block appended after an unclosed
-    /// string lands INSIDE it. Counted as an odd number of `"""` or `'''`
-    /// delimiters; a file this cannot classify is refused.
+    /// string lands INSIDE it. Delimiters are `"""` and `'''`; inside a
+    /// `"""` string a backslash escapes the next character, so `\"""` does
+    /// not close it (#1728). A file this cannot classify is refused.
     package func hasUnclosedOrMarkedMultilineString(_ existing: String) -> Bool {
-        var openBasic = false
-        var openLiteral = false
+        let basic: [Character] = ["\"", "\"", "\""]
+        let literal: [Character] = ["'", "'", "'"]
+        var open: [Character]?
         for line in block.splitLines(existing) {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed == block.markerBegin || trimmed == block.markerEnd {
-                if openBasic || openLiteral { return true }
+                if open != nil { return true }
                 continue
             }
-            if !openLiteral, line.components(separatedBy: "\"\"\"").count % 2 == 0 { openBasic.toggle() }
-            if !openBasic, line.components(separatedBy: "'''").count % 2 == 0 { openLiteral.toggle() }
+            let characters = Array(line)
+            var index = 0
+            while index < characters.count {
+                if open == basic, characters[index] == "\\" {
+                    index += 2
+                    continue
+                }
+                let next = Array(characters[index ..< min(index + 3, characters.count)])
+                if let delimiter = [basic, literal].first(where: { $0 == next }), open == nil || open == delimiter {
+                    open = open == nil ? delimiter : nil
+                    index += 3
+                    continue
+                }
+                index += 1
+            }
         }
-        return openBasic || openLiteral
+        return open != nil
     }
 
     /// Is `hooks` defined as a plain value (`hooks = [...]`) or as a table:

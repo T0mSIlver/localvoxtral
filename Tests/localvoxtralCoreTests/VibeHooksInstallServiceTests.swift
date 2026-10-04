@@ -196,6 +196,31 @@ final class VibeHooksInstallServiceTests: XCTestCase {
                 .refused(.unclosedString)
             ),
             (
+                // `\"""` is an escaped quote and two more, still inside the
+                // string: counted as delimiters, they put the markers outside
+                // it and the install rewrote the user's command (#1728).
+                "markers between escaped quotes inside a multi-line string are the user's data",
+                VibeHooksState(
+                    hooksFileExists: true,
+                    hooksData: Data(
+                        """
+                        command = \"\"\"
+                        cat <<'DOC'
+                        \\\"\"\"
+                        # >>> localvoxtral >>>
+                        user-owned command documentation
+                        # <<< localvoxtral <<<
+                        [example]
+                        \\\"\"\"
+                        DOC
+                        \"\"\"
+
+                        """.utf8
+                    )
+                ),
+                .refused(.unclosedString)
+            ),
+            (
                 "a key right after the block belongs to our last table",
                 VibeHooksState(hooksFileExists: true, hooksData: Data((Self.block + "custom = 2\n").utf8)),
                 .refused(.keyAfterBlock)
