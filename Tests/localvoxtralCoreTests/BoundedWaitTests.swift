@@ -1,6 +1,7 @@
 import Synchronization
 import XCTest
-@testable import localvoxtral
+import localvoxtralTestSupport
+@testable import localvoxtralCore
 
 /// The bound that stops a test helper's wait from hanging the suite. Every
 /// bound here is zero seconds, so no test in this file waits on the wall
