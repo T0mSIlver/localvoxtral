@@ -306,6 +306,10 @@ describe('channel', () => {
       touched.push('read')
       return { value: { text: 'what sess-2 typed', cursor: 17 } }
     })
+    on('prompt.submit', () => {
+      touched.push('submit')
+      return {}
+    })
     on('process.spawn', async function* (): AsyncGenerator<ProcessSpawnChunk, { value: ProcessSpawnResult }> {
       await clock.sleep(100)
       sessionID = 'sess-2'
@@ -314,6 +318,7 @@ describe('channel', () => {
         text:
           '{"id":"f","kind":"fill","mod_message":1,"text":"run the tests"}\n' +
           '{"id":"d","kind":"draft","mod_message":1}\n' +
+          '{"id":"s","kind":"send","mod_message":1,"text":"run the tests"}\n' +
           '{"id":"p","kind":"ping","mod_message":1}\n',
       }
       await clock.sleep(60000)
@@ -335,6 +340,7 @@ describe('channel', () => {
       { mod_reply: 1, session_id: 'sess-1', id: 'd', ok: false, reason: 'session_changed' },
       { mod_reply: 1, session_id: 'sess-1', id: 'f', ok: false, reason: 'session_changed' },
       { mod_reply: 1, session_id: 'sess-1', id: 'p', ok: true },
+      { mod_reply: 1, session_id: 'sess-1', id: 's', ok: false, reason: 'session_changed' },
     ])
   })
 
