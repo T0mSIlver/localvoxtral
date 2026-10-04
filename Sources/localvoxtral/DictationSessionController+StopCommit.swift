@@ -553,7 +553,14 @@ extension DictationSessionController {
             }
             return
         }
-        guard await self.pickedPaneStillShownBeforeInsertion(sessionMode: sessionMode) else { return }
+        // The relay and the mod reach the session by its id, whatever pane
+        // is in front; only keys need the joined pane read back.
+        let keysCarryCommit = !self.textInsertion.promptRelayTakesText
+            && (self.modChannelSessionID(join: capture.claudeJoin) == nil
+                || !(spokenSend == nil || spokenSend == .modSubmit))
+        guard await self.commitPaneStillShownBeforeInsertion(
+            sessionMode: sessionMode, joined: keysCarryCommit ? capture.claudeJoin : nil
+        ) else { return }
         // From here the task commits and saves the dictation itself.
         self.saveInterruptedPolishCommit = nil
         let commitTargetPID = self.overlayBufferCoordinator.commitTargetAppPID
@@ -1330,7 +1337,7 @@ extension DictationSessionController {
                     in: text, candidates: terms.candidates)
             }
             guard let self, outcome != .cancelled, !Task.isCancelled,
-                  await self.pickedPaneStillShownBeforeInsertion(sessionMode: sessionMode)
+                  await self.commitPaneStillShownBeforeInsertion(sessionMode: sessionMode)
             else { return }
             self.applyStopSecondPass(outcome)
             self.commitOverlayBufferText(sessionMode: sessionMode, sample: sample)
