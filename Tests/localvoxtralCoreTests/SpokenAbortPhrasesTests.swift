@@ -11,7 +11,7 @@ final class SpokenAbortPhrasesTests: XCTestCase {
 
     func testAListIsNormalizedAndDeduplicated() {
         XCTAssertEqual(
-            SpokenAbortPhrases.validate(SendTriggerPhrases.split("Stop, Claude!, stop,\nstop claude"), sendPhrases: send),
+            SpokenAbortPhrases.validate(SendTriggerPhrases.split("Stop!, Stop Claude., stop,\nstop claude"), sendPhrases: send),
             .success(["stop", "stop claude"])
         )
     }

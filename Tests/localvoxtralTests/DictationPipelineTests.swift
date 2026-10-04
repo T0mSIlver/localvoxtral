@@ -1550,8 +1550,7 @@ final class DictationPipelineTests: XCTestCase {
         )
         pipeline.viewModel.settings.spokenAbortPhrases = ["stop claude"]
 
-        await dictate(pipeline, "Stop, Claude.")
-        await pipeline.viewModel.session.polishAndCommitTask?.value
+        await dictateCommand(pipeline, "Stop, Claude.")
 
         XCTAssertEqual(fills.kinds, [.abort])
         XCTAssertEqual(typed.text, "", "no key")
@@ -1566,8 +1565,7 @@ final class DictationPipelineTests: XCTestCase {
         let (pipeline, typed, fills) = try await modChannelPipeline(answers: [.refuse])
         pipeline.viewModel.settings.spokenAbortPhrases = ["stop claude"]
 
-        await dictate(pipeline, "stop claude")
-        await pipeline.viewModel.session.polishAndCommitTask?.value
+        await dictateCommand(pipeline, "stop claude")
 
         XCTAssertEqual(fills.kinds, [.abort])
         XCTAssertEqual(typed.text, "")
@@ -1587,8 +1585,7 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.context.claudeModChannels = nil
         pipeline.viewModel.settings.spokenAbortPhrases = ["stop claude"]
 
-        await dictate(pipeline, "stop claude")
-        await pipeline.viewModel.session.polishAndCommitTask?.value
+        await dictateCommand(pipeline, "stop claude")
 
         XCTAssertEqual(fills.kinds, [])
         XCTAssertEqual(typed.text, "")
@@ -1640,11 +1637,33 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.clock.advance(by: 3)
         await armed.value
         XCTAssertFalse(pipeline.viewModel.isDictating)
-        await finishStoppedSession(pipeline, finalText: "Stop Claude.")
-        await pipeline.viewModel.session.polishAndCommitTask?.value
+        await finishCommand(pipeline, finalText: "Stop Claude.")
 
         XCTAssertEqual(fills.kinds, [.abort])
         XCTAssertEqual(typed.text, "")
+    }
+
+    /// Dictates `text` and stops, for a dictation the stop takes as a
+    /// command: it writes no record, so the stop is done once it stopped
+    /// finalizing and its command task ended.
+    private func dictateCommand(
+        _ pipeline: Pipeline, _ text: String, file: StaticString = #filePath, line: UInt = #line
+    ) async {
+        await startAndSpeak(pipeline, file: file, line: line)
+        pipeline.server.send(["type": "transcription.delta", "delta": text])
+        pipeline.viewModel.stopDictation(reason: "test")
+        await finishCommand(pipeline, finalText: text, file: file, line: line)
+    }
+
+    private func finishCommand(
+        _ pipeline: Pipeline, finalText: String, file: StaticString = #filePath, line: UInt = #line
+    ) async {
+        await pipeline.server.awaitFrame("the final commit", file: file, line: line) { $0.isFinalCommit }
+        pipeline.server.send(["type": "transcription.done", "text": finalText])
+        await pipeline.server.awaitClose(file: file, line: line)
+        let finished = await waitUntilObserved { !pipeline.viewModel.isFinalizingStop }
+        XCTAssertTrue(finished, "the stop never finished", file: file, line: line)
+        await pipeline.viewModel.session.polishAndCommitTask?.value
     }
 
     func testTheStopPhraseSentencesFitThePopoverLine() {
