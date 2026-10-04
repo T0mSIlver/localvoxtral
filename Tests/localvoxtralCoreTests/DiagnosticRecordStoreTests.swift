@@ -187,7 +187,7 @@ final class DiagnosticRecordStoreTests: XCTestCase {
         io.seed(Data("partial".utf8), at: directory.appendingPathComponent(".tmp-record"))
 
         XCTAssertEqual(store.removeAll(), 1)
-        XCTAssertEqual(io.fileNames, [])
+        XCTAssertEqual(try io.contents(of: directory), [])
         XCTAssertEqual(try store.summary().records, 0)
     }
 
@@ -205,7 +205,7 @@ final class DiagnosticRecordStoreTests: XCTestCase {
 
         XCTAssertEqual(store.removeAll(keeping: [kept]), 1)
 
-        XCTAssertEqual(Set(io.fileNames), [keptURL.lastPathComponent, inFlight.lastPathComponent])
+        XCTAssertEqual(Set(try XCTUnwrap(io.contents(of: directory))), [keptURL.lastPathComponent, inFlight.lastPathComponent])
         XCTAssertThrowsError(try store.write(makeRecord(), unlessDeletedSince: epoch))
     }
 
@@ -219,7 +219,55 @@ final class DiagnosticRecordStoreTests: XCTestCase {
         XCTAssertThrowsError(try store.write(makeRecord(), unlessDeletedSince: epoch)) {
             XCTAssertEqual($0 as? DiagnosticRecordStore.StoreError, .deletedSinceDecision)
         }
-        XCTAssertEqual(io.fileNames, [])
+        XCTAssertEqual(try io.contents(of: directory), [])
+        XCTAssertNoThrow(try store.write(makeRecord(), unlessDeletedSince: store.deletionEpoch()))
+    }
+
+    /// Another running copy turning records off moves the generation file
+    /// they share; a write this copy decided before that is refused (#1770).
+    func testAnotherProcessesDeleteInvalidatesAPendingWrite() throws {
+        let store = makeStore()
+        let epoch = store.deletionEpoch()
+
+        // What the other copy's `removeAll()` leaves: a later generation.
+        io.seed(Data("7".utf8), at: DiagnosticRecordStore.generationURL(forDirectory: directory))
+
+        XCTAssertThrowsError(try store.write(makeRecord(), unlessDeletedSince: epoch)) {
+            XCTAssertEqual($0 as? DiagnosticRecordStore.StoreError, .deletedSinceDecision)
+        }
+        XCTAssertEqual(try io.contents(of: directory), [])
+        XCTAssertNoThrow(try store.write(makeRecord(), unlessDeletedSince: store.deletionEpoch()))
+    }
+
+    /// On disk, under a data folder that is 0755 as on a real install: the
+    /// hardened writer refuses a file loose in such a folder, so the
+    /// generation must still move and still refuse a write decided before
+    /// the delete.
+    func testTheGenerationMovesOnDiskUnderALooseDataFolder() throws {
+        try FileManager.default.createDirectory(
+            at: home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+        let clock = self.clock
+        let store = DiagnosticRecordStore(directoryURL: directory, retention: .default, now: { clock.now() })
+        let other = DiagnosticRecordStore(directoryURL: directory, retention: .default, now: { clock.now() })
+        let epoch = store.deletionEpoch()
+
+        other.removeAll()
+
+        XCTAssertNotEqual(store.deletionEpoch(), epoch)
+        XCTAssertThrowsError(try store.write(makeRecord(), unlessDeletedSince: epoch))
+        XCTAssertNoThrow(try store.write(makeRecord(), unlessDeletedSince: store.deletionEpoch()))
+    }
+
+    /// A generation file that cannot be read refuses the write: a delete
+    /// may have happened that this copy cannot see.
+    func testAnUnreadableGenerationRefusesTheWrite() throws {
+        let store = makeStore()
+        let epoch = store.deletionEpoch()
+        io.seed(Data("garbage".utf8), at: DiagnosticRecordStore.generationURL(forDirectory: directory))
+
+        XCTAssertThrowsError(try store.write(makeRecord(), unlessDeletedSince: epoch))
+        XCTAssertThrowsError(try store.write(makeRecord(), unlessDeletedSince: store.deletionEpoch()))
+        store.removeAll()
         XCTAssertNoThrow(try store.write(makeRecord(), unlessDeletedSince: store.deletionEpoch()))
     }
 

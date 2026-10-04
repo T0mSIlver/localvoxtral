@@ -33,6 +33,23 @@ final class QuickCaptureProjectLinesTests: XCTestCase {
         XCTAssertEqual(options.first { $0.projectKey == "/nonexistent/other" }?.description, "Project other.")
     }
 
+    /// Two copies launched before either wrote: each one's line survives the
+    /// other's save, and a blank line removes only its own project (#1773).
+    func testTwoCopiesPreserveDescriptionsForDifferentProjects() {
+        let defaults = makeSettingsDefaults()
+        let first = makeSettings(defaults: defaults)
+        let second = makeSettings(defaults: defaults)
+
+        first.setQuickCaptureProjectLine("Dictation app", for: "/w/a")
+        second.setQuickCaptureProjectLine("Database tools", for: "/w/b")
+        XCTAssertEqual(
+            makeSettings(defaults: defaults).quickCaptureProjectLines,
+            ["/w/a": "Dictation app", "/w/b": "Database tools"])
+
+        first.setQuickCaptureProjectLine(" ", for: "/w/a")
+        XCTAssertEqual(makeSettings(defaults: defaults).quickCaptureProjectLines, ["/w/b": "Database tools"])
+    }
+
     func testALineIsCutToWhatTheRouterReadsAndABlankOneIsRemoved() {
         let settings = makeSettings()
         settings.setQuickCaptureProjectLine(String(repeating: "a", count: 250), for: "/w/demo")
