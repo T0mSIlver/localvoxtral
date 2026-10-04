@@ -13,7 +13,7 @@ patched. It does this without reading your screen.
 A Codex session joins like a Claude Code one, on one of these:
 
 - the focused terminal's tty, in Ghostty 1.4 or newer, iTerm2 or Terminal.app;
-- a [herdr](../herdr/README.md) pane;
+- a [herdr](https://t0msilver.github.io/localvoxtral/integrations/herdr/) pane;
 - a cmux surface.
 
 ## Install
@@ -47,13 +47,13 @@ The app never edits `~/.codex/hooks.json` or `~/.codex/config.toml` itself.
 **Settings → Codex → Tell Codex you dictate → Add** puts a short note in the
 instructions file Codex reads. That file is `~/.codex/AGENTS.override.md`
 when it holds anything, else `~/.codex/AGENTS.md`. See
-[Telling the agent you dictate](../../docs/coding-agents.md#telling-the-agent-you-dictate).
+[Telling the agent you dictate](https://t0msilver.github.io/localvoxtral/docs/coding-agents/#telling-the-agent-you-dictate).
 
 ## Teach Codex to check dictation
 
 **Settings → Codex → Teach Codex to check dictation → Add** installs a
 skill in ~/.codex/skills that names `localvoxtral doctor` and `localvoxtral logs`. See
-[Teaching the agent to check dictation](../../docs/coding-agents.md#teaching-the-agent-to-check-dictation).
+[Teaching the agent to check dictation](https://t0msilver.github.io/localvoxtral/docs/coding-agents/#teaching-the-agent-to-check-dictation).
 
 ## What it sends
 

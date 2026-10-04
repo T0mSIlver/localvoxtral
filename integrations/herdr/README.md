@@ -6,9 +6,9 @@ localvoxtral joins that exact pane: it reads its screen for context and writes
 your words into it through herdr itself.
 
 herdr needs no plugin. Install the plugin or hooks of the agent you run in the
-pane, as for any terminal: [Claude Code](../claude-code/README.md),
-[opencode](../opencode/README.md), [Codex](../codex/README.md) or
-[Mistral Vibe](../vibe/README.md). **Settings → herdr** shows whether herdr
+pane, as for any terminal: [Claude Code](https://t0msilver.github.io/localvoxtral/integrations/claude-code/),
+[opencode](https://t0msilver.github.io/localvoxtral/integrations/opencode/), [Codex](https://t0msilver.github.io/localvoxtral/integrations/codex/) or
+[Mistral Vibe](https://t0msilver.github.io/localvoxtral/integrations/vibe/). **Settings → herdr** shows whether herdr
 is detected and lists herdr's saved machines.
 
 ## What you get
@@ -23,7 +23,7 @@ disagrees, the app joins nothing and attaches no context.
 **Screen context from that pane.** With **Send agent's terminal screen** on
 in **Settings → Context**, the polisher reads the text of the joined pane
 from herdr. Neighboring panes and the rest of the herdr view never reach it.
-[Dictating into Claude Code](../../docs/coding-agents.md#dictating-into-claude-code)
+[Dictating into Claude Code](https://t0msilver.github.io/localvoxtral/docs/coding-agents/#dictating-into-claude-code)
 has a video of a join inside herdr.
 
 **Words that land in the pane, whatever has focus.** Dictation goes into the
@@ -33,7 +33,7 @@ and lands even if you click another window while you speak:
 - In **Overlay Buffer**, the app sends the text once, when it commits.
 - In **Live Auto-Paste**, it sends each finished phrase as you speak.
 - "Send it" presses Enter in that pane
-  ([Press Return with "send it"](../../docs/dictation.md#press-return-with-send-it)).
+  ([Press Return with "send it"](https://t0msilver.github.io/localvoxtral/docs/dictation/#press-return-with-send-it)).
 
 With polishing off, this works in a herdr running on this Mac. On a remote or
 federated herdr (below), it needs the context join, so polishing must be on;
@@ -47,7 +47,7 @@ even with polishing off, so the words don't fall back to keystrokes.
 dictation with "send that to" and a session's name sends it to that session
 and presses Enter there. A session in a local herdr pane receives it without
 its pane coming forward
-([Send a dictation to another session](../../docs/agents.md#send-a-dictation-to-another-session)).
+([Send a dictation to another session](https://t0msilver.github.io/localvoxtral/docs/agents/#send-a-dictation-to-another-session)).
 
 ## Set up on this Mac
 
@@ -61,7 +61,7 @@ localvoxtral can join a Claude Code or Mistral Vibe session in a herdr pane on
 an ssh host. Codex and opencode on a remote host don't join.
 
 1. Enroll the host in **Settings → Remote hosts**
-   ([How enrollment works](../../docs/remote-claude-context.md#how-enrollment-works)).
+   ([How enrollment works](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/#how-enrollment-works)).
    If you saved the machine in herdr, **Settings → herdr → Saved machines →
    Import…** fills in the form.
 2. **Set Up** checks for herdr on the host. When it finds herdr, it adds a
@@ -69,7 +69,7 @@ an ssh host. Codex and opencode on a remote host don't join.
    row shows a short marker that localvoxtral uses to recognize the pane. If
    your config already sets its own agents panel, Set Up leaves it alone and
    says so; add the row by hand from
-   [Set it up](../claude-code/README.md#set-it-up) in the remote plugin's guide.
+   [Set it up](https://t0msilver.github.io/localvoxtral/integrations/claude-code/#set-it-up) in the remote plugin's guide.
 3. From a terminal on your Mac, open herdr on the host over ssh, and
    dictate into the agent's pane.
 
@@ -83,7 +83,7 @@ When the marker is missing, the app checks how you started herdr instead. It
 accepts one ssh process, to exactly one enrolled host, that runs plain
 `herdr` or `herdr --session <name>`. It refuses `herdr terminal attach`, and
 an ssh session where you typed herdr afterwards, since neither proves what
-the window shows. The [integration matrix](../../docs/integration-matrix.md)
+the window shows. The [integration matrix](https://t0msilver.github.io/localvoxtral/docs/integration-matrix/)
 has the details.
 
 ## Set up a federated herdr machine
@@ -101,7 +101,7 @@ in your terminal.
 
 Step 4 matters because a federated view holds no ssh session of yours to
 carry the session's hooks back to your Mac. Details:
-[Federated herdr machines](../../docs/remote-claude-context.md#federated-herdr-machines).
+[Federated herdr machines](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/#federated-herdr-machines).
 
 ## Safety rules
 
@@ -145,7 +145,7 @@ itself to two actions on the joined pane: add text, and press Enter.
 
 ## See also
 
-- [Integration matrix](../../docs/integration-matrix.md): how each terminal
+- [Integration matrix](https://t0msilver.github.io/localvoxtral/docs/integration-matrix/): how each terminal
   and agent joins, herdr included.
-- [Remote Claude Code over SSH](../../docs/remote-claude-context.md): host
+- [Remote Claude Code over SSH](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/): host
   enrollment and the tunnel.

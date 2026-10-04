@@ -1,7 +1,8 @@
 name: Docs Site
 
 # Builds the user docs into the site at t0msilver.github.io/localvoxtral and
-# checks every docs link the app's Settings open (scripts/docs-site/). A PR
+# checks every docs link the app's Settings open, and the site links in the
+# other human-facing files (scripts/docs-site/check-human-links.py). A PR
 # gets the build and the check, and the site as an artifact; a push to main
 # deploys it. Hosted Ubuntu only.
 
@@ -9,8 +10,11 @@ on:
   pull_request:
     paths: &site-paths
       - README.md
+      - CONTRIBUTING.md
       - docs/**
-      - integrations/*/README.md
+      - integrations/**
+      - .github/pull_request_template.md
+      - scripts/release.sh
       - assets/**
       - Sources/**
       - scripts/docs-site/**

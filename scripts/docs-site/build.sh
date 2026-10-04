@@ -1,6 +1,7 @@
 #!/bin/bash
-# Builds the docs site into <out-dir>/site and checks the app's docs links
-# against it. Needs Zensical on PATH, at the version the docs-site workflow pins.
+# Builds the docs site into <out-dir>/site and checks the app's docs links,
+# and the site links in README.md and the other human-facing files, against
+# it. Needs Zensical on PATH, at the version the docs-site workflow pins.
 #
 # Usage: scripts/docs-site/build.sh [out-dir]   (default .build/docs-site)
 set -euo pipefail
@@ -11,3 +12,4 @@ OUT="${1:-$HERE/../../.build/docs-site}"
 python3 "$HERE/stage.py" "$OUT"
 zensical build --clean --config-file "$OUT/zensical.toml"
 python3 "$HERE/check-app-links.py" "$OUT/site"
+python3 "$HERE/check-human-links.py" --site "$OUT/site"
