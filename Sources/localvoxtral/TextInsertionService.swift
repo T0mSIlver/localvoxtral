@@ -115,6 +115,9 @@ final class TextInsertionService {
     /// restore.
     @ObservationIgnored
     private var clipboardWriteAfterPastes: (@MainActor () -> Void)?
+    /// Woken when the last pending restore runs.
+    @ObservationIgnored
+    private var pasteSettleWaiters: [CheckedContinuation<Void, Never>] = []
     private var insertionRetryTask: Task<Void, Never>?
     private var axInsertionSuccessCount = 0
     private var keyboardFallbackSuccessCount = 0
@@ -263,6 +266,13 @@ final class TextInsertionService {
         preferredAppPID: pid_t? = nil
     ) -> TextInsertResult {
         guard !text.isEmpty else { return .insertedByAccessibility }
+        // Pasting now would replace the clipboard before the target read the
+        // previous paste's (#1664). The text stays pending, in order, and the
+        // restore flushes it.
+        if fencedPasteMustWait(text) {
+            Log.insertion.notice("paste of text with a code fence waits for the previous paste")
+            return .failed
+        }
         refreshAccessibilityTrustState()
 
         if tryKeyboardInsertion(
@@ -298,9 +308,38 @@ final class TextInsertionService {
         clipboardWriteAfterPastes = write
     }
 
+    /// True while text is pending behind a paste whose clipboard the
+    /// target may still read: the restore will flush it.
+    var pendingTextWaitsOnPaste: Bool {
+        pastesAwaitingRestore > 0 && hasPendingInsertionText
+    }
+
+    /// Returns once no paste awaits its restore.
+    func pastesSettled() async {
+        guard pastesAwaitingRestore > 0 else { return }
+        await withCheckedContinuation { pasteSettleWaiters.append($0) }
+    }
+
+    private func fencedPasteMustWait(_ text: String) -> Bool {
+        guard pastesAwaitingRestore > 0, MarkdownCodeFence.containsFenceLine(text),
+              let bundleID = TerminalTargetDetector.currentFrontmostBundleID()
+        else { return false }
+        return Self.shiftReturnNewlineBundleIDs.contains(bundleID)
+    }
+
     private func pasteRestoreDidRun() {
         pastesAwaitingRestore -= 1
-        guard pastesAwaitingRestore == 0, let write = clipboardWriteAfterPastes else { return }
+        guard pastesAwaitingRestore == 0 else { return }
+        // Text that waited for this paste goes first; a paste it starts
+        // holds the clipboard write back again.
+        if hasPendingInsertionText {
+            flushPendingRealtimeInsertion()
+        }
+        guard pastesAwaitingRestore == 0 else { return }
+        let waiters = pasteSettleWaiters
+        pasteSettleWaiters = []
+        waiters.forEach { $0.resume() }
+        guard let write = clipboardWriteAfterPastes else { return }
         clipboardWriteAfterPastes = nil
         write()
     }
