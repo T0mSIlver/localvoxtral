@@ -161,13 +161,16 @@ extension DictationSessionController {
     /// Polished and committed by a task when polishing has a configuration,
     /// committed as-is otherwise. `addressedTo` is the session a "send that
     /// to <name>" named (#723 step 3): the commit goes there, never to the
-    /// focused app.
+    /// focused app. `readsBackJoinedPane` is set by a caller that awaited
+    /// before this commit, the second pass: keys into a joined session's pane
+    /// wait for it to be read back.
     func commitOverlayBufferText(
         sessionMode: DictationOutputMode,
         sample: OverlayStopSample,
         goToChecked: Bool = false,
         addressedTo: ClaudeSessionSnapshot? = nil,
-        earlyPolish: EarlyPolishRun? = nil
+        earlyPolish: EarlyPolishRun? = nil,
+        readsBackJoinedPane: Bool = false
     ) {
         if !goToChecked,
            startGoToSessionIfSpoken(sessionMode: sessionMode, sample: sample)
@@ -343,6 +346,67 @@ extension DictationSessionController {
         // for a polish that could not run holds it instead.
         let historyJoin = (sample.capture?.claudeJoin ?? context.claudeSessionJoin).map(AgentCLIJoin.init)
         let commitJoin = context.claudeSessionJoin
+        if readsBackJoinedPane, let commitJoin, keysCarryCommit(join: commitJoin, spokenSend: spokenSend) {
+            // The second pass was awaited: a switch to another tab of the
+            // same terminal meanwhile would take the keys (#1712). The pane
+            // is read back after the go-to and addressed checks above, as
+            // the last await before the keys.
+            saveInterruptedPolishCommit = { [weak self] in
+                self?.saveSessionRecord(
+                    startedAt: capturedSessionStartedAt,
+                    rawText: originalText,
+                    polishedText: workingText != originalText ? workingText : nil,
+                    polishingDuration: nil,
+                    provider: capturedProvider,
+                    model: capturedModel,
+                    outputMode: capturedOutputMode,
+                    targetAppBundleID: capturedTargetBundleID,
+                    status: .sttCompleted,
+                    commitSucceeded: false,
+                    polishContextSummary: payloadProvenanceSummary,
+                    clipboardPayload: clipboardPayload,
+                    audio: capturedAudio,
+                    joined: historyJoin
+                )
+            }
+            polishAndCommitTask = Task { @MainActor [weak self] in
+                guard let self,
+                      await self.commitPaneStillShownBeforeInsertion(sessionMode: sessionMode, joined: commitJoin)
+                else { return }
+                self.saveInterruptedPolishCommit = nil
+                self.commitOverlayUnpolished(
+                    sessionMode: sessionMode, preparation: preparation, displayWorkingText: displayWorkingText,
+                    record: sample.record, commitJoin: commitJoin, historyJoin: historyJoin, spokenSend: spokenSend)
+            }
+            return
+        }
+        commitOverlayUnpolished(
+            sessionMode: sessionMode, preparation: preparation, displayWorkingText: displayWorkingText,
+            record: sample.record, commitJoin: commitJoin, historyJoin: historyJoin, spokenSend: spokenSend)
+    }
+
+    /// Whether keys typed into the focused app carry the commit. The relay
+    /// and the mod reach the session by its id, whatever pane is in front;
+    /// only keys need the joined pane read back.
+    private func keysCarryCommit(join: ClaudeSessionJoin?, spokenSend: OverlaySpokenSend?) -> Bool {
+        !textInsertion.promptRelayTakesText
+            && (modChannelSessionID(join: join) == nil || !(spokenSend == nil || spokenSend == .modSubmit))
+    }
+
+    /// The overlay commit with no polish: typed, pasted or relayed now, and
+    /// saved.
+    private func commitOverlayUnpolished(
+        sessionMode: DictationOutputMode,
+        preparation: StopCommitCoordinator.Preparation,
+        displayWorkingText: String,
+        record: StoppedSessionRecordFields,
+        commitJoin: ClaudeSessionJoin?,
+        historyJoin: AgentCLIJoin?,
+        spokenSend: OverlaySpokenSend?
+    ) {
+        let originalText = preparation.originalText
+        let workingText = preparation.workingText
+        let llmConfigurationFailure = preparation.configurationFailure
         let commitTargetPID = overlayBufferCoordinator.commitTargetAppPID
         let commitSpokenSend = spokenSendForCommit(spokenSend, join: commitJoin)
         let overlayCommit = StopCommitCoordinator.commit(
@@ -358,12 +422,10 @@ extension DictationSessionController {
             lastError = failureMessage
         }
         if overlayCommit.succeeded {
-            // Read before the cleanup below discards the join.
             expectCorrection(
-                of: displayWorkingText, join: context.claudeSessionJoin, project: nil,
-                startedAt: capturedSessionStartedAt
+                of: displayWorkingText, join: commitJoin, project: nil, startedAt: record.startedAt
             )
-            proposeProjectTermsIfNew(join: context.claudeSessionJoin, inserted: displayWorkingText)
+            proposeProjectTermsIfNew(join: commitJoin, inserted: displayWorkingText)
         }
         sendOverlaySpokenSendIfNeeded(commitSpokenSend, commit: overlayCommit)
 
@@ -374,21 +436,21 @@ extension DictationSessionController {
         )
 
         saveSessionRecord(
-            startedAt: capturedSessionStartedAt,
+            startedAt: record.startedAt,
             rawText: originalText,
             // Persist the PLACEHOLDER-bearing working text, never the
             // payload; the payload lives only in the substituted commit copy.
             polishedText: workingText != originalText ? workingText : nil,
             polishingDuration: nil,
-            provider: capturedProvider,
-            model: capturedModel,
-            outputMode: capturedOutputMode,
-            targetAppBundleID: capturedTargetBundleID,
+            provider: record.provider,
+            model: record.model,
+            outputMode: record.outputMode,
+            targetAppBundleID: record.targetAppBundleID,
             status: llmConfigurationFailure == nil ? .sttCompleted : .llmFailed,
             commitSucceeded: overlayCommit.succeeded,
-            polishContextSummary: payloadProvenanceSummary,
-            clipboardPayload: clipboardPayload,
-            audio: capturedAudio,
+            polishContextSummary: preparation.payloadProvenanceSummary,
+            clipboardPayload: preparation.clipboardPayload,
+            audio: record.audio,
             joined: historyJoin
         )
 
@@ -569,13 +631,9 @@ extension DictationSessionController {
             }
             return
         }
-        // The relay and the mod reach the session by its id, whatever pane
-        // is in front; only keys need the joined pane read back.
-        let keysCarryCommit = !self.textInsertion.promptRelayTakesText
-            && (self.modChannelSessionID(join: capture.claudeJoin) == nil
-                || !(spokenSend == nil || spokenSend == .modSubmit))
         guard await self.commitPaneStillShownBeforeInsertion(
-            sessionMode: sessionMode, joined: keysCarryCommit ? capture.claudeJoin : nil
+            sessionMode: sessionMode,
+            joined: self.keysCarryCommit(join: capture.claudeJoin, spokenSend: spokenSend) ? capture.claudeJoin : nil
         ) else { return }
         // From here the task commits and saves the dictation itself.
         self.saveInterruptedPolishCommit = nil
@@ -1357,7 +1415,7 @@ extension DictationSessionController {
                   await self.commitPaneStillShownBeforeInsertion(sessionMode: sessionMode)
             else { return }
             self.applyStopSecondPass(outcome)
-            self.commitOverlayBufferText(sessionMode: sessionMode, sample: sample)
+            self.commitOverlayBufferText(sessionMode: sessionMode, sample: sample, readsBackJoinedPane: true)
             // The commit may hand off to a polish task; this one ends with it,
             // so whoever awaits the commit awaits all of it.
             await self.polishAndCommitTask?.value
