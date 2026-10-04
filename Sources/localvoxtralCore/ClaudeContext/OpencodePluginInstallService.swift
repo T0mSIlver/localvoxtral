@@ -25,9 +25,8 @@ import Foundation
 /// round-trip through `JSONSerialization`, written pretty-printed with sorted
 /// keys. Formatting normalizes; content outside our entry is preserved.
 ///
-/// Known limitation, shared with the reference writers: edits are
-/// read-modify-write with no interlock, so a hand-edit landing between our
-/// read and our rename loses to our stale snapshot (last-writer-wins).
+/// A hand-edit landing between our read and our rename is not overwritten:
+/// the write refuses with `changedOnDisk` (#1726).
 public struct OpencodePluginInstallService: Sendable {
     public static let consentSentence =
         "localvoxtral will edit ~/.config/opencode/plugins/localvoxtral.js and "
@@ -222,7 +221,7 @@ public struct OpencodePluginInstallService: Sendable {
 
     // MARK: - Mutations (consent-gated by the caller)
 
-    public enum ServiceError: Error, Equatable {
+    public enum ServiceError: Error, Equatable, CustomStringConvertible {
         case notConfigured
         case bundledPluginUnavailable
         case isSymlink
@@ -232,6 +231,22 @@ public struct OpencodePluginInstallService: Sendable {
         /// setup ran, which the write would have replaced. Running setup
         /// again applies to the saved file.
         case changedOnDisk
+
+        /// The sentence the alert shows: the model keeps `String(describing:)`.
+        public var description: String {
+            switch self {
+            case .notConfigured: return "Editing opencode's files is not available in this build."
+            case .bundledPluginUnavailable: return "This build's opencode plugin file is missing."
+            case .isSymlink:
+                return "~/.config/opencode, or a file this app writes under it, is a symlink. See the README for "
+                    + "the manual install."
+            case .unreadable: return "A file under ~/.config/opencode could not be read."
+            case .refused:
+                return "~/.config/opencode/tui.json is not in a shape this app writes into, so it was left alone."
+            case .changedOnDisk:
+                return "~/.config/opencode/tui.json changed while this was running. Nothing was written; try again."
+            }
+        }
     }
 
     /// Copy the bundled file and list it in `tui.json` (creating that file

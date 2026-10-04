@@ -186,7 +186,7 @@ public protocol ClaudeShellRCFileSystem: Sendable {
     func atomicWrite(_ data: Data, permissions: UInt16, replacing expected: Data?) throws
 }
 
-public enum ClaudeShellRCError: Error, Equatable {
+public enum ClaudeShellRCError: Error, Equatable, CustomStringConvertible {
     /// The rc file — or a directory on the way to it — is a symlink.
     ///
     /// Refused rather than followed, and this is the case a dotfiles user
@@ -208,6 +208,21 @@ public enum ClaudeShellRCError: Error, Equatable {
     /// setup ran, which the write would have replaced. Nothing was written;
     /// running setup again applies the block to the saved file.
     case changedOnDisk
+
+    /// The sentence the alert shows: the model keeps `String(describing:)`.
+    public var description: String {
+        switch self {
+        case .isSymlink:
+            return "Your shell startup file, or a folder on the way to it, is a symlink, so it was left alone."
+        case .invalidEncoding: return "Your shell startup file is not UTF-8 text, so it was left alone."
+        case .notConfigured: return "Editing your shell startup file is not available in this build."
+        case .unreadable: return "Your shell startup file could not be read."
+        case .markersDoNotPair:
+            return "Your shell startup file has a localvoxtral begin line without its end line. Fix it by hand."
+        case .changedOnDisk:
+            return "Your shell startup file changed while this was running. Nothing was written; try again."
+        }
+    }
 }
 
 /// Applies or removes the block in the user's rc file.
