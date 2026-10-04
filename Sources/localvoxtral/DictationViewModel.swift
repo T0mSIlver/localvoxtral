@@ -921,6 +921,11 @@ final class DictationViewModel {
         }
     }
 
+    /// See `DictationSessionController.finalizeDictationBeforeQuit`.
+    func finalizeDictationBeforeQuit(then reply: @escaping @MainActor () -> Void) -> Bool {
+        session.finalizeDictationBeforeQuit(then: reply)
+    }
+
     /// A stopped dictation still owed its commit is saved to History as not
     /// inserted. Quit calls this before it drains the History writes.
     func saveStoppedDictationForQuit() {

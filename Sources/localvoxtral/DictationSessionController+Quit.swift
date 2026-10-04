@@ -3,6 +3,11 @@ import Foundation
 import os
 
 extension DictationSessionController {
+    /// Today's quit: nothing waits for the backend's last words.
+    func finalizeDictationBeforeQuit(then reply: @escaping @MainActor () -> Void) -> Bool {
+        false
+    }
+
     /// Quit: a stopped dictation still owed its commit is saved to History
     /// as not inserted, synchronously, so the quit's History drain writes
     /// it. Waiting on the polish (#1284), on the final transcript (#1296),
