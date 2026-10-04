@@ -23,19 +23,26 @@ extension DictationSessionController {
         SpokenAbortPhrases.isStopPhrase(text, phrases: settings.spokenAbortPhrases)
     }
 
-    /// Runs at stop, before every other spoken command. Returns true when
-    /// the dictation is a stop phrase: the stop then ends as a command.
+    /// Runs at stop, before every other spoken command, for a text the
+    /// stop's second pass gave; the first pass's text is recognized before
+    /// the destination guards. Returns true when the dictation is a stop
+    /// phrase: the stop then ends as a command.
     func startSpokenAbortIfSpoken(
         sessionMode: DictationOutputMode,
         sample: OverlayStopSample
     ) -> Bool {
         guard isSpokenAbort(transcript.currentDictationEventText) else { return false }
+        startSpokenAbort(sessionMode: sessionMode, join: sample.capture?.claudeJoin ?? context.claudeSessionJoin)
+        return true
+    }
+
+    /// Asks `join`'s mod to end its turn and ends the stop as a command.
+    func startSpokenAbort(sessionMode: DictationOutputMode, join: ClaudeSessionJoin?) {
         overlayBufferCoordinator.reset()
-        let join = sample.capture?.claudeJoin ?? context.claudeSessionJoin
         guard let hub = context.claudeModChannels, let sessionID = modChannelSessionID(join: join) else {
             Log.backends.notice("stop phrase: no joined Claude Code session with its mod; nothing stopped, no key")
             finishSpokenAbort(sessionMode: sessionMode, status: SpokenAbortStatus.noMod)
-            return true
+            return
         }
         Log.dictation.notice("stop phrase: asking the joined session's mod to end its turn")
         polishAndCommitTask = Task { @MainActor [weak self] in
@@ -45,7 +52,6 @@ extension DictationSessionController {
             guard let self, !Task.isCancelled else { return }
             self.finishSpokenAbort(sessionMode: sessionMode, status: Self.spokenAbortStatus(of: exchange))
         }
-        return true
     }
 
     private func finishSpokenAbort(sessionMode: DictationOutputMode, status: String) {

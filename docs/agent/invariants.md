@@ -275,7 +275,9 @@ there is not.
   is only one of the user's stop phrases (`SpokenAbortPhrases`: empty, and
   so off, by default; the whole dictation must be the phrase, so a common
   word is allowed, but not a send phrase) is checked before every other
-  spoken command. It asks the mod of the session the dictation joined for
+  spoken command, and before the destination guards that keep text in
+  History during a Tab switch or once the picked pane left the front:
+  those guard an insertion, and a stop phrase inserts nothing. It asks the mod of the session the dictation joined for
   `abort`, which ends that session's running main-loop turn
   (`$.turn.abort` with the id `turn.start` gave; with none running it
   answers `no_turn`). The request goes only down that session's channel,

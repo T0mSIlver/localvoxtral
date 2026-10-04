@@ -114,6 +114,17 @@ extension DictationSessionController {
             commitQuickCapture(sessionMode: sessionMode)
             return
         }
+        // A stop phrase is a command to the joined session, not text for
+        // the destination: the destination's guards would keep it as text.
+        if isSpokenAbort(transcript.currentDictationEventText) {
+            sessionCommitGuard = nil
+            sessionPickedPane = nil
+            earlyPolishRun?.cancel()
+            earlyPolishRun = nil
+            _ = audio.sessionRecording.finish()
+            startSpokenAbort(sessionMode: sessionMode, join: context.claudeSessionJoin)
+            return
+        }
         let destinationCheck = checkDestinationBeforeCommit(sessionMode: sessionMode)
         if destinationCheck == .kept { return }
         let sessionAudio = audio.sessionRecording.finish()
