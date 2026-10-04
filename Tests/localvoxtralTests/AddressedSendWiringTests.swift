@@ -522,9 +522,14 @@ final class AddressedSendWiringTests: XCTestCase {
     func testEscapeIsReleasedOnceTheRouteHasTheText() async throws {
         let (herdr, held, release) = try herdrHoldingTheAppendsForegroundQuery()
         let harness = makeHarness(text: "Run the tests, send that to payments.", herdr: herdr)
+        // The build host has no GUI session to register the Carbon hotkey in.
+        EscapeCancelHandler.debugConfigureRegistration(status: noErr)
         let escape = harness.viewModel.session.escapeCancelHandler
         escape.start()
-        addTeardownBlock { @MainActor in escape.stop() }
+        addTeardownBlock { @MainActor in
+            escape.stop()
+            EscapeCancelHandler.resetDebugState()
+        }
         XCTAssertTrue(escape.debugIsRegistered, "precondition: the stop keeps Escape")
 
         let commit = harness.startStop()
