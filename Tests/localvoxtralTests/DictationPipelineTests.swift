@@ -352,6 +352,8 @@ final class DictationPipelineTests: XCTestCase {
 
         XCTAssertFalse(pipeline.viewModel.isFinalizingStop, "closed on the idle rule")
         XCTAssertEqual(yields, 1, "only the start yields")
+        // This backend has sent no final: the idle rule is its normal end (#1659).
+        XCTAssertEqual(pipeline.viewModel.statusText, DictationViewModel.StatusStrings.ready)
     }
 
     /// A settled sentence past 30 words, the first piece early polish takes.
@@ -2770,6 +2772,59 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(typed.text, prefix)
         XCTAssertEqual(pipeline.viewModel.statusText, DictationViewModel.StatusStrings.dictationEndMayBeMissing)
         XCTAssertEqual(pipeline.viewModel.lastError, DictationViewModel.StatusStrings.dictationEndMayBeMissing)
+    }
+
+    /// The backend sent a final earlier, so it answers a final commit. When
+    /// the stop's answer does not come before the idle rule closes the
+    /// socket, the stop says its end may be missing instead of Ready (#1659).
+    func testAStopThatGoesIdleWithoutTheFinalOfABackendThatSendsThemSaysTheEndMayBeMissing() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let first = "the first part."
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.done", "text": first])
+        let heard = await waitUntilObserved { pipeline.viewModel.transcript.currentDictationEventText == first }
+        XCTAssertTrue(heard, "the earlier final never arrived")
+        await stopOnTheIdleRule(pipeline)
+
+        let recorded = await pipeline.records.waitForCount(1)
+        XCTAssertTrue(recorded)
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [first])
+        let reported = await waitUntilObserved {
+            pipeline.viewModel.statusText == DictationViewModel.StatusStrings.dictationEndMayBeMissing
+        }
+        XCTAssertTrue(reported, "status: \(pipeline.viewModel.statusText)")
+        XCTAssertEqual(pipeline.viewModel.lastError, DictationViewModel.StatusStrings.dictationEndMayBeMissing)
+    }
+
+    /// speechd sends no final before the stop. Once a stop on this endpoint
+    /// was answered, the next one that goes idle without its answer says its
+    /// end may be missing (#1659).
+    func testAStopThatGoesIdleOnAnEndpointThatAnsweredAnEarlierStopSaysTheEndMayBeMissing() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        await startAndSpeak(pipeline)
+        await stopAndFinalize(pipeline)
+        pipeline.server.forgetFrames()
+
+        await startAndSpeak(pipeline)
+        sendPartials(pipeline)
+        await stopOnTheIdleRule(pipeline)
+
+        let reported = await waitUntilObserved {
+            pipeline.viewModel.statusText == DictationViewModel.StatusStrings.dictationEndMayBeMissing
+        }
+        XCTAssertTrue(reported, "status: \(pipeline.viewModel.statusText)")
+    }
+
+    /// Stops and lets the stop close on its idle rule, the final commit
+    /// unanswered.
+    private func stopOnTheIdleRule(_ pipeline: Pipeline, file: StaticString = #filePath, line: UInt = #line) async {
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit", file: file, line: line) { $0.isFinalCommit }
+        // The stop's two polls: the finalization and its watchdog.
+        await pipeline.clock.waitForSleepers(2, file: file, line: line)
+        pipeline.clock.advance(by: TimingConstants.finalizationMinimumOpen + TimingConstants.finalizationPollInterval)
+        await pipeline.server.awaitClose(file: file, line: line)
     }
 
     /// Stops, answers the final commit with an error frame, and lets the

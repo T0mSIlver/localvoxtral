@@ -13,7 +13,8 @@ package final class FakeRealtimeClient: RealtimeClient, @unchecked Sendable {
         var disconnectCount = 0
         var connectConfigurations: [RealtimeSessionConfiguration] = []
         var commits: [Bool] = []
-        var sentAudioBytes = 0
+        var sentAudio = Data()
+        var unsentAudio = Data()
         var refusesAudio = false
         var contextBudgets: [RealtimeContextBudget?] = []
         var connectionGeneration: RealtimeConnectionGeneration = .none
@@ -35,7 +36,9 @@ package final class FakeRealtimeClient: RealtimeClient, @unchecked Sendable {
     package var connectCount: Int { state.withLock { $0.connectCount } }
     package var disconnectCount: Int { state.withLock { $0.disconnectCount } }
     package var commits: [Bool] { state.withLock { $0.commits } }
-    package var sentAudioBytes: Int { state.withLock { $0.sentAudioBytes } }
+    package var sentAudioBytes: Int { state.withLock { $0.sentAudio.count } }
+    /// Every PCM byte the client took, in order.
+    package var sentAudio: Data { state.withLock { $0.sentAudio } }
     /// Every budget the session set, in order.
     package var contextBudgets: [RealtimeContextBudget?] { state.withLock { $0.contextBudgets } }
     package var connectConfigurations: [RealtimeSessionConfiguration] {
@@ -106,7 +109,7 @@ package final class FakeRealtimeClient: RealtimeClient, @unchecked Sendable {
     package func sendAudioChunk(_ pcm16Data: Data) -> Bool {
         state.withLock {
             guard !$0.refusesAudio else { return false }
-            $0.sentAudioBytes += pcm16Data.count
+            $0.sentAudio.append(pcm16Data)
             return true
         }
     }
@@ -115,6 +118,19 @@ package final class FakeRealtimeClient: RealtimeClient, @unchecked Sendable {
     /// it, whatever `isConnected` still says.
     package func setRefusesAudio(_ refuses: Bool) {
         state.withLock { $0.refusesAudio = refuses }
+    }
+
+    /// What the next `takeUnsentAudio` hands back, as a socket that closed
+    /// before its handshake leaves it.
+    package func setUnsentAudio(_ audio: Data) {
+        state.withLock { $0.unsentAudio = audio }
+    }
+
+    package func takeUnsentAudio() -> Data {
+        state.withLock { s in
+            defer { s.unsentAudio = Data() }
+            return s.unsentAudio
+        }
     }
 
     package func setContextBudget(_ budget: RealtimeContextBudget?) {

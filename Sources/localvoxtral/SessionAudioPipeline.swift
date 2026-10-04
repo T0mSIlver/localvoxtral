@@ -234,10 +234,33 @@ final class SessionAudioPipeline {
         }
     }
 
-    func flushBufferedAudio(to client: any RealtimeClient) {
+    /// Hands the client the buffer, behind any audio a closed socket never
+    /// sent. False when the client refused it, its socket gone: the buffer
+    /// keeps it for a reconnect, as the send loop does (#1458, #1673).
+    @discardableResult
+    func flushBufferedAudio(to client: any RealtimeClient) -> Bool {
+        reclaimUnsentAudio(from: client)
         let chunk = audioChunkBuffer.takeAll()
-        guard !chunk.isEmpty else { return }
-        client.sendAudioChunk(chunk)
+        guard !chunk.isEmpty else { return true }
+        guard client.sendAudioChunk(chunk) else {
+            audioChunkBuffer.putBack(chunk)
+            return false
+        }
+        return true
+    }
+
+    /// Puts the audio a closed socket never sent (a rollover's carried
+    /// audio, #1672) back in front of what was captured since. True when it
+    /// held any.
+    @discardableResult
+    func reclaimUnsentAudio(from client: any RealtimeClient) -> Bool {
+        let unsent = client.takeUnsentAudio()
+        guard !unsent.isEmpty else { return false }
+        audioChunkBuffer.putBack(unsent)
+        Log.backends.notice(
+            "realtime: \(String(format: "%.1f", Double(unsent.count) / Double(AudioChunkBuffer.bytesPerSecond)), privacy: .public)s of audio the closed socket never sent goes back to the buffer"
+        )
+        return true
     }
 
     /// Stops both loops. The buffer keeps what they had not drained.

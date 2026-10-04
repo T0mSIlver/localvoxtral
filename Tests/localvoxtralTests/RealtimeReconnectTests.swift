@@ -460,6 +460,65 @@ final class RealtimeReconnectTests: XCTestCase {
         XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.dictationEndMayBeMissing)
     }
 
+    /// The socket died and its `.disconnected` still waits on the main queue
+    /// when the user stops. The flush the dead client refuses stays in the
+    /// buffer, and the stop reconnects to deliver it, once, with the final
+    /// commit behind it (#1673).
+    func testAStopThatBeatsTheDisconnectEventKeepsTheUnsentTail() async {
+        let clock = ManualSessionClock()
+        let records = RecordedSessions()
+        let (viewModel, client) = makeDictatingViewModel(
+            outputMode: .overlayBuffer, clock: clock, records: records)
+        viewModel.transcript.currentDictationEventText = "before the drop"
+        let dying = viewModel.session.sessionConnectionGeneration
+        client.setConnected(false)
+        client.setRefusesAudio(true)
+        let tail = Data(repeating: 7, count: 3_200)
+        viewModel.audio.audioChunkBuffer.append(tail)
+        client.setOnCommit { [weak viewModel] final in
+            guard final else { return }
+            MainActor.assumeIsolated {
+                viewModel?.session.handle(event: .finalTranscript("the tail"))
+                viewModel?.session.handle(event: .transcriptionFinalized)
+            }
+        }
+        viewModel.dependencies.reconnectSleep = { _ in
+            guard client.connectCount > 0 else { return }
+            client.setRefusesAudio(false)
+            client.setConnected(true)
+        }
+
+        viewModel.stopDictation(reason: "manual toggle")
+        viewModel.session.handle(event: .disconnected, from: dying)
+        await viewModel.session.reconnectTask?.value
+        await viewModel.session.stopFinalizationTask?.value
+        await awaitStoppedSessionCommit(viewModel)
+
+        XCTAssertEqual(client.sentAudio, tail, "the tail reaches the new session once")
+        XCTAssertEqual(client.commits, [true])
+        XCTAssertEqual(records.all.map(\.rawText), ["before the drop the tail"])
+        XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.ready)
+    }
+
+    /// The socket a context rollover opened fails before its handshake, so
+    /// the audio carried to it never reached a server. The reconnect puts it
+    /// back ahead of the speech captured since, for the restarted send loop
+    /// to replay in order (#1672).
+    func testAReconnectReplaysTheAudioTheClosedSocketNeverSentAheadOfTheGap() async {
+        let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer)
+        let carried = Data(repeating: 9, count: 3_200)
+        let gap = Data(repeating: 7, count: 3_200)
+        client.setUnsentAudio(carried)
+        viewModel.audio.audioChunkBuffer.append(gap)
+        viewModel.dependencies.reconnectSleep = { _ in client.setConnected(true) }
+
+        viewModel.session.handle(event: .disconnected)
+        await viewModel.session.reconnectTask?.value
+
+        XCTAssertTrue(viewModel.isDictating)
+        XCTAssertEqual(viewModel.audio.audioChunkBuffer.takeAll(), carried + gap)
+    }
+
     // MARK: - The bundled helper reloads (#1583)
 
     /// speechd crashed and takes eight seconds to load its model again, so
