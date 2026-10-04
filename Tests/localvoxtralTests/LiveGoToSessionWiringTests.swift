@@ -145,6 +145,25 @@ final class LiveGoToSessionWiringTests: XCTestCase {
         XCTAssertEqual(harness.records.value.count, 1)
     }
 
+    /// A cancel while a spoken send reads the pane back throws the words
+    /// away too: nothing is typed and no Return is pressed once the pane
+    /// answers (#1656).
+    func testACancelDuringASpokenSendReadBackTypesAndSendsNothing() async {
+        let harness = makeHarness(spokenSend: true)
+        harness.viewModel.session.context.claudeSessionJoin = join(harness.sessions[0])
+        harness.focuser.onReadBack = { _ in harness.viewModel.cancelDictation() }
+
+        harness.partial("fix the bug send it")
+        harness.final("Fix the bug, send it.")
+        await harness.settle()
+        await awaitStoppedSessionCommit(harness.viewModel)
+
+        XCTAssertEqual(harness.focuser.readBackSessionIDs, ["pay"])
+        XCTAssertEqual(harness.typedText, "", "nothing the user cancelled is typed")
+        XCTAssertEqual(harness.returns, [], "nor sent")
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false], "History keeps it as not inserted")
+    }
+
     /// Review of #773 (P2): the stop waited only for the first go-to, and
     /// the cleanup cancelled the one queued behind it.
     func testAStopWaitsForAGoToQueuedBehindAnother() async {
