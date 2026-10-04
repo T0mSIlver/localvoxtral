@@ -2843,6 +2843,50 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertTrue(copied, "clipboard: \(clipboard.text.debugDescription)")
     }
 
+    /// Two fenced finals delivered back to back: the second paste waits
+    /// until the target read the first one's clipboard (#1664).
+    func testTwoFencePastesInARowPasteEachPayloadOnce() async throws {
+        let first = "first:\n```\nline one\n```"
+        let second = "second:\n```\nline two\n```"
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { ClaudeDesktopAllowlist.bundleID }
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .noFocusedElement }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        addTeardownBlock { @MainActor in
+            TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
+            TerminalTargetDetector.debugFocusedElementProbeOverride = nil
+            TerminalTargetDetector.debugSecureEventInputOverride = nil
+        }
+        let clipboard = FakeClipboard()
+        pipeline.viewModel.dependencies.pasteboardWriter = { clipboard.write($0) }
+        var pasted: [String] = []
+        pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        pipeline.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { _ in true },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false },
+            shiftReturnPoster: { true },
+            commandVPaster: { text in
+                clipboard.write(text)
+                // The target handles Cmd+V once the main thread is free.
+                Task { @MainActor in pasted.append(clipboard.text) }
+                return true
+            }
+        )
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.session.handle(event: .finalTranscript(first))
+        pipeline.viewModel.session.handle(event: .finalTranscript(second))
+        // The first paste's restore window passes, then the second's.
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
+        pipeline.clock.advance(by: 0.15)
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
+        pipeline.clock.advance(by: 0.15)
+        await stopAndFinalize(pipeline)
+
+        XCTAssertEqual(pasted.map { $0.trimmingCharacters(in: .whitespaces) }, [first, second])
+    }
+
     private func joinOpencodePane(
         _ pipeline: Pipeline, relay: OpencodePromptRelayAddress, inHerdr herdr: FakeHerdrSocket? = nil
     ) {

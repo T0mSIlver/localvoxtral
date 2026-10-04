@@ -18,6 +18,7 @@ final class LiveGoToSessionWiringTests: XCTestCase {
     override func tearDown() async throws {
         TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
         TerminalTargetDetector.debugSecureEventInputOverride = nil
+        TerminalTargetDetector.debugFocusedElementProbeOverride = nil
         try await super.tearDown()
     }
 
@@ -108,6 +109,79 @@ final class LiveGoToSessionWiringTests: XCTestCase {
             "what the terminal hold-back kept goes to the pane it was dictated into"
         )
         XCTAssertEqual(harness.typedText(in: Self.otherTerminalPID), "fix the build")
+    }
+
+    /// A tail whose insertion failed before the focus is kept, never typed
+    /// into the pane that came forward (#1663).
+    func testATailThatFailedToLandBeforeAGoToIsKeptNotTypedIntoTheNewPane() async {
+        let harness = makeHarness()
+        let clipboard = Box<[String]>([])
+        harness.viewModel.dependencies.pasteboardWriter = { clipboard.value.append($0) }
+        harness.focuser.onFocus = { _ in harness.frontmost.value = Self.otherTerminalPID }
+        let clock = ManualSessionClock()
+        harness.viewModel.textInsertion.restartInsertionRetryTask(
+            sleep: clock.sleep,
+            isDictating: { true }
+        )
+        defer { harness.viewModel.textInsertion.stopInsertionRetryTask() }
+
+        harness.insertionWorks.value = false
+        harness.partial("first part ")
+        harness.final("first part")
+        harness.partial("go to payments")
+        harness.final("go to payments")
+        await harness.settle()
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, ["pay"])
+
+        harness.insertionWorks.value = true
+        await clock.waitForSleepers(1)
+        clock.advance(by: 0.12)
+        await clock.waitForSleepers(1)
+
+        XCTAssertEqual(harness.typedText(in: Self.otherTerminalPID), "", "pane A's tail never reaches pane B")
+        XCTAssertEqual(clipboard.value, ["first part "], "kept once")
+        XCTAssertFalse(harness.viewModel.textInsertion.hasPendingInsertionText)
+    }
+
+    /// A stop right after two fenced finals into Claude Desktop waits for
+    /// the second paste, which waited for the first one's clipboard (#1664).
+    func testAStopWaitsForAFencePasteBehindAnother() async {
+        let first = "first:\n```\nline one\n```"
+        let second = "second:\n```\nline two\n```"
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .noFocusedElement }
+        let harness = makeHarness(sessions: [], app: ClaudeDesktopAllowlist.bundleID)
+        let clock = ManualSessionClock()
+        harness.viewModel.textInsertion.pasteRestoreSleep = clock.sleep
+        let clipboard = Box("")
+        let pasted = Box<[String]>([])
+        harness.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { _ in true },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false },
+            frontmostPIDReader: { Self.terminalPID },
+            shiftReturnPoster: { true },
+            commandVPaster: { text in
+                clipboard.value = text
+                // The target handles Cmd+V once the main thread is free.
+                Task { @MainActor in pasted.value.append(clipboard.value) }
+                return true
+            }
+        )
+
+        harness.partial(first)
+        harness.final(first)
+        harness.partial(second)
+        harness.final(second)
+        harness.stop()
+        await clock.waitForSleepers(1)
+        XCTAssertTrue(harness.records.value.isEmpty, "the stop waits for the second paste")
+        clock.advance(by: 0.15)
+        await clock.waitForSleepers(1)
+        clock.advance(by: 0.15)
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        XCTAssertEqual(pasted.value.map { $0.trimmingCharacters(in: .whitespaces) }, [first, second])
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [true])
     }
 
     func testAStopDuringAGoToWaitsForItThenTypesWhatFollowed() async {
@@ -388,6 +462,7 @@ final class LiveGoToSessionWiringTests: XCTestCase {
         let frontmost: Box<pid_t?>
         let typedPerApp: Box<[(pid: pid_t?, text: String)]>
         let records: Box<[DictationSessionRecord]>
+        let insertionWorks: Box<Bool>
         let sessions: [ClaudeSessionSnapshot]
         let nicknames: SessionNicknameStore
 
@@ -451,7 +526,8 @@ final class LiveGoToSessionWiringTests: XCTestCase {
 
     private func makeHarness(
         sessions: [ClaudeSessionSnapshot]? = nil,
-        spokenSend: Bool = false
+        spokenSend: Bool = false,
+        app: String = LiveGoToSessionWiringTests.ghostty
     ) -> Harness {
         let sessions = sessions ?? [session("pay", cwd: "/r/payments")]
         let settings = makeSettings(outputMode: .liveAutoPaste)
@@ -467,15 +543,17 @@ final class LiveGoToSessionWiringTests: XCTestCase {
         )
         viewModel.appConfigStore = MockAppConfigStore()
         retainForTestProcessLifetime(viewModel)
-        viewModel.dependencies.bundleIdentifier = { _ in Self.ghostty }
+        viewModel.dependencies.bundleIdentifier = { _ in app }
         let records = Box<[DictationSessionRecord]>([])
         viewModel.dependencies.onSessionRecord = { records.value.append($0) }
 
         let events = Box<[String]>([])
         let frontmost = Box<pid_t?>(Self.terminalPID)
         let typedPerApp = Box<[(pid: pid_t?, text: String)]>([])
+        let insertionWorks = Box(true)
         viewModel.textInsertion.debugConfigureInsertionHooks(
             unicodePoster: { chunk in
+                guard insertionWorks.value else { return false }
                 events.value.append("type:\(chunk)")
                 typedPerApp.value.append((frontmost.value, chunk))
                 return true
@@ -488,7 +566,7 @@ final class LiveGoToSessionWiringTests: XCTestCase {
             },
             frontmostPIDReader: { frontmost.value }
         )
-        TerminalTargetDetector.debugFrontmostBundleIDOverride = { Self.ghostty }
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { app }
         TerminalTargetDetector.debugSecureEventInputOverride = { false }
         viewModel.session.captureSessionTargetVerdict()
         viewModel.session.applyPreCapturedSessionTargetVerdict()
@@ -514,6 +592,7 @@ final class LiveGoToSessionWiringTests: XCTestCase {
             frontmost: frontmost,
             typedPerApp: typedPerApp,
             records: records,
+            insertionWorks: insertionWorks,
             sessions: sessions,
             nicknames: nicknames
         )

@@ -295,7 +295,9 @@ there is not.
   send; a held segment that is not a command, or is promoted at a stop, is
   typed whole, through the spoken send trigger when that withholds the
   segment. A resolved name types nothing: the terminal hold-back's tail is
-  released into the old pane first, and a focus ends the prompt relay, whose
+  released into the old pane first; text that did not land there is kept
+  (`keepUndeliveredAgentText`) and dropped from the pending buffers, never
+  retried into the new pane (#1663); and a focus ends the prompt relay, whose
   pane is the old one. Segments that end while the go-to resolves and
   focuses wait and land after it, in order; a stop waits for them too.
   History keeps the live dictation whole, the phrase included.
@@ -483,7 +485,11 @@ there is not.
   the exception (#695): typed key by key, a line that opens with a fence
   triggers Desktop's markdown shortcut and opens a code block that also takes
   the text after the closing fence, so that text is pasted whole with Cmd+V
-  (`MarkdownCodeFence`), and typed as above only if the paste fails. The
+  (`MarkdownCodeFence`), and typed as above only if the paste fails.
+  Desktop reads the clipboard after the post returned, so a paste never
+  replaces a clipboard an earlier paste's Cmd+V may still read (#1664): its
+  text stays pending, in order, until that paste's restore, and a stop
+  waits for it. The
   list is judged from the app frontmost when the keys
   are posted, after the insertion made its target frontmost. Listing Desktop
   under Settings → Terminals overrides the verdict (the user list wins), and
