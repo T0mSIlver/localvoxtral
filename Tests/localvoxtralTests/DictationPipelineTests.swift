@@ -1492,13 +1492,15 @@ final class DictationPipelineTests: XCTestCase {
     /// The session is mid-turn: the mod's submit waits for it, and the
     /// popover says so instead of reporting the prompt as sent.
     func testASpokenSendTheModQueuesSaysItRunsAfterTheTurn() async throws {
-        let (pipeline, typed, fills) = try await modChannelPipeline(answers: [.queued])
+        let answered = BoundedWait()
+        let (pipeline, typed, fills) = try await modChannelPipeline(answers: [.queued], answerGate: answered)
         pipeline.viewModel.settings.overlaySpokenSendEnabled = true
         let settled = FillSettled()
         ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
         addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
 
         await dictate(pipeline, "run the tests, send it.")
+        answered.resolve()
         let done = await settled.wait(for: 1)
 
         XCTAssertTrue(done)
@@ -3198,6 +3200,10 @@ final class DictationPipelineTests: XCTestCase {
 
         await startAndSpeak(pipeline)
         sendPartials(pipeline)
+        // A partial read after the stop is finalization activity: stamped
+        // after the clock advanced, it holds the idle rule off (#1744).
+        let heard = await waitUntilObserved { pipeline.viewModel.transcript.overlayDisplayText == Self.phrase }
+        XCTAssertTrue(heard, "the partials never arrived: \(pipeline.viewModel.transcript.overlayDisplayText)")
         await stopOnTheIdleRule(pipeline)
 
         let reported = await waitUntilObserved {

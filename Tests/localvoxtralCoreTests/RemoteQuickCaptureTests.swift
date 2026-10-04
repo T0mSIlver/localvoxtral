@@ -207,8 +207,11 @@ final class RemoteQuickCaptureTests: XCTestCase {
     private func startDraft(_ text: String = "for quill, italic kerning is still wrong") async -> Task<QuickCaptureDraft.Outcome?, Never> {
         let requests = requests!
         let project = quill
+        // An earlier draft's timer stays a sleeper after its draft ends
+        // (#1741): the new draft is registered once one more sleeps.
+        let sleeping = sleeper.sleepers
         let task = Task { await requests.draft(capture: text, project: project) }
-        await sleeper.waitForSleepers(1)
+        await sleeper.waitForSleepers(sleeping + 1)
         return task
     }
 
@@ -448,13 +451,12 @@ final class RemoteQuickCaptureTests: XCTestCase {
                     "\(label): the issues are quoted only when they can be linked"
                 )
             }
-            XCTAssertEqual(
-                try answer(
-                    RemoteQuickCaptureRequests.draftAnswerPath, session: "s1", draftID: draftID, exit: "0",
-                    body: Self.claudeAnswer
-                ).status,
-                200, label
-            )
+            let answered = try answer(
+                RemoteQuickCaptureRequests.draftAnswerPath, session: "s1", draftID: draftID, exit: "0",
+                body: Self.claudeAnswer
+            ).status
+            // A refused answer leaves the draft waiting forever.
+            guard answered == 200 else { return XCTFail("\(label): the answer was refused with \(answered)") }
             guard case .draft(let draft, _)? = await task.value else { return XCTFail("\(label): no draft") }
             XCTAssertEqual(draft.relation, relation, label)
             XCTAssertEqual(draft.issue, issue, label)
