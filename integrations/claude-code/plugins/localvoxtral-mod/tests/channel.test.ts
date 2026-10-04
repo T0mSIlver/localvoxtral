@@ -165,6 +165,59 @@ describe('channel', () => {
     ])
   })
 
+  // A /clear or a resume moved the process to sess-2 while sess-1's attach
+  // still carried requests: none of them may touch sess-2's prompt box.
+  test('a request issued for a session the process has left is refused, ping aside', async ($, on) => {
+    const clock = mock.clock(on)
+    mock.env(on, { HOME: '/Users/tom' })
+    let sessionID = 'sess-1'
+    const touched: string[] = []
+    const replies: unknown[] = []
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('session.id', () => ({ value: sessionID }))
+    on('settings.read', () => ({ value: {} }))
+    on('fs.exists', ($, e) => ({ value: e.path === PUBLISHER }))
+    on('ui.status', () => ({ value: undefined }))
+    on('prompt.fill', () => {
+      touched.push('fill')
+      return { isFilled: true }
+    })
+    on('prompt.read', () => {
+      touched.push('read')
+      return { value: { text: 'what sess-2 typed', cursor: 17 } }
+    })
+    on('process.spawn', async function* (): AsyncGenerator<ProcessSpawnChunk, { value: ProcessSpawnResult }> {
+      await clock.sleep(100)
+      sessionID = 'sess-2'
+      yield {
+        stream: 'stdout',
+        text:
+          '{"id":"f","kind":"fill","mod_message":1,"text":"run the tests"}\n' +
+          '{"id":"d","kind":"draft","mod_message":1}\n' +
+          '{"id":"p","kind":"ping","mod_message":1}\n',
+      }
+      await clock.sleep(60000)
+      return { value: EXITED }
+    })
+    on('process.run', ($, e) => {
+      if (e.argv[1] === '--mod-reply') replies.push(JSON.parse(e.init?.stdin ?? ''))
+      return {
+        value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+      }
+    })
+
+    await $.session.start(STARTED)
+    await clock.advance(1000)
+
+    expect(touched).toEqual([])
+    // Answered concurrently: in id order.
+    expect([...replies].sort((a, b) => ((a as { id: string }).id < (b as { id: string }).id ? -1 : 1))).toEqual([
+      { mod_reply: 1, session_id: 'sess-1', id: 'd', ok: false, reason: 'session_changed' },
+      { mod_reply: 1, session_id: 'sess-1', id: 'f', ok: false, reason: 'session_changed' },
+      { mod_reply: 1, session_id: 'sess-1', id: 'p', ok: true },
+    ])
+  })
+
   test('draftOf keeps the text around the cursor and never splits a surrogate pair', () => {
     const before = 'a'.repeat(DRAFT_BEFORE_CURSOR + 10)
     const after = 'b'.repeat(DRAFT_AFTER_CURSOR + 10)

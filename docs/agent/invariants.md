@@ -368,7 +368,11 @@ there is not.
   A forged bye ends only an attached session early, as a forged
   `SessionEnd` already can. After `/clear` the process goes on under a new
   session id: the mod's channel ends with the bye and attaches again under
-  the new id, never under the old one. With no bye (an app or mod that
+  the new id, never under the old one. A request already on the old
+  attach when the process moved acts on nothing: the mod answers every kind
+  but `ping` with `session_changed` once `$.session.id()` no longer names
+  the attach's session, and the app logs it to `Log.backends` and takes its
+  own path. With no bye (an app or mod that
   predates it, a crash), the session's own SessionEnd hook and the TTL
   from the detach end it as before.
 - **The Mistral second pass holds the text back, never the world** (#317).

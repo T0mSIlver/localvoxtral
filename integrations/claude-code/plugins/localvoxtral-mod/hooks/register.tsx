@@ -14,6 +14,7 @@ import {
   type Outcome,
   parseMessage,
   RESTART_DELAY_MS,
+  SESSION_CHANGED,
   SHORTEST_LIFE_MS,
   WIRE_VERSION,
 } from './channel'
@@ -161,7 +162,13 @@ async function answer(
 ): Promise<void> {
   let outcome: Outcome
   try {
-    outcome = await handle($, message)
+    // A /clear or a resume moves the process to another session before
+    // `session.end` cuts this attach. A request issued for this session
+    // must not act on that one's prompt box or transcript.
+    outcome =
+      message.kind !== 'ping' && (await $.session.id()) !== sessionID
+        ? { ok: false, reason: SESSION_CHANGED }
+        : await handle($, message)
   } catch {
     outcome = { ok: false, reason: 'failed' }
   }

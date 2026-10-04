@@ -263,6 +263,11 @@ public final class ClaudeModChannelHub: Sendable {
             Log.claudeContext.error("Mod channel: dropped a reply no request is waiting for")
             return
         }
+        if !reply.ok, reply.reason == ClaudeModChannelWire.Reply.sessionChangedReason {
+            Log.backends.error(
+                "Mod channel: the mod refused a request because its process moved to another session (/clear or resume)"
+            )
+        }
         pending.timer?.cancel()
         pending.continuation.resume(returning: .replied(reply))
     }

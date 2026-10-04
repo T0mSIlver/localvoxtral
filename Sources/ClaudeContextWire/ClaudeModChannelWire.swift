@@ -170,6 +170,11 @@ public enum ClaudeModChannelWire {
         /// What a `terms` fork cost.
         public var usage: Usage?
 
+        /// The `reason` of a request the mod refused because its process
+        /// went on under another session (`/clear`, a resume) before the
+        /// app closed this session's channel.
+        public static let sessionChangedReason = "session_changed"
+
         public init(
             sessionID: String,
             id: String,

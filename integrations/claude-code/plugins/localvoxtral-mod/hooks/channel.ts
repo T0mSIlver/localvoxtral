@@ -33,6 +33,9 @@ export type ChannelBye = { mod_bye: number; session_id: string }
 /** Whether the mod did what a message asked, why not, and any answer. */
 export type Outcome = { ok: boolean; reason?: string; text?: string; cursor?: number; usage?: ChannelUsage }
 
+/** The refusal of a request issued for a session the process has left. */
+export const SESSION_CHANGED = 'session_changed'
+
 // A child that ends sooner than this after it started is a publisher that
 // does not know `--attach` (an app older than the mod): stop asking it.
 export const SHORTEST_LIFE_MS = 5000
