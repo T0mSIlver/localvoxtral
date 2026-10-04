@@ -166,7 +166,7 @@ expect false "the enrollment service's split-out files do not run the lane" \
   Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteSSHConfigFileSystem.swift
 expect false "a settings-model plus forward-supervisor change does not run the lane" \
   Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel.swift \
-  Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardSupervisor.swift
+  Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardSupervisor.swift
 expect false "the settings model's files by area do not run the lane" \
   "Sources/localvoxtral/ClaudeContext/ClaudeIntegrationSettingsModel+SetupRun.swift" \
   Sources/localvoxtralCore/ClaudeContext/ClaudeShellSetupStatus.swift \
