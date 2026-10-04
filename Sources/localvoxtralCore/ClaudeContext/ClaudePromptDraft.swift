@@ -42,14 +42,31 @@ package struct ClaudePromptDraft: Sendable, Equatable {
     /// it overlaps take longer, so it rarely costs the commit anything.
     package static let readTimeout: Duration = .milliseconds(1500)
 
-    /// Whether `join`'s prompt box is this Mac's to ask about: a Claude Code
-    /// session on this Mac, joined by a mechanism that names it exactly. A
-    /// remote session's mod has no channel to the app (#1412).
+    /// Whether `join`'s prompt box is the app's to ask about: a session the
+    /// mod may fill (`fillsPrompt`), or a local Claude Desktop Code tab,
+    /// whose box the mod reads but cannot fill (#1643).
     package static func isReadable(through join: ClaudeSessionJoin) -> Bool {
-        let exact: [ClaudeSessionJoinMechanism] = [.ttyDevice, .herdrPane, .cmuxSurface, .desktopSession]
-        return join.snapshot.agent == .claude
-            && join.snapshot.origin.isLocalAuthenticated
-            && exact.contains(join.mechanism)
+        fillsPrompt(through: join)
+            || (join.snapshot.agent == .claude && join.snapshot.origin.isLocalAuthenticated
+                && join.mechanism == .desktopSession)
+    }
+
+    /// Whether a commit into `join`'s session may go through its mod: a
+    /// Claude Code session in a terminal, joined by a mechanism that names it
+    /// exactly. On this Mac: a tty, a herdr pane or a cmux surface. On an
+    /// enrolled host, whose mod reaches the app over the forward (#1412): a
+    /// remote or federated herdr pane, the ssh connection or the local tty it
+    /// carried, or a `cmux ssh` surface. Claude Desktop binds no box
+    /// (`no_composer`, #1643) and a browser tab is unmeasured.
+    package static func fillsPrompt(through join: ClaudeSessionJoin) -> Bool {
+        guard join.snapshot.agent == .claude else { return false }
+        let local: [ClaudeSessionJoinMechanism] = [.ttyDevice, .herdrPane, .cmuxSurface]
+        let remote: [ClaudeSessionJoinMechanism] = [
+            .remoteHerdrPane, .federatedHerdrPane, .remoteSSHConnection, .remoteLocalTTY, .cmuxSurface,
+        ]
+        return join.snapshot.origin.isLocalAuthenticated
+            ? local.contains(join.mechanism)
+            : remote.contains(join.mechanism)
     }
 
     /// Whether this draft, rather than the guess from the last commit,

@@ -20,13 +20,14 @@ extension DictationSessionController {
         case cancelled
     }
 
-    /// Whether the named session's mod takes the send: a local Claude Code
-    /// session with its mod attached, outside Claude Desktop, where a fill
-    /// is not yet known to show (#1643).
+    /// Whether the named session's mod takes the send: a Claude Code session
+    /// with its mod attached, outside Claude Desktop, where a fill is not
+    /// yet known to show (#1643). A remote session's mod counts once it
+    /// polls through the forward (#1412); a refusal there keeps the text,
+    /// since a remote session has no other addressed route.
     func addressedSendGoesThroughMod(_ session: ClaudeSessionSnapshot) -> Bool {
         guard let hub = context.claudeModChannels,
               session.agent == .claude,
-              session.origin.isLocalAuthenticated,
               session.desktopSessionID == nil
         else { return false }
         return hub.isAttached(session.sessionID)

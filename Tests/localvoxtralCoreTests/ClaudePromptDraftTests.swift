@@ -74,14 +74,32 @@ final class ClaudePromptDraftTests: XCTestCase {
         XCTAssertFalse(typed.decidesLeadingSpace(for: join(.ttyDevice, sessionID: "s2")))
     }
 
-    func testOnlyAnExactlyJoinedLocalClaudeSessionIsAsked() {
+    func testOnlyAnExactlyJoinedClaudeSessionIsAsked() {
         for mechanism in [ClaudeSessionJoinMechanism.ttyDevice, .herdrPane, .cmuxSurface, .desktopSession] {
             XCTAssertTrue(ClaudePromptDraft.isReadable(through: join(mechanism)), "\(mechanism)")
         }
         XCTAssertFalse(ClaudePromptDraft.isReadable(through: join(.browserTab)))
-        XCTAssertFalse(ClaudePromptDraft.isReadable(through: join(.remoteHerdrPane, origin: .remote(channel: "h"))))
         XCTAssertFalse(ClaudePromptDraft.isReadable(through: join(.ttyDevice, origin: .remote(channel: "h"))))
         XCTAssertFalse(ClaudePromptDraft.isReadable(through: join(.ttyDevice, agent: .opencode)))
+    }
+
+    /// A session on an enrolled host is filled through its mod by the arms
+    /// that name it exactly (#1412); a local mechanism on a remote origin,
+    /// Claude Desktop and a browser tab are not.
+    func testTheModFillsARemoteSessionOnlyThroughTheRemoteArms() {
+        let remote = ClaudeTransportOrigin.remote(channel: "ssh:h1")
+        for mechanism in [
+            ClaudeSessionJoinMechanism.remoteHerdrPane, .federatedHerdrPane, .remoteSSHConnection, .remoteLocalTTY,
+            .cmuxSurface,
+        ] {
+            XCTAssertTrue(ClaudePromptDraft.fillsPrompt(through: join(mechanism, origin: remote)), "\(mechanism)")
+            XCTAssertTrue(ClaudePromptDraft.isReadable(through: join(mechanism, origin: remote)), "\(mechanism)")
+        }
+        for mechanism in [ClaudeSessionJoinMechanism.ttyDevice, .herdrPane, .desktopSession, .browserTab] {
+            XCTAssertFalse(ClaudePromptDraft.fillsPrompt(through: join(mechanism, origin: remote)), "\(mechanism)")
+        }
+        XCTAssertFalse(ClaudePromptDraft.fillsPrompt(through: join(.remoteHerdrPane)), "a local origin")
+        XCTAssertFalse(ClaudePromptDraft.fillsPrompt(through: join(.desktopSession)))
     }
 
     func testTheDraftLeadsTheSessionBlockOneLinePerSideOfTheCursor() throws {

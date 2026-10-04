@@ -320,6 +320,16 @@ package struct ClaudeSessionJoinResolver {
     /// federated, ssh or cmux arms: this runs on every turn's end, with no
     /// dictation to justify a forward or a socket. A nil makes the cue fire,
     /// so an answer this cannot give costs a cue, never a missed one.
+    /// Whether keys typed into `target` now would reach `sessionID`'s prompt,
+    /// for a mod's keyboard fallback. A remote session has no tty on this Mac
+    /// to look up (#1412): the join `target` resolves to now must name it.
+    package func shows(_ sessionID: String, target: TerminalScreenTarget) async -> Bool {
+        if ClaudeRemoteSessionScope.hostID(fromScopedSessionID: sessionID) != nil {
+            return await resolve(target: target)?.snapshot.sessionID == sessionID
+        }
+        return await sessionShown(target: target) == sessionID
+    }
+
     package func sessionShown(target: TerminalScreenTarget) async -> String? {
         if ClaudeDesktopAllowlist.isSupported(target.bundleID) {
             guard let address = await focusedDesktopSessionURL(target.pid),

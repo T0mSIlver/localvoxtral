@@ -505,6 +505,14 @@ there is not.
   accepted here: the reply that answers a proven request (a `draft` carries
   the prompt box) goes in a new connection, and a squatter that took the port
   in between reads it.
+  The commit paths use a remote session's mod for the joins that name it
+  exactly (`ClaudePromptDraft.fillsPrompt`): a remote or federated herdr
+  pane, the ssh connection, the local tty it carried, or a `cmux ssh`
+  surface. A fill, append or send the remote mod refused is typed only while
+  the frontmost terminal, joined again from scratch, still names that
+  session (`ClaudeSessionJoinResolver.shows`), since a remote session has no
+  tty on this Mac to look up. An addressed send it refused keeps the text,
+  because a remote session has no other addressed route.
 - **The Mistral second pass holds the text back, never the world** (#317).
   An Overlay Buffer dictation in Mistral API mode is sent whole to the batch
   endpoint on stop (`DictationSessionController+StopCommit.swift`,

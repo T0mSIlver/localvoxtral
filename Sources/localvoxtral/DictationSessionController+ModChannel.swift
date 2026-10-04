@@ -47,15 +47,13 @@ extension DictationSessionController {
     }
 
     /// The joined session whose mod takes the commit, or nil: no mod
-    /// attached, a session that is not a local Claude Code one, or a
-    /// surface where a fill is not yet known to show.
+    /// attached, or a join the mod may not fill
+    /// (`ClaudePromptDraft.fillsPrompt`). A remote session's mod counts
+    /// once it polls through the forward (#1412).
     func modChannelSessionID(join: ClaudeSessionJoin?) -> String? {
         guard let join, let hub = context.claudeModChannels,
-              join.snapshot.agent == .claude,
-              join.snapshot.origin.isLocalAuthenticated
+              ClaudePromptDraft.fillsPrompt(through: join)
         else { return nil }
-        let localTerminal: [ClaudeSessionJoinMechanism] = [.ttyDevice, .herdrPane, .cmuxSurface]
-        guard localTerminal.contains(join.mechanism) else { return nil }
         let sessionID = join.snapshot.sessionID
         return hub.isAttached(sessionID) ? sessionID : nil
     }
@@ -148,7 +146,7 @@ extension DictationSessionController {
     private func keysReachModSession(_ sessionID: String, terminalPID: pid_t?) async -> Bool {
         guard let terminalPID, let resolver = context.claudeSessionJoinResolver,
               let target = TerminalScreenContextSource.frontmostTarget(), target.pid == terminalPID,
-              await resolver.sessionShown(target: target) == sessionID
+              await resolver.shows(sessionID, target: target)
         else { return false }
         // The pane lookup awaited: another app may have come forward since.
         return TerminalScreenContextSource.frontmostTarget()?.pid == terminalPID
