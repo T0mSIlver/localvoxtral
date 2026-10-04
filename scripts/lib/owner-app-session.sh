@@ -1,44 +1,35 @@
 # Shared by the lanes that borrow the owner's localvoxtral on the GUI Mac
-# (ui-smoke.sh, e2e-dictation.sh), and by capture-readme-assets.sh and
-# record-demo.sh: quit the owner's running instance and bring it back
-# afterwards, and keep the lane's settings out of the owner's defaults.
+# (ui-smoke.sh, e2e-dictation.sh, capture-readme-assets.sh, record-demo.sh):
+# quit the owner's running instance and bring it back afterwards, and keep the
+# lane's settings out of the owner's defaults.
 #
-# UI Smoke runs the app on a defaults suite of its own (#1029), and e2e on a
-# bundle id of its own (#1198); neither writes the owner's domain. capture-readme-assets.sh and record-demo.sh
-# still snapshot and restore it, on backup paths of their own, through the
-# backup functions below. Every lane restores a backup a killed run left
-# before it starts.
+# UI Smoke, capture-readme-assets.sh and record-demo.sh run the app on a
+# defaults suite of their own (#1029, #1450), and e2e on a bundle id of its
+# own (#1198); none writes the owner's domain. Before that, each lane
+# snapshotted the owner's domain into a backup file, forced its settings into
+# the domain and restored the backup on exit. A lane killed mid-run left its
+# backup on disk and its settings in the owner's domain, so every lane still
+# restores such a backup before it starts.
 #
 # Source it after setting:
 #   APP_PROCESS, BUNDLE_ID, OWNER_APP_BUNDLE (empty), OSASCRIPT_TIMEOUT_BIN,
 #   OSASCRIPT_TIMEOUT_SECONDS, and a record_fail function.
 #
-# ONE backup path for every lane, on purpose: a lane that died mid-run leaves
-# its forced defaults installed and its backup on disk, and whichever lane runs
-# next must restore that backup before it snapshots. With a path per lane, the
-# next lane would snapshot the dead lane's forced defaults as the owner's.
-#
-# The backup is one file: a header saying whether the domain existed and the
-# checksum of the exported plist, then the plist. It is staged beside its final
-# path and renamed into place, so a lane killed at any point leaves either no
-# backup or a complete one. Restoring deletes the live domain only after the
-# backup validates; a backup that does not validate stops the restore with the
-# domain untouched (#991).
+# A backup is one file: a header saying whether the domain existed and the
+# checksum of the exported plist, then the plist. Restoring deletes the live
+# domain only after the backup validates; a backup that does not validate
+# stops the restore with the domain untouched (#991).
 #
 # Written for the runner's bash 3.2.
-PERSISTENT_DEFAULTS_BACKUP="${HOME}/.localvoxtral-ui-smoke.defaults-backup"
-# Before #991 the backup was this plist plus a separate `.had-domain` marker.
-LEGACY_DEFAULTS_BACKUP="${HOME}/.localvoxtral-ui-smoke.pre.plist"
 DEFAULTS_BACKUP_HEADER="localvoxtral defaults backup v1"
+# The lanes that took backups, each on a path of its own: UI Smoke and e2e
+# shared `ui-smoke`. A backup is ~/.localvoxtral-<lane>.defaults-backup;
+# before #991 it was ~/.localvoxtral-<lane>.pre.plist plus a `.had-domain`
+# marker.
+DEFAULTS_BACKUP_LANES="ui-smoke capture-assets record-demo"
 
 defaults_backup_checksum() {
   cksum <"$1" | awk '{ print $1 " " $2 }'
-}
-
-# The staging files a killed snapshot or restore can leave beside the backup.
-remove_defaults_backup_scratch() {
-  rm -f "${PERSISTENT_DEFAULTS_BACKUP}".staged.* "${PERSISTENT_DEFAULTS_BACKUP}".export.* \
-    "${PERSISTENT_DEFAULTS_BACKUP}".payload.*
 }
 
 # read_defaults_backup <backup> <payload-out>: prints `present` or `absent`
@@ -68,117 +59,113 @@ apply_defaults_backup() {
   fi
 }
 
-# A backup a pre-#991 lane left. Its marker cannot be trusted: a lane killed
-# between the export and the marker left an export with no marker. Importing
-# the plist is right either way, since an absent domain was backed up as an
-# empty dict.
+# restore_legacy_defaults_backup <plist>: a backup a pre-#991 lane left. Its
+# marker cannot be trusted: a lane killed between the export and the marker
+# left an export with no marker. Importing the plist is right either way,
+# since an absent domain was backed up as an empty dict. Leaves the backup on
+# disk; the caller removes it.
 restore_legacy_defaults_backup() {
-  if [[ ! -e "$LEGACY_DEFAULTS_BACKUP" ]]; then
-    rm -f "${LEGACY_DEFAULTS_BACKUP}.had-domain"
-    return 0
-  fi
-  if ! plutil -lint -s "$LEGACY_DEFAULTS_BACKUP" >/dev/null 2>&1; then
-    printf 'ERROR: %s is not a valid plist; leaving the %s domain untouched.\n' "$LEGACY_DEFAULTS_BACKUP" "$BUNDLE_ID" >&2
+  local legacy="$1"
+  if ! plutil -lint -s "$legacy" >/dev/null 2>&1; then
+    printf 'ERROR: %s is not a valid plist; leaving the %s domain untouched.\n' "$legacy" "$BUNDLE_ID" >&2
     return 1
   fi
-  apply_defaults_backup present "$LEGACY_DEFAULTS_BACKUP" || return 1
-  rm -f "$LEGACY_DEFAULTS_BACKUP" "${LEGACY_DEFAULTS_BACKUP}.had-domain"
+  apply_defaults_backup present "$legacy"
 }
 
-restore_defaults() {
-  # `return $?`, never a bare `return`: cleanup runs this from an EXIT trap,
-  # where a bare `return` hands back the status from before the trap.
-  if [[ ! -e "$PERSISTENT_DEFAULTS_BACKUP" ]]; then
-    restore_legacy_defaults_backup
-    return $?
-  fi
-
-  local payload state
-  payload="$(mktemp "${PERSISTENT_DEFAULTS_BACKUP}.payload.XXXXXX")" || return 1
-  if ! state="$(read_defaults_backup "$PERSISTENT_DEFAULTS_BACKUP" "$payload")"; then
+# restore_defaults_backup <backup>: leaves the backup on disk; the caller
+# removes it.
+restore_defaults_backup() {
+  local backup="$1" payload state
+  payload="$(mktemp "${backup}.payload.XXXXXX")" || return 1
+  if ! state="$(read_defaults_backup "$backup" "$payload")"; then
     rm -f "$payload"
-    printf 'ERROR: %s does not validate; leaving the %s domain untouched.\n' "$PERSISTENT_DEFAULTS_BACKUP" "$BUNDLE_ID" >&2
+    printf 'ERROR: %s does not validate; leaving the %s domain untouched.\n' "$backup" "$BUNDLE_ID" >&2
     return 1
   fi
   if ! apply_defaults_backup "$state" "$payload"; then
     rm -f "$payload"
     return 1
   fi
-  rm -f "$payload" "$PERSISTENT_DEFAULTS_BACKUP"
+  rm -f "$payload"
 }
 
+# Restores the owner's domain from a backup a killed run left. Only the
+# oldest backup holds the owner's own settings: an older lane recovered only
+# its own path, so a later backup on another path can hold the forced modes
+# of the run killed before it. The oldest is restored first and removed last,
+# after every other backup: a recovery killed at any step leaves the oldest
+# on disk, and the next one restores it again. A backup that does not
+# validate fails the lane with every backup and the domain left as they are.
 recover_previous_defaults_backup() {
-  remove_defaults_backup_scratch
-  if [[ ! -e "$PERSISTENT_DEFAULTS_BACKUP" && ! -e "$LEGACY_DEFAULTS_BACKUP" ]]; then
-    rm -f "${LEGACY_DEFAULTS_BACKUP}.had-domain"
-    return 0
-  fi
+  local lane backup legacy found oldest=""
+  for lane in $DEFAULTS_BACKUP_LANES; do
+    backup="${HOME}/.localvoxtral-${lane}.defaults-backup"
+    legacy="${HOME}/.localvoxtral-${lane}.pre.plist"
+    # The staging files a killed snapshot or restore left beside the backup.
+    rm -f "${backup}".staged.* "${backup}".export.* "${backup}".payload.*
+    [[ -e "$legacy" ]] || rm -f "${legacy}.had-domain"
+    for found in "$backup" "$legacy"; do
+      [[ -e "$found" ]] || continue
+      if [[ -z "$oldest" || "$found" -ot "$oldest" ]]; then
+        oldest="$found"
+      fi
+    done
+  done
+  [[ -n "$oldest" ]] || return 0
 
-  printf 'WARNING: found a defaults backup from a previous interrupted run; restoring owner defaults before continuing.\n' >&2
-  if restore_defaults; then
-    printf 'WARNING: previous defaults backup restored and removed.\n' >&2
-    return 0
-  fi
-
-  record_fail "Could not restore the previous defaults backup at $PERSISTENT_DEFAULTS_BACKUP (or $LEGACY_DEFAULTS_BACKUP); refusing to mutate owner defaults."
-  return 1
-}
-
-# Existence comes from `defaults read`: only its "does not exist" error means
-# the domain is absent. Any other failure, or an export that fails or does not
-# lint, fails the snapshot, so the lane never mutates a domain it could not
-# back up.
-snapshot_defaults() {
-  if [[ -e "$PERSISTENT_DEFAULTS_BACKUP" || -e "$LEGACY_DEFAULTS_BACKUP" ]]; then
-    printf 'ERROR: a defaults backup is already on disk; restore it before taking another.\n' >&2
-    return 1
-  fi
-  remove_defaults_backup_scratch
-
-  local export_file staged state read_error
-  export_file="$(mktemp "${PERSISTENT_DEFAULTS_BACKUP}.export.XXXXXX")" || return 1
-  if defaults read "$BUNDLE_ID" >/dev/null 2>&1; then
-    state=present
-    if ! defaults export "$BUNDLE_ID" "$export_file" >/dev/null 2>&1 \
-      || ! plutil -lint -s "$export_file" >/dev/null 2>&1; then
-      rm -f "$export_file"
-      return 1
-    fi
+  printf 'WARNING: found a defaults backup from a previous interrupted run (%s); restoring owner defaults before continuing.\n' "$oldest" >&2
+  if [[ "$oldest" == *.pre.plist ]]; then
+    restore_legacy_defaults_backup "$oldest"
   else
-    read_error="$(defaults read "$BUNDLE_ID" 2>&1 >/dev/null)"
-    if [[ "$read_error" != *"does not exist"* ]]; then
-      rm -f "$export_file"
-      return 1
-    fi
-    state=absent
-  fi
-
-  staged="$(mktemp "${PERSISTENT_DEFAULTS_BACKUP}.staged.XXXXXX")" || { rm -f "$export_file"; return 1; }
-  if {
-    printf '%s\n' "$DEFAULTS_BACKUP_HEADER"
-    printf 'domain=%s\n' "$state"
-    printf 'cksum=%s\n' "$(defaults_backup_checksum "$export_file")"
-    printf -- '--\n'
-    cat "$export_file"
-  } >"$staged" \
-    && [[ "$(read_defaults_backup "$staged" "$export_file")" == "$state" ]] \
-    && mv -f "$staged" "$PERSISTENT_DEFAULTS_BACKUP"; then
-    rm -f "$export_file"
-    return 0
-  fi
-  rm -f "$export_file" "$staged"
-  return 1
+    restore_defaults_backup "$oldest"
+  fi || {
+    record_fail "Could not restore the previous defaults backup at $oldest; refusing to run the app."
+    return 1
+  }
+  # A backup left behind would be restored over the owner's later changes,
+  # so a failed removal fails the lane, with the oldest kept while any other
+  # backup remains.
+  for lane in $DEFAULTS_BACKUP_LANES; do
+    for found in "${HOME}/.localvoxtral-${lane}.defaults-backup" "${HOME}/.localvoxtral-${lane}.pre.plist"; do
+      [[ "$found" == "$oldest" ]] || rm -f "$found" "${found}.had-domain" || {
+        record_fail "Could not remove the defaults backup at $found; refusing to run the app."
+        return 1
+      }
+    done
+  done
+  rm -f "$oldest" "${oldest}.had-domain" || {
+    record_fail "Could not remove the restored defaults backup at $oldest; refusing to run the app."
+    return 1
+  }
+  printf 'WARNING: previous defaults backup restored; every backup removed.\n' >&2
 }
 
-# The suite UI Smoke writes its settings into, and the app reads
-# instead of $BUNDLE_ID when LOCALVOXTRAL_DEFAULTS_SUITE names it. Emptied
-# before and after a run, so a killed run's settings never reach the next.
+# The suite the lanes write their settings into, and the app reads instead of
+# $BUNDLE_ID when LOCALVOXTRAL_DEFAULTS_SUITE names it. Emptied before and
+# after a run, so a killed run's settings never reach the next.
 HARNESS_DEFAULTS_SUITE="com.localvoxtral.harness"
 
 use_harness_defaults() {
   defaults delete "$HARNESS_DEFAULTS_SUITE" >/dev/null 2>&1 || true
   LOCALVOXTRAL_DEFAULTS_SUITE="$HARNESS_DEFAULTS_SUITE"
   export LOCALVOXTRAL_DEFAULTS_SUITE
+}
+
+# Starts the suite from a copy of the owner's domain, for a lane that runs on
+# the owner's setup with a few settings pinned on top. Reads the owner's
+# domain, never writes it.
+copy_owner_defaults_to_harness() {
+  local exported read_error
+  if ! defaults read "$BUNDLE_ID" >/dev/null 2>&1; then
+    # Only "does not exist" means a fresh Mac; any other failure would run
+    # the lane on the app's defaults instead of the owner's setup.
+    read_error="$(defaults read "$BUNDLE_ID" 2>&1 >/dev/null)"
+    [[ "$read_error" == *"does not exist"* ]] || return 1
+    return 0
+  fi
+  exported="$(defaults export "$BUNDLE_ID" -)" || return 1
+  printf '%s\n' "$exported" | defaults import "$HARNESS_DEFAULTS_SUITE" -
 }
 
 # A no-op for a run that never got to use_harness_defaults: it touches nothing.
