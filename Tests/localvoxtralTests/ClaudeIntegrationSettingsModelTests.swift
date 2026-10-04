@@ -2482,7 +2482,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             return state
         }
         func createDirectory(permissions: UInt16) throws {}
-        func atomicWrite(_ data: Data, permissions: UInt16) throws {
+        func atomicWrite(_ data: Data, permissions: UInt16, replacing _: Data?) throws {
             writes += 1
             state.data = data
             state.fileExists = true
