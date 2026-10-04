@@ -50,6 +50,7 @@ final class SettingsStore {
         // Legacy global backend mode. Read only for one-time migration.
         static let backendMode = "settings.backend_mode"
         static let onboardingCompleted = "settings.onboarding_completed"
+        static let onboardingPolishingBeforeMistralChoice = "settings.onboarding_polishing_before_mistral_choice"
         static let opensWindowAtLaunch = "settings.opens_window_at_launch"
         static let dictationOutputMode = "settings.dictation_output_mode"
         static let dictationShortcutMode = "settings.dictation_shortcut_mode"
@@ -242,6 +243,28 @@ final class SettingsStore {
     /// The General settings pane's "Re-run setup…" resets it to false.
     var onboardingCompleted: Bool {
         didSet { defaults.set(onboardingCompleted, forKey: Keys.onboardingCompleted) }
+    }
+
+    /// Polishing as it stood before an unfinished setup wizard's Mistral
+    /// choice turned hosted polishing on. Stored, not held by the wizard, so a
+    /// force-quit before the wizard closes still lets the next launch's
+    /// wizard put it back (#1761). Cleared when onboarding completes.
+    var onboardingPolishingBeforeMistralChoice: PolishingSnapshot? {
+        didSet {
+            if let snapshot = onboardingPolishingBeforeMistralChoice {
+                defaults.set(
+                    ["mode": snapshot.mode.rawValue, "enabled": snapshot.enabled],
+                    forKey: Keys.onboardingPolishingBeforeMistralChoice
+                )
+            } else {
+                defaults.removeObject(forKey: Keys.onboardingPolishingBeforeMistralChoice)
+            }
+        }
+    }
+
+    struct PolishingSnapshot: Equatable {
+        let mode: BackendMode
+        let enabled: Bool
     }
 
     /// Whether a finished launch opens the localvoxtral window on History.
@@ -1188,6 +1211,8 @@ final class SettingsStore {
 
         opensWindowAtLaunch = Self.loadBool(
             defaults: defaults, key: Keys.opensWindowAtLaunch, fallback: false)
+        onboardingPolishingBeforeMistralChoice = Self.loadPolishingSnapshot(
+            defaults: defaults, key: Keys.onboardingPolishingBeforeMistralChoice)
         autoCopyEnabled = Self.loadBool(
             defaults: defaults, key: Keys.autoCopyEnabled, fallback: false)
         overlaySpokenSendEnabled = Self.loadBool(
@@ -1469,6 +1494,15 @@ final class SettingsStore {
         defaults.string(forKey: key)
             ?? environment[envKey]
             ?? fallback
+    }
+
+    private static func loadPolishingSnapshot(defaults: UserDefaults, key: String) -> PolishingSnapshot? {
+        guard let stored = defaults.dictionary(forKey: key),
+              let rawMode = stored["mode"] as? String,
+              let mode = BackendMode(rawValue: rawMode),
+              let enabled = stored["enabled"] as? Bool
+        else { return nil }
+        return PolishingSnapshot(mode: mode, enabled: enabled)
     }
 
     private static func loadBool(

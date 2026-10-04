@@ -932,6 +932,8 @@ final class TextInsertionService {
         // Secure Keyboard Entry swallows posted keys while posting reports
         // success: the text would be counted typed and land nowhere.
         guard !TerminalTargetDetector.isSecureKeyboardEntryEnabled() else { return false }
+        // So does macOS for an app without Accessibility (#1762).
+        guard isAccessibilityTrusted else { return false }
         let modifiersActive = hasActiveFallbackModifiers()
         if modifiersActive {
             activeModifierFallbackCount += 1

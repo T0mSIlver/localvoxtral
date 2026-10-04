@@ -320,6 +320,49 @@ final class OnboardingViewModelTests: XCTestCase {
         XCTAssertNotEqual(settings.polishingBackendMode, .mistralAPI)
     }
 
+    /// The same, with a force-quit between the Mistral choice and the Local
+    /// one: the next launch's wizard still puts polishing back (#1761).
+    func testAnInterruptedMistralChoiceIsUndoneByDecliningPolishingAfterRelaunch() {
+        let secretStore = InMemorySecretStore()
+        let firstRun = makeModel(secretStore: secretStore)
+        firstRun.model.advance()  // permissions
+        firstRun.model.advance()  // engine
+        firstRun.model.engineChoice = .mistralAPI
+        firstRun.model.mistralAPIKeyDraft = "mk-mistral"
+        firstRun.model.advance()  // finish (Mistral path); force-quit here
+        XCTAssertTrue(firstRun.settings.llmPolishingEnabled)
+
+        let (model, settings, _, _, _) = makeModel(secretStore: secretStore)
+        XCTAssertFalse(settings.onboardingCompleted)
+        model.advance()  // permissions
+        model.advance()  // engine
+        model.advance()  // downloads
+        model.polishingConsent = false
+        model.startDownloads()
+
+        XCTAssertFalse(settings.llmPolishingEnabled, "declined polishing must not keep Mistral's")
+        XCTAssertNotEqual(settings.polishingBackendMode, .mistralAPI)
+    }
+
+    /// A finished run leaves nothing for the next Re-run Setup to restore.
+    func testFinishingSetupForgetsThePolishingTheMistralChoiceReplaced() {
+        let (model, settings, _, _, _) = makeModel()
+        model.advance()  // permissions
+        model.advance()  // engine
+        model.engineChoice = .mistralAPI
+        model.mistralAPIKeyDraft = "mk-mistral"
+        model.advance()  // finish
+        XCTAssertNotNil(settings.onboardingPolishingBeforeMistralChoice)
+
+        model.finish()
+
+        XCTAssertNil(settings.onboardingPolishingBeforeMistralChoice)
+        XCTAssertNil(
+            SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
+                .onboardingPolishingBeforeMistralChoice
+        )
+    }
+
     func testEnginePage_localPathIsUnchanged() {
         let (model, settings, driver, _, _) = makeModel()
         model.advance()  // permissions

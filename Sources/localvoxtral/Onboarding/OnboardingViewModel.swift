@@ -77,11 +77,6 @@ final class OnboardingViewModel {
     /// lazy-bootstrap invariant.
     private(set) var downloadsStarted = false
 
-    /// Polishing as it stood before this run's first Mistral choice, which
-    /// turns hosted polishing on. Picking Local afterwards and declining
-    /// polishing puts it back; otherwise every overlay commit would keep
-    /// sending text to Mistral.
-    @ObservationIgnored private var polishingBeforeMistralChoice: (mode: BackendMode, enabled: Bool)?
 
     let settings: SettingsStore
     let viewModel: DictationViewModel
@@ -161,8 +156,15 @@ final class OnboardingViewModel {
     /// an engine nothing will use.
     /// Returns false, changing nothing, when the key was not saved.
     private func applyMistralEngineChoice() -> Bool {
-        if polishingBeforeMistralChoice == nil {
-            polishingBeforeMistralChoice = (settings.polishingBackendMode, settings.llmPolishingEnabled)
+        // Polishing as it stood before the first Mistral choice, which turns
+        // hosted polishing on. Picking Local afterwards and declining
+        // polishing puts it back; otherwise every overlay commit would keep
+        // sending text to Mistral. Stored, so it survives a force-quit (#1761).
+        if settings.onboardingPolishingBeforeMistralChoice == nil {
+            settings.onboardingPolishingBeforeMistralChoice = SettingsStore.PolishingSnapshot(
+                mode: settings.polishingBackendMode,
+                enabled: settings.llmPolishingEnabled
+            )
         }
         guard viewModel.engines.applyMistralQuickSetup(apiKey: mistralAPIKeyDraft) else { return false }
         mistralAPIKeySaveFailure = nil
@@ -212,7 +214,7 @@ final class OnboardingViewModel {
             viewModel.engines.applyPolishingBackendModeChange(.managedLocal)
             settings.llmPolishingEnabled = true
         } else {
-            if let previous = polishingBeforeMistralChoice {
+            if let previous = settings.onboardingPolishingBeforeMistralChoice {
                 viewModel.engines.applyPolishingBackendModeChange(previous.mode)
                 settings.llmPolishingEnabled = previous.enabled
             }
@@ -263,6 +265,7 @@ final class OnboardingViewModel {
         if !settings.onboardingCompleted {
             settings.onboardingCompleted = true
         }
+        settings.onboardingPolishingBeforeMistralChoice = nil
     }
 
     // MARK: - Finish page

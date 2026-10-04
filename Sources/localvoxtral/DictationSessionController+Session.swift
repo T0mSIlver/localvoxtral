@@ -395,6 +395,7 @@ extension DictationSessionController {
         firstChunkPreprocessor.reset()
         overlayBufferCoordinator.reset()
         realtimeFinalizationLastActivityAt = nil
+        stopReplaysReconnectGap = false
         // The previous dictation's relay may still answer: its refusals must
         // not reach this dictation's buffers (#1466).
         textInsertion.retirePromptRelay(endingDictation: true)
@@ -816,7 +817,8 @@ extension DictationSessionController {
                     return
                 }
 
-                if let sentAt, now.timeIntervalSince(sentAt) >= TimingConstants.finalizationMinimumOpen,
+                if !self.stopReplaysReconnectGap,
+                   let sentAt, now.timeIntervalSince(sentAt) >= TimingConstants.finalizationMinimumOpen,
                    inactivity >= TimingConstants.finalizationInactivityThreshold
                 {
                     Log.backends.notice(
