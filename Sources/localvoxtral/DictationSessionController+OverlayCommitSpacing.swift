@@ -6,6 +6,15 @@ struct OverlayCommitLanding: Equatable {
     let targetPID: pid_t
     let sessionID: String
     let promptsSubmitted: Int
+    /// The start generation of the dictation that committed. Not part of
+    /// where it landed: it names whose refusal may forget it.
+    var generation: UInt64 = 0
+
+    func isAt(_ other: OverlayCommitLanding?) -> Bool {
+        guard let other else { return false }
+        return targetPID == other.targetPID && sessionID == other.sessionID
+            && promptsSubmitted == other.promptsSubmitted
+    }
 }
 
 /// A commit inserts its text trimmed, so two dictations into one unsent
@@ -30,7 +39,7 @@ extension DictationSessionController {
         let committer: any OverlayTextCommitting =
             (spokenSend == nil ? modChannelCommitter(join: join, targetPID: targetPID) : nil) ?? overlayTextCommitter
         guard let landing = lastOverlayCommitLanding,
-              landing == currentLanding(join: join, targetPID: targetPID)
+              landing.isAt(currentLanding(join: join, targetPID: targetPID))
         else { return committer }
         Log.overlay.info("overlay commit: continues the unsent prompt; leading space")
         return LeadingSpaceOverlayCommitter(base: committer)
@@ -42,7 +51,7 @@ extension DictationSessionController {
         _ committer: any OverlayTextCommitting, session: ClaudeSessionSnapshot, targetPID: pid_t
     ) -> any OverlayTextCommitting {
         guard let landing = lastOverlayCommitLanding,
-              landing == currentLanding(session: session, targetPID: targetPID)
+              landing.isAt(currentLanding(session: session, targetPID: targetPID))
         else { return committer }
         Log.overlay.info("send to session: continues the unsent prompt; leading space")
         return LeadingSpaceOverlayCommitter(base: committer)
@@ -70,20 +79,25 @@ extension DictationSessionController {
         spokenSend: OverlaySpokenSend?
     ) {
         guard commit.outcome != .succeeded || !committedText.trimmed.isEmpty else { return }
+        // The committer read the generation just now, with no await between.
         lastOverlayCommitLanding = commit.outcome == .succeeded && spokenSend == nil
-            ? currentLanding(join: join, targetPID: targetPID)
+            ? currentLanding(join: join, targetPID: targetPID, generation: sessionStartGeneration)
             : nil
     }
 
     /// The join's session as the registry holds it NOW: the join itself was
     /// resolved when the dictation started, and a prompt submitted while it
     /// ran must count (Vibe review of #806). Nil once the session is gone.
-    private func currentLanding(join: ClaudeSessionJoin?, targetPID: pid_t?) -> OverlayCommitLanding? {
+    private func currentLanding(
+        join: ClaudeSessionJoin?, targetPID: pid_t?, generation: UInt64 = 0
+    ) -> OverlayCommitLanding? {
         guard let join else { return nil }
-        return currentLanding(session: join.snapshot, targetPID: targetPID)
+        return currentLanding(session: join.snapshot, targetPID: targetPID, generation: generation)
     }
 
-    private func currentLanding(session: ClaudeSessionSnapshot, targetPID: pid_t?) -> OverlayCommitLanding? {
+    private func currentLanding(
+        session: ClaudeSessionSnapshot, targetPID: pid_t?, generation: UInt64 = 0
+    ) -> OverlayCommitLanding? {
         guard let targetPID else { return nil }
         let sessionID = session.sessionID
         let promptsSubmitted: Int
@@ -94,7 +108,7 @@ extension DictationSessionController {
             promptsSubmitted = session.promptsSubmitted
         }
         return OverlayCommitLanding(
-            targetPID: targetPID, sessionID: sessionID, promptsSubmitted: promptsSubmitted
+            targetPID: targetPID, sessionID: sessionID, promptsSubmitted: promptsSubmitted, generation: generation
         )
     }
 }

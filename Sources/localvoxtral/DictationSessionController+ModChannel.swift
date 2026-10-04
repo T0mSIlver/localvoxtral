@@ -57,7 +57,7 @@ extension DictationSessionController {
     ) async {
         var inserted = false
         if sessionStartGeneration != generation {
-            keepOverlayTextOfARetiredDictation(text, sessionID: sessionID)
+            keepOverlayTextOfARetiredDictation(text, sessionID: sessionID, generation: generation)
             return
         }
         if mayHaveLanded {
@@ -65,18 +65,20 @@ extension DictationSessionController {
         } else if await keysReachModSession(sessionID, terminalPID: terminalPID) {
             // The read-back awaited: the next dictation may have started.
             guard sessionStartGeneration == generation else {
-                keepOverlayTextOfARetiredDictation(text, sessionID: sessionID)
+                keepOverlayTextOfARetiredDictation(text, sessionID: sessionID, generation: generation)
                 return
             }
-            inserted = commitOverlayTextThePromptRelayRefused(text, preferredAppPID: pid, sessionID: sessionID)
+            inserted = commitOverlayTextThePromptRelayRefused(
+                text, preferredAppPID: pid, sessionID: sessionID, generation: generation
+            )
         } else {
             Log.overlay.notice(
                 "overlay commit: the mod did not fill and the session's pane is not in front; text kept"
             )
             lastError = keepUndeliveredAgentText(text)
         }
-        if !inserted, lastOverlayCommitLanding?.sessionID == sessionID {
-            lastOverlayCommitLanding = nil
+        if !inserted {
+            forgetLanding(ofSession: sessionID, generation: generation)
         }
     }
 

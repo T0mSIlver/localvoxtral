@@ -33,6 +33,9 @@ there is not.
   dictation clears it. "Send that to <name>" into a terminal pane is judged
   the same way against the pane's pid and the named session; its Return, or
   a failed typing, clears a landing in that session and no other (#1480).
+  A route or mod refusal that answers late clears only the landing of the
+  dictation that handed its text off, by its start generation: a later
+  commit to the same session keeps its continuation space (#1660).
   Anything looser puts a space in front of `/compact`
   in a fresh prompt. No trailing space after a commit.
 - **A mid-dictation reconnect resumes the session; it never replays it.**
