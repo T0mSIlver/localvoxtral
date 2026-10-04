@@ -16,6 +16,8 @@ final class BackendProcessSupervisor {
     }
 
     typealias Probe = @Sendable (URL) async -> Bool
+    /// The pid a ready listener reports, nil when it reports none.
+    typealias OwnerProbe = @Sendable (URL) async -> pid_t?
     typealias SleepClosure = @Sendable (Duration) async throws -> Void
 
     private(set) var state: State
@@ -34,6 +36,7 @@ final class BackendProcessSupervisor {
 
     @ObservationIgnored private let configuration: BackendProcessConfiguration
     @ObservationIgnored private let probe: Probe
+    @ObservationIgnored private let ownerProbe: OwnerProbe
     @ObservationIgnored private let sleepFor: SleepClosure
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private var stateContinuations: [UUID: AsyncStream<State>.Continuation] = [:]
@@ -63,6 +66,7 @@ final class BackendProcessSupervisor {
     init(
         configuration: BackendProcessConfiguration,
         probe: @escaping Probe = BackendProcessSupervisor.defaultProbe,
+        ownerProbe: @escaping OwnerProbe = BackendProcessSupervisor.defaultOwnerProbe,
         sleepFor: @escaping SleepClosure = { duration in
             try await Task.sleep(for: duration)
         },
@@ -70,6 +74,7 @@ final class BackendProcessSupervisor {
     ) {
         self.configuration = configuration
         self.probe = probe
+        self.ownerProbe = ownerProbe
         self.sleepFor = sleepFor
         self.now = now
         self.state = .idle
@@ -112,6 +117,19 @@ final class BackendProcessSupervisor {
         } catch {
             return false
         }
+    }
+
+    private static func defaultOwnerProbe(url: URL) async -> pid_t? {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 2
+
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let pid = object["pid"] as? Int
+        else { return nil }
+        return pid_t(exactly: pid)
     }
 
     private func supervise() async {
