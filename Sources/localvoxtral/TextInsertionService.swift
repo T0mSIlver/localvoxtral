@@ -187,9 +187,11 @@ final class TextInsertionService {
     @ObservationIgnored
     private(set) var promptRelayKeptText = false
     /// The route takes text without the newline guard (the Claude Code
-    /// mod's, #1645), so what it gives back to the keys is guarded here.
+    /// mod's, #1645), so the session armed none: every text the keys type
+    /// instead, what the route gave back and what follows its failure or
+    /// retirement, is guarded here.
     @ObservationIgnored
-    private var promptRelayRefusalsNeedNewlineGuard = false
+    private var promptRelayKeysNeedNewlineGuard = false
     /// Moves when another dictation starts or the keys go to another pane,
     /// so a sink can tell whether the live buffers and the keyboard path
     /// still serve its dictation.
@@ -472,7 +474,7 @@ final class TextInsertionService {
         promptRelayKeptText = false
         promptRelayGeneration += 1
         promptRelayDictation += 1
-        promptRelayRefusalsNeedNewlineGuard = route?.takesUnsanitizedText ?? false
+        promptRelayKeysNeedNewlineGuard = route?.takesUnsanitizedText ?? false
         guard let route else {
             promptRelaySink = nil
             return
@@ -550,7 +552,6 @@ final class TextInsertionService {
     /// order, so a refused text that cannot be typed yet is never overtaken
     /// by a later one.
     private func typeLiveTextThePromptRelayRefused(_ text: String) {
-        let text = promptRelayRefusalsNeedNewlineGuard ? Self.collapsingNewlineRuns(text) : text
         liveInsertionTargetPIDs.append(nil)
         if liveHoldBackStream != nil {
             // Released text: retried as-is, never re-ingested.
@@ -559,6 +560,12 @@ final class TextInsertionService {
             pendingRealtimeInsertionText += text
         }
         flushPendingRealtimeInsertion()
+    }
+
+    /// `text` as the keys may type it while the relay's route left the
+    /// session without a newline guard.
+    private func guardedForKeysAfterPromptRelay(_ text: String) -> String {
+        promptRelayKeysNeedNewlineGuard ? Self.collapsingNewlineRuns(text) : text
     }
 
     /// Every whitespace run holding a newline or a tab, as one space: a
@@ -604,7 +611,7 @@ final class TextInsertionService {
             pendingRealtimeInsertionText.removeAll(keepingCapacity: true)
             return
         }
-        switch insertTextPrioritizingKeyboard(prepared.text) {
+        switch insertTextPrioritizingKeyboard(guardedForKeysAfterPromptRelay(prepared.text)) {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
             commitLateTerminalGuard(prepared)
             pendingRealtimeInsertionText.removeAll(keepingCapacity: true)
@@ -801,10 +808,11 @@ final class TextInsertionService {
             liveTypedTextForSession += prepared.text
             return
         }
-        switch insertTextPrioritizingKeyboard(prepared.text) {
+        let typed = guardedForKeysAfterPromptRelay(prepared.text)
+        switch insertTextPrioritizingKeyboard(typed) {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
             commitLateTerminalGuard(prepared)
-            liveTypedTextForSession += prepared.text
+            liveTypedTextForSession += typed
             liveInsertionTargetPIDs.append(confirmedLiveInsertionPID())
         case .failed:
             // Keep the released text verbatim for the retry task; it must
