@@ -246,6 +246,14 @@ package final class VoiceMemoIntake {
                 continue
             }
             guard file.size > 0, previous[file.name] == file else { continue }
+            // The listing is as old as the memos transcribed before this
+            // one: renamed since, its name may hold another recording now,
+            // which would be decoded as this one (#1687). Checked before the
+            // engine and stop guard, so no wait comes between it and `take`.
+            guard await isStillListed(file) else {
+                Log.backends.notice("Voice memos: a memo changed since the folder was listed; left for the next scan")
+                continue
+            }
             guard canTranscribe(), !isStopped else { break }
             let outcome = await take(file, at: url)
             if outcome == .captured { captured += 1 }
@@ -368,6 +376,16 @@ package final class VoiceMemoIntake {
         // so a later scan trashes the file only if it is still this memo,
         // and otherwise takes it as a new one (#1098).
         guard await isStillListed(file) else {
+            if await anotherRecordingTookTheName(of: file) {
+                // Renamed while it was read, and another recording saved
+                // under its name: the words may be either one's. The memo is
+                // taken again under its new name rather than trashed as
+                // captured; a duplicate capture beats a lost memo (#1687).
+                Log.backends.notice("Voice memos: another recording took a memo's name while it was transcribed; the memo is taken again")
+                ledger.entries[VoiceMemoLedger.key(for: file)] = nil
+                saveLedger()
+                return .captured
+            }
             Log.backends.notice("Voice memos: the memo changed while it was transcribed; the file stays for the next scan")
             return .captured
         }
@@ -381,6 +399,16 @@ package final class VoiceMemoIntake {
     private func isStillListed(_ file: VoiceMemoFile) async -> Bool {
         guard let files = try? await list(directory) else { return false }
         return files.contains(file)
+    }
+
+    /// Whether the folder lists another recording under `file`'s name: not
+    /// the same size and date, so not `file` downloaded again. False when
+    /// the folder cannot be listed.
+    private func anotherRecordingTookTheName(of file: VoiceMemoFile) async -> Bool {
+        guard let files = try? await list(directory), let now = files.first(where: { $0.name == file.name }) else {
+            return false
+        }
+        return now.size != file.size || now.modifiedAt != file.modifiedAt
     }
 
     /// The memo's capture is on disk: marks it captured and moves it to the
