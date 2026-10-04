@@ -114,6 +114,30 @@ final class TextInsertionServiceRealtimeInsertionTests: XCTestCase {
         }
     }
 
+    /// The Claude Code mod takes newlines as text, so the session arms no
+    /// newline guard. Once a spoken send's ack reports a shortfall, the
+    /// keys take over, and a newline in a later delta must not reach them:
+    /// it would submit the prompt (#1645).
+    func testDeltasTypedAfterTheModRouteFailedHaveTheirNewlinesCollapsed() async throws {
+        let (service, posted) = makeRecordingService(frontmostBundleID: TerminalScreenAllowlist.ghosttyBundleID)
+        defer { TerminalTargetDetector.debugFrontmostBundleIDOverride = nil }
+        let mod = FakeClaudeMod(refuses: "run the tests")
+        let hub = ClaudeModChannelHub(sleep: ManualSessionClock().clock.sleep)
+        mod.attach(to: hub)
+        let opened = await ClaudeModPromptRoute.opened(hub: hub, sessionID: "s1", keysReachThePrompt: { true })
+        service.beginPromptRelay(try XCTUnwrap(opened))
+        let sink = try XCTUnwrap(service.promptRelaySink)
+
+        service.enqueueRealtimeInsertion("run the tests")
+        sink.submit()
+        await sink.waitUntilIdle()
+        XCTAssertFalse(sink.isHealthy, "the shortfall failed the route over to the keys")
+        service.enqueueRealtimeInsertion(" first line\nsecond line")
+
+        XCTAssertEqual(posted.value, ["run the tests", " first line second line"])
+        XCTAssertEqual(mod.submitted, [], "the submit is dropped, never a key")
+    }
+
     func testClaudeDesktopGetsEachNewlineAsShiftReturn() {
         let (service, posted) = makeRecordingService(frontmostBundleID: ClaudeDesktopAllowlist.bundleID)
         defer { TerminalTargetDetector.debugFrontmostBundleIDOverride = nil }

@@ -3,6 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Band, InboxView } from '../types'
 import {
+  AppendStream,
   BAND_STALE_MS,
   bandOf,
   type ChannelBye,
@@ -136,6 +137,9 @@ async function runChannel(
           }
           if (message?.kind === 'state' && message.waiting !== undefined) void update($, waiting, () => message.waiting ?? [])
           else if (message?.kind === 'state') void showBand($, message)
+          else if (message?.kind === 'append') queueAppend($, sessionID, message)
+          // After every append written before it, so its count is final.
+          else if (message?.kind === 'ack') appends = appends.then(() => answer($, publisher, sessionID, message))
           else if (message !== null) void answer($, publisher, sessionID, message)
           newline = buffered.indexOf('\n')
         }
@@ -207,6 +211,29 @@ async function answer(
   }
 }
 
+// Live Auto-Paste's deltas (#1645), filled one after another in the order
+// they arrived: a fill awaits the engine, and two in flight could land
+// swapped.
+const stream = new AppendStream()
+let appends: Promise<void> = Promise.resolve()
+
+/** Queues one `append`; it is not answered, the stop's `ack` counts it. */
+function queueAppend($: EngineInterface, sessionID: string, message: ChannelMessage): void {
+  appends = appends.then(async () => {
+    if (!stream.admits(message.seq)) return
+    let isFilled = false
+    try {
+      // A delta meant for the session the process left goes nowhere.
+      if (message.text !== undefined && message.text !== '' && (await $.session.id()) === sessionID) {
+        isFilled = (await $.prompt.fill({ text: message.text, mode: 'insert' })).isFilled
+      }
+    } catch {
+      // Counted as not filled: the app types or keeps it and what follows.
+    }
+    stream.settle(isFilled)
+  })
+}
+
 const band = atom({ plugin: 'localvoxtral-mod', key: 'band' } as const, null)
 // The other sessions waiting for the person, oldest first (#1695).
 const waiting = atom({ plugin: 'localvoxtral-mod', key: 'waiting' } as const, [])
@@ -238,8 +265,11 @@ async function handle($: EngineInterface, message: ChannelMessage): Promise<Outc
       return filled.isFilled ? { ok: true } : { ok: false, reason: filled.refusal ?? 'refused' }
     }
     case 'send':
-      if (message.text === undefined || message.text === '') return { ok: false, reason: 'no_text' }
+      // An empty text submits the box as the appends left it (#1645).
+      if (message.text === undefined) return { ok: false, reason: 'no_text' }
       return send($, message.text)
+    case 'ack':
+      return { ok: true, seq: stream.ack() }
     case 'draft':
       // What the person already typed, for polish and the space before the
       // fill (#1406). Read where the dictation will land, at the stop.
@@ -271,13 +301,19 @@ let runningTurn: string | undefined
  * whole text is submitted as the person's own and the box emptied, so
  * nothing is sent twice or left behind. Answers `queued` when the submit
  * waits for a running turn; a submit refused later puts the text back.
+ * An empty text submits the box as it stands (#1645).
  */
 async function send($: EngineInterface, text: string): Promise<Outcome> {
-  const reason = needsKeys(insertedAt(await $.prompt.read(), text))
+  const box = await $.prompt.read()
+  if (text === '' && box.text.trim() === '') return { ok: false, reason: 'no_text' }
+  const reason = needsKeys(insertedAt(box, text))
   if (reason !== undefined) return { ok: false, reason }
-  const filled = await $.prompt.fill({ text, mode: 'insert' })
-  if (!filled.isFilled) return { ok: false, reason: filled.refusal ?? 'refused' }
-  const whole = filled.text
+  let whole = box.text
+  if (text !== '') {
+    const filled = await $.prompt.fill({ text, mode: 'insert' })
+    if (!filled.isFilled) return { ok: false, reason: filled.refusal ?? 'refused' }
+    whole = filled.text
+  }
   const emptied = await $.prompt.fill({ text: '', mode: 'replace' })
   if (!emptied.isFilled) return { ok: true, submitted: false, reason: emptied.refusal ?? 'refused' }
 

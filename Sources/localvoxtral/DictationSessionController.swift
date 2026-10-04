@@ -1212,8 +1212,10 @@ final class DictationSessionController {
         preCapturedSessionTargetVerdict = nil
         sessionTargetIsTerminalLike = verdict.decision.isTerminalLike
         sessionSecureInputActive = verdict.secureKeyboardEntryEnabled
+        // The session's mod takes the live text with no key (#1645).
+        let modTakesTheKeys = isLiveAutoPasteModeEnabled && context.agentPromptRoute is ClaudeModPromptRoute
 
-        if verdict.secureKeyboardEntryEnabled {
+        if verdict.secureKeyboardEntryEnabled, !modTakesTheKeys {
             // Never mask the Accessibility-trust warning — it explains a
             // total insertion failure, which outranks a secure-input maybe.
             if currentErrorToken != .accessibilityPermissionRequired {
@@ -1301,6 +1303,6 @@ extension DictationSessionController {
         joinedRepositoryRootLookup?.cancel()
         joinedRepositoryRootLookup = Task { [weak self] in await self?.lookUpJoinedRepositoryRoot() }
         noteDictationJoinedAgentSession(context.claudeSessionJoin?.snapshot.sessionID)
-        await context.resolveAgentPromptRoute(isCurrent: isCurrent)
+        await context.resolveAgentPromptRoute(liveAutoPaste: isLiveAutoPasteModeEnabled, isCurrent: isCurrent)
     }
 }

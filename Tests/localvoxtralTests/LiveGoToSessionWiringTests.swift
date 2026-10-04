@@ -334,6 +334,38 @@ final class LiveGoToSessionWiringTests: XCTestCase {
         XCTAssertEqual(harness.viewModel.statusText, DictationSessionController.GoToSessionStatus.ambiguous)
     }
 
+    /// A stop during a go-to that lands nowhere: the session's mod still
+    /// holds the deltas unconfirmed, so the record waits for its ack. Never
+    /// answered, every delta may be in the box or not: the record says not
+    /// inserted, and nothing is typed (#1645).
+    func testAStopDuringAGoToThatLandsNowhereWaitsForTheModsAck() async throws {
+        let harness = makeHarness(sessions: [
+            session("a", cwd: "/r/localvoxtral", tty: "/dev/ttys001"),
+            session("b", cwd: "/r/localvoxtral", tty: "/dev/ttys002"),
+        ])
+        let clock = ManualSessionClock()
+        let hub = ClaudeModChannelHub(sleep: clock.sleep)
+        // It answers the opening ack and never the stop's.
+        let mod = FakeClaudeMod(acksToAnswer: 1)
+        mod.attach(to: hub)
+        let opened = await ClaudeModPromptRoute.opened(hub: hub, sessionID: "s1", keysReachThePrompt: { true })
+        harness.viewModel.textInsertion.beginPromptRelay(try XCTUnwrap(opened))
+
+        harness.partial("run the tests.")
+        harness.final("run the tests.")
+        await mod.appends.waitFor(1)
+        harness.partial("go to localvoxtral")
+        harness.final("go to localvoxtral")
+        harness.stop()
+        await clock.waitForSleepers(1)
+        clock.advance(by: 60)
+        await awaitStoppedSessionCommit(harness.viewModel)
+
+        XCTAssertEqual(mod.kinds.filter { $0 == .ack }.count, 2, "the opening ack and the stop's")
+        XCTAssertEqual(harness.typedText, "")
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false])
+    }
+
     /// With the spoken send trigger on, a go-to that names no session is
     /// still a prompt it can send.
     func testAnUnknownGoToEndingInTheTriggerIsSent() async {

@@ -161,6 +161,9 @@ extension DictationSessionController {
         let provider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
         let model = sessionModelName ?? settings.effectiveModelName
         let join = context.claudeSessionJoin.map(AgentCLIJoin.init)
+        // The session's mod route, if any, settles after the go-to and
+        // before the record (#1645).
+        let modSink = unsettledModRouteSink
         saveInterruptedPolishCommit = { [weak self] in
             guard let self else { return }
             self.saveSessionRecord(
@@ -192,6 +195,9 @@ extension DictationSessionController {
                   insertion.pendingTextWaitsOnPaste {
                 await insertion.pastesSettled()
                 guard !Task.isCancelled else { return }
+            }
+            if let modSink {
+                await self?.settleModRoute(modSink)
             }
             guard let self, !Task.isCancelled else { return }
             self.saveInterruptedPolishCommit = nil

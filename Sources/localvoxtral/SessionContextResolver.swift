@@ -246,10 +246,51 @@ final class SessionContextResolver {
         }
     }
 
+    /// A Live Auto-Paste dictation into a local Claude Code session whose
+    /// mod is attached and takes appends (#1645): the deltas go to its
+    /// prompt box with no key. A tty, herdr or cmux join names the session;
+    /// with no context join, the focused pane's own session, asked of the
+    /// local arms only. Asked only while some mod is attached.
+    private func resolveClaudeModRoute() async -> ClaudeModPromptRoute? {
+        guard let hub = claudeModChannels, hub.hasAttachedChannels,
+              let resolver = claudeSessionJoinResolver
+        else { return nil }
+        let start = TerminalScreenContextSource.frontmostTarget()
+        let sessionID: String
+        if let join = claudeSessionJoin {
+            let terminal: [ClaudeSessionJoinMechanism] = [.ttyDevice, .herdrPane, .cmuxSurface]
+            guard join.snapshot.agent == .claude, join.snapshot.origin.isLocalAuthenticated,
+                  terminal.contains(join.mechanism)
+            else { return nil }
+            sessionID = join.snapshot.sessionID
+        } else {
+            guard !contextJoinAskedTheArms, let start,
+                  TerminalScreenAllowlist.isSupported(start.bundleID),
+                  let shown = await resolver.sessionShown(target: start),
+                  let snapshot = resolver.registry.snapshot(sessionID: shown),
+                  snapshot.agent == .claude, snapshot.origin.isLocalAuthenticated
+            else { return nil }
+            sessionID = shown
+        }
+        let startPID = start?.pid
+        return await ClaudeModPromptRoute.opened(hub: hub, sessionID: sessionID, keysReachThePrompt: { @MainActor in
+            // The terminal the dictation started in, still frontmost, its
+            // focused pane still this session, and keys not swallowed.
+            guard !TerminalTargetDetector.isSecureKeyboardEntryEnabled(),
+                  let target = TerminalScreenContextSource.frontmostTarget(), target.pid == startPID,
+                  await resolver.sessionShown(target: target) == sessionID
+            else { return false }
+            return TerminalScreenContextSource.frontmostTarget()?.pid == startPID
+        })
+    }
+
     /// This dictation's route into the joined agent, if any. Runs after the
     /// join. Stores nothing once `isCurrent` says the start was replaced.
-    func resolveAgentPromptRoute(isCurrent: @MainActor () -> Bool = { true }) async {
-        var route: (any AgentPromptRoute)? = await resolveOpencodePromptRoute()
+    /// The Claude Code mod's route serves Live Auto-Paste only: an Overlay
+    /// Buffer commit fills through the mod on its own (#1409).
+    func resolveAgentPromptRoute(liveAutoPaste: Bool = false, isCurrent: @MainActor () -> Bool = { true }) async {
+        var route: (any AgentPromptRoute)? = liveAutoPaste ? await resolveClaudeModRoute() : nil
+        if route == nil { route = await resolveOpencodePromptRoute() }
         if route == nil { route = await resolveHerdrPaneRoute() }
         if route == nil { route = await resolveCmuxSurfaceRoute() }
         guard isCurrent() else { return }

@@ -81,9 +81,22 @@ public final class ClaudeModChannelHub: Sendable {
         self.makeID = makeID
     }
 
+    /// Whether any session has a mod listening: the cheap question asked
+    /// before any lookup that would find one.
+    public var hasAttachedChannels: Bool {
+        state.withLock { !$0.channels.isEmpty }
+    }
+
     /// Whether `sessionID` has a mod listening right now.
     public func isAttached(_ sessionID: String) -> Bool {
         state.withLock { $0.channels[sessionID] != nil }
+    }
+
+    /// Which attach of `sessionID`'s mod is listening now, or nil: a mod
+    /// that reloaded and attached again under the same session gets a new
+    /// one, and its state starts over.
+    package func attachment(of sessionID: String) -> UInt64? {
+        state.withLock { $0.channels[sessionID]?.token }
     }
 
     /// The sessions that have a mod listening right now.
@@ -128,9 +141,12 @@ public final class ClaudeModChannelHub: Sendable {
     }
 
     /// `send`, saying whether a request without a reply ever reached the mod.
+    /// With `attachment`, only that attach of the mod gets it; a later one
+    /// answers `notDelivered`.
     public func exchange(
         _ message: ClaudeModChannelWire.Message,
         with sessionID: String,
+        attachment: UInt64? = nil,
         timeout: Duration
     ) async -> Exchange {
         var message = message
@@ -141,7 +157,7 @@ public final class ClaudeModChannelHub: Sendable {
             Log.claudeContext.error("Mod channel: \(message.kind.rawValue, privacy: .public) is over the line cap")
             return .notDelivered
         }
-        guard let channel = state.withLock({ $0.channels[sessionID]?.channel }) else { return .notDelivered }
+        guard let channel = channel(of: sessionID, attachment: attachment) else { return .notDelivered }
 
         return await withCheckedContinuation { continuation in
             state.withLock { $0.pending[id] = Pending(sessionID: sessionID, continuation: continuation) }
@@ -169,15 +185,27 @@ public final class ClaudeModChannelHub: Sendable {
     /// Writes `message` to the mod of `sessionID` and waits for nothing:
     /// for messages the mod does not answer, such as `state`.
     ///
-    /// - Returns: whether the line was written.
+    /// - Returns: whether the line was written: false too when
+    ///   `attachment` no longer names the session's mod.
     @discardableResult
-    public func post(_ message: ClaudeModChannelWire.Message, to sessionID: String) -> Bool {
+    public func post(
+        _ message: ClaudeModChannelWire.Message, to sessionID: String, attachment: UInt64? = nil
+    ) -> Bool {
         var message = message
         message.id = makeID()
         guard let line = ClaudeModChannelWire.encodeLine(message),
-              let channel = state.withLock({ $0.channels[sessionID]?.channel })
+              let channel = channel(of: sessionID, attachment: attachment)
         else { return false }
         return channel.write(line)
+    }
+
+    private func channel(of sessionID: String, attachment: UInt64?) -> Channel? {
+        state.withLock { state in
+            guard let attached = state.channels[sessionID],
+                  attachment == nil || attached.token == attachment
+            else { return nil }
+            return attached.channel
+        }
     }
 
     // MARK: Broker side
