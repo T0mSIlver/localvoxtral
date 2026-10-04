@@ -630,6 +630,19 @@ final class DiagnosticRecordRedactionTests: XCTestCase {
             "the screen's harvest is taken from this text")
     }
 
+    /// A field may hold one side of the cursor on its own, which the joined
+    /// draft's lines do not spell.
+    func testWithholdsEachSideOfTheCursorOnItsOwn() {
+        let draft = ClaudePromptDraft(
+            sessionID: "s1", beforeCursor: "rename the table\nQuokka", afterCursor: "Ledger and its tests"
+        )
+
+        let clipboard = DiagnosticRecordRedaction.withholding(
+            .draft(draft), in: "copied:\nLedger and its tests\nend", softWrapped: true)
+
+        XCTAssertEqual(clipboard, "copied:\n\(DiagnosticRecordRedaction.withheldDraftPlaceholder)\nend")
+    }
+
     /// A prior prompt can spell part of the draft's label ("prompt box"):
     /// masked first, it would rewrite the label, and a draft too short for
     /// the line pass would be left behind it.

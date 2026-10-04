@@ -152,6 +152,14 @@ package enum DiagnosticRecordRedaction {
         package let text: String
         package let labels: [String]
         package let placeholder: String
+        /// Pieces of `text` whose lines are looked for too: a field may hold
+        /// one of them on its own.
+        package var pieces: [String] = []
+
+        /// `text` and its pieces, one line per needle.
+        var needles: String {
+            ([text] + pieces).joined(separator: "\n")
+        }
 
         /// The prompt the user last sent to the joined agent.
         package static func priorPrompt(_ prompt: String?) -> Withheld? {
@@ -166,13 +174,15 @@ package enum DiagnosticRecordRedaction {
         /// The joined session's unsent draft, both sides of the cursor. The
         /// session block puts each side on one line behind its label; the
         /// screen shows the draft's own lines, which the cursor does not
-        /// split.
+        /// split. Each side's lines are looked for as well, for a field that
+        /// holds only one side.
         package static func draft(_ draft: ClaudePromptDraft?) -> Withheld? {
             guard let draft, !draft.isEmpty else { return nil }
             return Withheld(
                 text: draft.beforeCursor + draft.afterCursor,
                 labels: [ClaudePromptDraft.beforeCursorLabel, ClaudePromptDraft.afterCursorLabel],
-                placeholder: withheldDraftPlaceholder
+                placeholder: withheldDraftPlaceholder,
+                pieces: [draft.beforeCursor, draft.afterCursor].filter { !$0.isEmpty }
             )
         }
     }
@@ -244,7 +254,7 @@ package enum DiagnosticRecordRedaction {
         .sorted { $0.whole.count > $1.whole.count }
         let lines = withheld.flatMap { value in
             Set(
-                value.text.split(whereSeparator: \.isNewline).flatMap { line in
+                value.needles.split(whereSeparator: \.isNewline).flatMap { line in
                     [String(line), PolishContextExcerptSelector.renderedLine(String(line))]
                 }
                 .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -287,7 +297,7 @@ package enum DiagnosticRecordRedaction {
             }
             if softWrapped {
                 for value in withheld {
-                    output = withholdingWrapped(value.text, in: output, placeholder: value.placeholder)
+                    output = withholdingWrapped(value.needles, in: output, placeholder: value.placeholder)
                 }
             }
             for (line, placeholder) in lines {
