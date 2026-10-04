@@ -167,7 +167,7 @@ OWN Automation grant the first time it is used, under **System Settings →
 Privacy & Security → Automation → localvoxtral**.
 
 The app asks for the grant only while **Settings → Context → Send diff,
-recent files and last prompt** is on, since that is the only feature a
+recent files and prompts** is on, since that is the only feature a
 browser join serves. Firefox is not supported, because it exposes no
 AppleScript access to the focused tab's URL.
 
@@ -423,7 +423,7 @@ with Return. Sessions in Claude Desktop or a browser tab are still typed.
 
 When an Overlay Buffer dictation into such a session is polished, the app
 also asks the mod what the prompt box already holds, in a terminal or the
-Claude Desktop Code tab. With **Send diff, recent files and last prompt** on, polish sees
+Claude Desktop Code tab. With **Send diff, recent files and prompts** on, polish sees
 that text and knows the dictation continues it; whatever the setting, the
 dictation starts with a space only when the box ends in a word. The text stays
 on your Mac when polishing does, is never logged, and is left out of
