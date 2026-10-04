@@ -81,8 +81,10 @@ public enum ClaudeModChannelWire {
         /// `ok` with `""`, which is also all a surface that binds no box
         /// can say.
         case draft
-        /// The joined dictation's state, for the band above the prompt
-        /// (#1411): `phase` and the words so far in `text`. Not answered.
+        /// What the band above the prompt shows. Not answered. Either the
+        /// joined dictation's state (#1411): `phase` and the words so far
+        /// in `text`; or, with `waiting` set and no `phase`, the other
+        /// sessions that wait for the user (#1695).
         case state
         /// The app took the mod's `Bye` and ended the channel (#1646): the
         /// mod stops its `--attach` and, if the process goes on under a new
@@ -108,12 +110,17 @@ public enum ClaudeModChannelWire {
         /// words so far for `state`.
         public var text: String?
         public var phase: Phase?
+        /// For `state`: the names of the other sessions waiting for the
+        /// user, oldest first; empty when none does. Names only, never what
+        /// an agent said (#717).
+        public var waiting: [String]?
 
         public init(
             kind: Kind,
             id: String = "",
             text: String? = nil,
             phase: Phase? = nil,
+            waiting: [String]? = nil,
             version: Int = ClaudeModChannelWire.version
         ) {
             self.modMessage = version
@@ -121,6 +128,7 @@ public enum ClaudeModChannelWire {
             self.id = id
             self.text = text
             self.phase = phase
+            self.waiting = waiting
         }
 
         enum CodingKeys: String, CodingKey {
@@ -129,6 +137,7 @@ public enum ClaudeModChannelWire {
             case id
             case text
             case phase
+            case waiting
         }
     }
 

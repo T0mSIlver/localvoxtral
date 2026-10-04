@@ -6,7 +6,15 @@
 
 export const WIRE_VERSION = 1
 
-export type ChannelMessage = { mod_message: number; kind: string; id: string; text?: string; phase?: string }
+export type ChannelMessage = {
+  mod_message: number
+  kind: string
+  id: string
+  text?: string
+  phase?: string
+  /** For `state`: the other sessions waiting for the person (#1695). */
+  waiting?: string[]
+}
 
 /** What a fork cost, in the API's spelling. */
 export type ChannelUsage = {
@@ -113,12 +121,28 @@ export function bandOf(message: ChannelMessage): { phase: 'listening' | 'finishi
   return { phase: message.phase, text: message.text ?? '' }
 }
 
+/**
+ * The band's line about the other sessions waiting for the person, at most
+ * `columns` wide; null when none does. Names only (#717).
+ */
+export function waitingLine(names: string[], columns: number): string | null {
+  if (names.length === 0) return null
+  const [first, second] = names
+  const line =
+    names.length === 1
+      ? `${first} waits for you`
+      : names.length === 2
+        ? `${first} and ${second} wait for you`
+        : `${first} and ${names.length - 1} others wait for you`
+  return line.length > columns ? `${line.slice(0, Math.max(1, columns - 1))}…` : line
+}
+
 /** Parses one line, or null for anything that is not a message of this wire. */
 export function parseMessage(line: string): ChannelMessage | null {
   try {
     const value: unknown = JSON.parse(line)
     if (typeof value !== 'object' || value === null) return null
-    const { mod_message, kind, id, text, phase } = value as Record<string, unknown>
+    const { mod_message, kind, id, text, phase, waiting } = value as Record<string, unknown>
     if (mod_message !== WIRE_VERSION || typeof kind !== 'string' || typeof id !== 'string') return null
     return {
       mod_message,
@@ -126,6 +150,7 @@ export function parseMessage(line: string): ChannelMessage | null {
       id,
       ...(typeof text === 'string' ? { text } : {}),
       ...(typeof phase === 'string' ? { phase } : {}),
+      ...(Array.isArray(waiting) ? { waiting: waiting.filter(name => typeof name === 'string') } : {}),
     }
   } catch {
     return null

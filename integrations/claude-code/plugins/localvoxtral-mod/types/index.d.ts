@@ -3,6 +3,6 @@ export type Band = { phase: 'listening' | 'finishing'; text: string } | null
 
 declare module 'claude-code' {
   interface PluginState {
-    'localvoxtral-mod': { band: Band }
+    'localvoxtral-mod': { band: Band; waiting: string[] }
   }
 }
