@@ -94,12 +94,13 @@ package struct DiagnosticRecordStore: Sendable {
     /// only through `exclusively`, which adds the lock other copies share.
     private static let recordMutationLock = Mutex(0)
 
-    /// Bumped by `removeAll()`, per folder. A write that started before the
-    /// user turned records off must not land after the delete: the writer
-    /// reads the epoch when it last checked the switch, and `write` refuses
-    /// once it has moved. Only a delete-everything bumps it; the orphan sweep
-    /// after every trim must not cost the record being written.
-    private static let deletionEpochs = Mutex<[String: UInt64]>([:])
+    // The deletion generation, bumped by `removeAll()`. A write that started
+    // before the user turned records off must not land after the delete: the
+    // writer reads the generation when it last checked the switch, and
+    // `write` refuses once it has moved. Only a delete-everything bumps it;
+    // the orphan sweep after every trim must not cost the record being
+    // written. It is a file (`generationURL`), not process memory, because
+    // the delete may come from another running copy (#1770).
 
     private let directoryURL: URL
     private let io: ClaudeRemoteHostStoreIO
@@ -130,9 +131,40 @@ package struct DiagnosticRecordStore: Sendable {
 
     // MARK: - Writing
 
-    /// The folder's deletion epoch now. See `deletionEpochs`.
+    /// Where the deletion generation every running copy shares lives: not in
+    /// the folder, which `removeAll()` empties, and not loose in the data
+    /// folder, which is 0755 and which the hardened writer refuses; in a
+    /// 0700 folder of its own beside it.
+    package static func generationURL(forDirectory directoryURL: URL) -> URL {
+        directoryURL.deletingLastPathComponent()
+            .appendingPathComponent(".\(directoryURL.lastPathComponent)-state", isDirectory: true)
+            .appendingPathComponent("generation")
+    }
+
+    /// The folder's deletion generation now; one no write accepts when the
+    /// file cannot be read.
     package func deletionEpoch() -> UInt64 {
-        Self.deletionEpochs.withLock { $0[directoryURL.path] ?? 0 }
+        readGeneration() ?? .max
+    }
+
+    /// 0 when no copy has deleted everything yet; nil when the file is there
+    /// but unreadable, which refuses every write until a `removeAll()`
+    /// rewrites it: a delete may have happened that this copy cannot see.
+    private func readGeneration() -> UInt64? {
+        let url = Self.generationURL(forDirectory: directoryURL)
+        do {
+            guard let data = try io.read(from: url) else { return 0 }
+            if let generation = UInt64(String(decoding: data, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)) {
+                return generation
+            }
+            Log.backends.error("Diagnostic record: \(url.lastPathComponent, privacy: .public) holds no generation; refusing writes until records are deleted")
+        } catch {
+            Log.backends.error(
+                "Diagnostic record: could not read \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+        }
+        return nil
     }
 
     /// Redacts `record`, writes it, and prunes. Returns the file it wrote.
@@ -141,7 +173,11 @@ package struct DiagnosticRecordStore: Sendable {
     @discardableResult
     package func write(_ record: DiagnosticRecord, unlessDeletedSince epoch: UInt64? = nil) throws -> URL {
         try exclusively {
-            if let epoch, epoch != deletionEpoch() { throw StoreError.deletedSinceDecision }
+            if let epoch {
+                guard let current = readGeneration(), current == epoch else {
+                    throw StoreError.deletedSinceDecision
+                }
+            }
             return try writeLocked(record)
         }
     }
@@ -343,7 +379,15 @@ package struct DiagnosticRecordStore: Sendable {
     @discardableResult
     package func removeAll(keeping kept: Set<UUID> = []) -> Int {
         exclusively {
-            Self.deletionEpochs.withLock { $0[directoryURL.path, default: 0] += 1 }
+            let generationURL = Self.generationURL(forDirectory: directoryURL)
+            do {
+                let next = (readGeneration() ?? 0) &+ 1
+                try io.write(Data(String(next).utf8), to: generationURL)
+            } catch {
+                Log.backends.error(
+                    "Diagnostic record: could not write \(generationURL.lastPathComponent, privacy: .public); a write already decided may still land: \(error.localizedDescription, privacy: .public)"
+                )
+            }
             let names = ((try? directoryIO.contents(of: directoryURL)) ?? nil) ?? []
             var removed = 0
             for name in names {
