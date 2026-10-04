@@ -476,6 +476,14 @@ final class EnginesModel {
         }
     }
 
+    /// Returns once the managed stops already queued have finished. The
+    /// onboarding wizard starts its downloads behind them, since the warmup
+    /// below, which serializes the same way, waits for onboarding (#1763).
+    func awaitPendingManagedShutdowns() async {
+        await dictationShutdownTask?.value
+        await polishingShutdownTask?.value
+    }
+
     func startManagedBackendWarmup(dictation: Bool, polishing: Bool) {
         guard dictation || polishing else { return }
         guard settings.onboardingCompleted else {

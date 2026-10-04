@@ -44,6 +44,10 @@ final class LiveOnboardingBootstrapDriver: OnboardingBootstrapDriving {
         runTask?.cancel()
         runTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            // A helper still shutting down answers as ready until the stop
+            // removes it, leaving the page with nothing running (#1763).
+            await self.waitForPendingShutdowns()
+            guard !Task.isCancelled else { return }
             // Any failure is already reflected into `itemStates` through the
             // status observation below (ensureReady sets `.failed` on the
             // backend status before throwing), so the throw is swallowed here.
