@@ -5,6 +5,30 @@ import Foundation
 /// go down the channel unanswered (`ClaudeModPromptRoute`), so the stop asks
 /// the mod how far it got before the record says whether everything landed.
 extension DictationSessionController {
+    /// The dictation's mod route while it may hold appends the mod has not
+    /// confirmed, or nil.
+    var unsettledModRouteSink: AgentPromptSink? {
+        guard let sink = textInsertion.promptRelaySink, sink.isHealthy,
+              sink.route is ClaudeModPromptRoute
+        else { return nil }
+        return sink
+    }
+
+    /// Returns once `sink`, the mod route the stop found, has settled: what
+    /// the mod did not fill was typed or kept. A go-to that retired the
+    /// route meanwhile settled it then, and a cancel drops what is
+    /// unconfirmed (#1222).
+    func settleModRoute(_ sink: AgentPromptSink) async {
+        if textInsertion.promptRelaySink === sink {
+            guard !wasCancelled else {
+                textInsertion.retirePromptRelay(settling: false)
+                return
+            }
+            sink.finish()
+        }
+        await sink.waitUntilIdle()
+    }
+
     /// Starts the stop's wait for the mod's `ack` and returns true, or false
     /// when the dictation has no mod route to settle. `finish` runs once the
     /// route settled: what the mod did not fill was typed or kept by then.
@@ -12,9 +36,7 @@ extension DictationSessionController {
         sessionMode: DictationOutputMode,
         finish: @escaping @MainActor (_ sessionAudio: Data?) -> Void
     ) -> Bool {
-        guard let sink = textInsertion.promptRelaySink, sink.isHealthy,
-              sink.route is ClaudeModPromptRoute
-        else { return false }
+        guard let sink = unsettledModRouteSink else { return false }
         // A cancel types nothing more (#1222): what the mod did not fill is
         // dropped with the dictation, never typed.
         guard !wasCancelled else {

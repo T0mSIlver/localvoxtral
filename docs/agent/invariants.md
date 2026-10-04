@@ -1063,10 +1063,17 @@ there is not.
     dictation started in is frontmost with its focused pane on the session,
     and stay in History otherwise. An `ack` with no answer, or a channel
     gone mid-dictation, leaves every unconfirmed delta possibly filled: all
-    of them stay in History, none is typed. The live record waits for the
-    stop's `ack`. *No key, so no key rules:* the terminal newline guard and
-    the trailing-space policy do not apply to filled text, and Secure
-    Keyboard Entry neither refuses the start nor warns.
+    of them stay in History, none is typed. *One attach:* the route writes
+    and asks only the attach of the mod it opened on. A mod that reloads
+    attaches again under the same session with a fresh stream, whose count
+    says nothing about what the old one filled, so the route treats it as
+    a lost channel. The live record waits for the stop's `ack`, behind a
+    go-to still running at the stop too. *No key, so no key rules:* the
+    terminal newline guard and the trailing-space policy do not apply to
+    filled text, and Secure Keyboard Entry neither refuses the start nor
+    warns. Every text the keys type instead, until the next dictation,
+    has its newline runs collapsed: what the mod gave back, and every delta
+    after the route failed over or a go-to retired it.
 - **Claude Code context reaches the prompt only through a positive join.**
   The joined session's repository (status, uncommitted diffs, contents
   of files the agent just touched) and its prior user prompt are attached as
