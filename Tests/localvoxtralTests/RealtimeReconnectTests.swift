@@ -431,7 +431,10 @@ final class RealtimeReconnectTests: XCTestCase {
 
         viewModel.session.handle(event: .finalTranscript("in the gap"))
         viewModel.session.handle(event: .transcriptionFinalized)
-        await viewModel.session.stopFinalizationTask?.value
+        // The finalization loop sleeps on the clock until its next poll.
+        let finalization = viewModel.session.stopFinalizationTask
+        clock.advance(by: TimingConstants.finalizationPollInterval)
+        await finalization?.value
         await awaitStoppedSessionCommit(viewModel)
 
         XCTAssertEqual(records.all.map(\.rawText), ["before the crash in the gap"])
