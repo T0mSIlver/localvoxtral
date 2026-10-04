@@ -826,9 +826,10 @@ final class AddressedSendWiringTests: XCTestCase {
                 }
                 guard message.kind == .send else { return false }
                 sends.value.append(message.text ?? "")
+                // Record the held id before waking the test, which may answer it at once.
+                if answer == .held { heldID.value = message.id }
                 arrival.yield()
                 guard answer != .undeliverable else { return false }
-                if answer == .held { heldID.value = message.id }
                 answerSend(answer, message.id)
                 return true
             },
