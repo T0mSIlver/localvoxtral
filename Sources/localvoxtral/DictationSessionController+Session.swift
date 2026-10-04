@@ -85,7 +85,10 @@ extension DictationSessionController {
                 Log.target.notice("Secure Keyboard Entry is on; the session's mod takes the live text")
                 return false
             }
-        } else if context.claudeModChannels?.hasAttachedChannels == true {
+        } else if context.claudeModChannels?.hasAttachedChannels == true,
+                  let target = TerminalScreenContextSource.frontmostTarget(),
+                  TerminalScreenAllowlist.isSupported(target.bundleID) {
+            // Only a terminal can hold a session the mod takes.
             return false
         }
         captureSessionTargetVerdict()

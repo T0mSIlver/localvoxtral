@@ -1779,6 +1779,44 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(typed.text, "")
     }
 
+    /// A mod attached to another session: the refusal waits for this
+    /// dictation's route, and with none it still refuses the start.
+    func testSecureKeyboardEntryStillRefusesALiveStartNoModTakes() async throws {
+        let mod = FakeClaudeMod()
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        _ = joinClaudeCodeTerminal(pipeline)
+        let hub = ClaudeModChannelHub(sleep: { _ in try? await Task.sleep(for: .seconds(3600)) })
+        mod.attach(to: hub, sessionID: "s2")
+        pipeline.viewModel.context.claudeModChannels = hub
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        await pipeline.viewModel.session.beginDictationSession()
+
+        XCTAssertFalse(pipeline.viewModel.isDictating)
+        XCTAssertFalse(pipeline.viewModel.isConnectingRealtimeSession)
+        XCTAssertEqual(pipeline.viewModel.statusText, DictationViewModel.StatusStrings.liveDictationBlockedBySecureInput)
+        XCTAssertEqual(mod.kinds, [], "the other session's mod is never asked")
+    }
+
+    /// A cancel drops what the mod did not fill: nothing is typed after the
+    /// person threw the dictation away (#1222).
+    func testACancelTypesNothingTheModDidNotFill() async throws {
+        let split = Self.phrase.index(Self.phrase.startIndex, offsetBy: 18)
+        let mod = FakeClaudeMod(refuses: String(Self.phrase[split...]))
+        let (pipeline, typed) = try await modLivePipeline(mod)
+
+        await startAndSpeak(pipeline)
+        let sink = try XCTUnwrap(pipeline.viewModel.textInsertion.promptRelaySink)
+        sendPartials(pipeline)
+        await mod.appends.waitFor(2)
+        pipeline.viewModel.cancelDictation()
+        await sink.waitUntilIdle()
+
+        XCTAssertEqual(mod.box, String(Self.phrase[..<split]))
+        XCTAssertEqual(typed.text, "")
+        XCTAssertEqual(mod.kinds.last, .append, "no ack: nothing is settled to be typed")
+    }
+
     /// A newline the server sends is filled as text, where the keys would
     /// have turned it into a space so it could not submit the prompt.
     func testANewlineGoesToTheModAsText() async throws {

@@ -55,8 +55,9 @@ package struct ClaudePromptDraft: Sendable, Equatable {
     /// Whether this draft, rather than the guess from the last commit,
     /// decides the commit's leading space. An empty answer from Claude
     /// Desktop does not: a surface that draws its own prompt box gives the
-    /// mod `""` whatever it holds (`$.prompt.read`), and the Code tab is not
-    /// yet measured to bind it.
+    /// mod `""` whatever it holds (`$.prompt.read`), and the Code tab binds
+    /// none: its fill answers `no_composer` (measured on Claude Code
+    /// 2.1.287, #1643).
     package func decidesLeadingSpace(for join: ClaudeSessionJoin) -> Bool {
         guard join.snapshot.sessionID == sessionID else { return false }
         return !isEmpty || join.mechanism != .desktopSession

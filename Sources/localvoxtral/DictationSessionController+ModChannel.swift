@@ -20,9 +20,9 @@ extension DictationSessionController {
 
     /// The committer that fills `join`'s session through its mod, or nil:
     /// no mod attached, a session that is not a local Claude Code one, or a
-    /// surface where a fill is not yet known to show (Claude Desktop, a
-    /// browser tab), which keep inserting by keyboard until a hand check
-    /// says otherwise.
+    /// surface the mod cannot fill: Claude Desktop's Code tab binds no box
+    /// (`no_composer`, #1643), and a browser tab is unmeasured. Both keep
+    /// inserting by keyboard.
     ///
     /// With `submits`, the mod submits the box after the fill, and a fill
     /// it refused is typed and followed by Return under the same gates as

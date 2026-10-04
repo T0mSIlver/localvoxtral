@@ -15,13 +15,17 @@ extension DictationSessionController {
         guard let sink = textInsertion.promptRelaySink, sink.isHealthy,
               sink.route is ClaudeModPromptRoute
         else { return false }
+        // A cancel types nothing more (#1222): what the mod did not fill is
+        // dropped with the dictation, never typed.
+        guard !wasCancelled else {
+            textInsertion.retirePromptRelay(settling: false)
+            return false
+        }
         isFinalizingStop = true
         statusText = StatusStrings.finalizing
         // Every word the hold-back stream holds goes to the mod before the
-        // ack counts. A cancel types nothing more (#1222).
-        if !wasCancelled {
-            textInsertion.flushFinalLiveReplacementCorrections()
-        }
+        // ack counts.
+        textInsertion.flushFinalLiveReplacementCorrections()
         sink.finish()
         let sessionAudio = audio.sessionRecording.finish()
         let storedAudio = sessionStoresAudio ? sessionAudio : nil

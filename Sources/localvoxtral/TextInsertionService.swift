@@ -520,7 +520,12 @@ final class TextInsertionService {
     /// The keys and the pending buffers serve something else from now on:
     /// the next dictation, or the pane a go-to moved to. A refusal of a call
     /// already handed to the route stays in History.
-    func retirePromptRelay(endingDictation: Bool = false) {
+    ///
+    /// A route that confirms its appends only when asked settles them
+    /// first, unless `settling` is false (a cancel): what did not land is
+    /// kept in History, since the keys serve something else now.
+    func retirePromptRelay(endingDictation: Bool = false, settling: Bool = true) {
+        if settling { promptRelaySink?.finish() }
         promptRelaySink = nil
         promptRelayGeneration += 1
         if endingDictation { promptRelayDictation += 1 }

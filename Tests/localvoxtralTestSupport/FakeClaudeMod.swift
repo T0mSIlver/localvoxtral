@@ -22,6 +22,8 @@ package final class FakeClaudeMod: Sendable {
     /// How many `ack`s it answers before it goes silent.
     package let acksToAnswer: Int
     package let knowsAppend: Bool
+    /// Counts every append written to it, filled or not.
+    package let appends = EventCount()
 
     package init(refuses: String? = nil, acksToAnswer: Int = .max, knowsAppend: Bool = true) {
         self.refuses = refuses
@@ -49,6 +51,7 @@ package final class FakeClaudeMod: Sendable {
     private func handle(_ message: ClaudeModChannelWire.Message, sessionID: String) -> ClaudeModChannelWire.Reply? {
         state.withLock { state -> ClaudeModChannelWire.Reply? in
             state.kinds.append(message.kind)
+            if message.kind == .append { appends.increment() }
             guard knowsAppend || (message.kind != .append && message.kind != .ack) else {
                 return message.kind == .append
                     ? nil : .init(sessionID: sessionID, id: message.id, ok: false, reason: "unknown_kind")

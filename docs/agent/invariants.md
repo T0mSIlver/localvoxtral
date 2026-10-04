@@ -44,7 +44,8 @@ there is not.
   by hand is continued too, and a box cleared without a submit takes
   `/compact` as written. An empty answer from a Claude Desktop session does
   not decide, since a surface that draws its own prompt box gives the mod
-  `""` whatever it holds; there the guess above still runs, as it does for
+  `""` whatever it holds (the Code tab binds none: a fill there answers
+  `no_composer`, #1643); there the guess above still runs, as it does for
   an unpolished commit, a mod that does not answer, and every other agent.
 - **The prompt draft is the person's unsent words, read only from the
   joined session's own mod** (#1406). At the stop of a polished Overlay
