@@ -240,6 +240,56 @@ final class ClaudeSessionRegistryTests: XCTestCase {
         )
     }
 
+    // MARK: Mod channel liveness (#1646)
+
+    func testAnAttachedModChannelKeepsTheSessionPastItsTTLAndTheTTLCountsFromTheDetach() {
+        let clock = TestClock(epoch)
+        let registry = makeRegistry(limits: ClaudeRegistryLimits(maxSessions: 32, sessionTTL: 100), clock: clock)
+        registry.ingest(record(.sessionStart, claudePID: 4242), origin: local)
+        registry.modChannelAttached(sessionID: "s1", claudePID: 4242, token: 1)
+
+        clock.advance(10_000)
+        XCTAssertNotNil(registry.snapshot(sessionID: "s1"), "an attached mod proves the session alive")
+
+        registry.modChannelDetached(sessionID: "s1", token: 1, sessionEnded: false)
+        clock.advance(99)
+        XCTAssertNotNil(registry.snapshot(sessionID: "s1"), "a reloaded mod must find the session to attach again")
+        clock.advance(2)
+        XCTAssertNil(registry.snapshot(sessionID: "s1"))
+    }
+
+    func testAnAttachedModChannelKeepsNoDeadOrOtherProcessSessionAlive() {
+        let clock = TestClock(epoch)
+        let liveness = TestLiveness()
+        let registry = makeRegistry(
+            limits: ClaudeRegistryLimits(maxSessions: 32, sessionTTL: 100), clock: clock, liveness: liveness
+        )
+        registry.ingest(record(.sessionStart, session: "dead", claudePID: 1), origin: local)
+        registry.ingest(record(.sessionStart, session: "other", claudePID: 2), origin: local)
+        registry.ingest(record(.sessionStart, session: "pidless"), origin: local)
+        registry.modChannelAttached(sessionID: "dead", claudePID: 1, token: 1)
+        registry.modChannelAttached(sessionID: "other", claudePID: 3, token: 2)
+        registry.modChannelAttached(sessionID: "pidless", claudePID: 4, token: 3)
+        liveness.kill(1)
+
+        XCTAssertNil(registry.snapshot(sessionID: "dead"), "pid liveness still applies")
+        clock.advance(101)
+        XCTAssertNil(registry.snapshot(sessionID: "other"), "an attach from another process keeps the TTL")
+        XCTAssertNil(registry.snapshot(sessionID: "pidless"), "a pidless session keeps its TTL")
+    }
+
+    func testADetachAfterTheModsByeEndsTheSessionAndAnOldTokenChangesNothing() {
+        let registry = makeRegistry()
+        registry.ingest(record(.sessionStart, claudePID: 4242), origin: local)
+        registry.modChannelAttached(sessionID: "s1", claudePID: 4242, token: 2)
+
+        registry.modChannelDetached(sessionID: "s1", token: 1, sessionEnded: true)
+        XCTAssertNotNil(registry.snapshot(sessionID: "s1"), "a channel the session no longer holds ends nothing")
+
+        registry.modChannelDetached(sessionID: "s1", token: 2, sessionEnded: true)
+        XCTAssertNil(registry.snapshot(sessionID: "s1"))
+    }
+
     /// Regression, production-shaped: the publisher is a one-shot process, so
     /// by the time the app looks at a record the `hookPID` is ALWAYS dead. If
     /// liveness probes it, every local session is stale the instant it is

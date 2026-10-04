@@ -317,6 +317,36 @@ final class ClaudeModChannelSocketTests: XCTestCase {
         XCTAssertEqual(ended, ClaudeModAttachClient.Outcome.closed)
     }
 
+    /// The mod's `bye` on `session.end` (#1646): the app answers it down the
+    /// channel, closes it, and the session is gone from the registry.
+    func testAByeClosesTheChannelAndEndsTheSession() async throws {
+        try announce("sess-1")
+        let attached = expectation(description: "attached")
+        hub.debugConfigureAttachHook { if $0 { attached.fulfill() } }
+        let output = Received()
+        let attach = client("sess-1", output: output)
+        let outcome = Task.detached { attach.attachOnce() }
+        await fulfillment(of: [attached], timeout: 5)
+        let detached = expectation(description: "detached")
+        hub.debugConfigureAttachHook { if !$0 { detached.fulfill() } }
+
+        let bye = try XCTUnwrap(ClaudeModChannelWire.encodeLine(ClaudeModChannelWire.Bye(sessionID: "sess-1")))
+        ClaudeModAttachClient.sendReply(bye, to: socketPath, publisher: UnixSocketPublisher(timeout: 2))
+
+        let ended = await outcome.value
+        await fulfillment(of: [detached], timeout: 5)
+        XCTAssertEqual(ended, ClaudeModAttachClient.Outcome.closed)
+        let told = try XCTUnwrap(output.all.last)
+        XCTAssertEqual(ClaudeModChannelWire.decode(ClaudeModChannelWire.Message.self, from: told.dropLast())?.kind, .bye)
+        XCTAssertNil(registry.snapshot(sessionID: "sess-1"))
+    }
+
+    func testAByeForASessionWithNoChannelEndsNothing() throws {
+        try announce("sess-1")
+        XCTAssertFalse(hub.bye(sessionID: "sess-1"))
+        XCTAssertNotNil(registry.snapshot(sessionID: "sess-1"))
+    }
+
     /// An app that took the attach and never answered it: the attach gives
     /// up at its deadline, so `run()` retries, instead of waiting for as
     /// long as Claude Code lives.
