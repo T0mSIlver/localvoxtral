@@ -227,8 +227,9 @@ final class ClaudeRemoteModChannelsTests: XCTestCase {
         guard case .lines(let oldAttach, 1, let oldLines) = await first.value else { return XCTFail("no lines") }
         XCTAssertEqual(oldLines.count, 1)
 
-        // The forward dropped: no poll in the grace, so the lease goes.
-        await fixture.clock.waitForSleepers(1)
+        // The forward dropped: no poll in the grace, so the lease goes. Armed:
+        // the first poll's hold and its answer's expiry.
+        await fixture.clock.waitForSleepers(2)
         let detached = expectation(description: "the channel detached")
         fixture.hub.debugConfigureAttachHook { attached in if !attached { detached.fulfill() } }
         fixture.clock.advance(by: 10)
@@ -238,7 +239,8 @@ final class ClaudeRemoteModChannelsTests: XCTestCase {
         // A new attach: the answer that carried its first line is lost, and
         // a second line queues behind it.
         let second = poll(fixture, attach: oldAttach, acked: 1)
-        await fixture.clock.waitForSleepers(1)
+        // The first poll's hold, still armed, and this one's.
+        await fixture.clock.waitForSleepers(2)
         XCTAssertTrue(fixture.hub.post(.init(kind: .state, phase: .done), to: scoped))
         guard case .lines(let newAttach, 1, let lost) = await second.value else { return XCTFail("no lines") }
         XCTAssertNotEqual(newAttach, oldAttach)
