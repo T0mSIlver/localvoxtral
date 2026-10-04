@@ -1263,7 +1263,10 @@ text and submits prompts on what the app sends, so it trusts the token
 alone for nothing. Every request and every answer on its routes carries an
 HMAC under the host's channel key, which setup stores in the plugin's
 config and which never crosses the tunnel. A squatter holding the token
-cannot attach as a session or write into the prompt.
+cannot attach as a session or write into the prompt. Nor can it replay a
+poll it captured once the forward is back (1.42.0): each answer names a
+challenge the next poll must carry, good once and for ten seconds, and a
+poll without one gets only a new challenge.
 
 **A process on your Mac that squats 127.0.0.1:8473 before the app binds it.**
 Loopback ports on macOS go to whoever binds first, with no ownership. A

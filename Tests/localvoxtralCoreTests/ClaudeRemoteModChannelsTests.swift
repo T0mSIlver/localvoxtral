@@ -23,7 +23,7 @@ final class ClaudeRemoteModChannelsTests: XCTestCase {
             hub = ClaudeModChannelHub(sleep: { [hubClock] in await hubClock.sleep($0) })
             channels = ClaudeRemoteModChannels(
                 hub: hub, registry: registry, hold: .seconds(25), grace: .seconds(10),
-                maxQueuedLines: 3, sleep: { [clock] in await clock.sleep($0) }
+                maxQueuedLines: 3, sleep: { [clock] in await clock.sleep($0) }, now: { [clock] in clock.now }
             )
         }
 
@@ -38,11 +38,17 @@ final class ClaudeRemoteModChannelsTests: XCTestCase {
         }
     }
 
+    /// A poll carrying a challenge the channels just issued for it, as a mod
+    /// that verified the last answer sends.
     private func poll(
-        _ fixture: Fixture, host: String = "h1", session: String = "sess-1", instance: String? = nil, acked: Int = 0
+        _ fixture: Fixture, host: String = "h1", session: String = "sess-1", instance: String? = nil,
+        attach: UInt64 = 0, acked: Int = 0
     ) -> Task<ClaudeRemoteModChannels.PollOutcome, Never> {
+        let instance = instance ?? self.instance
         let request = ClaudeRemoteModWire.PollRequest(
-            sessionID: session, instance: instance ?? self.instance, nonce: nonce, acked: acked
+            sessionID: session, instance: instance, nonce: nonce,
+            challenge: fixture.channels.issueChallenge(hostID: host, sessionID: session, instance: instance),
+            attach: attach, acked: acked
         )
         return Task { await fixture.channels.poll(hostID: host, request: request) }
     }
@@ -83,7 +89,7 @@ final class ClaudeRemoteModChannelsTests: XCTestCase {
 
         // Armed so far: the first poll's hold and each answer's expiry; this
         // poll's hold is the fourth.
-        let acked = poll(fixture, acked: 1)
+        let acked = poll(fixture, attach: attach, acked: 1)
         await fixture.clock.waitForSleepers(4)
         fixture.clock.advance(by: 25)
         let empty = await acked.value
@@ -160,6 +166,111 @@ final class ClaudeRemoteModChannelsTests: XCTestCase {
         XCTAssertNil(fixture.registry.snapshot(sessionID: scoped))
     }
 
+    /// A squatter on the forward port keeps the polls it captured; replayed
+    /// once the forward is back, they must get neither a lease nor a line.
+    func testOnlyAPollWithALiveChallengeGetsTheChannelAndEachChallengeServesOnce() async throws {
+        let fixture = Fixture()
+        fixture.announce("sess-1", on: "h1")
+        let scoped = ClaudeRemoteSessionScope.scopedSessionID(hostID: "h1", sessionID: "sess-1")
+        func request(_ challenge: String, instance: String? = nil) -> ClaudeRemoteModWire.PollRequest {
+            .init(sessionID: "sess-1", instance: instance ?? self.instance, nonce: nonce, challenge: challenge, acked: 0)
+        }
+
+        let bare = await fixture.channels.poll(hostID: "h1", request: request(""))
+        let made = await fixture.channels.poll(hostID: "h1", request: request(String(repeating: "9", count: 32)))
+        XCTAssertEqual(bare, .unchallenged)
+        XCTAssertEqual(made, .unchallenged)
+        XCTAssertFalse(fixture.hub.isAttached(scoped))
+
+        // Issued for another host or another process of the session: no.
+        let elsewhere = fixture.channels.issueChallenge(hostID: "h2", sessionID: "sess-1", instance: instance)
+        let otherInstance = fixture.channels.issueChallenge(
+            hostID: "h1", sessionID: "sess-1", instance: String(repeating: "3", count: 32)
+        )
+        let fromElsewhere = await fixture.channels.poll(hostID: "h1", request: request(elsewhere))
+        let fromOtherInstance = await fixture.channels.poll(hostID: "h1", request: request(otherInstance))
+        XCTAssertEqual(fromElsewhere, .unchallenged)
+        XCTAssertEqual(fromOtherInstance, .unchallenged)
+
+        // Past the grace, a challenge is dead.
+        let stale = fixture.channels.issueChallenge(hostID: "h1", sessionID: "sess-1", instance: instance)
+        fixture.clock.advance(by: 11)
+        let late = await fixture.channels.poll(hostID: "h1", request: request(stale))
+        XCTAssertEqual(late, .unchallenged)
+        XCTAssertFalse(fixture.hub.isAttached(scoped))
+
+        let challenge = fixture.channels.issueChallenge(hostID: "h1", sessionID: "sess-1", instance: instance)
+        let live = request(challenge)
+        let held = Task { await fixture.channels.poll(hostID: "h1", request: live) }
+        await fixture.clock.waitForSleepers(1)
+        XCTAssertTrue(fixture.hub.isAttached(scoped))
+        XCTAssertTrue(fixture.hub.post(.init(kind: .state, phase: .listening), to: scoped))
+        guard case .lines(_, _, let lines) = await held.value else { return XCTFail("no lines") }
+        XCTAssertEqual(lines.count, 1)
+
+        // The same poll again, its line still unacked: nothing.
+        let replayed = await fixture.channels.poll(hostID: "h1", request: live)
+        XCTAssertEqual(replayed, .unchallenged)
+    }
+
+    /// The mod lost the answer that told it of a new attach and still acks
+    /// lines of the old one: the new attach's lines, numbered from 1 again,
+    /// must stay.
+    func testAnAckFromAnEarlierAttachDropsNoLineOfANewOne() async throws {
+        let fixture = Fixture()
+        fixture.announce("sess-1", on: "h1")
+        let scoped = ClaudeRemoteSessionScope.scopedSessionID(hostID: "h1", sessionID: "sess-1")
+
+        let first = poll(fixture)
+        await fixture.clock.waitForSleepers(1)
+        XCTAssertTrue(fixture.hub.post(.init(kind: .state, phase: .listening), to: scoped))
+        guard case .lines(let oldAttach, 1, let oldLines) = await first.value else { return XCTFail("no lines") }
+        XCTAssertEqual(oldLines.count, 1)
+
+        // The forward dropped: no poll in the grace, so the lease goes.
+        await fixture.clock.waitForSleepers(1)
+        let detached = expectation(description: "the channel detached")
+        fixture.hub.debugConfigureAttachHook { attached in if !attached { detached.fulfill() } }
+        fixture.clock.advance(by: 10)
+        await fulfillment(of: [detached], timeout: 10)
+        fixture.hub.debugConfigureAttachHook { _ in }
+
+        // A new attach: the answer that carried its first line is lost, and
+        // a second line queues behind it.
+        let second = poll(fixture, attach: oldAttach, acked: 1)
+        await fixture.clock.waitForSleepers(1)
+        XCTAssertTrue(fixture.hub.post(.init(kind: .state, phase: .done), to: scoped))
+        guard case .lines(let newAttach, 1, let lost) = await second.value else { return XCTFail("no lines") }
+        XCTAssertNotEqual(newAttach, oldAttach)
+        XCTAssertTrue(fixture.hub.post(.init(kind: .append, id: "a1"), to: scoped))
+
+        let again = await poll(fixture, attach: oldAttach, acked: 1).value
+        guard case .lines(newAttach, 1, let lines) = again else { return XCTFail("\(again)") }
+        XCTAssertEqual(Array(lines.prefix(1)), lost)
+        XCTAssertEqual(lines.count, 2)
+    }
+
+    func testClosingARevokedHostsChannelsAnswersItsHeldPollWithNothing() async throws {
+        let fixture = Fixture()
+        fixture.announce("sess-1", on: "h1")
+        fixture.announce("sess-2", on: "h2")
+        let revoked = ClaudeRemoteSessionScope.scopedSessionID(hostID: "h1", sessionID: "sess-1")
+        let kept = ClaudeRemoteSessionScope.scopedSessionID(hostID: "h2", sessionID: "sess-2")
+        let held = poll(fixture)
+        let other = poll(fixture, host: "h2", session: "sess-2")
+        await fixture.clock.waitForSleepers(2)
+
+        fixture.channels.closeChannels(ofHostsNotIn: ["h2"])
+
+        let outcome = await held.value
+        XCTAssertEqual(outcome, .revoked)
+        XCTAssertFalse(fixture.hub.isAttached(revoked))
+        XCTAssertFalse(fixture.hub.post(.init(kind: .state, waiting: ["payments"]), to: revoked))
+        XCTAssertFalse(fixture.channels.hasLease(revoked))
+        XCTAssertTrue(fixture.hub.isAttached(kept))
+        XCTAssertTrue(fixture.hub.post(.init(kind: .state, phase: .listening), to: kept))
+        _ = await other.value
+    }
 }
 
 /// The wire and its proofs. The vectors are the ones the remote plugin's
@@ -184,10 +295,14 @@ final class ClaudeRemoteModWireTests: XCTestCase {
     }
 
     func testAPollWithAMalformedIdDoesNotDecode() {
-        func poll(_ session: String, instance: String = String(repeating: "1", count: 32), acked: Int = 0) -> Data {
-            Data(#"{"mod_poll":1,"session_id":"\#(session)","instance":"\#(instance)","nonce":"\#(String(repeating: "2", count: 32))","acked":\#(acked)}"#.utf8)
+        func poll(
+            _ session: String, instance: String = String(repeating: "1", count: 32), challenge: String = "", acked: Int = 0
+        ) -> Data {
+            Data(#"{"mod_poll":1,"session_id":"\#(session)","instance":"\#(instance)","nonce":"\#(String(repeating: "2", count: 32))","challenge":"\#(challenge)","attach":7,"acked":\#(acked)}"#.utf8)
         }
         XCTAssertNotNil(ClaudeRemoteModWire.decodePoll(poll("0b2c-uuid")))
+        XCTAssertNotNil(ClaudeRemoteModWire.decodePoll(poll("ok", challenge: String(repeating: "a", count: 32))))
+        XCTAssertNil(ClaudeRemoteModWire.decodePoll(poll("ok", challenge: "short")))
         XCTAssertNil(ClaudeRemoteModWire.decodePoll(poll("../x")))
         XCTAssertNil(ClaudeRemoteModWire.decodePoll(poll("a:b")))
         XCTAssertNil(ClaudeRemoteModWire.decodePoll(poll("ok", instance: "short")))
@@ -195,8 +310,11 @@ final class ClaudeRemoteModWireTests: XCTestCase {
     }
 
     func testTheAnswerCarriesEachLineAsAStringWithoutItsNewline() throws {
-        let body = ClaudeRemoteModWire.answerBody(attach: 7, first: 3, lines: [Data("{\"a\":1}\n".utf8)])
+        let body = ClaudeRemoteModWire.answerBody(
+            attach: 7, first: 3, lines: [Data("{\"a\":1}\n".utf8)], next: String(repeating: "c", count: 32)
+        )
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(decoded["next"] as? String, String(repeating: "c", count: 32))
         XCTAssertEqual(decoded["attach"] as? Int, 7)
         XCTAssertEqual(decoded["first"] as? Int, 3)
         XCTAssertEqual(decoded["lines"] as? [String], ["{\"a\":1}"])
@@ -216,80 +334,151 @@ final class ClaudeRemoteModRouteTests: XCTestCase {
         super.tearDown()
     }
 
-    func testOnlyAProvenPollAttachesAndItsAnswerCarriesTheProof() async throws {
+    /// One enrolled host whose hook named `sess-1`, and a listener with one
+    /// slot for one-shot requests: a held poll must give it back.
+    private struct Route {
         let clock = ManualSessionClock()
+        let hosts: ClaudeRemoteHostRegistry
+        let enrollment: ClaudeRemoteEnrollment
+        let key: String
+        let hub = ClaudeModChannelHub()
+        let port: UInt16
+        let scoped: String
+
+        var hostID: String { enrollment.host.id }
+
+        func poll(challenge: String = "", attach: UInt64 = 0, acked: Int = 0) -> (body: Data, nonce: String) {
+            let nonce = ClaudeRemoteModWire.randomChallenge()
+            let body = Data(
+                #"{"mod_poll":1,"session_id":"sess-1","instance":"\#(String(repeating: "5", count: 32))","nonce":"\#(nonce)","challenge":"\#(challenge)","attach":\#(attach),"acked":\#(acked)}"#.utf8
+            )
+            return (body, nonce)
+        }
+
+        func post(_ body: Data, path: String = ClaudeRemoteModWire.pollPath, proof: String? = nil) throws
+            -> RemoteListenerResponse {
+            try postToRemoteListener(
+                port: port, path: path,
+                headers: [
+                    "Authorization": "Bearer \(enrollment.token)",
+                    ClaudeRemoteModWire.proofHeaderName: proof ?? ClaudeRemoteModWire.requestProof(key: key, body: body),
+                ],
+                body: body
+            )
+        }
+    }
+
+    private func start() throws -> Route {
         let sessions = ClaudeSessionRegistry(isProcessAlive: { _ in true })
         let hosts = try ClaudeRemoteHostRegistry(
             fileURL: URL(fileURLWithPath: "/tmp/lvx-mod-route-\(UUID().uuidString)/hosts.json"),
             io: MemoryRemoteHostStoreIO()
         )
         let enrollment = try hosts.enroll(label: "buildhost")
-        let hostID = enrollment.host.id
-        let key = try XCTUnwrap(hosts.modChannelKey(hostID: hostID))
-        let hub = ClaudeModChannelHub()
-        let port = try unusedLoopbackPort()
-        let scoped = ClaudeRemoteSessionScope.scopedSessionID(hostID: hostID, sessionID: "sess-1")
+        let scoped = ClaudeRemoteSessionScope.scopedSessionID(hostID: enrollment.host.id, sessionID: "sess-1")
         _ = sessions.ingest(
             ClaudeHookRecord(event: .sessionStart, sessionID: scoped, timestamp: 1, rawCwd: "/srv/repo"),
-            origin: .remote(channel: ClaudeRemoteSessionScope.channel(hostID: hostID))
+            origin: .remote(channel: ClaudeRemoteSessionScope.channel(hostID: enrollment.host.id))
         )
-        // One slot for one-shot requests: a held poll must give it back.
+        let route = Route(
+            hosts: hosts, enrollment: enrollment,
+            key: try XCTUnwrap(hosts.modChannelKey(hostID: enrollment.host.id)),
+            port: try unusedLoopbackPort(), scoped: scoped
+        )
         listener = ClaudeRemoteContextListener(
             registry: sessions, hosts: hosts,
-            limits: ClaudeRemoteListenerLimits(port: port, maxConcurrentConnections: 1),
-            modChannels: ClaudeRemoteModChannels(hub: hub, registry: sessions, sleep: { await clock.sleep($0) })
+            limits: ClaudeRemoteListenerLimits(port: route.port, maxConcurrentConnections: 1),
+            modChannels: ClaudeRemoteModChannels(
+                hub: route.hub, registry: sessions,
+                sleep: { [clock = route.clock] in await clock.sleep($0) }, now: { [clock = route.clock] in clock.now }
+            )
         )
         try listener.start()
+        return route
+    }
 
-        let nonce = String(repeating: "4", count: 32)
-        let body = Data(
-            #"{"mod_poll":1,"session_id":"sess-1","instance":"\#(String(repeating: "5", count: 32))","nonce":"\#(nonce)","acked":0}"#.utf8
-        )
-        func headers(proof: String) -> [String: String] {
-            ["Authorization": "Bearer \(enrollment.token)", ClaudeRemoteModWire.proofHeaderName: proof]
-        }
+    private func answer(_ response: RemoteListenerResponse) throws -> [String: Any] {
+        try XCTUnwrap(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+    }
 
-        let unproven = try postToRemoteListener(
-            port: port, path: ClaudeRemoteModWire.pollPath,
-            headers: headers(proof: String(repeating: "0", count: 64)), body: body
-        )
+    func testOnlyAProvenPollAttachesAndItsAnswerCarriesTheProof() async throws {
+        let route = try start()
+
+        let unproven = try route.post(route.poll().body, proof: String(repeating: "0", count: 64))
         XCTAssertEqual(unproven.status, 403)
-        XCTAssertFalse(hub.isAttached(scoped))
+        XCTAssertFalse(route.hub.isAttached(route.scoped))
 
-        let proof = ClaudeRemoteModWire.requestProof(key: key, body: body)
-        let held = Task.detached {
-            try postToRemoteListener(
-                port: port, path: ClaudeRemoteModWire.pollPath, headers: headers(proof: proof), body: body
-            )
-        }
-        await clock.waitForSleepers(1)
-        XCTAssertTrue(hub.isAttached(scoped))
+        // The first poll gets a challenge and nothing else.
+        let (bare, bareNonce) = route.poll()
+        let challenged = try route.post(bare)
+        XCTAssertEqual(challenged.status, 200)
+        XCTAssertEqual(
+            challenged.headers[ClaudeRemoteModWire.proofHeaderName.lowercased()],
+            ClaudeRemoteModWire.answerProof(key: route.key, nonce: bareNonce, body: challenged.body)
+        )
+        XCTAssertEqual(try answer(challenged)["lines"] as? [String], [])
+        let challenge = try XCTUnwrap(try answer(challenged)["next"] as? String)
+        XCTAssertFalse(route.hub.isAttached(route.scoped))
+
+        let (body, nonce) = route.poll(challenge: challenge)
+        let held = Task.detached { try route.post(body) }
+        await route.clock.waitForSleepers(1)
+        XCTAssertTrue(route.hub.isAttached(route.scoped))
 
         // While the poll holds, a one-shot request still finds its slot.
-        let meanwhile = try postToRemoteListener(
-            port: port, path: ClaudeRemoteModWire.replyPath,
-            headers: headers(proof: String(repeating: "0", count: 64)), body: Data("{}".utf8)
+        let meanwhile = try route.post(
+            Data("{}".utf8), path: ClaudeRemoteModWire.replyPath, proof: String(repeating: "0", count: 64)
         )
         XCTAssertEqual(meanwhile.status, 403)
 
-        XCTAssertTrue(hub.post(.init(kind: .state, phase: .listening), to: scoped))
-        let answer = try await held.value
-        XCTAssertEqual(answer.status, 200)
+        XCTAssertTrue(route.hub.post(.init(kind: .state, phase: .listening), to: route.scoped))
+        let lines = try await held.value
+        XCTAssertEqual(lines.status, 200)
         XCTAssertEqual(
-            answer.headers[ClaudeRemoteModWire.proofHeaderName.lowercased()],
-            ClaudeRemoteModWire.answerProof(key: key, nonce: nonce, body: answer.body)
+            lines.headers[ClaudeRemoteModWire.proofHeaderName.lowercased()],
+            ClaudeRemoteModWire.answerProof(key: route.key, nonce: nonce, body: lines.body)
         )
-        let lines = try XCTUnwrap(
-            (JSONSerialization.jsonObject(with: answer.body) as? [String: Any])?["lines"] as? [String]
-        )
-        XCTAssertEqual(lines.count, 1)
+        XCTAssertEqual((try answer(lines)["lines"] as? [String])?.count, 1)
 
         // A rotated token is a new key: the old proof no longer opens it.
-        _ = try hosts.rotateToken(hostID: hostID)
-        let afterRotation = try postToRemoteListener(
-            port: port, path: ClaudeRemoteModWire.pollPath, headers: headers(proof: proof), body: body
-        )
+        _ = try route.hosts.rotateToken(hostID: route.hostID)
+        let afterRotation = try route.post(body)
         XCTAssertEqual(afterRotation.status, 401)
+    }
+
+    /// Codex review, 2026-10-04: a squatter on the forward port replays a
+    /// poll it captured once the forward is back. It gets the line nobody
+    /// acked yet only if the listener serves the same poll twice.
+    func testAReplayedPollGetsNoLine() async throws {
+        let route = try start()
+        let challenge = try XCTUnwrap(try answer(route.post(route.poll().body))["next"] as? String)
+        let (body, _) = route.poll(challenge: challenge)
+        let held = Task.detached { try route.post(body) }
+        await route.clock.waitForSleepers(1)
+        XCTAssertTrue(route.hub.post(.init(kind: .fill, id: "f", text: "the dictation"), to: route.scoped))
+        let delivered = try await held.value
+        XCTAssertEqual((try answer(delivered)["lines"] as? [String])?.count, 1)
+
+        let replayed = try route.post(body)
+
+        XCTAssertEqual(replayed.status, 200)
+        XCTAssertEqual(try answer(replayed)["lines"] as? [String], [])
+    }
+
+    /// Codex review, 2026-10-04: a host revoked while its poll holds gets
+    /// nothing the app writes afterwards.
+    func testAHostRevokedWhileItsPollHoldsGetsNoAnswer() async throws {
+        let route = try start()
+        let challenge = try XCTUnwrap(try answer(route.post(route.poll().body))["next"] as? String)
+        let held = Task.detached { try route.post(route.poll(challenge: challenge).body) }
+        await route.clock.waitForSleepers(1)
+
+        try route.hosts.revoke(hostID: route.hostID)
+        XCTAssertTrue(route.hub.post(.init(kind: .state, waiting: ["payments"]), to: route.scoped))
+
+        let response = try await held.value
+        XCTAssertEqual(response.status, 401)
+        XCTAssertTrue(response.body.isEmpty)
     }
 }
 

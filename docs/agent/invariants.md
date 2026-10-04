@@ -479,7 +479,15 @@ there is not.
   squatting the forward port on the host receives the token from every hook,
   so every request also carries `X-Lvx-Mod-Proof`, an HMAC of the body under
   the channel key, and every poll answer carries one over the poll's nonce
-  and the body. The key is `HMAC(storedTokenHash, "lvx-mod-channel-v1")`. The
+  and the body. A proven poll can still be captured by the squatter and
+  replayed once the forward is back, so a poll gets a lease or a line only
+  when it carries a challenge the listener issued in an earlier answer's
+  `next`, for that host, session and `instance`, unused and at most `grace`
+  (10 s) old; any other poll gets a fresh challenge and nothing else
+  (Codex review, 2026-10-04). The window is the Mac's clock alone, so a
+  host's clock skew cannot break or widen it. RESIDUAL: a squatter that
+  captures a poll and gets the forward back within those 10 s replays it
+  once. The key is `HMAC(storedTokenHash, "lvx-mod-channel-v1")`. The
   Mac derives it and never stores it, and setup writes it into the plugin's
   config through `plugin configure --values-stdin`, never through argv. The
   key never crosses the tunnel, and a token without the salt cannot produce
@@ -495,9 +503,15 @@ there is not.
   request. A held poll gives back its one-shot connection slot and takes one
   of `maxHeldPolls` (16), so hooks never queue behind polls. Lines wait
   bounded on the Mac (64 lines, 256 KiB) and go again until a poll acks them,
-  so an answer lost with the forward loses no line. No poll for 10 s after
+  so an answer lost with the forward loses no line. An ack counts only in
+  the attach it names (a random id, so an app restart cannot reuse one): a
+  new lease numbers its lines from 1 again. No poll for 10 s after
   the last one ended detaches the channel, and the hub answers every waiting
-  request as unanswered. A second process of the same session (another
+  request as unanswered. Revoking or removing a host closes its channels at
+  the same reconcile that evicts its sessions, and a held poll checks the
+  host's credential again before it answers, so a forward kept up by hand
+  carries nothing the app writes after the revoke. A mod drops its waiting
+  band whenever its transport fails. A second process of the same session (another
   `instance`) gets 409 until the first's lease expires. The mod's dials back
   off 300 s after a failure, as post.sh does, because each dial at a forward
   with no app behind it prints a `connect_to` line on the Mac's terminal. A

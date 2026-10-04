@@ -1,4 +1,4 @@
-import type { HttpInit, HttpResponse } from 'claude-code'
+import type { HttpInit, HttpResponse, RenderPropsOf } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { hmacHex } from '../hooks/hmac'
@@ -15,14 +15,25 @@ const STARTED = { surface: 'terminal', isInteractive: true, cwd: '/work' } as co
 const POLL = 'http://127.0.0.1:29891/v1/mod/poll'
 const REPLY = 'http://127.0.0.1:29891/v1/mod/reply'
 
-type Poll = { session_id: string; instance: string; nonce: string; acked: number }
+type Poll = { session_id: string; instance: string; nonce: string; challenge: string; attach: number; acked: number }
+const PROPS = {
+  hasSurvey: false,
+  isWorking: false,
+  maxRows: 4,
+  bodyColumns: 80,
+  scroll: { top: 0, height: 0 },
+} as unknown as RenderPropsOf['AbovePrompt']
 
 /**
  * A listener as the app runs it: checks each request's token and proof,
  * answers each poll with the next batch (or holds it), and records replies.
  * `forge` answers with a proof under another key, as a squatter would.
  */
-function fakeApp(clock: { sleep(ms: number): Promise<void> }, batches: string[][], answer: { forge?: boolean; status?: number } = {}) {
+function fakeApp(
+  clock: { sleep(ms: number): Promise<void> },
+  batches: (string[] | 'drop')[],
+  answer: { forge?: boolean; status?: number } = {},
+) {
   const polls: Poll[] = []
   const replies: unknown[] = []
   const refusals: string[] = []
@@ -39,8 +50,13 @@ function fakeApp(clock: { sleep(ms: number): Promise<void> }, batches: string[][
     polls.push(poll)
     if (answer.status !== undefined) return { status: answer.status, ok: false, headers: {}, text: '' }
     const lines = batches.shift()
+    if (lines === 'drop') {
+      await clock.sleep(1000)
+      throw new Error('connection reset')
+    }
     if (lines === undefined) await clock.sleep(25000)
-    const text = JSON.stringify({ attach: 7, first: poll.acked + 1, lines: lines ?? [] })
+    const next = (polls.length % 16).toString(16).repeat(32)
+    const text = JSON.stringify({ attach: 7, first: poll.acked + 1, lines: lines ?? [], next })
     const proof = answerProof(answer.forge === true ? 'b'.repeat(64) : KEY, poll.nonce, text)
     return { status: 200, ok: true, headers: { 'x-lvx-mod-proof': proof }, text }
   }
@@ -82,6 +98,34 @@ describe('remote channel', () => {
       ['sess-1', 2],
     ])
     expect(app.polls[0].nonce).not.toBe(app.polls[1].nonce)
+    // The ack names the attach it counts in, and each poll carries the
+    // challenge of the answer before it.
+    expect(app.polls.map(poll => [poll.attach, poll.challenge])).toEqual([
+      [0, ''],
+      [7, '1'.repeat(32)],
+    ])
+  })
+
+  test('a dropped forward clears who waits', { options: OPTIONS }, async ($, on) => {
+    const clock = mock.clock(on)
+    mock.env(on, { HOME: '/home/tom' })
+    const app = fakeApp(clock, [['{"mod_message":1,"kind":"state","id":"w","waiting":["payments"]}'], 'drop'])
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('session.id', () => ({ value: 'sess-1' }))
+    on('fs.read', () => {
+      throw new Error('no stamp')
+    })
+    on('ui.render', ($, e) => $.ui.resolve(e).Box({}))
+    on('http.fetch', async ($, e) => ({ value: await app.fetch(e.url, e.init) }))
+
+    await $.session.start(STARTED)
+    await clock.advance(10)
+    const ui = await $.ui.mount({ plugin: 'localvoxtral-remote', surface: 'terminal', component: 'AbovePrompt', props: PROPS })
+    expect(await ui.find({ type: 'Text', text: 'payments waits for you' })).toBeDefined()
+    await clock.advance(1000)
+    expect(app.polls.length).toBe(2)
+    expect(await ui.find({ type: 'Text', text: /wait/ })).toBeUndefined()
+    await ui.unmount()
   })
 
   test('acts on nothing an answer without the key proof carries, and waits before dialing again', { options: OPTIONS }, async ($, on) => {
@@ -107,6 +151,8 @@ describe('remote channel', () => {
     expect(app.polls.length).toBe(1)
     await clock.advance(20000)
     expect(app.polls.length).toBe(2)
+    // The forged answer's challenge is not carried.
+    expect(app.polls[1].challenge).toBe('')
   })
 
   test('a hook that reaches the app ends the wait early', { options: OPTIONS }, async ($, on) => {

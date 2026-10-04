@@ -506,7 +506,8 @@ channel key, so a process that takes the tunnel's port on the host cannot put
 text into your prompt. Setup stores the key in the plugin's config. A host
 enrolled before 1.41.0 gets the key the next time you run **Update host…** or
 set it up again, and the mod stays off until then. Rotating the host's token
-changes the key, so run setup again after a rotation.
+changes the key, so run setup again after a rotation. The app answers only
+mods from 1.42.0 on, so a host on 1.41.0 needs **Update host…** too.
 
 When the tunnel or the app is down, the mod waits five minutes between tries,
 as the hook script does, and tries again sooner once a hook gets through.
