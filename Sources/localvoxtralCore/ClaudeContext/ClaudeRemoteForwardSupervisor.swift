@@ -266,7 +266,7 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
         /// (the `-V` lesson from PR #197).
         public var argv: [String] {
             if let localSocketForward {
-                return ClaudeRemoteHerdrForwardService.argv(
+                return ClaudeRemoteHerdrForwardArgv.argv(
                     alias: sshHostAlias,
                     localSocketPath: localSocketForward.localSocketPath,
                     remoteSocketPath: localSocketForward.remoteSocketPath
@@ -536,7 +536,7 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
                     // predecessor has exited before the restart loop reaches
                     // this point, and this path lives in the entry's private
                     // workspace, so clearing its stale name is safe.
-                    _ = Darwin.unlink(localForward.localSocketPath)
+                    _ = unlink(localForward.localSocketPath)
                 }
                 process = try launch(configuration)
             } catch {

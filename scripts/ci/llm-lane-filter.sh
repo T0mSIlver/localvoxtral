@@ -193,12 +193,13 @@ EXEMPT=(
   'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardOwnership.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardPidLedger.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardPort.swift'
-  'Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardSupervisor.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardSupervisor.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardProcess.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteTokenRedaction.swift'      # log redaction
   'Sources/localvoxtral/ClaudeContext/ClaudeSurfaceProbeCommand.swift'       # the --probe-surface CLI wrapper
   # The join and hook plumbing (owner call, #643)
   'Sources/localvoxtral/ClaudeContext/ClaudeRemoteHerdrForward.swift'
+  'Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteHerdrForwardArgv.swift'
   'Sources/localvoxtral/ClaudeContext/CmuxSocketClient+RunningApplication.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeContextBroker.swift'
   'Sources/localvoxtralCore/ClaudeContext/ClaudeJoinAbstentionTap.swift'

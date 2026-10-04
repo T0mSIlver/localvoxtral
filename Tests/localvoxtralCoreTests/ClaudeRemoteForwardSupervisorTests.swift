@@ -1,7 +1,8 @@
 import Foundation
 import Synchronization
 import XCTest
-@testable import localvoxtral
+import localvoxtralTestSupport
+@testable import localvoxtralCore
 
 /// A fake `ssh -N -R`. Nothing here spawns a process or touches a network:
 /// the supervisor's whole job is deciding what to do when ssh says something
@@ -381,7 +382,7 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
 
     // MARK: Command shape
 
-    func testARefusalOfAnyForwardDoesNotEndTheConnection() {
+    func testARefusalOfAnyForwardDoesNotEndTheConnection() async {
         // The connection reads the alias's config and requests every
         // RemoteForward declared there. With `yes`, a refusal of any of them
         // killed the process, so a forward held elsewhere cost this tunnel
@@ -397,7 +398,7 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
         XCTAssertTrue(argv.contains("ServerAliveCountMax=3"))
     }
 
-    func testNoOptionCanClearTheForwardTheProcessExistsToCreate() {
+    func testNoOptionCanClearTheForwardTheProcessExistsToCreate() async {
         // The regression that made this whole feature a no-op. The argv used to
         // carry `ClearAllForwardings=yes` to stop the alias's own RemoteForward
         // being inherited twice — but ssh_config(5) says that option clears
@@ -422,7 +423,7 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
         XCTAssertFalse(joined.contains("noremoteforward"), argv.description)
     }
 
-    func testTheConnectionCannotDetachMultiplexOrRunALocalCommand() {
+    func testTheConnectionCannotDetachMultiplexOrRunALocalCommand() async {
         // Every one of these is settable per-Host in the user's own config, and
         // each breaks the supervisor's grip in a different way:
         // ForkAfterAuthentication backgrounds ssh out of the tracked Process
@@ -441,7 +442,7 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
         }
     }
 
-    func testTheAliasIsTheLastArgumentAndOptionParsingIsTerminated() {
+    func testTheAliasIsTheLastArgumentAndOptionParsingIsTerminated() async {
         let argv = configuration().argv
         XCTAssertEqual(argv.last, "builder")
         XCTAssertEqual(argv[argv.count - 2], "--", "an alias must never be readable as an option")
@@ -657,7 +658,7 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
         XCTAssertEqual(harness.ownershipProbeCalls.count, 2)
     }
 
-    func testTheExternallyForwardedCopyAsksTheUserForNothing() {
+    func testTheExternallyForwardedCopyAsksTheUserForNothing() async {
         let text = ClaudeRemoteForwardSupervisor.State.externallyForwarded.text
         XCTAssertEqual(text, "Tunnel up through an existing ssh session.")
         XCTAssertLessThan(text.count, 60, "owner rule: one short sentence")
@@ -698,7 +699,7 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
         XCTAssertEqual(harness.processes.count, 1)
     }
 
-    func testTheRefusedPortIsReadFromTheWarningNotGuessed() {
+    func testTheRefusedPortIsReadFromTheWarningNotGuessed() async {
         // `listen port` anchors it: the same line carries host names, and a
         // hostname with digits must never be read as a port.
         XCTAssertEqual(
@@ -1077,7 +1078,7 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
         )
     }
 
-    func testBackoffIsExponentialAndCapped() {
+    func testBackoffIsExponentialAndCapped() async {
         XCTAssertEqual(ClaudeRemoteForwardSupervisor.backoff(attempt: 1), .milliseconds(500))
         XCTAssertEqual(ClaudeRemoteForwardSupervisor.backoff(attempt: 2), .seconds(1))
         XCTAssertEqual(ClaudeRemoteForwardSupervisor.backoff(attempt: 3), .seconds(2))

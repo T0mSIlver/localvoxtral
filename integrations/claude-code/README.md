@@ -786,7 +786,7 @@ not there. As always, the failure is silent, and dictation gets no context.
 So each enrolled host's row in Settings has **Keep the tunnel open**. With it
 on, localvoxtral holds that host's forward itself. It runs ssh in batch mode
 with no remote command, forwarding the host's port to 127.0.0.1:8473 on your
-Mac. The [forward supervisor](../../Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardSupervisor.swift)
+Mac. The [forward supervisor](../../Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardSupervisor.swift)
 builds the exact command.
 
 It is off by default, per host, because an app that opened ssh connections
