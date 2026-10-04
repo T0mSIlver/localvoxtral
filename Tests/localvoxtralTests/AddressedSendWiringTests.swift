@@ -640,7 +640,7 @@ final class AddressedSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.inserted.value.map(\.text), [])
         XCTAssertEqual(harness.returns.value, [])
         XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false])
-        XCTAssertEqual(harness.viewModel.statusText, StatusStrings.agentPromptTextKeptInHistory)
+        XCTAssertEqual(harness.viewModel.statusText, DictationViewModel.StatusStrings.agentPromptTextKeptInHistory)
     }
 
     /// The mod's process moved to another session (`/clear`) after the
