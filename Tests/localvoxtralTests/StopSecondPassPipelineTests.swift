@@ -1,5 +1,6 @@
 import ClaudeContextWire
 import Foundation
+import localvoxtralTestSupport
 import Synchronization
 import XCTest
 @testable import localvoxtral
@@ -108,6 +109,48 @@ final class StopSecondPassPipelineTests: XCTestCase {
         XCTAssertTrue(harness.overlay.committedTexts.isEmpty)
         XCTAssertEqual(harness.records.map(\.rawText), [Self.realtimeText])
         XCTAssertEqual(harness.records.first?.commitSucceeded, false)
+    }
+
+    /// A dictation joined to a Claude Code session in a terminal tab, with
+    /// polishing off: the user switched to another tab of the same terminal
+    /// while the second pass ran. The joined pane is read back before the
+    /// keys, so the other tab's prompt gets nothing, and the text is saved
+    /// not inserted and copied (#1712).
+    func testATabSwitchDuringTheSecondPassTypesNothing() async throws {
+        let transcriber = FakeBatchTranscriber(.held)
+        let harness = makeHarness(transcriber: transcriber)
+        let focuser = try joinTerminalTab(harness)
+        let copied = harness.viewModel.recordPasteboardWrites()
+
+        harness.stop()
+        let commit = harness.viewModel.session.polishAndCommitTask
+        _ = await transcriber.called.value(failAfter: 10)
+        await harness.clock.waitForSleepers(1)
+        // Same terminal, another tab, while the second pass runs.
+        focuser.paneStillShowsSession = false
+        harness.clock.advance(by: 3)
+        await commit?.value
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        XCTAssertEqual(focuser.readBackSessionIDs, ["s1"], "read back before the keys")
+        XCTAssertTrue(harness.overlay.committedTexts.isEmpty, "the other tab's session never gets the words")
+        XCTAssertEqual(harness.records.map(\.rawText), [Self.realtimeText])
+        XCTAssertEqual(harness.records.first?.commitSucceeded, false)
+        XCTAssertEqual(copied.values, [Self.realtimeText])
+    }
+
+    /// The same joined dictation whose pane is still in front after the
+    /// second pass is typed as before.
+    func testAJoinedDictationWhosePaneStaysInFrontIsTypedAfterTheSecondPass() async throws {
+        let harness = makeHarness(transcriber: FakeBatchTranscriber(.text(Self.batchText)))
+        let focuser = try joinTerminalTab(harness)
+
+        harness.stop()
+        await awaitStoppedSessionCommit(harness.viewModel)
+
+        XCTAssertEqual(focuser.readBackSessionIDs, ["s1"])
+        XCTAssertEqual(harness.overlay.committedTexts, [Self.batchText])
+        XCTAssertEqual(harness.records.first?.commitSucceeded, true)
     }
 
     func testASessionWithoutASecondPassCommitsAtOnce() {
@@ -457,6 +500,38 @@ final class StopSecondPassPipelineTests: XCTestCase {
             windowID: 101,
             mechanism: .ttyDevice
         )
+    }
+
+    /// Joins the dictation to Claude Code session `s1` in a Ghostty tab by
+    /// its tty, with a navigator that reads the pane back through the
+    /// returned focuser.
+    private func joinTerminalTab(_ harness: Harness) throws -> FakeSessionPaneFocuser {
+        let registry = ClaudeSessionRegistry(
+            now: { Date(timeIntervalSince1970: 3_000_000) }, isProcessAlive: { _ in true })
+        XCTAssertNotNil(registry.ingest(
+            ClaudeHookRecord(
+                event: .sessionStart, sessionID: "s1", timestamp: 0, rawCwd: "/repo", prompt: nil, files: [],
+                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001, tty: "/dev/ttys042")
+            ),
+            origin: .localAuthenticated(peerUID: 501)
+        ))
+        let snapshot = try XCTUnwrap(registry.liveSessions().first)
+        harness.viewModel.session.context.claudeSessionJoin = ClaudeSessionJoin(
+            target: TerminalScreenTarget(pid: 4242, bundleID: TerminalScreenAllowlist.ghosttyBundleID),
+            snapshot: snapshot,
+            windowID: 101,
+            mechanism: .ttyDevice
+        )
+        harness.overlay.commitTargetAppPID = 4242
+        let focuser = FakeSessionPaneFocuser()
+        harness.viewModel.session.sessionNavigator = SessionNavigator(
+            liveSessions: { registry.liveSessions() },
+            repositoryRoot: { _ in .unknown },
+            focuser: focuser,
+            sleep: ManualSessionClock().sleep,
+            ttyForegroundPIDs: { _ in [9001] }
+        )
+        return focuser
     }
 
     private struct Harness {
