@@ -305,7 +305,19 @@ public final class ClaudeRemoteModChannels: Sendable {
         }
         // No pid: a remote pid names a process on another machine.
         registry.modChannelAttached(sessionID: sessionID, claudePID: 0, token: token)
-        state.withLock { $0.leases[sessionID]?.token = token }
+        // A close that came between the hub's attach and here found no token
+        // to detach with: detach now, or the hub would keep the channel.
+        let closedMeanwhile = state.withLock { state -> Bool in
+            guard state.leases[sessionID]?.id == leaseID else { return true }
+            state.leases[sessionID]?.token = token
+            guard state.leases[sessionID]?.isClosed == true else { return false }
+            state.leases[sessionID]?.isDetached = true
+            return true
+        }
+        if closedMeanwhile {
+            detach(sessionID: sessionID, token: token)
+            return nil
+        }
         Log.claudeContext.info("Remote mod channel attached for host \(hostID, privacy: .public)")
         return leaseID
     }
