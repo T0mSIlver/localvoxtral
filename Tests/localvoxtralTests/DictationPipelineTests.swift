@@ -2070,9 +2070,9 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.overlay.insertsThroughCommitter = true
         pipeline.overlay.commitTargetAppPID = 4343
         pipeline.overlay.passesTargetPIDToCommitter = false
-        var sessionID = "s1"
+        let sessionID = remote ? joinRemoteHerdrPane(pipeline) : "s1"
         if remote {
-            sessionID = joinRemoteHerdrPane(pipeline)
+            // Joined above.
         } else if let herdr {
             joinHerdrPane(pipeline, herdr: herdr, ttyRead: { herdrFocus?.read(.tty) })
         } else {
