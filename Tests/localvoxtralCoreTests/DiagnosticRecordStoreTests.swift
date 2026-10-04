@@ -221,6 +221,25 @@ final class DiagnosticRecordStoreTests: XCTestCase {
         XCTAssertNoThrow(try store.write(makeRecord(), unlessDeletedSince: store.deletionEpoch()))
     }
 
+    /// On disk, under a data folder that is 0755 as on a real install: the
+    /// hardened writer refuses a file loose in such a folder, so the
+    /// generation must still move and still refuse a write decided before
+    /// the delete.
+    func testTheGenerationMovesOnDiskUnderALooseDataFolder() throws {
+        try FileManager.default.createDirectory(
+            at: home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+        let clock = self.clock
+        let store = DiagnosticRecordStore(directoryURL: directory, retention: .default, now: { clock.now() })
+        let other = DiagnosticRecordStore(directoryURL: directory, retention: .default, now: { clock.now() })
+        let epoch = store.deletionEpoch()
+
+        other.removeAll()
+
+        XCTAssertNotEqual(store.deletionEpoch(), epoch)
+        XCTAssertThrowsError(try store.write(makeRecord(), unlessDeletedSince: epoch))
+        XCTAssertNoThrow(try store.write(makeRecord(), unlessDeletedSince: store.deletionEpoch()))
+    }
+
     /// A generation file that cannot be read refuses the write: a delete
     /// may have happened that this copy cannot see.
     func testAnUnreadableGenerationRefusesTheWrite() throws {

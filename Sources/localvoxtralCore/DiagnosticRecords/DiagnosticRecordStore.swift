@@ -131,11 +131,14 @@ package struct DiagnosticRecordStore: Sendable {
 
     // MARK: - Writing
 
-    /// Where the deletion generation every running copy shares lives:
-    /// beside the folder, which `removeAll()` empties.
+    /// Where the deletion generation every running copy shares lives: not in
+    /// the folder, which `removeAll()` empties, and not loose in the data
+    /// folder, which is 0755 and which the hardened writer refuses; in a
+    /// 0700 folder of its own beside it.
     package static func generationURL(forDirectory directoryURL: URL) -> URL {
         directoryURL.deletingLastPathComponent()
-            .appendingPathComponent(".\(directoryURL.lastPathComponent).generation")
+            .appendingPathComponent(".\(directoryURL.lastPathComponent)-state", isDirectory: true)
+            .appendingPathComponent("generation")
     }
 
     /// The folder's deletion generation now; one no write accepts when the
