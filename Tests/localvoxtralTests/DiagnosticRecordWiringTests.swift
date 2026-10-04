@@ -234,6 +234,26 @@ final class DiagnosticRecordWiringTests: XCTestCase {
         XCTAssertEqual(try recordsOnDisk(in: harness.captureDirectory).count, 0, "the launch retry deleted nothing")
     }
 
+    /// "Also delete the backups" still empties the records' quarantine when
+    /// History did not open (#1771).
+    func testFailedHistoryOpenStillDeletesTheRecordBackupsWhenAsked() async throws {
+        let harness = try makeHarness(recordsEnabled: true)
+        let session = harness.viewModel.session
+        session.historyOpenFailed = true
+        let quarantine = DictationHistoryQuarantine(
+            directoryURL: harness.captureDirectory.deletingLastPathComponent().appendingPathComponent("quarantine"),
+            now: { Date(timeIntervalSince1970: 1_800_000_000) })
+        session.quarantineWithoutHistory = quarantine
+        let folder = quarantine.folder(for: "diagnostic-records")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: folder.appendingPathComponent("dictation-x.json"))
+
+        session.deleteAllDiagnosticRecords(removingBackups: false)
+        XCTAssertTrue(quarantine.holdsFiles(of: "diagnostic-records"), "kept unless the user asked")
+        session.deleteAllDiagnosticRecords(removingBackups: true)
+        XCTAssertFalse(quarantine.holdsFiles(of: "diagnostic-records"))
+    }
+
     /// A session context over its grant renders selected lines with tabs as
     /// spaces. The prompt the user last sent the agent must still be out of
     /// every field that reaches disk (#1106), a tab in its first 24

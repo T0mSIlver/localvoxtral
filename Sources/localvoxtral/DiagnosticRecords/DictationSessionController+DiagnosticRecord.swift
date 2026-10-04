@@ -120,6 +120,7 @@ extension DictationSessionController {
         }
         if historyOpenFailed, let diagnosticRecordStore {
             let removed = diagnosticRecordStore.removeAll()
+            if removingBackups { quarantineWithoutHistory?.removeAll(of: "diagnostic-records") }
             Log.persistence.info(
                 "History did not open: deleted \(removed, privacy: .public) diagnostic record(s) directly")
         }

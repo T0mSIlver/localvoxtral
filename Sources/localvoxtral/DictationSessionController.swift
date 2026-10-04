@@ -229,6 +229,10 @@ final class DictationSessionController {
     /// record may be written, and the record deletions bypass History (#1771).
     @ObservationIgnored
     var historyOpenFailed = false
+    /// History's quarantine when History did not open, so "Also delete the
+    /// backups" still reaches it; with History open, History owns it.
+    @ObservationIgnored
+    var quarantineWithoutHistory: DictationHistoryQuarantine?
     /// Watches the seconds after a commit for an immediate erase, and patches
     /// that dictation's record with what it saw. `var` for the same reason as
     /// the store: tests inject the clock and the event source.
