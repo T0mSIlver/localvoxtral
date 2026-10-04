@@ -37,7 +37,7 @@ A remote host can never:
 
 Two switches do different things.
 
-**The toggle** (**Send diff, recent files and last prompt**, in **Settings ›
+**The toggle** (**Send diff, recent files and prompts**, in **Settings ›
 Context**) gates what a dictation attaches. With it off, nothing a host sent
 reaches the polisher.
 

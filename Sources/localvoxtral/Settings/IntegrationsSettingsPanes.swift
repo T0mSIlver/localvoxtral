@@ -69,7 +69,7 @@ struct IntegrationsContextSettingsPane: View {
                     }
 
                     SettingsFieldRow(
-                        title: "Send diff, recent files and last prompt"
+                        title: "Send diff, recent files and prompts"
                     ) {
                         Toggle("", isOn: $settings.claudeRepoContextEnabled)
                             .labelsHidden()

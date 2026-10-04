@@ -72,7 +72,7 @@ become lists.
 
 Claude Desktop also hosts plain chat, so it gets the agent-tuned prompt only
 when the dictation joined a Code-tab session. That needs **Send diff, recent
-files and last prompt** in **Settings → Context**. When the polisher is not
+files and prompts** in **Settings → Context**. When the polisher is not
 on this Mac (the Mistral API, say), it also needs **Send context to non-local
 polishing servers**. With either off, Claude Desktop gets the standard prompt.
 
@@ -140,9 +140,10 @@ servers** is the only toggle that lifts that limit.
   the polisher, verbatim. It works in Ghostty, iTerm2, Terminal.app, cmux and
   herdr panes only. In cmux it also needs the cmux join (see
   [Join sessions in cmux](#join-sessions-in-cmux)).
-- **Send diff, recent files and last prompt** sends your uncommitted changes,
-  the files the agent recently touched, and the last request you sent that
-  session. It needs one of these: a joined Claude Code or opencode session in
+- **Send diff, recent files and prompts** sends your uncommitted changes,
+  the files the agent recently touched, the last request you sent that
+  session and, for a Claude Code session with the localvoxtral mod, what
+  its prompt box holds unsent. It needs one of these: a joined Claude Code or opencode session in
   a supported terminal, a Claude Code Remote Control session in the focused
   browser tab, or a Claude Code session focused in Claude Desktop's Code tab.
   For a session on a remote host, only the session request and the short
