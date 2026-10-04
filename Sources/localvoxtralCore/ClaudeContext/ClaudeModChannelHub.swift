@@ -81,6 +81,12 @@ public final class ClaudeModChannelHub: Sendable {
         self.makeID = makeID
     }
 
+    /// Whether any session has a mod listening: the cheap question asked
+    /// before any lookup that would find one.
+    public var hasAttachedChannels: Bool {
+        state.withLock { !$0.channels.isEmpty }
+    }
+
     /// Whether `sessionID` has a mod listening right now.
     public func isAttached(_ sessionID: String) -> Bool {
         state.withLock { $0.channels[sessionID] != nil }

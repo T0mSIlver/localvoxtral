@@ -14,6 +14,7 @@ export type ChannelMessage = {
   phase?: string
   /** For `state`: the other sessions waiting for the person (#1695). */
   waiting?: string[]
+  seq?: number
 }
 
 /** What a fork cost, in the API's spelling. */
@@ -35,6 +36,7 @@ export type ChannelReply = {
   usage?: ChannelUsage
   submitted?: boolean
   queued?: boolean
+  seq?: number
 }
 
 /** The mod's word that its session ends (#1646), sent like a reply. */
@@ -49,6 +51,7 @@ export type Outcome = {
   usage?: ChannelUsage
   submitted?: boolean
   queued?: boolean
+  seq?: number
 }
 
 /** The refusal of a request issued for a session the process has left. */
@@ -142,7 +145,7 @@ export function parseMessage(line: string): ChannelMessage | null {
   try {
     const value: unknown = JSON.parse(line)
     if (typeof value !== 'object' || value === null) return null
-    const { mod_message, kind, id, text, phase, waiting } = value as Record<string, unknown>
+    const { mod_message, kind, id, text, phase, waiting, seq } = value as Record<string, unknown>
     if (mod_message !== WIRE_VERSION || typeof kind !== 'string' || typeof id !== 'string') return null
     return {
       mod_message,
@@ -151,8 +154,44 @@ export function parseMessage(line: string): ChannelMessage | null {
       ...(typeof text === 'string' ? { text } : {}),
       ...(typeof phase === 'string' ? { phase } : {}),
       ...(Array.isArray(waiting) ? { waiting: waiting.filter(name => typeof name === 'string') } : {}),
+      ...(typeof seq === 'number' && Number.isInteger(seq) ? { seq } : {}),
     }
   } catch {
     return null
+  }
+}
+
+/**
+ * One Live Auto-Paste stream's appends (#1645), in the order the app wrote
+ * them: each fills only when it is the next one, so a lost or late delta
+ * ends the stream instead of landing out of order, and so does a fill the
+ * box refused. An `ack` reads how many filled and starts the next stream.
+ */
+export class AppendStream {
+  private filled = 0
+  private ended = false
+
+  /** Whether the append numbered `seq` may fill now. */
+  admits(seq: number | undefined): boolean {
+    if (this.ended) return false
+    if (seq !== this.filled + 1) {
+      this.ended = true
+      return false
+    }
+    return true
+  }
+
+  /** What became of the append `admits` let through. */
+  settle(isFilled: boolean): void {
+    if (isFilled) this.filled += 1
+    else this.ended = true
+  }
+
+  /** How many filled, in order from the first; the next append starts at 1. */
+  ack(): number {
+    const filled = this.filled
+    this.filled = 0
+    this.ended = false
+    return filled
   }
 }

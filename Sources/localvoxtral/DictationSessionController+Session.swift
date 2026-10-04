@@ -69,12 +69,25 @@ extension DictationSessionController {
     /// visible, and returns true when the start was refused. Overlay Buffer
     /// sessions are never refused: their pipeline still produces text and the
     /// commit falls back to the clipboard (#89 split behavior).
+    ///
+    /// While some Claude Code mod is attached, the refusal waits for the
+    /// session's route (`afterRouteResolved`): a mod that takes the deltas
+    /// posts no key, so Secure Keyboard Entry stops nothing (#1645).
     func refuseLiveStartForSecureInputIfNeeded(
-        outputMode requestedOutputMode: DictationOutputMode
+        outputMode requestedOutputMode: DictationOutputMode,
+        afterRouteResolved: Bool = false
     ) -> Bool {
         guard requestedOutputMode == .liveAutoPaste,
               TerminalTargetDetector.isSecureKeyboardEntryEnabled()
         else { return false }
+        if afterRouteResolved {
+            guard !(context.agentPromptRoute is ClaudeModPromptRoute) else {
+                Log.target.notice("Secure Keyboard Entry is on; the session's mod takes the live text")
+                return false
+            }
+        } else if context.claudeModChannels?.hasAttachedChannels == true {
+            return false
+        }
         captureSessionTargetVerdict()
         applyPreCapturedSessionTargetVerdict()
         statusText = StatusStrings.liveDictationBlockedBySecureInput
@@ -365,6 +378,11 @@ extension DictationSessionController {
                 clearLatchedSessionMetadata()
                 isConnectingRealtimeSession = false
             }
+            return nil
+        }
+        if refuseLiveStartForSecureInputIfNeeded(outputMode: requestedOutputMode, afterRouteResolved: true) {
+            context.discardTerminalScreenCapture()
+            isConnectingRealtimeSession = false
             return nil
         }
         refreshInsertionScalarTracingForSession()

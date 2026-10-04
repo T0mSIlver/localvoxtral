@@ -1709,6 +1709,106 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(fills.texts, ["that's what I was doing.", "/compact"])
     }
 
+    // MARK: - Live Auto-Paste through the session's mod (#1645)
+
+    /// Each delta goes to the mod as an append, in order, while the
+    /// dictation runs; the stop's ack confirms them all, so no key is typed
+    /// and the record says inserted.
+    func testLiveAutoPasteIntoAClaudeSessionWithAModFillsEveryDeltaInOrderAndTypesNothing() async throws {
+        let mod = FakeClaudeMod()
+        let (pipeline, typed) = try await modLivePipeline(mod)
+
+        await startAndSpeak(pipeline)
+        XCTAssertTrue(pipeline.viewModel.textInsertion.promptRelaySink?.route is ClaudeModPromptRoute)
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline)
+
+        XCTAssertEqual(mod.box, Self.phrase)
+        XCTAssertEqual(mod.kinds, [.ack, .append, .append, .ack], "opened, two deltas, the stop's count")
+        XCTAssertEqual(typed.text, "", "no key went to the terminal")
+        XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded), [true])
+    }
+
+    /// The mod stopped filling at the second delta (a gap, or a dialog took
+    /// the box): its ack says one landed, so the stop types the second, once,
+    /// after the first.
+    func testDeltasTheModDidNotFillAreTypedOnceAtTheStop() async throws {
+        let split = Self.phrase.index(Self.phrase.startIndex, offsetBy: 18)
+        let mod = FakeClaudeMod(refuses: String(Self.phrase[split...]))
+        let (pipeline, typed) = try await modLivePipeline(mod)
+
+        await startAndSpeak(pipeline)
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline)
+
+        XCTAssertEqual(mod.box, String(Self.phrase[..<split]))
+        XCTAssertEqual(typed.text, String(Self.phrase[split...]))
+        XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded), [true])
+    }
+
+    /// The stop's ack never comes back: every delta may be in the box, so
+    /// none is typed, and the record says not inserted.
+    func testAnUnansweredStopAckKeepsTheDictationInHistoryAndTypesNothing() async throws {
+        let mod = FakeClaudeMod(acksToAnswer: 1)
+        // The opening ack is answered; the stop's times out at once.
+        let timers = Mutex(0)
+        let (pipeline, typed) = try await modLivePipeline(mod, sleep: { _ in
+            if timers.withLock({ $0 += 1; return $0 }) == 1 { try? await Task.sleep(for: .seconds(3600)) }
+        })
+
+        await startAndSpeak(pipeline)
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline, expectedError: DictationViewModel.StatusStrings.agentPromptTextKeptInHistory)
+
+        XCTAssertEqual(typed.text, "")
+        XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded), [false])
+    }
+
+    /// Secure Keyboard Entry would swallow every key, which refuses a live
+    /// start: a mod that takes the deltas posts none, so the dictation runs.
+    func testSecureKeyboardEntryDoesNotRefuseALiveDictationTheModTakes() async throws {
+        let mod = FakeClaudeMod()
+        let (pipeline, typed) = try await modLivePipeline(mod)
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        await startAndSpeak(pipeline)
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline)
+
+        XCTAssertEqual(mod.box, Self.phrase)
+        XCTAssertEqual(typed.text, "")
+    }
+
+    /// A newline the server sends is filled as text, where the keys would
+    /// have turned it into a space so it could not submit the prompt.
+    func testANewlineGoesToTheModAsText() async throws {
+        let mod = FakeClaudeMod()
+        let (pipeline, typed) = try await modLivePipeline(mod)
+
+        await startAndSpeak(pipeline)
+        pipeline.server.send(["type": "transcription.delta", "delta": "first line\nsecond line"])
+        await stopAndFinalize(pipeline, finalText: "first line\nsecond line")
+
+        XCTAssertEqual(mod.box, "first line\nsecond line")
+        XCTAssertEqual(typed.text, "")
+    }
+
+    /// Live Auto-Paste joined to Claude Code session `s1` in a terminal by
+    /// its tty, with `mod` attached to its channel.
+    private func modLivePipeline(
+        _ mod: FakeClaudeMod,
+        sleep: @escaping @Sendable (Duration) async -> Void = { _ in try? await Task.sleep(for: .seconds(3600)) }
+    ) async throws -> (Pipeline, TypedText) {
+        let pipeline = try await makePipeline(outputMode: .liveAutoPaste)
+        pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
+        _ = joinClaudeCodeTerminal(pipeline)
+        let typed = recordTypedText(pipeline)
+        let hub = ClaudeModChannelHub(sleep: sleep)
+        mod.attach(to: hub)
+        pipeline.viewModel.context.claudeModChannels = hub
+        return (pipeline, typed)
+    }
+
     /// How the fake mod answers a fill.
     private enum FakeModAnswer { case fill, refuse, silent, sent, queued }
 

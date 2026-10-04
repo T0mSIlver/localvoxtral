@@ -442,6 +442,132 @@ describe('channel', () => {
     })
   }
 
+  type AppendCase = {
+    label: string
+    lines: object[]
+    refuse?: string[]
+    fills: string[]
+    acks: number[]
+  }
+  const appendCases: AppendCase[] = [
+    {
+      label: 'fills in order though the first fill is slow, and the ack counts them',
+      lines: [
+        { kind: 'ack', id: 'k0', seq: 0 },
+        { kind: 'append', id: 'a1', seq: 1, text: 'slow ' },
+        { kind: 'append', id: 'a2', seq: 2, text: 'and steady' },
+        { kind: 'ack', id: 'k1', seq: 2 },
+      ],
+      fills: ['slow ', 'and steady'],
+      acks: [0, 2],
+    },
+    {
+      label: 'a gap ends the stream: nothing after it fills, out of order or not',
+      lines: [
+        { kind: 'ack', id: 'k0', seq: 0 },
+        { kind: 'append', id: 'a1', seq: 1, text: 'one ' },
+        { kind: 'append', id: 'a3', seq: 3, text: 'three ' },
+        { kind: 'append', id: 'a2', seq: 2, text: 'two ' },
+        { kind: 'ack', id: 'k1', seq: 3 },
+        { kind: 'append', id: 'b1', seq: 1, text: 'next' },
+        { kind: 'ack', id: 'k2', seq: 1 },
+      ],
+      fills: ['one ', 'next'],
+      acks: [0, 1, 1],
+    },
+    {
+      label: 'a refused fill ends the stream there',
+      lines: [
+        { kind: 'ack', id: 'k0', seq: 0 },
+        { kind: 'append', id: 'a1', seq: 1, text: 'one ' },
+        { kind: 'append', id: 'a2', seq: 2, text: 'two ' },
+        { kind: 'append', id: 'a3', seq: 3, text: 'three' },
+        { kind: 'ack', id: 'k1', seq: 3 },
+      ],
+      refuse: ['two '],
+      fills: ['one ', 'two '],
+      acks: [0, 1],
+    },
+  ]
+  for (const c of appendCases) {
+    test(`append: ${c.label}`, async ($, on) => {
+      const clock = mock.clock(on)
+      mock.env(on, { HOME: '/Users/tom' })
+      const fills: string[] = []
+      const replies: { id: string; ok: boolean; seq?: number }[] = []
+      on('session.start', ($, e) => ({ cwd: e.cwd }))
+      on('session.id', () => ({ value: 'sess-1' }))
+      on('settings.read', () => ({ value: {} }))
+      on('fs.exists', ($, e) => ({ value: e.path === PUBLISHER }))
+      on('ui.status', () => ({ value: undefined }))
+      on('prompt.fill', async ($, e) => {
+        fills.push(e.text)
+        if (fills.length === 1) await clock.sleep(500)
+        return { isFilled: !(c.refuse ?? []).includes(e.text) }
+      })
+      on('process.spawn', async function* (): AsyncGenerator<ProcessSpawnChunk, { value: ProcessSpawnResult }> {
+        yield { stream: 'stdout', text: c.lines.map((l) => JSON.stringify({ mod_message: 1, ...l })).join('\n') + '\n' }
+        await clock.sleep(60000)
+        return { value: EXITED }
+      })
+      on('process.run', ($, e) => {
+        if (e.argv[1] === '--mod-reply') replies.push(JSON.parse(e.init?.stdin ?? ''))
+        return {
+          value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+        }
+      })
+
+      await $.session.start(STARTED)
+      await clock.advance(2000)
+
+      expect(fills).toEqual(c.fills)
+      expect(replies.every((r) => r.id.startsWith('k') && r.ok)).toBe(true)
+      expect(replies.map((r) => r.seq)).toEqual(c.acks)
+    })
+  }
+
+  test('send with no text submits the box as the appends left it', async ($, on) => {
+    const clock = mock.clock(on)
+    mock.env(on, { HOME: '/Users/tom' })
+    let box = 'run the tests'
+    const fills: { text: string; mode: string }[] = []
+    const submits: string[] = []
+    const replies: unknown[] = []
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('session.id', () => ({ value: 'sess-1' }))
+    on('settings.read', () => ({ value: {} }))
+    on('fs.exists', ($, e) => ({ value: e.path === PUBLISHER }))
+    on('ui.status', () => ({ value: undefined }))
+    on('prompt.read', () => ({ value: { text: box, cursor: box.length } }))
+    on('prompt.fill', ($, e) => {
+      fills.push({ text: e.text, mode: e.mode })
+      box = e.mode === 'replace' ? e.text : box + e.text
+      return { isFilled: true }
+    })
+    on('prompt.submit', ($, e) => {
+      submits.push(e.text)
+      return { text: e.text }
+    })
+    on('process.spawn', async function* (): AsyncGenerator<ProcessSpawnChunk, { value: ProcessSpawnResult }> {
+      yield { stream: 'stdout', text: '{"id":"s","kind":"send","mod_message":1,"text":""}\n' }
+      await clock.sleep(60000)
+      return { value: EXITED }
+    })
+    on('process.run', ($, e) => {
+      if (e.argv[1] === '--mod-reply') replies.push(JSON.parse(e.init?.stdin ?? ''))
+      return {
+        value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+      }
+    })
+
+    await $.session.start(STARTED)
+    await clock.advance(2000)
+
+    expect(replies).toEqual([{ mod_reply: 1, session_id: 'sess-1', id: 's', ok: true, submitted: true }])
+    expect(fills).toEqual([{ text: '', mode: 'replace' }])
+    expect(submits).toEqual(['run the tests'])
+  })
+
   test('parseMessage takes only this version of the wire', () => {
     expect(parseMessage('{"mod_message":1,"kind":"ping","id":"a"}')).toEqual({
       mod_message: 1,
@@ -452,5 +578,7 @@ describe('channel', () => {
     expect(parseMessage('{"kind":"ping","id":"a"}')).toBeNull()
     expect(parseMessage('not json')).toBeNull()
     expect(parseMessage('{"mod_message":1,"kind":"state","id":"a","waiting":["api",3]}')?.waiting).toEqual(['api'])
+    expect(parseMessage('{"mod_message":1,"kind":"append","id":"a","seq":2,"text":"x"}')?.seq).toBe(2)
+    expect(parseMessage('{"mod_message":1,"kind":"append","id":"a","seq":1.5}')?.seq).toBeUndefined()
   })
 })

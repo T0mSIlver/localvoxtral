@@ -186,6 +186,10 @@ final class TextInsertionService {
     /// after `endPromptRelay`.
     @ObservationIgnored
     private(set) var promptRelayKeptText = false
+    /// The route takes text without the newline guard (the Claude Code
+    /// mod's, #1645), so what it gives back to the keys is guarded here.
+    @ObservationIgnored
+    private var promptRelayRefusalsNeedNewlineGuard = false
     /// Moves when another dictation starts or the keys go to another pane,
     /// so a sink can tell whether the live buffers and the keyboard path
     /// still serve its dictation.
@@ -468,6 +472,7 @@ final class TextInsertionService {
         promptRelayKeptText = false
         promptRelayGeneration += 1
         promptRelayDictation += 1
+        promptRelayRefusalsNeedNewlineGuard = route?.takesUnsanitizedText ?? false
         guard let route else {
             promptRelaySink = nil
             return
@@ -505,8 +510,10 @@ final class TextInsertionService {
 
     /// The stop: no new text goes to the route. Calls already handed to it
     /// still land, and a refusal is still typed, until the next dictation
-    /// starts.
+    /// starts. A route that confirms its appends only when asked settles
+    /// them now, behind those calls.
     func endPromptRelay() {
+        promptRelaySink?.finish()
         promptRelaySink = nil
     }
 
@@ -538,6 +545,7 @@ final class TextInsertionService {
     /// order, so a refused text that cannot be typed yet is never overtaken
     /// by a later one.
     private func typeLiveTextThePromptRelayRefused(_ text: String) {
+        let text = promptRelayRefusalsNeedNewlineGuard ? Self.collapsingNewlineRuns(text) : text
         liveInsertionTargetPIDs.append(nil)
         if liveHoldBackStream != nil {
             // Released text: retried as-is, never re-ingested.
@@ -546,6 +554,26 @@ final class TextInsertionService {
             pendingRealtimeInsertionText += text
         }
         flushPendingRealtimeInsertion()
+    }
+
+    /// Every whitespace run holding a newline or a tab, as one space: a
+    /// typed newline would submit a terminal's prompt.
+    static func collapsingNewlineRuns(_ text: String) -> String {
+        var collapsed = ""
+        var run = ""
+        var runBreaks = false
+        for character in text {
+            if character.isWhitespace {
+                run.append(character)
+                runBreaks = runBreaks || character.isNewline || character == "\t"
+                continue
+            }
+            collapsed += runBreaks ? " " : run
+            run = ""
+            runBreaks = false
+            collapsed.append(character)
+        }
+        return collapsed + (runBreaks ? " " : run)
     }
 
     func enqueueRealtimeInsertion(_ text: String) {

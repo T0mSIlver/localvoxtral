@@ -73,6 +73,10 @@ extension DictationSessionController {
         guard !finishLiveAutoPasteSessionAfterGoTo(sessionMode: sessionMode, finish: { [weak self] sessionAudio in
             self?.finishLiveAutoPasteSession(sessionMode: sessionMode, finishedAudio: sessionAudio)
         }) else { return }
+        // Deltas the session's mod took unanswered: its ack first (#1645).
+        guard !finishLiveAutoPasteSessionAfterModAck(sessionMode: sessionMode, finish: { [weak self] sessionAudio in
+            self?.finishLiveAutoPasteSession(sessionMode: sessionMode, finishedAudio: sessionAudio)
+        }) else { return }
         finishLiveAutoPasteSession(sessionMode: sessionMode)
     }
 
@@ -780,7 +784,12 @@ extension DictationSessionController {
         // off. Nothing to apply and not a terminal keeps the no-session path:
         // no hold-back, no delay.
         let dictionary = replacementDictionaryForCurrentSession()
-        guard dictionary != nil || sessionTargetIsTerminalLike else {
+        // The session's mod fills newlines and spaces as text (#1645): the
+        // newline guard and the trailing-space policy are for keys, and
+        // what the mod gives back to them is guarded on the way.
+        let keysGuarded = sessionTargetIsTerminalLike
+            && textInsertion.promptRelaySink?.route.takesUnsanitizedText != true
+        guard dictionary != nil || keysGuarded else {
             textInsertion.endLiveReplacementSession()
             return
         }
@@ -789,7 +798,7 @@ extension DictationSessionController {
         textInsertion.beginLiveReplacementSession(
             dictionary: dictionary,
             preferredAppPID: overlayBufferCoordinator.commitTargetAppPID,
-            isTerminalLikeTarget: sessionTargetIsTerminalLike
+            isTerminalLikeTarget: keysGuarded
         )
     }
 
