@@ -32,9 +32,25 @@ extension DictationSessionController {
         // Read now: an answer that comes after the next dictation armed its
         // own relay still belongs to this one.
         let sessionID = promptRelaySessionID
+        let generation = sessionStartGeneration
         return PromptRelayOverlayCommitter(sink: sink) { [weak self] text, pid in
-            self?.commitOverlayTextThePromptRelayRefused(text, preferredAppPID: pid, sessionID: sessionID)
+            guard let self else { return }
+            guard self.sessionStartGeneration == generation else {
+                self.keepOverlayTextOfARetiredDictation(text, sessionID: sessionID)
+                return
+            }
+            self.commitOverlayTextThePromptRelayRefused(text, preferredAppPID: pid, sessionID: sessionID)
         }
+    }
+
+    /// An overlay commit's text that the relay or the mod gave back after
+    /// the next dictation started: the keys serve that dictation now, so the
+    /// text is kept, never typed (#1466, #1657). The status line is the new
+    /// dictation's.
+    func keepOverlayTextOfARetiredDictation(_ text: String, sessionID: String?) {
+        Log.overlay.notice("overlay commit: refused after the next dictation started; text kept")
+        _ = keepUndeliveredAgentText(text)
+        forgetLanding(ofSession: sessionID)
     }
 
     /// The overlay's text the relay did not take, committed the way the
@@ -78,7 +94,7 @@ extension DictationSessionController {
     /// turn `/compact` into text (docs/agent/invariants.md, "An Overlay
     /// Buffer commit starts with a space only when it continues the unsent
     /// prompt").
-    private func forgetLanding(ofSession sessionID: String?) {
+    func forgetLanding(ofSession sessionID: String?) {
         guard let sessionID, lastOverlayCommitLanding?.sessionID == sessionID
         else { return }
         Log.overlay.notice("overlay commit: relay text not in the prompt; next commit adds no space")
