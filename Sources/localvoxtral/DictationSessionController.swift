@@ -359,6 +359,15 @@ final class DictationSessionController {
     var sessionStartGeneration: UInt64 = 0
     @ObservationIgnored
     var stopFinalizationTask: Task<Void, Never>?
+    /// Answers the quit once the stop's finalization ends; set while a quit
+    /// waits on the helper's last words (#1756).
+    @ObservationIgnored
+    var quitFinalizationReply: (@MainActor () -> Void)?
+    /// The stopped session is the quit's to save, from the quit's stop until
+    /// `saveStoppedDictationForQuit`: an event that ends the finalization
+    /// later (the socket's close) must not commit it.
+    @ObservationIgnored
+    var quitHoldsStoppedSession = false
     @ObservationIgnored
     var connectTimeoutTask: Task<Void, Never>?
     /// Stops an Overlay Buffer tap session that has gone quiet

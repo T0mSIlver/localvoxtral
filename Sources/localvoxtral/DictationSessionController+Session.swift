@@ -563,6 +563,7 @@ extension DictationSessionController {
         finalizationWatchdogTask = nil
         cancelConnectTimeout()
         cancelRealtimeReconnect()
+        quitHoldsStoppedSession = false
         isFinalizingStop = false
         isConnectingRealtimeSession = false
         // Every attempt starts with a fresh secure-input sample: a stale

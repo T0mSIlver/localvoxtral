@@ -3,9 +3,41 @@ import Foundation
 import os
 
 extension DictationSessionController {
-    /// Today's quit: nothing waits for the backend's last words.
+    /// Quit during a dictation: the stop sends its final commit, and the quit
+    /// waits for the backend's last words before `saveStoppedDictationForQuit`
+    /// saves the record. speechd flushes its tail only on a final commit
+    /// (#1756). The finalization is bounded short, as the sleep stop's is
+    /// (#1584); when it ends, by the answer or the bound, `reply` lets the
+    /// quit go on, possibly before this returns. False, and no `reply`, when
+    /// nothing is worth the wait: no dictation is listening, or its backend
+    /// is not known to answer a final commit.
     func finalizeDictationBeforeQuit(then reply: @escaping @MainActor () -> Void) -> Bool {
-        false
+        guard isDictating, backendAnswersFinalCommits || sessionUsesManagedSpeechHelper else { return false }
+        Log.backends.notice("quit during a dictation; waiting for the backend's last words")
+        quitFinalizationReply = reply
+        quitHoldsStoppedSession = true
+        stopDictation(
+            reason: "app terminating",
+            finalizationTimeout: TimingConstants.quitStopFinalizationTimeout
+        )
+        return true
+    }
+
+    /// The stop's finalization ended while a quit waited on it: the record is
+    /// left to `saveStoppedDictationForQuit`, which saves it not inserted, so
+    /// nothing is typed or polished while the app quits.
+    func endQuitFinalization() {
+        let reply = quitFinalizationReply
+        quitFinalizationReply = nil
+        stopFinalizationTask?.cancel()
+        stopFinalizationTask = nil
+        finalizationWatchdogTask?.cancel()
+        finalizationWatchdogTask = nil
+        cancelRealtimeReconnect()
+        activeRealtimeClient.disconnect()
+        guard let reply else { return }
+        Log.backends.notice("quit: the stop's finalization ended; saving the dictation")
+        reply()
     }
 
     /// Quit: a stopped dictation still owed its commit is saved to History
@@ -15,6 +47,8 @@ extension DictationSessionController {
     /// A dictation still running is stopped here first: the terminate
     /// observer's stop runs in a Task, after the drain if at all (#1568).
     func saveStoppedDictationForQuit() {
+        quitHoldsStoppedSession = false
+        quitFinalizationReply = nil
         if isDictating {
             stopDictation(reason: "app terminating")
         }
