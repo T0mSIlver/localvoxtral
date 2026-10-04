@@ -184,6 +184,47 @@ final class LiveGoToSessionWiringTests: XCTestCase {
         XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [true])
     }
 
+    /// The stop's own flush releases the hold-back's last word, a closing
+    /// fence, while the paste before it awaits its restore: the stop waits
+    /// for it rather than dropping it (#1664).
+    func testAStopWaitsForAFenceItsOwnFlushReleasesBehindAPaste() async {
+        let fenced = "first:\n```\nline one\n```"
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .noFocusedElement }
+        let harness = makeHarness(
+            sessions: [], app: ClaudeDesktopAllowlist.bundleID,
+            dictionary: ReplacementDictionary(entries: [ReplacementEntry(replaceWith: "PostgreSQL", matches: ["postgres"])])
+        )
+        let clock = ManualSessionClock()
+        harness.viewModel.textInsertion.pasteRestoreSleep = clock.sleep
+        let clipboard = Box("")
+        let pasted = Box<[String]>([])
+        harness.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { _ in true },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false },
+            frontmostPIDReader: { Self.terminalPID },
+            shiftReturnPoster: { true },
+            commandVPaster: { text in
+                clipboard.value = text
+                Task { @MainActor in pasted.value.append(clipboard.value) }
+                return true
+            }
+        )
+
+        harness.partial(fenced)
+        harness.final(fenced)
+        harness.stop()
+        await clock.waitForSleepers(1)
+        clock.advance(by: 0.15)
+        await clock.waitForSleepers(1)
+        clock.advance(by: 0.15)
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        XCTAssertEqual(pasted.value.count, 2, "the held closing fence is a second paste: \(pasted.value)")
+        XCTAssertEqual(pasted.value.joined(), fenced)
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [true])
+    }
+
     func testAStopDuringAGoToWaitsForItThenTypesWhatFollowed() async {
         let harness = makeHarness()
         harness.focuser.onFocus = { _ in harness.frontmost.value = Self.otherTerminalPID }
@@ -527,12 +568,13 @@ final class LiveGoToSessionWiringTests: XCTestCase {
     private func makeHarness(
         sessions: [ClaudeSessionSnapshot]? = nil,
         spokenSend: Bool = false,
-        app: String = LiveGoToSessionWiringTests.ghostty
+        app: String = LiveGoToSessionWiringTests.ghostty,
+        dictionary: ReplacementDictionary? = nil
     ) -> Harness {
         let sessions = sessions ?? [session("pay", cwd: "/r/payments")]
         let settings = makeSettings(outputMode: .liveAutoPaste)
         settings.liveSpokenSendEnabled = spokenSend
-        settings.replacementDictionaryEnabled = false
+        settings.replacementDictionaryEnabled = dictionary != nil
 
         let overlay = MockOverlayCoordinator()
         overlay.commitTargetAppPID = Self.terminalPID
@@ -541,7 +583,7 @@ final class LiveGoToSessionWiringTests: XCTestCase {
             overlayBufferCoordinator: overlay,
             startRuntimeServices: false
         )
-        viewModel.appConfigStore = MockAppConfigStore()
+        viewModel.appConfigStore = MockAppConfigStore(replacementDictionary: dictionary ?? ReplacementDictionary(entries: []))
         retainForTestProcessLifetime(viewModel)
         viewModel.dependencies.bundleIdentifier = { _ in app }
         let records = Box<[DictationSessionRecord]>([])

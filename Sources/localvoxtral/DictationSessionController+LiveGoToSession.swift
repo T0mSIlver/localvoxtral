@@ -148,6 +148,10 @@ extension DictationSessionController {
         sessionMode: DictationOutputMode,
         finish: @escaping @MainActor (_ sessionAudio: Data?) -> Void
     ) -> Bool {
+        // The hold-back's tail first: released behind a paste, it waits too.
+        if liveGoToTask == nil, !wasCancelled {
+            textInsertion.flushFinalLiveReplacementCorrections()
+        }
         guard liveGoToTask != nil || (!wasCancelled && textInsertion.pendingTextWaitsOnPaste) else { return false }
         isFinalizingStop = true
         statusText = StatusStrings.finalizing
@@ -180,6 +184,9 @@ extension DictationSessionController {
             while let goTo = self?.liveGoToTask {
                 await goTo.value
                 guard !Task.isCancelled else { return }
+            }
+            if self?.wasCancelled == false {
+                self?.textInsertion.flushFinalLiveReplacementCorrections()
             }
             while let insertion = self?.textInsertion, self?.wasCancelled == false,
                   insertion.pendingTextWaitsOnPaste {
