@@ -389,7 +389,18 @@ there is not.
   foreground test), and the destination list's picked pane must pass the
   same test before its words go in: a suspended agent stays alive and
   registered, and its tab reads back as the session's, while its shell
-  owns the terminal (#1249). Correction learning and term
+  owns the terminal (#1249). **Once the text is handed over** (to a
+  route's sink, to the mod's `send`, or typed into the tab), the commit
+  awaits the delivery, and two rules hold. Escape is released at the
+  hand-off to a route or the mod (#1666): neither write can be called
+  back, so a cancel there would show while the text is still sent and
+  submitted. In a terminal tab Escape stays until the Return, and a cancel
+  during the read-back stops the Return, never the typed text. A quit
+  before the commit saves its record (#1667) saves it as not inserted,
+  exactly once (`HandedOffAddressedCommit`): the commit's own save, also
+  when a new dictation superseded it, and the quit's claim the same record. A mod
+  refusal gives the text back to the usual route, and the record with it.
+  Correction learning and term
   proposals skip an addressed dictation: they key on the join of the pane
   it started in. Live Auto-Paste has no addressed send: its words are
   typed before the phrase at the end is heard.

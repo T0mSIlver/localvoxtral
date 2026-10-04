@@ -518,6 +518,10 @@ final class DictationSessionController {
     /// target app nor History (#526).
     @ObservationIgnored
     var saveInterruptedPolishCommit: (() -> Void)?
+    /// Addressed commits whose text a route or the mod holds while the
+    /// commit awaits the delivery: quit saves each one's record (#1667).
+    @ObservationIgnored
+    var handedOffAddressedCommits: [HandedOffAddressedCommit] = []
     @ObservationIgnored
     // Several finalization callbacks can converge here; keep stop cleanup
     // idempotent until commit/post-processing fully finishes.

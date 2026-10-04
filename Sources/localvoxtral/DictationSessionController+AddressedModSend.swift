@@ -65,10 +65,12 @@ extension DictationSessionController {
             autoCopyEnabled: settings.autoCopyEnabled
         )
         guard let text = capture.text else { return .fallBack }
-        // Handed over: a cancel from here no longer saves the record, until
-        // a refusal gives the text back to the usual route.
+        // Handed over: a cancel from here no longer saves the record, and
+        // a quit does (#1667), until a refusal gives the text back to the
+        // usual route.
         let saveIfInterrupted = saveInterruptedPolishCommit
         saveInterruptedPolishCommit = nil
+        let handedOff = handOffAddressedCommit(saveNotInserted: saveIfInterrupted, releasesEscape: true)
 
         let exchange = await hub.exchange(
             .init(kind: .send, text: text), with: sessionID, timeout: Self.modChannelFillTimeout
@@ -82,24 +84,28 @@ extension DictationSessionController {
                 Log.dictation.notice("send to session: the mod submitted queued=\(queued, privacy: .public)")
                 return .finished(AddressedCommit(
                     outcome: commit.outcome, inserted: true,
-                    status: queued ? ModChannelStatus.queued : nil, superseded: superseded
+                    status: queued ? ModChannelStatus.queued : nil,
+                    superseded: superseded, handedOff: handedOff
                 ))
             }
             Log.backends.notice(
                 "send to session: the mod filled but did not submit (\(reply.reason ?? "no reason", privacy: .public))"
             )
             return .finished(AddressedCommit(
-                outcome: commit.outcome, inserted: true, status: ModChannelStatus.filledNotSent, superseded: superseded
+                outcome: commit.outcome, inserted: true, status: ModChannelStatus.filledNotSent,
+                superseded: superseded, handedOff: handedOff
             ))
         case .replied(let reply) where reply.reason == ClaudeModChannelWire.Reply.sessionChangedReason:
             Log.backends.error("send to session: the mod's process left that session; nothing sent, text kept")
             return .finished(AddressedCommit(
-                outcome: commit.outcome, inserted: false, status: AddressedSendStatus.notSent, superseded: superseded
+                outcome: commit.outcome, inserted: false, status: AddressedSendStatus.notSent,
+                superseded: superseded, handedOff: handedOff
             ))
         case .unanswered:
             Log.backends.error("send to session: the mod did not answer; it may have submitted, so the text is kept")
             return .finished(AddressedCommit(
-                outcome: commit.outcome, inserted: false, status: AddressedSendStatus.notSent, superseded: superseded
+                outcome: commit.outcome, inserted: false, status: AddressedSendStatus.notSent,
+                superseded: superseded, handedOff: handedOff
             ))
         case .replied(let reply):
             Log.backends.error(
@@ -111,9 +117,11 @@ extension DictationSessionController {
         // A new dictation owns the keys now: no route may focus or type.
         guard !superseded else {
             return .finished(AddressedCommit(
-                outcome: commit.outcome, inserted: false, status: AddressedSendStatus.notSent, superseded: true
+                outcome: commit.outcome, inserted: false, status: AddressedSendStatus.notSent, superseded: true,
+                handedOff: handedOff
             ))
         }
+        takeBackAddressedCommit(handedOff)
         saveInterruptedPolishCommit = saveIfInterrupted
         return .fallBack
     }

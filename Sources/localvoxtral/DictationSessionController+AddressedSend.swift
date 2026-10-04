@@ -28,6 +28,9 @@ extension DictationSessionController {
         /// over: the record is still saved, but the stop's cleanup and
         /// status belong to the new dictation now.
         var superseded = false
+        /// The record's save while the text was handed over: nil when it
+        /// never was.
+        var handedOff: HandedOffAddressedCommit?
 
         static func notSent(_ status: String) -> AddressedCommit {
             AddressedCommit(outcome: nil, inserted: false, status: status)
@@ -131,8 +134,9 @@ extension DictationSessionController {
             saveInterruptedPolishCommit = nil
             return .notSent(AddressedSendStatus.unsupported)
         case .prompt(let route):
+            let saveNotInserted = saveInterruptedPolishCommit
             saveInterruptedPolishCommit = nil
-            return await commitOverlayThroughAddressedRoute(route)
+            return await commitOverlayThroughAddressedRoute(route, saveNotInserted: saveNotInserted)
         case .terminalPane:
             return await commitOverlayIntoTerminalPane(of: session)
         }
@@ -171,7 +175,9 @@ extension DictationSessionController {
         }
     }
 
-    private func commitOverlayThroughAddressedRoute(_ route: any AgentPromptRoute) async -> AddressedCommit {
+    private func commitOverlayThroughAddressedRoute(
+        _ route: any AgentPromptRoute, saveNotInserted: (() -> Void)?
+    ) async -> AddressedCommit {
         let sink = AgentPromptSink(
             route: route,
             kept: { _ in Log.dictation.notice("send to session: route refused the text; kept in History") },
@@ -185,6 +191,7 @@ extension DictationSessionController {
             autoCopyEnabled: settings.autoCopyEnabled
         )
         sink.submit()
+        let handedOff = handOffAddressedCommit(saveNotInserted: saveNotInserted, releasesEscape: true)
         await sink.waitUntilIdle()
         let delivered = sink.isHealthy
         Log.dictation.notice("send to session: \(route.name, privacy: .public) delivered=\(delivered, privacy: .public)")
@@ -192,7 +199,8 @@ extension DictationSessionController {
             outcome: commit.outcome,
             inserted: delivered,
             status: delivered ? nil : AddressedSendStatus.notSent,
-            superseded: Task.isCancelled
+            superseded: Task.isCancelled,
+            handedOff: handedOff
         )
     }
 
@@ -207,6 +215,7 @@ extension DictationSessionController {
         }
         let focus = await navigator.focusPane(sessionID: session.sessionID)
         guard !Task.isCancelled else { return nil }
+        let saveNotInserted = saveInterruptedPolishCommit
         saveInterruptedPolishCommit = nil
         Log.dictation.notice("send to session: \(String(describing: focus), privacy: .public)")
         guard case .focused(let bundleID)? = focus else {
@@ -240,6 +249,9 @@ extension DictationSessionController {
             Log.dictation.notice("send to session: the text did not land in the pane; no Return")
             return AddressedCommit(outcome: commit.outcome, inserted: false, status: nil)
         }
+        // Escape stays until the Return: a cancel during the read-back
+        // stops the Return, never the typed text.
+        let handedOff = handOffAddressedCommit(saveNotInserted: saveNotInserted, releasesEscape: false)
         // Through the navigator: the registry is asked again after the
         // read-back, so an agent that exited meanwhile (#1219) or was
         // suspended meanwhile (#1249) gets no Return.
@@ -252,7 +264,8 @@ extension DictationSessionController {
                 outcome: commit.outcome,
                 inserted: true,
                 status: AddressedSendStatus.typedNotSubmitted,
-                superseded: true
+                superseded: true,
+                handedOff: handedOff
             )
         }
         guard stillThere, returnSubmitsPrompt(inPID: pid), pressSpokenSendReturn(pid: pid) else {
@@ -260,11 +273,84 @@ extension DictationSessionController {
             return AddressedCommit(
                 outcome: commit.outcome,
                 inserted: true,
-                status: AddressedSendStatus.typedNotSubmitted
+                status: AddressedSendStatus.typedNotSubmitted,
+                handedOff: handedOff
             )
         }
         forgetOverlayCommitLanding(inSession: session.sessionID)
-        return AddressedCommit(outcome: commit.outcome, inserted: true, status: nil)
+        return AddressedCommit(outcome: commit.outcome, inserted: true, status: nil, handedOff: handedOff)
+    }
+}
+
+extension DictationSessionController {
+    /// The text is with a route, the mod or the pane, and the commit awaits
+    /// the delivery: until the commit saves its own record, quit saves it
+    /// as not inserted (#1667). With `releasesEscape`, Escape goes back to
+    /// the focused app: the write cannot be called back, so a cancel would
+    /// show while the text is still sent and submitted (#1666).
+    func handOffAddressedCommit(
+        saveNotInserted: (() -> Void)?, releasesEscape: Bool
+    ) -> HandedOffAddressedCommit {
+        let handedOff = HandedOffAddressedCommit(saveNotInserted: saveNotInserted)
+        handedOffAddressedCommits.append(handedOff)
+        if releasesEscape {
+            Log.dictation.notice("send to session: text handed over; Escape released")
+            escapeCancelHandler.stop()
+        }
+        return handedOff
+    }
+
+    /// The mod refused, and the text goes back to the commit for the
+    /// session's usual route.
+    func takeBackAddressedCommit(_ handedOff: HandedOffAddressedCommit) {
+        handedOffAddressedCommits.removeAll { $0 === handedOff }
+        _ = handedOff.claimSave()
+    }
+
+    /// The commit's own save: false when quit saved the record already.
+    func claimAddressedCommitSave(_ addressed: AddressedCommit) -> Bool {
+        guard let handedOff = addressed.handedOff else { return true }
+        handedOffAddressedCommits.removeAll { $0 === handedOff }
+        return handedOff.claimSave()
+    }
+
+    /// Quit: every addressed commit still awaiting its delivery is saved as
+    /// not inserted, so the quit's History drain writes it.
+    func saveHandedOffAddressedCommitsForQuit() {
+        let pending = handedOffAddressedCommits
+        handedOffAddressedCommits = []
+        for handedOff in pending {
+            Log.persistence.notice("quit while an addressed send delivers; saving it as not inserted")
+            handedOff.saveForQuit()
+        }
+    }
+}
+
+/// One addressed commit's record while its delivery is awaited: saved once,
+/// by the commit when the delivery answers or by quit before that.
+@MainActor
+final class HandedOffAddressedCommit {
+    private var saveNotInserted: (() -> Void)?
+    private var saved = false
+
+    init(saveNotInserted: (() -> Void)?) {
+        self.saveNotInserted = saveNotInserted
+    }
+
+    func saveForQuit() {
+        guard !saved else { return }
+        saved = true
+        let save = saveNotInserted
+        saveNotInserted = nil
+        save?()
+    }
+
+    /// Whether the record is still the caller's to save.
+    func claimSave() -> Bool {
+        guard !saved else { return false }
+        saved = true
+        saveNotInserted = nil
+        return true
     }
 }
 
