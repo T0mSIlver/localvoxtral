@@ -472,9 +472,11 @@ extension DictationSessionController {
         let text = transcript.currentDictationEventText
         overlayBufferCoordinator.reset()
         completeStoppedSessionCleanup(sessionMode: sessionMode, overlayCommitOutcome: nil, shouldCommitOverlay: true)
-        statusText = picked
-            ? keepUntypedText(text, status: DestinationStatus.paneLeftFront)
-            : copyUntypedText(text)
+        if picked {
+            statusText = keepUntypedText(text, status: DestinationStatus.paneLeftFront)
+        } else if !text.isEmpty {
+            statusText = copyUntypedText(text)
+        }
         return false
     }
 
