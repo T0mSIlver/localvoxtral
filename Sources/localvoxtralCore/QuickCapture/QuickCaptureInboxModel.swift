@@ -702,15 +702,18 @@ package final class QuickCaptureInboxModel {
 
     package func setRepository(_ repository: String, for id: UUID) {
         let trimmed = repository.trimmingCharacters(in: .whitespacesAndNewlines)
+        let withoutRepository = Set(projects().filter { $0.repository == nil }.map(\.key))
         // A project with no repository takes the answer: the capture's is the
-        // project's then, and follows it when it changes (#1683).
-        let answered = QuickCaptureInbox.isRepository(trimmed)
-            ? inbox.items.first(where: { $0.id == id })?.projectKey.flatMap { key in
-                projects().first(where: { $0.key == key && $0.repository == nil }).map { _ in key }
-            }
-            : nil
+        // project's then, and follows it when it changes (#1683). Read from
+        // the Inbox the change applies to, which another copy may have moved
+        // the capture in.
+        var answered: String?
         mutate { inbox in
+            answered = nil
             inbox.update(id) {
+                if QuickCaptureInbox.isRepository(trimmed), let key = $0.projectKey, withoutRepository.contains(key) {
+                    answered = key
+                }
                 $0.repository = trimmed.isEmpty ? nil : trimmed
                 $0.repositoryIsOwn = trimmed.isEmpty ? nil : answered == nil
             }
