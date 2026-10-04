@@ -147,6 +147,8 @@ final class BackendProcessSupervisorTests: XCTestCase {
             name: "backend.sh",
             body: """
             #!/bin/sh
+            : > "\(pidFile.path)"
+            sleep 2
             echo $$ > "\(pidFile.path)"
             trap 'exit 0' TERM
             while true; do sleep 1; done
