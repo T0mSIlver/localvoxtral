@@ -515,6 +515,71 @@ final class AddressedSendWiringTests: XCTestCase {
         XCTAssertEqual(copied.values, ["Run the tests"])
     }
 
+    /// Escape while a route delivers: the route has the text and writes it
+    /// whatever the app does next, so Escape goes back to the focused app
+    /// once the text is handed over, instead of showing a cancel while the
+    /// text is still sent and submitted (#1666).
+    func testEscapeIsReleasedOnceTheRouteHasTheText() async throws {
+        let (herdr, held, release) = try herdrHoldingTheAppendsForegroundQuery()
+        let harness = makeHarness(text: "Run the tests, send that to payments.", herdr: herdr)
+        // The build host has no GUI session to register the Carbon hotkey in.
+        EscapeCancelHandler.debugConfigureRegistration(status: noErr)
+        let escape = harness.viewModel.session.escapeCancelHandler
+        escape.start()
+        addTeardownBlock { @MainActor in
+            escape.stop()
+            EscapeCancelHandler.resetDebugState()
+        }
+        XCTAssertTrue(escape.debugIsRegistered, "precondition: the stop keeps Escape")
+
+        let commit = harness.startStop()
+        for await _ in held { break }
+        XCTAssertFalse(escape.debugIsRegistered, "Escape goes back to the focused app")
+        escape.debugPressEscape()
+        release.signal()
+        await commit?.value
+
+        XCTAssertFalse(harness.viewModel.session.wasCancelled)
+        XCTAssertEqual(herdr.writes.map(\.method), ["pane.send_text", "pane.send_keys"])
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [true])
+        XCTAssertEqual(harness.viewModel.statusText, "Ready")
+    }
+
+    /// Quit while a route delivers: the dictation is saved as not inserted
+    /// before the quit drains History, and the route's answer adds no second
+    /// record (#1667).
+    func testAQuitWhileTheRouteDeliversSavesOneRecordNotInserted() async throws {
+        let (herdr, held, release) = try herdrHoldingTheAppendsForegroundQuery()
+        let harness = makeHarness(text: "Run the tests, send that to payments.", herdr: herdr)
+        let store = try XCTUnwrap(harness.viewModel.sessionStore)
+
+        let commit = harness.startStop()
+        for await _ in held { break }
+        // What `applicationWillTerminate` runs before it drains History.
+        harness.viewModel.saveStoppedDictationForQuit()
+        await store.pendingWrites?.value
+
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false], "the quit lost the dictation")
+        XCTAssertEqual(harness.records.value.map(\.rawText), ["Run the tests"], "the phrase cut, as a sent record")
+
+        release.signal()
+        await commit?.value
+        XCTAssertEqual(harness.records.value.count, 1, "the route answering later saves nothing more")
+    }
+
+    /// The normal path still saves its one record, inserted, and a later
+    /// quit saves nothing more.
+    func testADeliveredRouteSendLeavesNothingForAQuit() async throws {
+        let herdr = try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane("w1:p2") { [(9001, "claude")] })
+        addTeardownBlock { herdr.stop() }
+        let harness = makeHarness(text: "Run the tests, send that to payments.", herdr: herdr)
+
+        await harness.stop()
+        harness.viewModel.saveStoppedDictationForQuit()
+
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [true], "one record, inserted")
+    }
+
     func testTheStatusSentencesFitThePopoverLine() {
         for sentence in [
             DictationSessionController.AddressedSendStatus.unsupported,
@@ -617,6 +682,36 @@ final class AddressedSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.inserted.value.map(\.text), ["Run the tests"])
         XCTAssertEqual(harness.returns.value, [Self.namedTerminalPID])
         XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [true])
+    }
+
+    /// A mod refusal gives the text back to the terminal tab's route, and
+    /// Escape with it: a cancel during the read-back still stops the Return.
+    func testEscapeAfterAModRefusalStillStopsTheTerminalsReturn() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
+        )
+        _ = attachMod(harness, sessionID: "pay", answer: .refused("dialog"))
+        // The build host has no GUI session to register the Carbon hotkey in.
+        EscapeCancelHandler.debugConfigureRegistration(status: noErr)
+        let escape = harness.viewModel.session.escapeCancelHandler
+        escape.start()
+        addTeardownBlock { @MainActor in
+            escape.stop()
+            EscapeCancelHandler.resetDebugState()
+        }
+        var registeredAtReadBack: Bool?
+        harness.focuser.onReadBack = { _ in
+            registeredAtReadBack = escape.debugIsRegistered
+            escape.debugPressEscape()
+        }
+
+        await harness.stop()
+
+        XCTAssertEqual(registeredAtReadBack, true, "Escape is the app's again for the terminal's route")
+        XCTAssertEqual(harness.inserted.value.map(\.text), ["Run the tests"])
+        XCTAssertEqual(harness.returns.value, [], "the cancel stops the Return")
+        XCTAssertEqual(harness.records.value.count, 1)
     }
 
     /// The channel is there but the write fails: the mod never got the
@@ -755,6 +850,16 @@ final class AddressedSendWiringTests: XCTestCase {
         /// The pids in every tty's foreground process group.
         let foreground: Box<[Int32]>
 
+        /// Stops the dictation and returns its commit task, without
+        /// awaiting it.
+        @MainActor
+        func startStop() -> Task<Void, Never>? {
+            viewModel.isDictating = false
+            viewModel.isFinalizingStop = true
+            viewModel.session.finishStoppedSession(promotePendingSegment: false)
+            return viewModel.session.polishAndCommitTask
+        }
+
         @MainActor
         func stop() async {
             viewModel.isDictating = false
@@ -840,6 +945,33 @@ final class AddressedSendWiringTests: XCTestCase {
             guard let id = heldID.value else { return XCTFail("no held send to answer") }
             answerSend(late, id)
         }
+    }
+
+    /// A herdr pane of "payments" whose second foreground query, the one
+    /// the route's append asks after the route resolved, waits for `release`.
+    /// `held` yields when it starts waiting.
+    private func herdrHoldingTheAppendsForegroundQuery(
+    ) throws -> (FakeHerdrSocket, AsyncStream<Void>, DispatchSemaphore) {
+        let (held, arrival) = AsyncStream<Void>.makeStream()
+        let release = DispatchSemaphore(value: 0)
+        let queries = Box(0)
+        let lock = NSLock()
+        let herdr = try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane("w1:p2") {
+            let query = lock.withLock {
+                queries.value += 1
+                return queries.value
+            }
+            if query == 2 {
+                arrival.yield()
+                release.wait()
+            }
+            return [(9001, "claude")]
+        })
+        addTeardownBlock {
+            release.signal()
+            herdr.stop()
+        }
+        return (herdr, held, release)
     }
 
     private func session(_ id: String, cwd: String, tty: String = "/dev/ttys009") -> ClaudeSessionSnapshot {
