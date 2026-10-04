@@ -192,6 +192,17 @@ final class TextInsertionService {
     /// retirement, is guarded here.
     @ObservationIgnored
     private var promptRelayKeysNeedNewlineGuard = false
+    /// The trailing whitespace run of what the keys typed under that guard,
+    /// held as the hold-back stream holds a terminal session's: typed before
+    /// the next text, or at the stop under the trailing-space policy (#1734).
+    @ObservationIgnored
+    private var promptRelayKeysHeldWhitespace = ""
+    /// What the keys typed under that guard this dictation: the text the
+    /// stop's trailing-space policy judges. What the route filled before is
+    /// to it what a field's earlier text is to a terminal session's policy
+    /// (`withholdingTUIAutocompleteTrailingSpace`): unseen.
+    @ObservationIgnored
+    private var promptRelayKeysTypedText = ""
     /// Moves when another dictation starts or the keys go to another pane,
     /// so a sink can tell whether the live buffers and the keyboard path
     /// still serve its dictation.
@@ -475,6 +486,8 @@ final class TextInsertionService {
         promptRelayGeneration += 1
         promptRelayDictation += 1
         promptRelayKeysNeedNewlineGuard = route?.takesUnsanitizedText ?? false
+        promptRelayKeysHeldWhitespace = ""
+        promptRelayKeysTypedText = ""
         guard let route else {
             promptRelaySink = nil
             return
@@ -529,6 +542,10 @@ final class TextInsertionService {
     func retirePromptRelay(endingDictation: Bool = false, settling: Bool = true) {
         if settling { promptRelaySink?.finish() }
         promptRelaySink = nil
+        // The keys' text so far is in the pane they leave: the next stop
+        // judges only what they type from here.
+        promptRelayKeysTypedText = ""
+        promptRelayKeysHeldWhitespace = ""
         promptRelayGeneration += 1
         if endingDictation { promptRelayDictation += 1 }
     }
@@ -562,10 +579,54 @@ final class TextInsertionService {
         flushPendingRealtimeInsertion()
     }
 
-    /// `text` as the keys may type it while the relay's route left the
-    /// session without a newline guard.
-    private func guardedForKeysAfterPromptRelay(_ text: String) -> String {
-        promptRelayKeysNeedNewlineGuard ? Self.collapsingNewlineRuns(text) : text
+    /// What the keys type of `text` now, and what they hold. While the
+    /// relay's route left the session without a newline guard, newline runs
+    /// are collapsed and the trailing whitespace run is held behind the
+    /// whitespace held before, as a terminal session's hold-back stream
+    /// does: only the stop decides whether a space follows a lone slash
+    /// command or a trailing mention.
+    private func keysTextAfterPromptRelay(_ text: String) -> (typed: String, held: String) {
+        guard promptRelayKeysNeedNewlineGuard else { return (text, "") }
+        let text = promptRelayKeysHeldWhitespace + text
+        let body = text.lastIndex { !$0.isWhitespace }.map(text.index(after:)) ?? text.startIndex
+        return (Self.collapsingNewlineRuns(String(text[..<body])), String(text[body...]))
+    }
+
+    /// Notes that the keys typed `typed` and now hold `held`.
+    private func keysTypedAfterPromptRelay(_ typed: String, holding held: String) {
+        guard promptRelayKeysNeedNewlineGuard else { return }
+        promptRelayKeysHeldWhitespace = held
+        promptRelayKeysTypedText += typed
+    }
+
+    /// The stop: the whitespace the keys held is typed, collapsed, unless
+    /// the trailing-space policy withholds it from what they typed.
+    private func releaseKeysHeldWhitespace() {
+        guard !promptRelayKeysHeldWhitespace.isEmpty else { return }
+        let run = Self.collapsingNewlineRuns(promptRelayKeysHeldWhitespace)
+        promptRelayKeysHeldWhitespace = ""
+        let keysText = promptRelayKeysTypedText + run
+        let dropCount = keysText.count - TUIAutocompleteTrailingSpace.stripped(keysText).count
+        if dropCount > 0 {
+            Log.corrector.notice(
+                "tui autocomplete: withheld \(min(dropCount, run.count), privacy: .public) trailing whitespace char(s) at stop"
+            )
+        }
+        let typed = String(run.dropLast(min(dropCount, run.count)))
+        guard !typed.isEmpty else { return }
+        switch insertTextPrioritizingKeyboard(typed) {
+        case .insertedByAccessibility, .insertedByKeyboardFallback:
+            promptRelayKeysTypedText += typed
+            liveInsertionTargetPIDs.append(confirmedLiveInsertionPID())
+        case .failed:
+            // Left for the cleanup to report, like any text the field refused;
+            // with a stream armed, as released text, never re-ingested.
+            if liveHoldBackStream != nil {
+                pendingHoldBackReleasedText += typed
+            } else {
+                pendingRealtimeInsertionText += typed
+            }
+        }
     }
 
     /// Every whitespace run holding a newline or a tab, as one space: a
@@ -611,10 +672,18 @@ final class TextInsertionService {
             pendingRealtimeInsertionText.removeAll(keepingCapacity: true)
             return
         }
-        switch insertTextPrioritizingKeyboard(guardedForKeysAfterPromptRelay(prepared.text)) {
+        let keys = keysTextAfterPromptRelay(prepared.text)
+        guard !keys.typed.isEmpty else {
+            commitLateTerminalGuard(prepared)
+            pendingRealtimeInsertionText.removeAll(keepingCapacity: true)
+            keysTypedAfterPromptRelay("", holding: keys.held)
+            return
+        }
+        switch insertTextPrioritizingKeyboard(keys.typed) {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
             commitLateTerminalGuard(prepared)
             pendingRealtimeInsertionText.removeAll(keepingCapacity: true)
+            keysTypedAfterPromptRelay(keys.typed, holding: keys.held)
             liveInsertionTargetPIDs.append(confirmedLiveInsertionPID())
         case .failed:
             break
@@ -764,12 +833,15 @@ final class TextInsertionService {
     /// the cleanup to report.
     func discardLiveReplacementSession() {
         liveHoldBackStream = nil
+        promptRelayKeysHeldWhitespace = ""
     }
 
     func flushFinalLiveReplacementCorrections() {
         // Session stop: release the whole held tail with replacements applied.
-        guard liveHoldBackStream != nil else { return }
-        flushLiveHoldBackStream(releaseRemainder: true)
+        if liveHoldBackStream != nil {
+            flushLiveHoldBackStream(releaseRemainder: true)
+        }
+        releaseKeysHeldWhitespace()
     }
 
     // MARK: - Private
@@ -808,11 +880,17 @@ final class TextInsertionService {
             liveTypedTextForSession += prepared.text
             return
         }
-        let typed = guardedForKeysAfterPromptRelay(prepared.text)
-        switch insertTextPrioritizingKeyboard(typed) {
+        let keys = keysTextAfterPromptRelay(prepared.text)
+        guard !keys.typed.isEmpty else {
+            commitLateTerminalGuard(prepared)
+            keysTypedAfterPromptRelay("", holding: keys.held)
+            return
+        }
+        switch insertTextPrioritizingKeyboard(keys.typed) {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
             commitLateTerminalGuard(prepared)
-            liveTypedTextForSession += typed
+            liveTypedTextForSession += keys.typed
+            keysTypedAfterPromptRelay(keys.typed, holding: keys.held)
             liveInsertionTargetPIDs.append(confirmedLiveInsertionPID())
         case .failed:
             // Keep the released text verbatim for the retry task; it must
