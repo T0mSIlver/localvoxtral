@@ -370,7 +370,10 @@ extension DictationSessionController {
                 )
             }
             polishAndCommitTask = Task { @MainActor [weak self] in
-                guard let self,
+                // A new dictation that cancelled this before it ran already
+                // saved it and reset the overlay; with no target left, the
+                // read-back below would pass.
+                guard let self, !Task.isCancelled,
                       await self.commitPaneStillShownBeforeInsertion(sessionMode: sessionMode, joined: commitJoin)
                 else { return }
                 self.saveInterruptedPolishCommit = nil
