@@ -1,3 +1,4 @@
+import ClaudeContextWire
 import Foundation
 
 /// Live Auto-Paste through a Claude Code session's mod (#1645): the deltas

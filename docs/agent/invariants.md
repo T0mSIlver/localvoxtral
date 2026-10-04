@@ -862,7 +862,8 @@ there is not.
   owner's decision.
   (3) *Keystrokes are the fallback, not a race.* `AgentPromptSink` sends one
   call at a time, in order, and counts a call delivered only when the target
-  confirmed it; the first failure (refused, timed out, unconfirmed) hands
+  confirmed it, or, for a route whose appends go unanswered, once the
+  route's `settle` confirmed it (the Claude Code mod's, below); the first failure (refused, timed out, unconfirmed) hands
   that call's text and every append queued behind it to the keyboard path,
   in order, for the rest of the dictation, and drops any queued submit: that
   text may have landed elsewhere. A route failure records a nil landing,
@@ -1044,6 +1045,27 @@ there is not.
     the join. In cmux's default `cmuxOnly` mode there is no join and so no
     route, and dictation types as before, with no alert and no setting. A
     connection refused mid-dictation falls back to keystrokes the same way.
+  - *the Claude Code mod* (#1645, `ClaudeModPromptRoute`). Live Auto-Paste
+    only; an Overlay Buffer commit fills through the mod on its own
+    (`ModChannelOverlayCommitter`). *Only a local session's own channel:*
+    a tty, local herdr or cmux join of a Claude Code session on this Mac,
+    or, with no context join, the focused pane's session as the local arms
+    alone answer it (`sessionShown`), and only once its mod answered an
+    opening `ack` (an older mod answers `unknown_kind` and the dictation
+    types as before). *Unanswered appends, counted at the stop:* each delta
+    is an `append` with its place in the stream, and counts delivered once
+    written. The mod fills them one at a time in that order; a gap or a
+    refused fill ends the stream there, so nothing lands out of order. The
+    stop (and a spoken send, before its empty `send` submits the box) asks
+    `ack`, which answers how many filled; the rest are typed, sanitized as
+    keys need, only while Secure Keyboard Entry is off and the terminal the
+    dictation started in is frontmost with its focused pane on the session,
+    and stay in History otherwise. An `ack` with no answer, or a channel
+    gone mid-dictation, leaves every unconfirmed delta possibly filled: all
+    of them stay in History, none is typed. The live record waits for the
+    stop's `ack`. *No key, so no key rules:* the terminal newline guard and
+    the trailing-space policy do not apply to filled text, and Secure
+    Keyboard Entry neither refuses the start nor warns.
 - **Claude Code context reaches the prompt only through a positive join.**
   The joined session's repository (status, uncommitted diffs, contents
   of files the agent just touched) and its prior user prompt are attached as
