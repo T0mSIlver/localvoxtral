@@ -14,6 +14,9 @@ package enum DiagnosticRecordRedaction {
     /// Stands in for the lines of the prompt the user last sent to their
     /// agent (`withholdPrompt`).
     package static let withheldPromptPlaceholder = "<prior prompt withheld>"
+    /// Stands in for the joined session's unsent prompt draft
+    /// (`ClaudePromptDraft`), which the session context carries too.
+    package static let withheldDraftPlaceholder = "<prompt draft withheld>"
     /// The remote-enrollment token: 43 base64url characters with no prefix.
     package static let tokenLength = 43
 
@@ -135,12 +138,62 @@ package enum DiagnosticRecordRedaction {
     /// spaces, control characters dropped), because a context over its grant
     /// renders the second form (#1106).
     ///
-    /// The screen gets one more pass first (`withholdingWrapped`): a terminal
+    /// The screen gets one more pass (`withholdingWrapped`): a terminal
     /// soft-wraps a long prompt line at the pane width and expands its tabs,
     /// so a row there can hold any stretch of a line (#1121).
     package static func withholdPrompt(_ prompt: String?, from record: inout DiagnosticRecord) {
-        guard let prompt, !prompt.isEmpty else { return }
-        let withhold = promptWithholder(prompt)
+        withhold(.priorPrompt(prompt), from: &record)
+    }
+
+    /// The person's own words the context carried and a record must not
+    /// keep: the text, the labels that head it in the session block, and
+    /// what stands in for it.
+    package struct Withheld: Equatable {
+        package let text: String
+        package let labels: [String]
+        package let placeholder: String
+        /// Pieces of `text` whose lines are looked for too: a field may hold
+        /// one of them on its own.
+        package var pieces: [String] = []
+
+        /// `text` and its pieces, one line per needle.
+        var needles: String {
+            ([text] + pieces).joined(separator: "\n")
+        }
+
+        /// The prompt the user last sent to the joined agent.
+        package static func priorPrompt(_ prompt: String?) -> Withheld? {
+            guard let prompt, !prompt.isEmpty else { return nil }
+            return Withheld(
+                text: prompt,
+                labels: [ClaudeSessionContextText.priorPromptLabel],
+                placeholder: withheldPromptPlaceholder
+            )
+        }
+
+        /// The joined session's unsent draft, both sides of the cursor. The
+        /// session block puts each side on one line behind its label; the
+        /// screen shows the draft's own lines, which the cursor does not
+        /// split. Each side's lines are looked for as well, for a field that
+        /// holds only one side.
+        package static func draft(_ draft: ClaudePromptDraft?) -> Withheld? {
+            guard let draft, !draft.isEmpty else { return nil }
+            return Withheld(
+                text: draft.beforeCursor + draft.afterCursor,
+                labels: [ClaudePromptDraft.beforeCursorLabel, ClaudePromptDraft.afterCursorLabel],
+                placeholder: withheldDraftPlaceholder,
+                pieces: [draft.beforeCursor, draft.afterCursor].filter { !$0.isEmpty }
+            )
+        }
+    }
+
+    /// `withholdPrompt` for every `Withheld` the record must not keep, all
+    /// at once: one value's text can spell part of another's label ("prompt
+    /// box"), so every label is masked before any value's lines are.
+    package static func withhold(_ withheld: [Withheld], from record: inout DiagnosticRecord) {
+        guard !withheld.isEmpty else { return }
+        let withhold = promptWithholder(withheld, softWrapped: false)
+        let withholdScreen = promptWithholder(withheld, softWrapped: true)
 
         func withholdOptional(_ text: inout String?) {
             text = text.map(withhold)
@@ -149,14 +202,17 @@ package enum DiagnosticRecordRedaction {
         withholdOptional(&record.text.systemPrompt)
         record.text.userPrompts = record.text.userPrompts.map(withhold)
         if var screen = record.screen {
-            screen.sanitizedText = screen.sanitizedText.map {
-                withhold(withholdingWrapped(prompt, in: $0))
-            }
+            screen.sanitizedText = screen.sanitizedText.map(withholdScreen)
             record.screen = screen
         }
         for index in record.sources.indices {
             withholdOptional(&record.sources[index].renderedExcerpt)
         }
+    }
+
+    /// `withholdPrompt` for any `Withheld`.
+    package static func withhold(_ withheld: Withheld?, from record: inout DiagnosticRecord) {
+        withhold([withheld].compactMap { $0 }, from: &record)
     }
 
     /// `text` with the prompt taken out as `withholdPrompt` takes it out of
@@ -168,33 +224,53 @@ package enum DiagnosticRecordRedaction {
     /// the text once per prompt anchor, so only screen text, which is capped,
     /// takes it; the clipboard can hold millions of characters.
     package static func withholdingPrompt(_ prompt: String?, in text: String, softWrapped: Bool) -> String {
-        guard let prompt, !prompt.isEmpty else { return text }
-        return promptWithholder(prompt)(softWrapped ? withholdingWrapped(prompt, in: text) : text)
+        withholding(.priorPrompt(prompt), in: text, softWrapped: softWrapped)
     }
 
-    /// The label, whole-line and cut-line passes `withholdPrompt` runs on
-    /// every field.
-    private static func promptWithholder(_ prompt: String) -> (String) -> String {
-        let label = ClaudeSessionContextText.priorPromptLabel
-        let renderedPrompt = prompt.components(separatedBy: "\n")
-            .map(PolishContextExcerptSelector.renderedLine)
-            .joined(separator: "\n")
-        let labelled = Set([prompt, renderedPrompt].map { label + $0 })
-            .sorted { $0.count > $1.count }
-        let lines = Set(
-            prompt.split(whereSeparator: \.isNewline).flatMap { line in
-                [String(line), PolishContextExcerptSelector.renderedLine(String(line))]
+    /// `text` with every one of `withheld` taken out, labels first, as
+    /// `withhold(_:from:)` takes them out of a record.
+    package static func withholding(_ withheld: [Withheld], in text: String, softWrapped: Bool) -> String {
+        withheld.isEmpty ? text : promptWithholder(withheld, softWrapped: softWrapped)(text)
+    }
+
+    /// `withholdingPrompt` for any `Withheld`.
+    package static func withholding(_ withheld: Withheld?, in text: String, softWrapped: Bool) -> String {
+        withholding([withheld].compactMap { $0 }, in: text, softWrapped: softWrapped)
+    }
+
+    /// The label, soft-wrap, whole-line and cut-line passes `withholdPrompt`
+    /// runs on every field, each pass over every value before the next pass.
+    private static func promptWithholder(_ withheld: [Withheld], softWrapped: Bool) -> (String) -> String {
+        let labelled = withheld.flatMap { value in
+            let renderedText = value.text.components(separatedBy: "\n")
+                .map(PolishContextExcerptSelector.renderedLine)
+                .joined(separator: "\n")
+            return value.labels.flatMap { label in
+                Set([value.text, renderedText]).map {
+                    (whole: label + $0, label: label, placeholder: value.placeholder)
+                }
             }
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { $0.count >= minimumLineLength }
-        )
-        .sorted { $0.count > $1.count }
+        }
+        .sorted { $0.whole.count > $1.whole.count }
+        let lines = withheld.flatMap { value in
+            Set(
+                value.needles.split(whereSeparator: \.isNewline).flatMap { line in
+                    [String(line), PolishContextExcerptSelector.renderedLine(String(line))]
+                }
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { $0.count >= minimumLineLength }
+            )
+            .map { (line: $0, placeholder: value.placeholder) }
+        }
+        .sorted { $0.line.count > $1.line.count }
 
         /// Replaces each `head` and the rest of its line with `kept` and the
         /// placeholder, searching on after each replacement, which may hold
         /// `head` itself.
-        func maskingToLineEnd(_ head: String, in text: String, keeping kept: String = "") -> String {
-            let replacement = kept + withheldPromptPlaceholder
+        func maskingToLineEnd(
+            _ head: String, in text: String, keeping kept: String = "", placeholder: String
+        ) -> String {
+            let replacement = kept + placeholder
             var output = text
             var searchFrom = 0
             while let found = output.range(
@@ -211,15 +287,25 @@ package enum DiagnosticRecordRedaction {
 
         func withhold(_ text: String) -> String {
             var output = text
-            for whole in labelled {
-                output = output.replacingOccurrences(of: whole, with: label + withheldPromptPlaceholder)
+            for (whole, label, placeholder) in labelled {
+                output = output.replacingOccurrences(of: whole, with: label + placeholder)
             }
-            output = maskingToLineEnd(label, in: output, keeping: label)
-            for line in lines {
-                output = output.replacingOccurrences(of: line, with: withheldPromptPlaceholder)
+            for value in withheld {
+                for label in value.labels {
+                    output = maskingToLineEnd(label, in: output, keeping: label, placeholder: value.placeholder)
+                }
             }
-            for line in lines where line.count >= truncatedPrefixLength {
-                output = maskingToLineEnd(String(line.prefix(truncatedPrefixLength)), in: output)
+            if softWrapped {
+                for value in withheld {
+                    output = withholdingWrapped(value.needles, in: output, placeholder: value.placeholder)
+                }
+            }
+            for (line, placeholder) in lines {
+                output = output.replacingOccurrences(of: line, with: placeholder)
+            }
+            for (line, placeholder) in lines where line.count >= truncatedPrefixLength {
+                output = maskingToLineEnd(
+                    String(line.prefix(truncatedPrefixLength)), in: output, placeholder: placeholder)
             }
             return output
         }
@@ -237,7 +323,9 @@ package enum DiagnosticRecordRedaction {
     /// found is extended both ways for as long as the line goes on matching.
     /// A line shorter than an anchor must match whole; one shorter than
     /// `minimumLineLength` is not looked for, as in `withholdPrompt`.
-    package static func withholdingWrapped(_ prompt: String, in text: String) -> String {
+    package static func withholdingWrapped(
+        _ prompt: String, in text: String, placeholder: String = withheldPromptPlaceholder
+    ) -> String {
         let needles = prompt.split(whereSeparator: \.isNewline)
             .map { $0.filter(isSpelled) }
             .filter { $0.count >= minimumLineLength }
@@ -283,7 +371,7 @@ package enum DiagnosticRecordRedaction {
             }
             for span in merged.reversed() {
                 let range = indices[span.lowerBound]..<output.index(after: indices[span.upperBound - 1])
-                output.replaceSubrange(range, with: withheldPromptPlaceholder)
+                output.replaceSubrange(range, with: placeholder)
             }
         }
         return output

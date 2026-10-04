@@ -1345,6 +1345,67 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded), [true, true])
     }
 
+    /// The prompt box already holds typed words when the dictation starts:
+    /// the mod reads it at the stop, so the first commit continues it with a
+    /// space instead of gluing to its last word, which no earlier commit
+    /// could have told the app (#1406).
+    func testAFillAfterWordsTypedInThePromptBoxStartsWithASpace() async throws {
+        let (pipeline, typed, fills) = try await modChannelPipeline(
+            answers: [.fill], drafts: [(text: "fix the flaky", cursor: 13)]
+        )
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "reconnect test.")
+        let filled = await settled.wait(for: 1)
+
+        XCTAssertTrue(filled)
+        XCTAssertEqual(fills.texts, [" reconnect test."])
+        XCTAssertEqual(typed.text, "")
+    }
+
+    /// The person cleared the box after the last commit without sending it:
+    /// the mod reads it empty, so `/compact` stays a command, where the
+    /// guess from the last commit would have put a space in front (#802).
+    func testAFillIntoABoxTheModReadsEmptyTakesNoSpaceAfterAnEarlierCommit() async throws {
+        let (pipeline, _, fills) = try await modChannelPipeline(
+            answers: [.fill], drafts: [(text: "", cursor: 0)]
+        )
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "run the tests.")
+        _ = await settled.wait(for: 1)
+        await dictate(pipeline, "/compact")
+        let both = await settled.wait(for: 2)
+
+        XCTAssertTrue(both)
+        XCTAssertEqual(fills.texts, ["run the tests.", "/compact"])
+    }
+
+    /// With session context on, the polish request carries the draft behind
+    /// its label, so the model sees what the dictation continues.
+    func testThePromptDraftReachesThePolishRequest() async throws {
+        let (pipeline, _, _) = try await modChannelPipeline(
+            answers: [.fill], drafts: [(text: "fix the flaky\nWebSocketClient", cursor: 29)]
+        )
+        let polish = FakePolishingService()
+        pipeline.viewModel.llmPolishingService = polish
+        pipeline.viewModel.settings.claudeRepoContextEnabled = true
+
+        await dictate(pipeline, "reconnect test.")
+        let sent = await waitForPolishRequests(polish, 1)
+
+        XCTAssertTrue(sent)
+        let prompts = await polish.lastRequest?.userPrompts.joined(separator: "\n") ?? ""
+        XCTAssertTrue(
+            prompts.contains(ClaudePromptDraft.beforeCursorLabel + "fix the flaky / WebSocketClient"),
+            prompts
+        )
+    }
+
     /// The mod got the fill and never answered: it may have filled the box,
     /// so the words stay in History instead of going in twice.
     func testAFillTheModNeverAnswersIsKeptNotTyped() async throws {
@@ -1394,6 +1455,82 @@ final class DictationPipelineTests: XCTestCase {
 
         XCTAssertEqual(typed.text, "/compact", "precondition: the next dictation committed, and A was never typed")
         XCTAssertEqual(copied.values, ["run the tests."], "the next dictation leaves the clipboard alone")
+    }
+
+    // MARK: - A spoken send through the session's mod (#1644)
+
+    /// "Send it" into a Claude Code session with its mod: the mod fills and
+    /// submits, once, and no key is posted, so Secure Keyboard Entry does
+    /// not stop it.
+    func testASpokenSendThroughTheModSubmitsOnceAndPostsNoKey() async throws {
+        var returns: [pid_t] = []
+        let (pipeline, typed, fills) = try await modChannelPipeline(
+            answers: [.sent], returnKeyPoster: { pid in
+                returns.append(pid)
+                return true
+            }
+        )
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+        addTeardownBlock { @MainActor in TerminalTargetDetector.debugSecureEventInputOverride = nil }
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "run the tests, send it.")
+        let done = await settled.wait(for: 1)
+
+        XCTAssertTrue(done)
+        XCTAssertEqual(fills.kinds, [.send])
+        XCTAssertEqual(fills.texts, ["run the tests"])
+        XCTAssertEqual(returns, [], "no Return key")
+        XCTAssertEqual(typed.text, "", "no key at all")
+    }
+
+    /// The session is mid-turn: the mod's submit waits for it, and the
+    /// popover says so instead of reporting the prompt as sent.
+    func testASpokenSendTheModQueuesSaysItRunsAfterTheTurn() async throws {
+        let (pipeline, typed, fills) = try await modChannelPipeline(answers: [.queued])
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "run the tests, send it.")
+        let done = await settled.wait(for: 1)
+
+        XCTAssertTrue(done)
+        XCTAssertEqual(fills.kinds, [.send])
+        XCTAssertEqual(typed.text, "")
+        XCTAssertEqual(pipeline.viewModel.lastError, DictationSessionController.ModChannelStatus.queued)
+    }
+
+    /// The mod refused (a dialog held the keys): the words are typed into
+    /// the session's pane, which is in front, and Return follows once, as
+    /// before the mod.
+    func testASpokenSendTheModRefusesIsTypedThenReturnedOnce() async throws {
+        var returns: [pid_t] = []
+        let (pipeline, typed, fills) = try await modChannelPipeline(
+            answers: [.refuse], returnKeyPoster: { pid in
+                returns.append(pid)
+                return true
+            }
+        )
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == 4343 ? TerminalScreenAllowlist.ghosttyBundleID : nil
+        }
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "run the tests, send it.")
+        let done = await settled.wait(for: 1)
+
+        XCTAssertTrue(done)
+        XCTAssertEqual(fills.kinds, [.send])
+        XCTAssertEqual(typed.text, "run the tests")
+        XCTAssertEqual(returns, [4343])
     }
 
     /// The joined session's band follows the dictation: listening with the
@@ -1571,7 +1708,7 @@ final class DictationPipelineTests: XCTestCase {
     }
 
     /// How the fake mod answers a fill.
-    private enum FakeModAnswer { case fill, refuse, silent }
+    private enum FakeModAnswer { case fill, refuse, silent, sent, queued }
 
     /// A dictation joined to Claude Code session `s1` in a terminal, whose
     /// mod answers the fills in turn with `answers`, the last one repeating.
@@ -1587,6 +1724,8 @@ final class DictationPipelineTests: XCTestCase {
         herdr: FakeHerdrSocket? = nil,
         herdrFocus: HerdrFocus? = nil,
         answerGate: BoundedWait? = nil,
+        drafts: [(text: String, cursor: Int)] = [],
+        returnKeyPoster: ((pid_t) -> Bool)? = nil,
         beforeAnswer: @escaping @Sendable () -> Void = {}
     ) async throws -> (Pipeline, TypedText, FillRecorder) {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
@@ -1601,7 +1740,7 @@ final class DictationPipelineTests: XCTestCase {
             if let focus { focusedTTY = { focus.tty } }
             _ = joinClaudeCodeTerminal(pipeline, focusedTTY: focusedTTY)
         }
-        let typed = recordTypedText(pipeline)
+        let typed = recordTypedText(pipeline, returnKeyPoster: returnKeyPoster)
 
         // A silent mod's fill times out at once, or when the gate opens;
         // the others' timer never fires before their reply cancels it.
@@ -1619,13 +1758,23 @@ final class DictationPipelineTests: XCTestCase {
                     fills.appendState(message.phase, message.text)
                     return true
                 }
-                guard message.kind == .fill else { return false }
+                if message.kind == .draft {
+                    // A mod older than `draft` is one that is never asked.
+                    guard !drafts.isEmpty else { return false }
+                    let box = drafts[min(fills.takeDraftIndex(), drafts.count - 1)]
+                    hub.deliver(.init(sessionID: "s1", id: message.id, ok: true, text: box.text, cursor: box.cursor))
+                    return true
+                }
+                guard message.kind == .fill || message.kind == .send else { return false }
                 let answer = answers[min(fills.texts.count, answers.count - 1)]
-                fills.append(message.text ?? "")
+                fills.append(message.text ?? "", kind: message.kind)
                 beforeAnswer()
                 if answer != .silent {
+                    let ok = answer != .refuse
                     let reply = ClaudeModChannelWire.Reply(
-                        sessionID: "s1", id: message.id, ok: answer == .fill, reason: answer == .fill ? nil : "dialog"
+                        sessionID: "s1", id: message.id, ok: ok, reason: ok ? nil : "dialog",
+                        submitted: message.kind == .send && ok ? true : nil,
+                        queued: answer == .queued ? true : nil
                     )
                     if let answerGate {
                         Task {
@@ -4502,8 +4651,27 @@ private final class FillRecorder: @unchecked Sendable {
     private var recorded: [String] = []
     private var recordedStates: [(phase: ClaudeModChannelWire.Phase?, text: String?)] = []
 
-    func append(_ text: String) { lock.withLock { recorded.append(text) } }
+    private var recordedKinds: [ClaudeModChannelWire.Kind] = []
+
+    func append(_ text: String, kind: ClaudeModChannelWire.Kind = .fill) {
+        lock.withLock {
+            recorded.append(text)
+            recordedKinds.append(kind)
+        }
+    }
+
     var texts: [String] { lock.withLock { recorded } }
+    var kinds: [ClaudeModChannelWire.Kind] { lock.withLock { recordedKinds } }
+
+    private var draftsRead = 0
+
+    /// How many drafts the mod gave before this one.
+    func takeDraftIndex() -> Int {
+        lock.withLock {
+            defer { draftsRead += 1 }
+            return draftsRead
+        }
+    }
 
     private var stateObserver: (@Sendable () -> Void)?
 

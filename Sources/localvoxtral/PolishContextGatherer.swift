@@ -21,6 +21,10 @@ struct PolishContextMaterial {
     var repoVocabularyOutcome: RepoVocabularyMatcher.GroundingOutcome
     var claudeRepoSnapshot: ClaudeRepoSnapshot?
     var claudeSessionText: String
+    /// The joined session's prompt box at the stop, read through its mod.
+    /// Kept when consent is withdrawn: the commit's leading space reads it,
+    /// and that never leaves the Mac.
+    let promptDraft: ClaudePromptDraft?
     let screenRenderDemand: Int
     let repoRenderDemand: Int
     let allocation: [PolishContextSource: Int]
@@ -120,6 +124,14 @@ enum PolishContextGatherer {
         // on any pane-read failure it IS `capturedScreenDecision`,
         // which for these joins is vocabulary-only at best (the
         // authorizer still refuses raw AX attachment).
+        // The prompt box as the stop left it, asked of the session's mod
+        // now and awaited after the slow reads below, which hide its
+        // round trip. Not a child task: a cancelled commit returns without
+        // waiting out the mod.
+        let promptDraftRead = Task { @MainActor in
+            await context.promptDraft(for: capturedClaudeJoin)
+        }
+
         var screenDecision = capturedScreenDecision
         let screenReadThroughJoin = capturedSocketPaneStart != nil && endpointURL != nil
         if capturedSocketPaneStart != nil,
@@ -244,11 +256,14 @@ enum PolishContextGatherer {
         // stop both too. Checking only the setting here meant a dead
         // session's PRIOR PROMPT still rode to whatever endpoint was
         // configured, including a remote one.
+        let promptDraft = await promptDraftRead.value
+        guard !Task.isCancelled else { return nil }
         var claudeSessionText = ""
         if let endpointURL = endpointURL {
             claudeSessionText = context.claudeSessionTextIfEnabled(
                 join: capturedClaudeJoin,
-                endpointURL: endpointURL
+                endpointURL: endpointURL,
+                draft: promptDraft
             )
         }
 
@@ -406,6 +421,7 @@ enum PolishContextGatherer {
             repoVocabularyOutcome: repoVocabularyOutcome,
             claudeRepoSnapshot: claudeRepoSnapshot,
             claudeSessionText: claudeSessionText,
+            promptDraft: promptDraft,
             screenRenderDemand: screenRenderDemand,
             repoRenderDemand: repoRenderDemand,
             allocation: allocation,

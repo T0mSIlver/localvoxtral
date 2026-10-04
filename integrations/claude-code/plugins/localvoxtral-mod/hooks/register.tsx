@@ -5,12 +5,20 @@ import type { Band } from '../types'
 import {
   BAND_STALE_MS,
   bandOf,
+  type ChannelBye,
   type ChannelMessage,
+  draftOf,
+  insertedAt,
+  needsKeys,
   type ChannelReply,
+  NEW_SESSION_POLL_MS,
+  NEW_SESSION_WAIT_MS,
   type Outcome,
   parseMessage,
   RESTART_DELAY_MS,
+  SESSION_CHANGED,
   SHORTEST_LIFE_MS,
+  SUBMIT_ANSWER_MS,
   WIRE_VERSION,
 } from './channel'
 
@@ -54,28 +62,57 @@ async function settingsShowIndicator($: EngineInterface): Promise<boolean> {
   return typeof command === 'string' && SETTINGS_INDICATOR.test(command)
 }
 
+// The session the mod said `bye` for, and whether the process ends with it
+// (any end but `/clear`). Module state: `session.end` sets it, the channel
+// loop reads it.
+let endingSession: string | undefined
+let processEnds = false
+// Resolves when `session.end` cuts the channel of a `/clear`, so the read
+// loop stops waiting on a child the app may never close.
+let cutChannel: () => void = () => {}
+
 /**
  * Keeps `--attach` running for the session's life and answers each message
- * with what `handle` did.
+ * with what `handle` did. After the app's `bye`, attaches again under the
+ * session id a `/clear` moved the process to (#1646).
  * Never throws into the session.
  */
 async function runChannel(
   $: EngineInterface,
   publisher: string,
 ): Promise<void> {
-  const sessionID = await $.session.id()
+  let sessionID = await $.session.id()
   for (;;) {
     const startedAt = await $.clock.now()
+    let saidBye = false
     try {
       let buffered = ''
       const child = $.process.spawn({ argv: [publisher, '--attach', '--session', sessionID] })
-      for await (const { stream, text } of child) {
+      const cut = new Promise<'cut'>((resolve) => {
+        cutChannel = () => resolve('cut')
+      })
+      read: for (;;) {
+        const piece = await Promise.race([child.next(), cut])
+        if (piece === 'cut') {
+          // Ends the child; not awaited, since a pull may still be pending.
+          void child.return(undefined as never).catch(() => {})
+          break
+        }
+        if (piece.done === true) break
+        const { stream, text } = piece.value
         if (stream !== 'stdout') continue
         buffered += text
         let newline = buffered.indexOf('\n')
         while (newline >= 0) {
           const message = parseMessage(buffered.slice(0, newline))
           buffered = buffered.slice(newline + 1)
+          if (message?.kind === 'bye') {
+            // The app ended this session's channel; leaving the loop ends
+            // the child.
+            saidBye = true
+            void child.return(undefined as never).catch(() => {})
+            break read
+          }
           if (message?.kind === 'state') void showBand($, message)
           else if (message !== null) void answer($, publisher, sessionID, message)
           newline = buffered.indexOf('\n')
@@ -84,8 +121,39 @@ async function runChannel(
     } catch {
       // The child could not start; the restart below decides what is next.
     }
+    if (saidBye || endingSession === sessionID) {
+      if (processEnds) return
+      const next = await newSessionID($, sessionID)
+      if (next === undefined) return
+      sessionID = next
+      continue
+    }
     if ((await $.clock.now()) - startedAt < SHORTEST_LIFE_MS) return
     await $.clock.sleep(RESTART_DELAY_MS)
+  }
+}
+
+/** The id the process went on under after `ended`, or undefined in time. */
+async function newSessionID($: EngineInterface, ended: string): Promise<string | undefined> {
+  for (let waited = 0; waited <= NEW_SESSION_WAIT_MS; waited += NEW_SESSION_POLL_MS) {
+    const id = await $.session.id()
+    if (id !== ended) return id
+    await $.clock.sleep(NEW_SESSION_POLL_MS)
+  }
+  return undefined
+}
+
+/**
+ * Tells the app the session ends (#1646), so it drops the session when the
+ * channel closes instead of waiting out a TTL. Inside `session.end`'s short
+ * budget; a failure leaves the app the session's own SessionEnd hook.
+ */
+async function sayBye($: EngineInterface, publisher: string, sessionID: string): Promise<void> {
+  const bye: ChannelBye = { mod_bye: WIRE_VERSION, session_id: sessionID }
+  try {
+    await $.process.run([publisher, '--mod-reply'], { stdin: `${JSON.stringify(bye)}\n`, timeoutMs: 1000 })
+  } catch {
+    // The app keeps the session until its SessionEnd hook or TTL.
   }
 }
 
@@ -97,7 +165,13 @@ async function answer(
 ): Promise<void> {
   let outcome: Outcome
   try {
-    outcome = await handle($, message)
+    // A /clear or a resume moves the process to another session before
+    // `session.end` cuts this attach. A request issued for this session
+    // must not act on that one's prompt box or transcript.
+    outcome =
+      message.kind !== 'ping' && (await $.session.id()) !== sessionID
+        ? { ok: false, reason: SESSION_CHANGED }
+        : await handle($, message)
   } catch {
     outcome = { ok: false, reason: 'failed' }
   }
@@ -137,6 +211,13 @@ async function handle($: EngineInterface, message: ChannelMessage): Promise<Outc
       const filled = await $.prompt.fill({ text: message.text, mode: 'insert' })
       return filled.isFilled ? { ok: true } : { ok: false, reason: filled.refusal ?? 'refused' }
     }
+    case 'send':
+      if (message.text === undefined || message.text === '') return { ok: false, reason: 'no_text' }
+      return send($, message.text)
+    case 'draft':
+      // What the person already typed, for polish and the space before the
+      // fill (#1406). Read where the dictation will land, at the stop.
+      return { ok: true, ...draftOf(await $.prompt.read()) }
     case 'terms': {
       // The project's names, from what this session already holds (#1410):
       // its own transcript, served from the prompt cache, no tool.
@@ -155,10 +236,73 @@ async function handle($: EngineInterface, message: ChannelMessage): Promise<Outc
   }
 }
 
+// The main loop's running turn, from `turn.start` to its `turn.complete`:
+// a plugin's submit waits for it.
+let runningTurn: string | undefined
+
+/**
+ * A spoken send (#1644): the text goes in at the cursor, then the box's
+ * whole text is submitted as the person's own and the box emptied, so
+ * nothing is sent twice or left behind. Answers `queued` when the submit
+ * waits for a running turn; a submit refused later puts the text back.
+ */
+async function send($: EngineInterface, text: string): Promise<Outcome> {
+  const reason = needsKeys(insertedAt(await $.prompt.read(), text))
+  if (reason !== undefined) return { ok: false, reason }
+  const filled = await $.prompt.fill({ text, mode: 'insert' })
+  if (!filled.isFilled) return { ok: false, reason: filled.refusal ?? 'refused' }
+  const whole = filled.text
+  const emptied = await $.prompt.fill({ text: '', mode: 'replace' })
+  if (!emptied.isFilled) return { ok: true, submitted: false, reason: emptied.refusal ?? 'refused' }
+
+  const busy = runningTurn !== undefined
+  const submitted = $.prompt.submit({ text: whole, asUser: true }).then(
+    async (result) => {
+      if (result.drop === undefined) return 'sent' as const
+      await putBack($, whole)
+      return 'dropped' as const
+    },
+    async () => {
+      await putBack($, whole)
+      return 'dropped' as const
+    },
+  )
+  if (busy) return { ok: true, submitted: true, queued: true }
+  const first = await Promise.race([submitted, $.clock.sleep(SUBMIT_ANSWER_MS).then(() => 'waiting' as const)])
+  if (first === 'dropped') return { ok: true, submitted: false, reason: 'dropped' }
+  return first === 'sent' ? { ok: true, submitted: true } : { ok: true, submitted: true, queued: true }
+}
+
+/**
+ * A submit that did not go: its text back in the box, after anything typed
+ * since, so neither is cut into the other.
+ */
+async function putBack($: EngineInterface, text: string): Promise<void> {
+  try {
+    const box = await $.prompt.read()
+    await $.prompt.fill({ text: box.text === '' ? text : ` ${text}`, mode: 'append' })
+  } catch {
+    // The engine shows the drop's reason; nothing else to do.
+  }
+}
+
+// The publisher the channel runs, once `session.start` found one.
+let channelPublisher: string | undefined
+
 // Not gated on `isInteractive`, which is false for an SDK host and may be
 // for a Claude Desktop session, where the indicator and the channel matter
 // most.
 export const register: Register = (on, options) => {
+  on('turn.start', async ($, e, next) => {
+    runningTurn = e.turnId
+    return next(e)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined && e.turnId === runningTurn) runningTurn = undefined
+    return next(e)
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const shown = await read($, band)
     if (shown === null || e.props.hasSurvey) return next(e)
@@ -175,10 +319,26 @@ export const register: Register = (on, options) => {
     )
   })
 
+  on('session.end', async ($, e, next) => {
+    // A turn the end cut short raises no `turn.complete` the mod sees.
+    runningTurn = undefined
+    if (channelPublisher !== undefined) {
+      endingSession = e.sessionId
+      processEnds = e.reason !== 'clear'
+      await sayBye($, channelPublisher, e.sessionId)
+      // Without the app's answer (an app that is down or predates the bye)
+      // the child would go on attaching as the cleared session: end it, so
+      // the channel moves to the new id.
+      if (!processEnds) cutChannel()
+    }
+    return next(e)
+  })
+
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     const publisher = await findPublisher($, String(options.publisher_path ?? ''))
     if (publisher === undefined) return started
+    channelPublisher = publisher
     // A module reload or the session's end can cut the loop mid-call.
     runChannel($, publisher).catch(() => {})
     if (await settingsShowIndicator($)) return started

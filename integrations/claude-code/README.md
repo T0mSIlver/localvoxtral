@@ -415,14 +415,29 @@ in a terminal goes into Claude Code's prompt box through the mod instead of
 being typed: no key is posted, so Secure Keyboard Entry and a focus change
 cannot drop it. If the mod cannot take the text (a dialog holds the keys, the
 session ended), the app types it as before. A dictation that ends in the
-spoken send word, and sessions in Claude Desktop or a browser tab, are still
-typed.
+spoken send word is sent by the mod too, with no Return key: it submits the
+whole prompt box, your typed words included. While Claude is still working,
+the prompt waits for that turn, and the menu bar says so. A box holding a
+paste, an image, an `@` mention or a slash command is still typed and sent
+with Return. Sessions in Claude Desktop or a browser tab are still typed.
+
+When an Overlay Buffer dictation into such a session is polished, the app
+also asks the mod what the prompt box already holds, in a terminal or the
+Claude Desktop Code tab. With **Send diff, recent files and last prompt** on, polish sees
+that text and knows the dictation continues it; whatever the setting, the
+dictation starts with a space only when the box ends in a word. The text stays
+on your Mac when polishing does, is never logged, and is left out of
+diagnostic records.
 
 While an Overlay Buffer dictation is joined to a session with the mod, that
 session shows it above its prompt: **Listening** and the words so far, then
 **Finishing** while the text is polished, then nothing. The band shows
 wherever the session is drawn, a terminal, the Claude Desktop Code tab or the
 Claude app on a phone.
+
+While the mod is connected, the app keeps the session joinable however long
+it sits idle, and drops it the moment the session ends or `/clear` starts a
+new one.
 
 With **Ask the coding agent for each new project's terms** on, a session with
 the mod answers that question itself when it has had at least three prompts

@@ -8,10 +8,12 @@ import Foundation
 /// keeps the connection open; the broker writes `Message` lines down it, and
 /// the process copies each one that decodes to its stdout, where the mod
 /// reads it. The mod answers a message with `--mod-reply`, a one-shot
-/// connection carrying a `Reply` line.
+/// connection carrying a `Reply` line, and says the session ended with a
+/// `Bye` line the same way (#1646).
 ///
-/// Every line is one JSON object. The three shapes tell themselves apart by
-/// a key no hook record has: `mod_attach`, `mod_message` and `mod_reply`.
+/// Every line is one JSON object. The shapes tell themselves apart by a key
+/// no hook record has: `mod_attach`, `mod_message`, `mod_reply` and
+/// `mod_bye`.
 public enum ClaudeModChannelWire {
     public static let version = 1
     /// One message or reply, whole. Dictated text is the largest payload.
@@ -62,13 +64,30 @@ public enum ClaudeModChannelWire {
         /// Put `text` in the session's prompt box at the cursor (#1409).
         /// `ok` only once the box holds it.
         case fill
+        /// A spoken send (#1644): put `text` in the box at the cursor, then
+        /// submit the box's whole text and empty it, with no key. `ok` once
+        /// the box held it; the reply's `submitted` says whether it was then
+        /// submitted, and `queued` that the submit waits for the running
+        /// turn. A box the mod cannot submit as typed (a paste placeholder,
+        /// a slash command) answers `ok: false` with nothing changed.
+        case send
         /// Ask the session's own model `text` over its transcript, tool-less
         /// (`$.model.fork`, #1410). `ok` with the answer in the reply's
         /// `text`.
         case terms
+        /// Answer with the prompt box as the person left it: `ok` with the
+        /// draft around the cursor in the reply's `text` and the cursor's
+        /// UTF-16 offset into it in `cursor` (#1406). An empty box answers
+        /// `ok` with `""`, which is also all a surface that binds no box
+        /// can say.
+        case draft
         /// The joined dictation's state, for the band above the prompt
         /// (#1411): `phase` and the words so far in `text`. Not answered.
         case state
+        /// The app took the mod's `Bye` and ended the channel (#1646): the
+        /// mod stops its `--attach` and, if the process goes on under a new
+        /// session id (`/clear`), attaches again for that one. Not answered.
+        case bye
     }
 
     /// What a `state` message says the dictation is doing.
@@ -149,10 +168,23 @@ public enum ClaudeModChannelWire {
         /// Why it was not done, as a short code (`dialog`, `no_composer`),
         /// never text the person typed or dictated.
         public var reason: String?
-        /// The model's answer to `terms`. Never set for `fill`.
+        /// The model's answer to `terms`; the draft for `draft`. Never set
+        /// for `fill`.
         public var text: String?
+        /// Where the cursor sits in a `draft` reply's `text`, in UTF-16 code
+        /// units.
+        public var cursor: Int?
         /// What a `terms` fork cost.
         public var usage: Usage?
+        /// For `send`: whether the box's text was submitted.
+        public var submitted: Bool?
+        /// For `send`: the submit waits for the session's running turn.
+        public var queued: Bool?
+
+        /// The `reason` of a request the mod refused because its process
+        /// went on under another session (`/clear`, a resume) before the
+        /// app closed this session's channel.
+        public static let sessionChangedReason = "session_changed"
 
         public init(
             sessionID: String,
@@ -160,15 +192,21 @@ public enum ClaudeModChannelWire {
             ok: Bool,
             reason: String? = nil,
             text: String? = nil,
+            cursor: Int? = nil,
             usage: Usage? = nil,
+            submitted: Bool? = nil,
+            queued: Bool? = nil,
             version: Int = ClaudeModChannelWire.version
         ) {
+            self.submitted = submitted
+            self.queued = queued
             self.modReply = version
             self.sessionID = sessionID
             self.id = id
             self.ok = ok
             self.reason = reason
             self.text = text
+            self.cursor = cursor
             self.usage = usage
         }
 
@@ -179,12 +217,35 @@ public enum ClaudeModChannelWire {
             case ok
             case reason
             case text
+            case cursor
             case usage
+            case submitted
+            case queued
+        }
+    }
+
+    /// The mod's word that its session is ending (#1646), sent on
+    /// `session.end` through `--mod-reply`. The app ends the session when the
+    /// session's channel detaches after it; with no channel attached it
+    /// changes nothing.
+    public struct Bye: Codable, Equatable, Sendable {
+        public var modBye: Int
+        public var sessionID: String
+
+        public init(sessionID: String, version: Int = ClaudeModChannelWire.version) {
+            self.modBye = version
+            self.sessionID = sessionID
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case modBye = "mod_bye"
+            case sessionID = "session_id"
         }
     }
 
     public static func isAttach(_ line: Data) -> Bool { hasKey("mod_attach", in: line) }
     public static func isReply(_ line: Data) -> Bool { hasKey("mod_reply", in: line) }
+    public static func isBye(_ line: Data) -> Bool { hasKey("mod_bye", in: line) }
 
     /// Decodes a line of this wire, or nil: over the size cap, not JSON, the
     /// wrong shape, or a version this build does not speak.
@@ -236,4 +297,8 @@ extension ClaudeModChannelWire.Message: ClaudeModChannelWire.Versioned {
 
 extension ClaudeModChannelWire.Reply: ClaudeModChannelWire.Versioned {
     public var wireVersion: Int { modReply }
+}
+
+extension ClaudeModChannelWire.Bye: ClaudeModChannelWire.Versioned {
+    public var wireVersion: Int { modBye }
 }

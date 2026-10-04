@@ -45,6 +45,28 @@ final class StopSecondPassPipelineTests: XCTestCase {
         XCTAssertEqual(usage.first?.costEUR ?? 0, 0.0026 / 60, accuracy: 1e-12)
     }
 
+    /// #1649: the batch model left out a sentence the realtime stream had,
+    /// and replacing the text whole lost it from the overlay, the polish and
+    /// the commit.
+    func testASentenceOnlyTheRealtimeTextHasSurvivesTheReplace() async {
+        let realtime = "close the old issues tonight then archive every session because the cache goes cold start fresh tomorrow"
+        let batch = "Close the old issues tonight. Start fresh tomorrow."
+        let kept = "Close the old issues tonight. then archive every session because the cache goes cold Start fresh tomorrow."
+        let polisher = FakePolishingService()
+        let harness = makeHarness(
+            transcriber: FakeBatchTranscriber(.text(batch)), polisher: polisher, realtimeText: realtime)
+
+        harness.stop()
+        await awaitStoppedSessionCommit(harness.viewModel)
+
+        XCTAssertTrue(
+            harness.overlay.refreshCalls.contains { $0.displayText == kept }, "the overlay shows it before polish")
+        let polished = await polisher.lastRequest
+        XCTAssertEqual(polished?.inputText, kept, "polish gets it")
+        XCTAssertEqual(harness.overlay.committedTexts, [kept])
+        XCTAssertEqual(harness.records.map(\.rawText), [kept])
+    }
+
     func testTheDeadlineKeepsTheRealtimeTextAndCancelsTheRequest() async {
         let transcriber = FakeBatchTranscriber(.held)
         let harness = makeHarness(transcriber: transcriber)
@@ -431,7 +453,8 @@ final class StopSecondPassPipelineTests: XCTestCase {
     private func makeHarness(
         transcriber: FakeBatchTranscriber,
         polisher: FakePolishingService? = nil,
-        secondPass: Bool = true
+        secondPass: Bool = true,
+        realtimeText: String = realtimeText
     ) -> Harness {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.polishSpeakerTerms = ["localvoxtral", "Claude Code"]
@@ -471,7 +494,7 @@ final class StopSecondPassPipelineTests: XCTestCase {
         )
         session.audio.sessionRecording.begin(enabled: true)
         session.audio.sessionRecording.append(Self.pcm)
-        viewModel.transcript.currentDictationEventText = Self.realtimeText
+        viewModel.transcript.currentDictationEventText = realtimeText
         return Harness(viewModel: viewModel, overlay: overlay, clock: clock, recordLog: records)
     }
 }

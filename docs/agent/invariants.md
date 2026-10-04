@@ -37,7 +37,34 @@ there is not.
   dictation that handed its text off, by its start generation: a later
   commit to the same session keeps its continuation space (#1660).
   Anything looser puts a space in front of `/compact`
-  in a fresh prompt. No trailing space after a commit.
+  in a fresh prompt. No trailing space after a commit. Where the joined
+  session's mod read its prompt box at the stop (a polished commit into a
+  local Claude Code session, below), the box decides instead: a space only
+  when the cursor follows a character that is not whitespace, so text typed
+  by hand is continued too, and a box cleared without a submit takes
+  `/compact` as written. An empty answer from a Claude Desktop session does
+  not decide, since a surface that draws its own prompt box gives the mod
+  `""` whatever it holds; there the guess above still runs, as it does for
+  an unpolished commit, a mod that does not answer, and every other agent.
+- **The prompt draft is the person's unsent words, read only from the
+  joined session's own mod** (#1406). At the stop of a polished Overlay
+  Buffer commit, `SessionContextResolver.promptDraft` asks the mod of the
+  joined session for `$.prompt.read`, only for a Claude Code session on this
+  Mac joined by an exact mechanism (tty, local herdr pane, cmux surface,
+  Claude Desktop; `ClaudePromptDraft.isReadable`) and still live, with a
+  1.5 s cap that the repository reads overlap. The reply names its session
+  and is dropped for any other; the mod sends at most 3,000 UTF-16 units
+  before the cursor and 1,000 after. The draft reaches polish only through
+  `claudeSessionTextIfEnabled`, under the session block's three gates, and
+  leaves with it when consent is withdrawn at the stop; it leads that block,
+  one line per side of the cursor behind `ClaudePromptDraft`'s labels. The
+  leading space reads it whatever the context settings say, since that never
+  leaves the Mac. The app logs its length only. A diagnostic record takes it
+  out as it takes out the prior prompt (`DiagnosticRecordRedaction.Withheld`):
+  behind its labels, line by line, and soft-wrapped on the screen; lines
+  under eight characters that the screen shows outside the label stay, as
+  for the prior prompt. The draft is read at the stop, and the commit lands
+  after the polish: words typed in between are not seen.
 - **A mid-dictation reconnect resumes the session; it never replays it.**
   When the realtime socket drops without the user asking
   (`DictationSessionController+Reconnect.swift`, #380), the mic keeps recording and the
@@ -181,6 +208,24 @@ there is not.
   only by its own bundle ID on `ReturnSubmitsAppList` (the AX probe reads the
   element focused NOW, which need not be the commit target's), and the Return
   follows only a commit that reported `.succeeded`.
+  A dictation joined to a local Claude Code session whose mod is attached
+  (#1644) is sent by the mod instead (`send`): no key, so neither focus nor
+  Secure Keyboard Entry gates it, and it can only reach the session the
+  dictation joined, never an unfocused one by name (#723's Return rule
+  stands for every key). The mod fills at the cursor, then submits the
+  box's whole text as the person's own (`$.prompt.submit` with `asUser`)
+  and empties the box, so a typed draft goes with it and nothing is sent
+  twice. A box with a paste or image placeholder, an `@` mention, or a
+  leading `/` or `!` is refused unchanged, since a plugin's submit sends
+  those as plain text. A plugin's submit resolves only once a running turn
+  ends (measured on Claude Code 2.1.287), so the mod answers `queued` when a
+  main-loop turn is running or the submit has not entered within 1.5 s; the
+  popover then says the prompt runs after the turn, not that it was sent. A
+  submit a hook drops puts the text back in the box and answers not
+  submitted. A refusal, or a request the mod never got, is typed under the
+  fill rule below and followed by Return under this bullet's gates, judged
+  then; an unanswered one is kept, with no Return. A channel that closed
+  between the stop and the commit sends by Return under the same gates.
 - **A voice stop is the stop key, never a second commit path** (#839).
   An Overlay Buffer dictation whose words (settled segments plus the
   partial in flight: the Mistral API sends no final before the stop) end in
@@ -325,10 +370,32 @@ there is not.
   but never answered, the text stays in History (on the clipboard with
   History off). Unless keys put it in, the next
   commit gets no continuation space. Mod replies ride one-shot connections
-  and carry a short reason code, never what the person typed or dictated;
-  the one text a reply carries is the session model's answer to the
-  project-terms question (#1410), which the same parser and filters read as
-  a one-shot run's.
+  and carry a short reason code, never what the person dictated. Two
+  replies carry text: the session model's answer to the project-terms
+  question (#1410), which the same parser and filters read as a one-shot
+  run's, and the prompt draft (#1406, above), which only the stop that
+  asked for it reads.
+  **An attached channel is the session's liveness** (#1646). While a local
+  session's channel is open and its attach named the same Claude pid as
+  the session's hooks, the registry applies no TTL to it; pid liveness
+  still does, and a pidless or mismatched session keeps its TTL. Once the
+  channel detaches, the TTL counts from the detach, so a reloaded mod or a
+  restarted publisher still finds the session to attach again. The attach
+  only extends a session a hook created, and a same-user process could
+  keep one fresh by sending hooks just as well. The mod's `session.end`
+  sends a `mod_bye` line through `--mod-reply`; the broker acts on it only
+  for a session with an attached channel: it writes a `bye` message down
+  that channel and closes it, and that detach removes the session at once.
+  A forged bye ends only an attached session early, as a forged
+  `SessionEnd` already can. After `/clear` the process goes on under a new
+  session id: the mod's channel ends with the bye and attaches again under
+  the new id, never under the old one. A request already on the old
+  attach when the process moved acts on nothing: the mod answers every kind
+  but `ping` with `session_changed` once `$.session.id()` no longer names
+  the attach's session, and the app logs it to `Log.backends` and takes its
+  own path. With no bye (an app or mod that
+  predates it, a crash), the session's own SessionEnd hook and the TTL
+  from the detach end it as before.
 - **The Mistral second pass holds the text back, never the world** (#317).
   An Overlay Buffer dictation in Mistral API mode is sent whole to the batch
   endpoint on stop (`DictationSessionController+StopCommit.swift`,
@@ -346,10 +413,17 @@ there is not.
   never a fresh read of Settings;
   (2) the audio lives in memory for the pass, and reaches the disk only
   through the audio-store latch taken at start (`sessionStoresAudio`);
-  (3) the batch text replaces the realtime text whole when it answers in
-  time, and is never merged with it: the two segment and punctuate
-  differently, and a merge would repeat or drop words at every seam. A blank answer, a failure or a missed
-  deadline keeps the realtime text and is only logged.
+  (3) the batch text replaces the realtime text when it answers in
+  time, and is never merged with it at seams: the two segment and
+  punctuate differently, and a merge would repeat or drop words at every
+  seam. The one exception is a run of realtime words the batch text dropped
+  outright (#1649): aligned word by word, a run of at least
+  `minimumRestoredRunWords` with nothing in its place and mostly words its
+  neighbours lack goes back between the batch words around it
+  (`StopSecondPass.keepingDroppedRealtimeRuns`). Shorter runs and restarts
+  stay dropped, since removing them is the batch model's job. A blank
+  answer, a failure or a missed deadline keeps the realtime text and is
+  only logged.
   The term list leaves the Mac. The user's own words go to any endpoint, as
   they do in the polish prompt. Everything else comes from screen, session
   and repository context, so it goes only with the trusted-endpoint opt-in,
