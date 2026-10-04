@@ -121,6 +121,22 @@ final class StopSecondPassPipelineTests: XCTestCase {
         XCTAssertEqual(harness.overlay.committedTexts, [Self.realtimeText])
     }
 
+    /// #1678: the switch in Settings, latched at start like a real session.
+    func testTheSettingsSwitchDecidesWhetherTheStopTranscribesAgain() async {
+        for enabled in [true, false] {
+            let transcriber = FakeBatchTranscriber(.text(Self.batchText))
+            let harness = makeHarness(transcriber: transcriber, secondPassSetting: enabled)
+
+            harness.stop()
+            await awaitStoppedSessionCommit(harness.viewModel)
+
+            XCTAssertEqual(transcriber.calls.count, enabled ? 1 : 0, "switch \(enabled)")
+            XCTAssertEqual(
+                harness.overlay.committedTexts, [enabled ? Self.batchText : Self.realtimeText],
+                "switch \(enabled)")
+        }
+    }
+
     // MARK: - Context terms (#647)
 
     private static let projectDirectory = "/nonexistent-647/quillmark"
@@ -406,6 +422,13 @@ final class StopSecondPassPipelineTests: XCTestCase {
         session.audio.sessionRecording.append(Self.pcm)
         XCTAssertNil(session.audio.sessionRecording.finish())
 
+        settings.mistralStopSecondPassEnabled = false
+        session.latchSessionAudio(outputMode: .overlayBuffer)
+        XCTAssertFalse(session.sessionHasStopSecondPass, "turned off in Settings")
+        session.audio.sessionRecording.append(Self.pcm)
+        XCTAssertNil(session.audio.sessionRecording.finish(), "no audio kept for a pass that won't run")
+        settings.mistralStopSecondPassEnabled = true
+
         settings.dictationBackendMode = .externalURL
         session.latchSessionAudio(outputMode: .overlayBuffer)
         XCTAssertFalse(session.sessionHasStopSecondPass)
@@ -454,6 +477,7 @@ final class StopSecondPassPipelineTests: XCTestCase {
         transcriber: FakeBatchTranscriber,
         polisher: FakePolishingService? = nil,
         secondPass: Bool = true,
+        secondPassSetting: Bool? = nil,
         realtimeText: String = realtimeText
     ) -> Harness {
         let settings = makeSettings(outputMode: .overlayBuffer)
@@ -486,13 +510,19 @@ final class StopSecondPassPipelineTests: XCTestCase {
 
         let session = viewModel.session
         session.sessionOutputMode = .overlayBuffer
-        session.sessionHasStopSecondPass = secondPass
         session.sessionRealtimeConfiguration = RealtimeSessionConfiguration(
             endpoint: MistralRealtimeWebSocketClient.defaultEndpoint,
             apiKey: "session-key",
             model: "voxtral-mini-transcribe-realtime-2602"
         )
-        session.audio.sessionRecording.begin(enabled: true)
+        if let secondPassSetting {
+            settings.dictationBackendMode = .mistralAPI
+            settings.mistralStopSecondPassEnabled = secondPassSetting
+            session.latchSessionAudio(outputMode: .overlayBuffer)
+        } else {
+            session.sessionHasStopSecondPass = secondPass
+            session.audio.sessionRecording.begin(enabled: true)
+        }
         session.audio.sessionRecording.append(Self.pcm)
         viewModel.transcript.currentDictationEventText = realtimeText
         return Harness(viewModel: viewModel, overlay: overlay, clock: clock, recordLog: records)

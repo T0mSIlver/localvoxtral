@@ -1109,7 +1109,12 @@ extension DictationSessionController {
         audio sessionAudio: Data?,
         capture: StopCommitCoordinator.Capture? = nil
     ) -> StopSecondPassRequest? {
-        guard sessionHasStopSecondPass else { return nil }
+        guard sessionHasStopSecondPass else {
+            if sessionStopSecondPassTurnedOff {
+                Log.backends.notice("second pass skipped: turned off in Settings")
+            }
+            return nil
+        }
         guard !transcript.currentDictationEventText
             .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
