@@ -307,11 +307,15 @@ final class SettingsStore {
 
     /// Stores `line` for `projectKey`, cut to what the router reads; a blank
     /// line removes it. Kept untrimmed, since it is stored as the user types
-    /// (a trailing space is the next word's); the router trims it.
+    /// (a trailing space is the next word's); the router trims it. Applied to
+    /// the dictionary saved now, which another running copy may have changed
+    /// since this one read it (#1773).
     func setQuickCaptureProjectLine(_ line: String, for projectKey: String) {
         let cut = String(line.prefix(QuickCaptureProjects.maxUserLineCharacters))
-        quickCaptureProjectLines[projectKey] =
-            cut.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : cut
+        var lines = defaults.dictionary(forKey: Keys.quickCaptureProjectLines) as? [String: String]
+            ?? quickCaptureProjectLines
+        lines[projectKey] = cut.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : cut
+        quickCaptureProjectLines = lines
     }
 
     /// Hosted transcription model. Empty means

@@ -9,7 +9,9 @@ extension SettingsStore {
     /// Appends a user-added terminal app and forgets any recorded removal of
     /// its id: re-adding is a fresh start for the migration ledger.
     func addUserTerminalApp(_ app: UserTerminalApp) {
-        userTerminalApps.append(app)
+        var apps = savedUserTerminalApps() ?? userTerminalApps
+        if !apps.contains(where: { $0.bundleID == app.bundleID }) { apps.append(app) }
+        userTerminalApps = apps
         var removed = removedUserTerminalAppBundleIDs()
         guard removed.contains(app.bundleID) else { return }
         removed.removeAll { $0 == app.bundleID }
@@ -21,11 +23,21 @@ extension SettingsStore {
     /// the launch-time `terminal_apps.toml` import cannot resurrect the id
     /// even if the imported-ids ledger is lost.
     func removeUserTerminalApp(bundleID: String) {
-        userTerminalApps.removeAll { $0.bundleID == bundleID }
+        var apps = savedUserTerminalApps() ?? userTerminalApps
+        apps.removeAll { $0.bundleID == bundleID }
+        userTerminalApps = apps
         var removed = removedUserTerminalAppBundleIDs()
         guard !removed.contains(bundleID) else { return }
         removed.append(bundleID)
         defaults.set(removed, forKey: UserTerminalAppsMigrator.removedBundleIDsKey)
+    }
+
+    /// The list saved now, which another running copy may have changed since
+    /// this one loaded it (#1774); nil when none is saved or it does not
+    /// decode, and the caller keeps its own.
+    private func savedUserTerminalApps() -> [UserTerminalApp]? {
+        guard let data = defaults.data(forKey: Keys.userTerminalApps) else { return nil }
+        return try? JSONDecoder().decode([UserTerminalApp].self, from: data)
     }
 
     private func removedUserTerminalAppBundleIDs() -> [String] {

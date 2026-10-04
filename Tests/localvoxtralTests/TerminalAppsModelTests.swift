@@ -60,6 +60,26 @@ final class TerminalAppsModelTests: XCTestCase {
         return model
     }
 
+    // MARK: - Two running copies (#1774)
+
+    /// Two copies launched on the same list: each one's addition survives
+    /// the other's, and a removal in one is not undone by an addition in
+    /// the other.
+    func testTwoCopiesPreserveTerminalAppChanges() {
+        let x = UserTerminalApp(bundleID: "dev.x.Term", displayName: "X")
+        makeStore().addUserTerminalApp(x)
+        let first = makeStore()
+        let second = makeStore()
+
+        first.addUserTerminalApp(UserTerminalApp(bundleID: "dev.y.Term", displayName: "Y"))
+        second.addUserTerminalApp(UserTerminalApp(bundleID: "dev.z.Term", displayName: "Z"))
+        XCTAssertEqual(makeStore().userTerminalApps.map(\.bundleID), ["dev.x.Term", "dev.y.Term", "dev.z.Term"])
+
+        first.removeUserTerminalApp(bundleID: "dev.x.Term")
+        second.addUserTerminalApp(UserTerminalApp(bundleID: "dev.w.Term", displayName: "W"))
+        XCTAssertEqual(makeStore().userTerminalApps.map(\.bundleID), ["dev.y.Term", "dev.z.Term", "dev.w.Term"])
+    }
+
     // MARK: - Dot matrix
 
     func testNotInstalledTerminalsAreGrey() {
