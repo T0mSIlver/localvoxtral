@@ -77,6 +77,17 @@ extension DictationSessionController {
         return LeadingSpaceOverlayCommitter(base: committer)
     }
 
+    /// Whether the last commit went into `session`'s unsent prompt and the
+    /// session has submitted nothing since, whichever app shows it: a mod's
+    /// fill lands in the session's own box, wherever its pane is.
+    func lastCommitContinuesPrompt(of session: ClaudeSessionSnapshot) -> Bool {
+        guard let landing = lastOverlayCommitLanding, landing.sessionID == session.sessionID else { return false }
+        let current = currentLanding(session: session, targetPID: landing.targetPID)
+        guard landing.isAt(current) else { return false }
+        Log.overlay.info("send to session: continues the unsent prompt; leading space")
+        return true
+    }
+
     /// An addressed send that pressed Return, or failed to type, leaves
     /// nothing in the named session's prompt to continue. A landing in
     /// another session is that prompt's evidence and stays, as does one

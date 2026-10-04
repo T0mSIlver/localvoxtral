@@ -560,6 +560,32 @@ final class AddressedSendWiringTests: XCTestCase {
         XCTAssertEqual(mod.sends.value, [" Run the tests"])
     }
 
+    /// The mod did not say what the box holds: the last commit's evidence
+    /// decides the space, as on the typed route.
+    func testWithoutADraftTheModSendSpacesTheUnsentPromptItContinues() async {
+        let registry = ClaudeSessionRegistry(now: { Date(timeIntervalSince1970: 3_000_000) }, isProcessAlive: { _ in true })
+        registry.ingest(
+            ClaudeHookRecord(
+                event: .sessionStart, sessionID: "pay", timestamp: 0, rawCwd: "/r/payments", prompt: nil, files: [],
+                process: ClaudeHookProcessInfo(hookPID: 1, claudePID: Self.agentPID, tty: "/dev/ttys001", termProgram: "ghostty")
+            ),
+            origin: local
+        )
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.", sessions: registry.liveSessions(), registry: registry
+        )
+        harness.viewModel.session.lastOverlayCommitLanding = OverlayCommitLanding(
+            targetPID: Self.namedTerminalPID, sessionID: "pay",
+            promptsSubmitted: registry.snapshot(sessionID: "pay")?.promptsSubmitted ?? -1
+        )
+        let mod = attachMod(harness, sessionID: "pay", answer: .submitted, draft: nil)
+
+        await harness.stop()
+
+        XCTAssertEqual(mod.sends.value, [" Run the tests"])
+        XCTAssertNil(harness.viewModel.session.lastOverlayCommitLanding, "submitted: nothing left to continue")
+    }
+
     /// The session is mid-turn: the popover says the prompt runs after it.
     func testAQueuedModSendSaysItRunsAfterTheTurn() async {
         let harness = makeHarness(
@@ -698,10 +724,11 @@ final class AddressedSendWiringTests: XCTestCase {
     }
 
     /// Attaches a fake mod for `sessionID` that answers each `send` with
-    /// `answer` and each `draft` with `draft` before an empty cursor tail.
+    /// `answer` and each `draft` with `draft` before an empty cursor tail,
+    /// or not at all when `draft` is nil.
     /// A silent mod's request times out at once.
     private func attachMod(
-        _ harness: Harness, sessionID: String, answer: ModAnswer, draft: String = ""
+        _ harness: Harness, sessionID: String, answer: ModAnswer, draft: String? = ""
     ) -> FakeMod {
         let sleep: @Sendable (Duration) async -> Void = answer == .silent
             ? { @Sendable _ in }
@@ -714,6 +741,8 @@ final class AddressedSendWiringTests: XCTestCase {
                     ClaudeModChannelWire.Message.self, from: line.dropLast()
                 ) else { return false }
                 if message.kind == .draft {
+                    // A mod older than `draft` never answers it.
+                    guard let draft else { return false }
                     hub.deliver(.init(
                         sessionID: sessionID, id: message.id, ok: true, text: draft, cursor: draft.utf16.count
                     ))

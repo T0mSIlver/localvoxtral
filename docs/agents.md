@@ -130,6 +130,11 @@ nothing.
 The name has one to four words, and sessions answer to it the way they do
 for "go to". What happens next depends on the session:
 
+- **A Claude Code session on this Mac with the localvoxtral mod**, outside
+  Claude Desktop, gets the text and sends it without coming forward and
+  without a key press. If its mod can't take the text (a dialog is open, or
+  the prompt box holds a paste or a slash command), the session is handled
+  as one without the mod, below.
 - **A Ghostty, iTerm2 or Terminal.app tab** comes forward and gets the text.
   Enter is pressed only if that pane is still the one in front.
 - **An opencode session, or a session in a

@@ -20,16 +20,16 @@ extension DictationSessionController {
         case cancelled
     }
 
-    /// The named session when its mod takes the send: a local Claude Code
+    /// Whether the named session's mod takes the send: a local Claude Code
     /// session with its mod attached, outside Claude Desktop, where a fill
     /// is not yet known to show (#1643).
-    func addressedModSessionID(_ session: ClaudeSessionSnapshot) -> String? {
+    func addressedSendGoesThroughMod(_ session: ClaudeSessionSnapshot) -> Bool {
         guard let hub = context.claudeModChannels,
               session.agent == .claude,
               session.origin.isLocalAuthenticated,
               session.desktopSessionID == nil
-        else { return nil }
-        return hub.isAttached(session.sessionID) ? session.sessionID : nil
+        else { return false }
+        return hub.isAttached(session.sessionID)
     }
 
     /// Reads the session's prompt box for the leading space, hands the
@@ -37,15 +37,17 @@ extension DictationSessionController {
     /// mod got and did not give may have submitted, so it is kept, never sent
     /// again another way; a `session_changed` refusal is kept too, since the
     /// pane now shows another session (#1651).
-    func commitOverlayAddressedThroughMod(sessionID: String) async -> AddressedModSend {
+    func commitOverlayAddressedThroughMod(session: ClaudeSessionSnapshot) async -> AddressedModSend {
         guard let hub = context.claudeModChannels else { return .fallBack }
+        let sessionID = session.sessionID
         let draft = await hub.promptDraft(of: sessionID, timeout: ClaudePromptDraft.readTimeout)
         guard !Task.isCancelled else { return .cancelled }
 
+        // The box decides the space; a mod that did not say what it holds
+        // leaves the last commit's evidence, as for the typed route (#802).
+        let needsSpace = draft?.commitNeedsLeadingSpace ?? lastCommitContinuesPrompt(of: session)
         let capture = CapturingOverlayCommitter()
-        let committer: any OverlayTextCommitting = draft?.commitNeedsLeadingSpace == true
-            ? LeadingSpaceOverlayCommitter(base: capture)
-            : capture
+        let committer: any OverlayTextCommitting = needsSpace ? LeadingSpaceOverlayCommitter(base: capture) : capture
         let commit = StopCommitCoordinator.commit(
             overlay: overlayBufferCoordinator,
             textInsertion: committer,
