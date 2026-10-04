@@ -550,6 +550,10 @@ final class DictationSessionController {
     /// which is transcribed again on stop (#317).
     @ObservationIgnored
     var sessionHasStopSecondPass = false
+    /// Latched at start: such a dictation, with the second pass turned off
+    /// in Settings (#1678).
+    @ObservationIgnored
+    var sessionStopSecondPassTurnedOff = false
     /// Where the second pass reports what it cost; the realtime client and
     /// the polishing service hold the same ledger.
     @ObservationIgnored

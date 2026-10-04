@@ -54,6 +54,7 @@ extension DictationSessionController {
         sessionUsesManagedSpeechHelper = false
         sessionStoresAudio = false
         sessionHasStopSecondPass = false
+        sessionStopSecondPassTurnedOff = false
         earlyPolishRun?.cancel()
         earlyPolishRun = nil
     }
@@ -621,8 +622,10 @@ extension DictationSessionController {
     func latchSessionAudio(outputMode: DictationOutputMode) {
         sessionStoresAudio = settings.dictationAudioEnabled
             && settings.dictationHistoryRetention.savesDictations
-        sessionHasStopSecondPass = settings.dictationBackendMode == .mistralAPI
+        let secondPassApplies = settings.dictationBackendMode == .mistralAPI
             && outputMode == .overlayBuffer
+        sessionHasStopSecondPass = secondPassApplies && settings.mistralStopSecondPassEnabled
+        sessionStopSecondPassTurnedOff = secondPassApplies && !settings.mistralStopSecondPassEnabled
         audio.sessionRecording.begin(enabled: sessionStoresAudio || sessionHasStopSecondPass)
     }
 

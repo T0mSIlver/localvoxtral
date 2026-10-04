@@ -96,6 +96,7 @@ final class SettingsStore {
         static let clipboardPayloadMacroEnabled = "settings.clipboard_payload_macro_enabled"
         static let terminalScreenContextEnabled = "settings.terminal_screen_context_enabled"
         static let repoVocabularyEnabled = "settings.repo_vocabulary_enabled"
+        static let mistralStopSecondPassEnabled = "settings.mistral_stop_second_pass_enabled"
         static let claudeRepoContextEnabled = "settings.claude_repo_context_enabled"
         static let cmuxSurfaceJoinEnabled = "settings.cmux_surface_join_enabled"
         static let polishContextTrustedEndpointEnabled =
@@ -604,6 +605,17 @@ final class SettingsStore {
         let records = Self.loadBool(defaults: defaults, key: Keys.diagnosticRecordsEnabled, fallback: true)
         if records != diagnosticRecordsEnabled { diagnosticRecordsEnabled = records }
         return saved
+    }
+
+    /// Transcribe each Overlay Buffer dictation on the Mistral API engine a
+    /// second time on stop (#317). On by default: it is the only thing that
+    /// recovers speech lost in a stream stall (symptom D in
+    /// docs/agent/mistral-realtime-stall.md), at half the realtime price
+    /// again (#1678).
+    var mistralStopSecondPassEnabled: Bool {
+        didSet {
+            defaults.set(mistralStopSecondPassEnabled, forKey: Keys.mistralStopSecondPassEnabled)
+        }
     }
 
     /// Keep each saved dictation's audio on this Mac, for the replay eval.
@@ -1278,6 +1290,8 @@ final class SettingsStore {
             defaults: defaults, key: Keys.terminalScreenContextEnabled, fallback: false)
         repoVocabularyEnabled = Self.loadBool(
             defaults: defaults, key: Keys.repoVocabularyEnabled, fallback: false)
+        mistralStopSecondPassEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.mistralStopSecondPassEnabled, fallback: true)
         claudeRepoContextEnabled = Self.loadBool(
             defaults: defaults, key: Keys.claudeRepoContextEnabled, fallback: false)
         cmuxSurfaceJoinEnabled = Self.loadBool(

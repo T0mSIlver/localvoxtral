@@ -654,6 +654,19 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertTrue(makeStore().earlyPolishEnabled)
     }
 
+    // MARK: - mistralStopSecondPassEnabled (#1678)
+
+    func testMistralStopSecondPassEnabled_defaultsOnAndPersistsAcrossReload() {
+        let store = makeStore()
+        XCTAssertTrue(store.mistralStopSecondPassEnabled)
+        store.mistralStopSecondPassEnabled = false
+
+        let reloadedStore = makeStore()
+        XCTAssertFalse(reloadedStore.mistralStopSecondPassEnabled)
+        reloadedStore.mistralStopSecondPassEnabled = true
+        XCTAssertTrue(makeStore().mistralStopSecondPassEnabled)
+    }
+
     // MARK: - clipboardPayloadMacroEnabled
 
     func testClipboardPayloadMacroEnabled_defaultsToTrue() {
