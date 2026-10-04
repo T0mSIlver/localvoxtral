@@ -1,11 +1,13 @@
-enum PreferredTextInsertionTargetPolicy {
-    enum PasteActivationAction: Equatable {
+import Foundation
+
+package enum PreferredTextInsertionTargetPolicy {
+    package enum PasteActivationAction: Equatable {
         case useCurrentFrontmost
         case activate(pid_t)
         case deny
     }
 
-    static func accessibilityTargetPID(
+    package static func accessibilityTargetPID(
         systemFocusedPID: pid_t?,
         preferredPID: pid_t?,
         selfPID: pid_t
@@ -23,7 +25,7 @@ enum PreferredTextInsertionTargetPolicy {
         return systemFocusedPID
     }
 
-    static func pasteActivationAction(
+    package static func pasteActivationAction(
         frontmostPID: pid_t?,
         preferredPID: pid_t?,
         selfPID: pid_t

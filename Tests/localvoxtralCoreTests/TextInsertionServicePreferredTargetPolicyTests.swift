@@ -1,5 +1,6 @@
+import Foundation
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 final class TextInsertionServicePreferredTargetPolicyTests: XCTestCase {
     private let selfPID: pid_t = 777

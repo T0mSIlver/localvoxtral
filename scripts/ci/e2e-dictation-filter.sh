@@ -36,6 +36,7 @@ PATTERNS=(
   'Sources/localvoxtralCore/LiveTerminalNewlineGuard.swift'
   'Sources/localvoxtralCore/TUIAutocompleteTrailingSpace.swift'
   'Sources/localvoxtral/TextInsertionService.swift'
+  'Sources/localvoxtralCore/PreferredTextInsertionTargetPolicy.swift' # which app the text goes to
   'Sources/localvoxtral/SystemAccessibilityFocus.swift'
   'Sources/localvoxtral/OverlayBufferSessionCoordinator.swift'
   'Sources/localvoxtralCore/OverlayBufferStateMachine.swift'
