@@ -199,6 +199,8 @@ final class ClaudeRemoteListenerCoordinatorTests: XCTestCase {
 
         try hosts.revoke(hostID: doomed.host.id)
         try coordinator.reconcile()
+        // Past the hold: a poll still held answers now, whatever it holds.
+        clock.advance(by: 25)
 
         let outcome = await held.value
         XCTAssertEqual(outcome, .revoked)

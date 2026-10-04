@@ -261,6 +261,8 @@ final class ClaudeRemoteModChannelsTests: XCTestCase {
         await fixture.clock.waitForSleepers(2)
 
         fixture.channels.closeChannels(ofHostsNotIn: ["h2"])
+        // Past the hold: a poll still held answers now, whatever it holds.
+        fixture.clock.advance(by: 25)
 
         let outcome = await held.value
         XCTAssertEqual(outcome, .revoked)
