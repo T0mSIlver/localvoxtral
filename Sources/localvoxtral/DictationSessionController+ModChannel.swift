@@ -27,13 +27,14 @@ extension DictationSessionController {
         let sessionID = join.snapshot.sessionID
         guard hub.isAttached(sessionID) else { return nil }
         Log.overlay.info("overlay commit: through the session's mod")
+        let generation = sessionStartGeneration
         return ModChannelOverlayCommitter(
             hub: hub,
             sessionID: sessionID,
             notFilled: { [weak self] text, pid, mayHaveLanded in
                 await self?.commitOverlayTextTheModDidNotFill(
                     text, preferredAppPID: pid, sessionID: sessionID, terminalPID: targetPID,
-                    mayHaveLanded: mayHaveLanded
+                    mayHaveLanded: mayHaveLanded, generation: generation
                 )
             }
         )
@@ -51,12 +52,22 @@ extension DictationSessionController {
         preferredAppPID pid: pid_t?,
         sessionID: String,
         terminalPID: pid_t?,
-        mayHaveLanded: Bool
+        mayHaveLanded: Bool,
+        generation: UInt64
     ) async {
         var inserted = false
+        if sessionStartGeneration != generation {
+            keepOverlayTextOfARetiredDictation(text, sessionID: sessionID)
+            return
+        }
         if mayHaveLanded {
             lastError = keepUndeliveredAgentText(text)
         } else if await keysReachModSession(sessionID, terminalPID: terminalPID) {
+            // The read-back awaited: the next dictation may have started.
+            guard sessionStartGeneration == generation else {
+                keepOverlayTextOfARetiredDictation(text, sessionID: sessionID)
+                return
+            }
             inserted = commitOverlayTextThePromptRelayRefused(text, preferredAppPID: pid, sessionID: sessionID)
         } else {
             Log.overlay.notice(

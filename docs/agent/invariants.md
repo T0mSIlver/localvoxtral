@@ -767,7 +767,10 @@ there is not.
   in the wrong app, or in twice. A refusal that answers after the next
   dictation started, or after a go-to moved the keys, stays in History
   too (#1466): the keyboard path and its pending text belong to that
-  dictation or pane now, and would carry the text into its route. With
+  dictation or pane now, and would carry the text into its route. That
+  holds for an Overlay Buffer commit's own fallback and for a fill the
+  session's mod gave back, which carry the start generation of the
+  dictation that handed the text off (#1657). With
   History off, every path below that keeps text puts all of it on the
   clipboard instead and says so (`keepUndeliveredAgentText`, #1499): Copy
   last dictation alone would lose it to the next dictation.

@@ -198,7 +198,11 @@ extension DictationSessionController {
             liveGoToTask = Task { @MainActor [weak self] in
                 let shows = await navigator.focusedPaneShows(sessionID: paneSessionID, bundleID: bundleID)
                 guard let self, !Task.isCancelled else { return }
-                if shows {
+                if self.wasCancelled {
+                    // A cancel during the read-back throws the words away,
+                    // as it does the segments behind a go-to (#1656).
+                    Log.dictation.notice("spoken send: cancelled during the pane read-back; nothing typed")
+                } else if shows {
                     self.sendLiveSpokenSendFinal(remainder, in: pid, startsMidWord: startsMidWord)
                 } else {
                     Log.dictation.notice(
