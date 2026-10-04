@@ -454,6 +454,48 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(model.markFiled(id, url: "https://github.com/o/reach/issues/13"), .failure(.notReady(.filed)))
     }
 
+    /// File in a copy that has not read another copy's move (#1684): the
+    /// button files the draft this copy shows, never the one the file has
+    /// now in a repository the user did not see.
+    func testFileFromAStaleInboxRefusesACaptureAnotherCopyMoved() async throws {
+        let model = model(answer: ["reach": 0.9])
+        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        var onDisk = try XCTUnwrap(QuickCaptureInboxFile.load(from: fileURL).value)
+        onDisk.update(id) { $0.repository = "o/website" }
+        try PrivateFile.write(QuickCaptureInboxFile.encode(onDisk), to: fileURL)
+
+        await model.file(id)?.value
+
+        XCTAssertTrue(github.created.withLock { $0.isEmpty })
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.first?.repository, "o/website")
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.first?.state, .ready)
+    }
+
+    /// A copy that still shows the capture ready moves it while another
+    /// copy files it (#1685): the move is refused, so the filed issue and
+    /// the capture's project and repository stay together.
+    func testAStaleCopyCannotMoveAnotherCopysFiling() async throws {
+        let filing = ManualSleeper()
+        let filer = model(answer: ["reach": 0.9])
+        await filer.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(filer.items.first?.id)
+        let stale = model(answer: ["reach": 0.9])
+        github.createGate = filing
+        let sending = try XCTUnwrap(filer.file(id))
+        await filing.waitForSleepers(1)
+
+        await stale.move(id, toProjectKey: "remote:website")?.value
+        filing.wakeAll()
+        await sending.value
+
+        let item = try XCTUnwrap(QuickCaptureInboxFile.load(from: fileURL).value?.items.first)
+        XCTAssertEqual(item.state, .filed)
+        XCTAssertEqual(item.projectKey, "/w/reach")
+        XCTAssertEqual(item.repository, "o/reach")
+        XCTAssertEqual(item.filedURL, "https://github.com/o/reach/issues/9")
+    }
+
     /// Another running copy moved the capture to another repository after
     /// this one loaded it (#990 review): marking it filed in the old one is
     /// refused against the file, and History is not told it was filed.
