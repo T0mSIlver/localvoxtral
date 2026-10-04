@@ -242,6 +242,10 @@ from your issue and say so in your report. Don't ask whether to file it.
 
 - `README.md` is a landing page. User docs live in `docs/`, agent guides in
   `docs/agent/`, machine-local scratch in the gitignored `local-notes/`.
+- People read the docs site, agents the Markdown: a link a person follows
+  (README, app, integration READMEs, release notes) goes to
+  t0msilver.github.io/localvoxtral, never to a `docs/*.md`
+  (`scripts/ci/test-human-doc-links.sh`).
 - Changed a model pin or backend copy? Update `docs/under-the-hood.md` in the
   same PR.
 - Moved or renamed a section that a comment points at? Fix the pointer in the

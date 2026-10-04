@@ -418,7 +418,9 @@ then deploys it on pushes to main. `scripts/docs-site/stage.py` copies only
 the public pages (README, `docs/*.md` without `docs/agent/`, the integration
 READMEs) because Zensical has no `exclude_docs` yet. `check-app-links.py` then
 fails the run when a `DocsLink.page` path or anchor in `Sources/` is missing
-from the built site. A PR gets the build, the check and the site as the
+from the built site, and `check-human-links.py` when a site link in README,
+an integration README, the release notes or another human-facing file it
+lists names a missing page or anchor. A PR gets the build, the check and the site as the
 `github-pages` artifact. Zensical is pinned in the workflow; after a bump,
 look at the built site before merging. Build it locally with
 `scripts/docs-site/build.sh` (needs `zensical` on `PATH`).

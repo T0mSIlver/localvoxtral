@@ -62,11 +62,11 @@ One opt-in feature outside the plugin does spend tokens. With **Ask the
 coding agent for each new project's terms** on, the app runs its own
 read-only, one-shot Claude Code run once per project, never in your session.
 That costs about $0.03 to $0.12, or the same share of a Claude.ai plan's quota
-(see [Terms from your coding agent](../../docs/dictation.md#terms-from-your-coding-agent)).
+(see [Terms from your coding agent](https://t0msilver.github.io/localvoxtral/docs/dictation/#terms-from-your-coding-agent)).
 
 On an enrolled host, the remote plugin runs that one-shot run on the host
 instead, when the Mac asks for a session's project
-([Terms from the coding agent on a host](../../docs/remote-claude-context.md#terms-from-the-coding-agent-on-a-host)).
+([Terms from the coding agent on a host](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/#terms-from-the-coding-agent-on-a-host)).
 
 The remote plugin also ships the `localvoxtral-doctor` skill. Its one-line
 description sits in each session's context on the host; the rest loads only
@@ -74,7 +74,7 @@ when you ask why dictation misbehaves.
 
 The remote plugin also drafts a quick capture routed to one of that host's
 projects. It has the same caps as the Mac's own draft, $0.50 at most
-([Quick capture on a host](../../docs/remote-claude-context.md#quick-capture-on-a-host)).
+([Quick capture on a host](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/#quick-capture-on-a-host)).
 
 ## Which terminal am I dictating into?
 
@@ -538,13 +538,13 @@ row offers only **Remove**.
 
 **Settings → Claude Code → Tell Claude Code you dictate → Add** puts a short
 note in ~/.claude/CLAUDE.md saying your prompts come from speech-to-text. See
-[Telling the agent you dictate](../../docs/coding-agents.md#telling-the-agent-you-dictate).
+[Telling the agent you dictate](https://t0msilver.github.io/localvoxtral/docs/coding-agents/#telling-the-agent-you-dictate).
 
 ## Teach Claude Code to check dictation
 
 **Settings → Claude Code → Teach Claude Code to check dictation → Add** installs a
 skill in ~/.claude/skills that names `localvoxtral doctor` and `localvoxtral logs`. See
-[Teaching the agent to check dictation](../../docs/coding-agents.md#teaching-the-agent-to-check-dictation).
+[Teaching the agent to check dictation](https://t0msilver.github.io/localvoxtral/docs/coding-agents/#teaching-the-agent-to-check-dictation).
 
 ## Set up a remote host
 
@@ -582,8 +582,8 @@ wrong side fails open silently forever.
 
 The flow stops at the first failure and gives the exact fix. The sheet shows
 no token, command or file contents, only one line per step. Its **Details**
-link opens [Remote Claude Code over SSH](../../docs/remote-claude-context.md),
-whose [Commands the app runs](../../docs/remote-claude-context.md#commands-the-app-runs)
+link opens [Remote Claude Code over SSH](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/),
+whose [Commands the app runs](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/#commands-the-app-runs)
 lists every command.
 
 The consent sentence names every local file and the ssh alias the flow may
@@ -598,9 +598,9 @@ a flag and has no other input path, so the token is in that one command's
 arguments while it runs. Afterwards it sits in the plugin's config under
 ~/.claude, readable by anything running as you there. That holds whether the
 app runs the command or you paste it (see
-[A token](../../docs/remote-claude-context.md#3-a-token)).
+[A token](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/#3-a-token)).
 
-[Remote Claude Code context over SSH](../../docs/remote-claude-context.md) is
+[Remote Claude Code context over SSH](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/) is
 the full reference: what the token authorizes, the per-Mac port, multiplexer
 limits, uninstalling.
 
@@ -697,7 +697,7 @@ The plugin list prints the plugin's stored config. After a rotation that
 holds a token this app no longer knows, and so could not redact.
 
 To run the equivalent commands by hand, see
-[Checking the setup](../../docs/remote-claude-context.md#checking-the-setup).
+[Checking the setup](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/#checking-the-setup).
 
 ### Show the connection indicator on a host
 
@@ -766,7 +766,7 @@ session:
 * sessions you only ever look at through a herdr 0.9 federated view. The link
   herdr holds is not a shell of yours. It may have lost the forward to an
   earlier session that has since ended (first session wins, see
-  [A second session to the same host](../../docs/remote-claude-context.md#a-second-session-to-the-same-host))
+  [A second session to the same host](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/#a-second-session-to-the-same-host))
 
 Those sessions publish hooks like an interactive one, into a tunnel that is
 not there. As always, the failure is silent, and dictation gets no context.

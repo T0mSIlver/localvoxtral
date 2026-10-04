@@ -634,7 +634,7 @@ package enum AgentCLIDoctorChecks {
         return AgentCLICheck(
             id: id, title: title, state: .warning, detail: last.line,
             fix: "Joined no agent session. If you dictated into one, `causes` names the step that stopped it; "
-                + "see How a dictation finds its session in docs/coding-agents.md.",
+                + "see https://t0msilver.github.io/localvoxtral/docs/coding-agents/#how-a-dictation-finds-its-session",
             lines: lines
         )
     }

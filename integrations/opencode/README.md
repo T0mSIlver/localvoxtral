@@ -3,7 +3,7 @@
 The opencode plugin lets localvoxtral use what your
 [opencode](https://github.com/sst/opencode) session is doing to transcribe
 your dictation, and write the words straight into the session's prompt. The
-[Claude Code plugin](../claude-code/README.md) does the same for Claude Code.
+[Claude Code plugin](https://t0msilver.github.io/localvoxtral/integrations/claude-code/) does the same for Claude Code.
 
 ## What you get
 
@@ -23,9 +23,9 @@ your session, with your default model:
 
 - With **Ask the coding agent for each new project's terms** on, the app runs
   it once per project. See
-  [Terms from your coding agent](../../docs/dictation.md#terms-from-your-coding-agent).
+  [Terms from your coding agent](https://t0msilver.github.io/localvoxtral/docs/dictation/#terms-from-your-coding-agent).
 - When neither Claude Code nor Mistral Vibe is installed, a
-  [quick capture](../../docs/coding-agents.md#quick-capture) routed to a
+  [quick capture](https://t0msilver.github.io/localvoxtral/docs/coding-agents/#quick-capture) routed to a
   project on this Mac runs it once to draft the issue.
 
 ## Install
@@ -81,13 +81,13 @@ vocabulary-only.
 the instructions file opencode reads. That file is
 `~/.config/opencode/AGENTS.md`, or `~/.claude/CLAUDE.md` when the first one
 does not exist. See
-[Telling the agent you dictate](../../docs/coding-agents.md#telling-the-agent-you-dictate).
+[Telling the agent you dictate](https://t0msilver.github.io/localvoxtral/docs/coding-agents/#telling-the-agent-you-dictate).
 
 ## Teach opencode to check dictation
 
 **Settings → opencode → Teach opencode to check dictation → Add** installs a
 skill in ~/.config/opencode/skills that names `localvoxtral doctor` and `localvoxtral logs`. See
-[Teaching the agent to check dictation](../../docs/coding-agents.md#teaching-the-agent-to-check-dictation).
+[Teaching the agent to check dictation](https://t0msilver.github.io/localvoxtral/docs/coding-agents/#teaching-the-agent-to-check-dictation).
 
 ## What it sends
 
@@ -180,4 +180,4 @@ Then remove the plugin's line from `~/.config/opencode/tui.json`.
   typing into.
 - **herdr panes keep working.** The plugin forwards the herdr pane identity
   it inherited from the environment, so localvoxtral's
-  [herdr](../herdr/README.md) join applies to opencode panes unchanged.
+  [herdr](https://t0msilver.github.io/localvoxtral/integrations/herdr/) join applies to opencode panes unchanged.
