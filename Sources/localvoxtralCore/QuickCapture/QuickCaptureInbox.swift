@@ -117,6 +117,10 @@ package struct QuickCaptureItem: Codable, Equatable, Sendable, Identifiable {
     /// `owner/name` for `gh issue create --repo`. Resolved from a local
     /// checkout's remote; typed by the user otherwise.
     package var repository: String?
+    /// True when the user typed `repository` for this capture alone, false
+    /// when it is its project's (#1683). Nil in files written before, read
+    /// by whether it names one of the project's repositories.
+    package var repositoryIsOwn: Bool?
     /// The draft's short title, for every kind.
     package var title: String
     /// An issue's body, a question's answer, or a task or note restated.
@@ -417,9 +421,18 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
               let target = project.issueRepository, let current = item.repository,
               current.caseInsensitiveCompare(target) != .orderedSame
         else { return }
-        let projectRepositories = [project.repository, project.github?.parent].compactMap { $0 }
-        guard projectRepositories.contains(where: { $0.caseInsensitiveCompare(current) == .orderedSame }) else { return }
+        switch item.repositoryIsOwn {
+        case true?:
+            return
+        case false?:
+            // The project's repository itself changed, typed or not (#1683).
+            break
+        case nil:
+            let projectRepositories = [project.repository, project.github?.parent].compactMap { $0 }
+            guard projectRepositories.contains(where: { $0.caseInsensitiveCompare(current) == .orderedSame }) else { return }
+        }
         item.repository = target
+        item.repositoryIsOwn = false
         item.dropIssueLinks()
     }
 
@@ -465,7 +478,10 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
     ) {
         update(id) { item in
             guard item.state == .drafting else { return }
-            if item.repository == nil { item.repository = repository }
+            if item.repository == nil {
+                item.repository = repository
+                item.repositoryIsOwn = false
+            }
             switch outcome {
             case .draft(let draft, _):
                 item.state = .ready
@@ -505,7 +521,10 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
             }
             guard item.state == .drafting else { return }
             item.state = .ready
-            if item.repository == nil { item.repository = repository }
+            if item.repository == nil {
+                item.repository = repository
+                item.repositoryIsOwn = false
+            }
             switch outcome {
             case .draft(let draft, _):
                 item.kind = .issue
@@ -564,6 +583,7 @@ package struct QuickCaptureInbox: Codable, Equatable, Sendable {
             item.suggestion = nil
             item.repositorySuggestion = nil
             item.repository = repository
+            item.repositoryIsOwn = false
             item.dropIssueLinks()
             // A check still reading the old project's code no longer applies.
             if item.codeCheck?.state == .checking { item.codeCheck = nil }

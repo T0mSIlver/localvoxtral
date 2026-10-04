@@ -702,12 +702,24 @@ package final class QuickCaptureInboxModel {
 
     package func setRepository(_ repository: String, for id: UUID) {
         let trimmed = repository.trimmingCharacters(in: .whitespacesAndNewlines)
-        mutate { inbox in inbox.update(id) { $0.repository = trimmed.isEmpty ? nil : trimmed } }
-        guard QuickCaptureInbox.isRepository(trimmed),
-              let key = inbox.items.first(where: { $0.id == id })?.projectKey,
-              let project = projects().first(where: { $0.key == key }), project.repository == nil
-        else { return }
-        onRepositoryAnswered?(key, trimmed)
+        let withoutRepository = Set(projects().filter { $0.repository == nil }.map(\.key))
+        // A project with no repository takes the answer: the capture's is the
+        // project's then, and follows it when it changes (#1683). Read from
+        // the Inbox the change applies to, which another copy may have moved
+        // the capture in.
+        var answered: String?
+        mutate { inbox in
+            answered = nil
+            inbox.update(id) {
+                if QuickCaptureInbox.isRepository(trimmed), let key = $0.projectKey, withoutRepository.contains(key) {
+                    answered = key
+                }
+                $0.repository = trimmed.isEmpty ? nil : trimmed
+                $0.repositoryIsOwn = trimmed.isEmpty ? nil : answered == nil
+            }
+        }
+        guard let answered else { return }
+        onRepositoryAnswered?(answered, trimmed)
     }
 
     /// Moves a capture to another project, or to the catch-all with nil. A
@@ -742,6 +754,7 @@ package final class QuickCaptureInboxModel {
                     inbox.update(id) {
                         guard $0.projectKey == project.key, $0.state == .ready, $0.repository == nil else { return }
                         $0.repository = repository
+                        $0.repositoryIsOwn = false
                     }
                 }
             }

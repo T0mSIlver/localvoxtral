@@ -880,7 +880,10 @@ public final class ClaudeRemoteContextListener: Sendable {
             case .readme:
                 return quickCapture.acceptReadme(sessionID: sessionID, readme: body) ? .accepted(nil) : .notAsked
             case .prompt(let id):
-                return quickCapture.prompt(draftID: id, sessionID: sessionID, agent: agent, issueList: body)
+                return quickCapture.prompt(
+                    draftID: id, sessionID: sessionID, agent: agent, issueList: body,
+                    listedRepository: RemoteQuickCaptureRequests.issuesRepository(in: request.headers)
+                )
                     .map { .accepted(Data($0.utf8)) } ?? .notAsked
             case .answer(let id):
                 return quickCapture.acceptDraft(
@@ -891,7 +894,10 @@ public final class ClaudeRemoteContextListener: Sendable {
                 return quickCapture.words(draftID: id, sessionID: sessionID, agent: agent)
                     .map { .accepted(Data($0.utf8)) } ?? .notAsked
             case .context(let id):
-                return quickCapture.acceptContext(draftID: id, sessionID: sessionID, agent: agent, bundle: body)
+                return quickCapture.acceptContext(
+                    draftID: id, sessionID: sessionID, agent: agent, bundle: body,
+                    listedRepository: RemoteQuickCaptureRequests.issuesRepository(in: request.headers)
+                )
                     ? .accepted(nil) : .notAsked
             case .check(let id):
                 switch quickCapture.checkPrompt(draftID: id, sessionID: sessionID, agent: agent) {

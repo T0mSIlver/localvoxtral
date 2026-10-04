@@ -46,6 +46,9 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
     /// How the host's run ended: the agent's exit status, or `timeout`,
     /// `capped` or `missing`.
     package static let draftExitHeaderName = "X-Lvx-Draft-Exit"
+    /// The repository the host listed issues in: its origin's (#1682). A
+    /// shim that sends none lists issues that link nothing.
+    package static let issuesRepositoryHeaderName = "X-Lvx-Issues-Repository"
     /// The first shims that read the two headers.
     package static let minimumPluginVersion = "1.17.0"
     package static let minimumVibeHooksVersion = "1.3.0"
@@ -76,6 +79,9 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
     private struct Draft {
         let projectKey: String
         let projectName: String
+        /// Where the capture files: a listed issue may be linked only when
+        /// the host listed this repository's.
+        let filingRepository: String?
         let capture: String
         let createdAt: Date
         let firstDrafter: (any QuickCaptureFirstDrafting)?
@@ -353,6 +359,7 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
                 state.drafts[id] = Draft(
                     projectKey: project.key,
                     projectName: project.name,
+                    filingRepository: project.issueRepository,
                     capture: capture,
                     createdAt: createdAt,
                     firstDrafter: firstDrafter,
@@ -422,15 +429,24 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
     /// once: the agent drafts from scratch. `issueList` is the host's
     /// `gh issue list --json number,title,body`, or empty when its `gh`
     /// listed nothing; it is untrusted and only ever quoted in the prompt.
-    /// Nil when this session was not asked for this draft, or already sent
-    /// context.
-    package func prompt(draftID: String, sessionID: String, agent: ProjectTermProposal.Agent, issueList: Data) -> String? {
+    /// `listedRepository` is the repository it says it listed: another than
+    /// the capture's lists issues that are not the capture's, so none is
+    /// quoted or linked. Nil when this session was not asked for this draft,
+    /// or already sent context.
+    package func prompt(
+        draftID: String, sessionID: String, agent: ProjectTermProposal.Agent, issueList: Data,
+        listedRepository: String? = nil
+    ) -> String? {
         let issues = issueList.isEmpty ? nil : QuickCaptureDraft.parseIssueList(issueList)
         return state.withLock { state -> String? in
             guard var draft = state.drafts[draftID], draft.sessionID == sessionID, draft.agent == agent,
                   !draft.prompted, !draft.contextReceived
             else { return nil }
-            let listed = issues.map { Array($0.prefix(QuickCaptureDraft.maxListedIssues)) }
+            var listed = issues.map { Array($0.prefix(QuickCaptureDraft.maxListedIssues)) }
+            if listed != nil, !Self.issuesLink(listed: listedRepository, filing: draft.filingRepository) {
+                Log.backends.notice("Quick capture draft: the host listed another repository's issues; none quoted or linked")
+                listed = nil
+            }
             draft.prompted = true
             draft.openIssues = listed?.map(\.number)
             state.drafts[draftID] = draft
@@ -456,21 +472,33 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
 
     /// The host's context bundle, once, from the session asked. Starts the
     /// first draft; the host polls `checkPrompt` for what follows. False
-    /// when this session was not asked, or already answered.
+    /// when this session was not asked, or already answered. Open issues
+    /// listed in another repository than the capture's (`listedRepository`,
+    /// as in `prompt`) are dropped.
     package func acceptContext(
-        draftID: String, sessionID: String, agent: ProjectTermProposal.Agent, bundle: Data
+        draftID: String, sessionID: String, agent: ProjectTermProposal.Agent, bundle: Data,
+        listedRepository: String? = nil
     ) -> Bool {
-        let context = QuickCaptureContext.parse(bundle: bundle)
+        var parsed = QuickCaptureContext.parse(bundle: bundle)
+        var dropped = false
         let taken = state.withLock { state -> Draft? in
             guard var draft = state.drafts[draftID], draft.sessionID == sessionID, draft.agent == agent,
                   !draft.contextReceived, !draft.prompted
             else { return nil }
+            if parsed.openIssues != nil, !Self.issuesLink(listed: listedRepository, filing: draft.filingRepository) {
+                parsed.openIssues = nil
+                dropped = true
+            }
             draft.contextReceived = true
-            draft.openIssues = context.openIssues?.map(\.number)
+            draft.openIssues = parsed.openIssues?.map(\.number)
             state.drafts[draftID] = draft
             return draft
         }
         guard let taken else { return false }
+        if dropped {
+            Log.backends.notice("Quick capture draft: the host listed another repository's issues; none quoted or linked")
+        }
+        let context = parsed
         Log.backends.notice(
             "Quick capture draft: remote context received: \(QuickCaptureDrafter.summary(of: context), privacy: .public)"
         )
@@ -615,6 +643,18 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
         case nil:
             return nil
         }
+    }
+
+    /// Whether the issues a host listed in `listed` may be linked from a
+    /// capture filed in `filing`: only when both are named and the same.
+    static func issuesLink(listed: String?, filing: String?) -> Bool {
+        guard let listed, let filing else { return false }
+        return listed.caseInsensitiveCompare(filing) == .orderedSame
+    }
+
+    /// The repository a host's request says it listed issues in.
+    package static func issuesRepository(in headers: [String: String]) -> String? {
+        headers[issuesRepositoryHeaderName.lowercased()].flatMap { QuickCaptureInbox.isRepository($0) ? $0 : nil }
     }
 
     /// The session id an answer names, in the shape both shims send: 1 to 64

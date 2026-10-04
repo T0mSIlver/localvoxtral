@@ -269,6 +269,8 @@ for agent in claude vibe; do
     || fail "$label: posted issues '$(cat "$TMP_DIR/prompt-body")'"
   check_request "$label" "$agent" "$TMP_DIR/prompt-header"
   grep -qx "X-Lvx-Draft-Id: $DRAFT_ID" "$TMP_DIR/prompt-header" || fail "$label: the prompt request names no draft"
+  grep -qx "X-Lvx-Issues-Repository: me/quill" "$TMP_DIR/prompt-header" \
+    || fail "$label: the prompt request does not name the repository its issues come from"
   [ "$(cat "$TMP_DIR/$agent-cwd")" = "$TMP_DIR/repo" ] || fail "$label: the run's cwd is not the repository root"
   grep -qx '<capture>' "$TMP_DIR/$agent-stdin" || fail "$label: the run did not get the Mac's prompt on stdin"
   # Other users on the host read argv from ps (#1494).
