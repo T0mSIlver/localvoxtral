@@ -684,6 +684,36 @@ final class AddressedSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [true])
     }
 
+    /// A mod refusal gives the text back to the terminal tab's route, and
+    /// Escape with it: a cancel during the read-back still stops the Return.
+    func testEscapeAfterAModRefusalStillStopsTheTerminalsReturn() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
+        )
+        _ = attachMod(harness, sessionID: "pay", answer: .refused("dialog"))
+        // The build host has no GUI session to register the Carbon hotkey in.
+        EscapeCancelHandler.debugConfigureRegistration(status: noErr)
+        let escape = harness.viewModel.session.escapeCancelHandler
+        escape.start()
+        addTeardownBlock { @MainActor in
+            escape.stop()
+            EscapeCancelHandler.resetDebugState()
+        }
+        var registeredAtReadBack: Bool?
+        harness.focuser.onReadBack = { _ in
+            registeredAtReadBack = escape.debugIsRegistered
+            escape.debugPressEscape()
+        }
+
+        await harness.stop()
+
+        XCTAssertEqual(registeredAtReadBack, true, "Escape is the app's again for the terminal's route")
+        XCTAssertEqual(harness.inserted.value.map(\.text), ["Run the tests"])
+        XCTAssertEqual(harness.returns.value, [], "the cancel stops the Return")
+        XCTAssertEqual(harness.records.value.count, 1)
+    }
+
     /// The channel is there but the write fails: the mod never got the
     /// request, so the focus path runs.
     func testAModThatNeverGetsTheRequestFallsBackToTheFocusPath() async {
