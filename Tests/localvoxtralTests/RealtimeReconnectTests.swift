@@ -500,6 +500,50 @@ final class RealtimeReconnectTests: XCTestCase {
         XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.ready)
     }
 
+    /// The socket closes during the stop's finalization with audio it never
+    /// sent: a rollover's carried audio and the final commit queued behind
+    /// it. The stop reconnects, and the audio reaches the new session once,
+    /// final commit behind it (#1672).
+    func testAStopWhoseSocketClosesOnAudioItNeverSentReconnectsForIt() async {
+        let clock = ManualSessionClock()
+        let records = RecordedSessions()
+        let (viewModel, client) = makeDictatingViewModel(
+            outputMode: .overlayBuffer, clock: clock, records: records)
+        viewModel.transcript.currentDictationEventText = "before the close"
+        client.setConnected(true)
+        client.setOnCommit { [weak viewModel] final in
+            // The first socket closes without answering; the new one does.
+            guard final, client.connectCount > 0 else { return }
+            MainActor.assumeIsolated {
+                viewModel?.session.handle(event: .finalTranscript("the carried words"))
+                viewModel?.session.handle(event: .transcriptionFinalized)
+            }
+        }
+        viewModel.dependencies.reconnectSleep = { _ in
+            guard client.connectCount > 0 else { return }
+            client.setConnected(true)
+        }
+
+        viewModel.stopDictation(reason: "manual toggle")
+        // The finalization poll and its watchdog.
+        await clock.waitForSleepers(2)
+        let poll = viewModel.session.stopFinalizationTask
+        let carried = Data(repeating: 9, count: 3_200)
+        client.setUnsentAudio(carried)
+        client.setConnected(false)
+        clock.advance(by: TimingConstants.finalizationPollInterval)
+        await poll?.value
+        await viewModel.session.reconnectTask?.value
+        await viewModel.session.stopFinalizationTask?.value
+        await awaitStoppedSessionCommit(viewModel)
+
+        XCTAssertEqual(client.connectCount, 1)
+        XCTAssertEqual(client.sentAudio, carried, "the carried audio reaches the new session once")
+        XCTAssertEqual(client.commits, [true, true])
+        XCTAssertEqual(records.all.map(\.rawText), ["before the close the carried words"])
+        XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.ready)
+    }
+
     /// The socket a context rollover opened fails before its handshake, so
     /// the audio carried to it never reached a server. The reconnect puts it
     /// back ahead of the speech captured since, for the restarted send loop

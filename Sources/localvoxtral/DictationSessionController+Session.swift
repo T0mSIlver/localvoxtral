@@ -769,7 +769,9 @@ extension DictationSessionController {
             // until the retiring socket's `done`), and an idle close there
             // drops the whole tail (#1456). Only the timeout bounds that wait.
             var sentAt: Date?
-            while self.isFinalizingStop {
+            // Cancelled when a closed socket hands the stop to a reconnect
+            // (`finishStopOnClosedSocket`): the run owns it from there.
+            while self.isFinalizingStop, !Task.isCancelled {
                 if !self.activeRealtimeClient.isConnected {
                     Log.backends.notice("stop finalization: the socket closed; finishing the stop")
                     self.finishStopOnClosedSocket()

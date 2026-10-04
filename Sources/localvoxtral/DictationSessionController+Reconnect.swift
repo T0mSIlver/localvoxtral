@@ -270,9 +270,9 @@ extension DictationSessionController {
     /// #1672) goes to a new socket through a reconnect, under the stop's
     /// watchdog; otherwise the stop ends with what arrived.
     func finishStopOnClosedSocket() {
-        if !isReconnectingRealtimeSession, !isCompletingStoppedSession,
-           audio.reclaimUnsentAudio(from: activeRealtimeClient)
-        {
+        // A reconnect already carries the stop; its watchdog bounds it.
+        guard !isReconnectingRealtimeSession else { return }
+        if !isCompletingStoppedSession, audio.reclaimUnsentAudio(from: activeRealtimeClient) {
             stopFinalizationTask?.cancel()
             stopFinalizationTask = nil
             if beginRealtimeReconnectIfPossible() {
