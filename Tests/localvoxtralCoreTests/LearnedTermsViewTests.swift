@@ -1,5 +1,5 @@
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// What the per-term view shows and changes (#522): the applied counter, the
 /// pin, and the line under a term in a project's sheet. The rest of the memory's rules are
