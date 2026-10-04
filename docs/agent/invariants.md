@@ -471,6 +471,40 @@ there is not.
   own path. With no bye (an app or mod that
   predates it, a crash), the session's own SessionEnd hook and the TTL
   from the detach end it as before.
+- **A remote mod channel needs the host's channel key both ways** (#1412).
+  The remote plugin carries a copy of the mod's hooks module
+  (`scripts/sync-remote-mod.sh` writes it, CI checks it), which long-polls
+  `POST /v1/mod/poll` on the listener through the forward and answers on
+  `/v1/mod/reply`. The token alone does not open these routes. A process
+  squatting the forward port on the host receives the token from every hook,
+  so every request also carries `X-Lvx-Mod-Proof`, an HMAC of the body under
+  the channel key, and every poll answer carries one over the poll's nonce
+  and the body. The key is `HMAC(storedTokenHash, "lvx-mod-channel-v1")`. The
+  Mac derives it and never stores it, and setup writes it into the plugin's
+  config through `plugin configure --values-stdin`, never through argv. The
+  key never crosses the tunnel, and a token without the salt cannot produce
+  it. Rotating the token changes the key, so a host needs setup again. The
+  mod acts on nothing whose answer proof fails and backs off as after a dead
+  dial. The listener refuses a request without the proof with 403, before
+  any lease is touched.
+  The listener scopes the poll's session id under the authenticated host and
+  attaches the hub channel under that scoped id. It attaches only when the
+  registry holds that session from a hook of the same host, the twin of the
+  local rule above. A reply's id is scoped the same way before
+  `ClaudeModChannelHub.deliver`, so one host cannot answer another's
+  request. A held poll gives back its one-shot connection slot and takes one
+  of `maxHeldPolls` (16), so hooks never queue behind polls. Lines wait
+  bounded on the Mac (64 lines, 256 KiB) and go again until a poll acks them,
+  so an answer lost with the forward loses no line. No poll for 10 s after
+  the last one ended detaches the channel, and the hub answers every waiting
+  request as unanswered. A second process of the same session (another
+  `instance`) gets 409 until the first's lease expires. The mod's dials back
+  off 300 s after a failure, as post.sh does, because each dial at a forward
+  with no app behind it prints a `connect_to` line on the Mac's terminal. A
+  newer `ok` in post.sh's `hook-status` stamp ends the wait early. A residual
+  accepted here: the reply that answers a proven request (a `draft` carries
+  the prompt box) goes in a new connection, and a squatter that took the port
+  in between reads it.
 - **The Mistral second pass holds the text back, never the world** (#317).
   An Overlay Buffer dictation in Mistral API mode is sent whole to the batch
   endpoint on stop (`DictationSessionController+StopCommit.swift`,

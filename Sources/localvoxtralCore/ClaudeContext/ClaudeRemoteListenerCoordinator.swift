@@ -86,7 +86,8 @@ public final class ClaudeRemoteListenerCoordinator: ClaudeRemoteListenerControll
         onRemoteSkills: @escaping @Sendable (String, [String]) -> Void = { _, _ in },
         projectTerms: RemoteProjectTermRequests? = nil,
         quickCapture: RemoteQuickCaptureRequests? = nil,
-        doctor: RemoteDoctorRoute? = nil
+        doctor: RemoteDoctorRoute? = nil,
+        modChannels: ClaudeRemoteModChannels? = nil
     ) {
         self.init(hosts: hosts, sessions: sessions) { registry, rejections in
             ClaudeRemoteContextListener(
@@ -98,7 +99,8 @@ public final class ClaudeRemoteListenerCoordinator: ClaudeRemoteListenerControll
                 onRemoteSkills: onRemoteSkills,
                 projectTerms: projectTerms,
                 quickCapture: quickCapture,
-                doctor: doctor
+                doctor: doctor,
+                modChannels: modChannels
             )
         }
     }

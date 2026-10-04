@@ -145,6 +145,13 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             "hooks/post.sh", "hooks/statusline.sh", "hooks/terms.sh", "hooks/capture.sh", "hooks/doctor.sh",
             "hooks/agent-projects.sh", "bin/localvoxtral",
         ]
+        // The mod's hooks module (#1412): TypeScript Claude Code's own engine
+        // loads, a copy of localvoxtral-mod's (scripts/sync-remote-mod.sh).
+        // Nothing here runs as a process.
+        let modFiles: Set<String> = [
+            "hooks/register.tsx", "hooks/channel.ts", "hooks/inbox.ts", "hooks/hmac.ts", "hooks/remote.ts",
+            "types/index.d.ts", "tests/remote.test.ts", ".gitignore",
+        ]
         let contents = try FileManager.default.subpathsOfDirectory(atPath: pluginRoot.path)
         for path in contents {
             let full = pluginRoot.appendingPathComponent(path)
@@ -171,8 +178,9 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
                 "the remote plugin must ship no executable but its seven sh scripts, found \(path)"
             )
             XCTAssertTrue(
-                path.hasSuffix(".json") || path == "skills/\(AgentSkillInstallService.skillName)/SKILL.md",
-                "the remote plugin must ship JSON manifests, the doctor skill and its seven sh scripts only, found \(path)"
+                path.hasSuffix(".json") || path == "skills/\(AgentSkillInstallService.skillName)/SKILL.md"
+                    || modFiles.contains(path),
+                "the remote plugin must ship JSON manifests, the doctor skill, the mod's module and its seven sh scripts only, found \(path)"
             )
         }
         for script in shellScripts {

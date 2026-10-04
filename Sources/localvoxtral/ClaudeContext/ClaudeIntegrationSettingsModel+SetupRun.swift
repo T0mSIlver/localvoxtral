@@ -117,8 +117,12 @@ extension ClaudeIntegrationSettingsModel {
         guard continueSetup(hostID: hostID) else { return }
 
         markSetup(.remotePlugin, .running)
+        // Read after the token is final: a rotation is a new key (#1412).
+        let channelKey = registry?.modChannelKey(hostID: hostID)
         let (pluginOutcome, pluginFailure) = await performSetupStep("remote plugin") {
-            try service.setupRemotePlugin(sshHostAlias: alias, token: token, remoteForwardPort: port)
+            try service.setupRemotePlugin(
+                sshHostAlias: alias, token: token, channelKey: channelKey, remoteForwardPort: port
+            )
         }
         if let failure = pluginFailure {
             failSetup(

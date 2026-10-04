@@ -413,9 +413,9 @@ function queueAppend($: EngineInterface, sessionID: string, message: ChannelMess
   })
 }
 
-const band = atom({ plugin: 'localvoxtral-mod', key: 'band' } as const, null)
+const band = atom({ plugin: 'localvoxtral-remote', key: 'band' } as const, null)
 // The other sessions waiting for the person, oldest first (#1695).
-const waiting = atom({ plugin: 'localvoxtral-mod', key: 'waiting' } as const, [])
+const waiting = atom({ plugin: 'localvoxtral-remote', key: 'waiting' } as const, [])
 let bandUpdatedAt = 0
 
 /** Shows what a `state` message says; the app waits for no answer. */
@@ -542,7 +542,7 @@ let channelLink: Link | undefined
 // Not gated on `isInteractive`, which is false for an SDK host and may be
 // for a Claude Desktop session, where the indicator and the channel matter
 // most.
-const inbox = atom({ plugin: 'localvoxtral-mod', key: 'inbox' } as const, { status: 'loading' })
+const inbox = atom({ plugin: 'localvoxtral-remote', key: 'inbox' } as const, { status: 'loading' })
 
 /**
  * Reads this project's captures into the Inbox pane. Their words stay in the

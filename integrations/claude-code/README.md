@@ -1256,6 +1256,15 @@ install storing one port. The Mac whose config was installed last receives the
 events, and the other Mac sees no traffic. You can see that only one Mac is
 served, and no credential reaches the wrong Mac's listener.
 
+**A process on the host that squats the forward port while no ssh holds it.**
+It receives every hook's bearer token, and the hook script's stdout gate
+keeps its answers out of the session. The mod (remote plugin 1.41.0) takes
+text and submits prompts on what the app sends, so it trusts the token
+alone for nothing. Every request and every answer on its routes carries an
+HMAC under the host's channel key, which setup stores in the plugin's
+config and which never crosses the tunnel. A squatter holding the token
+cannot attach as a session or write into the prompt.
+
 **A process on your Mac that squats 127.0.0.1:8473 before the app binds it.**
 Loopback ports on macOS go to whoever binds first, with no ownership. A
 squatter cannot authenticate your hosts, because it does not have the token

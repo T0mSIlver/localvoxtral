@@ -15,7 +15,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// Kept next to the installer that verifies it. A manifest contract test
     /// pins this value to the remote plugin's plugin.json, and another pins
     /// the shim's `X-Lvx-Plugin-Version` header to the same number.
-    public static let remotePluginVersion = "1.40.0"
+    public static let remotePluginVersion = "1.41.0"
 
     /// The plugin's sensitive userConfig key. Claude Code exposes it to the
     /// plugin's COMMAND-hook shim as `CLAUDE_PLUGIN_OPTION_TOKEN`; the shim
@@ -35,6 +35,8 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// always emits both halves together for that reason; changing one alone
     /// fails open, which looks exactly like nothing happening.
     public static let portConfigKey = "port"
+    /// The remote plugin's mod channel key (#1412), stored like the token.
+    public static let channelKeyConfigKey = "channel_key"
 
     /// A herdr config line that already defines the agents panel, once cut
     /// at `#` and stripped of whitespace and quotes: TOML lets
