@@ -322,11 +322,20 @@ package struct QuickCaptureContextGatherer: Sendable {
 
     /// `git` and `gh` as the app's user: `gh` found as the Inbox finds it,
     /// `git` on PATH or in `/usr/bin`. 20 s each.
+    ///
+    /// A command that fails leaves its part of the context out, and says so
+    /// through `logFailure` (#1692): the tool, its first argument and the
+    /// outcome, never the rest of its arguments or its output.
     package static func processRun(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        isExecutable: @escaping @Sendable (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+        isExecutable: @escaping @Sendable (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) },
+        logFailure: @escaping @Sendable (String) -> Void = { Log.backends.notice("\($0, privacy: .public)") }
     ) -> Run {
         { tool, arguments, root in
+            let name = tool == .gh ? "gh" : "git"
+            // `issue`, `pr`, `grep`: what was asked, without the search words.
+            let command = ([name] + arguments.prefix(1)).joined(separator: " ")
+            let left = "Quick capture context: `\(command)`"
             let candidates: [String]
             switch tool {
             case .gh:
@@ -334,7 +343,10 @@ package struct QuickCaptureContextGatherer: Sendable {
             case .git:
                 candidates = (environment["PATH"] ?? "").split(separator: ":").map { "\($0)/git" } + ["/usr/bin/git"]
             }
-            guard let executable = candidates.first(where: isExecutable) else { return nil }
+            guard let executable = candidates.first(where: isExecutable) else {
+                logFailure("\(left) not run, \(name) not found; that context is left out")
+                return nil
+            }
             guard let output = await BoundedProcess.run(
                 executableURL: URL(fileURLWithPath: executable),
                 arguments: arguments,
@@ -342,12 +354,25 @@ package struct QuickCaptureContextGatherer: Sendable {
                 currentDirectory: root,
                 timeoutSeconds: 20,
                 maxBytes: 1_000_000,
-                label: "quick capture context \(tool == .gh ? "gh" : "git")"
-            ), !output.timedOut else { return nil }
+                label: "quick capture context \(name)"
+            ) else {
+                logFailure("\(left) did not start; that context is left out")
+                return nil
+            }
+            guard !output.timedOut else {
+                logFailure("\(left) timed out; that context is left out")
+                return nil
+            }
             // git grep exits 1 when nothing matched; it printed nothing then.
-            guard output.exitCode == 0 || (tool == .git && output.exitCode == 1) else { return nil }
+            guard output.exitCode == 0 || (tool == .git && output.exitCode == 1) else {
+                logFailure("\(left) exited \(output.exitCode); that context is left out")
+                return nil
+            }
             // A capped grep still has its first lines, which are all that is read.
-            if output.capped, tool == .gh { return nil }
+            if output.capped, tool == .gh {
+                logFailure("\(left) output over the cap; that context is left out")
+                return nil
+            }
             return output.data
         }
     }

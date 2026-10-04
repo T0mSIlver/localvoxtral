@@ -524,7 +524,13 @@ package final class QuickCaptureInboxModel {
               let capture = inbox.items.first(where: { $0.id == id })
         else { return nil }
         var joined = false
-        mutate { joined = $0.join(id, into: target) }
+        // The target as the join read it: another running copy may have
+        // moved or edited it since this copy did (#1686).
+        var current = before
+        mutate { inbox in
+            current = inbox.items.first { $0.id == target } ?? before
+            joined = inbox.join(id, into: target)
+        }
         guard joined else {
             Log.backends.notice("Quick capture: not joined, another running copy filed or discarded that capture")
             return nil
@@ -532,19 +538,19 @@ package final class QuickCaptureInboxModel {
         Log.backends.notice("Quick capture: joined an open capture as its follow-up")
         onStatus?(QuickCaptureFollowUpStatus.joined)
         if let recordID = capture.historyRecordID {
-            onRouted?(recordID, "Added to \(before.projectName.map { "a \($0) capture" } ?? "an Inbox capture")")
+            onRouted?(recordID, "Added to \(current.projectName.map { "a \($0) capture" } ?? "an Inbox capture")")
         }
         // A capture with no project keeps the words and drafts nothing.
-        guard let key = before.projectKey else { return Task {} }
+        guard let key = current.projectKey else { return Task {} }
         let projects = projects()
         let input: String
-        if let draft = before.draftSnapshot {
+        if let draft = current.draftSnapshot {
             input = QuickCaptureSpokenReview.redraftCapture(
-                original: before.words, title: draft.title, body: draft.body,
-                changes: (before.changes ?? []) + ["Add what the user said next: \(capture.text)"]
+                original: current.words, title: draft.title, body: draft.body,
+                changes: (current.changes ?? []) + ["Add what the user said next: \(capture.text)"]
             )
         } else {
-            input = before.words + "\n\n" + capture.text
+            input = current.words + "\n\n" + capture.text
         }
         return Task { @MainActor [weak self] in
             await self?.draft(target, text: input, destination: .project(key), projects: projects)
@@ -711,7 +717,17 @@ package final class QuickCaptureInboxModel {
         let projects = projects()
         let project = key.flatMap { key in projects.first { $0.keys.contains(key) } }
         guard let item = inbox.items.first(where: { $0.id == id }), item.state == .ready else { return nil }
-        mutate { $0.move(id, to: project, repository: project?.issueRepository) }
+        var moved = false
+        mutate { inbox in
+            // Ready as the file has it now: another running copy may be
+            // filing it in its repository (#1685).
+            moved = inbox.items.first(where: { $0.id == id })?.state == .ready
+            if moved { inbox.move(id, to: project, repository: project?.issueRepository) }
+        }
+        guard moved else {
+            Log.backends.notice("Quick capture: not moved, another running copy is filing or changed it")
+            return nil
+        }
         guard let project else { return nil }
         let needsDraft = item.title.isEmpty
         return Task { @MainActor [weak self] in
@@ -812,15 +828,19 @@ package final class QuickCaptureInboxModel {
     }
 
     /// The only path to `gh issue create`.
-    @discardableResult
     ///
-    /// With `shown`, it files that draft only: unchanged since and bound
-    /// for the same repository, also by another running copy.
+    /// It files the draft `shown`, else the one this copy shows, only if
+    /// the file still has it unchanged and bound for the same repository:
+    /// another running copy may have moved or edited it since (#1684).
+    @discardableResult
     package func file(_ id: UUID, shown: QuickCaptureDraftSnapshot? = nil) -> Task<Void, Never>? {
-        let eligible: (QuickCaptureItem) -> Bool = { item in
-            item.canFile && shown.map(item.matches) ?? true
-        }
-        guard inbox.items.first(where: { $0.id == id }).map(eligible) == true,
+        guard let displayed = inbox.items.first(where: { $0.id == id }) else { return nil }
+        let shown = shown ?? QuickCaptureDraftSnapshot(
+            id: id, projectName: displayed.projectName ?? "", title: displayed.title, body: displayed.body,
+            repository: displayed.repository
+        )
+        let eligible: (QuickCaptureItem) -> Bool = { $0.canFile && $0.matches(shown) }
+        guard eligible(displayed),
               case let (item, token)? = claim(id, when: eligible, commentOn: nil), let repository = item.repository
         else { return nil }
         let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)

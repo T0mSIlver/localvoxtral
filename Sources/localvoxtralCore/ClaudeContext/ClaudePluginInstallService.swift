@@ -143,6 +143,11 @@ public struct ClaudePluginInstallService: Sendable {
     /// Injected so tests never spawn a real process.
     public typealias Runner = @Sendable (Invocation) throws -> RunResult
 
+    /// Where a failure the flow goes on past is logged: a mod step, a
+    /// listing. Injected so tests read it back. Its lines name a step and an
+    /// exit code or a runner failure, never CLI output or arguments.
+    public typealias FailureLog = @Sendable (String) -> Void
+
     private let claudeExecutableURL: URL?
     private let marketplaceURL: URL?
     /// The app-owned mirror, and the ONLY path a repair may register. Nil
@@ -150,19 +155,22 @@ public struct ClaudePluginInstallService: Sendable {
     private let repairMarketplaceURL: URL?
     private let publisherURL: URL?
     private let runner: Runner
+    private let logFailure: FailureLog
 
     public init(
         claudeExecutableURL: URL?,
         marketplaceURL: URL?,
         repairMarketplaceURL: URL? = nil,
         publisherURL: URL? = nil,
-        runner: @escaping Runner
+        runner: @escaping Runner,
+        logFailure: FailureLog? = nil
     ) {
         self.claudeExecutableURL = claudeExecutableURL
         self.marketplaceURL = marketplaceURL
         self.repairMarketplaceURL = repairMarketplaceURL
         self.publisherURL = publisherURL
         self.runner = runner
+        self.logFailure = logFailure ?? { Log.backends.notice("\($0, privacy: .public)") }
     }
 
     /// Fully-qualified plugin reference, e.g. `localvoxtral@localvoxtral`.
@@ -243,9 +251,7 @@ public struct ClaudePluginInstallService: Sendable {
     /// registered with once, which is not necessarily where this app lives now
     /// — that gap is the whole reason the mirror exists.
     public func marketplaceListOutput() throws -> String? {
-        guard claudeExecutableURL != nil else { return nil }
-        let result = try runner(Invocation(arguments: ["plugin", "marketplace", "list", "--json"]))
-        return result.succeeded ? result.message : nil
+        try listing("marketplace list", arguments: ["plugin", "marketplace", "list", "--json"])
     }
 
     /// Invocations whose output is PARSED rather than shown, and which must
@@ -285,9 +291,48 @@ public struct ClaudePluginInstallService: Sendable {
     /// not an action the pane reports. Throws only when the runner itself
     /// fails (timeout, output cap) — the same failures `perform` surfaces.
     public func pluginListOutput() throws -> String? {
+        try listing("plugin list", arguments: ["plugin", "list", "--json"])
+    }
+
+    /// A listing's stdout, nil when it ran and failed. Either failure is
+    /// logged: the callers turn both into an unknown status (#1690).
+    private func listing(_ name: String, arguments: [String]) throws -> String? {
         guard claudeExecutableURL != nil else { return nil }
-        let result = try runner(Invocation(arguments: ["plugin", "list", "--json"]))
-        return result.succeeded ? result.message : nil
+        let result: RunResult
+        do {
+            result = try runner(Invocation(arguments: arguments))
+        } catch {
+            logFailure("Claude plugin: `\(name)` failed (\(Self.describe(error))); status unknown")
+            throw error
+        }
+        guard result.succeeded else {
+            logFailure("Claude plugin: `\(name)` exited \(result.exitCode); status unknown")
+            return nil
+        }
+        return result.message
+    }
+
+    /// A mod step: best-effort, so its failure never fails the flow, but
+    /// logged, so a missing mod has a reason in the log (#1689).
+    private func performModStep(_ action: Action) {
+        do {
+            try perform(action)
+        } catch {
+            logFailure("Claude plugin: mod step \(action) failed (\(Self.describe(error))); the context hooks are unaffected")
+        }
+    }
+
+    /// A failure as an exit code or a kind of runner failure: never the
+    /// CLI's output or arguments.
+    private static func describe(_ error: Error) -> String {
+        switch error as? ServiceError {
+        case .commandFailed(_, let exitCode, _): "exit \(exitCode)"
+        case .commandTimedOut(_, _, let seconds): "timed out after \(Int(seconds)) s"
+        case .outputTooLarge: "output over the cap"
+        case .claudeCLINotFound: "claude not found"
+        case .marketplaceUnavailable: "marketplace missing"
+        case nil: "\(type(of: error))"
+        }
     }
 
     /// The user-facing install: register the marketplace, then install. Both
@@ -295,13 +340,13 @@ public struct ClaudePluginInstallService: Sendable {
     public func installPlugin() throws {
         try perform(.addMarketplace)
         try perform(.install)
-        _ = try? perform(.installMod)
+        performModStep(.installMod)
     }
 
     /// The user-facing uninstall. The marketplace is deregistered too so we
     /// leave nothing of ours behind in the user's Claude Code config.
     public func uninstallPlugin() throws {
-        _ = try? perform(.uninstallMod)
+        performModStep(.uninstallMod)
         try perform(.uninstall)
         try perform(.removeMarketplace)
     }
@@ -318,8 +363,8 @@ public struct ClaudePluginInstallService: Sendable {
         try perform(.addMarketplace)
         _ = try? perform(.uninstall)
         try perform(.install)
-        _ = try? perform(.uninstallMod)
-        _ = try? perform(.installMod)
+        performModStep(.uninstallMod)
+        performModStep(.installMod)
     }
 
     /// The unattended update at launch: refresh the marketplace, then
@@ -332,12 +377,12 @@ public struct ClaudePluginInstallService: Sendable {
     /// (`ClaudePublisherPointer`) first.
     ///
     /// The mod is updated only where it is installed: `plugin update` on a
-    /// plugin that is not installed fails, and that failure is ignored, so
-    /// the unattended path never installs it.
+    /// plugin that is not installed fails, and that failure is only logged,
+    /// so the unattended path never installs it.
     public func updateInstalledPlugin() throws {
         try perform(.addMarketplace)
         try perform(.update)
-        _ = try? perform(.updateMod)
+        performModStep(.updateMod)
     }
 }
 
