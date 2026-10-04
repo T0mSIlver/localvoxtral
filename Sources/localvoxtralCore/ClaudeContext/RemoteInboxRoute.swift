@@ -134,6 +134,9 @@ public final class RemoteInboxRoute: Sendable {
             return .unknownSession
         }
         let result = Mutex<Answer?>(nil)
+        // Set once the wait gives up: an open that has not started by then
+        // must not raise the Inbox after the host was told it failed.
+        let expired = Mutex(false)
         let done = DispatchSemaphore(value: 0)
         let captures = self.captures, open = self.open
         Task {
@@ -144,6 +147,7 @@ public final class RemoteInboxRoute: Sendable {
                 // Checked against the project before anything opens: an id
                 // from another project is as unknown as a made-up one.
                 if let item = inProject.first(where: { $0.id.uuidString.lowercased() == id.lowercased() }),
+                   !expired.withLock({ $0 }),
                    await open(item.id) == true {
                     answer = .opened
                 } else {
@@ -156,6 +160,7 @@ public final class RemoteInboxRoute: Sendable {
             done.signal()
         }
         guard done.wait(timeout: .now() + timeout) == .success, let answer = result.withLock({ $0 }) else {
+            expired.withLock { $0 = true }
             Log.backends.error("Remote inbox: the app did not answer in \(self.timeout, privacy: .public) s")
             return .timedOut
         }
