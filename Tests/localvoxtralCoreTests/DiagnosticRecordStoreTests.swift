@@ -205,7 +205,7 @@ final class DiagnosticRecordStoreTests: XCTestCase {
 
         XCTAssertEqual(store.removeAll(keeping: [kept]), 1)
 
-        XCTAssertEqual(Set(io.fileNames), [keptURL.lastPathComponent, inFlight.lastPathComponent])
+        XCTAssertEqual(Set(try XCTUnwrap(io.contents(of: directory))), [keptURL.lastPathComponent, inFlight.lastPathComponent])
         XCTAssertThrowsError(try store.write(makeRecord(), unlessDeletedSince: epoch))
     }
 
