@@ -13,12 +13,18 @@ final class VoiceMemoIntakeTests: XCTestCase {
         let results = Mutex<[String: Result<String, any Error>]>([:])
         let calls = Mutex<[String]>([])
         let whileTranscribing = Mutex<(@MainActor @Sendable () -> Void)?>(nil)
+        /// Set, the words are those of the recording at the path when it
+        /// is read, after `whileTranscribing`: what a real decoder hears.
+        let read = Mutex<(@MainActor @Sendable (String) -> String)?>(nil)
         func transcribe(_ url: URL) async throws -> VoiceMemoTranscript {
             let name = url.lastPathComponent
             calls.withLock { $0.append(name) }
             if let observe = whileTranscribing.withLock({ $0 }) { await observe() }
             // A cancelled memo closes its socket, and the stream ends without a transcript.
             try Task.checkCancellation()
+            if let read = read.withLock({ $0 }) {
+                return VoiceMemoTranscript(text: await read(name), pcm16: Data(name.utf8))
+            }
             let result = results.withLock { $0[name] } ?? .success("words of \(name)")
             return VoiceMemoTranscript(text: try result.get(), pcm16: Data(name.utf8))
         }
@@ -449,6 +455,58 @@ final class VoiceMemoIntakeTests: XCTestCase {
         XCTAssertEqual(captured.map(\.text), ["words of walk.m4a"])
         XCTAssertEqual(transcriber.calls.withLock { $0 }, ["walk.m4a"])
         XCTAssertEqual(trashed, ["shopping.m4a"])
+    }
+
+    /// The recording at a path, as a decoder reading it now hears it.
+    private func words(at name: String) -> String {
+        files.first { $0.name == name }.map { "recording \($0.fileNumber ?? 0)" } ?? "nothing"
+    }
+
+    /// #1687: while an earlier memo transcribes, memo A is renamed and
+    /// another recording B saved under A's old name. The pass does not
+    /// decode B as A from its stale listing: each is captured once, and A
+    /// goes to the Trash only after its own words were saved.
+    func testRenameAndNameReuseBeforeDecodeKeepsBothMemosOnce() async {
+        files = [memo("old.m4a", minute: 0), memo("memo.wav", minute: 1)]
+        let a = inodes["memo.wav"]
+        let intake = intake()
+        _ = await intake.scan()
+        transcriber.read.withLock { $0 = { [unowned self] in words(at: $0) } }
+        transcriber.whileTranscribing.withLock {
+            $0 = { [unowned self] in
+                transcriber.whileTranscribing.withLock { $0 = nil }
+                files = [
+                    memo("old.m4a", minute: 0), memo("groceries.wav", minute: 1, inode: a),
+                    memo("memo.wav", size: 2_000, minute: 2, inode: 999),
+                ]
+            }
+        }
+        for _ in 0..<4 { _ = await intake.scan() }
+
+        XCTAssertEqual(captured.map(\.text).sorted(), ["recording 100", "recording 101", "recording 999"])
+        XCTAssertEqual(Set(trashed), ["old.m4a", "groceries.wav", "memo.wav"])
+    }
+
+    /// #1687: the name is reused while the memo itself is decoded, so the
+    /// words may be either recording's. Neither is trashed unheard: A is
+    /// taken again under its new name, at the cost of maybe a duplicate.
+    func testNameReusedDuringDecodeNeverTrashesTheRenamedMemoUnheard() async {
+        files = [memo("memo.wav")]
+        let a = inodes["memo.wav"]
+        let intake = intake()
+        _ = await intake.scan()
+        transcriber.read.withLock { $0 = { [unowned self] in words(at: $0) } }
+        transcriber.whileTranscribing.withLock {
+            $0 = { [unowned self] in
+                transcriber.whileTranscribing.withLock { $0 = nil }
+                files = [memo("groceries.wav", inode: a), memo("memo.wav", size: 2_000, minute: 2, inode: 999)]
+            }
+        }
+        for _ in 0..<4 { _ = await intake.scan() }
+
+        XCTAssertTrue(captured.map(\.text).contains("recording \(a ?? 0)"), "A's words reached the Inbox")
+        XCTAssertTrue(captured.map(\.text).contains("recording 999"))
+        XCTAssertEqual(Set(trashed), ["groceries.wav", "memo.wav"])
     }
 
     /// A relaunch between the rename and the next scan finds the memo
