@@ -238,12 +238,12 @@ there is not.
   then; an unanswered one is kept, with no Return. A channel that closed
   between the stop and the commit sends by Return under the same gates.
 - **An Overlay Buffer commit that waited types only into the pane it was
-  for** (#1056, #1668). A pid cannot tell two tabs of one terminal apart,
+  for** (#1056, #1668, #1712). A pid cannot tell two tabs of one terminal apart,
   nor two Claude Desktop sessions, so as the last await before the keys
   the focused pane is read back (`SessionNavigator.focusedPaneShows`): the
   pane Tab picked, after the polish and after the second pass; with none
-  picked, the joined session's after the polish, when keys carry the
-  commit (no relay or mod takes it) into the joined app and its pane can
+  picked, the joined session's after the polish or a second pass with no
+  polish (#1712), when keys carry the commit (no relay or mod takes it) into the joined app and its pane can
   be read back (any route but `.unsupported`). A pane that no longer shows the session gets nothing:
   the text is saved not inserted; a picked pane's goes on the clipboard
   only with History off (#1546), a joined one's always, as a commit the
