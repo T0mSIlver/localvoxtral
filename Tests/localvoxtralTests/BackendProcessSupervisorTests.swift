@@ -136,40 +136,41 @@ final class BackendProcessSupervisorTests: XCTestCase {
     }
 
     /// The child answers readiness, then dies before the owner check: that is
-    /// a crash to restart, not a foreign listener on the port.
+    /// a crash to restart, not a foreign listener on the port. The probes
+    /// read the child's pid from the supervisor, not from a file the child
+    /// writes: a shell's `echo $$ > file` creates the file before it writes
+    /// the pid, and an owner probe that read it empty killed nothing and
+    /// waited out the test (#1794).
     func testAChildThatDiesDuringTheOwnerCheckRestarts() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let pidFile = directory.appendingPathComponent("pid")
         let script = try writeScript(
             in: directory,
             name: "backend.sh",
             body: """
             #!/bin/sh
-            : > "\(pidFile.path)"
-            sleep 2
-            echo $$ > "\(pidFile.path)"
             trap 'exit 0' TERM
             while true; do sleep 1; done
             """
         )
         let exitHandled = BoundedWait()
+        let child = SupervisedChild()
         let supervisor = makeSupervisor(
             executableURL: script,
             readinessTimeout: .seconds(3_600),
             readinessReportsOwnerPID: true,
-            probe: { _ in FileManager.default.fileExists(atPath: pidFile.path) },
+            // Not ready before the spawn (the port check), ready once the
+            // child runs.
+            probe: { _ in await child.pid() != nil },
             ownerProbe: { _ in
-                let pid = (try? String(contentsOf: pidFile, encoding: .utf8))
-                    .flatMap { pid_t($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
-                try? FileManager.default.removeItem(at: pidFile)
-                if let pid { kill(pid, SIGKILL) }
+                if let pid = await child.pid() { kill(pid, SIGKILL) }
                 _ = await exitHandled.value(failAfter: 10)
                 return nil
             },
             sleepFor: { _ in await Task.yield() }
         )
+        child.supervisor = supervisor
         supervisor.debugProcessExitHandled = { _ in exitHandled.resolve() }
         let watcher = StateWatcher(stream: supervisor.stateUpdates)
         defer { watcher.cancel() }
@@ -739,6 +740,15 @@ final class BackendProcessSupervisorTests: XCTestCase {
 
     private func isProcessRunning(_ pid: pid_t) -> Bool {
         Darwin.kill(pid, 0) == 0
+    }
+}
+
+/// The supervisor's child pid, for probes that run off the main actor.
+private final class SupervisedChild: @unchecked Sendable {
+    @MainActor weak var supervisor: BackendProcessSupervisor?
+
+    func pid() async -> pid_t? {
+        await MainActor.run { supervisor?.processID }
     }
 }
 
