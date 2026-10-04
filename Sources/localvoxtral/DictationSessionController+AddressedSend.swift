@@ -291,7 +291,7 @@ extension DictationSessionController {
     func handOffAddressedCommit(
         saveNotInserted: (() -> Void)?, releasesEscape: Bool
     ) -> HandedOffAddressedCommit {
-        let handedOff = HandedOffAddressedCommit(saveNotInserted: saveNotInserted)
+        let handedOff = HandedOffAddressedCommit(saveNotInserted: saveNotInserted, releasedEscape: releasesEscape)
         handedOffAddressedCommits.append(handedOff)
         if releasesEscape {
             Log.dictation.notice("send to session: text handed over; Escape released")
@@ -301,10 +301,14 @@ extension DictationSessionController {
     }
 
     /// The mod refused, and the text goes back to the commit for the
-    /// session's usual route.
+    /// session's usual route, with Escape: a terminal tab's cancel still
+    /// stops its Return.
     func takeBackAddressedCommit(_ handedOff: HandedOffAddressedCommit) {
         handedOffAddressedCommits.removeAll { $0 === handedOff }
         _ = handedOff.claimSave()
+        if handedOff.releasedEscape {
+            escapeCancelHandler.start()
+        }
     }
 
     /// The commit's own save: false when quit saved the record already.
@@ -330,11 +334,13 @@ extension DictationSessionController {
 /// by the commit when the delivery answers or by quit before that.
 @MainActor
 final class HandedOffAddressedCommit {
+    let releasedEscape: Bool
     private var saveNotInserted: (() -> Void)?
     private var saved = false
 
-    init(saveNotInserted: (() -> Void)?) {
+    init(saveNotInserted: (() -> Void)?, releasedEscape: Bool) {
         self.saveNotInserted = saveNotInserted
+        self.releasedEscape = releasedEscape
     }
 
     func saveForQuit() {
