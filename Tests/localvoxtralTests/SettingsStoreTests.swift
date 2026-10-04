@@ -969,8 +969,9 @@ final class SettingsStoreTests: XCTestCase {
     }
 
     /// The merge keeps the cap a launch applies: two copies each adding the
-    /// last term that fits save 80, not 81.
-    func testTwoRunningCopiesKeepTheTermCap() {
+    /// last term that fits save 80, not 81, and the term the first copy
+    /// already saved stays; the second copy's addition is the one refused.
+    func testStaleAdditionAtCapacityKeepsAlreadySavedTerm() {
         let start = (1..<SpeakerTerms.maxTerms).map { "Term\($0)" }
         makeStore().polishSpeakerTerms = start
         let first = makeStore()
@@ -979,8 +980,8 @@ final class SettingsStoreTests: XCTestCase {
         first.polishSpeakerTerms.append("Ghostty")
         second.polishSpeakerTerms.append("Voxtral")
 
-        XCTAssertEqual(defaults.stringArray(forKey: "settings.polish_speaker_terms"), start + ["Voxtral"])
-        XCTAssertEqual(second.polishSpeakerTerms, start + ["Voxtral"])
+        XCTAssertEqual(defaults.stringArray(forKey: "settings.polish_speaker_terms"), start + ["Ghostty"])
+        XCTAssertEqual(second.polishSpeakerTerms, start + ["Ghostty"])
     }
 
     func testTwoRunningCopiesKeepEachOthersDismissedSuggestions() {
