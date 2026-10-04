@@ -88,7 +88,11 @@ there is not.
   flushed and the stop's final commit follows, and the stop's watchdog gives
   the run no longer than a finalization may take. A run that does not get
   through ends the stop with the text received before the drop, and the status
-  says its end may be missing.
+  says its end may be missing. So does any stop that ends on the idle rule,
+  the timeout or a closed socket without the backend's answer to its final
+  commit, once the backend has shown it sends finals: one this session, or an
+  answered stop on the same endpoint (#1659). A backend that only streams
+  deltas ends every stop on the idle rule, silently.
   For the bundled helper the run spends no attempt while speechd reads
   `.starting` (#1583): the helper binds its port only once its model is
   loaded, so every connect meanwhile is refused at once. That wait is bounded
@@ -100,6 +104,13 @@ there is not.
   WebSocket upgrade alone is not enough, because audio handed over before the
   handshake waits in the client and dies with a socket that closes first; that
   close fails the attempt inside the run's budget instead of ending the run.
+  Audio a socket closed on before sending it (a context rollover's carried
+  audio, queued for a replacement that failed before its handshake) never
+  reached a server: the client hands it back (`takeUnsentAudio`) and the
+  session puts it ahead of the buffer (#1672). A stop that finds the socket
+  already closed, before its `.disconnected` reaches the main queue, keeps the
+  refused flush in the buffer and reconnects as if the event had come first
+  (#1673).
   The buffer's retention cap is sized above
   `RealtimeReconnectPolicy.worstCaseDuration`, so a run that reconnects within
   its retry cap loses nothing — past the cap the OLDEST audio goes first.

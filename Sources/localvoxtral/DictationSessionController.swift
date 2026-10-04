@@ -426,6 +426,22 @@ final class DictationSessionController {
     /// final commit was to return may be lost, so the stop is not Ready.
     @ObservationIgnored
     var realtimeErrorDuringStop = false
+    /// The stop sent, or will send, a final commit and waits for the
+    /// backend's answer; cleared once `.transcriptionFinalized` brings it.
+    /// Still set when the stop ends, it ended on the idle rule, the timeout
+    /// or a closed socket instead (#1659).
+    @ObservationIgnored
+    var stopAwaitsBackendFinal = false
+    /// This session's backend sent a final: it answers a final commit, so a
+    /// stop that ends without that answer may be missing its end (#1659). A
+    /// backend that only streams deltas never sets it, and its stops end on
+    /// the idle rule by design.
+    @ObservationIgnored
+    var sessionBackendSendsFinals = false
+    /// Endpoints whose server answered a stop's final commit in this run of
+    /// the app: speechd, for one, sends no final until the stop.
+    @ObservationIgnored
+    var endpointsThatAnswerFinalCommits: Set<String> = []
     /// How long the stop in progress waits for the server's last words.
     @ObservationIgnored
     var stopFinalizationTimeout = TimingConstants.stopFinalizationTimeout
@@ -985,7 +1001,7 @@ final class DictationSessionController {
         // the run going, so that speech reaches the server with the final
         // commit behind it (#1582); any other stop ends the run before it
         // can hand the stopped session a socket.
-        let finalizesAcrossReconnect = finalizeRemainingAudio && isReconnectingRealtimeSession
+        var finalizesAcrossReconnect = finalizeRemainingAudio && isReconnectingRealtimeSession
         if !finalizesAcrossReconnect {
             cancelRealtimeReconnect()
         }
@@ -997,8 +1013,18 @@ final class DictationSessionController {
 
         audio.stopSessionAudioCapture()
         audio.audioDucking.restoreAfterSession()
-        if !finalizesAcrossReconnect {
-            audio.flushBufferedAudio(to: activeRealtimeClient)
+        if !finalizesAcrossReconnect, !audio.flushBufferedAudio(to: activeRealtimeClient),
+           finalizeRemainingAudio
+        {
+            // The socket closed and its `.disconnected` is still on its way
+            // to the main queue. The tail it refused waits in the buffer, and
+            // the stop reconnects for it as it would had the event come
+            // first (#1673).
+            Log.backends.notice("stop: the socket closed before the tail went out; reconnecting to finalize it")
+            finalizesAcrossReconnect = beginRealtimeReconnectIfPossible()
+            if !finalizesAcrossReconnect {
+                realtimeErrorDuringStop = true
+            }
         }
         isDictating = false
         // An Overlay Buffer stop keeps Escape until its commit is done:
@@ -1019,6 +1045,7 @@ final class DictationSessionController {
         }
 
         isFinalizingStop = true
+        stopAwaitsBackendFinal = true
         stopFinalizationTimeout = finalizationTimeout
         statusText = StatusStrings.finalizing
         if isOverlayBufferModeEnabled {

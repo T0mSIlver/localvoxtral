@@ -15,11 +15,13 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         case awaitingFinalCommitTranscriptionDone
     }
 
-    /// A frame held until the handshake, with the PCM bytes it carries (zero
-    /// for a control frame) so audio is counted only once it is sent.
+    /// A frame held until the handshake, with the PCM it carries (nil for a
+    /// control frame): audio is counted only once it is sent, and a socket
+    /// that closes first hands it back to the session (#1672).
     private struct PendingFrame {
         let text: String
-        let audioBytes: Int
+        var audio: Data?
+        var audioBytes: Int { audio?.count ?? 0 }
     }
 
     /// A rollover under way (#1139): the retiring socket's final commit is
@@ -48,6 +50,10 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         var isGenerationInProgress = false
         var finalCommitCompletionGate: FinalCommitCompletionGate = .idle
         var pendingMessages: [PendingFrame] = []
+        /// Audio a socket closed on before sending it: queued for its
+        /// handshake, the carried audio of a rollover above all. No server
+        /// took it, so the session replays it on the next socket (#1672).
+        var unsentAudio = Data()
         /// The handshake's replay of `pendingMessages` is under way: new
         /// frames queue behind it until it has emptied the queue (#1058).
         var isReplayingHandshakeQueue = false
@@ -167,6 +173,9 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
 
         let previousUsage: SocketUsage? = state.withLock { s in
             s.configuration = configuration
+            // A new session or a reconnect: the one that could have replayed
+            // it has taken it or moved on.
+            s.unsentAudio.removeAll()
             let usage = takeUsageLocked(&s)
             closeSocketLocked(&s, cancelTask: true)
             // Stamped in the SAME locked block as the swap. A separate
@@ -253,7 +262,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         }
         if case .carry = next { return true }
         debugLog("send append bytes=\(pcm16Data.count)")
-        guard send(event: Self.appendPayload(pcm16Data), audioBytes: pcm16Data.count) else { return false }
+        guard send(event: Self.appendPayload(pcm16Data), audio: pcm16Data) else { return false }
         if case .sendThenRollOver(let reason) = next {
             beginRollover(reason: reason)
         }
@@ -453,7 +462,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             var carriedBytes = 0
             for chunk in rollover.carried {
                 guard let text = Self.frameText(Self.appendPayload(chunk)) else { continue }
-                s.pendingMessages.append(PendingFrame(text: text, audioBytes: chunk.count))
+                s.pendingMessages.append(PendingFrame(text: text, audio: chunk))
                 carriedBytes += chunk.count
             }
             s.socketAudioBytes = carriedBytes
@@ -468,7 +477,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             }
             for commit in commits {
                 if let text = Self.frameText(commit) {
-                    s.pendingMessages.append(PendingFrame(text: text, audioBytes: 0))
+                    s.pendingMessages.append(PendingFrame(text: text))
                 }
             }
             s.isGenerationInProgress = true
@@ -686,7 +695,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
 
     /// False when the frame went nowhere: no socket, or no frame to send.
     @discardableResult
-    private func send(event: [String: Any], audioBytes: Int = 0) -> Bool {
+    private func send(event: [String: Any], audio: Data? = nil) -> Bool {
         guard JSONSerialization.isValidJSONObject(event) else {
             emit(.error("Invalid JSON payload generated."), from: currentConnectionGeneration)
             return false
@@ -702,7 +711,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             if let type = event["type"] as? String {
                 debugLog("queue event type=\(type)")
             }
-            return sendText(text, audioBytes: audioBytes)
+            return sendText(text, audio: audio)
         } catch {
             emit(
                 .error("Failed to serialize WebSocket payload: \(error.localizedDescription)"),
@@ -712,7 +721,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     }
 
     @discardableResult
-    private func sendText(_ text: String, audioBytes: Int = 0) -> Bool {
+    private func sendText(_ text: String, audio: Data? = nil) -> Bool {
         let action: SendAction = state.withLock { s in
             switch s.base.socketState {
             case .connected:
@@ -721,17 +730,17 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                 guard s.hasReceivedSessionCreated || s.hasBypassedSessionCreatedGate,
                       !s.isReplayingHandshakeQueue
                 else {
-                    s.pendingMessages.append(PendingFrame(text: text, audioBytes: audioBytes))
+                    s.pendingMessages.append(PendingFrame(text: text, audio: audio))
                     return .queued
                 }
                 guard let webSocketTask = s.base.webSocketTask else { return .dropped }
                 // Counted when handed to the socket, as the Mistral client
                 // does: a send that fails as the socket dies over-counts by
                 // the frames in flight.
-                s.sentAudioBytes += audioBytes
+                s.sentAudioBytes += audio?.count ?? 0
                 return .send(task: webSocketTask, text: text)
             case .connecting:
-                s.pendingMessages.append(PendingFrame(text: text, audioBytes: audioBytes))
+                s.pendingMessages.append(PendingFrame(text: text, audio: audio))
                 return .queued
             case .disconnected:
                 return .dropped
@@ -758,7 +767,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
            let data = try? JSONSerialization.data(withJSONObject: ["type": "session.update", "model": modelName]),
            let text = String(data: data, encoding: .utf8) {
             s.hasSentSessionUpdate = true
-            s.pendingMessages.insert(PendingFrame(text: text, audioBytes: 0), at: 0)
+            s.pendingMessages.insert(PendingFrame(text: text), at: 0)
             debugLog("queue event type=session.update")
         }
         s.isReplayingHandshakeQueue = true
@@ -905,6 +914,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             return
         }
 
+        var unsentBytes = 0
         let outcome:
             (
                 error: String?, disconnected: Bool, usage: SocketUsage?,
@@ -918,10 +928,20 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                 let shouldEmitError = !s.base.isUserInitiatedDisconnect
                 let generation = s.base.connectionGeneration
                 let usage = takeUsageLocked(&s)
+                // Taken before the close erases the queue.
+                for frame in s.pendingMessages {
+                    if let audio = frame.audio { s.unsentAudio.append(audio) }
+                }
+                unsentBytes = s.unsentAudio.count
                 closeSocketLocked(&s, cancelTask: false)
                 return (shouldEmitError ? errorMessage : nil, true, usage, generation)
             }
         recordUsage(outcome.usage)
+        if unsentBytes > 0 {
+            Log.backends.notice(
+                "realtime connection \(outcome.generation.description, privacy: .public) closed with \(String(format: "%.1f", Double(unsentBytes) / Double(AudioChunkBuffer.bytesPerSecond)), privacy: .public)s of audio it never sent; kept for the next socket"
+            )
+        }
 
         if let error = outcome.error {
             emit(.error(error), from: outcome.generation)
@@ -942,6 +962,13 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         guard let errorMessage else { return nil }
         guard let httpStatusCode, httpStatusCode >= 400 else { return errorMessage }
         return "The server refused the connection (HTTP \(httpStatusCode)): \(errorMessage)"
+    }
+
+    package func takeUnsentAudio() -> Data {
+        state.withLock { s in
+            defer { s.unsentAudio = Data() }
+            return s.unsentAudio
+        }
     }
 
     // MARK: - Usage
@@ -1114,7 +1141,7 @@ extension RealtimeAPIWebSocketClient {
             s.usageBackend = usageBackend
             s.usageModel = usageModel
             s.sentAudioBytes = 0
-            s.pendingMessages = [PendingFrame(text: "pending-message", audioBytes: 0)]
+            s.pendingMessages = [PendingFrame(text: "pending-message")]
             s.hasUncommittedAudio = true
             s.isGenerationInProgress = true
             startPingTimerLocked(&s)

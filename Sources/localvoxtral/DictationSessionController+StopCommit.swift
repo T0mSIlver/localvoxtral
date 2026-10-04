@@ -9,12 +9,28 @@ import os
 /// decides what reaches the polisher, so the LLM lane filter names it; the
 /// rest of the session does not trigger that lane.
 extension DictationSessionController {
+    /// Evidence the backend answers a stop's final commit: a final this
+    /// session, or an answered stop on the same endpoint earlier (#1659).
+    var backendAnswersFinalCommits: Bool {
+        if sessionBackendSendsFinals { return true }
+        guard let endpoint = sessionRealtimeConfiguration?.endpoint.absoluteString else { return false }
+        return endpointsThatAnswerFinalCommits.contains(endpoint)
+    }
+
     func finishStoppedSession(promotePendingSegment: Bool) {
         guard !isCompletingStoppedSession else {
             debugLog("finishStoppedSession ignored; cleanup already in progress")
             return
         }
         isCompletingStoppedSession = true
+
+        if stopAwaitsBackendFinal, !wasCancelled, !realtimeErrorDuringStop, backendAnswersFinalCommits {
+            Log.backends.error(
+                "stop finalization ended without the backend's final; the end of the dictation may be missing"
+            )
+            realtimeErrorDuringStop = true
+        }
+        stopAwaitsBackendFinal = false
 
         stopFinalizationTask?.cancel()
         stopFinalizationTask = nil
@@ -824,6 +840,7 @@ extension DictationSessionController {
             }
         }
         realtimeErrorDuringStop = false
+        sessionBackendSendsFinals = false
 
         textInsertion.stopInsertionRetryTask()
         textInsertion.logDiagnostics()

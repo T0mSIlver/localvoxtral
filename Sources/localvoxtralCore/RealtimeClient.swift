@@ -117,4 +117,13 @@ package protocol RealtimeClient: AnyObject, Sendable {
     /// `connect()`, so a reconnect stays under it; the session sets it at
     /// every start.
     func setContextBudget(_ budget: RealtimeContextBudget?)
+    /// Audio the client took but no server did: a socket that closed before
+    /// its handshake sent what was queued for it (#1672). Handed over once;
+    /// the session replays it ahead of its buffer on the next socket.
+    func takeUnsentAudio() -> Data
+}
+
+extension RealtimeClient {
+    /// A client that holds no audio for its handshake has none to hand back.
+    package func takeUnsentAudio() -> Data { Data() }
 }

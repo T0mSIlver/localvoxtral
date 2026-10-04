@@ -115,7 +115,7 @@ extension DictationSessionController {
             return
         }
         if isFinalizingStop {
-            finishStoppedSession(promotePendingSegment: true)
+            finishStopOnClosedSocket()
             return
         }
         guard isDictating else {
@@ -187,6 +187,7 @@ extension DictationSessionController {
 
     private func handleFinalTranscriptEvent(_ text: String) {
         guard acceptsRealtimeEvents else { return }
+        sessionBackendSendsFinals = true
         let processedText = preprocessIncomingTranscriptChunk(text)
         if isFinalizingStop {
             realtimeFinalizationLastActivityAt = dependencies.clock.now()
@@ -240,6 +241,11 @@ extension DictationSessionController {
 
     private func handleTranscriptionFinalizedEvent() {
         guard isFinalizingStop else { return }
+        stopAwaitsBackendFinal = false
+        sessionBackendSendsFinals = true
+        if let endpoint = sessionRealtimeConfiguration?.endpoint.absoluteString {
+            endpointsThatAnswerFinalCommits.insert(endpoint)
+        }
         debugLog("transcription finalized, disconnecting")
         activeRealtimeClient.disconnect()
     }

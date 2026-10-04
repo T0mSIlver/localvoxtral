@@ -755,7 +755,7 @@ extension DictationSessionController {
 
             if !self.activeRealtimeClient.isConnected {
                 self.debugLog("socket already disconnected before final commit; finishing stop")
-                self.finishStoppedSession(promotePendingSegment: true)
+                self.finishStopOnClosedSocket()
                 return
             }
             let clock = self.dependencies.clock
@@ -769,10 +769,12 @@ extension DictationSessionController {
             // until the retiring socket's `done`), and an idle close there
             // drops the whole tail (#1456). Only the timeout bounds that wait.
             var sentAt: Date?
-            while self.isFinalizingStop {
+            // Cancelled when a closed socket hands the stop to a reconnect
+            // (`finishStopOnClosedSocket`): the run owns it from there.
+            while self.isFinalizingStop, !Task.isCancelled {
                 if !self.activeRealtimeClient.isConnected {
                     Log.backends.notice("stop finalization: the socket closed; finishing the stop")
-                    self.finishStoppedSession(promotePendingSegment: true)
+                    self.finishStopOnClosedSocket()
                     return
                 }
 
@@ -1179,7 +1181,10 @@ extension DictationSessionController {
 
                 if !self.activeRealtimeClient.isConnected {
                     self.debugLog("watchdog observed disconnected socket during finalization; finishing stop")
-                    self.finishStoppedSession(promotePendingSegment: true)
+                    self.finishStopOnClosedSocket()
+                    // A reconnect for audio the socket never sent stays
+                    // under this watchdog's bound.
+                    if self.isReconnectingRealtimeSession { continue }
                     return
                 }
 

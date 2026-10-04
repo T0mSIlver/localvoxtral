@@ -45,6 +45,8 @@ extension DictationSessionController {
         // audio drain is also what lets the buffer hold the gap: chunks the
         // send loop would have taken and dropped stay put for the replay.
         audio.cancelSendAndCommitTasks()
+        // Ahead of them, what the socket took but closed on before sending.
+        audio.reclaimUnsentAudio(from: activeRealtimeClient)
         // No text can arrive while the socket is down; a silence stop now
         // would end the session before the gap is replayed.
         pauseSilenceAutoStopForReconnect()
@@ -261,6 +263,24 @@ extension DictationSessionController {
             technicalDetails:
                 "Realtime websocket disconnected unexpectedly during active dictation; reconnect failed after \(policy.maxAttempts) attempts."
         )
+    }
+
+    /// The socket closed while the stop finalizes. Audio it never sent (a
+    /// rollover's carried audio, with the final commit queued behind it,
+    /// #1672) goes to a new socket through a reconnect, under the stop's
+    /// watchdog; otherwise the stop ends with what arrived.
+    func finishStopOnClosedSocket() {
+        // A reconnect already carries the stop; its watchdog bounds it.
+        guard !isReconnectingRealtimeSession else { return }
+        if !isCompletingStoppedSession, audio.reclaimUnsentAudio(from: activeRealtimeClient) {
+            stopFinalizationTask?.cancel()
+            stopFinalizationTask = nil
+            if beginRealtimeReconnectIfPossible() {
+                statusText = StatusStrings.finalizing
+                return
+            }
+        }
+        finishStoppedSession(promotePendingSegment: true)
     }
 
     /// A stop that waited on a reconnect run which never got through: it
