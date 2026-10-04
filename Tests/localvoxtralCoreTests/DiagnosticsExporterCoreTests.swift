@@ -1,8 +1,8 @@
 import Foundation
 import XCTest
-@testable import localvoxtral
+@testable import localvoxtralCore
 
-final class DiagnosticsExporterTests: XCTestCase {
+final class DiagnosticsExporterCoreTests: XCTestCase {
     func testSanitizedEndpointDescriptionStripsCredentials() {
         let url = URL(string: "wss://user:pass@example.com:9000/path?token=x#section")!
         XCTAssertEqual(

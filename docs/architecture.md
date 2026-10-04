@@ -71,6 +71,9 @@ AppKit:
 - the Settings sidebar's status dots (`SettingsStatusDot`,
   `IntegrationsSidebarStatus`); their rendering stays in the app
 - the Claude session snapshot and its reducer (`ClaudeSessionState`)
+- the diagnostics report (`DiagnosticsSnapshot`, `DiagnosticsExporter`); the
+  snapshot it is built from (`makeSnapshot`, which reads settings and keys)
+  stays in the app
 - `DictationOutputMode`, the dogfood control socket's grammar and the WAV
   source the e2e check dictates from (`Dogfood/`); the socket stays in the app
 - the config store (`AppConfigStore`, `BundledConfigDefaultHistory`,
