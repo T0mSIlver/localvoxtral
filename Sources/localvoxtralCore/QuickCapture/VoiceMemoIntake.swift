@@ -246,14 +246,15 @@ package final class VoiceMemoIntake {
                 continue
             }
             guard file.size > 0, previous[file.name] == file else { continue }
-            guard canTranscribe(), !isStopped else { break }
             // The listing is as old as the memos transcribed before this
             // one: renamed since, its name may hold another recording now,
-            // which would be decoded as this one (#1687).
+            // which would be decoded as this one (#1687). Checked before the
+            // engine and stop guard, so no wait comes between it and `take`.
             guard await isStillListed(file) else {
                 Log.backends.notice("Voice memos: a memo changed since the folder was listed; left for the next scan")
                 continue
             }
+            guard canTranscribe(), !isStopped else { break }
             let outcome = await take(file, at: url)
             if outcome == .captured { captured += 1 }
             // The engine or the disk failed; the rest would fail the same way.
