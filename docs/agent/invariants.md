@@ -511,7 +511,11 @@ there is not.
   surface. A fill, append or send the remote mod refused is typed only while
   the frontmost terminal, joined again from scratch, still names that
   session (`ClaudeSessionJoinResolver.shows`), since a remote session has no
-  tty on this Mac to look up. An addressed send it refused keeps the text,
+  tty on this Mac to look up. The join's arms await forwards, sockets and
+  process queries after reading the focus, so `shows` reads what the join
+  saw again after them: the tty and machine of a herdr surface, then its
+  pane last; a `cmux ssh` surface's focused id; the tty of an ssh join
+  (Codex review, 2026-10-04). An addressed send it refused keeps the text,
   because a remote session has no other addressed route.
 - **The Mistral second pass holds the text back, never the world** (#317).
   An Overlay Buffer dictation in Mistral API mode is sent whole to the batch
