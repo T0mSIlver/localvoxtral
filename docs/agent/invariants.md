@@ -343,10 +343,17 @@ there is not.
   never a fresh read of Settings;
   (2) the audio lives in memory for the pass, and reaches the disk only
   through the audio-store latch taken at start (`sessionStoresAudio`);
-  (3) the batch text replaces the realtime text whole when it answers in
-  time, and is never merged with it: the two segment and punctuate
-  differently, and a merge would repeat or drop words at every seam. A blank answer, a failure or a missed
-  deadline keeps the realtime text and is only logged.
+  (3) the batch text replaces the realtime text when it answers in
+  time, and is never merged with it at seams: the two segment and
+  punctuate differently, and a merge would repeat or drop words at every
+  seam. The one exception is a run of realtime words the batch text dropped
+  outright (#1649): aligned word by word, a run of at least
+  `minimumRestoredRunWords` with nothing in its place and mostly words its
+  neighbours lack goes back between the batch words around it
+  (`StopSecondPass.keepingDroppedRealtimeRuns`). Shorter runs and restarts
+  stay dropped, since removing them is the batch model's job. A blank
+  answer, a failure or a missed deadline keeps the realtime text and is
+  only logged.
   The term list leaves the Mac. The user's own words go to any endpoint, as
   they do in the polish prompt. Everything else comes from screen, session
   and repository context, so it goes only with the trusted-endpoint opt-in,
