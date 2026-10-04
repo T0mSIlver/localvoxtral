@@ -743,6 +743,7 @@ final class DictationViewModel {
                 sessionStore = store
             case let .failure(failure):
                 historyOpenFailure = failure
+                session.historyOpenFailed = true
             }
             sessionStore?.onAccessFailureChange = { [weak self] failure in
                 self?.historyAccessFailure = failure

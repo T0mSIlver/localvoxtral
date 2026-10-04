@@ -185,6 +185,7 @@ extension SettingsStore {
             return
         }
         guard !stored.isEmpty else { return }
+        removeReintroducedLegacyCopy(of: key, matching: stored)
 
         // The write-through in these properties' `didSet` would store the value
         // that just came out of the store — another keychain operation, and
@@ -197,6 +198,21 @@ extension SettingsStore {
         case .mistralAPIKey: mistralAPIKey = stored
         case .jevAPIKey: jevAPIKey = stored
         }
+    }
+
+    /// An older, pre-Keychain build run after the migration writes the key
+    /// back to the plist in plain text, and a migrated install never sweeps
+    /// it again (#1775). A copy equal to the stored key is this user's key
+    /// twice over and goes; a different value is left alone, like any key a
+    /// migrated install did not write.
+    private func removeReintroducedLegacyCopy(of key: SecretKey, matching stored: String) {
+        let defaultsKey = Self.legacyDefaultsKey(for: key)
+        guard defaults.bool(forKey: Keys.apiKeysMigratedToKeychain),
+              defaults.string(forKey: defaultsKey)?.trimmed == stored
+        else { return }
+        defaults.removeObject(forKey: defaultsKey)
+        Log.secrets.notice(
+            "Removed the plaintext copy of \(key.rawValue, privacy: .public) an older build wrote back to UserDefaults")
     }
 
     /// The precedence `loadString` gave these keys, with the secret store

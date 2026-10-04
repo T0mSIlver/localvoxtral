@@ -29,7 +29,8 @@ but cut by the render budget
   no record. Live Auto-Paste writes none.
 - Deleted with its entry: `DictationSessionStore` removes it on Delete, Delete
   All and retention, and sweeps records whose entry is gone at launch and on
-  every trim. Turning the switch off deletes every record. The store's own
+  every trim. Turning the switch off deletes every record, directly when
+  History did not open; a launch whose History did not open writes none. The store's own
   limit is 500 records and 14 days.
 - A write failure logs to `Log.backends` and costs only the record, never the
   commit.
