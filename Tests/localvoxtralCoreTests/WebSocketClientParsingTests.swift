@@ -91,4 +91,24 @@ final class WebSocketClientParsingTests: XCTestCase {
         let result = client.findString(in: dict, matching: ["delta", "text", "transcript"])
         XCTAssertEqual(result, "prefer me for partials")
     }
+
+    // MARK: - HTTP-level upgrade rejections
+
+    /// An OpenAI-compatible server that refuses the upgrade with 401, 403 or
+    /// 429 surfaces as a bare -1011, which reads as a wrong path; the status
+    /// on the task's response names the real cause.
+    func testARejectedUpgradeIsClassifiedByItsHTTPStatus() {
+        let raw = "WebSocket failed: The operation couldn't be completed. [NSURLErrorDomain:-1011]"
+        let expected: [(Int?, RealtimeConnectionFailureKind)] = [
+            (401, .unauthorized), (403, .unauthorized), (429, .rateLimited), (nil, .endpointRejected),
+        ]
+        for (status, kind) in expected {
+            let message = RealtimeAPIWebSocketClient.terminalErrorMessage(errorMessage: raw, httpStatusCode: status)
+            XCTAssertEqual(
+                RealtimeConnectionFailureClassifier.classify(socketErrorMessage: message), kind,
+                "HTTP \(status.map(String.init) ?? "none"): \(message ?? "nil")"
+            )
+        }
+        XCTAssertNil(RealtimeAPIWebSocketClient.terminalErrorMessage(errorMessage: nil, httpStatusCode: 401))
+    }
 }

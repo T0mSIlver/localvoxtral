@@ -886,6 +886,10 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     override func handleTerminalSocketError(
         for task: URLSessionWebSocketTask, errorMessage: String?
     ) {
+        let errorMessage = Self.terminalErrorMessage(
+            errorMessage: errorMessage,
+            httpStatusCode: (task.response as? HTTPURLResponse)?.statusCode
+        )
         // The retiring socket died before its `done` (a 1012 from a server
         // that ran out of context, say): the session goes on to the next
         // socket with the carried audio rather than through a reconnect,
@@ -925,6 +929,11 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         if outcome.disconnected {
             emit(.disconnected, from: outcome.generation)
         }
+    }
+
+    /// The socket error text a terminal failure reports.
+    static func terminalErrorMessage(errorMessage: String?, httpStatusCode _: Int?) -> String? {
+        errorMessage
     }
 
     // MARK: - Usage
