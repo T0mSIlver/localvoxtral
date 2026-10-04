@@ -1806,14 +1806,14 @@ final class DictationPipelineTests: XCTestCase {
     }
 
     /// A session on an enrolled host gets the band too, through its mod's
-    /// poll (#1412): listening, then done.
+    /// poll (#1412): finishing while the stop commits, then done.
     func testARemoteSessionsBandFollowsTheDictation() async throws {
         let (pipeline, _, recorder) = try await modChannelPipeline(answers: [.fill], remote: true)
 
         await dictate(pipeline, "run the tests.")
 
         let phases = recorder.states.map(\.phase)
-        XCTAssertEqual(phases.first, .listening, "phases: \(phases)")
+        XCTAssertTrue(phases.contains(.finishing), "phases: \(phases)")
         XCTAssertEqual(phases.last, .done)
     }
 
