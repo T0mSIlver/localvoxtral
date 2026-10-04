@@ -39,8 +39,9 @@ package enum DiagnosticRecordRedaction {
          placeholder),
         // A shell assignment to a variable named like a secret:
         // `OPENAI_API_KEY=…`, `export DB_PASSWORD="…"`, and the bare
-        // `PASSWORD=…` (#1571).
-        (#"\b((?:[A-Z][A-Z0-9_]*)?(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)[A-Z0-9_]*\s*=\s*["']?)[^\s"']{6,}"#,
+        // `PASSWORD=…` (#1571). A quoted value goes whole, to its closing
+        // quote or the end of the line, whatever its length or spaces.
+        (#"\b((?:[A-Z][A-Z0-9_]*)?(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)[A-Z0-9_]*\s*=\s*["']?)(?:(?<=")[^"\n]+|(?<=')[^'\n]+|[^\s"']{6,})"#,
          "$1" + placeholder),
         // 32 or more hex digits: API secrets, session ids, and also full
         // commit hashes, which a record can do without.
@@ -73,6 +74,16 @@ package enum DiagnosticRecordRedaction {
                 in: output, range: range, withTemplate: template)
         }
         return redactingTokenRuns(output, count: &count)
+    }
+
+    /// The terms a record lists as harvested from a text source (screen,
+    /// session, clipboard), taken from the redacted text: a term pulled out
+    /// of `DB_PASSWORD=…` has lost the name that marks it as a secret, and
+    /// no rule would catch it alone.
+    package static func harvestTerms(in text: String) -> [String] {
+        guard !text.isEmpty else { return [] }
+        var count = 0
+        return ClipboardVocabulary.entities(inExcerpt: redacting(text, count: &count))
     }
 
     /// Replaces every maximal base64url run of exactly `tokenLength`

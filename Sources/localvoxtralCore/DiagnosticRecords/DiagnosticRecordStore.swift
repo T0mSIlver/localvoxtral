@@ -336,13 +336,21 @@ package struct DiagnosticRecordStore: Sendable {
 
     /// Deletes every record, and whatever else is in the folder: a temporary
     /// file a write left when the app died mid-write holds a record too.
+    /// `kept` names dictations another running copy saved after Delete All
+    /// took the rows: their records stay, and so do temporary files, one of
+    /// which may be that copy's write in flight; the launch sweep takes a
+    /// stray one.
     @discardableResult
-    package func removeAll() -> Int {
+    package func removeAll(keeping kept: Set<UUID> = []) -> Int {
         exclusively {
             Self.deletionEpochs.withLock { $0[directoryURL.path, default: 0] += 1 }
             let names = ((try? directoryIO.contents(of: directoryURL)) ?? nil) ?? []
             var removed = 0
             for name in names {
+                if !kept.isEmpty {
+                    guard let parsed = DiagnosticRecordFileName.parse(name) else { continue }
+                    if kept.contains(parsed.id) { continue }
+                }
                 do {
                     try directoryIO.remove(at: directoryURL.appendingPathComponent(name))
                     if DiagnosticRecordFileName.parse(name) != nil { removed += 1 }

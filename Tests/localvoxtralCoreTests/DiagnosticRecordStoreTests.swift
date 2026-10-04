@@ -191,6 +191,24 @@ final class DiagnosticRecordStoreTests: XCTestCase {
         XCTAssertEqual(try store.summary().records, 0)
     }
 
+    /// Delete All keeps the records of dictations another copy saved after
+    /// the rows went, and any write that copy has in flight, and still
+    /// refuses a write this copy decided before it.
+    func testRemoveAllKeepingSparesTheNamedRecordsAndWritesInFlight() throws {
+        let store = makeStore()
+        let kept = UUID()
+        let epoch = store.deletionEpoch()
+        try store.write(makeRecord())
+        let keptURL = try store.write(makeRecord(id: kept.uuidString))
+        let inFlight = directory.appendingPathComponent(".\(keptURL.lastPathComponent).42.x.tmp")
+        io.seed(Data("partial".utf8), at: inFlight)
+
+        XCTAssertEqual(store.removeAll(keeping: [kept]), 1)
+
+        XCTAssertEqual(Set(io.fileNames), [keptURL.lastPathComponent, inFlight.lastPathComponent])
+        XCTAssertThrowsError(try store.write(makeRecord(), unlessDeletedSince: epoch))
+    }
+
     /// A write decided before the user turned records off must not land
     /// after the delete.
     func testAWriteDecidedBeforeADeleteAllIsRefused() throws {
@@ -389,6 +407,30 @@ final class DiagnosticRecordRedactionTests: XCTestCase {
                 keeping: "export \(name)=\""
             )
         }
+    }
+
+    /// A quoted value is the secret whole, spaces and all: the first word
+    /// alone may be short, and every word after it is the secret too.
+    func testRedactsWholeQuotedSecretAssignments() {
+        assertRedacts(
+            "passphrase",
+            in: "export DB_PASSWORD=\"my secret passphrase\"; npm start",
+            keeping: "export DB_PASSWORD=\"<redacted>\"; npm start"
+        )
+        assertRedacts(
+            "battery staple",
+            in: "export API_TOKEN='hunter22 battery staple' && make",
+            keeping: "export API_TOKEN='<redacted>' && make"
+        )
+    }
+
+    /// The harvest lists single terms, which have lost the `NAME=` that
+    /// marked them as secrets, so it is taken from the redacted text.
+    func testSecretAssignmentValuesNeverReachTheHarvest() {
+        let screen = "$ export DB_PASSWORD=CrimsonFalcon71\n$ npm run buildServer\n"
+        let harvest = DiagnosticRecordRedaction.harvestTerms(in: screen)
+        XCTAssertFalse(harvest.contains { $0.contains("CrimsonFalcon71") }, "\(harvest)")
+        XCTAssertTrue(harvest.contains("buildServer"), "\(harvest)")
     }
 
     /// Code that reads a key is not a secret: only an uppercase shell

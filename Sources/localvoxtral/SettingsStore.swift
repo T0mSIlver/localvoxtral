@@ -533,8 +533,10 @@ final class SettingsStore {
             if let saved = defaults.stringArray(forKey: Keys.polishSpeakerTerms) {
                 // Capped and deduplicated as a launch reads it, or the next
                 // launch's shorter base takes the overflow for another copy's.
+                // At the cap, this copy's addition goes, not a saved term.
                 terms = SpeakerTerms.sanitized(
-                    ListSettingMerge.merge(base: oldValue, ours: terms, saved: saved))
+                    ListSettingMerge.merge(base: oldValue, ours: terms, saved: saved),
+                    keeping: saved)
             }
             // Saved first: the assignment below re-enters this observer
             // (`@Observable`), which must find the merge already saved.
