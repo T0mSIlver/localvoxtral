@@ -32,6 +32,7 @@ extension DictationSessionController {
     ) -> ModChannelOverlayCommitter? {
         guard let hub = context.claudeModChannels, let sessionID = modChannelSessionID(join: join) else { return nil }
         Log.overlay.info("overlay commit: through the session's mod submits=\(submits, privacy: .public)")
+        let generation = sessionStartGeneration
         return ModChannelOverlayCommitter(
             hub: hub,
             sessionID: sessionID,
@@ -39,7 +40,7 @@ extension DictationSessionController {
             settled: { [weak self] text, pid, outcome in
                 await self?.modChannelCommitSettled(
                     outcome, text: text, preferredAppPID: pid, sessionID: sessionID, terminalPID: targetPID,
-                    submits: submits
+                    submits: submits, generation: generation
                 )
             }
         )
@@ -66,7 +67,8 @@ extension DictationSessionController {
         preferredAppPID pid: pid_t?,
         sessionID: String,
         terminalPID: pid_t?,
-        submits: Bool
+        submits: Bool,
+        generation: UInt64
     ) async {
         switch outcome {
         case .filled, .sent:
@@ -78,7 +80,7 @@ extension DictationSessionController {
         case .refused, .unanswered:
             let typed = await commitOverlayTextTheModDidNotFill(
                 text, preferredAppPID: pid, sessionID: sessionID, terminalPID: terminalPID,
-                mayHaveLanded: outcome == .unanswered
+                mayHaveLanded: outcome == .unanswered, generation: generation
             )
             // The keys went in while the session's pane was in front, with
             // nothing awaited since: Return follows under the spoken send's
@@ -107,21 +109,33 @@ extension DictationSessionController {
         preferredAppPID pid: pid_t?,
         sessionID: String,
         terminalPID: pid_t?,
-        mayHaveLanded: Bool
+        mayHaveLanded: Bool,
+        generation: UInt64
     ) async -> Bool {
         var inserted = false
+        if sessionStartGeneration != generation {
+            keepOverlayTextOfARetiredDictation(text, sessionID: sessionID, generation: generation)
+            return false
+        }
         if mayHaveLanded {
             lastError = keepUndeliveredAgentText(text)
         } else if await keysReachModSession(sessionID, terminalPID: terminalPID) {
-            inserted = commitOverlayTextThePromptRelayRefused(text, preferredAppPID: pid, sessionID: sessionID)
+            // The read-back awaited: the next dictation may have started.
+            guard sessionStartGeneration == generation else {
+                keepOverlayTextOfARetiredDictation(text, sessionID: sessionID, generation: generation)
+                return false
+            }
+            inserted = commitOverlayTextThePromptRelayRefused(
+                text, preferredAppPID: pid, sessionID: sessionID, generation: generation
+            )
         } else {
             Log.overlay.notice(
                 "overlay commit: the mod did not fill and the session's pane is not in front; text kept"
             )
             lastError = keepUndeliveredAgentText(text)
         }
-        if !inserted, lastOverlayCommitLanding?.sessionID == sessionID {
-            lastOverlayCommitLanding = nil
+        if !inserted {
+            forgetLanding(ofSession: sessionID, generation: generation)
         }
         return inserted
     }

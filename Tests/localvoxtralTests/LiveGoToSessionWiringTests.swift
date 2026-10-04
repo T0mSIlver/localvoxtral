@@ -145,6 +145,25 @@ final class LiveGoToSessionWiringTests: XCTestCase {
         XCTAssertEqual(harness.records.value.count, 1)
     }
 
+    /// A cancel while a spoken send reads the pane back throws the words
+    /// away too: nothing is typed and no Return is pressed once the pane
+    /// answers (#1656).
+    func testACancelDuringASpokenSendReadBackTypesAndSendsNothing() async {
+        let harness = makeHarness(spokenSend: true)
+        harness.viewModel.session.context.claudeSessionJoin = join(harness.sessions[0])
+        harness.focuser.onReadBack = { _ in harness.viewModel.cancelDictation() }
+
+        harness.partial("fix the bug send it")
+        harness.final("Fix the bug, send it.")
+        await harness.settle()
+        await awaitStoppedSessionCommit(harness.viewModel)
+
+        XCTAssertEqual(harness.focuser.readBackSessionIDs, ["pay"])
+        XCTAssertEqual(harness.typedText, "", "nothing the user cancelled is typed")
+        XCTAssertEqual(harness.returns, [], "nor sent")
+        XCTAssertEqual(harness.records.value.count, 1)
+    }
+
     /// Review of #773 (P2): the stop waited only for the first go-to, and
     /// the cleanup cancelled the one queued behind it.
     func testAStopWaitsForAGoToQueuedBehindAnother() async {
@@ -211,6 +230,32 @@ final class LiveGoToSessionWiringTests: XCTestCase {
 
         XCTAssertEqual(harness.typedText, "go to the tests")
         XCTAssertEqual(harness.events.value.last, "return:\(Self.terminalPID)")
+    }
+
+    /// A name that resolves to nothing is sent as text, and with a joined
+    /// pane its send reads the pane back first. The segments that end
+    /// meanwhile wait behind that read-back, as behind a go-to, and are not
+    /// typed into the prompt before it is sent.
+    func testAnUnknownGoToSendHoldsLaterSegmentsBehindItsReadBack() async {
+        let harness = makeHarness(spokenSend: true)
+        harness.viewModel.session.context.claudeSessionJoin = join(harness.sessions[0])
+        harness.focuser.onReadBack = { _ in
+            harness.focuser.onReadBack = nil
+            harness.partial("run the build")
+            harness.final("Run the build.")
+        }
+
+        harness.partial("go to the tests send it")
+        harness.final("Go to the tests, send it.")
+        await harness.settle()
+
+        let events = harness.events.value
+        let sent = events.firstIndex { $0.hasPrefix("return:") }
+        let later = events.firstIndex { $0.contains("Run the build") }
+        XCTAssertEqual(harness.returns.count, 1, "events: \(events)")
+        XCTAssertEqual(events.first, "type:Go to the tests", "events: \(events)")
+        XCTAssertNotNil(later, "events: \(events)")
+        XCTAssertLessThan(sent ?? .max, later ?? -1, "the later segment follows the send: \(events)")
     }
 
     /// The same instruction sent to one agent, then after a go-to to
