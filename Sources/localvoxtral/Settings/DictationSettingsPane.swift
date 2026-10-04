@@ -600,7 +600,9 @@ struct SendPhrasesRow: View {
 
     private func save() {
         guard let draft else { return }
-        switch SendTriggerPhrases.validate(SendTriggerPhrases.split(draft)) {
+        switch SendTriggerPhrases.validate(
+            SendTriggerPhrases.split(draft), stopPhrases: settings.spokenAbortPhrases
+        ) {
         case .success(let phrases):
             settings.spokenSendTriggerPhrases = phrases
             self.draft = nil

@@ -44,6 +44,18 @@ final class SpokenAbortPhrasesTests: XCTestCase {
         XCTAssertFalse(SpokenAbortPhrases.isStopPhrase("", phrases: phrases))
     }
 
+    /// Either list refuses the other's phrase, so one dictation never means
+    /// both.
+    func testASendPhraseCannotAlsoBeAStopPhrase() {
+        XCTAssertEqual(
+            SendTriggerPhrases.validate(["send it", "Stop Claude"], stopPhrases: ["stop claude"]),
+            .failure(.stopPhrase("Stop Claude"))
+        )
+        XCTAssertEqual(
+            SpokenAbortPhrases.validate(["Send now"], sendPhrases: send), .failure(.sendPhrase("Send now"))
+        )
+    }
+
     func testAStoredListThatNoLongerValidatesLoadsAsNone() {
         XCTAssertEqual(SpokenAbortPhrases.loaded(nil, sendPhrases: send), [])
         XCTAssertEqual(SpokenAbortPhrases.loaded(["send it"], sendPhrases: send), [])
