@@ -270,6 +270,27 @@ there is not.
   before the rest of the sentence arrives. The user's phrase list
   (`SendTriggerPhrases`) refuses one common word and anything over four
   words, and a stored list that no longer validates loads as the default.
+- **A stop phrase ends only the joined session's turn, and never by a
+  key** (#1696; owner ruling 2026-10-04). An Overlay Buffer dictation that
+  is only one of the user's stop phrases (`SpokenAbortPhrases`: empty, and
+  so off, by default; the whole dictation must be the phrase, so a common
+  word is allowed, but not a send phrase) is checked before every other
+  spoken command, and before the destination guards that keep text in
+  History during a Tab switch or once the picked pane left the front:
+  those guard an insertion, and a stop phrase inserts nothing. It asks the mod of the session the dictation joined for
+  `abort`, which ends that session's running main-loop turn
+  (`$.turn.abort` with the id `turn.start` gave; with none running it
+  answers `no_turn`). The request goes only down that session's channel,
+  under the same join rule as a fill (`modChannelSessionID`: a local
+  Claude Code session joined by tty, herdr pane or cmux surface, mod
+  attached; Claude Desktop is not measured), and the mod refuses it with
+  `session_changed` once its process left that id. With no such session,
+  or any refusal, nothing is stopped and no key is posted: an Escape sent
+  to whatever is frontmost could cancel another app's work, which is
+  worse than a turn that runs on. Either way the phrase is a command:
+  nothing is typed and nothing goes to History. The voice stop arms on it
+  as on a send phrase, so it needs no key press. Live Auto-Paste does not
+  listen for it yet (#1704).
 - **"Go to <name>" is a command only when the name resolves** (#723 step
   1). An Overlay Buffer dictation (a Live Auto-Paste segment, #747) that
   is only "go to" plus at most four words is looked up against the live

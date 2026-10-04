@@ -150,3 +150,18 @@ in History.
 When a delivery fails, nothing reaches the app you are in. The text stays in
 History, and the popover says whether it was typed without Enter.
 
+
+## Stop Claude Code by voice
+
+Add your phrases under **Settings → Dictation → Output → Phrases that stop
+Claude Code**, for example "stop claude". The list is empty by default, so
+nothing is stopped until you add one.
+
+In Overlay Buffer, a dictation that is only one of those phrases ends the
+running turn of the Claude Code session it joined, as Escape would, but
+without a key, so the session's pane need not be in front. Nothing is typed
+and nothing goes to History. The dictation stops on its own after the
+**Wait before pressing Return** pause, like a send phrase.
+
+It needs the localvoxtral mod in that session. Without it, or with no turn
+running, nothing is stopped and the menu bar popover says so.

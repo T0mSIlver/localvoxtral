@@ -114,6 +114,17 @@ extension DictationSessionController {
             commitQuickCapture(sessionMode: sessionMode)
             return
         }
+        // A stop phrase is a command to the joined session, not text for
+        // the destination: the destination's guards would keep it as text.
+        if isSpokenAbort(transcript.currentDictationEventText) {
+            sessionCommitGuard = nil
+            sessionPickedPane = nil
+            earlyPolishRun?.cancel()
+            earlyPolishRun = nil
+            _ = audio.sessionRecording.finish()
+            startSpokenAbort(sessionMode: sessionMode, join: context.claudeSessionJoin)
+            return
+        }
         let destinationCheck = checkDestinationBeforeCommit(sessionMode: sessionMode)
         if destinationCheck == .kept { return }
         let sessionAudio = audio.sessionRecording.finish()
@@ -177,7 +188,8 @@ extension DictationSessionController {
         readsBackJoinedPane: Bool = false
     ) {
         if !goToChecked,
-           startGoToSessionIfSpoken(sessionMode: sessionMode, sample: sample)
+           startSpokenAbortIfSpoken(sessionMode: sessionMode, sample: sample)
+            || startGoToSessionIfSpoken(sessionMode: sessionMode, sample: sample)
             || startAddressedSendIfSpoken(sessionMode: sessionMode, sample: sample) {
             // A spoken command took the dictation. Any commit it makes
             // later polishes the whole text, without the pieces.

@@ -42,7 +42,7 @@ extension DictationSessionController {
             self.spokenStopArmedWords = nil
             self.fireSpokenStop(after: wait)
         }
-        Log.dictation.info("spoken stop armed: a send phrase ends the dictation after \(wait.displayName, privacy: .public)")
+        Log.dictation.info("spoken stop armed: a send or stop phrase ends the dictation after \(wait.displayName, privacy: .public)")
     }
 
     func disarmSpokenStop() {
@@ -61,7 +61,7 @@ extension DictationSessionController {
         }
         sessionStoppedBySpokenPhrase = true
         Log.dictation.notice(
-            "spoken stop: a send phrase and \(wait.displayName, privacy: .public) without new text; stopping as if pressed quick_capture=\(self.sessionIsQuickCapture, privacy: .public)"
+            "spoken stop: a send or stop phrase and \(wait.displayName, privacy: .public) without new text; stopping as if pressed quick_capture=\(self.sessionIsQuickCapture, privacy: .public)"
         )
         stopDictation(reason: "spoken stop")
     }
@@ -77,6 +77,9 @@ extension DictationSessionController {
             return settings.overlaySpokenSendEnabled
                 && SpokenStopRule.endsInSendPhrase(text, phrases: settings.spokenSendTriggerPhrases)
         case .toggled, .held:
+            // A stop phrase said alone ends the joined session's turn at
+            // the stop (#1696).
+            if isSpokenAbort(text) { return true }
             // Only a stop that will send: a phrase the commit would keep as
             // text must not end the dictation.
             if case .send = planOverlaySpokenSend(for: text) { return true }

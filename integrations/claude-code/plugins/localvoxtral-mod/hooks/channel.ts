@@ -57,6 +57,9 @@ export type Outcome = {
 /** The refusal of a request issued for a session the process has left. */
 export const SESSION_CHANGED = 'session_changed'
 
+/** The refusal of an `abort` while no main-loop turn runs. */
+export const NO_TURN = 'no_turn'
+
 // A child that ends sooner than this after it started is a publisher that
 // does not know `--attach` (an app older than the mod): stop asking it.
 export const SHORTEST_LIFE_MS = 5000
