@@ -1148,7 +1148,7 @@ extension DictationSessionController {
         // sweeps the records too; this one also stops a record already on
         // its way to disk.
         if !retention.savesDictations || !settings.diagnosticRecordsEnabled {
-            sessionStore?.deleteAllDiagnosticRecords()
+            deleteAllDiagnosticRecords()
         }
         if !settings.dictationAudioEnabled {
             sessionStore?.deleteAllAudio()

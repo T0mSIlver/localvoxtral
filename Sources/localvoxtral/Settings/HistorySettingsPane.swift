@@ -201,7 +201,7 @@ struct HistorySettingsPane: View {
 
     private func turnRecordsOff(removingBackups: Bool) {
         settings.diagnosticRecordsEnabled = false
-        let deleting = viewModel.sessionStore?.deleteAllDiagnosticRecords(removingBackups: removingBackups)
+        let deleting = viewModel.session.deleteAllDiagnosticRecords(removingBackups: removingBackups)
         Task {
             await deleting?.value
             await model.reloadStorageSummary()
