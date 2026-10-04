@@ -1089,7 +1089,10 @@ there is not.
     filled text, and Secure Keyboard Entry neither refuses the start nor
     warns. Every text the keys type instead, until the next dictation,
     has its newline runs collapsed: what the mod gave back, and every delta
-    after the route failed over or a go-to retired it.
+    after the route failed over or a go-to retired it. Their trailing
+    whitespace waits for the next text or the stop, which applies the
+    trailing-space policy to what the keys typed; what the mod filled is
+    unseen to it, like a field's earlier text (#1734).
 - **Claude Code context reaches the prompt only through a positive join.**
   The joined session's repository (status, uncommitted diffs, contents
   of files the agent just touched) and its prior user prompt are attached as

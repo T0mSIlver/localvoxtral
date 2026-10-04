@@ -138,6 +138,36 @@ final class TextInsertionServiceRealtimeInsertionTests: XCTestCase {
         XCTAssertEqual(mod.submitted, [], "the submit is dropped, never a key")
     }
 
+    /// Once the mod route failed over, the keys get the stop's
+    /// trailing-space policy a terminal session without the mod gets: a
+    /// lone slash command ends without the space that would close Claude
+    /// Code's autocomplete, and a space with words after it is typed (#1734).
+    func testAfterTheModRouteFailedTheKeysWithholdALoneCommandsTrailingSpaceAtTheStop() async throws {
+        for (deltas, expected) in [
+            (["/compact "], ["/compact"]),
+            (["/compact ", "now "], ["/compact", " now", " "]),
+        ] {
+            let (service, posted) = makeRecordingService(frontmostBundleID: TerminalScreenAllowlist.ghosttyBundleID)
+            defer { TerminalTargetDetector.debugFrontmostBundleIDOverride = nil }
+            let mod = FakeClaudeMod(refuses: deltas[0])
+            let hub = ClaudeModChannelHub(sleep: ManualSessionClock().clock.sleep)
+            mod.attach(to: hub)
+            let opened = await ClaudeModPromptRoute.opened(hub: hub, sessionID: "s1", keysReachThePrompt: { true })
+            service.beginPromptRelay(try XCTUnwrap(opened))
+            let sink = try XCTUnwrap(service.promptRelaySink)
+
+            service.enqueueRealtimeInsertion(deltas[0])
+            sink.submit()
+            await sink.waitUntilIdle()
+            XCTAssertFalse(sink.isHealthy, "the shortfall failed the route over to the keys")
+            for delta in deltas.dropFirst() { service.enqueueRealtimeInsertion(delta) }
+            service.flushFinalLiveReplacementCorrections()
+
+            XCTAssertEqual(posted.value, expected, "\(deltas)")
+            XCTAssertFalse(service.hasPendingInsertionText, "\(deltas)")
+        }
+    }
+
     func testClaudeDesktopGetsEachNewlineAsShiftReturn() {
         let (service, posted) = makeRecordingService(frontmostBundleID: ClaudeDesktopAllowlist.bundleID)
         defer { TerminalTargetDetector.debugFrontmostBundleIDOverride = nil }
