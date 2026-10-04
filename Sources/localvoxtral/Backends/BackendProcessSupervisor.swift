@@ -168,6 +168,22 @@ final class BackendProcessSupervisor {
             let readinessOutcome = await waitForReadiness()
 
             switch readinessOutcome {
+            case .foreignListener(let reportedPID):
+                Log.backends.error(
+                    "\(self.configuration.name, privacy: .public) readiness answered by pid \(reportedPID.map(String.init) ?? "none", privacy: .public), not the child; refusing it"
+                )
+                if let process = currentProcess {
+                    await terminate(process: process, gracePeriod: configuration.terminationGracePeriod)
+                }
+                clearCurrentProcess()
+                transition(
+                    to: .failed(
+                        summary: "\(configuration.name) port already in use; refusing to adopt an existing backend process.",
+                        detail: nil
+                    )
+                )
+                return
+
             case .ready:
                 transition(to: .running)
                 let readyAt = now()
@@ -231,6 +247,8 @@ final class BackendProcessSupervisor {
 
     private enum ReadinessOutcome {
         case ready
+        /// Ready, but the listener named another pid, or none (#1760).
+        case foreignListener(reportedPID: pid_t?)
         case exited
         case timedOut
         case cancelled
@@ -245,6 +263,11 @@ final class BackendProcessSupervisor {
             }
 
             if await probe(configuration.readinessURL) {
+                guard configuration.readinessReportsOwnerPID else { return .ready }
+                let reportedPID = await ownerProbe(configuration.readinessURL)
+                guard let childPID = currentProcessID, reportedPID == childPID else {
+                    return .foreignListener(reportedPID: reportedPID)
+                }
                 return .ready
             }
 
