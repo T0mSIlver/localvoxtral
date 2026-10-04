@@ -1643,6 +1643,32 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(typed.text, "")
     }
 
+    /// A stop phrase said while a Tab switch is still in flight, or after
+    /// the picked pane left the front: the destination guards are for text,
+    /// so the phrase still ends the joined session's turn instead of being
+    /// kept in History (Codex review of #1706).
+    func testAStopPhraseEndsTheJoinedTurnWhateverTheDestinationGuardSays() async throws {
+        for commitGuard: DestinationCommitGuard in [
+            .unsettled, .pickedPane(bundleID: "com.example.gone", sessionID: "other"),
+        ] {
+            let (pipeline, typed, fills) = try await modChannelPipeline(answers: [.sent])
+            pipeline.viewModel.settings.spokenAbortPhrases = ["stop claude"]
+
+            await startAndSpeak(pipeline)
+            pipeline.viewModel.session.sessionCommitGuard = commitGuard
+            pipeline.server.send(["type": "transcription.delta", "delta": "stop claude"])
+            pipeline.viewModel.stopDictation(reason: "test")
+            await finishCommand(pipeline, finalText: "stop claude")
+
+            XCTAssertEqual(fills.kinds, [.abort], "\(commitGuard)")
+            XCTAssertEqual(typed.text, "", "\(commitGuard)")
+            XCTAssertEqual(pipeline.records.all.count, 0, "\(commitGuard)")
+            XCTAssertEqual(
+                pipeline.viewModel.statusText, DictationSessionController.SpokenAbortStatus.stopped, "\(commitGuard)"
+            )
+        }
+    }
+
     /// Dictates `text` and stops, for a dictation the stop takes as a
     /// command: it writes no record, so the stop is done once it stopped
     /// finalizing and its command task ended.
