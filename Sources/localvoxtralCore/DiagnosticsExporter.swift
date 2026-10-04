@@ -11,29 +11,63 @@ import Foundation
 ///   values are never copied into the snapshot.
 /// - Endpoints are scrubbed of embedded credentials (userinfo/query/fragment).
 /// - Dictated content / transcript stores are never read here.
-struct DiagnosticsSnapshot: Sendable, Equatable {
-    var appVersion: String
-    var appBuild: String
-    var bundleIdentifier: String
-    var osVersion: String
-    var dictationBackendMode: String
-    var polishingBackendMode: String
-    var realtimeEndpoint: String
-    var realtimeModel: String
-    var hasRealtimeAPIKey: Bool
-    var polishingSummary: String
-    var hasPolishingAPIKey: Bool
-    var speechdStatus: String
-    var polishdStatus: String
-    var speechdRecentOutput: [String]
-    var polishdRecentOutput: [String]
+package struct DiagnosticsSnapshot: Sendable, Equatable {
+    package var appVersion: String
+    package var appBuild: String
+    package var bundleIdentifier: String
+    package var osVersion: String
+    package var dictationBackendMode: String
+    package var polishingBackendMode: String
+    package var realtimeEndpoint: String
+    package var realtimeModel: String
+    package var hasRealtimeAPIKey: Bool
+    package var polishingSummary: String
+    package var hasPolishingAPIKey: Bool
+    package var speechdStatus: String
+    package var polishdStatus: String
+    package var speechdRecentOutput: [String]
+    package var polishdRecentOutput: [String]
+
+    package init(
+        appVersion: String,
+        appBuild: String,
+        bundleIdentifier: String,
+        osVersion: String,
+        dictationBackendMode: String,
+        polishingBackendMode: String,
+        realtimeEndpoint: String,
+        realtimeModel: String,
+        hasRealtimeAPIKey: Bool,
+        polishingSummary: String,
+        hasPolishingAPIKey: Bool,
+        speechdStatus: String,
+        polishdStatus: String,
+        speechdRecentOutput: [String],
+        polishdRecentOutput: [String]
+    ) {
+        self.appVersion = appVersion
+        self.appBuild = appBuild
+        self.bundleIdentifier = bundleIdentifier
+        self.osVersion = osVersion
+        self.dictationBackendMode = dictationBackendMode
+        self.polishingBackendMode = polishingBackendMode
+        self.realtimeEndpoint = realtimeEndpoint
+        self.realtimeModel = realtimeModel
+        self.hasRealtimeAPIKey = hasRealtimeAPIKey
+        self.polishingSummary = polishingSummary
+        self.hasPolishingAPIKey = hasPolishingAPIKey
+        self.speechdStatus = speechdStatus
+        self.polishdStatus = polishdStatus
+        self.speechdRecentOutput = speechdRecentOutput
+        self.polishdRecentOutput = polishdRecentOutput
+    }
 }
 
-enum DiagnosticsExporter {
+package enum DiagnosticsExporter {
     /// Filename prefix + format for the on-disk report. Timestamp is colons-free
     /// so it is safe in filenames on all filesystems.
-    static let filenamePrefix = "localvoxtral-diagnostics-"
-    static let filenameSuffix = ".txt"
+    package static let filenamePrefix = "localvoxtral-diagnostics-"
+    package static let filenameSuffix = ".txt"
 
     // Formatters are created per-call (not as `static let`) because DateFormatter
     // is non-Sendable and Swift 6.2 strict concurrency forbids shared static
@@ -55,70 +89,11 @@ enum DiagnosticsExporter {
         return formatter
     }
 
-    // MARK: - Snapshot building (reads live types; @MainActor)
-
-    /// Builds a redacted snapshot from the live app state. This is the security
-    /// boundary: it decides exactly what (non-secret) information leaves the app.
-    @MainActor
-    static func makeSnapshot(
-        settings: SettingsStore,
-        speechdStatus: ManagedBackendStatus,
-        polishdStatus: ManagedBackendStatus,
-        speechdRecentOutput: [String],
-        polishdRecentOutput: [String],
-        bundle: Bundle = .main,
-        processInfo: ProcessInfo = .processInfo
-    ) -> DiagnosticsSnapshot {
-        // The snapshot reports whether each key is set, so it has to have read
-        // them. Export is user-initiated, which is the only moment a keychain
-        // prompt for a key the user's engines do not use is fair
-        // (`SettingsStore.ensureSecretsLoaded`).
-        settings.ensureAllSecretsLoaded()
-
-        let info = bundle.infoDictionary
-        let appVersion = (info?["CFBundleShortVersionString"] as? String) ?? "unknown"
-        let appBuild = (info?["CFBundleVersion"] as? String) ?? "unknown"
-        let bundleIdentifier = bundle.bundleIdentifier ?? "unknown"
-
-        let realtimeEndpoint = sanitizedEndpointDescription(
-            from: settings.resolvedWebSocketURL(for: settings.realtimeProvider)
-        )
-        let realtimeModel = settings.effectiveModelName(for: settings.realtimeProvider)
-
-        let polishingSummary: String
-        if let polishing = settings.llmPolishingConfiguration {
-            // Deliberately the pre-normalization URL as the user typed it; the
-            // wire request appends /v1/chat/completions to a base URL
-            // (LLMPolishingService.normalizedChatCompletionsURL).
-            polishingSummary = sanitizedEndpointDescription(from: polishing.endpointURL)
-        } else {
-            polishingSummary = "<disabled>"
-        }
-
-        return DiagnosticsSnapshot(
-            appVersion: appVersion,
-            appBuild: appBuild,
-            bundleIdentifier: bundleIdentifier,
-            osVersion: processInfo.operatingSystemVersionString,
-            dictationBackendMode: settings.dictationBackendMode.displayName,
-            polishingBackendMode: settings.polishingBackendMode.displayName,
-            realtimeEndpoint: realtimeEndpoint,
-            realtimeModel: realtimeModel,
-            hasRealtimeAPIKey: !settings.apiKey.trimmed.isEmpty,
-            polishingSummary: polishingSummary,
-            hasPolishingAPIKey: !settings.llmPolishingAPIKey.trimmed.isEmpty,
-            speechdStatus: describe(speechdStatus),
-            polishdStatus: describe(polishdStatus),
-            speechdRecentOutput: speechdRecentOutput,
-            polishdRecentOutput: polishdRecentOutput
-        )
-    }
-
     // MARK: - Report rendering (pure)
 
     /// Renders the snapshot as a single readable text report. `now` is an
     /// injected clock seam (no `Date()` here) so tests are deterministic.
-    static func makeReport(snapshot: DiagnosticsSnapshot, now: Date) -> String {
+    package static func makeReport(snapshot: DiagnosticsSnapshot, now: Date) -> String {
         var lines: [String] = []
         let headerFormatter = makeHeaderFormatter()
         lines.append("localvoxtral diagnostics")
@@ -176,7 +151,7 @@ enum DiagnosticsExporter {
     /// `localvoxtral-diagnostics-<timestamp>.txt`, where `<timestamp>` is
     /// derived from the injected `now`. Returns the written file URL.
     @discardableResult
-    static func writeReport(
+    package static func writeReport(
         snapshot: DiagnosticsSnapshot,
         to directory: URL,
         now: Date
@@ -201,7 +176,7 @@ enum DiagnosticsExporter {
 
     /// Returns a credential-free description of an endpoint URL. Userinfo,
     /// query, and fragment are stripped so embedded tokens can never leak.
-    static func sanitizedEndpointDescription(from url: URL?) -> String {
+    package static func sanitizedEndpointDescription(from url: URL?) -> String {
         guard let url else { return "<invalid endpoint>" }
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return url.absoluteString
@@ -214,7 +189,7 @@ enum DiagnosticsExporter {
     }
 
     /// Human-readable, single-line description of a managed-backend status.
-    static func describe(_ status: ManagedBackendStatus) -> String {
+    package static func describe(_ status: ManagedBackendStatus) -> String {
         switch status {
         case .preparingModel(let progress):
             return "preparing model (\(describe(progress)))"

@@ -331,8 +331,7 @@ enum DiagnosticRecordBuilder {
     /// the outcome discards it. Runs off-actor (this whole type does), once per
     /// recorded dictation, and the cost lands in `Timings.captureMilliseconds`.
     static func textSourceHarvest(_ text: String) -> [String] {
-        guard !text.isEmpty else { return [] }
-        return ClipboardVocabulary.entities(inExcerpt: text)
+        DiagnosticRecordRedaction.harvestTerms(in: text)
     }
 
     /// The joined-session repo's term pool — the exact list

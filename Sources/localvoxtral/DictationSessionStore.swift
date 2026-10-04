@@ -363,6 +363,12 @@ final class DictationSessionStore {
         }
     }
 
+    #if DEBUG
+    /// Runs between Delete All's row deletion and its file deletion, where
+    /// another copy's save can land.
+    var debugAfterDeleteAllSave: (@Sendable () -> Void)?
+    #endif
+
     /// Delete All, and Don't keep when the user asked for the backups to go:
     /// with `removingBackups` the snapshots and the quarantine go too (#1574).
     /// Only once the rows are gone: a delete that failed keeps every copy.
@@ -372,11 +378,20 @@ final class DictationSessionStore {
         let diagnosticRecordStore = diagnosticRecordStore
         let backups = backups
         let quarantine = quarantine
+        #if DEBUG
+        let afterSave = debugAfterDeleteAllSave
+        #endif
         return enqueueWrite("delete all dictations") { context in
             let deleted = try Self.deleteRecords(matching: nil, in: context)
             try context.save()
-            audioStore?.removeAll()
-            diagnosticRecordStore?.removeAll()
+            #if DEBUG
+            afterSave?()
+            #endif
+            // Another running copy may have saved a dictation since the rows
+            // went: its audio and record stay with it.
+            let saved = try Set(context.fetch(FetchDescriptor<DictationSessionRecord>()).map(\.id))
+            audioStore?.removeAll(except: saved)
+            diagnosticRecordStore?.removeAll(keeping: saved)
             if removingBackups {
                 backups?.removeAll()
                 quarantine?.removeAll(of: "dictation-audio")

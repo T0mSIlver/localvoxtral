@@ -64,10 +64,15 @@ AppKit:
 - the clipboard reader's rules (`PolishContextClipboardReader`; its
   pasteboard half stays in the app)
 - the model catalogs (`BackendCatalog`, `SpeechModelCatalog`, `PolishModelCatalog`)
+- which app an insertion targets (`PreferredTextInsertionTargetPolicy`);
+  `TextInsertionService` stays in the app
 - a managed backend's status (`ManagedBackendStatus`, `ModelDownloadProgress`)
   and the onboarding wizard's download items built from it
   (`OnboardingBootstrapDriving`); `BackendManager` and the live driver stay
   in the app
+- the diagnostics report (`DiagnosticsSnapshot`, `DiagnosticsExporter`); the
+  snapshot it is built from (`makeSnapshot`, which reads settings and keys)
+  stays in the app
 - the Settings sidebar's status dots (`SettingsStatusDot`,
   `IntegrationsSidebarStatus`); their rendering stays in the app
 - the Claude session snapshot and its reducer (`ClaudeSessionState`)
