@@ -672,6 +672,8 @@ From localvoxtral-remote 1.39.0 and Vibe hooks 1.19.0, the shim names the
 repository it listed open issues in (origin's). The Mac quotes and links those
 issues only when that is the repository the capture files in: a fork's #7 is not
 upstream's #7, and an older shim's issues link nothing.
+From localvoxtral-remote 1.40.0 and Vibe hooks 1.20.0, a project directory whose
+name holds a newline sends nothing: the shell would have named its sibling.
 The run posts the output, at most 60 KiB, to the listener with how the run
 ended. A Vibe run (hooks 1.4.0) adds its token counts in a header; Claude
 Code's output already carries its usage.

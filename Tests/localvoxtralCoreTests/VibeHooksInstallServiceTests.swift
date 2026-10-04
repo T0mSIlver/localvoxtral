@@ -196,6 +196,31 @@ final class VibeHooksInstallServiceTests: XCTestCase {
                 .refused(.unclosedString)
             ),
             (
+                // `\"""` is an escaped quote and two more, still inside the
+                // string: counted as delimiters, they put the markers outside
+                // it and the install rewrote the user's command (#1728).
+                "markers between escaped quotes inside a multi-line string are the user's data",
+                VibeHooksState(
+                    hooksFileExists: true,
+                    hooksData: Data(
+                        """
+                        command = \"\"\"
+                        cat <<'DOC'
+                        \\\"\"\"
+                        # >>> localvoxtral >>>
+                        user-owned command documentation
+                        # <<< localvoxtral <<<
+                        [example]
+                        \\\"\"\"
+                        DOC
+                        \"\"\"
+
+                        """.utf8
+                    )
+                ),
+                .refused(.unclosedString)
+            ),
+            (
                 "a key right after the block belongs to our last table",
                 VibeHooksState(hooksFileExists: true, hooksData: Data((Self.block + "custom = 2\n").utf8)),
                 .refused(.keyAfterBlock)
@@ -248,6 +273,20 @@ final class VibeHooksInstallServiceTests: XCTestCase {
             let (service, fs) = service(state: VibeHooksState(hooksFileExists: true, hooksData: Data(text.utf8)))
             try service.install()
             XCTAssertEqual(fs.hooksText, text + "\n" + Self.block, text)
+            XCTAssertNil(VibeHooksBlockEditor.remote.refusal(for: text), text)
+        }
+    }
+
+    /// Triple quotes inside a one-line string or a comment open nothing; the
+    /// escape-aware scanner first read them as delimiters and refused these
+    /// valid files (#1728 review).
+    func testQuotesInOneLineStringsAndCommentsDoNotBlockAnInstall() {
+        let texts = [
+            #"[[hooks]]\#nname = "mine"\#ncommand = 'printf %s \"""hello\"""'\#n"#,
+            #"[[hooks]]\#nname = "mine"\#ncommand = "echo \"\"\" done"\#n"#,
+            #"# a note: \""" or ''' in a comment\#n[[hooks]]\#nname = "mine" # trailing """\#n"#,
+        ]
+        for text in texts {
             XCTAssertNil(VibeHooksBlockEditor.remote.refusal(for: text), text)
         }
     }

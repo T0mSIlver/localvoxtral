@@ -747,8 +747,10 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         let exited = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in exited.signal() }
         try process.run()
-        stdinPipe.fileHandleForWriting.write(stdin)
-        stdinPipe.fileHandleForWriting.closeFile()
+        // A shim that fails open exits without reading its payload: the
+        // write then fails with EPIPE, which `write(_:)` turns into a trap.
+        try? stdinPipe.fileHandleForWriting.write(contentsOf: stdin)
+        try? stdinPipe.fileHandleForWriting.close()
         let out = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
         let err = stderrPipe.fileHandleForReading.readDataToEndOfFile()
         exited.wait()

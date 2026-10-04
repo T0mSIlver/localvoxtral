@@ -83,6 +83,15 @@ echo 'Linked plain README.' >"$LINKED/README"
 git -C "$LINKED" add -A
 git -C "$LINKED" commit -q -m init
 
+# Two directories outside any repository whose names differ only by a
+# trailing newline, each with its own README (#1727).
+NOTES="$TMP_DIR/notes"
+NOTES_NL="$NOTES
+"
+mkdir -p "$NOTES" "$NOTES_NL"
+echo 'SIBLING-SENTINEL' >"$NOTES/README.md"
+echo 'NEWLINE-SENTINEL' >"$NOTES_NL/README.md"
+
 STUB="$TMP_DIR/stub"
 AGENTS="$TMP_DIR/agents"
 mkdir -p "$STUB" "$AGENTS"
@@ -254,6 +263,17 @@ for agent in claude vibe; do
   sleep 0.5
   [ ! -e "$TMP_DIR/readme-body" ] || fail "$label: a second README within the day"
   pass "$label: README opening posted once a day"
+
+  # 1b. Command substitution strips a trailing newline from the directory's
+  #     name, which named the sibling directory, whose README was posted
+  #     under this session (#1727). A name holding a newline is refused.
+  reset_state
+  printf 'X-Lvx-Readme: wanted\r\n' >"$TMP_DIR/asks"
+  run_hook "$agent" "$NOTES_NL"
+  sleep 0.5
+  ! grep -q SIBLING-SENTINEL "$TMP_DIR/readme-body" 2>/dev/null \
+    || fail "$label: posted the README of the directory beside the project"
+  pass "$label: a project name ending in a newline never posts its sibling's README"
 
   # 2. The draft ask: issues listed, prompt fetched, agent run in the
   #    repository root on that prompt, output posted with its exit status.
