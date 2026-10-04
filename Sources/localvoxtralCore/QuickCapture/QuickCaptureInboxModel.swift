@@ -702,12 +702,21 @@ package final class QuickCaptureInboxModel {
 
     package func setRepository(_ repository: String, for id: UUID) {
         let trimmed = repository.trimmingCharacters(in: .whitespacesAndNewlines)
-        mutate { inbox in inbox.update(id) { $0.repository = trimmed.isEmpty ? nil : trimmed } }
-        guard QuickCaptureInbox.isRepository(trimmed),
-              let key = inbox.items.first(where: { $0.id == id })?.projectKey,
-              let project = projects().first(where: { $0.key == key }), project.repository == nil
-        else { return }
-        onRepositoryAnswered?(key, trimmed)
+        // A project with no repository takes the answer: the capture's is the
+        // project's then, and follows it when it changes (#1683).
+        let answered = QuickCaptureInbox.isRepository(trimmed)
+            ? inbox.items.first(where: { $0.id == id })?.projectKey.flatMap { key in
+                projects().first(where: { $0.key == key && $0.repository == nil }).map { _ in key }
+            }
+            : nil
+        mutate { inbox in
+            inbox.update(id) {
+                $0.repository = trimmed.isEmpty ? nil : trimmed
+                $0.repositoryIsOwn = trimmed.isEmpty ? nil : answered == nil
+            }
+        }
+        guard let answered else { return }
+        onRepositoryAnswered?(answered, trimmed)
     }
 
     /// Moves a capture to another project, or to the catch-all with nil. A
@@ -742,6 +751,7 @@ package final class QuickCaptureInboxModel {
                     inbox.update(id) {
                         guard $0.projectKey == project.key, $0.state == .ready, $0.repository == nil else { return }
                         $0.repository = repository
+                        $0.repositoryIsOwn = false
                     }
                 }
             }

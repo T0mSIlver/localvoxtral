@@ -52,9 +52,15 @@ private final class Flag: @unchecked Sendable {
 private final class ManualSeconds: @unchecked Sendable {
     private let lock = NSLock()
     private var value: TimeInterval = 0
+    /// Called on every read, outside the lock.
+    var onRead: (@Sendable () -> Void)?
 
     var now: TimeInterval {
-        get { lock.withLock { value } }
+        get {
+            let read = lock.withLock { value }
+            onRead?()
+            return read
+        }
         set { lock.withLock { value = newValue } }
     }
 }
@@ -362,13 +368,18 @@ final class ClaudeModChannelSocketTests: XCTestCase {
         let answered = expectation(description: "the attach gave up")
         let alive = Flag(true)
         let clock = ManualSeconds()
+        // The client's first read sets its reply deadline (#1669): moving
+        // the clock before it would only move the deadline.
+        let deadlineRead = expectation(description: "the client read its reply deadline")
+        deadlineRead.assertForOverFulfill = false
+        clock.onRead = { deadlineRead.fulfill() }
         let attach = client("sess-1", output: Received(), parentAlive: alive, clock: clock)
         let outcome = Task.detached {
             let outcome = attach.attachOnce()
             answered.fulfill()
             return outcome
         }
-        await fulfillment(of: [entered], timeout: 5)
+        await fulfillment(of: [entered, deadlineRead], timeout: 5)
 
         clock.now = 6
         await fulfillment(of: [answered], timeout: 5)

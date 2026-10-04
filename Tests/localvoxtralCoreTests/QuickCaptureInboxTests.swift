@@ -714,6 +714,59 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(github.created.withLock { $0.map(\.first) }, ["them/tool"])
     }
 
+    /// A project with no GitHub origin files in a repository the user typed.
+    /// Correcting it in Projects retargets the captures that took it, and a
+    /// repository typed for one capture stays (#1683).
+    func testChangingATypedProjectRepositoryRetargetsExistingCaptures() async throws {
+        func notes(filingIn repository: String) -> [QuickCaptureProject] {
+            [QuickCaptureProject(
+                key: "/w/notes", name: "notes", summary: nil, terms: [], userLine: nil,
+                repository: repository, issueRepository: repository)]
+        }
+        let list = ProjectListBox(notes(filingIn: "me/old"))
+        let runner = FakeQuickCaptureCheckRunner([
+            .draft(.init(title: "Verbose flag", body: "b", relation: .none, issue: nil), usage: nil),
+            .draft(.init(title: "Quiet flag", body: "b", relation: .none, issue: nil), usage: nil),
+        ])
+        let model = QuickCaptureFixture.model(
+            fileURL: fileURL, answer: ["notes": 0.95], github: github, runner: runner, currentProjects: { list.value })
+        await model.capture(text: "Add a verbose flag", historyRecordID: nil).value
+        await model.capture(text: "Add a quiet flag", historyRecordID: nil).value
+        let typed = try XCTUnwrap(model.items.first?.id)
+        let id = try XCTUnwrap(model.items.last?.id)
+        XCTAssertEqual(model.items.last?.repository, "me/old")
+        model.setRepository("me/override", for: typed)
+
+        list.value = notes(filingIn: "me/right")
+        model.adoptProjects()
+
+        XCTAssertEqual(model.items.last?.repository, "me/right")
+        XCTAssertEqual(model.items.first?.repository, "me/override", "a repository typed for one capture stays")
+        await model.file(id)?.value
+        XCTAssertEqual(github.created.withLock { $0.map(\.first) }, ["me/right"])
+    }
+
+    /// A capture from an Inbox file written before #1683 says nothing of
+    /// where its repository came from: one that is not the project's own
+    /// or its parent reads as typed for it, and stays.
+    func testACaptureFromAnOlderInboxFileKeepsARepositoryThatIsNotTheProjects() throws {
+        var item = QuickCaptureItem(capturedAt: Date(timeIntervalSince1970: 0), text: "Add a verbose flag")
+        item.state = .ready
+        item.projectKey = "/w/notes"
+        item.repository = "me/old"
+        let encoded = try JSONEncoder().encode(item)
+        let legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertNil(legacy["repositoryIsOwn"], "precondition: the field is absent")
+        let read = try JSONDecoder().decode(QuickCaptureItem.self, from: encoded)
+        let project = QuickCaptureProject(
+            key: "/w/notes", name: "notes", summary: nil, terms: [], userLine: nil,
+            repository: "me/right", issueRepository: "me/right")
+
+        let adopted = QuickCaptureInbox(items: [read]).adopting([project])
+
+        XCTAssertEqual(adopted.items.first?.repository, "me/old")
+    }
+
     /// "File issues here" changed while a draft ran: the capture files
     /// where the project files when the draft lands, and the fork's issue
     /// the draft names is not linked. Its first draft, and a redraft.
