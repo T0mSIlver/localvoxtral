@@ -177,8 +177,9 @@ from your issue and say so in your report. Don't ask whether to file it.
   Don't simplify it. The runner runs as the owner, so any launch of the app
   there gets data of its own, or it opens the owner's History (#985): the
   smokes set `CFFIXED_USER_HOME` (`scripts/ci/launch-smoke.py`), and lanes
-  that need the owner's preferences export `LOCALVOXTRAL_DATA_HOME` for
-  `lv_open`.
+  that launch through `lv_open` export `LOCALVOXTRAL_DATA_HOME`. UI Smoke and
+  e2e also run on the `LOCALVOXTRAL_DEFAULTS_SUITE` suite, never writing the
+  owner's preferences (#1029).
 
 ## Code
 

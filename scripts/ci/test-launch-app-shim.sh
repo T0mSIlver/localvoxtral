@@ -61,6 +61,12 @@ LOCALVOXTRAL_DATA_HOME=/tmp/lv-data lv_open -n /tmp/localvoxtral.app
 [ "$(cat "$ARGV_LOG")" = "open --env LOCALVOXTRAL_DATA_HOME=/tmp/lv-data -n /tmp/localvoxtral.app" ] \
   || fail "the data folder was not forwarded: $(cat "$ARGV_LOG")"
 
+# So does the defaults suite, so a lane never writes the owner's preferences
+# (#1029).
+LOCALVOXTRAL_DEFAULTS_SUITE=com.localvoxtral.harness lv_open -n /tmp/localvoxtral.app
+[ "$(cat "$ARGV_LOG")" = "open --env LOCALVOXTRAL_DEFAULTS_SUITE=com.localvoxtral.harness -n /tmp/localvoxtral.app" ] \
+  || fail "the defaults suite was not forwarded: $(cat "$ARGV_LOG")"
+
 # A data folder that cannot be made fails the lane instead of leaving an
 # empty override, which would mean the owner's stores (#985).
 cat >"$WORK/mktemp" <<'STUB'

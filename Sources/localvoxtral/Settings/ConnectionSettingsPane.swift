@@ -320,7 +320,7 @@ struct ConnectionSettingsPane: View {
 /// estimated from list prices in the local ledger.
 private struct MistralUsageRow: View {
     let viewModel: DictationViewModel
-    @AppStorage("mistralUsagePeriod") private var periodRawValue =
+    @AppStorage("mistralUsagePeriod", store: AppDefaults.shared) private var periodRawValue =
         MistralUsagePeriod.thirtyDays.rawValue
 
     private var period: Binding<MistralUsagePeriod> {

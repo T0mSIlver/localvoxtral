@@ -308,11 +308,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let terminalAppsImport = UserTerminalAppsMigrator.planImport(
             tomlBundleIDs: appConfigStore.loadTerminalAppBundleIDs(),
             storedApps: settings.userTerminalApps,
-            defaults: .standard
+            defaults: AppDefaults.shared
         )
         if !terminalAppsImport.isEmpty {
             settings.userTerminalApps += terminalAppsImport.additions
-            UserTerminalAppsMigrator.record(terminalAppsImport, defaults: .standard)
+            UserTerminalAppsMigrator.record(terminalAppsImport, defaults: AppDefaults.shared)
         }
         let manager = BackendManager(
             polishingModelProvider: { settings.resolvedManagedLLMPolishingModel },
@@ -809,7 +809,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // "Go to <name>" (#723): the same registry and the same
             // focused-pane reader as the join, so a pane counts as brought
             // forward by the evidence the join trusts.
-            let nicknames = SessionNicknameStore.userDefaults(.standard, key: "session_navigation.nicknames")
+            let nicknames = SessionNicknameStore.userDefaults(AppDefaults.shared, key: "session_navigation.nicknames")
             let desktopTitles = ClaudeDesktopSessionTitles.live()
             let terminalFocuser = TerminalSessionPaneFocuser.live(ttyReader: ttyReader)
             viewModel.session.sessionNavigator = SessionNavigator(
@@ -1284,8 +1284,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             codexBundledVersion: CodexPluginAssets.bundledPluginVersion(),
             codexHookMemory: CodexHookHeardMemory(
                 registry: claudeSessionRegistry,
-                load: { UserDefaults.standard.bool(forKey: CodexHookHeardMemory.defaultsKey) },
-                save: { UserDefaults.standard.set($0, forKey: CodexHookHeardMemory.defaultsKey) }
+                load: { AppDefaults.shared.bool(forKey: CodexHookHeardMemory.defaultsKey) },
+                save: { AppDefaults.shared.set($0, forKey: CodexHookHeardMemory.defaultsKey) }
             ),
             // A binary on this Mac: a synchronous PATH scan, decided at model
             // construction so the row paints on first paint.

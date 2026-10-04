@@ -4,9 +4,10 @@
 # 2026-09-18 a drill that failed its TCC preflight still quit it on exit, three
 # times in one evening, mid-dictation, without relaunching it. This suite runs
 # the real script against stubbed macOS tools and asserts that the owner's app
-# is only quit once the drill is really going to launch, that it is quit before
-# the drill rewrites defaults, and that it is relaunched from the same bundle,
-# with plain `open` and the owner's defaults restored, however the drill ends.
+# is only quit once the drill is really going to launch, and that it is
+# relaunched from the same bundle with plain `open`, however the drill ends.
+# The drill runs the app on its own defaults suite and never writes the
+# owner's domain (#1029).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -67,17 +68,16 @@ case "$1" in
   -n|--env) ;;
   *)
     echo 4242 >"$RUNNING"
-    env | grep -E '^(RUNNER_TRACKING_ID|LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN|LOCALVOXTRAL_DATA_HOME)=' >>"$EVENTS"
+    env | grep -E '^(RUNNER_TRACKING_ID|LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN|LOCALVOXTRAL_DATA_HOME|LOCALVOXTRAL_DEFAULTS_SUITE)=' >>"$EVENTS"
     ;;
 esac
 exit 0
 STUB
 cat >"$BIN/defaults" <<'STUB'
 #!/bin/sh
-echo "defaults $1" >>"$EVENTS"
+echo "defaults $1 $2" >>"$EVENTS"
 case "$1" in
-  export) printf '<plist/>\n' >"$3" ;;
-  import) exit "${STUB_IMPORT_STATUS:-0}" ;;
+  export) if [ "$3" = - ]; then printf '<plist/>\n'; else printf '<plist/>\n' >"$3"; fi ;;
 esac
 exit 0
 STUB
@@ -123,20 +123,18 @@ grep -q "^open" "$EVENTS" && fail "a drill that failed its preflight ran open"
 echo "PASS: failed preflight leaves the owner's app running"
 
 # 2. Preflight passes, the drill's launch fails: the owner's app is quit before
-#    any defaults write, then relaunched from its own bundle after the owner's
-#    defaults are restored, without the CI-only env.
+#    the launch and relaunched from its own bundle without the CI-only env.
+#    The drill writes only its own suite.
 run_drill 0 yes
 assert_reached_launch
 quit_line="$(line_of "quit")"
-write_line="$(line_of "defaults write")"
-import_line="$(line_of "defaults import")"
+write_line="$(line_of "defaults write com.localvoxtral.harness")"
 relaunch_line="$(line_of "open $OWNER_BUNDLE")"
 [ -n "$quit_line" ] || fail "the drill did not quit the owner's app before launching"
-[ -n "$write_line" ] || fail "the drill never forced its defaults"
-[ "$quit_line" -lt "$write_line" ] || fail "defaults were rewritten while the owner's app was still running"
+[ -n "$write_line" ] || fail "the drill never wrote its defaults suite"
+grep -qE "^defaults (write|import|delete) com\.localvoxtral\.app$" "$EVENTS" \
+  && fail "the drill wrote the owner's defaults domain"
 [ -n "$relaunch_line" ] || fail "the owner's app was not relaunched from $OWNER_BUNDLE"
-[ -n "$import_line" ] || fail "the owner's defaults were not restored"
-[ "$import_line" -lt "$relaunch_line" ] || fail "the owner's app was relaunched before its defaults were restored"
 grep -q "^open --env.*$OWNER_BUNDLE" "$EVENTS" && fail "the owner relaunch carried the CI-only env"
 # The runner kills every process that carries the job's tracking id when the
 # job ends; on 2026-09-25 that was the relaunched owner app, seven seconds
@@ -145,10 +143,12 @@ grep -q "^RUNNER_TRACKING_ID=" "$EVENTS" && fail "the owner relaunch carried the
 # The drill's data folder is deleted after the run: an owner app reopened on
 # it would save the owner's dictations into a folder about to go (#985).
 grep -q "^LOCALVOXTRAL_DATA_HOME=" "$EVENTS" && fail "the owner relaunch carried the drill's data folder"
+grep -q "^LOCALVOXTRAL_DEFAULTS_SUITE=" "$EVENTS" && fail "the owner relaunch carried the drill's defaults suite"
 grep -q "^LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN=" "$EVENTS" && fail "the owner relaunch inherited the lane's keychain flag"
 [ -s "$RUNNING" ] || fail "the owner's app is not running after the drill"
 grep -q "Relaunched the owner's app" "$WORK/out" || fail "the relaunch is not reported in the drill output"
-echo "PASS: the owner's app is quit before defaults change and relaunched after they are restored"
+grep -q "Owner defaults unchanged" "$WORK/out" || fail "the drill did not report the owner's defaults"
+echo "PASS: the owner's app is quit before the launch and relaunched after it; only the harness suite is written"
 
 # The app's log is streamed from before its launch (#594): a line logged
 # before the stream attaches is lost.
@@ -156,9 +156,11 @@ stream_line="$(line_of "log stream")"
 launch_line="$(grep -nE -m1 "^open --env LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN=1 (--env [^ ]+ )*-n" "$EVENTS" | cut -d: -f1 || true)"
 [ -n "$stream_line" ] || fail "the drill never streamed the app's log"
 [ -n "$launch_line" ] || fail "the drill never launched the app"
-# Its data stays out of the owner's (#985).
+# Its data and preferences stay out of the owner's (#985, #1029).
 grep -qE "^open .*--env LOCALVOXTRAL_DATA_HOME=/[^ ]+ .*-n" "$EVENTS" \
   || fail "the drill launched the app on the owner's data"
+grep -qE "^open .*--env LOCALVOXTRAL_DEFAULTS_SUITE=com\.localvoxtral\.harness .*-n" "$EVENTS" \
+  || fail "the drill launched the app on the owner's preferences"
 [ "$stream_line" -lt "$launch_line" ] || fail "the app's log stream started after the launch"
 echo "PASS: the app's log is streamed from before its launch"
 
@@ -167,24 +169,5 @@ run_drill 0 no
 assert_reached_launch
 grep -q "^open $OWNER_BUNDLE" "$EVENTS" && fail "the drill relaunched an app that was not running before"
 echo "PASS: no relaunch when the owner's app was not running"
-
-# 4. Restoring the owner's defaults fails: the owner's app stays down rather
-#    than starting on the drill's forced modes.
-STUB_IMPORT_STATUS=1 run_drill 0 yes
-assert_reached_launch
-grep -q "^open $OWNER_BUNDLE" "$EVENTS" && fail "the owner's app was relaunched without its defaults"
-grep -q "NOT relaunching the owner app" "$WORK/out" || fail "the skipped relaunch is not reported"
-echo "PASS: no relaunch when the owner's defaults could not be restored"
-
-# 5. The owner's defaults cannot be backed up: the drill touches nothing and
-#    still brings the owner's app back. Cleanup restores from an EXIT trap,
-#    where a bare `return` reported the failed drill's status as a failed
-#    restore and kept the owner's app down.
-STUB_LINT_STATUS=1 run_drill 0 yes
-grep -q "Could not create persistent defaults backup" "$WORK/out" \
-  || fail "the drill did not end at its snapshot: $(tail -n 3 "$WORK/out")"
-grep -q "^defaults write" "$EVENTS" && fail "the drill forced its defaults without a backup"
-grep -q "^open $OWNER_BUNDLE" "$EVENTS" || fail "the owner's app was not relaunched after a failed snapshot"
-echo "PASS: a failed snapshot leaves the defaults alone and relaunches the owner's app"
 
 echo "ui-smoke owner-app tests passed"
