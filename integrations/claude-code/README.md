@@ -439,6 +439,11 @@ While the mod is connected, the app keeps the session joinable however long
 it sits idle, and drops it the moment the session ends or `/clear` starts a
 new one.
 
+With **Tell me when an agent needs you** on, the band also names the other
+Claude Code sessions that wait for your answer, oldest first: "payments waits
+for you". It names sessions only, never what an agent said, and goes once
+none waits.
+
 With **Ask the coding agent for each new project's terms** on, a session with
 the mod answers that question itself when it has had at least three prompts
 and was active in the last four minutes: the app asks the session's own model

@@ -451,5 +451,6 @@ describe('channel', () => {
     expect(parseMessage('{"mod_message":2,"kind":"ping","id":"a"}')).toBeNull()
     expect(parseMessage('{"kind":"ping","id":"a"}')).toBeNull()
     expect(parseMessage('not json')).toBeNull()
+    expect(parseMessage('{"mod_message":1,"kind":"state","id":"a","waiting":["api",3]}')?.waiting).toEqual(['api'])
   })
 })

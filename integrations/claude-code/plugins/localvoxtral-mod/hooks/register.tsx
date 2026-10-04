@@ -15,6 +15,7 @@ import {
   NEW_SESSION_WAIT_MS,
   type Outcome,
   parseMessage,
+  waitingLine,
   RESTART_DELAY_MS,
   SESSION_CHANGED,
   SHORTEST_LIFE_MS,
@@ -113,7 +114,8 @@ async function runChannel(
             void child.return(undefined as never).catch(() => {})
             break read
           }
-          if (message?.kind === 'state') void showBand($, message)
+          if (message?.kind === 'state' && message.waiting !== undefined) void update($, waiting, () => message.waiting ?? [])
+          else if (message?.kind === 'state') void showBand($, message)
           else if (message !== null) void answer($, publisher, sessionID, message)
           newline = buffered.indexOf('\n')
         }
@@ -121,6 +123,8 @@ async function runChannel(
     } catch {
       // The child could not start; the restart below decides what is next.
     }
+    // Nobody tells this mod who waits until it attaches again.
+    await update($, waiting, () => [])
     if (saidBye || endingSession === sessionID) {
       if (processEnds) return
       const next = await newSessionID($, sessionID)
@@ -184,6 +188,8 @@ async function answer(
 }
 
 const band = atom({ plugin: 'localvoxtral-mod', key: 'band' } as const, null)
+// The other sessions waiting for the person, oldest first (#1695).
+const waiting = atom({ plugin: 'localvoxtral-mod', key: 'waiting' } as const, [])
 let bandUpdatedAt = 0
 
 /** Shows what a `state` message says; the app waits for no answer. */
@@ -304,17 +310,25 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey) return next(e)
     const shown = await read($, band)
-    if (shown === null || e.props.hasSurvey) return next(e)
+    const columns = e.props.bodyColumns ?? 80
+    const others = waitingLine(await read($, waiting), columns)
+    if (shown === null && others === null) return next(e)
     const { Box, Text } = $.ui.resolve(e)
     // Two lines at most: the tail of the words, as wide as the box.
-    const room = Math.max(20, (e.props.bodyColumns ?? 80) * 2 - 16)
-    const words = shown.text.length > room ? `…${shown.text.slice(-(room - 1))}` : shown.text
+    const room = Math.max(20, columns * 2 - 16)
+    const words = shown === null ? '' : shown.text.length > room ? `…${shown.text.slice(-(room - 1))}` : shown.text
     return (
-      <Box>
-        <Text color="red">● </Text>
-        <Text bold>{shown.phase === 'listening' ? 'Listening' : 'Finishing'} </Text>
-        <Text dimColor>{words}</Text>
+      <Box flexDirection="column">
+        {shown !== null && (
+          <Box>
+            <Text color="red">● </Text>
+            <Text bold>{shown.phase === 'listening' ? 'Listening' : 'Finishing'} </Text>
+            <Text dimColor>{words}</Text>
+          </Box>
+        )}
+        {others !== null && <Text color="yellow">{others}</Text>}
       </Box>
     )
   })

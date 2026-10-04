@@ -686,7 +686,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         let announcer = AgentAttentionAnnouncer()
         if settings.agentAttentionEnabled { announcer.requestSoundIfMissing() }
-        viewModel.agentAttention = AgentAttentionModel(tracker: tracker, announcer: announcer)
+        let attention = AgentAttentionModel(tracker: tracker, announcer: announcer)
+        viewModel.agentAttention = attention
+        // The other waiting sessions, in each attached mod's band (#1695).
+        let waitingBand = AgentWaitingBand(hub: claudeModChannels)
+        attention.waitingBand = waitingBand
+        claudeModChannels.observeAttach { sessionID in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { waitingBand.attached(sessionID: sessionID) }
+            }
+        }
         // The registry calls this on whichever socket thread ingested; the
         // sequence it stamps under its lock puts a session's events back in
         // order.

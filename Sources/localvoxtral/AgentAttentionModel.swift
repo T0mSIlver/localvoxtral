@@ -16,6 +16,9 @@ final class AgentAttentionModel {
     let tracker: AgentAttentionTracker
     @ObservationIgnored
     let announcer: (any AgentAttentionAnnouncing)?
+    /// Tells attached mods which other sessions wait (#1695).
+    @ObservationIgnored
+    var waitingBand: AgentWaitingBand?
 
     init(tracker: AgentAttentionTracker, announcer: (any AgentAttentionAnnouncing)?) {
         self.tracker = tracker
@@ -25,6 +28,7 @@ final class AgentAttentionModel {
             let removed = Set(self.queue.entries.map(\.sessionID))
                 .subtracting(tracker.queue.entries.map(\.sessionID))
             self.queue = tracker.queue
+            self.waitingBand?.update(tracker.queue)
             if !removed.isEmpty { announcer?.withdraw(sessionIDs: removed) }
         }
         tracker.onCue = { entry in announcer?.announce(entry) }

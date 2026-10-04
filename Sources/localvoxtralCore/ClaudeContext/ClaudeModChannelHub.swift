@@ -62,6 +62,7 @@ public final class ClaudeModChannelHub: Sendable {
         debugAttachHook.withLock { $0 = hook }
     }
     #endif
+    private let attachObserver = Mutex<(@Sendable (String) -> Void)?>(nil)
     private let maxChannels: Int
     private let sleep: @Sendable (Duration) async -> Void
     private let makeID: @Sendable () -> String
@@ -83,6 +84,19 @@ public final class ClaudeModChannelHub: Sendable {
     /// Whether `sessionID` has a mod listening right now.
     public func isAttached(_ sessionID: String) -> Bool {
         state.withLock { $0.channels[sessionID] != nil }
+    }
+
+    /// The sessions that have a mod listening right now.
+    public func attachedSessionIDs() -> Set<String> {
+        state.withLock { Set($0.channels.keys) }
+    }
+
+    /// Called with the session's id after each attach, on the broker's
+    /// thread and under its lock: hand the work off, never block. A message
+    /// posted from it waits for the attach's answer, which is the
+    /// connection's first line.
+    public func observeAttach(_ observer: (@Sendable (String) -> Void)?) {
+        attachObserver.withLock { $0 = observer }
     }
 
     /// How a request ended, told apart where it matters: a request the mod
@@ -197,6 +211,7 @@ public final class ClaudeModChannelHub: Sendable {
         #if DEBUG
         debugAttachHook.withLock { $0 }?(true)
         #endif
+        attachObserver.withLock { $0 }?(sessionID)
         return token
     }
 
