@@ -133,16 +133,25 @@ extension DictationSessionController {
     /// The stop's cleanup after an addressed commit, and its one sentence.
     /// Correction learning and term proposals are skipped: they key on the
     /// join of the pane the dictation started in, not the named session.
-    func finishAddressedCommit(_ addressed: AddressedCommit, sessionMode: DictationOutputMode) {
-        guard !addressed.superseded else { return }
+    /// `text` is what the commit handed over, captured before a new
+    /// dictation could replace the transcript.
+    func finishAddressedCommit(_ addressed: AddressedCommit, text: String, sessionMode: DictationOutputMode) {
+        guard !addressed.superseded else {
+            // The cleanup and the status are the new dictation's; the text
+            // a route refused is still kept (#1658).
+            if addressed.status == AddressedSendStatus.notSent {
+                _ = keepUndeliveredAgentText(text)
+            }
+            return
+        }
         if case .failed(let message)? = addressed.outcome {
             lastError = message
         }
         var status = addressed.status
         if status == AddressedSendStatus.notSent {
-            status = keepUndeliveredAgentText(transcript.currentDictationEventText)
+            status = keepUndeliveredAgentText(text)
         } else if status == AddressedSendStatus.unsupported {
-            status = keepUntypedText(transcript.currentDictationEventText, status: AddressedSendStatus.unsupported)
+            status = keepUntypedText(text, status: AddressedSendStatus.unsupported)
         }
         completeStoppedSessionCleanup(
             sessionMode: sessionMode,
