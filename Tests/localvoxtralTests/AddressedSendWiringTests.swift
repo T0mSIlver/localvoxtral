@@ -525,6 +525,144 @@ final class AddressedSendWiringTests: XCTestCase {
         }
     }
 
+    // MARK: - Through the named session's mod (#1693)
+
+    /// The named session's mod is attached: it fills and submits by session
+    /// id. The pane is never brought forward and no key is posted anywhere.
+    func testAnAttachedModSubmitsInTheUnfocusedSessionWithNoFocusAndNoKey() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001"), session("web", cwd: "/r/web")]
+        )
+        let mod = attachMod(harness, sessionID: "pay", answer: .submitted)
+
+        await harness.stop()
+
+        XCTAssertEqual(mod.sends.value, ["Run the tests"], "the phrase is cut")
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, [], "the pane stays where it is")
+        XCTAssertEqual(harness.inserted.value.map(\.text), [], "no key typed")
+        XCTAssertEqual(harness.returns.value, [], "no Return")
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [true])
+        XCTAssertEqual(harness.viewModel.statusText, "Ready")
+    }
+
+    /// The box holds an unsent draft ending in a word: the text continues it
+    /// with a space, and the mod submits the whole box.
+    func testTheModSendSpacesADraftEndingInAWord() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
+        )
+        let mod = attachMod(harness, sessionID: "pay", answer: .submitted, draft: "then")
+
+        await harness.stop()
+
+        XCTAssertEqual(mod.sends.value, [" Run the tests"])
+    }
+
+    /// The session is mid-turn: the popover says the prompt runs after it.
+    func testAQueuedModSendSaysItRunsAfterTheTurn() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
+        )
+        _ = attachMod(harness, sessionID: "pay", answer: .queued)
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, [])
+        XCTAssertEqual(harness.viewModel.statusText, DictationSessionController.ModChannelStatus.queued)
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [true])
+    }
+
+    /// The mod refused (a dialog holds the box): nothing changed in the
+    /// session, so the focus path runs as it does without a mod.
+    func testAModRefusalFallsBackToTheFocusPath() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
+        )
+        let mod = attachMod(harness, sessionID: "pay", answer: .refused("dialog"))
+
+        await harness.stop()
+
+        XCTAssertEqual(mod.sends.value, ["Run the tests"])
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, ["pay"])
+        XCTAssertEqual(harness.inserted.value.map(\.text), ["Run the tests"])
+        XCTAssertEqual(harness.returns.value, [Self.namedTerminalPID])
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [true])
+    }
+
+    /// The channel is there but the write fails: the mod never got the
+    /// request, so the focus path runs.
+    func testAModThatNeverGetsTheRequestFallsBackToTheFocusPath() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
+        )
+        _ = attachMod(harness, sessionID: "pay", answer: .undeliverable)
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, ["pay"])
+        XCTAssertEqual(harness.inserted.value.map(\.text), ["Run the tests"])
+        XCTAssertEqual(harness.returns.value, [Self.namedTerminalPID])
+    }
+
+    /// Only the named session's mod counts: another session's attached mod
+    /// leaves this one on the focus path.
+    func testAnotherSessionsModLeavesTheNamedOneOnTheFocusPath() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001"), session("web", cwd: "/r/web")]
+        )
+        let mod = attachMod(harness, sessionID: "web", answer: .submitted)
+
+        await harness.stop()
+
+        XCTAssertEqual(mod.sends.value, [])
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, ["pay"])
+        XCTAssertEqual(harness.returns.value, [Self.namedTerminalPID])
+    }
+
+    /// The mod got the request and never answered: it may have submitted,
+    /// so nothing is typed or sent another way, and the text is kept.
+    func testAnUnansweredModSendIsKeptAndNeverRetyped() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
+        )
+        _ = attachMod(harness, sessionID: "pay", answer: .silent)
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, [])
+        XCTAssertEqual(harness.inserted.value.map(\.text), [])
+        XCTAssertEqual(harness.returns.value, [])
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false])
+        XCTAssertEqual(harness.viewModel.statusText, StatusStrings.agentPromptTextKeptInHistory)
+    }
+
+    /// The mod's process moved to another session (`/clear`) after the
+    /// name resolved: its pane shows that session now, so nothing is sent
+    /// there by any path (#1651).
+    func testASessionChangedRefusalIsKeptAndTakesNoOtherPath() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
+        )
+        _ = attachMod(
+            harness, sessionID: "pay", answer: .refused(ClaudeModChannelWire.Reply.sessionChangedReason)
+        )
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, [])
+        XCTAssertEqual(harness.inserted.value.map(\.text), [])
+        XCTAssertEqual(harness.returns.value, [])
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false])
+    }
+
     // MARK: - Harness
 
     private struct Harness {
@@ -547,6 +685,61 @@ final class AddressedSendWiringTests: XCTestCase {
             viewModel.session.finishStoppedSession(promotePendingSegment: false)
             await awaitStoppedSessionCommit(viewModel)
         }
+    }
+
+    private enum ModAnswer: Equatable {
+        case submitted, queued, silent, undeliverable
+        case refused(String)
+    }
+
+    private struct FakeMod {
+        /// The texts of the `send` requests the mod got.
+        let sends: Box<[String]>
+    }
+
+    /// Attaches a fake mod for `sessionID` that answers each `send` with
+    /// `answer` and each `draft` with `draft` before an empty cursor tail.
+    /// A silent mod's request times out at once.
+    private func attachMod(
+        _ harness: Harness, sessionID: String, answer: ModAnswer, draft: String = ""
+    ) -> FakeMod {
+        let sleep: @Sendable (Duration) async -> Void = answer == .silent
+            ? { @Sendable _ in }
+            : { @Sendable _ in try? await Task.sleep(for: .seconds(3600)) }
+        let hub = ClaudeModChannelHub(sleep: sleep)
+        let sends = Box<[String]>([])
+        _ = hub.attach(sessionID: sessionID, channel: .init(
+            write: { line in
+                guard let message = ClaudeModChannelWire.decode(
+                    ClaudeModChannelWire.Message.self, from: line.dropLast()
+                ) else { return false }
+                if message.kind == .draft {
+                    hub.deliver(.init(
+                        sessionID: sessionID, id: message.id, ok: true, text: draft, cursor: draft.utf16.count
+                    ))
+                    return true
+                }
+                guard message.kind == .send else { return false }
+                sends.value.append(message.text ?? "")
+                switch answer {
+                case .undeliverable:
+                    return false
+                case .silent:
+                    break
+                case .submitted, .queued:
+                    hub.deliver(.init(
+                        sessionID: sessionID, id: message.id, ok: true,
+                        submitted: true, queued: answer == .queued ? true : nil
+                    ))
+                case .refused(let reason):
+                    hub.deliver(.init(sessionID: sessionID, id: message.id, ok: false, reason: reason))
+                }
+                return true
+            },
+            close: {}
+        ))
+        harness.viewModel.session.context.claudeModChannels = hub
+        return FakeMod(sends: sends)
     }
 
     private func session(_ id: String, cwd: String, tty: String = "/dev/ttys009") -> ClaudeSessionSnapshot {
