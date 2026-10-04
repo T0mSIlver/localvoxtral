@@ -556,7 +556,8 @@ extension DictationSessionController {
         overlayCommit = StopCommitCoordinator.commit(
             overlay: self.overlayBufferCoordinator,
             textInsertion: self.overlayCommitter(
-                join: capture.claudeJoin, targetPID: commitTargetPID, spokenSend: spokenSend
+                join: capture.claudeJoin, targetPID: commitTargetPID, spokenSend: spokenSend,
+                draft: outcome.material.promptDraft
             ),
             autoCopyEnabled: self.settings.autoCopyEnabled
         )

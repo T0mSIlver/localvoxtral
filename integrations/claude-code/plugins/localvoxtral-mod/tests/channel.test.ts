@@ -1,7 +1,7 @@
 import type { ProcessSpawnChunk, ProcessSpawnResult } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { parseMessage } from '../hooks/channel'
+import { DRAFT_AFTER_CURSOR, DRAFT_BEFORE_CURSOR, draftOf, parseMessage } from '../hooks/channel'
 
 const PUBLISHER = '/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook'
 const STARTED = { surface: 'terminal', isInteractive: true, cwd: '/work' } as const
@@ -133,6 +133,55 @@ describe('channel', () => {
         usage: { input_tokens: 12, cache_creation_input_tokens: 0, cache_read_input_tokens: 48000, output_tokens: 30 },
       },
     ])
+  })
+
+  test('draft answers with the prompt box as typed and the cursor in it', async ($, on) => {
+    const clock = mock.clock(on)
+    mock.env(on, { HOME: '/Users/tom' })
+    const replies: unknown[] = []
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('session.id', () => ({ value: 'sess-1' }))
+    on('settings.read', () => ({ value: {} }))
+    on('fs.exists', ($, e) => ({ value: e.path === PUBLISHER }))
+    on('ui.status', () => ({ value: undefined }))
+    on('prompt.read', () => ({ value: { text: 'fix the flaky test and', cursor: 18 } }))
+    on('process.spawn', async function* (): AsyncGenerator<ProcessSpawnChunk, { value: ProcessSpawnResult }> {
+      yield { stream: 'stdout', text: '{"id":"d","kind":"draft","mod_message":1}\n' }
+      await clock.sleep(60000)
+      return { value: EXITED }
+    })
+    on('process.run', ($, e) => {
+      if (e.argv[1] === '--mod-reply') replies.push(JSON.parse(e.init?.stdin ?? ''))
+      return {
+        value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+      }
+    })
+
+    await $.session.start(STARTED)
+    await clock.advance(1000)
+
+    expect(replies).toEqual([
+      { mod_reply: 1, session_id: 'sess-1', id: 'd', ok: true, text: 'fix the flaky test and', cursor: 18 },
+    ])
+  })
+
+  test('draftOf keeps the text around the cursor and never splits a surrogate pair', () => {
+    const before = 'a'.repeat(DRAFT_BEFORE_CURSOR + 10)
+    const after = 'b'.repeat(DRAFT_AFTER_CURSOR + 10)
+    expect(draftOf({ text: before + after, cursor: before.length })).toEqual({
+      text: 'a'.repeat(DRAFT_BEFORE_CURSOR) + 'b'.repeat(DRAFT_AFTER_CURSOR),
+      cursor: DRAFT_BEFORE_CURSOR,
+    })
+    // The cut falls between the halves of an emoji on both sides.
+    const pair = '\u{1F600}'
+    const cutStart = 'x' + pair + 'a'.repeat(DRAFT_BEFORE_CURSOR - 1)
+    const cutEnd = 'b'.repeat(DRAFT_AFTER_CURSOR - 1) + pair + 'y'
+    const clipped = draftOf({ text: cutStart + cutEnd, cursor: cutStart.length })
+    expect(clipped).toEqual({
+      text: 'a'.repeat(DRAFT_BEFORE_CURSOR - 1) + 'b'.repeat(DRAFT_AFTER_CURSOR - 1),
+      cursor: DRAFT_BEFORE_CURSOR - 1,
+    })
+    expect(draftOf({ text: '', cursor: 0 })).toEqual({ text: '', cursor: 0 })
   })
 
   test('a publisher that exits at once is not started again', async ($, on) => {

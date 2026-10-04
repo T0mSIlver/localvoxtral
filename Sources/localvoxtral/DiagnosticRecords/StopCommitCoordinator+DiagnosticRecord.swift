@@ -96,7 +96,8 @@ extension StopCommitCoordinator {
                 committedText: committedText
             ),
             polishSeconds: polishSeconds,
-            withheldPrompt: capture.claudeJoin?.snapshot.latestPriorUserPrompt
+            withheldPrompt: capture.claudeJoin?.snapshot.latestPriorUserPrompt,
+            withheldDraft: material.promptDraft
         )
     }
 }

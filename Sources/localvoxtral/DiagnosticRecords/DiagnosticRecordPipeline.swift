@@ -385,6 +385,14 @@ struct DiagnosticRecordInputs: Sendable {
     /// carried. Only used to take it back out
     /// (`DiagnosticRecordRedaction.withholdPrompt`); never written.
     var withheldPrompt: String? = nil
+    /// The joined session's unsent prompt draft, which the context carried.
+    /// Taken back out like `withheldPrompt`; never written.
+    var withheldDraft: ClaudePromptDraft? = nil
+
+    /// Everything the record takes back out, the prompt first.
+    var withheld: [DiagnosticRecordRedaction.Withheld] {
+        [.priorPrompt(withheldPrompt), .draft(withheldDraft)].compactMap { $0 }
+    }
 }
 
 extension DiagnosticRecordBuilder {
@@ -426,7 +434,7 @@ extension DiagnosticRecordBuilder {
             sources.append(source(SourceInputs(
                 source: .terminal,
                 harvest: textSourceHarvest(
-                    DiagnosticRecordRedaction.withholdingPrompt(inputs.withheldPrompt, in: screenText, softWrapped: true)),
+                    DiagnosticRecordRedaction.withholding(inputs.withheld, in: screenText, softWrapped: true)),
                 outcome: inputs.screenOutcome,
                 renderedExcerpt: inputs.screenRenderedExcerpt
             )))
@@ -435,7 +443,7 @@ extension DiagnosticRecordBuilder {
             sources.append(source(SourceInputs(
                 source: .claude,
                 harvest: textSourceHarvest(
-                    DiagnosticRecordRedaction.withholdingPrompt(inputs.withheldPrompt, in: claudeText, softWrapped: false)),
+                    DiagnosticRecordRedaction.withholding(inputs.withheld, in: claudeText, softWrapped: false)),
                 outcome: inputs.claudeSessionOutcome,
                 renderedExcerpt: inputs.claudeSessionRenderedExcerpt
             )))
@@ -444,7 +452,7 @@ extension DiagnosticRecordBuilder {
             sources.append(source(SourceInputs(
                 source: .clipboard,
                 harvest: textSourceHarvest(
-                    DiagnosticRecordRedaction.withholdingPrompt(inputs.withheldPrompt, in: clipboardText, softWrapped: false)),
+                    DiagnosticRecordRedaction.withholding(inputs.withheld, in: clipboardText, softWrapped: false)),
                 outcome: inputs.clipboardOutcome,
                 renderedExcerpt: inputs.clipboardRenderedExcerpt
             )))
@@ -472,7 +480,7 @@ extension DiagnosticRecordBuilder {
                 captureMilliseconds: nil
             )
         )
-        DiagnosticRecordRedaction.withholdPrompt(inputs.withheldPrompt, from: &record)
+        DiagnosticRecordRedaction.withhold(inputs.withheld, from: &record)
         return record
     }
 }

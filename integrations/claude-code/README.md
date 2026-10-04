@@ -418,6 +418,14 @@ session ended), the app types it as before. A dictation that ends in the
 spoken send word, and sessions in Claude Desktop or a browser tab, are still
 typed.
 
+When an Overlay Buffer dictation into such a session is polished, the app
+also asks the mod what the prompt box already holds, in a terminal or the
+Claude Desktop Code tab. With **Send diff, recent files and last prompt** on, polish sees
+that text and knows the dictation continues it; whatever the setting, the
+dictation starts with a space only when the box ends in a word. The text stays
+on your Mac when polishing does, is never logged, and is left out of
+diagnostic records.
+
 While an Overlay Buffer dictation is joined to a session with the mod, that
 session shows it above its prompt: **Listening** and the words so far, then
 **Finishing** while the text is polished, then nothing. The band shows

@@ -34,7 +34,34 @@ there is not.
   the same way against the pane's pid and the named session; its Return, or
   a failed typing, clears a landing in that session and no other (#1480).
   Anything looser puts a space in front of `/compact`
-  in a fresh prompt. No trailing space after a commit.
+  in a fresh prompt. No trailing space after a commit. Where the joined
+  session's mod read its prompt box at the stop (a polished commit into a
+  local Claude Code session, below), the box decides instead: a space only
+  when the cursor follows a character that is not whitespace, so text typed
+  by hand is continued too, and a box cleared without a submit takes
+  `/compact` as written. An empty answer from a Claude Desktop session does
+  not decide, since a surface that draws its own prompt box gives the mod
+  `""` whatever it holds; there the guess above still runs, as it does for
+  an unpolished commit, a mod that does not answer, and every other agent.
+- **The prompt draft is the person's unsent words, read only from the
+  joined session's own mod** (#1406). At the stop of a polished Overlay
+  Buffer commit, `SessionContextResolver.promptDraft` asks the mod of the
+  joined session for `$.prompt.read`, only for a Claude Code session on this
+  Mac joined by an exact mechanism (tty, local herdr pane, cmux surface,
+  Claude Desktop; `ClaudePromptDraft.isReadable`) and still live, with a
+  1.5 s cap that the repository reads overlap. The reply names its session
+  and is dropped for any other; the mod sends at most 3,000 UTF-16 units
+  before the cursor and 1,000 after. The draft reaches polish only through
+  `claudeSessionTextIfEnabled`, under the session block's three gates, and
+  leaves with it when consent is withdrawn at the stop; it leads that block,
+  one line per side of the cursor behind `ClaudePromptDraft`'s labels. The
+  leading space reads it whatever the context settings say, since that never
+  leaves the Mac. The app logs its length only. A diagnostic record takes it
+  out as it takes out the prior prompt (`DiagnosticRecordRedaction.Withheld`):
+  behind its labels, line by line, and soft-wrapped on the screen; lines
+  under eight characters that the screen shows outside the label stay, as
+  for the prior prompt. The draft is read at the stop, and the commit lands
+  after the polish: words typed in between are not seen.
 - **A mid-dictation reconnect resumes the session; it never replays it.**
   When the realtime socket drops without the user asking
   (`DictationSessionController+Reconnect.swift`, #380), the mic keeps recording and the
@@ -322,10 +349,11 @@ there is not.
   but never answered, the text stays in History (on the clipboard with
   History off). Unless keys put it in, the next
   commit gets no continuation space. Mod replies ride one-shot connections
-  and carry a short reason code, never what the person typed or dictated;
-  the one text a reply carries is the session model's answer to the
-  project-terms question (#1410), which the same parser and filters read as
-  a one-shot run's.
+  and carry a short reason code, never what the person dictated. Two
+  replies carry text: the session model's answer to the project-terms
+  question (#1410), which the same parser and filters read as a one-shot
+  run's, and the prompt draft (#1406, above), which only the stop that
+  asked for it reads.
 - **The Mistral second pass holds the text back, never the world** (#317).
   An Overlay Buffer dictation in Mistral API mode is sent whole to the batch
   endpoint on stop (`DictationSessionController+StopCommit.swift`,

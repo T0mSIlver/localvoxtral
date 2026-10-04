@@ -6,6 +6,7 @@ import {
   BAND_STALE_MS,
   bandOf,
   type ChannelMessage,
+  draftOf,
   type ChannelReply,
   type Outcome,
   parseMessage,
@@ -137,6 +138,10 @@ async function handle($: EngineInterface, message: ChannelMessage): Promise<Outc
       const filled = await $.prompt.fill({ text: message.text, mode: 'insert' })
       return filled.isFilled ? { ok: true } : { ok: false, reason: filled.refusal ?? 'refused' }
     }
+    case 'draft':
+      // What the person already typed, for polish and the space before the
+      // fill (#1406). Read where the dictation will land, at the stop.
+      return { ok: true, ...draftOf(await $.prompt.read()) }
     case 'terms': {
       // The project's names, from what this session already holds (#1410):
       // its own transcript, served from the prompt cache, no tool.
