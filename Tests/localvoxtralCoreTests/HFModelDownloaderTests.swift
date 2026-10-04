@@ -2,11 +2,11 @@ import Foundation
 import Synchronization
 import XCTest
 
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 @MainActor
 final class HFModelDownloaderTests: XCTestCase {
-    func testDefaultCacheRootMatchesHuggingFaceEnvironmentPrecedence() {
+    func testDefaultCacheRootMatchesHuggingFaceEnvironmentPrecedence() async {
         let home = URL(fileURLWithPath: "/Users/tester", isDirectory: true)
         XCTAssertEqual(
             HFModelDownloader.defaultCacheRoot(

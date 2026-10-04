@@ -1,16 +1,21 @@
+#if canImport(Darwin)
 import Darwin
+#endif
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import Synchronization
 
-struct ModelPreparationRequest: Equatable, Sendable {
-    let backendID: String
-    let displayName: String
-    let repoID: String
+package struct ModelPreparationRequest: Equatable, Sendable {
+    package let backendID: String
+    package let displayName: String
+    package let repoID: String
     /// Pinned commit, or nil to track the repo's `main` (custom repo ids).
-    let revision: String?
-    let includePatterns: [String]
+    package let revision: String?
+    package let includePatterns: [String]
 
-    init(
+    package init(
         backendID: String,
         displayName: String,
         repoID: String,
@@ -25,7 +30,7 @@ struct ModelPreparationRequest: Equatable, Sendable {
     }
 }
 
-protocol ModelPreparing: Sendable {
+package protocol ModelPreparing: Sendable {
     func prepare(
         _ request: ModelPreparationRequest,
         progress: @MainActor @Sendable @escaping (ModelDownloadProgress) -> Void
@@ -39,7 +44,7 @@ protocol ModelPreparing: Sendable {
     func discardPartialDownloads(for request: ModelPreparationRequest)
 }
 
-enum ModelDownloadError: LocalizedError, Sendable {
+package enum ModelDownloadError: LocalizedError, Sendable {
     case repositoryRequestFailed(repoID: String, statusCode: Int)
     case resolvedRevisionMismatch(expected: String, actual: String)
     case noMatchingFiles(repoID: String)
@@ -47,7 +52,7 @@ enum ModelDownloadError: LocalizedError, Sendable {
     case fileRequestFailed(path: String, statusCode: Int)
     case transport(message: String, detail: String?)
 
-    var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .repositoryRequestFailed(let repoID, let statusCode):
             return "Model repository request failed for \(repoID) (HTTP \(statusCode))."
@@ -64,23 +69,23 @@ enum ModelDownloadError: LocalizedError, Sendable {
         }
     }
 
-    var technicalDetails: String? {
+    package var technicalDetails: String? {
         if case .transport(_, let detail) = self { return detail }
         return errorDescription
     }
 }
 
-struct HFModelRepositoryInfo: Equatable, Sendable {
-    let sha: String
-    let fileNames: [String]
+package struct HFModelRepositoryInfo: Equatable, Sendable {
+    package let sha: String
+    package let fileNames: [String]
     /// Exact byte sizes from the repo API (`?blobs=true`), keyed by file name.
     /// The authoritative source for the download total: available before the
     /// first byte moves, unlike HEAD probes (which the CDN may refuse) or
     /// transfer-reported sizes (which arrive only as each file starts).
-    let sizesByFileName: [String: Int64]
+    package let sizesByFileName: [String: Int64]
 }
 
-protocol HFModelDownloadTransport: Sendable {
+package protocol HFModelDownloadTransport: Sendable {
     func repositoryInfo(from url: URL) async throws -> (data: Data, statusCode: Int)
     func contentLength(of url: URL) async throws -> Int64?
     /// Bytes an earlier interrupted transfer of `url` left behind, ready to be
@@ -108,7 +113,7 @@ protocol HFModelDownloadTransport: Sendable {
     ) async throws -> (temporaryURL: URL, statusCode: Int)
 }
 
-final class URLSessionHFModelDownloadTransport: HFModelDownloadTransport {
+package final class URLSessionHFModelDownloadTransport: HFModelDownloadTransport {
     /// Resume data from interrupted transfers, keyed by absolute file URL.
     /// In-memory for the process lifetime only: a paused download that does not
     /// survive a quit simply refetches its unfinished file, which is exactly
@@ -126,12 +131,14 @@ final class URLSessionHFModelDownloadTransport: HFModelDownloadTransport {
     /// bytes saved differ, and the multi-gigabyte half is the half that resumes.
     private let resumeDataByURL = Mutex<[String: Data]>([:])
 
-    func repositoryInfo(from url: URL) async throws -> (data: Data, statusCode: Int) {
+    package init() {}
+
+    package func repositoryInfo(from url: URL) async throws -> (data: Data, statusCode: Int) {
         let (data, response) = try await URLSession.shared.data(from: url)
         return (data, (response as? HTTPURLResponse)?.statusCode ?? 0)
     }
 
-    func contentLength(of url: URL) async throws -> Int64? {
+    package func contentLength(of url: URL) async throws -> Int64? {
         var request = URLRequest(url: url)
         request.httpMethod = "HEAD"
         let (_, response) = try await URLSession.shared.data(for: request)
@@ -141,11 +148,11 @@ final class URLSessionHFModelDownloadTransport: HFModelDownloadTransport {
         return response.expectedContentLength > 0 ? response.expectedContentLength : nil
     }
 
-    func retainedResumeData(for url: URL) -> Data? {
+    package func retainedResumeData(for url: URL) -> Data? {
         resumeDataByURL.withLock { $0[url.absoluteString] }
     }
 
-    func discardResumeData(withURLPrefix prefix: String) {
+    package func discardResumeData(withURLPrefix prefix: String) {
         resumeDataByURL.withLock { store in
             for key in store.keys where key.hasPrefix(prefix) {
                 store[key] = nil
@@ -153,7 +160,7 @@ final class URLSessionHFModelDownloadTransport: HFModelDownloadTransport {
         }
     }
 
-    func download(
+    package func download(
         from url: URL,
         resumeData: Data?,
         onBytes: @escaping @Sendable (Int64, Int64?) -> Void
@@ -192,6 +199,11 @@ final class URLSessionHFModelDownloadTransport: HFModelDownloadTransport {
         }
     }
 }
+
+#if !canImport(Darwin)
+// swift-corelibs-foundation does not export the key; this is its value on Darwin.
+private let NSURLSessionDownloadTaskResumeData = "NSURLSessionDownloadTaskResumeData"
+#endif
 
 /// Delegate for one download task: relays byte-level progress and hands the
 /// finished file back through a continuation. `didFinishDownloadingTo`'s file
@@ -323,7 +335,7 @@ private final class ProgressReportingDownloadDelegate: NSObject, URLSessionDownl
     }
 }
 
-struct HFModelDownloader: ModelPreparing {
+package struct HFModelDownloader: ModelPreparing {
     private struct RepositoryResponse: Decodable {
         struct Sibling: Decodable {
             let rfilename: String
@@ -341,7 +353,7 @@ struct HFModelDownloader: ModelPreparing {
     /// tests inject 1 to observe every callback.
     private let progressByteGranularity: Int64
 
-    init(
+    package init(
         cacheRoot: URL? = nil,
         transport: any HFModelDownloadTransport = URLSessionHFModelDownloadTransport(),
         fileManager: FileManager = .default,
@@ -353,7 +365,7 @@ struct HFModelDownloader: ModelPreparing {
         self.progressByteGranularity = progressByteGranularity
     }
 
-    func prepare(
+    package func prepare(
         _ request: ModelPreparationRequest,
         progress: @MainActor @Sendable @escaping (ModelDownloadProgress) -> Void
     ) async throws {
@@ -530,7 +542,7 @@ struct HFModelDownloader: ModelPreparing {
             && (error as NSError).code == NSURLErrorCancelled
     }
 
-    func discardPartialDownloads(for request: ModelPreparationRequest) {
+    package func discardPartialDownloads(for request: ModelPreparationRequest) {
         transport.discardResumeData(
             withURLPrefix: Self.fileURLPrefix(repoID: request.repoID)
         )
@@ -539,7 +551,7 @@ struct HFModelDownloader: ModelPreparing {
         )
     }
 
-    static func defaultCacheRoot(
+    package static func defaultCacheRoot(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> URL {
@@ -556,19 +568,19 @@ struct HFModelDownloader: ModelPreparing {
             .appendingPathComponent("hub", isDirectory: true)
     }
 
-    static func repositoryInfoURL(repoID: String, revision: String?) -> URL {
+    package static func repositoryInfoURL(repoID: String, revision: String?) -> URL {
         // blobs=true adds exact per-file byte sizes to the sibling list, so
         // the aggregate download total is known before any transfer starts.
         URL(string: "https://huggingface.co/api/models/\(repoID)/revision/\(revision ?? "main")?blobs=true")!
     }
 
-    static func fileURL(repoID: String, revision: String, fileName: String) -> URL {
+    package static func fileURL(repoID: String, revision: String, fileName: String) -> URL {
         URL(string: "\(fileURLPrefix(repoID: repoID))\(revision)/\(fileName)")!
     }
 
     /// Every file URL of a repo shares this prefix, whatever revision it is
     /// pinned to — the key space `discardPartialDownloads` sweeps.
-    static func fileURLPrefix(repoID: String) -> String {
+    package static func fileURLPrefix(repoID: String) -> String {
         "https://huggingface.co/\(repoID)/resolve/"
     }
 
