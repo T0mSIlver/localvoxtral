@@ -1,10 +1,13 @@
+#if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+#endif
 import Foundation
 import Synchronization
 import XCTest
-@testable import localvoxtral
-
-#if canImport(Darwin)
+@testable import localvoxtralCore
+import localvoxtralTestSupport
 
 /// One real AF_UNIX connection per fixture, matching herdr's protocol rather
 /// than hiding framing or lifecycle behavior behind a mock transport.
@@ -34,11 +37,11 @@ private final class HerdrOneShotServer: @unchecked Sendable {
             attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
         )
 
-        let listener = socket(AF_UNIX, SOCK_STREAM, 0)
+        let listener = socket(AF_UNIX, POSIXSocket.stream, 0)
         guard listener >= 0 else { throw POSIXError(.ENFILE) }
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
-        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        POSIXSocket.setLength(of: &address)
         let bytes = Array(createdSocketPath.utf8)
         withUnsafeMutableBytes(of: &address.sun_path) { raw in
             raw.copyBytes(from: bytes)
@@ -46,7 +49,7 @@ private final class HerdrOneShotServer: @unchecked Sendable {
         }
         let bound = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
         guard bound == 0, listen(listener, 1) == 0 else {
@@ -66,7 +69,7 @@ private final class HerdrOneShotServer: @unchecked Sendable {
     func stop() {
         state.withLock { state in
             if state.listenerFD >= 0 {
-                shutdown(state.listenerFD, SHUT_RDWR)
+                shutdown(state.listenerFD, Int32(SHUT_RDWR))
             }
         }
         wakeBlockedUnixListener(atPath: socketPath)
@@ -91,16 +94,12 @@ private final class HerdrOneShotServer: @unchecked Sendable {
         let client = accept(listener, nil, nil)
         guard client >= 0 else { return }
         defer { close(client) }
-        var noSigPipe: Int32 = 1
-        _ = setsockopt(
-            client, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe,
-            socklen_t(MemoryLayout<Int32>.size)
-        )
+        POSIXSocket.suppressSIGPIPE(onSocket: client)
 
         var line = Data()
         var chunk = [UInt8](repeating: 0, count: 4096)
         while line.count <= 64 * 1024 {
-            let count = Darwin.read(client, &chunk, chunk.count)
+            let count = LibC.read(client, &chunk, chunk.count)
             guard count > 0 else { return }
             line.append(contentsOf: chunk[0..<count])
             if let newline = line.firstIndex(of: 0x0A) {
@@ -115,13 +114,15 @@ private final class HerdrOneShotServer: @unchecked Sendable {
             guard let base = raw.baseAddress else { return }
             var offset = 0
             while offset < raw.count {
-                let count = Darwin.send(client, base.advanced(by: offset), raw.count - offset, 0)
+                let count = LibC.send(
+                    client, base.advanced(by: offset), raw.count - offset, POSIXSocket.sendFlags
+                )
                 if count < 0, errno == EINTR { continue }
                 guard count > 0 else { return }
                 offset += count
             }
         }
-        shutdown(client, SHUT_WR)
+        shutdown(client, Int32(SHUT_WR))
     }
 }
 
@@ -630,4 +631,3 @@ final class HerdrSocketClientTests: XCTestCase {
         XCTAssertFalse(recorded.detail.contains("SECRET"))
     }
 }
-#endif
