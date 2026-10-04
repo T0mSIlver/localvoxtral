@@ -13,6 +13,11 @@ import Synchronization
 /// asks the same before it submits. An `ack` the mod never answers leaves
 /// every unconfirmed append possibly filled, so none of them is typed: they
 /// stay in History (`docs/agent/invariants.md`).
+///
+/// The route is bound to the attach of the mod it opened on. A mod that
+/// reloads attaches again with a fresh stream, whose count says nothing
+/// about what the old one filled: the route never writes to it, and what it
+/// had not confirmed stays in History.
 package final class ClaudeModPromptRoute: AgentPromptRoute {
     package let name = "Claude Code mod"
     /// The mod fills newlines and trailing spaces as text: no key is posted
@@ -20,6 +25,8 @@ package final class ClaudeModPromptRoute: AgentPromptRoute {
     package var takesUnsanitizedText: Bool { true }
     package let sessionID: String
     private let hub: ClaudeModChannelHub
+    /// The attach of the mod whose stream holds this route's appends.
+    private let attachment: UInt64
     private let ackTimeout: Duration
     private let submitTimeout: Duration
     /// Whether a key typed now reaches this session's prompt: asked before
@@ -38,12 +45,14 @@ package final class ClaudeModPromptRoute: AgentPromptRoute {
     package init(
         hub: ClaudeModChannelHub,
         sessionID: String,
+        attachment: UInt64,
         ackTimeout: Duration = .seconds(5),
         submitTimeout: Duration = .seconds(5),
         keysReachThePrompt: @escaping @Sendable () async -> Bool
     ) {
         self.hub = hub
         self.sessionID = sessionID
+        self.attachment = attachment
         self.ackTimeout = ackTimeout
         self.submitTimeout = submitTimeout
         self.keysReachThePrompt = keysReachThePrompt
@@ -58,22 +67,26 @@ package final class ClaudeModPromptRoute: AgentPromptRoute {
         timeout: Duration = .seconds(1),
         keysReachThePrompt: @escaping @Sendable () async -> Bool
     ) async -> ClaudeModPromptRoute? {
-        guard hub.isAttached(sessionID) else { return nil }
-        let exchange = await hub.exchange(.init(kind: .ack, seq: 0), with: sessionID, timeout: timeout)
+        guard let attachment = hub.attachment(of: sessionID) else { return nil }
+        let exchange = await hub.exchange(
+            .init(kind: .ack, seq: 0), with: sessionID, attachment: attachment, timeout: timeout
+        )
         guard let reply = exchange.reply, reply.ok, reply.seq != nil else {
             Log.claudeContext.notice(
                 "Claude Code mod: no append stream (\(exchange.reply?.reason ?? "unanswered", privacy: .public)); live text goes another way"
             )
             return nil
         }
-        return ClaudeModPromptRoute(hub: hub, sessionID: sessionID, keysReachThePrompt: keysReachThePrompt)
+        return ClaudeModPromptRoute(
+            hub: hub, sessionID: sessionID, attachment: attachment, keysReachThePrompt: keysReachThePrompt
+        )
     }
 
     package func deliver(_ call: AgentPromptCall) async -> AgentPromptDelivery {
         switch call {
         case .append(let text):
             let seq = state.withLock { $0.written.count + 1 }
-            guard hub.post(.init(kind: .append, text: text, seq: seq), to: sessionID) else {
+            guard hub.post(.init(kind: .append, text: text, seq: seq), to: sessionID, attachment: attachment) else {
                 Log.backends.notice("Claude Code mod: append \(seq, privacy: .public) not written")
                 return await keysReachThePrompt() ? .typeInstead : .keepInHistory
             }
@@ -85,7 +98,9 @@ package final class ClaudeModPromptRoute: AgentPromptRoute {
                 state.withLock { $0.settled = settlement }
                 return settlement.outcome
             }
-            let exchange = await hub.exchange(.init(kind: .send, text: ""), with: sessionID, timeout: submitTimeout)
+            let exchange = await hub.exchange(
+                .init(kind: .send, text: ""), with: sessionID, attachment: attachment, timeout: submitTimeout
+            )
             let reply = exchange.reply
             if reply?.ok == true, reply?.submitted == true {
                 Log.backends.notice("Claude Code mod: spoken send submitted queued=\(reply?.queued == true, privacy: .public)")
@@ -117,7 +132,9 @@ package final class ClaudeModPromptRoute: AgentPromptRoute {
             return state.written
         }
         guard !written.isEmpty else { return .allLanded }
-        let exchange = await hub.exchange(.init(kind: .ack, seq: written.count), with: sessionID, timeout: ackTimeout)
+        let exchange = await hub.exchange(
+            .init(kind: .ack, seq: written.count), with: sessionID, attachment: attachment, timeout: ackTimeout
+        )
         switch exchange {
         case .replied(let reply) where reply.ok && reply.seq != nil:
             let filled = min(max(0, reply.seq ?? 0), written.count)
@@ -128,7 +145,8 @@ package final class ClaudeModPromptRoute: AgentPromptRoute {
             let rest = Array(written[filled...])
             return AgentPromptSettlement(unlanded: rest, outcome: await keysReachThePrompt() ? .typeInstead : .keepInHistory)
         case .notDelivered:
-            // The channel is gone: the mod may have filled any of them.
+            // The channel is gone, or a reloaded mod holds the session
+            // now: the old one may have filled any of them.
             Log.backends.notice("Claude Code mod: ack not delivered; \(written.count, privacy: .public) appends kept")
             return AgentPromptSettlement(unlanded: written, outcome: .keepInHistory)
         case .replied, .unanswered:

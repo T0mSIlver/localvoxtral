@@ -83,9 +83,9 @@ final class ClaudeModPromptRouteTests: XCTestCase {
     func testAnUnansweredAckKeepsEveryDeltaAndTypesNone() async throws {
         let silent = FakeClaudeMod(acksToAnswer: 0)
         let hub = ClaudeModChannelHub(sleep: Self.timesOutAtOnce)
-        silent.attach(to: hub)
+        let attachment = try XCTUnwrap(silent.attach(to: hub))
         // As if opened while the mod still answered.
-        let route = ClaudeModPromptRoute(hub: hub, sessionID: "s1", keysReachThePrompt: { true })
+        let route = ClaudeModPromptRoute(hub: hub, sessionID: "s1", attachment: attachment, keysReachThePrompt: { true })
         var kept: [String] = []
         let sink = sink(route, typed: { _ in XCTFail("nothing typed") }, kept: { kept.append($0) })
 
@@ -115,6 +115,34 @@ final class ClaudeModPromptRouteTests: XCTestCase {
 
         XCTAssertEqual(kept, ["run ", "the tests"])
         XCTAssertFalse(sink.isHealthy)
+    }
+
+    /// The mod reloaded between the deltas and the stop and attached again
+    /// under the same session: its new stream counts from zero, which says
+    /// nothing about what the old one filled. Nothing is typed twice; every
+    /// unconfirmed delta stays in History.
+    func testAModThatReattachedMidDictationKeepsEveryUnconfirmedDelta() async throws {
+        let mod = FakeClaudeMod()
+        let hub = ClaudeModChannelHub(sleep: Self.neverTimesOut)
+        let token = try XCTUnwrap(mod.attach(to: hub))
+        let opened = await ClaudeModPromptRoute.opened(hub: hub, sessionID: "s1", keysReachThePrompt: { true })
+        let route = try XCTUnwrap(opened)
+        var kept: [String] = []
+        let sink = sink(route, typed: { _ in XCTFail("nothing typed") }, kept: { kept.append($0) })
+
+        sink.append("run ")
+        sink.append("the ")
+        await sink.waitUntilIdle()
+        hub.detach(sessionID: "s1", token: token)
+        let reloaded = FakeClaudeMod()
+        reloaded.attach(to: hub)
+        sink.append("tests")
+        sink.finish()
+        await sink.waitUntilIdle()
+
+        XCTAssertEqual(mod.box, "run the ")
+        XCTAssertEqual(kept, ["run ", "the ", "tests"])
+        XCTAssertEqual(reloaded.kinds, [], "the new channel is never asked about the old stream")
     }
 
     func testAModOlderThanAppendOpensNoRoute() async {

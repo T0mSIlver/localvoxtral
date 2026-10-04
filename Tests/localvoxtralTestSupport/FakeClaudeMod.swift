@@ -35,8 +35,10 @@ package final class FakeClaudeMod: Sendable {
     package var kinds: [ClaudeModChannelWire.Kind] { state.withLock { $0.kinds } }
     package var submitted: [String] { state.withLock { $0.submitted } }
 
-    package func attach(to hub: ClaudeModChannelHub, sessionID: String = "s1") {
-        _ = hub.attach(sessionID: sessionID, channel: .init(
+    /// Returns the token `detach` takes, as the broker holds it.
+    @discardableResult
+    package func attach(to hub: ClaudeModChannelHub, sessionID: String = "s1") -> UInt64? {
+        hub.attach(sessionID: sessionID, channel: .init(
             write: { [self] line in
                 guard let message = ClaudeModChannelWire.decode(
                     ClaudeModChannelWire.Message.self, from: line.dropLast()
