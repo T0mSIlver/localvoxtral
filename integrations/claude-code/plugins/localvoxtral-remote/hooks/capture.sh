@@ -225,6 +225,13 @@ if ORIGIN="$(git remote get-url origin 2>/dev/null)"; then
   REPO="$(github_repo "$ORIGIN")"
   [ -n "$REPO" ] || REPO="-"
 fi
+# The repository the issue lists come from: the Mac links a draft only to an
+# issue of the repository its capture files in (#1682). gh's own pick is
+# unnamed, so its issues link nothing.
+case "$REPO" in
+"" | - | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_./-]*) ;;
+*) echo "X-Lvx-Issues-Repository: $REPO" >>"$WORK/header" || exit 0 ;;
+esac
 
 # bounded <seconds> <out-file> <command...>: runs the command into the file
 # under the watchdog; an error, a timeout or no output leaves the file empty.

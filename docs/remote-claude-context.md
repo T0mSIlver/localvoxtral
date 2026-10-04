@@ -668,6 +668,10 @@ It then runs the Mac's drafting command in the project:
 Both get 20 turns and a 6-minute watchdog (4 minutes before 1.24.0 and 1.9.0).
 From localvoxtral-remote 1.37.0 and Vibe hooks 1.18.0, the prompt goes to the
 agent on stdin, since other users on the host can read a command line from `ps`.
+From localvoxtral-remote 1.39.0 and Vibe hooks 1.19.0, the shim names the
+repository it listed open issues in (origin's). The Mac quotes and links those
+issues only when that is the repository the capture files in: a fork's #7 is not
+upstream's #7, and an older shim's issues link nothing.
 The run posts the output, at most 60 KiB, to the listener with how the run
 ended. A Vibe run (hooks 1.4.0) adds its token counts in a header; Claude
 Code's output already carries its usage.
