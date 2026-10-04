@@ -560,7 +560,7 @@ final class AddressedSendWiringTests: XCTestCase {
         await store.pendingWrites?.value
 
         XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false], "the quit lost the dictation")
-        XCTAssertEqual(harness.records.value.map(\.rawText), ["Run the tests, send that to payments."])
+        XCTAssertEqual(harness.records.value.map(\.rawText), ["Run the tests"], "the phrase cut, as a sent record")
 
         release.signal()
         await commit?.value
