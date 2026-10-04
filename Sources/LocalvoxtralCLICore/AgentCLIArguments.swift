@@ -62,6 +62,7 @@ public struct AgentCLIArguments: Sendable {
           capture filed <capture> <issue-url>
                                   after you opened the issue with gh, mark the
                                   capture filed. The command never files anything
+          capture open <capture>  show the capture in localvoxtral's Inbox
           status                  whether the app runs, its engines, the last join
           doctor                  checks the app, permissions, engines, agent hooks,
                                   remote hosts and the last joins, with a fix for
@@ -145,6 +146,7 @@ public struct AgentCLIArguments: Sendable {
             case ("capture", "list"): command = .captureList
             case ("capture", "show"): command = .captureShow
             case ("capture", "filed"): command = .captureFiled
+            case ("capture", "open"): command = .captureOpen
             default: return .usageError("unknown command: \(group) \(verb)")
             }
         default:
@@ -156,7 +158,7 @@ public struct AgentCLIArguments: Sendable {
         case .historySearch: allowed = ["--project", "--since", "--limit"]
         case .captureList: allowed = ["--project", "--since"]
         case .captureFiled: allowed = ["--agent"]
-        case .captureShow: allowed = []
+        case .captureShow, .captureOpen: allowed = []
         case .termsList: allowed = ["--project"]
         case .termsPropose: allowed = ["--project", "--agent"]
         case .historyLast, .status, .doctor: allowed = []
@@ -179,9 +181,11 @@ public struct AgentCLIArguments: Sendable {
                 return .usageError("--agent must be claude, codex, opencode or vibe")
             }
             request.caller = caller
-        case .captureShow:
+        case .captureShow, .captureOpen:
             // Unquoted words are one title.
-            guard !operands.isEmpty else { return .usageError("capture show needs a capture: its title or id") }
+            guard !operands.isEmpty else {
+                return .usageError("\(command == .captureShow ? "capture show" : "capture open") needs a capture: its title or id")
+            }
             request.capture = operands.joined(separator: " ")
             operands = []
         case .captureFiled:

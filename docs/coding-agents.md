@@ -367,6 +367,7 @@ localvoxtral terms propose Featherline QuillDoc --project .
 localvoxtral capture list --project .
 localvoxtral capture show "busy herdr pane"
 localvoxtral capture filed "busy herdr pane" https://github.com/you/app/issues/42
+localvoxtral capture open "busy herdr pane"
 localvoxtral status
 localvoxtral doctor
 localvoxtral logs --join --since 3h
@@ -401,6 +402,8 @@ instead of searching GitHub.
   filed on the Inbox page, as after **File**. The URL must be an issue in
   the capture's repository, and a capture that is still drafting or already
   filed is refused.
+- `capture open` brings the Inbox page forward on the capture, for you to
+  edit or file it there.
 
 ### Find out what is wrong
 

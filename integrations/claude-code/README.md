@@ -435,6 +435,13 @@ session shows it above its prompt: **Listening** and the words so far, then
 wherever the session is drawn, a terminal, the Claude Desktop Code tab or the
 Claude app on a phone.
 
+`/inbox` opens a pane listing this project's quick captures, newest first,
+each with **Open in localvoxtral**, which brings the app's Inbox forward on
+that capture. Editing and filing stay in the app, and the captures' words
+stay in the pane: none reaches the session's prompt. The pane needs the
+`localvoxtral` command (see `docs/coding-agents.md`) or the app in
+/Applications.
+
 While the mod is connected, the app keeps the session joinable however long
 it sits idle, and drops it the moment the session ends or `/clear` starts a
 new one.

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Band } from '../types'
+import type { Band, InboxView } from '../types'
 import {
   BAND_STALE_MS,
   bandOf,
@@ -22,6 +22,7 @@ import {
   SUBMIT_ANSWER_MS,
   WIRE_VERSION,
 } from './channel'
+import { detailOf, INBOX_PANE, inboxOf } from './inbox'
 
 // The connection indicator the publisher draws for the settings status line
 // (../../../README.md, "Connection indicator"), pinned as this plugin's own
@@ -47,6 +48,25 @@ async function findPublisher($: EngineInterface, configured: string): Promise<st
     configured,
     '/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook',
     `${home}/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook`,
+  ]
+  for (const path of candidates) {
+    if (path !== '' && (await $.fs.exists(path))) return path
+  }
+  return undefined
+}
+
+/** The `localvoxtral` command: the app's own copy beside the publisher first. */
+async function findCLI($: EngineInterface, configuredPublisher: string): Promise<string | undefined> {
+  const home = (await $.env.get('HOME')) ?? ''
+  const bundled = 'localvoxtral.app/Contents/MacOS/localvoxtral-cli'
+  const candidates = [
+    (await $.env.get('LOCALVOXTRAL_CLI_BIN')) ?? '',
+    configuredPublisher.endsWith('/localvoxtral-claude-hook')
+      ? configuredPublisher.replace(/localvoxtral-claude-hook$/, 'localvoxtral-cli')
+      : '',
+    `/Applications/${bundled}`,
+    `${home}/Applications/${bundled}`,
+    '/usr/local/bin/localvoxtral',
   ]
   for (const path of candidates) {
     if (path !== '' && (await $.fs.exists(path))) return path
@@ -298,7 +318,77 @@ let channelPublisher: string | undefined
 // Not gated on `isInteractive`, which is false for an SDK host and may be
 // for a Claude Desktop session, where the indicator and the channel matter
 // most.
+const inbox = atom({ plugin: 'localvoxtral-mod', key: 'inbox' } as const, { status: 'loading' })
+
+/**
+ * Reads this project's captures into the Inbox pane. Their words stay in the
+ * pane: none reaches the session's prompt or its model.
+ */
+async function loadInbox($: EngineInterface, cli: string | undefined): Promise<void> {
+  let view: InboxView
+  if (cli === undefined) {
+    view = { status: 'failed', reason: 'The localvoxtral command is not installed here.' }
+  } else {
+    try {
+      const run = await $.process.run([cli, 'capture', 'list', '--project', await $.session.cwd(), '--json'], {
+        timeoutMs: 5000,
+      })
+      view = inboxOf(run, await $.clock.now())
+    } catch {
+      view = { status: 'failed', reason: 'localvoxtral could not list the Inbox.' }
+    }
+  }
+  await update($, inbox, () => view)
+}
+
+/** Brings the app's Inbox forward on the capture; filing happens there. */
+async function openCapture($: EngineInterface, cli: string | undefined, id: string): Promise<void> {
+  try {
+    if (cli !== undefined) {
+      const { exitCode } = await $.process.run([cli, 'capture', 'open', id, '--json'], { timeoutMs: 5000 })
+      if (exitCode === 0) return
+    }
+  } catch {
+    // Said below.
+  }
+  $.ui.toast('localvoxtral could not open that capture.')
+}
+
 export const register: Register = (on, options) => {
+  on('command.run', { command: 'inbox' }, async $ => {
+    await update($, inbox, () => ({ status: 'loading' }) as const)
+    await $.ui.open({ id: INBOX_PANE, title: 'Inbox' })
+    await loadInbox($, await findCLI($, String(options.publisher_path ?? '')))
+    return { text: 'Opened the Inbox pane.' }
+  })
+
+  on('ui.render', { component: 'Pane', requestId: INBOX_PANE }, async ($, e) => {
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const view = await read($, inbox)
+    if (view.status === 'loading') return <Text dimColor>Reading the Inbox…</Text>
+    if (view.status === 'failed') return <Text dimColor>{view.reason}</Text>
+    if (view.captures.length === 0) return <Text dimColor>No captures for this project.</Text>
+    const cli = await findCLI($, String(options.publisher_path ?? ''))
+    return (
+      <Box flexDirection="column">
+        {view.captures.map(capture => (
+          <Box key={capture.id} flexDirection="column" marginBottom={1}>
+            <Text>{capture.title}</Text>
+            <Box>
+              <Text dimColor>{detailOf(capture, view.at)} </Text>
+              <Button
+                key={`open-${capture.id}`}
+                label="Open in localvoxtral"
+                dimColor
+                onPress={() => openCapture($, cli, capture.id)}
+              />
+            </Box>
+          </Box>
+        ))}
+      </Box>
+    )
+  })
+
   on('turn.start', async ($, e, next) => {
     runningTurn = e.turnId
     return next(e)
@@ -350,6 +440,11 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
+    try {
+      await $.command.register({ name: 'inbox', description: "Show this project's localvoxtral captures" })
+    } catch {
+      // A host with no slash commands still gets the indicator and the channel.
+    }
     const publisher = await findPublisher($, String(options.publisher_path ?? ''))
     if (publisher === undefined) return started
     channelPublisher = publisher
