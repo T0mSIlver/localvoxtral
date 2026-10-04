@@ -14,6 +14,11 @@ import { hmacHex } from './hmac'
 
 export const POLL_PATH = '/v1/mod/poll'
 export const REPLY_PATH = '/v1/mod/reply'
+/** A remote session's Inbox: its project's titles, and an open by id. */
+export const INBOX_PATH = '/v1/mod/inbox'
+export const INBOX_OPEN_PATH = '/v1/mod/inbox/open'
+// The app answers an Inbox ask within 5 s.
+export const ASK_ABANDON_MS = 8000
 export const PROOF_HEADER = 'X-Lvx-Mod-Proof'
 
 /** The app holds a poll this long when it has nothing to send. */
@@ -75,6 +80,8 @@ export type PollRequest = {
   /** The last line of that attach delivered; the app drops it and those before. */
   acked: number
 }
+
+export type InboxRequest = { mod_inbox: number; session_id: string; nonce: string; id?: string }
 
 /**
  * One poll's answer: the attach it belongs to, the number of its first line,

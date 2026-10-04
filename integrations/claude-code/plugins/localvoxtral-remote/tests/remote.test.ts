@@ -14,6 +14,29 @@ const OPTIONS = { token: TOKEN, port: '29891', channel_key: KEY }
 const STARTED = { surface: 'terminal', isInteractive: true, cwd: '/work' } as const
 const POLL = 'http://127.0.0.1:29891/v1/mod/poll'
 const REPLY = 'http://127.0.0.1:29891/v1/mod/reply'
+const INBOX = 'http://127.0.0.1:29891/v1/mod/inbox'
+const INBOX_OPEN = 'http://127.0.0.1:29891/v1/mod/inbox/open'
+const NOW = Date.parse('2026-10-04T12:00:00Z')
+const CAPTURE = '3f9c2a1b-0000-4000-8000-000000000001'
+// The app's answer, as RemoteInboxRoute writes it: no words, no note.
+const LISTED = JSON.stringify({
+  ok: true,
+  captures: {
+    inboxAvailable: true,
+    captures: [
+      { id: CAPTURE, title: 'Italic kerning', kind: 'issue', state: 'ready', capturedAt: '2026-10-04T10:00:00Z' },
+      { id: '81d04e77-0000-4000-8000-000000000002', title: '', state: 'drafting', capturedAt: '2026-10-04T11:00:00Z' },
+    ],
+  },
+})
+const PANE = {
+  title: 'Inbox',
+  isFocused: false,
+  bodyColumns: 40,
+  placement: 'inline',
+  scroll: { top: 0, height: 0 },
+  view: {},
+} as unknown as RenderPropsOf['Pane']
 
 type Poll = { session_id: string; instance: string; nonce: string; challenge: string; attach: number; acked: number }
 const PROPS = {
@@ -234,5 +257,71 @@ describe('remote channel', () => {
     expect(app.refusals).toEqual([])
     expect(app.replies).toEqual([{ mod_bye: 1, session_id: 'sess-1' }])
     expect(app.polls.map(poll => poll.session_id)).toEqual(['sess-1', 'sess-2'])
+  })
+
+  test('/inbox lists the session project from the app, signed, and opens a capture by id', { options: OPTIONS }, async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    mock.env(on, { HOME: '/home/tom' })
+    const asks: { url: string; body: Record<string, unknown>; proven: boolean }[] = []
+    const toasts: string[] = []
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('session.id', () => ({ value: 'sess-1' }))
+    on('command.register', ($, e) => ({ value: { command: e.name } }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('ui.toast', ($, e) => {
+      toasts.push(e.text)
+      return { value: undefined }
+    })
+    on('ui.render', ($, e) => $.ui.resolve(e).Box({}))
+    on('http.fetch', async ($, e) => {
+      if (e.url === POLL) {
+        await clock.sleep(600000)
+        return { value: { status: 200, ok: true, headers: {}, text: '' } }
+      }
+      const body = e.init?.body ?? ''
+      const asked = JSON.parse(body) as Record<string, unknown>
+      asks.push({ url: e.url, body: asked, proven: e.init?.headers?.['X-Lvx-Mod-Proof'] === requestProof(KEY, body) })
+      const text = e.url === INBOX ? LISTED : ''
+      const proof = answerProof(KEY, String(asked.nonce), text)
+      return { value: { status: 200, ok: true, headers: { 'x-lvx-mod-proof': proof }, text } }
+    })
+
+    await $.session.start(STARTED)
+    const ran = await $.command.run({ command: 'inbox' })
+    expect(ran.text).toBe('Opened the Inbox pane.')
+    const ui = await $.ui.mount({ plugin: 'localvoxtral-remote', surface: 'desktop', component: 'Pane', props: PANE, requestId: 'localvoxtral-inbox' })
+    expect(await ui.find({ type: 'Text', text: 'Italic kerning' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Untitled capture' })).toBeDefined()
+    await ui.press({ key: `open-${CAPTURE}` })
+    await ui.unmount()
+
+    expect(toasts).toEqual([])
+    expect(asks.map(ask => [ask.url, ask.proven, ask.body.session_id, ask.body.id])).toEqual([
+      [INBOX, true, 'sess-1', undefined],
+      [INBOX_OPEN, true, 'sess-1', CAPTURE],
+    ])
+  })
+
+  test('/inbox shows nothing an answer without the key proof carries', { options: OPTIONS }, async ($, on) => {
+    mock.clock(on, { now: NOW })
+    mock.env(on, { HOME: '/home/tom' })
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('session.id', () => ({ value: 'sess-1' }))
+    on('command.register', ($, e) => ({ value: { command: e.name } }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('ui.render', ($, e) => $.ui.resolve(e).Box({}))
+    on('http.fetch', async ($, e) => {
+      const asked = JSON.parse(e.init?.body ?? '{}') as Record<string, unknown>
+      const text = e.url === INBOX ? LISTED : ''
+      const proof = answerProof('b'.repeat(64), String(asked.nonce), text)
+      return { value: { status: 200, ok: true, headers: { 'x-lvx-mod-proof': proof }, text } }
+    })
+
+    await $.session.start(STARTED)
+    await $.command.run({ command: 'inbox' })
+    const ui = await $.ui.mount({ plugin: 'localvoxtral-remote', surface: 'terminal', component: 'Pane', props: PANE, requestId: 'localvoxtral-inbox' })
+    expect(await ui.find({ type: 'Text', text: 'localvoxtral could not list the Inbox.' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Italic kerning' })).toBeUndefined()
+    await ui.unmount()
   })
 })

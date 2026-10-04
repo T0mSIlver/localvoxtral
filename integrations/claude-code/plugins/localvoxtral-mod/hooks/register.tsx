@@ -33,6 +33,10 @@ import {
   hookOKAt,
   isChannelKey,
   isToken,
+  ASK_ABANDON_MS,
+  INBOX_OPEN_PATH,
+  INBOX_PATH,
+  type InboxRequest,
   parsePollAnswer,
   POLL_ABANDON_MS,
   POLL_PATH,
@@ -583,10 +587,60 @@ async function loadInbox($: EngineInterface, cli: string | undefined): Promise<v
   await update($, inbox, () => view)
 }
 
+/**
+ * One Inbox ask through a remote host's forward (#1412), signed like a poll:
+ * the status and body of an answer that carries the key's proof, `old` for
+ * an app without the route, or undefined.
+ */
+async function askApp(
+  $: EngineInterface,
+  link: RemoteLink,
+  path: string,
+  id?: string,
+): Promise<{ status: number; text: string } | 'old' | undefined> {
+  try {
+    const nonce = randomHex(16)
+    const request: InboxRequest = { mod_inbox: WIRE_VERSION, session_id: await $.session.id(), nonce }
+    if (id !== undefined) request.id = id
+    const body = JSON.stringify(request)
+    const asked = $.http.fetch(`http://127.0.0.1:${link.port}${path}`, {
+      method: 'POST',
+      headers: remoteHeaders(link, body),
+      body,
+    })
+    asked.catch(() => {})
+    const answered = await Promise.race([asked, $.clock.sleep(ASK_ABANDON_MS).then(() => undefined)])
+    if (answered === undefined) return undefined
+    const proof = answered.headers[PROOF_HEADER.toLowerCase()] ?? ''
+    if (sameHex(proof, answerProof(link.key, nonce, answered.text))) return { status: answered.status, text: answered.text }
+    // Unsigned, so it says nothing the pane acts on beyond this line.
+    return answered.status === 404 ? 'old' : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Reads this session's project's captures from the app through the forward:
+ * ids, titles, kinds, states and dates; their words stay on the Mac.
+ */
+async function loadRemoteInbox($: EngineInterface, link: RemoteLink): Promise<void> {
+  const result = await askApp($, link, INBOX_PATH)
+  let view: InboxView
+  if (result === 'old') view = { status: 'failed', reason: 'Update localvoxtral on your Mac to see its Inbox here.' }
+  else if (result?.status === 200) view = inboxOf({ exitCode: 0, stdout: result.text }, await $.clock.now())
+  else if (result?.status === 409) view = { status: 'failed', reason: 'localvoxtral has not seen this session yet.' }
+  else view = { status: 'failed', reason: 'localvoxtral could not list the Inbox.' }
+  await update($, inbox, () => view)
+}
+
 /** Brings the app's Inbox forward on the capture; filing happens there. */
 async function openCapture($: EngineInterface, cli: string | undefined, id: string): Promise<void> {
   try {
-    if (cli !== undefined) {
+    if (channelLink?.kind === 'remote') {
+      const result = await askApp($, channelLink, INBOX_OPEN_PATH, id)
+      if (typeof result === 'object' && result.status === 200) return
+    } else if (cli !== undefined) {
       const { exitCode } = await $.process.run([cli, 'capture', 'open', id, '--json'], { timeoutMs: 5000 })
       if (exitCode === 0) return
     }
@@ -596,11 +650,20 @@ async function openCapture($: EngineInterface, cli: string | undefined, id: stri
   $.ui.toast('localvoxtral could not open that capture.')
 }
 
+async function registerInbox($: EngineInterface): Promise<void> {
+  try {
+    await $.command.register({ name: 'inbox', description: "Show this project's localvoxtral captures" })
+  } catch {
+    // A host with no slash commands still gets the indicator and the channel.
+  }
+}
+
 export const register: Register = (on, options) => {
   on('command.run', { command: 'inbox' }, async $ => {
     await update($, inbox, () => ({ status: 'loading' }) as const)
     await $.ui.open({ id: INBOX_PANE, title: 'Inbox' })
-    await loadInbox($, await findCLI($, String(options.publisher_path ?? '')))
+    if (channelLink?.kind === 'remote') await loadRemoteInbox($, channelLink)
+    else await loadInbox($, await findCLI($, String(options.publisher_path ?? '')))
     return { text: 'Opened the Inbox pane.' }
   })
 
@@ -610,12 +673,12 @@ export const register: Register = (on, options) => {
     if (view.status === 'loading') return <Text dimColor>Reading the Inbox…</Text>
     if (view.status === 'failed') return <Text dimColor>{view.reason}</Text>
     if (view.captures.length === 0) return <Text dimColor>No captures for this project.</Text>
-    const cli = await findCLI($, String(options.publisher_path ?? ''))
+    const cli = channelLink?.kind === 'remote' ? undefined : await findCLI($, String(options.publisher_path ?? ''))
     return (
       <Box flexDirection="column">
         {view.captures.map(capture => (
           <Box key={capture.id} flexDirection="column" marginBottom={1}>
-            <Text>{capture.title}</Text>
+            <Text>{capture.title === '' ? 'Untitled capture' : capture.title}</Text>
             <Box>
               <Text dimColor>{detailOf(capture, view.at)} </Text>
               <Button
@@ -683,19 +746,17 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     if ('token' in options) {
-      // The remote plugin's copy (#1412): the channel over the forward, and
-      // no indicator or Inbox, which need the app's binaries on this machine.
+      // The remote plugin's copy (#1412): the channel and the Inbox over the
+      // forward, and no indicator, which needs the app's binaries on this
+      // machine.
       const remote = remoteLinkOf(options)
       if (remote === undefined) return started
       channelLink = remote
+      await registerInbox($)
       runRemoteChannel($, remote).catch(() => {})
       return started
     }
-    try {
-      await $.command.register({ name: 'inbox', description: "Show this project's localvoxtral captures" })
-    } catch {
-      // A host with no slash commands still gets the indicator and the channel.
-    }
+    await registerInbox($)
     const publisher = await findPublisher($, String(options.publisher_path ?? ''))
     if (publisher === undefined) return started
     const link = { kind: 'publisher', publisher } as const

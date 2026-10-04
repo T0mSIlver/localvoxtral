@@ -1173,7 +1173,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 },
                 // Remote sessions' mods poll through the same hub the local
                 // broker hands attaches to (#1412).
-                modChannels: ClaudeRemoteModChannels(hub: claudeModChannels, registry: claudeSessionRegistry)
+                modChannels: ClaudeRemoteModChannels(hub: claudeModChannels, registry: claudeSessionRegistry),
+                inbox: RemoteInboxRoute(
+                    registry: claudeSessionRegistry,
+                    captures: { @MainActor [weak viewModel] in viewModel?.quickCapture?.model.items },
+                    open: { @MainActor [weak viewModel, claudeSessionRegistry] id in
+                        guard let viewModel else { return nil }
+                        return await AgentCLIAppDataSource(viewModel: viewModel, sessions: claudeSessionRegistry)
+                            .openCapture(id)
+                    }
+                )
             )
         }
         claudeRemoteListenerCoordinator = coordinator

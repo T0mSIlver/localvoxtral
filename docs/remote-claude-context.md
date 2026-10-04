@@ -512,6 +512,13 @@ mods from 1.42.0 on, so a host on 1.41.0 needs **Update host…** too.
 When the tunnel or the app is down, the mod waits five minutes between tries,
 as the hook script does, and tries again sooner once a hook gets through.
 
+From 1.42.0 `/inbox` works in a session on the host too. The pane lists the
+captures of the project that session is in, with each one's title, kind,
+state and age, the way it does on your Mac. The app sends the host those
+fields and nothing else: a capture's words and its note stay on your Mac, and
+a capture not drafted yet shows as "Untitled capture". **Open in localvoxtral**
+brings the Inbox forward on your Mac.
+
 ### Mistral Vibe on an enrolled host
 
 An enrolled host can report its Mistral Vibe sessions too, over the same
