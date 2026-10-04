@@ -156,10 +156,18 @@ struct LLMPolishingService: LLMPolishingServicing {
     /// backend; only Mistral's are priced. Nil records nothing.
     var usageRecorder: (any UsageRecording)?
     let session: URLSession
+    /// Times the request's whole budget (#1688). Injected so tests run it
+    /// on a manual clock.
+    let sleep: @Sendable (Duration) async -> Void
 
-    init(usageRecorder: (any UsageRecording)? = nil, session: URLSession = SameOriginHTTP.shared) {
+    init(
+        usageRecorder: (any UsageRecording)? = nil,
+        session: URLSession = SameOriginHTTP.shared,
+        sleep: @escaping @Sendable (Duration) async -> Void = SessionClock.live.sleep
+    ) {
         self.usageRecorder = usageRecorder
         self.session = session
+        self.sleep = sleep
     }
 
     /// One rule for every backend. The timeout is only the client's cap: a
@@ -203,7 +211,19 @@ struct LLMPolishingService: LLMPolishingServicing {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: urlRequest)
+            let session = session
+            (data, response) = try await PolishRequestTimeout.enforcing(
+                seconds: urlRequest.timeoutInterval, sleep: sleep
+            ) {
+                try await session.data(for: urlRequest)
+            }
+        } catch let deadline as PolishDeadlinePassed {
+            // Sent and still answering: it may be billed.
+            Log.backends.error(
+                "Polish: no complete answer from \(urlRequest.url?.host ?? "-", privacy: .public) within its \(Int(deadline.seconds), privacy: .public) s budget; cancelled"
+            )
+            recordUsage(request: request, configuration: configuration, usage: nil)
+            throw LLMPolishingError.timedOut(afterSeconds: deadline.seconds)
         } catch {
             let polishingError = Self.polishingError(
                 forTransportError: error,

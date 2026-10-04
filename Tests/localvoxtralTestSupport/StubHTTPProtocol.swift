@@ -12,6 +12,9 @@ package class StubHTTPProtocol: URLProtocol, @unchecked Sendable {
     package enum Reply: Sendable {
         case http(Int, String)
         case failure(URLError)
+        /// A 200 whose body starts and never finishes: a server that keeps
+        /// the connection alive without answering.
+        case stalls
     }
 
     package static let host = "usage-stub.invalid"
@@ -41,6 +44,12 @@ package class StubHTTPProtocol: URLProtocol, @unchecked Sendable {
             client?.urlProtocolDidFinishLoading(self)
         case .failure(let error):
             client?.urlProtocol(self, didFailWithError: error)
+        case .stalls:
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"])!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data("{".utf8))
         }
     }
 
