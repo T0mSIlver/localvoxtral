@@ -23,6 +23,14 @@ extension DictationSessionController {
               !(settings.dictationHistoryRetention.savesDictations && sessionStore != nil)
         else { return status }
         Log.dictation.notice("text not inserted and History is off; text copied")
+        return copyUntypedText(text)
+    }
+
+    /// Puts `text`, typed nowhere, on the clipboard whether or not History
+    /// keeps it too.
+    ///
+    /// - Returns: the popover's sentence for a copy.
+    func copyUntypedText(_ text: String) -> String {
         // A Cmd+V paste may still read the clipboard (#1467). The relay
         // keeps the whole text each time, so a later write may replace a
         // held one.
