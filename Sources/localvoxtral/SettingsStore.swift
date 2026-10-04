@@ -57,6 +57,7 @@ final class SettingsStore {
         static let overlaySpokenSendEnabled = "settings.overlay_spoken_send_enabled"
         static let liveSpokenSendEnabled = "settings.live_spoken_send_enabled"
         static let spokenSendTriggerPhrases = "settings.spoken_send_trigger_phrases"
+        static let spokenAbortPhrases = "settings.spoken_abort_phrases"
         static let spokenStopWait = "settings.spoken_stop_wait_ms"
         static let audioDuckingEnabled = "settings.audio_ducking_enabled"
         static let audioDuckingFadeDuration = "settings.audio_ducking_fade_duration"
@@ -355,6 +356,13 @@ final class SettingsStore {
     /// loads as the default.
     var spokenSendTriggerPhrases: [String] {
         didSet { defaults.set(spokenSendTriggerPhrases, forKey: Keys.spokenSendTriggerPhrases) }
+    }
+
+    /// The phrases that, said alone, end the joined Claude Code session's
+    /// running turn (#1696). Empty, and so off, unless the user set some;
+    /// only a list `SpokenAbortPhrases` accepted is ever assigned.
+    var spokenAbortPhrases: [String] {
+        didSet { defaults.set(spokenAbortPhrases, forKey: Keys.spokenAbortPhrases) }
     }
 
     /// How long an Overlay Buffer dictation that ends in a send phrase waits
@@ -1186,6 +1194,8 @@ final class SettingsStore {
             defaults: defaults, key: Keys.liveSpokenSendEnabled, fallback: false)
         spokenSendTriggerPhrases = SendTriggerPhrases.loaded(
             defaults.stringArray(forKey: Keys.spokenSendTriggerPhrases))
+        spokenAbortPhrases = SpokenAbortPhrases.loaded(
+            defaults.stringArray(forKey: Keys.spokenAbortPhrases), sendPhrases: spokenSendTriggerPhrases)
         spokenStopWait =
             (defaults.object(forKey: Keys.spokenStopWait) as? Int)
             .flatMap(SpokenStopWait.init(rawValue:)) ?? .default

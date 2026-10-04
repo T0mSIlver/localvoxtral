@@ -104,6 +104,10 @@ public enum ClaudeModChannelWire {
         /// app asks it at the dictation's start (a mod older than `append`
         /// answers `unknown_kind`) and at its stop.
         case ack
+        /// A spoken stop phrase (#1696): end the session's running main-loop
+        /// turn (`$.turn.abort`), with no key. `ok` once it is ended; with
+        /// no turn running, `ok: false` with `noTurnReason`.
+        case abort
     }
 
     /// What a `state` message says the dictation is doing.
@@ -216,6 +220,8 @@ public enum ClaudeModChannelWire {
         /// went on under another session (`/clear`, a resume) before the
         /// app closed this session's channel.
         public static let sessionChangedReason = "session_changed"
+        /// The refusal of an `abort` while no turn runs.
+        public static let noTurnReason = "no_turn"
 
         public init(
             sessionID: String,

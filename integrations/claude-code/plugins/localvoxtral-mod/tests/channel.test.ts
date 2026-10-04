@@ -6,6 +6,7 @@ import { DRAFT_AFTER_CURSOR, DRAFT_BEFORE_CURSOR, draftOf, parseMessage } from '
 const PUBLISHER = '/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook'
 const STARTED = { surface: 'terminal', isInteractive: true, cwd: '/work' } as const
 const EXITED: ProcessSpawnResult = { code: 0, signal: null }
+const COMPLETED_T1 = { answer: 'done', durationMs: 10, isAborted: false, turnId: 't1', reason: 'answer' } as const
 
 describe('channel', () => {
   test('answers each message the app sends with a reply for this session', async ($, on) => {
@@ -201,6 +202,83 @@ describe('channel', () => {
       expect(submits).toEqual(c.submits)
     })
   }
+
+  for (const [label, turnRunning, expected, aborted] of [
+    ['a running turn is ended by its id', true, { ok: true }, ['t1']],
+    ['with no turn running it answers no_turn and ends nothing', false, { ok: false, reason: 'no_turn' }, []],
+  ] as const) {
+    test(`abort: ${label}`, async ($, on) => {
+      const clock = mock.clock(on)
+      mock.env(on, { HOME: '/Users/tom' })
+      const ended: string[] = []
+      const replies: unknown[] = []
+      on('session.start', ($, e) => ({ cwd: e.cwd }))
+      on('session.id', () => ({ value: 'sess-1' }))
+      on('settings.read', () => ({ value: {} }))
+      on('fs.exists', ($, e) => ({ value: e.path === PUBLISHER }))
+      on('ui.status', () => ({ value: undefined }))
+      on('turn.start', ($, e) => ({ turnId: e.turnId }))
+      on('turn.abort', ($, e) => {
+        ended.push(e.turnId)
+        return { value: undefined }
+      })
+      on('process.spawn', async function* (): AsyncGenerator<ProcessSpawnChunk, { value: ProcessSpawnResult }> {
+        yield { stream: 'stdout', text: '{"id":"x","kind":"abort","mod_message":1}\n' }
+        await clock.sleep(60000)
+        return { value: EXITED }
+      })
+      on('process.run', ($, e) => {
+        if (e.argv[1] === '--mod-reply') replies.push(JSON.parse(e.init?.stdin ?? ''))
+        return {
+          value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+        }
+      })
+
+      if (turnRunning) await $.turn.start({ text: 'earlier', turnId: 't1' })
+      await $.session.start(STARTED)
+      await clock.advance(1000)
+
+      expect(replies).toEqual([{ mod_reply: 1, session_id: 'sess-1', id: 'x', ...expected }])
+      expect(ended).toEqual(aborted)
+    })
+  }
+
+  test('a turn that completed is not ended by a later abort', async ($, on) => {
+    const clock = mock.clock(on)
+    mock.env(on, { HOME: '/Users/tom' })
+    const ended: string[] = []
+    const replies: unknown[] = []
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('session.id', () => ({ value: 'sess-1' }))
+    on('settings.read', () => ({ value: {} }))
+    on('fs.exists', ($, e) => ({ value: e.path === PUBLISHER }))
+    on('ui.status', () => ({ value: undefined }))
+    on('turn.start', ($, e) => ({ turnId: e.turnId }))
+    on('turn.abort', ($, e) => {
+      ended.push(e.turnId)
+      return { value: undefined }
+    })
+    on('turn.complete', ($, e) => ({ text: e.answer }))
+    on('process.spawn', async function* (): AsyncGenerator<ProcessSpawnChunk, { value: ProcessSpawnResult }> {
+      yield { stream: 'stdout', text: '{"id":"x","kind":"abort","mod_message":1}\n' }
+      await clock.sleep(60000)
+      return { value: EXITED }
+    })
+    on('process.run', ($, e) => {
+      if (e.argv[1] === '--mod-reply') replies.push(JSON.parse(e.init?.stdin ?? ''))
+      return {
+        value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+      }
+    })
+
+    await $.turn.start({ text: 'earlier', turnId: 't1' })
+    await $.turn.complete(COMPLETED_T1)
+    await $.session.start(STARTED)
+    await clock.advance(1000)
+
+    expect(replies).toEqual([{ mod_reply: 1, session_id: 'sess-1', id: 'x', ok: false, reason: 'no_turn' }])
+    expect(ended).toEqual([])
+  })
 
   test('terms asks the session itself and returns its answer and usage', async ($, on) => {
     const clock = mock.clock(on)

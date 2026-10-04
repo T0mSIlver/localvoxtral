@@ -177,7 +177,8 @@ extension DictationSessionController {
         readsBackJoinedPane: Bool = false
     ) {
         if !goToChecked,
-           startGoToSessionIfSpoken(sessionMode: sessionMode, sample: sample)
+           startSpokenAbortIfSpoken(sessionMode: sessionMode, sample: sample)
+            || startGoToSessionIfSpoken(sessionMode: sessionMode, sample: sample)
             || startAddressedSendIfSpoken(sessionMode: sessionMode, sample: sample) {
             // A spoken command took the dictation. Any commit it makes
             // later polishes the whole text, without the pieces.

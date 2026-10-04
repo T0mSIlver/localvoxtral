@@ -1535,6 +1535,129 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(returns, [4343])
     }
 
+    // MARK: - A spoken stop phrase (#1696)
+
+    /// "Stop claude" said alone, with the phrase set: the joined session's
+    /// mod ends its turn. Nothing is typed, no key is posted, nothing goes
+    /// to History.
+    func testAStopPhraseEndsTheJoinedSessionsTurnThroughItsMod() async throws {
+        var returns: [pid_t] = []
+        let (pipeline, typed, fills) = try await modChannelPipeline(
+            answers: [.sent], returnKeyPoster: { pid in
+                returns.append(pid)
+                return true
+            }
+        )
+        pipeline.viewModel.settings.spokenAbortPhrases = ["stop claude"]
+
+        await dictate(pipeline, "Stop, Claude.")
+        await pipeline.viewModel.session.polishAndCommitTask?.value
+
+        XCTAssertEqual(fills.kinds, [.abort])
+        XCTAssertEqual(typed.text, "", "no key")
+        XCTAssertEqual(returns, [])
+        XCTAssertEqual(pipeline.records.all.count, 0, "a command, not a dictation")
+        XCTAssertEqual(pipeline.viewModel.statusText, DictationSessionController.SpokenAbortStatus.stopped)
+    }
+
+    /// The session has no turn running: nothing is stopped and the popover
+    /// says so.
+    func testAStopPhraseWithNoTurnRunningSaysSo() async throws {
+        let (pipeline, typed, fills) = try await modChannelPipeline(answers: [.refuse])
+        pipeline.viewModel.settings.spokenAbortPhrases = ["stop claude"]
+
+        await dictate(pipeline, "stop claude")
+        await pipeline.viewModel.session.polishAndCommitTask?.value
+
+        XCTAssertEqual(fills.kinds, [.abort])
+        XCTAssertEqual(typed.text, "")
+        XCTAssertEqual(pipeline.viewModel.statusText, DictationSessionController.SpokenAbortStatus.noTurn)
+    }
+
+    /// No mod in the joined session: no Escape or any other key goes
+    /// anywhere, the phrase is not typed, and the popover says why.
+    func testAStopPhraseWithoutAModPostsNoKeyAndTypesNothing() async throws {
+        var returns: [pid_t] = []
+        let (pipeline, typed, fills) = try await modChannelPipeline(
+            answers: [.sent], returnKeyPoster: { pid in
+                returns.append(pid)
+                return true
+            }
+        )
+        pipeline.viewModel.context.claudeModChannels = nil
+        pipeline.viewModel.settings.spokenAbortPhrases = ["stop claude"]
+
+        await dictate(pipeline, "stop claude")
+        await pipeline.viewModel.session.polishAndCommitTask?.value
+
+        XCTAssertEqual(fills.kinds, [])
+        XCTAssertEqual(typed.text, "")
+        XCTAssertEqual(returns, [])
+        XCTAssertEqual(pipeline.records.all.count, 0)
+        XCTAssertEqual(pipeline.viewModel.statusText, DictationSessionController.SpokenAbortStatus.noMod)
+    }
+
+    /// With no stop phrase set, the same words are an ordinary dictation.
+    func testWithNoStopPhraseSetTheWordsAreText() async throws {
+        let (pipeline, _, fills) = try await modChannelPipeline(answers: [.fill])
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "stop claude")
+        let done = await settled.wait(for: 1)
+
+        XCTAssertTrue(done)
+        XCTAssertEqual(fills.kinds, [.fill])
+        XCTAssertFalse(fills.kinds.contains(.abort))
+    }
+
+    /// A stop phrase inside a longer dictation is part of the prompt.
+    func testAStopPhraseInsideAPromptIsText() async throws {
+        let (pipeline, _, fills) = try await modChannelPipeline(answers: [.fill])
+        pipeline.viewModel.settings.spokenAbortPhrases = ["stop claude"]
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "tell me how to stop claude from retrying")
+        let done = await settled.wait(for: 1)
+
+        XCTAssertTrue(done)
+        XCTAssertEqual(fills.kinds, [.fill])
+    }
+
+    /// Said alone and followed by the wait, the stop phrase ends the
+    /// dictation on its own, then the turn: no key press needed.
+    func testAStopPhraseAndSilenceStopTheDictationAndThenTheTurn() async throws {
+        let (pipeline, typed, fills) = try await modChannelPipeline(answers: [.sent])
+        pipeline.viewModel.settings.spokenAbortPhrases = ["stop claude"]
+
+        await startAndSpeak(pipeline)
+        await sendDelta(pipeline, "Stop Claude.")
+        let armed = try XCTUnwrap(pipeline.viewModel.session.spokenStopTask, "armed by the stop phrase")
+        await pipeline.clock.waitForSleepers(pipeline.listeningTimers + 1)
+        pipeline.clock.advance(by: 3)
+        await armed.value
+        XCTAssertFalse(pipeline.viewModel.isDictating)
+        await finishStoppedSession(pipeline, finalText: "Stop Claude.")
+        await pipeline.viewModel.session.polishAndCommitTask?.value
+
+        XCTAssertEqual(fills.kinds, [.abort])
+        XCTAssertEqual(typed.text, "")
+    }
+
+    func testTheStopPhraseSentencesFitThePopoverLine() {
+        for sentence in [
+            DictationSessionController.SpokenAbortStatus.stopped,
+            DictationSessionController.SpokenAbortStatus.noTurn,
+            DictationSessionController.SpokenAbortStatus.noMod,
+            DictationSessionController.SpokenAbortStatus.failed,
+        ] {
+            XCTAssertLessThanOrEqual(sentence.count, 44, sentence)
+        }
+    }
+
     /// The joined session's band follows the dictation: listening with the
     /// words so far, then finishing, then done, which clears it (#1411).
     func testTheJoinedSessionsBandFollowsTheDictationAndClearsAtTheEnd() async throws {
@@ -1903,6 +2026,18 @@ final class DictationPipelineTests: XCTestCase {
                     guard !drafts.isEmpty else { return false }
                     let box = drafts[min(fills.takeDraftIndex(), drafts.count - 1)]
                     hub.deliver(.init(sessionID: "s1", id: message.id, ok: true, text: box.text, cursor: box.cursor))
+                    return true
+                }
+                if message.kind == .abort {
+                    // A stop phrase: `refuse` stands for no turn running.
+                    let answer = answers[min(fills.texts.count, answers.count - 1)]
+                    fills.append("", kind: .abort)
+                    guard answer != .silent else { return true }
+                    let ok = answer != .refuse
+                    hub.deliver(.init(
+                        sessionID: "s1", id: message.id, ok: ok,
+                        reason: ok ? nil : ClaudeModChannelWire.Reply.noTurnReason
+                    ))
                     return true
                 }
                 guard message.kind == .fill || message.kind == .send else { return false }
