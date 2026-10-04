@@ -205,8 +205,9 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
 
             guard head.isWebSocketUpgrade, let key = head.header("sec-websocket-key") else {
                 // Plain HTTP: the readiness probe. Anything else also gets a simple 200 so a
-                // stray GET can't wedge the supervisor.
-                let json = head.path == "/health" ? #"{"status":"ok"}"# : #"{"status":"ok"}"#
+                // stray GET can't wedge the supervisor. The pid lets the supervisor tell
+                // its own child from another process on the port (#1760).
+                let json = #"{"status":"ok","pid":\#(ProcessInfo.processInfo.processIdentifier)}"#
                 self.rawSend(connection, WebSocketHandshake.httpResponse(status: "200 OK", json: json),
                              thenClose: true)
                 return

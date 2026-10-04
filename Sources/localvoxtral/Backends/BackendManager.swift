@@ -708,7 +708,8 @@ final class BackendManager: ManagedBackendManaging {
             arguments: arguments(for: spec, speechModel: speechModel),
             environment: processEnvironment(),
             readinessURL: URL(string: "http://127.0.0.1:\(spec.port)/health")!,
-            readinessTimeout: readinessTimeout(for: spec)
+            readinessTimeout: readinessTimeout(for: spec),
+            readinessReportsOwnerPID: spec.id == BackendCatalog.speechd.id
         )
     }
 

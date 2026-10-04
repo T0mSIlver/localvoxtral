@@ -16,6 +16,8 @@ final class BackendProcessSupervisor {
     }
 
     typealias Probe = @Sendable (URL) async -> Bool
+    /// The pid a ready listener reports, nil when it reports none.
+    typealias OwnerProbe = @Sendable (URL) async -> pid_t?
     typealias SleepClosure = @Sendable (Duration) async throws -> Void
 
     private(set) var state: State
@@ -34,6 +36,7 @@ final class BackendProcessSupervisor {
 
     @ObservationIgnored private let configuration: BackendProcessConfiguration
     @ObservationIgnored private let probe: Probe
+    @ObservationIgnored private let ownerProbe: OwnerProbe
     @ObservationIgnored private let sleepFor: SleepClosure
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private var stateContinuations: [UUID: AsyncStream<State>.Continuation] = [:]
@@ -63,6 +66,7 @@ final class BackendProcessSupervisor {
     init(
         configuration: BackendProcessConfiguration,
         probe: @escaping Probe = BackendProcessSupervisor.defaultProbe,
+        ownerProbe: @escaping OwnerProbe = BackendProcessSupervisor.defaultOwnerProbe,
         sleepFor: @escaping SleepClosure = { duration in
             try await Task.sleep(for: duration)
         },
@@ -70,6 +74,7 @@ final class BackendProcessSupervisor {
     ) {
         self.configuration = configuration
         self.probe = probe
+        self.ownerProbe = ownerProbe
         self.sleepFor = sleepFor
         self.now = now
         self.state = .idle
@@ -114,6 +119,19 @@ final class BackendProcessSupervisor {
         }
     }
 
+    private static func defaultOwnerProbe(url: URL) async -> pid_t? {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 2
+
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let pid = object["pid"] as? Int
+        else { return nil }
+        return pid_t(exactly: pid)
+    }
+
     private func supervise() async {
         defer {
             supervisionTask = nil
@@ -150,6 +168,22 @@ final class BackendProcessSupervisor {
             let readinessOutcome = await waitForReadiness()
 
             switch readinessOutcome {
+            case .foreignListener(let reportedPID):
+                Log.backends.error(
+                    "\(self.configuration.name, privacy: .public) readiness answered by pid \(reportedPID.map(String.init) ?? "none", privacy: .public), not the child; refusing it"
+                )
+                if let process = currentProcess {
+                    await terminate(process: process, gracePeriod: configuration.terminationGracePeriod)
+                }
+                clearCurrentProcess()
+                transition(
+                    to: .failed(
+                        summary: "\(configuration.name) port already in use; refusing to adopt an existing backend process.",
+                        detail: nil
+                    )
+                )
+                return
+
             case .ready:
                 transition(to: .running)
                 let readyAt = now()
@@ -213,6 +247,8 @@ final class BackendProcessSupervisor {
 
     private enum ReadinessOutcome {
         case ready
+        /// Ready, but the listener named another pid, or none (#1760).
+        case foreignListener(reportedPID: pid_t?)
         case exited
         case timedOut
         case cancelled
@@ -227,6 +263,15 @@ final class BackendProcessSupervisor {
             }
 
             if await probe(configuration.readinessURL) {
+                guard configuration.readinessReportsOwnerPID else { return .ready }
+                let reportedPID = await ownerProbe(configuration.readinessURL)
+                // A stop or the child's exit between the two requests is not
+                // a foreign listener.
+                if stoppingIntentionally || Task.isCancelled { return .cancelled }
+                if currentProcessExited || currentProcess?.isRunning == false { return .exited }
+                guard let childPID = currentProcessID, reportedPID == childPID else {
+                    return .foreignListener(reportedPID: reportedPID)
+                }
                 return .ready
             }
 

@@ -2,6 +2,8 @@ import Darwin
 import Foundation
 import Synchronization
 import XCTest
+
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 @MainActor
@@ -85,6 +87,138 @@ final class BackendProcessSupervisorTests: XCTestCase {
         XCTAssertTrue(summary.contains("port already in use"))
         XCTAssertNil(detail)
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    /// Another process binds the port while the helper loads and answers
+    /// the readiness probe: the supervisor refuses it and stops the child
+    /// instead of reporting a backend it does not own as running (#1760).
+    func testAForeignListenerThatAnswersReadinessIsRefused() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let pidFile = directory.appendingPathComponent("pid")
+        let script = try writeScript(
+            in: directory,
+            name: "backend.sh",
+            body: """
+            #!/bin/sh
+            echo $$ > "\(pidFile.path)"
+            trap 'exit 0' TERM
+            while true; do sleep 1; done
+            """
+        )
+        let supervisor = makeSupervisor(
+            executableURL: script,
+            readinessReportsOwnerPID: true,
+            probe: Self.readyOnceSpawned(),
+            ownerProbe: { _ in 1 },
+            sleepFor: { _ in }
+        )
+        let watcher = StateWatcher(stream: supervisor.stateUpdates)
+        defer { watcher.cancel() }
+
+        await supervisor.start()
+        let state = try await watcher.waitForState { state in
+            switch state {
+            case .failed, .running: return true
+            default: return false
+            }
+        }
+
+        guard case let .failed(summary, _) = state else {
+            await supervisor.stop()
+            return XCTFail("expected the foreign listener refused, got \(state)")
+        }
+        XCTAssertTrue(summary.contains("port already in use"), summary)
+        if let pid = try readPID(from: pidFile) {
+            XCTAssertFalse(isProcessRunning(pid))
+        }
+    }
+
+    /// The child answers readiness, then dies before the owner check: that is
+    /// a crash to restart, not a foreign listener on the port.
+    func testAChildThatDiesDuringTheOwnerCheckRestarts() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let pidFile = directory.appendingPathComponent("pid")
+        let script = try writeScript(
+            in: directory,
+            name: "backend.sh",
+            body: """
+            #!/bin/sh
+            echo $$ > "\(pidFile.path)"
+            trap 'exit 0' TERM
+            while true; do sleep 1; done
+            """
+        )
+        let exitHandled = BoundedWait()
+        let supervisor = makeSupervisor(
+            executableURL: script,
+            readinessTimeout: .seconds(3_600),
+            readinessReportsOwnerPID: true,
+            probe: { _ in FileManager.default.fileExists(atPath: pidFile.path) },
+            ownerProbe: { _ in
+                let pid = (try? String(contentsOf: pidFile, encoding: .utf8))
+                    .flatMap { pid_t($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                try? FileManager.default.removeItem(at: pidFile)
+                if let pid { kill(pid, SIGKILL) }
+                _ = await exitHandled.value(failAfter: 10)
+                return nil
+            },
+            sleepFor: { _ in await Task.yield() }
+        )
+        supervisor.debugProcessExitHandled = { _ in exitHandled.resolve() }
+        let watcher = StateWatcher(stream: supervisor.stateUpdates)
+        defer { watcher.cancel() }
+
+        await supervisor.start()
+        let state = try await watcher.waitForState { state in
+            switch state {
+            case .failed, .restarting: return true
+            default: return false
+            }
+        }
+        await supervisor.stop()
+
+        XCTAssertEqual(state, .restarting(attempt: 1))
+    }
+
+    /// The listener that answers is the child: it runs as before.
+    func testAReadyChildThatReportsItsOwnPIDRuns() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let pidFile = directory.appendingPathComponent("pid")
+        let script = try writeScript(
+            in: directory,
+            name: "backend.sh",
+            body: """
+            #!/bin/sh
+            echo $$ > "\(pidFile.path)"
+            trap 'exit 0' TERM
+            while true; do sleep 1; done
+            """
+        )
+        let supervisor = makeSupervisor(
+            executableURL: script,
+            // Polls until the child wrote its pid; the yields count no time.
+            readinessTimeout: .seconds(3_600),
+            readinessReportsOwnerPID: true,
+            probe: { _ in FileManager.default.fileExists(atPath: pidFile.path) },
+            ownerProbe: { _ in
+                (try? String(contentsOf: pidFile, encoding: .utf8))
+                    .flatMap { pid_t($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            },
+            sleepFor: { _ in await Task.yield() }
+        )
+        let watcher = StateWatcher(stream: supervisor.stateUpdates)
+        defer { watcher.cancel() }
+
+        await supervisor.start()
+
+        _ = try await watcher.waitForState(.running)
+        await supervisor.stop()
     }
 
     func testReadinessTimeoutFailsAndTerminatesChild() async throws {
@@ -516,7 +650,9 @@ final class BackendProcessSupervisorTests: XCTestCase {
         terminationGracePeriod: Duration = .milliseconds(100),
         maxConsecutiveRestartFailures: Int = 5,
         healthyRunDuration: Duration = .seconds(60),
+        readinessReportsOwnerPID: Bool = false,
         probe: @escaping @Sendable (URL) async -> Bool,
+        ownerProbe: @escaping @Sendable (URL) async -> pid_t? = { _ in nil },
         sleepFor: @escaping @Sendable (Duration) async throws -> Void,
         now: @escaping @Sendable () -> Date = ManualSessionClock().clock.now
     ) -> BackendProcessSupervisor {
@@ -531,9 +667,11 @@ final class BackendProcessSupervisorTests: XCTestCase {
                 readinessTimeout: readinessTimeout,
                 terminationGracePeriod: terminationGracePeriod,
                 maxConsecutiveRestartFailures: maxConsecutiveRestartFailures,
-                healthyRunDuration: healthyRunDuration
+                healthyRunDuration: healthyRunDuration,
+                readinessReportsOwnerPID: readinessReportsOwnerPID
             ),
             probe: probe,
+            ownerProbe: ownerProbe,
             sleepFor: sleepFor,
             now: now
         )
