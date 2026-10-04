@@ -1,6 +1,3 @@
-import AppKit
-import ApplicationServices
-import CoreGraphics
 import Foundation
 
 /// One display, as the overlay's placement math sees it.
@@ -8,12 +5,12 @@ import Foundation
 /// A snapshot rather than `NSScreen` so the geometry below is ordinary value
 /// code that unit tests can drive: the cases that matter (a display that is
 /// gone, one that changed resolution) cannot be staged with real screens.
-struct OverlayScreenSnapshot: Equatable, Sendable {
-    let id: String
-    let frame: CGRect
-    let visibleFrame: CGRect
+package struct OverlayScreenSnapshot: Equatable, Sendable {
+    package let id: String
+    package let frame: CGRect
+    package let visibleFrame: CGRect
 
-    init(id: String, frame: CGRect, visibleFrame: CGRect) {
+    package init(id: String, frame: CGRect, visibleFrame: CGRect) {
         self.id = id
         self.frame = frame
         self.visibleFrame = visibleFrame
@@ -28,11 +25,11 @@ struct OverlayScreenSnapshot: Equatable, Sendable {
 /// one is primary) moves every global coordinate under the stored point, and
 /// the overlay grows downward from its top edge, so the top edge is the
 /// coordinate that has to stay still as the transcript gets longer.
-struct OverlayManualPlacement: Equatable, Sendable {
-    var screenID: String
-    var topLeftOffset: CGPoint
+package struct OverlayManualPlacement: Equatable, Sendable {
+    package var screenID: String
+    package var topLeftOffset: CGPoint
 
-    init(screenID: String, topLeftOffset: CGPoint) {
+    package init(screenID: String, topLeftOffset: CGPoint) {
         self.screenID = screenID
         self.topLeftOffset = topLeftOffset
     }
@@ -40,7 +37,7 @@ struct OverlayManualPlacement: Equatable, Sendable {
     /// Whether this is usable at all. A stored placement is read back from
     /// user defaults, where an empty string or a NaN is possible, and both
     /// would resolve to a panel origin nothing could clamp.
-    var isWellFormed: Bool {
+    package var isWellFormed: Bool {
         !screenID.isEmpty && topLeftOffset.x.isFinite && topLeftOffset.y.isFinite
     }
 }
@@ -52,10 +49,10 @@ struct OverlayManualPlacement: Equatable, Sendable {
 /// visible frame. Skipping either step is what puts the overlay somewhere the
 /// user cannot reach it — an unplugged monitor, or a resolution change while
 /// it was unplugged — with no way to drag it back.
-enum OverlayManualPlacementResolver {
+package enum OverlayManualPlacementResolver {
     /// Gap kept between the panel and the edge of the screen's visible frame.
     /// Matches the margin the anchored placement uses.
-    static let edgeMargin: CGFloat = 10
+    package static let edgeMargin: CGFloat = 10
 
     /// The placement to store for a panel sitting at `panelFrame`.
     ///
@@ -63,7 +60,7 @@ enum OverlayManualPlacementResolver {
     /// two screens is remembered against the one it mostly shows on. Returns
     /// nil when no screen can be named — the drag still moved the panel for
     /// this session, it just teaches nothing for the next one.
-    static func capture(
+    package static func capture(
         panelFrame: CGRect,
         screens: [OverlayScreenSnapshot]
     ) -> OverlayManualPlacement? {
@@ -85,7 +82,7 @@ enum OverlayManualPlacementResolver {
     /// deliberately NOT discarded in that case: plugging the monitor back in
     /// should put the overlay where the user left it, and the anchored
     /// position is always reachable in the meantime.
-    static func resolveOrigin(
+    package static func resolveOrigin(
         _ placement: OverlayManualPlacement,
         panelSize: CGSize,
         screens: [OverlayScreenSnapshot]
@@ -112,7 +109,7 @@ enum OverlayManualPlacementResolver {
     /// remember for it. Dragging runs through the same clamp as restoring, so
     /// the panel can never be dropped where the next session would have to
     /// rescue it.
-    static func settle(
+    package static func settle(
         draggedFrame: CGRect,
         screens: [OverlayScreenSnapshot]
     ) -> (frame: CGRect, placement: OverlayManualPlacement)? {

@@ -1,12 +1,11 @@
-import CoreGraphics
 import Foundation
 import XCTest
 
-@testable import localvoxtral
+@testable import localvoxtralCore
 
 /// Covers the position the user drags the overlay to: what gets stored, and
 /// what comes back when the displays have changed underneath it.
-final class OverlayManualPlacementTests: XCTestCase {
+final class OverlayManualPlacementResolverTests: XCTestCase {
     /// 1920×1080 primary, menu bar taking 25pt off the top.
     private let primary = OverlayScreenSnapshot(
         id: "primary",
