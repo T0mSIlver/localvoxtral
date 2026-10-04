@@ -16,6 +16,9 @@ final class QuickCaptureInboxViewModel {
     /// Bumped when a project's repository, GitHub description or filing
     /// choice lands, so the Projects pane reads them again.
     private(set) var projectsRevision = 0
+    /// The capture `localvoxtral capture open` asked to show (#1694), until
+    /// the Inbox page has scrolled to it.
+    var revealed: UUID?
     /// The agent sessions running now and the enrolled hosts, for the
     /// Projects pane (#939). The app sets them; empty in tests and previews.
     @ObservationIgnored var liveSessions: @MainActor () -> [ClaudeSessionSnapshot] = { [] }

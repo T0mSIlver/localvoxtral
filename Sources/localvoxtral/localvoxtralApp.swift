@@ -724,7 +724,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The `localvoxtral` command's requests arrive on the same socket
         // (#721) and are answered from the app's own stores.
         let agentCLI = AgentCLIService(
-            source: AgentCLIAppDataSource(viewModel: viewModel, sessions: claudeSessionRegistry)
+            source: AgentCLIAppDataSource(
+                viewModel: viewModel,
+                sessions: claudeSessionRegistry,
+                openInbox: { [weak self] in self?.openWindow(on: .inbox) }
+            )
         )
         let broker = ClaudeContextBroker(
             socketPath: socketPath,

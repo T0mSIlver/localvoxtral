@@ -80,6 +80,8 @@ public enum AgentCLICommand: String, Sendable, CaseIterable {
     case captureList = "capture.list"
     case captureShow = "capture.show"
     case captureFiled = "capture.filed"
+    /// Brings the app's Inbox forward on one capture (#1694).
+    case captureOpen = "capture.open"
 }
 
 /// The coding agent that ran the command, recorded as a proposed term's
@@ -551,7 +553,7 @@ public struct AgentCLIResponse: Sendable, Equatable, Codable {
     public var doctor: AgentCLIDoctor?
     /// `capture list`.
     public var captures: AgentCLICaptures?
-    /// `capture show` and `capture filed`.
+    /// `capture show`, `capture filed` and `capture open`.
     public var capture: AgentCLICapture?
 
     public init(

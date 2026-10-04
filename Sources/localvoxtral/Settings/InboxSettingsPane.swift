@@ -11,6 +11,21 @@ struct InboxSettingsPane: View {
     let inbox: QuickCaptureInboxViewModel?
 
     var body: some View {
+        ScrollViewReader { proxy in
+            page
+                .onAppear { scroll(proxy) }
+                .onChange(of: inbox?.revealed) { scroll(proxy) }
+        }
+    }
+
+    /// To the capture `localvoxtral capture open` named (#1694).
+    private func scroll(_ proxy: ScrollViewProxy) {
+        guard let inbox, let id = inbox.revealed else { return }
+        withAnimation { proxy.scrollTo(id, anchor: .top) }
+        inbox.revealed = nil
+    }
+
+    private var page: some View {
         SettingsPage(tab: .inbox) {
             SettingsGroup(title: "Captures") {
                 if let inbox, let problem = inbox.storeProblem {
@@ -20,6 +35,7 @@ struct InboxSettingsPane: View {
                 } else if let inbox, !inbox.items.isEmpty {
                     ForEach(inbox.items) { item in
                         InboxCaptureRow(item: item, inbox: inbox)
+                            .id(item.id)
                     }
                 } else {
                     SettingsGroupRow {

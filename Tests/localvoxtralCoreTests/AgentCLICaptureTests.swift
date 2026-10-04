@@ -86,6 +86,12 @@ final class AgentCLICaptureTests: XCTestCase {
         XCTAssertEqual(filed.request.caller, .codex)
 
         XCTAssertEqual(parse(["capture", "show"]), .usageError("capture show needs a capture: its title or id"))
+
+        guard case .run(let open) = parse(["capture", "open", herdrID.uuidString, "--json"]) else { return XCTFail("open") }
+        XCTAssertEqual(open.request.knownCommand, .captureOpen)
+        XCTAssertEqual(open.request.capture, herdrID.uuidString)
+        XCTAssertEqual(parse(["capture", "open"]), .usageError("capture open needs a capture: its title or id"))
+        XCTAssertEqual(parse(["capture", "open", "x", "--project", "."]), .usageError("--project does not apply to capture open"))
         XCTAssertEqual(
             parse(["capture", "filed", "https://github.com/o/reach/issues/7"]),
             .usageError("capture filed needs a capture and the issue's URL")
@@ -172,6 +178,40 @@ final class AgentCLICaptureTests: XCTestCase {
             > when the herdr pane is busy queue my dictation
 
             """)
+    }
+
+    /// The Claude Code mod's Inbox pane reads this line (#1694): keep its
+    /// keys.
+    func testListJSONCarriesWhatTheModsInboxPaneReads() async throws {
+        let response = await respond(.captureList, project: "/work/reach", source: fixture())
+        let line = try XCTUnwrap(AgentCLIWire.encodeLine(response).flatMap { String(data: $0, encoding: .utf8) })
+        XCTAssertEqual(line, #"""
+            {"captures":{"captures":[{"capturedAt":"2026-09-21T12:13:20Z","id":"3f9c2a1b-0000-4000-8000-000000000001","kind":"issue","project":{"key":"\/work\/reach","name":"reach"},"repository":"o\/reach","state":"ready","title":"Queue dictation into a busy herdr pane"}],"inboxAvailable":true},"cli":1,"ok":true}
+
+            """#)
+    }
+
+    // MARK: Open
+
+    func testOpenBringsTheInboxForwardOnTheCaptureItNames() async throws {
+        let source = fixture()
+        let response = await respond(.captureOpen, capture: herdrID.uuidString.lowercased(), source: source)
+        XCTAssertEqual(response.capture?.id, herdrID.uuidString.lowercased())
+        XCTAssertNil(response.capture?.text, "open answers with the summary, never the words")
+        XCTAssertEqual(source.state.withLock { $0.opened }, [herdrID])
+        let line = try XCTUnwrap(AgentCLIWire.encodeLine(response).flatMap { String(data: $0, encoding: .utf8) })
+        XCTAssertTrue(line.hasPrefix(#"{"capture":{"capturedAt":"2026-09-21T12:13:20Z","id":"3f9c2a1b-0000-4000-8000-000000000001""#), line)
+
+        let unknown = await respond(.captureOpen, capture: "dark mode", source: source)
+        XCTAssertEqual(unknown.error?.code, .unknownCapture)
+        XCTAssertEqual(source.state.withLock { $0.opened }, [herdrID])
+    }
+
+    func testOpenWithoutAnInboxSaysSo() async {
+        var state = FixtureAgentCLIDataSource.State()
+        state.inbox = nil
+        let response = await respond(.captureOpen, capture: "anything", source: FixtureAgentCLIDataSource(state))
+        XCTAssertEqual(response.error, AgentCLIError(.unknownCapture, "the Inbox is not available"))
     }
 
     func testListTextIsAnAlignedTable() async {
