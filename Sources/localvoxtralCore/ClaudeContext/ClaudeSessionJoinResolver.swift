@@ -328,9 +328,8 @@ package struct ClaudeSessionJoinResolver {
         guard ClaudeRemoteSessionScope.hostID(fromScopedSessionID: sessionID) != nil else {
             return await sessionShown(target: target) == sessionID
         }
-        let tty = await focusedTerminalTTY(target.bundleID)
         guard let join = await resolve(target: target), join.snapshot.sessionID == sessionID,
-              await stillShows(join, tty: tty, terminal: target)
+              await stillShows(join, terminal: target)
         else { return false }
         return true
     }
@@ -341,7 +340,7 @@ package struct ClaudeSessionJoinResolver {
     /// in between must count (Codex review of #1780, 2026-10-04). As for a
     /// local herdr pane (#1498), the pane is read last: a pane switch keeps
     /// the tty, so no slower read may follow it.
-    private func stillShows(_ join: ClaudeSessionJoin, tty: String?, terminal: TerminalScreenTarget) async -> Bool {
+    private func stillShows(_ join: ClaudeSessionJoin, terminal: TerminalScreenTarget) async -> Bool {
         let shown: Bool
         switch join.mechanism {
         case .remoteHerdrPane, .federatedHerdrPane:
@@ -353,9 +352,22 @@ package struct ClaudeSessionJoinResolver {
                   case .value(let focused) = await cmuxSurfaces.focusedSurface(expectedPeerPID: terminal.pid)
             else { return false }
             shown = focused.surfaceID == binding.surfaceID
-        case .remoteSSHConnection, .remoteLocalTTY:
-            // The connection is the tty's: the same tty, read last.
-            guard let tty else { return false }
+        case .remoteLocalTTY:
+            // The binding is the tty the session reported: the focused one,
+            // read last.
+            guard let bound = join.snapshot.remoteSessionEnvironment?.localTTY else { return false }
+            shown = await focusedTerminalTTY(terminal.bundleID) == bound
+        case .remoteSSHConnection:
+            // The binding is the connection the session reported: the
+            // focused tty's ssh must still hold it, and the tty is read
+            // again last.
+            guard let tty = await focusedTerminalTTY(terminal.bundleID),
+                  let value = join.snapshot.remoteSessionEnvironment?.sshConnection,
+                  let report = ClaudeRemoteSSHConnectionReport.parse(value),
+                  case .connection(let connection) = sshDestinationProbe(tty),
+                  let sockets = connection.sockets,
+                  sockets.filter({ Self.socket($0, matches: report) }).count == 1
+            else { return false }
             shown = await focusedTerminalTTY(terminal.bundleID) == tty
         default:
             shown = false
