@@ -40,8 +40,19 @@ extension DictationSessionController {
     func commitOverlayAddressedThroughMod(session: ClaudeSessionSnapshot) async -> AddressedModSend {
         guard let hub = context.claudeModChannels else { return .fallBack }
         let sessionID = session.sessionID
-        let draft = await hub.promptDraft(of: sessionID, timeout: ClaudePromptDraft.readTimeout)
+        // The dictation that sends: a reply that comes after a new one
+        // committed must not forget that one's landing.
+        let generation = sessionStartGeneration
+        let read = await hub.readPromptDraft(of: sessionID, timeout: ClaudePromptDraft.readTimeout)
         guard !Task.isCancelled else { return .cancelled }
+        // A detach without a clean bye leaves the session's registry entry,
+        // whose tty and pid still match the pane after `/clear`: the usual
+        // route would type into the session that replaced it.
+        guard case .read(let draft) = read else {
+            Log.backends.error("send to session: the mod's process left that session; nothing sent, text kept")
+            saveInterruptedPolishCommit = nil
+            return .finished(.notSent(AddressedSendStatus.notSent))
+        }
 
         // The box decides the space; a mod that did not say what it holds
         // leaves the last commit's evidence, as for the typed route (#802).
@@ -66,7 +77,7 @@ extension DictationSessionController {
         switch exchange {
         case .replied(let reply) where reply.ok:
             if reply.submitted == true {
-                forgetOverlayCommitLanding(inSession: sessionID)
+                forgetOverlayCommitLanding(inSession: sessionID, committedBy: generation)
                 let queued = reply.queued == true
                 Log.dictation.notice("send to session: the mod submitted queued=\(queued, privacy: .public)")
                 return .finished(AddressedCommit(

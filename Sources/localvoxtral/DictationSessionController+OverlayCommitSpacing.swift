@@ -97,6 +97,13 @@ extension DictationSessionController {
         lastOverlayCommitLanding = nil
     }
 
+    /// The same, for a send that answers late: a landing a later dictation
+    /// recorded while it waited is that dictation's evidence and stays.
+    func forgetOverlayCommitLanding(inSession sessionID: String, committedBy generation: UInt64) {
+        guard let landing = lastOverlayCommitLanding, landing.generation <= generation else { return }
+        forgetOverlayCommitLanding(inSession: sessionID)
+    }
+
     /// Remembers where a commit landed, or forgets the last one: a failed
     /// commit, a commit with no join, or one the spoken trigger sent leaves
     /// nothing the next commit may continue. A commit of nothing changed no

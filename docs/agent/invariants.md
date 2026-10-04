@@ -326,9 +326,11 @@ there is not.
   request as a spoken send, after a `draft` read that decides the leading
   space. No pane is brought forward and no key is posted. The channel is
   the one the session's own local hook named, and the mod refuses with
-  `session_changed` once its process left that id (#1651): that refusal
-  and an unanswered request, which may have submitted, keep the text in
-  History and try no other route. A mod that refused for any other reason
+  `session_changed` once its process left that id (#1651): that refusal,
+  to the `draft` read or to the `send`, and an unanswered request, which
+  may have submitted, keep the text in History and try no other route (a
+  detach with no clean bye leaves the old registry entry, whose tty and
+  pid still match the pane after `/clear`). A mod that refused for any other reason
   (a dialog, a placeholder, a command, an `@` mention), or never got the
   request, changed nothing in the session, so the routes below run as if
   it had no mod, logged to `Log.backends`; a new dictation started by
