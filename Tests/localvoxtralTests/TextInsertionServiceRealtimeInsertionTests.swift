@@ -168,6 +168,32 @@ final class TextInsertionServiceRealtimeInsertionTests: XCTestCase {
         }
     }
 
+    /// A go-to moves the keys to another pane: the stop judges only what
+    /// they typed there, so a lone command in the new pane loses its space
+    /// whatever the old pane got (#1734).
+    func testAfterAGoToTheStopJudgesOnlyTheNewPanesText() async throws {
+        let (service, posted) = makeRecordingService(frontmostBundleID: TerminalScreenAllowlist.ghosttyBundleID)
+        defer { TerminalTargetDetector.debugFrontmostBundleIDOverride = nil }
+        let mod = FakeClaudeMod(refuses: "hello ")
+        let hub = ClaudeModChannelHub(sleep: ManualSessionClock().clock.sleep)
+        mod.attach(to: hub)
+        let opened = await ClaudeModPromptRoute.opened(hub: hub, sessionID: "s1", keysReachThePrompt: { true })
+        service.beginPromptRelay(try XCTUnwrap(opened))
+        let sink = try XCTUnwrap(service.promptRelaySink)
+
+        service.enqueueRealtimeInsertion("hello ")
+        sink.submit()
+        await sink.waitUntilIdle()
+        XCTAssertFalse(sink.isHealthy, "the shortfall failed the route over to the keys")
+        // The go-to's order: flush, then retire.
+        service.flushFinalLiveReplacementCorrections()
+        service.retirePromptRelay()
+        service.enqueueRealtimeInsertion("/compact ")
+        service.flushFinalLiveReplacementCorrections()
+
+        XCTAssertEqual(posted.value, ["hello", " ", "/compact"])
+    }
+
     func testClaudeDesktopGetsEachNewlineAsShiftReturn() {
         let (service, posted) = makeRecordingService(frontmostBundleID: ClaudeDesktopAllowlist.bundleID)
         defer { TerminalTargetDetector.debugFrontmostBundleIDOverride = nil }

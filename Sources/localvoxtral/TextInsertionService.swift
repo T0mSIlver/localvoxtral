@@ -542,6 +542,10 @@ final class TextInsertionService {
     func retirePromptRelay(endingDictation: Bool = false, settling: Bool = true) {
         if settling { promptRelaySink?.finish() }
         promptRelaySink = nil
+        // The keys' text so far is in the pane they leave: the next stop
+        // judges only what they type from here.
+        promptRelayKeysTypedText = ""
+        promptRelayKeysHeldWhitespace = ""
         promptRelayGeneration += 1
         if endingDictation { promptRelayDictation += 1 }
     }
@@ -615,8 +619,13 @@ final class TextInsertionService {
             promptRelayKeysTypedText += typed
             liveInsertionTargetPIDs.append(confirmedLiveInsertionPID())
         case .failed:
-            // Left for the cleanup to report, like any text the field refused.
-            pendingRealtimeInsertionText += typed
+            // Left for the cleanup to report, like any text the field refused;
+            // with a stream armed, as released text, never re-ingested.
+            if liveHoldBackStream != nil {
+                pendingHoldBackReleasedText += typed
+            } else {
+                pendingRealtimeInsertionText += typed
+            }
         }
     }
 
