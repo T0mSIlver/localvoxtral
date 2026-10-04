@@ -1129,7 +1129,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     guard let viewModel else { return [] }
                     return await AgentCLIAppDataSource(viewModel: viewModel, sessions: claudeSessionRegistry)
                         .hostDoctorChecks(hostID: hostID)
-                }
+                },
+                // Remote sessions' mods poll through the same hub the local
+                // broker hands attaches to (#1412).
+                modChannels: ClaudeRemoteModChannels(hub: claudeModChannels, registry: claudeSessionRegistry)
             )
         }
         claudeRemoteListenerCoordinator = coordinator

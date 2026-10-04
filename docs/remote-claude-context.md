@@ -492,6 +492,25 @@ uninstalls the plugin and deletes the token (Claude Code 2.1.283).
 
 ## Use other agents and features on a host
 
+### The Claude Code mod on a host
+
+From localvoxtral-remote 1.41.0 the plugin also carries the mod that local
+sessions run, so a session on the host gets a channel from the app the way a
+local session does. It needs a Claude Code that loads mods. An older one runs
+the hooks as before and ignores the mod.
+
+The mod reaches the app through the same tunnel, with no new port: it asks the
+app for work, the app holds the request until it has something, and the mod
+answers on a second request. Both ends sign every request and answer with a
+channel key, so a process that takes the tunnel's port on the host cannot put
+text into your prompt. Setup stores the key in the plugin's config. A host
+enrolled before 1.41.0 gets the key the next time you run **Update host…** or
+set it up again, and the mod stays off until then. Rotating the host's token
+changes the key, so run setup again after a rotation.
+
+When the tunnel or the app is down, the mod waits five minutes between tries,
+as the hook script does, and tries again sooner once a hook gets through.
+
 ### Mistral Vibe on an enrolled host
 
 An enrolled host can report its Mistral Vibe sessions too, over the same

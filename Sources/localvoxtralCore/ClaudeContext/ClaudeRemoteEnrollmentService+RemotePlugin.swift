@@ -110,6 +110,7 @@ extension ClaudeRemoteEnrollmentService {
     public func setupRemotePlugin(
         sshHostAlias: String,
         token: String?,
+        channelKey: String? = nil,
         remoteForwardPort: UInt16,
         marketplace: ClaudeRemoteMarketplaceFiles? = .bundled(),
         timeout: TimeInterval = defaultRemoteSetupTimeout
@@ -198,7 +199,7 @@ extension ClaudeRemoteEnrollmentService {
             + Self.remoteMarketplaceWriteScript(marketplace)
             + "claude plugin marketplace add \"$M\"\n"
         let install = "claude plugin install \(reference) --config '\(Self.portConfigKey)=\(remoteForwardPort)'"
-            + (token.map { "\n" + Self.remoteTokenConfigureScript(token: $0, removeOnFailure: before == nil) } ?? "")
+            + Self.remoteSecretsConfigureScript(token: token, channelKey: channelKey, removeOnFailure: before == nil)
         let mutation: String
         let outcome: PluginSetupOutcome
         switch before {
@@ -284,14 +285,38 @@ extension ClaudeRemoteEnrollmentService {
     /// A fresh install that cannot take its token is removed again, so the
     /// next setup installs it with one instead of reporting a tokenless
     /// plugin current.
-    package static func remoteTokenConfigureScript(token: String, removeOnFailure: Bool) -> String {
+    package static func remoteTokenConfigureScript(
+        token: String, channelKey: String? = nil, removeOnFailure: Bool
+    ) -> String {
+        var values = [tokenConfigKey: token]
+        values[channelKeyConfigKey] = channelKey
+        return configureScript(values: values, onFailure: "{ \(removeOnFailure ? uninstallQuietly : "")exit \(tokenConfigureExitCode); }")
+    }
+
+    /// The plugin's secrets for this run: the token, when the run has one,
+    /// with the mod channel key (#1412); otherwise the key alone, which a
+    /// host set up before the key existed gets on its next setup with no new
+    /// token. A Claude Code that cannot store the key alone fails nothing:
+    /// it is too old to load the mod that reads it.
+    package static func remoteSecretsConfigureScript(
+        token: String?, channelKey: String?, removeOnFailure: Bool
+    ) -> String {
+        if let token {
+            return "\n" + remoteTokenConfigureScript(token: token, channelKey: channelKey, removeOnFailure: removeOnFailure)
+        }
+        guard let channelKey else { return "" }
+        return "\n" + configureScript(values: [channelKeyConfigKey: channelKey], onFailure: "true")
+    }
+
+    private static let uninstallQuietly = "claude plugin uninstall \(remotePluginReference) >/dev/null 2>&1 || true; "
+
+    private static func configureScript(values: [String: String], onFailure: String) -> String {
         let json = (try? JSONSerialization.data(
-            withJSONObject: [tokenConfigKey: token], options: [.sortedKeys]
+            withJSONObject: values, options: [.sortedKeys]
         )).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
         let delimiter = heredocDelimiter(for: json, seed: "TOKEN")
-        let cleanup = removeOnFailure ? "claude plugin uninstall \(remotePluginReference) >/dev/null 2>&1 || true; " : ""
         return """
-            claude plugin configure \(remotePluginReference) --values-stdin <<'\(delimiter)' || { \(cleanup)exit \(tokenConfigureExitCode); }
+            claude plugin configure \(remotePluginReference) --values-stdin <<'\(delimiter)' || \(onFailure)
             \(json)
             \(delimiter)
             """

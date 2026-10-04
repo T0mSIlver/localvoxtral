@@ -1,7 +1,7 @@
 {
   "name": "localvoxtral-remote",
   "description": "Publishes Claude Code session context from a REMOTE host to localvoxtral on your Mac, over an SSH RemoteForward tunnel. Command hooks running a bundled POSIX-sh shim that POSTs via curl — needs only sh and curl on the remote host, and fails open silently when either is missing.",
-  "version": "1.40.0",
+  "version": "1.41.0",
   "author": {
     "name": "localvoxtral"
   },
@@ -28,6 +28,14 @@
       "title": "Tunnel port on this host",
       "description": "Loopback port on THIS host that localvoxtral's SSH RemoteForward binds — the app allocates one per Mac so two Macs enrolled here can never fight over the same bind. Copy the value from the enrollment plan; leaving it empty falls back to the legacy shared port 8473.",
       "default": ""
+    },
+    "channel_key": {
+      "type": "string",
+      "sensitive": true,
+      "title": "localvoxtral channel key",
+      "description": "Per-host key localvoxtral's setup stores here. It signs what this plugin's mod and the app send each other over the tunnel, so a process that takes the tunnel's port cannot put text into your prompt. Run setup again in the app to set it.",
+      "default": ""
     }
-  }
+  },
+  "types": "./types/index.d.ts"
 }

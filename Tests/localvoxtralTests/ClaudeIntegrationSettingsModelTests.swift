@@ -2994,14 +2994,19 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     @MainActor
     func testTheSetupRunInstallsTheSheetsTokenThroughStdinOnly() async throws {
         let (model, _, _, recorder) = try await enrollAndRunSetup(remoteForwardPort: 28542)
-        let token = try XCTUnwrap(model.presentedPlan).token
+        let plan = try XCTUnwrap(model.presentedPlan)
+        let token = plan.token
+        // The mod's channel key rides with it (#1412), derived from the
+        // stored hash, never from anything the host sent.
+        let channelKey = try XCTUnwrap(model.registry?.modChannelKey(hostID: plan.host.id))
         let scripts = recorder.all.map { String(decoding: $0.standardInput, as: UTF8.self) }
         XCTAssertEqual(
             scripts.filter { $0.contains(token) }.count, 1,
             "only the install call carries the token"
         )
         XCTAssertTrue(scripts.contains {
-            $0.contains("--config 'port=28542'\n") && $0.contains("--values-stdin") && $0.contains("{\"token\":\"\(token)\"}\n")
+            $0.contains("--config 'port=28542'\n") && $0.contains("--values-stdin")
+                && $0.contains("{\"channel_key\":\"\(channelKey)\",\"token\":\"\(token)\"}\n")
         })
         for invocation in recorder.all {
             XCTAssertFalse(invocation.argv.joined(separator: " ").contains(token), "\(invocation.argv)")
