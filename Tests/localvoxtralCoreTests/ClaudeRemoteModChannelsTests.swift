@@ -309,6 +309,7 @@ final class ClaudeRemoteModWireTests: XCTestCase {
         XCTAssertNil(ClaudeRemoteModWire.decodePoll(poll("a:b")))
         XCTAssertNil(ClaudeRemoteModWire.decodePoll(poll("ok", instance: "short")))
         XCTAssertNil(ClaudeRemoteModWire.decodePoll(poll("ok", acked: -1)))
+        XCTAssertNil(ClaudeRemoteModWire.decodePoll(poll("ok", acked: Int.max)))
     }
 
     func testTheAnswerCarriesEachLineAsAStringWithoutItsNewline() throws {

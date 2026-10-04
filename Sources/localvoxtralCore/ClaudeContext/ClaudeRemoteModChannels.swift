@@ -61,7 +61,8 @@ public enum ClaudeRemoteModWire {
               poll.sessionID.utf8.allSatisfy({ isASCIIAlphanumeric($0) || $0 == UInt8(ascii: "-") }),
               isHex(poll.instance, count: 32), isHex(poll.nonce, count: 32),
               poll.challenge.isEmpty || isHex(poll.challenge, count: 32),
-              poll.acked >= 0
+              // An answer adds 1 to it: a trapping overflow would end the app.
+              (0..<Int(Int32.max)).contains(poll.acked)
         else { return nil }
         return poll
     }
