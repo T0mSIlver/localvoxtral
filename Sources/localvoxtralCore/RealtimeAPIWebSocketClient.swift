@@ -886,6 +886,10 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     override func handleTerminalSocketError(
         for task: URLSessionWebSocketTask, errorMessage: String?
     ) {
+        let errorMessage = Self.terminalErrorMessage(
+            errorMessage: errorMessage,
+            httpStatusCode: (task.response as? HTTPURLResponse)?.statusCode
+        )
         // The retiring socket died before its `done` (a 1012 from a server
         // that ran out of context, say): the session goes on to the next
         // socket with the carried audio rather than through a reconnect,
@@ -925,6 +929,19 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         if outcome.disconnected {
             emit(.disconnected, from: outcome.generation)
         }
+    }
+
+    /// The socket error text a terminal failure reports, with the HTTP
+    /// status of a rejected upgrade folded in. URLSession reports a 401, 403
+    /// or 429 upgrade as a bare `NSURLErrorBadServerResponse` (-1011), which
+    /// the failure classifier reads as a wrong path; `task.response` still
+    /// carries the status, and the classifier's `http 401`, `http 403` and
+    /// `http 429` rules name the real cause. Mistral words its own
+    /// (`MistralRealtimeWebSocketClient.terminalErrorMessage`).
+    static func terminalErrorMessage(errorMessage: String?, httpStatusCode: Int?) -> String? {
+        guard let errorMessage else { return nil }
+        guard let httpStatusCode, httpStatusCode >= 400 else { return errorMessage }
+        return "The server refused the connection (HTTP \(httpStatusCode)): \(errorMessage)"
     }
 
     // MARK: - Usage

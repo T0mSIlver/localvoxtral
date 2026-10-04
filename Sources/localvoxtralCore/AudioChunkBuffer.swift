@@ -10,9 +10,10 @@ package final class AudioChunkBuffer: Sendable {
     /// while nothing is draining: a reconnect gap (#380), or a stalled send
     /// task. Past it the OLDEST audio is dropped — what is still worth
     /// transcribing is the speech closest to now. Sized above the worst case
-    /// a `RealtimeReconnectPolicy` run can take, so a reconnect that lands
-    /// within its retry cap replays the whole gap.
-    package static let maxRetainedSeconds = 30
+    /// a `RealtimeReconnectPolicy` run can take, the helper wait included
+    /// (about 41 s), so a reconnect that lands within its retry cap replays
+    /// the whole gap. At 32 KB/s that is under 1.5 MB.
+    package static let maxRetainedSeconds = 45
 
     package static let defaultMaxRetainedBytes = bytesPerSecond * maxRetainedSeconds
 

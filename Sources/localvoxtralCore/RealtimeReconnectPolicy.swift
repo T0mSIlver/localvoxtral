@@ -26,8 +26,7 @@ package struct RealtimeReconnectPolicy: Sendable, Equatable {
     /// restarting before it dials anyway (#1583). speechd binds its port only
     /// once its model is loaded, so until then every connect is refused at
     /// once and would spend the attempts in seconds. Charged no attempt, and
-    /// short of `AudioChunkBuffer.maxRetainedSeconds` by the time the
-    /// attempts take when each is refused at once.
+    /// counted in `worstCaseDuration`, which the audio buffer outlasts.
     package let managedHelperStartBudget: TimeInterval
 
     package static let `default` = RealtimeReconnectPolicy(
@@ -47,11 +46,12 @@ package struct RealtimeReconnectPolicy: Sendable, Equatable {
         return min(grown, maxBackoff)
     }
 
-    /// Longest a full run can take when every attempt times out silently.
-    /// `AudioChunkBuffer.maxRetainedSeconds` is sized against this: a run that
-    /// succeeds within the cap replays every second the gap swallowed.
+    /// Longest a full run can take: the whole wait for a restarting helper,
+    /// then every attempt timing out silently. `AudioChunkBuffer
+    /// .maxRetainedSeconds` is sized against this: a run that succeeds within
+    /// the cap replays every second the gap swallowed.
     package var worstCaseDuration: TimeInterval {
-        (1...max(1, maxAttempts)).reduce(0) { total, attempt in
+        (1...max(1, maxAttempts)).reduce(managedHelperStartBudget) { total, attempt in
             total + backoff(beforeAttempt: attempt) + attemptTimeout
         }
     }
