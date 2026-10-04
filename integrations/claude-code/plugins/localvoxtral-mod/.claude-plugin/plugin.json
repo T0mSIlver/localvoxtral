@@ -1,7 +1,7 @@
 {
   "name": "localvoxtral-mod",
   "description": "Shows whether localvoxtral is connected to this Claude Code session, puts dictated text in the prompt box, and shows the dictation above the prompt. A Claude Code mod: needs a Claude Code build that loads hooks modules, and does nothing on one that does not.",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": {
     "name": "localvoxtral"
   },

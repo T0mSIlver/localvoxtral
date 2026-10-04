@@ -354,6 +354,27 @@ there is not.
   question (#1410), which the same parser and filters read as a one-shot
   run's, and the prompt draft (#1406, above), which only the stop that
   asked for it reads.
+  **An attached channel is the session's liveness** (#1646). While a local
+  session's channel is open and its attach named the same Claude pid as
+  the session's hooks, the registry applies no TTL to it; pid liveness
+  still does, and a pidless or mismatched session keeps its TTL. Once the
+  channel detaches, the TTL counts from the detach, so a reloaded mod or a
+  restarted publisher still finds the session to attach again. The attach
+  only extends a session a hook created, and a same-user process could
+  keep one fresh by sending hooks just as well. The mod's `session.end`
+  sends a `mod_bye` line through `--mod-reply`; the broker acts on it only
+  for a session with an attached channel: it writes a `bye` message down
+  that channel and closes it, and that detach removes the session at once.
+  A forged bye ends only an attached session early, as a forged
+  `SessionEnd` already can. After `/clear` the process goes on under a new
+  session id: the mod's channel ends with the bye and attaches again under
+  the new id, never under the old one. A request already on the old
+  attach when the process moved acts on nothing: the mod answers every kind
+  but `ping` with `session_changed` once `$.session.id()` no longer names
+  the attach's session, and the app logs it to `Log.backends` and takes its
+  own path. With no bye (an app or mod that
+  predates it, a crash), the session's own SessionEnd hook and the TTL
+  from the detach end it as before.
 - **The Mistral second pass holds the text back, never the world** (#317).
   An Overlay Buffer dictation in Mistral API mode is sent whole to the batch
   endpoint on stop (`DictationSessionController+StopCommit.swift`,

@@ -5,12 +5,16 @@ import type { Band } from '../types'
 import {
   BAND_STALE_MS,
   bandOf,
+  type ChannelBye,
   type ChannelMessage,
   draftOf,
   type ChannelReply,
+  NEW_SESSION_POLL_MS,
+  NEW_SESSION_WAIT_MS,
   type Outcome,
   parseMessage,
   RESTART_DELAY_MS,
+  SESSION_CHANGED,
   SHORTEST_LIFE_MS,
   WIRE_VERSION,
 } from './channel'
@@ -55,28 +59,57 @@ async function settingsShowIndicator($: EngineInterface): Promise<boolean> {
   return typeof command === 'string' && SETTINGS_INDICATOR.test(command)
 }
 
+// The session the mod said `bye` for, and whether the process ends with it
+// (any end but `/clear`). Module state: `session.end` sets it, the channel
+// loop reads it.
+let endingSession: string | undefined
+let processEnds = false
+// Resolves when `session.end` cuts the channel of a `/clear`, so the read
+// loop stops waiting on a child the app may never close.
+let cutChannel: () => void = () => {}
+
 /**
  * Keeps `--attach` running for the session's life and answers each message
- * with what `handle` did.
+ * with what `handle` did. After the app's `bye`, attaches again under the
+ * session id a `/clear` moved the process to (#1646).
  * Never throws into the session.
  */
 async function runChannel(
   $: EngineInterface,
   publisher: string,
 ): Promise<void> {
-  const sessionID = await $.session.id()
+  let sessionID = await $.session.id()
   for (;;) {
     const startedAt = await $.clock.now()
+    let saidBye = false
     try {
       let buffered = ''
       const child = $.process.spawn({ argv: [publisher, '--attach', '--session', sessionID] })
-      for await (const { stream, text } of child) {
+      const cut = new Promise<'cut'>((resolve) => {
+        cutChannel = () => resolve('cut')
+      })
+      read: for (;;) {
+        const piece = await Promise.race([child.next(), cut])
+        if (piece === 'cut') {
+          // Ends the child; not awaited, since a pull may still be pending.
+          void child.return(undefined as never).catch(() => {})
+          break
+        }
+        if (piece.done === true) break
+        const { stream, text } = piece.value
         if (stream !== 'stdout') continue
         buffered += text
         let newline = buffered.indexOf('\n')
         while (newline >= 0) {
           const message = parseMessage(buffered.slice(0, newline))
           buffered = buffered.slice(newline + 1)
+          if (message?.kind === 'bye') {
+            // The app ended this session's channel; leaving the loop ends
+            // the child.
+            saidBye = true
+            void child.return(undefined as never).catch(() => {})
+            break read
+          }
           if (message?.kind === 'state') void showBand($, message)
           else if (message !== null) void answer($, publisher, sessionID, message)
           newline = buffered.indexOf('\n')
@@ -85,8 +118,39 @@ async function runChannel(
     } catch {
       // The child could not start; the restart below decides what is next.
     }
+    if (saidBye || endingSession === sessionID) {
+      if (processEnds) return
+      const next = await newSessionID($, sessionID)
+      if (next === undefined) return
+      sessionID = next
+      continue
+    }
     if ((await $.clock.now()) - startedAt < SHORTEST_LIFE_MS) return
     await $.clock.sleep(RESTART_DELAY_MS)
+  }
+}
+
+/** The id the process went on under after `ended`, or undefined in time. */
+async function newSessionID($: EngineInterface, ended: string): Promise<string | undefined> {
+  for (let waited = 0; waited <= NEW_SESSION_WAIT_MS; waited += NEW_SESSION_POLL_MS) {
+    const id = await $.session.id()
+    if (id !== ended) return id
+    await $.clock.sleep(NEW_SESSION_POLL_MS)
+  }
+  return undefined
+}
+
+/**
+ * Tells the app the session ends (#1646), so it drops the session when the
+ * channel closes instead of waiting out a TTL. Inside `session.end`'s short
+ * budget; a failure leaves the app the session's own SessionEnd hook.
+ */
+async function sayBye($: EngineInterface, publisher: string, sessionID: string): Promise<void> {
+  const bye: ChannelBye = { mod_bye: WIRE_VERSION, session_id: sessionID }
+  try {
+    await $.process.run([publisher, '--mod-reply'], { stdin: `${JSON.stringify(bye)}\n`, timeoutMs: 1000 })
+  } catch {
+    // The app keeps the session until its SessionEnd hook or TTL.
   }
 }
 
@@ -98,7 +162,13 @@ async function answer(
 ): Promise<void> {
   let outcome: Outcome
   try {
-    outcome = await handle($, message)
+    // A /clear or a resume moves the process to another session before
+    // `session.end` cuts this attach. A request issued for this session
+    // must not act on that one's prompt box or transcript.
+    outcome =
+      message.kind !== 'ping' && (await $.session.id()) !== sessionID
+        ? { ok: false, reason: SESSION_CHANGED }
+        : await handle($, message)
   } catch {
     outcome = { ok: false, reason: 'failed' }
   }
@@ -160,6 +230,9 @@ async function handle($: EngineInterface, message: ChannelMessage): Promise<Outc
   }
 }
 
+// The publisher the channel runs, once `session.start` found one.
+let channelPublisher: string | undefined
+
 // Not gated on `isInteractive`, which is false for an SDK host and may be
 // for a Claude Desktop session, where the indicator and the channel matter
 // most.
@@ -180,10 +253,24 @@ export const register: Register = (on, options) => {
     )
   })
 
+  on('session.end', async ($, e, next) => {
+    if (channelPublisher !== undefined) {
+      endingSession = e.sessionId
+      processEnds = e.reason !== 'clear'
+      await sayBye($, channelPublisher, e.sessionId)
+      // Without the app's answer (an app that is down or predates the bye)
+      // the child would go on attaching as the cleared session: end it, so
+      // the channel moves to the new id.
+      if (!processEnds) cutChannel()
+    }
+    return next(e)
+  })
+
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     const publisher = await findPublisher($, String(options.publisher_path ?? ''))
     if (publisher === undefined) return started
+    channelPublisher = publisher
     // A module reload or the session's end can cut the loop mid-call.
     runChannel($, publisher).catch(() => {})
     if (await settingsShowIndicator($)) return started

@@ -147,12 +147,19 @@ public struct ClaudeModAttachClient: Sendable {
         }
     }
 
-    /// `--mod-reply`: sends the one reply on stdin to the app, if it decodes.
+    /// `--mod-reply`: sends the one reply or bye on stdin to the app, if it
+    /// decodes.
     public static func sendReply(_ stdin: Data, to socketPath: String, publisher: UnixSocketPublisher = .init()) {
         let line = stdin.split(separator: 0x0A).first.map { Data($0) } ?? Data()
-        guard let reply = ClaudeModChannelWire.decode(ClaudeModChannelWire.Reply.self, from: line),
-              let encoded = ClaudeModChannelWire.encodeLine(reply)
-        else { return }
+        let encoded: Data?
+        if let reply = ClaudeModChannelWire.decode(ClaudeModChannelWire.Reply.self, from: line) {
+            encoded = ClaudeModChannelWire.encodeLine(reply)
+        } else if let bye = ClaudeModChannelWire.decode(ClaudeModChannelWire.Bye.self, from: line) {
+            encoded = ClaudeModChannelWire.encodeLine(bye)
+        } else {
+            encoded = nil
+        }
+        guard let encoded else { return }
         _ = publisher.publish(line: encoded, to: socketPath)
     }
 }

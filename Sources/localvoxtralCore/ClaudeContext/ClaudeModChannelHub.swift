@@ -33,6 +33,9 @@ public final class ClaudeModChannelHub: Sendable {
     private struct Attached {
         var token: UInt64
         var channel: Channel
+        /// The mod said its session is ending (`bye`): the detach that
+        /// follows ends the session.
+        var isEnding = false
     }
 
     private struct Pending {
@@ -199,15 +202,19 @@ public final class ClaudeModChannelHub: Sendable {
 
     /// Forgets the channel `token` names, if it is still the session's, and
     /// answers nil to every request still waiting on it.
-    package func detach(sessionID: String, token: UInt64) {
-        let orphaned: [Pending]? = state.withLock { state in
-            guard state.channels[sessionID]?.token == token else { return nil }
+    ///
+    /// - Returns: whether the mod said `bye` first, so the session ended.
+    @discardableResult
+    package func detach(sessionID: String, token: UInt64) -> Bool {
+        let detached: (orphaned: [Pending], ended: Bool)? = state.withLock { state in
+            guard let attached = state.channels[sessionID], attached.token == token else { return nil }
             state.channels[sessionID] = nil
             let ids = state.pending.filter { $0.value.sessionID == sessionID }.map(\.key)
-            return ids.compactMap { state.pending.removeValue(forKey: $0) }
+            return (ids.compactMap { state.pending.removeValue(forKey: $0) }, attached.isEnding)
         }
-        guard let orphaned else { return }
-        Log.claudeContext.info("Mod channel detached")
+        guard let detached else { return false }
+        let (orphaned, ended) = detached
+        Log.claudeContext.info("Mod channel detached ended=\(ended, privacy: .public)")
         #if DEBUG
         debugAttachHook.withLock { $0 }?(false)
         #endif
@@ -215,6 +222,34 @@ public final class ClaudeModChannelHub: Sendable {
             pending.timer?.cancel()
             pending.continuation.resume(returning: .unanswered)
         }
+        return ended
+    }
+
+    /// The mod's `bye` (#1646): marks the session's channel as ending, tells
+    /// the mod with a `bye` message, and closes the channel, whose detach
+    /// then ends the session. A session with no channel is left alone: a
+    /// bye only ends what an attach proved.
+    ///
+    /// - Returns: whether a channel was attached.
+    @discardableResult
+    package func bye(sessionID: String) -> Bool {
+        let channel: Channel? = state.withLock { state in
+            guard state.channels[sessionID] != nil else { return nil }
+            state.channels[sessionID]?.isEnding = true
+            return state.channels[sessionID]?.channel
+        }
+        guard let channel else {
+            Log.claudeContext.info("Mod channel: a bye for a session with no channel; nothing ended")
+            return false
+        }
+        Log.claudeContext.info("Mod channel: the mod said bye; closing")
+        var message = ClaudeModChannelWire.Message(kind: .bye)
+        message.id = makeID()
+        if let line = ClaudeModChannelWire.encodeLine(message) {
+            _ = channel.write(line)
+        }
+        channel.close()
+        return true
     }
 
     /// Hands a reply to the request it answers. A reply that names another
@@ -227,6 +262,11 @@ public final class ClaudeModChannelHub: Sendable {
         guard let pending else {
             Log.claudeContext.error("Mod channel: dropped a reply no request is waiting for")
             return
+        }
+        if !reply.ok, reply.reason == ClaudeModChannelWire.Reply.sessionChangedReason {
+            Log.backends.error(
+                "Mod channel: the mod refused a request because its process moved to another session (/clear or resume)"
+            )
         }
         pending.timer?.cancel()
         pending.continuation.resume(returning: .replied(reply))
