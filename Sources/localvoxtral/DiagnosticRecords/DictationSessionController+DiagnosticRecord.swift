@@ -109,10 +109,29 @@ extension DictationSessionController {
         }
     }
 
+    /// Deletes every diagnostic record, through History's write queue. When
+    /// History did not open there is no queue and no quarantine, so the
+    /// folder is emptied here and now; the switch-off must not depend on a
+    /// store that failed (#1771).
+    @discardableResult
+    func deleteAllDiagnosticRecords(removingBackups: Bool = false) -> Task<Void, Never>? {
+        if let sessionStore {
+            return sessionStore.deleteAllDiagnosticRecords(removingBackups: removingBackups)
+        }
+        if historyOpenFailed, let diagnosticRecordStore {
+            let removed = diagnosticRecordStore.removeAll()
+            if removingBackups { quarantineWithoutHistory?.removeAll(of: "diagnostic-records") }
+            Log.persistence.info(
+                "History did not open: deleted \(removed, privacy: .public) diagnostic record(s) directly")
+        }
+        return nil
+    }
+
     /// Records are kept only while History keeps dictations: a record is an
     /// attachment to its History entry.
     var diagnosticRecordsWanted: Bool {
         settings.diagnosticRecordsEnabled && settings.dictationHistoryRetention.savesDictations
+            && !historyOpenFailed
     }
 
     private nonisolated static func assembleDiagnosticRecord(

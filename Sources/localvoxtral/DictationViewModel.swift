@@ -743,6 +743,10 @@ final class DictationViewModel {
                 sessionStore = store
             case let .failure(failure):
                 historyOpenFailure = failure
+                session.historyOpenFailed = true
+                session.quarantineWithoutHistory = DictationHistoryQuarantine(
+                    directoryURL: DictationHistoryQuarantine.directory(
+                        inHistoryFolder: dependencies.dataDirectory ?? DictationHistoryStoreFile.defaultDirectoryURL()))
             }
             sessionStore?.onAccessFailureChange = { [weak self] failure in
                 self?.historyAccessFailure = failure
