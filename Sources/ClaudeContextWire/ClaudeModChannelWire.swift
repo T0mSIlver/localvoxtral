@@ -64,6 +64,13 @@ public enum ClaudeModChannelWire {
         /// Put `text` in the session's prompt box at the cursor (#1409).
         /// `ok` only once the box holds it.
         case fill
+        /// A spoken send (#1644): put `text` in the box at the cursor, then
+        /// submit the box's whole text and empty it, with no key. `ok` once
+        /// the box held it; the reply's `submitted` says whether it was then
+        /// submitted, and `queued` that the submit waits for the running
+        /// turn. A box the mod cannot submit as typed (a paste placeholder,
+        /// a slash command) answers `ok: false` with nothing changed.
+        case send
         /// Ask the session's own model `text` over its transcript, tool-less
         /// (`$.model.fork`, #1410). `ok` with the answer in the reply's
         /// `text`.
@@ -169,6 +176,10 @@ public enum ClaudeModChannelWire {
         public var cursor: Int?
         /// What a `terms` fork cost.
         public var usage: Usage?
+        /// For `send`: whether the box's text was submitted.
+        public var submitted: Bool?
+        /// For `send`: the submit waits for the session's running turn.
+        public var queued: Bool?
 
         /// The `reason` of a request the mod refused because its process
         /// went on under another session (`/clear`, a resume) before the
@@ -183,8 +194,12 @@ public enum ClaudeModChannelWire {
             text: String? = nil,
             cursor: Int? = nil,
             usage: Usage? = nil,
+            submitted: Bool? = nil,
+            queued: Bool? = nil,
             version: Int = ClaudeModChannelWire.version
         ) {
+            self.submitted = submitted
+            self.queued = queued
             self.modReply = version
             self.sessionID = sessionID
             self.id = id
@@ -204,6 +219,8 @@ public enum ClaudeModChannelWire {
             case text
             case cursor
             case usage
+            case submitted
+            case queued
         }
     }
 

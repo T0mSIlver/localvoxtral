@@ -8,6 +8,8 @@ import {
   type ChannelBye,
   type ChannelMessage,
   draftOf,
+  insertedAt,
+  needsKeys,
   type ChannelReply,
   NEW_SESSION_POLL_MS,
   NEW_SESSION_WAIT_MS,
@@ -16,6 +18,7 @@ import {
   RESTART_DELAY_MS,
   SESSION_CHANGED,
   SHORTEST_LIFE_MS,
+  SUBMIT_ANSWER_MS,
   WIRE_VERSION,
 } from './channel'
 
@@ -208,6 +211,9 @@ async function handle($: EngineInterface, message: ChannelMessage): Promise<Outc
       const filled = await $.prompt.fill({ text: message.text, mode: 'insert' })
       return filled.isFilled ? { ok: true } : { ok: false, reason: filled.refusal ?? 'refused' }
     }
+    case 'send':
+      if (message.text === undefined || message.text === '') return { ok: false, reason: 'no_text' }
+      return send($, message.text)
     case 'draft':
       // What the person already typed, for polish and the space before the
       // fill (#1406). Read where the dictation will land, at the stop.
@@ -230,6 +236,56 @@ async function handle($: EngineInterface, message: ChannelMessage): Promise<Outc
   }
 }
 
+// The main loop's running turn, from `turn.start` to its `turn.complete`:
+// a plugin's submit waits for it.
+let runningTurn: string | undefined
+
+/**
+ * A spoken send (#1644): the text goes in at the cursor, then the box's
+ * whole text is submitted as the person's own and the box emptied, so
+ * nothing is sent twice or left behind. Answers `queued` when the submit
+ * waits for a running turn; a submit refused later puts the text back.
+ */
+async function send($: EngineInterface, text: string): Promise<Outcome> {
+  const reason = needsKeys(insertedAt(await $.prompt.read(), text))
+  if (reason !== undefined) return { ok: false, reason }
+  const filled = await $.prompt.fill({ text, mode: 'insert' })
+  if (!filled.isFilled) return { ok: false, reason: filled.refusal ?? 'refused' }
+  const whole = filled.text
+  const emptied = await $.prompt.fill({ text: '', mode: 'replace' })
+  if (!emptied.isFilled) return { ok: true, submitted: false, reason: emptied.refusal ?? 'refused' }
+
+  const busy = runningTurn !== undefined
+  const submitted = $.prompt.submit({ text: whole, asUser: true }).then(
+    async (result) => {
+      if (result.drop === undefined) return 'sent' as const
+      await putBack($, whole)
+      return 'dropped' as const
+    },
+    async () => {
+      await putBack($, whole)
+      return 'dropped' as const
+    },
+  )
+  if (busy) return { ok: true, submitted: true, queued: true }
+  const first = await Promise.race([submitted, $.clock.sleep(SUBMIT_ANSWER_MS).then(() => 'waiting' as const)])
+  if (first === 'dropped') return { ok: true, submitted: false, reason: 'dropped' }
+  return first === 'sent' ? { ok: true, submitted: true } : { ok: true, submitted: true, queued: true }
+}
+
+/**
+ * A submit that did not go: its text back in the box, after anything typed
+ * since, so neither is cut into the other.
+ */
+async function putBack($: EngineInterface, text: string): Promise<void> {
+  try {
+    const box = await $.prompt.read()
+    await $.prompt.fill({ text: box.text === '' ? text : ` ${text}`, mode: 'append' })
+  } catch {
+    // The engine shows the drop's reason; nothing else to do.
+  }
+}
+
 // The publisher the channel runs, once `session.start` found one.
 let channelPublisher: string | undefined
 
@@ -237,6 +293,16 @@ let channelPublisher: string | undefined
 // for a Claude Desktop session, where the indicator and the channel matter
 // most.
 export const register: Register = (on, options) => {
+  on('turn.start', async ($, e, next) => {
+    runningTurn = e.turnId
+    return next(e)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined && e.turnId === runningTurn) runningTurn = undefined
+    return next(e)
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const shown = await read($, band)
     if (shown === null || e.props.hasSurvey) return next(e)
@@ -254,6 +320,8 @@ export const register: Register = (on, options) => {
   })
 
   on('session.end', async ($, e, next) => {
+    // A turn the end cut short raises no `turn.complete` the mod sees.
+    runningTurn = undefined
     if (channelPublisher !== undefined) {
       endingSession = e.sessionId
       processEnds = e.reason !== 'clear'
