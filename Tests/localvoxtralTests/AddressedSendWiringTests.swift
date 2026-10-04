@@ -689,6 +689,57 @@ final class AddressedSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false])
     }
 
+    /// The draft read already met `session_changed`, then the channel
+    /// closed before the send: the old registry entry still matches the
+    /// pane after `/clear`, so the focus path would type into the session
+    /// that replaced it. Nothing is sent by any path (Codex review of #1702).
+    func testASessionChangedDraftReadKeepsTheTextWhenTheSendIsNotDelivered() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
+        )
+        _ = attachMod(
+            harness, sessionID: "pay", answer: .undeliverable,
+            draftRefusal: ClaudeModChannelWire.Reply.sessionChangedReason
+        )
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, [])
+        XCTAssertEqual(harness.inserted.value.map(\.text), [])
+        XCTAssertEqual(harness.returns.value, [])
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false])
+        XCTAssertEqual(harness.viewModel.statusText, DictationViewModel.StatusStrings.agentPromptTextKeptInHistory)
+    }
+
+    /// A new dictation committed into the same unsent prompt while the
+    /// cancelled send waited: the send's late "submitted" forgets only the
+    /// landings recorded before it, not the newer one (Codex review of #1702).
+    func testALateModReplyKeepsTheLandingANewerDictationRecorded() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
+        )
+        let mod = attachMod(harness, sessionID: "pay", answer: .held)
+
+        harness.viewModel.isDictating = false
+        harness.viewModel.isFinalizingStop = true
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        let commit = harness.viewModel.session.polishAndCommitTask
+        for await _ in mod.arrived { break }
+        XCTAssertTrue(harness.viewModel.session.cancelPolishingForNewSessionIfNeeded(), "a new dictation starts")
+        let newer = OverlayCommitLanding(
+            targetPID: Self.namedTerminalPID, sessionID: "pay", promptsSubmitted: 0,
+            generation: harness.viewModel.session.sessionStartGeneration &+ 1
+        )
+        harness.viewModel.session.lastOverlayCommitLanding = newer
+        mod.answerHeld(.submitted)
+        await commit?.value
+
+        XCTAssertEqual(mod.sends.value, ["Run the tests"], "precondition: the mod got the send")
+        XCTAssertEqual(harness.viewModel.session.lastOverlayCommitLanding, newer)
+    }
+
     // MARK: - Harness
 
     private struct Harness {
@@ -716,11 +767,17 @@ final class AddressedSendWiringTests: XCTestCase {
     private enum ModAnswer: Equatable {
         case submitted, queued, silent, undeliverable
         case refused(String)
+        /// Waits for the test's `answerHeld`.
+        case held
     }
 
     private struct FakeMod {
         /// The texts of the `send` requests the mod got.
         let sends: Box<[String]>
+        /// Yields once per `send` the mod got.
+        let arrived: AsyncStream<Void>
+        /// Answers the `send` a `.held` mod got.
+        let answerHeld: @MainActor (ModAnswer) -> Void
     }
 
     /// Attaches a fake mod for `sessionID` that answers each `send` with
@@ -728,18 +785,37 @@ final class AddressedSendWiringTests: XCTestCase {
     /// or not at all when `draft` is nil.
     /// A silent mod's request times out at once.
     private func attachMod(
-        _ harness: Harness, sessionID: String, answer: ModAnswer, draft: String? = ""
+        _ harness: Harness, sessionID: String, answer: ModAnswer, draft: String? = "", draftRefusal: String? = nil
     ) -> FakeMod {
         let sleep: @Sendable (Duration) async -> Void = answer == .silent
             ? { @Sendable _ in }
             : { @Sendable _ in try? await Task.sleep(for: .seconds(3600)) }
         let hub = ClaudeModChannelHub(sleep: sleep)
         let sends = Box<[String]>([])
+        let heldID = Box<String?>(nil)
+        let (arrived, arrival) = AsyncStream<Void>.makeStream()
+        let answerSend: @Sendable (ModAnswer, String) -> Void = { answer, id in
+            switch answer {
+            case .undeliverable, .silent, .held:
+                break
+            case .submitted, .queued:
+                hub.deliver(.init(
+                    sessionID: sessionID, id: id, ok: true,
+                    submitted: true, queued: answer == .queued ? true : nil
+                ))
+            case .refused(let reason):
+                hub.deliver(.init(sessionID: sessionID, id: id, ok: false, reason: reason))
+            }
+        }
         _ = hub.attach(sessionID: sessionID, channel: .init(
             write: { line in
                 guard let message = ClaudeModChannelWire.decode(
                     ClaudeModChannelWire.Message.self, from: line.dropLast()
                 ) else { return false }
+                if message.kind == .draft, let draftRefusal {
+                    hub.deliver(.init(sessionID: sessionID, id: message.id, ok: false, reason: draftRefusal))
+                    return true
+                }
                 if message.kind == .draft {
                     // A mod older than `draft` never answers it.
                     guard let draft else { return false }
@@ -750,25 +826,19 @@ final class AddressedSendWiringTests: XCTestCase {
                 }
                 guard message.kind == .send else { return false }
                 sends.value.append(message.text ?? "")
-                switch answer {
-                case .undeliverable:
-                    return false
-                case .silent:
-                    break
-                case .submitted, .queued:
-                    hub.deliver(.init(
-                        sessionID: sessionID, id: message.id, ok: true,
-                        submitted: true, queued: answer == .queued ? true : nil
-                    ))
-                case .refused(let reason):
-                    hub.deliver(.init(sessionID: sessionID, id: message.id, ok: false, reason: reason))
-                }
+                arrival.yield()
+                guard answer != .undeliverable else { return false }
+                if answer == .held { heldID.value = message.id }
+                answerSend(answer, message.id)
                 return true
             },
             close: {}
         ))
         harness.viewModel.session.context.claudeModChannels = hub
-        return FakeMod(sends: sends)
+        return FakeMod(sends: sends, arrived: arrived) { late in
+            guard let id = heldID.value else { return XCTFail("no held send to answer") }
+            answerSend(late, id)
+        }
     }
 
     private func session(_ id: String, cwd: String, tty: String = "/dev/ttys009") -> ClaudeSessionSnapshot {
