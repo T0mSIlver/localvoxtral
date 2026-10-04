@@ -51,3 +51,36 @@ package enum PolishRequestTimeout {
         return min(ceilingSeconds, scaled)
     }
 }
+
+/// What `PolishRequestTimeout.enforcing` throws when the request ran past its
+/// whole budget.
+package struct PolishDeadlinePassed: Error, Equatable {
+    package let seconds: TimeInterval
+}
+
+extension PolishRequestTimeout {
+    /// Runs `request` for at most `seconds` in all, then cancels it and throws
+    /// `PolishDeadlinePassed`. `URLRequest.timeoutInterval` measures idle
+    /// time: a server that sends a byte now and then would otherwise hold
+    /// the request, and the stop commit waiting on it, for the session's
+    /// seven-day resource timeout (#1688).
+    package static func enforcing<T: Sendable>(
+        seconds: TimeInterval,
+        sleep: @escaping @Sendable (Duration) async -> Void,
+        _ request: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T?.self) { group in
+            group.addTask { try await request() }
+            group.addTask {
+                await sleep(.seconds(seconds))
+                return nil
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else { throw CancellationError() }
+            if let value = first { return value }
+            // The sleep returns early when the caller is cancelled.
+            try Task.checkCancellation()
+            throw PolishDeadlinePassed(seconds: seconds)
+        }
+    }
+}
