@@ -141,7 +141,8 @@ public struct VibeHooksBlockEditor: Sendable, Equatable {
     /// user's data, not a delimiter, and a block appended after an unclosed
     /// string lands INSIDE it. Delimiters are `"""` and `'''`; inside a
     /// `"""` string a backslash escapes the next character, so `\"""` does
-    /// not close it (#1728). A file this cannot classify is refused.
+    /// not close it (#1728). Comments and one-line strings open nothing. A
+    /// file this cannot classify is refused.
     package func hasUnclosedOrMarkedMultilineString(_ existing: String) -> Bool {
         let basic: [Character] = ["\"", "\"", "\""]
         let literal: [Character] = ["'", "'", "'"]
@@ -164,6 +165,19 @@ public struct VibeHooksBlockEditor: Sendable, Equatable {
                     open = open == nil ? delimiter : nil
                     index += 3
                     continue
+                }
+                if open == nil {
+                    // Outside a multi-line string, a comment ends the line and
+                    // a one-line string is skipped whole: quotes in either
+                    // open nothing.
+                    let character = characters[index]
+                    if character == "#" { break }
+                    if character == "\"" || character == "'" {
+                        index += 1
+                        while index < characters.count, characters[index] != character {
+                            index += character == "\"" && characters[index] == "\\" ? 2 : 1
+                        }
+                    }
                 }
                 index += 1
             }

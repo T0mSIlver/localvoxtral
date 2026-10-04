@@ -277,6 +277,20 @@ final class VibeHooksInstallServiceTests: XCTestCase {
         }
     }
 
+    /// Triple quotes inside a one-line string or a comment open nothing; the
+    /// escape-aware scanner first read them as delimiters and refused these
+    /// valid files (#1728 review).
+    func testQuotesInOneLineStringsAndCommentsDoNotBlockAnInstall() {
+        let texts = [
+            #"[[hooks]]\#nname = "mine"\#ncommand = 'printf %s \"""hello\"""'\#n"#,
+            #"[[hooks]]\#nname = "mine"\#ncommand = "echo \"\"\" done"\#n"#,
+            #"# a note: \""" or ''' in a comment\#n[[hooks]]\#nname = "mine" # trailing """\#n"#,
+        ]
+        for text in texts {
+            XCTAssertNil(VibeHooksBlockEditor.remote.refusal(for: text), text)
+        }
+    }
+
     func testNamesThatMerelyLookLikeOursDoNotBlockAnInstall() throws {
         // Vibe deduplicates by EXACT name, so these are the user's own.
         let theirs = "namespace = \"localvoxtral-turn\"\n\n[[hooks]]\nname = \"localvoxtral-custom\"\n"
