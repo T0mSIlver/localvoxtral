@@ -480,9 +480,7 @@ extension DiagnosticRecordBuilder {
                 captureMilliseconds: nil
             )
         )
-        for withheld in inputs.withheld {
-            DiagnosticRecordRedaction.withhold(withheld, from: &record)
-        }
+        DiagnosticRecordRedaction.withhold(inputs.withheld, from: &record)
         return record
     }
 }
