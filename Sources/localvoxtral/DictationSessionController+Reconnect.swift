@@ -227,6 +227,7 @@ extension DictationSessionController {
             // server session with the stop's final commit behind it, once.
             statusText = StatusStrings.finalizing
             audio.flushBufferedAudio(to: activeRealtimeClient)
+            stopReplaysReconnectGap = true
             scheduleStopFinalization()
             startStopFinalizationWatchdog()
             return

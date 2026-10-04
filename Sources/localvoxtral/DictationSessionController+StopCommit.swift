@@ -887,6 +887,7 @@ extension DictationSessionController {
         wasCancelled = false
         isFinalizingStop = false
         stopFinalizationTimeout = TimingConstants.stopFinalizationTimeout
+        stopReplaysReconnectGap = false
         postModChannelBand(.done)
         isConnectingRealtimeSession = false
         isCompletingStoppedSession = false

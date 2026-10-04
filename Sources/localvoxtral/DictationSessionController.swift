@@ -445,6 +445,12 @@ final class DictationSessionController {
     /// How long the stop in progress waits for the server's last words.
     @ObservationIgnored
     var stopFinalizationTimeout = TimingConstants.stopFinalizationTimeout
+    /// The stop in progress sent a reconnect's whole gap behind its final
+    /// commit. The server decodes all of it before answering, with no delta
+    /// across a pause in the speech, so the idle rule would close on it
+    /// (#1758): only the final, a closed socket or the timeout end the stop.
+    @ObservationIgnored
+    var stopReplaysReconnectGap = false
     @ObservationIgnored
     var finalizationWatchdogTask: Task<Void, Never>?
     @ObservationIgnored
