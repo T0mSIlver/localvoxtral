@@ -383,7 +383,7 @@ package struct LiveClaudeShellRCFileSystem: ClaudeShellRCFileSystem {
         )
     }
 
-    package func atomicWrite(_ data: Data, permissions: UInt16) throws {
+    package func atomicWrite(_ data: Data, permissions: UInt16, replacing expected: Data?) throws {
         let temporaryURL = directoryURL.appendingPathComponent(
             ".localvoxtral-rc.\(UUID().uuidString)", isDirectory: false
         )
@@ -415,6 +415,11 @@ package struct LiveClaudeShellRCFileSystem: ClaudeShellRCFileSystem {
         }
         guard fsync(descriptor) == 0 else {
             throw ShellRCPOSIXFailure(operation: "fsync", code: errno)
+        }
+        // Last look before the rename: a save since the caller's read would
+        // be lost under it (#1726).
+        guard ClaudeIntegrationLiveIO.leaf(at: fileURL, holds: expected) else {
+            throw ClaudeShellRCError.changedOnDisk
         }
         let moved = temporaryURL.path.withCString { source in
             fileURL.path.withCString { destination in rename(source, destination) }

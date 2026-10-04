@@ -228,6 +228,10 @@ public struct OpencodePluginInstallService: Sendable {
         case isSymlink
         case unreadable
         case refused
+        /// A file changed between the read and the write: a save made while
+        /// setup ran, which the write would have replaced. Running setup
+        /// again applies to the saved file.
+        case changedOnDisk
     }
 
     /// Copy the bundled file and list it in `tui.json` (creating that file
@@ -252,11 +256,15 @@ public struct OpencodePluginInstallService: Sendable {
         if !state.pluginsDirExists {
             try fileSystem.createPluginsDirectory(permissions: 0o700)
         }
-        try fileSystem.atomicWritePlugin(bundled, permissions: state.pluginPermissions ?? 0o600)
+        try fileSystem.atomicWritePlugin(
+            bundled, permissions: state.pluginPermissions ?? 0o600, replacing: state.pluginData
+        )
         if !state.configDirExists {
             try fileSystem.createConfigDirectory(permissions: 0o700)
         }
-        try fileSystem.atomicWriteTUI(updatedTUI, permissions: state.tuiPermissions ?? 0o600)
+        try fileSystem.atomicWriteTUI(
+            updatedTUI, permissions: state.tuiPermissions ?? 0o600, replacing: state.tuiData
+        )
         Log.claudeContext.info("opencode plugin install completed")
     }
 
@@ -278,9 +286,11 @@ public struct OpencodePluginInstallService: Sendable {
                 throw ServiceError.refused
             }
             switch removal {
-            case .deleteFile: try fileSystem.deleteTUI()
+            case .deleteFile: try fileSystem.deleteTUI(replacing: tuiData)
             case .rewrite(let data):
-                try fileSystem.atomicWriteTUI(data, permissions: state.tuiPermissions ?? 0o600)
+                try fileSystem.atomicWriteTUI(
+                    data, permissions: state.tuiPermissions ?? 0o600, replacing: tuiData
+                )
             case .noChange: break
             }
         }
@@ -363,8 +373,12 @@ public protocol OpencodePluginFileSystem: Sendable {
     func readState() throws -> OpencodePluginState
     func createPluginsDirectory(permissions: UInt16) throws
     func createConfigDirectory(permissions: UInt16) throws
-    func atomicWritePlugin(_ data: Data, permissions: UInt16) throws
-    func atomicWriteTUI(_ data: Data, permissions: UInt16) throws
+    /// The writes and the `tui.json` delete go ahead only while the file
+    /// still holds `expected` (nil: no file), the bytes the caller read.
+    /// Otherwise they throw `ServiceError.changedOnDisk` and change nothing
+    /// (#1726).
+    func atomicWritePlugin(_ data: Data, permissions: UInt16, replacing expected: Data?) throws
+    func atomicWriteTUI(_ data: Data, permissions: UInt16, replacing expected: Data?) throws
     func deletePlugin() throws
-    func deleteTUI() throws
+    func deleteTUI(replacing expected: Data) throws
 }

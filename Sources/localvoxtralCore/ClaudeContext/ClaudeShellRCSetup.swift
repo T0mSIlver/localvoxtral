@@ -180,7 +180,10 @@ public struct ClaudeShellRCState: Sendable, Equatable {
 public protocol ClaudeShellRCFileSystem: Sendable {
     func readState() throws -> ClaudeShellRCState
     func createDirectory(permissions: UInt16) throws
-    func atomicWrite(_ data: Data, permissions: UInt16) throws
+    /// Replaces the file with `data` only while it still holds `expected`
+    /// (nil: no file), the bytes the caller read. Otherwise it throws
+    /// `ClaudeShellRCError.changedOnDisk` and writes nothing (#1726).
+    func atomicWrite(_ data: Data, permissions: UInt16, replacing expected: Data?) throws
 }
 
 public enum ClaudeShellRCError: Error, Equatable {
@@ -201,6 +204,10 @@ public enum ClaudeShellRCError: Error, Equatable {
     /// A begin marker with no end. Writing past it would let the NEXT apply
     /// swallow whatever the user put in between.
     case markersDoNotPair
+    /// The file changed between the read and the write: a save made while
+    /// setup ran, which the write would have replaced. Nothing was written;
+    /// running setup again applies the block to the saved file.
+    case changedOnDisk
 }
 
 /// Applies or removes the block in the user's rc file.
@@ -326,7 +333,8 @@ public struct ClaudeShellRCWriter: Sendable {
             }
             try fileSystem.atomicWrite(
                 Data(updated.utf8),
-                permissions: state.permissions ?? 0o600
+                permissions: state.permissions ?? 0o600,
+                replacing: state.data
             )
             Log.claudeContext.info("Claude shell rc edit completed")
         } catch {

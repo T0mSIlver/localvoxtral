@@ -602,14 +602,14 @@ private final class StubModelOpencodeFS: OpencodePluginFileSystem, @unchecked Se
     func readState() throws -> OpencodePluginState { state }
     func createPluginsDirectory(permissions: UInt16) throws {}
     func createConfigDirectory(permissions: UInt16) throws {}
-    func atomicWritePlugin(_ data: Data, permissions: UInt16) throws {
+    func atomicWritePlugin(_ data: Data, permissions: UInt16, replacing _: Data?) throws {
         writtenPlugin = (data, permissions)
     }
-    func atomicWriteTUI(_ data: Data, permissions: UInt16) throws {
+    func atomicWriteTUI(_ data: Data, permissions: UInt16, replacing _: Data?) throws {
         writtenTUI = (data, permissions)
     }
     func deletePlugin() throws { deletedPlugin = true }
-    func deleteTUI() throws { deletedTUI = true }
+    func deleteTUI(replacing _: Data) throws { deletedTUI = true }
 }
 
 /// Remembers writes, so the row's status follows its own actions.
