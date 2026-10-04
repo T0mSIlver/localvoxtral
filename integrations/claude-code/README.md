@@ -421,6 +421,12 @@ the prompt waits for that turn, and the menu bar says so. A box holding a
 paste, an image, an `@` mention or a slash command is still typed and sent
 with Return. Sessions in Claude Desktop or a browser tab are still typed.
 
+"Send that to <name>" uses the same mod when the named session has one: the
+words go into that session's prompt box and are submitted there, without
+bringing its pane forward or pressing a key. If its mod cannot take them,
+the pane comes forward and the words are typed, as for a session without
+the mod.
+
 When an Overlay Buffer dictation into such a session is polished, the app
 also asks the mod what the prompt box already holds, in a terminal or the
 Claude Desktop Code tab. With **Send diff, recent files and prompts** on, polish sees

@@ -222,9 +222,9 @@ there is not.
   follows only a commit that reported `.succeeded`.
   A dictation joined to a local Claude Code session whose mod is attached
   (#1644) is sent by the mod instead (`send`): no key, so neither focus nor
-  Secure Keyboard Entry gates it, and it can only reach the session the
-  dictation joined, never an unfocused one by name (#723's Return rule
-  stands for every key). The mod fills at the cursor, then submits the
+  Secure Keyboard Entry gates it. It reaches the session the dictation
+  joined; the one other session it reaches is the one "Send that to
+  <name>" names (#1693, below). The mod fills at the cursor, then submits the
   box's whole text as the person's own (`$.prompt.submit` with `asUser`)
   and empties the box, so a typed draft goes with it and nothing is sent
   twice. A box with a paste or image placeholder, an `@` mention, or a
@@ -346,6 +346,22 @@ there is not.
   that session and is submitted there; the spoken send trigger is not
   applied, so "send it" inside the text stays text. The focused app never
   gets the text or a key. Routes, in order:
+  (0) the session's mod (#1693; owner ruling 2026-10-04, which lifts the
+  Return exception below for these sessions only): a local Claude Code
+  session outside Claude Desktop (whose fill is unmeasured, #1643) with
+  its mod attached gets a `send` addressed by its session id, the same
+  request as a spoken send, after a `draft` read that decides the leading
+  space. No pane is brought forward and no key is posted. The channel is
+  the one the session's own local hook named, and the mod refuses with
+  `session_changed` once its process left that id (#1651): that refusal,
+  to the `draft` read or to the `send`, and an unanswered request, which
+  may have submitted, keep the text in History and try no other route (a
+  detach with no clean bye leaves the old registry entry, whose tty and
+  pid still match the pane after `/clear`). A mod that refused for any other reason
+  (a dialog, a placeholder, a command, an `@` mention), or never got the
+  request, changed nothing in the session, so the routes below run as if
+  it had no mod, logged to `Log.backends`; a new dictation started by
+  then sends nothing anywhere and keeps the text.
   (1) opencode's prompt relay, from a fresh declaration by the session's
   pid; (2) the herdr pane the session's own hooks reported, only when it is
   the one live local herdr, the registry maps the pane to that session

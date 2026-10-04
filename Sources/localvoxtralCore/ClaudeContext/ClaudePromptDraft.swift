@@ -107,21 +107,40 @@ extension ClaudeModChannelHub {
     /// no mod, the mod is older than `draft`, or no answer came in `timeout`;
     /// the caller then knows nothing about the box.
     package func promptDraft(of sessionID: String, timeout: Duration) async -> ClaudePromptDraft? {
-        guard isAttached(sessionID) else { return nil }
+        if case .read(let draft) = await readPromptDraft(of: sessionID, timeout: timeout) { return draft }
+        return nil
+    }
+
+    /// What a `draft` request found out about the session's prompt box.
+    package enum PromptDraftRead: Equatable, Sendable {
+        /// The box, or nil when the mod said nothing about it.
+        case read(ClaudePromptDraft?)
+        /// The mod's process left the session (`/clear` or resume, #1651):
+        /// whatever pane showed it shows another session now.
+        case sessionChanged
+    }
+
+    /// `promptDraft`, keeping a `session_changed` refusal, which a caller
+    /// that writes into the session must not treat as "no answer".
+    package func readPromptDraft(of sessionID: String, timeout: Duration) async -> PromptDraftRead {
+        guard isAttached(sessionID) else { return .read(nil) }
         guard let reply = await send(.init(kind: .draft), to: sessionID, timeout: timeout) else {
             Log.claudeContext.notice("Mod channel: no draft from the session's mod")
-            return nil
+            return .read(nil)
+        }
+        if !reply.ok, reply.reason == ClaudeModChannelWire.Reply.sessionChangedReason {
+            return .sessionChanged
         }
         guard let draft = ClaudePromptDraft(reply: reply, sessionID: sessionID) else {
             Log.claudeContext.notice(
                 "Mod channel: the mod did not give its draft (\(reply.reason ?? "malformed", privacy: .public))"
             )
-            return nil
+            return .read(nil)
         }
         // Counts only: the draft is the person's unsent words.
         Log.claudeContext.info(
             "Mod channel: draft read, \(draft.beforeCursor.count, privacy: .public) characters before the cursor, \(draft.afterCursor.count, privacy: .public) after"
         )
-        return draft
+        return .read(draft)
     }
 }

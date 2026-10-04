@@ -113,6 +113,14 @@ extension DictationSessionController {
     /// app: a route that refuses keeps it (`keepUndeliveredAgentText`), and
     /// a pane that is not the session's gets no key.
     func commitOverlayAddressed(to session: ClaudeSessionSnapshot) async -> AddressedCommit? {
+        if addressedSendGoesThroughMod(session) {
+            Log.dictation.notice("send to session: through the session's mod")
+            switch await commitOverlayAddressedThroughMod(session: session) {
+            case .finished(let commit): return commit
+            case .cancelled: return nil
+            case .fallBack: break
+            }
+        }
         var route = AddressedSessionRoute.unsupported(.noTTY)
         if let resolver = context.claudeSessionJoinResolver {
             route = await resolver.addressedRoute(for: session)
