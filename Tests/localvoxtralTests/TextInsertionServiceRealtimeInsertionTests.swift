@@ -41,6 +41,29 @@ final class TextInsertionServiceRealtimeInsertionTests: XCTestCase {
         XCTAssertEqual(snapshot.axInsertionSuccessCount, 0)
     }
 
+    /// macOS drops the keys an app without Accessibility posts: the text
+    /// stays pending instead of counting as typed (#1762).
+    func testRealtimeFlushWithoutAccessibilityPostsNoKeysAndKeepsTheText() {
+        let posted = PostedKeys()
+        let service = TextInsertionService()
+        service.debugConfigureInsertionHooks(
+            unicodePoster: { text in
+                posted.value.append(text)
+                return true
+            },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false }
+        )
+        service.debugSetAccessibilityTrusted(false)
+
+        service.enqueueRealtimeInsertion("hello")
+
+        XCTAssertEqual(posted.value, [])
+        XCTAssertEqual(service.debugInsertionSnapshot().pendingRealtimeInsertionText, "hello")
+        XCTAssertEqual(service.insertTextPrioritizingKeyboard("world"), .failed)
+        XCTAssertEqual(posted.value, [])
+    }
+
     // MARK: - Retry on the session clock (#1060)
 
     func testFailedLiveInsertionIsRetriedOnTheSessionClockAndNotAfterStop() async {

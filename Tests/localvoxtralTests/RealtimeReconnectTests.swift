@@ -396,6 +396,48 @@ final class RealtimeReconnectTests: XCTestCase {
         XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.ready)
     }
 
+    /// The replayed gap takes the server a while to decode, with no delta
+    /// across a pause in it: the stop waits for the final instead of closing
+    /// on the idle rule (#1758).
+    func testAStopDuringAReconnectWaitsForTheFinalOfTheReplayedGap() async {
+        let clock = ManualSessionClock()
+        let records = RecordedSessions()
+        let (viewModel, client) = makeDictatingViewModel(
+            outputMode: .overlayBuffer, clock: clock, records: records)
+        viewModel.transcript.currentDictationEventText = "before the crash"
+        viewModel.audio.audioChunkBuffer.append(Data(repeating: 7, count: 3_200))
+        client.setRefusesAudio(true)
+        viewModel.dependencies.reconnectSleep = { [weak viewModel] _ in
+            guard let viewModel else { return }
+            if viewModel.isDictating {
+                viewModel.stopDictation(reason: "manual toggle")
+            } else if client.connectCount > 0 {
+                client.setRefusesAudio(false)
+                client.setConnected(true)
+            }
+        }
+
+        viewModel.session.handle(event: .disconnected)
+        await viewModel.session.reconnectTask?.value
+        // The stop's two polls: the finalization and its watchdog.
+        await clock.waitForSleepers(2)
+        XCTAssertEqual(client.commits, [true])
+        viewModel.session.handle(event: .partialTranscript("in the"))
+        clock.advance(by: TimingConstants.finalizationMinimumOpen + TimingConstants.finalizationInactivityThreshold)
+        await clock.waitForSleepers(2)
+
+        XCTAssertTrue(viewModel.isFinalizingStop, "closed on the idle rule before the final")
+        XCTAssertEqual(client.disconnectCount, 0)
+
+        viewModel.session.handle(event: .finalTranscript("in the gap"))
+        viewModel.session.handle(event: .transcriptionFinalized)
+        await viewModel.session.stopFinalizationTask?.value
+        await awaitStoppedSessionCommit(viewModel)
+
+        XCTAssertEqual(records.all.map(\.rawText), ["before the crash in the gap"])
+        XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.ready)
+    }
+
     /// The helper never comes back: the stop finishes with the text received
     /// before the crash and says its end may be missing (#1582).
     func testAStopDuringAReconnectThatNeverSucceedsSaysTheEndMayBeMissing() async {
