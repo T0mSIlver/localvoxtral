@@ -164,7 +164,9 @@ extension DictationSessionController {
         // Before the dictionary and the polisher: the trigger is a command,
         // not text, so neither may see it. An addressed dictation is
         // submitted by its own delivery, in the named session.
-        let spokenSend = addressedTo == nil ? stripOverlaySpokenSendTrigger() : nil
+        let spokenSend = addressedTo == nil
+            ? stripOverlaySpokenSendTrigger(join: sample.capture?.claudeJoin ?? context.claudeSessionJoin)
+            : nil
         let preparation = StopCommitCoordinator.prepare(
             originalText: transcript.currentDictationEventText,
             polishingConfig: sample.polishingConfig,
@@ -325,14 +327,15 @@ extension DictationSessionController {
         let historyJoin = (sample.capture?.claudeJoin ?? context.claudeSessionJoin).map(AgentCLIJoin.init)
         let commitJoin = context.claudeSessionJoin
         let commitTargetPID = overlayBufferCoordinator.commitTargetAppPID
+        let commitSpokenSend = spokenSendForCommit(spokenSend, join: commitJoin)
         let overlayCommit = StopCommitCoordinator.commit(
             overlay: overlayBufferCoordinator,
-            textInsertion: overlayCommitter(join: commitJoin, targetPID: commitTargetPID, spokenSend: spokenSend),
+            textInsertion: overlayCommitter(join: commitJoin, targetPID: commitTargetPID, spokenSend: commitSpokenSend),
             autoCopyEnabled: settings.autoCopyEnabled
         )
         noteOverlayCommit(
             overlayCommit, committedText: displayWorkingText,
-            join: commitJoin, targetPID: commitTargetPID, spokenSend: spokenSend
+            join: commitJoin, targetPID: commitTargetPID, spokenSend: commitSpokenSend
         )
         if let failureMessage = overlayCommit.failureMessage {
             lastError = failureMessage
@@ -345,7 +348,7 @@ extension DictationSessionController {
             )
             proposeProjectTermsIfNew(join: context.claudeSessionJoin, inserted: displayWorkingText)
         }
-        sendOverlaySpokenSendIfNeeded(spokenSend, commit: overlayCommit)
+        sendOverlaySpokenSendIfNeeded(commitSpokenSend, commit: overlayCommit)
 
         completeStoppedSessionCleanup(
             sessionMode: sessionMode,
@@ -553,17 +556,18 @@ extension DictationSessionController {
         // From here the task commits and saves the dictation itself.
         self.saveInterruptedPolishCommit = nil
         let commitTargetPID = self.overlayBufferCoordinator.commitTargetAppPID
+        let commitSpokenSend = self.spokenSendForCommit(spokenSend, join: capture.claudeJoin)
         overlayCommit = StopCommitCoordinator.commit(
             overlay: self.overlayBufferCoordinator,
             textInsertion: self.overlayCommitter(
-                join: capture.claudeJoin, targetPID: commitTargetPID, spokenSend: spokenSend,
+                join: capture.claudeJoin, targetPID: commitTargetPID, spokenSend: commitSpokenSend,
                 draft: outcome.material.promptDraft
             ),
             autoCopyEnabled: self.settings.autoCopyEnabled
         )
         self.noteOverlayCommit(
             overlayCommit, committedText: insertedText,
-            join: capture.claudeJoin, targetPID: commitTargetPID, spokenSend: spokenSend
+            join: capture.claudeJoin, targetPID: commitTargetPID, spokenSend: commitSpokenSend
         )
         if let failureMessage = overlayCommit.failureMessage {
             self.lastError = failureMessage
@@ -578,7 +582,7 @@ extension DictationSessionController {
             )
             self.proposeProjectTermsIfNew(join: capture.claudeJoin, inserted: insertedText)
         }
-        self.sendOverlaySpokenSendIfNeeded(spokenSend, commit: overlayCommit)
+        self.sendOverlaySpokenSendIfNeeded(commitSpokenSend, commit: overlayCommit)
 
         self.completeStoppedSessionCleanup(
             sessionMode: sessionMode,
