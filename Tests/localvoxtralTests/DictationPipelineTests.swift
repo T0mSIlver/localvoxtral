@@ -1859,6 +1859,82 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.viewModel.statusText, DictationSessionController.DestinationStatus.paneLeftFront)
     }
 
+    /// A dictation joined to a Claude Code session in a terminal tab, with
+    /// no pane picked, no relay and no mod: the user switched to another tab
+    /// of the same terminal while the polish ran. The joined pane is read
+    /// back before the keys, so the other tab's prompt gets nothing, and the
+    /// text is saved not inserted and copied (#1668).
+    func testATabSwitchWhileAJoinedDictationPolishesTypesNothing() async throws {
+        let (pipeline, polish, focuser) = try await joinedTerminalPipelineWithHeldPolish()
+        let copied = pipeline.viewModel.recordPasteboardWrites()
+
+        await startAndSpeak(pipeline)
+        await stopWithHeldPolish(pipeline, polish)
+        // Same Ghostty, another tab, while the polish runs.
+        focuser.paneStillShowsSession = false
+        await polish.releaseHeldRequest()
+        let recorded = await pipeline.records.waitForCount(1)
+        XCTAssertTrue(recorded)
+
+        XCTAssertEqual(focuser.readBackSessionIDs, ["s1"], "read back before the keys")
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "the other tab's session never gets the words")
+        XCTAssertEqual(pipeline.records.all.count, 1)
+        XCTAssertEqual(pipeline.records.all.first?.rawText, Self.phrase)
+        XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, false)
+        XCTAssertEqual(copied.values.count, 1)
+        XCTAssertEqual(pipeline.viewModel.statusText, DictationViewModel.StatusStrings.overlayCopiedToClipboard)
+    }
+
+    /// The same joined dictation whose pane is still in front after the
+    /// polish is typed as before.
+    func testAJoinedDictationWhosePaneStaysInFrontIsTypedAfterThePolish() async throws {
+        let (pipeline, polish, focuser) = try await joinedTerminalPipelineWithHeldPolish()
+
+        await startAndSpeak(pipeline)
+        await stopWithHeldPolish(pipeline, polish)
+        await polish.releaseHeldRequest()
+        let recorded = await pipeline.records.waitForCount(1)
+        XCTAssertTrue(recorded)
+
+        XCTAssertEqual(focuser.readBackSessionIDs, ["s1"])
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 1)
+        XCTAssertEqual(pipeline.records.all.first?.commitSucceeded, true)
+    }
+
+    /// An Overlay Buffer dictation joined to Claude Code session `s1` in a
+    /// Ghostty tab by its tty, with a navigator that reads the pane back
+    /// through the returned focuser and a polish that holds its request.
+    private func joinedTerminalPipelineWithHeldPolish(
+    ) async throws -> (Pipeline, FakePolishingService, FakeSessionPaneFocuser) {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, earlyPolish: false)
+        pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
+        let registry = joinClaudeCodeTerminal(pipeline)
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        pipeline.viewModel.llmPolishingService = polish
+        pipeline.overlay.commitTargetAppPID = 4343
+        let focuser = FakeSessionPaneFocuser()
+        pipeline.viewModel.session.sessionNavigator = SessionNavigator(
+            liveSessions: { registry.liveSessions() },
+            repositoryRoot: { _ in .unknown },
+            focuser: focuser,
+            sleep: ManualSessionClock().sleep,
+            ttyForegroundPIDs: { _ in [9001] }
+        )
+        await polish.holdNextRequest()
+        return (pipeline, polish, focuser)
+    }
+
+    /// Stops the dictation and returns once its polish request is held.
+    private func stopWithHeldPolish(
+        _ pipeline: Pipeline, _ polish: FakePolishingService, file: StaticString = #filePath, line: UInt = #line
+    ) async {
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
+        let polishing = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(polishing, "the polish never started", file: file, line: line)
+    }
+
     /// Focus moved to another app between the pick and the stop: the words
     /// must not follow it. They stay in History as not inserted, and the
     /// popover says why.
