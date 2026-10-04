@@ -25,7 +25,12 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         openEndpointsSettings: @escaping () -> Void
     ) {
         self.dockIconPolicy = dockIconPolicy
-        let driver = LiveOnboardingBootstrapDriver(backendManager: backendManager)
+        let driver = LiveOnboardingBootstrapDriver(
+            backendManager: backendManager,
+            waitForPendingShutdowns: { [weak viewModel] in
+                await viewModel?.engines.awaitPendingManagedShutdowns()
+            }
+        )
         model = OnboardingViewModel(settings: settings, viewModel: viewModel, driver: driver)
         super.init()
         model.onRequestClose = { [weak self] in self?.closeWindow() }
