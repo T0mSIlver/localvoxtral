@@ -1192,10 +1192,10 @@ final class SettingsStore {
             defaults: defaults, key: Keys.overlaySpokenSendEnabled, fallback: false)
         liveSpokenSendEnabled = Self.loadBool(
             defaults: defaults, key: Keys.liveSpokenSendEnabled, fallback: false)
-        spokenSendTriggerPhrases = SendTriggerPhrases.loaded(
-            defaults.stringArray(forKey: Keys.spokenSendTriggerPhrases))
+        let sendPhrases = SendTriggerPhrases.loaded(defaults.stringArray(forKey: Keys.spokenSendTriggerPhrases))
+        spokenSendTriggerPhrases = sendPhrases
         spokenAbortPhrases = SpokenAbortPhrases.loaded(
-            defaults.stringArray(forKey: Keys.spokenAbortPhrases), sendPhrases: spokenSendTriggerPhrases)
+            defaults.stringArray(forKey: Keys.spokenAbortPhrases), sendPhrases: sendPhrases)
         spokenStopWait =
             (defaults.object(forKey: Keys.spokenStopWait) as? Int)
             .flatMap(SpokenStopWait.init(rawValue:)) ?? .default
