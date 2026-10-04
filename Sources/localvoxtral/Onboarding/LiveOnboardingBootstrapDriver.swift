@@ -13,16 +13,24 @@ final class LiveOnboardingBootstrapDriver: OnboardingBootstrapDriving {
     private(set) var itemStates: [OnboardingItemID: OnboardingItemState] = [:]
 
     @ObservationIgnored private let backendManager: any ManagedBackendManaging
+    @ObservationIgnored private let waitForPendingShutdowns: @MainActor () async -> Void
     @ObservationIgnored private var runTask: Task<Void, Never>?
     @ObservationIgnored private var dictationRequested = false
     @ObservationIgnored private var polishingRequested = false
     @ObservationIgnored private var isObserving = false
     #if DEBUG
+    var debugRunTask: Task<Void, Never>? { runTask }
     @ObservationIgnored var onItemStatesChanged: (([OnboardingItemID: OnboardingItemState]) -> Void)?
     #endif
 
-    init(backendManager: any ManagedBackendManaging) {
+    /// `waitForPendingShutdowns` returns once a stop the Engines model
+    /// queued (picking Mistral, say) has finished.
+    init(
+        backendManager: any ManagedBackendManaging,
+        waitForPendingShutdowns: @escaping @MainActor () async -> Void = {}
+    ) {
         self.backendManager = backendManager
+        self.waitForPendingShutdowns = waitForPendingShutdowns
     }
 
     func start(dictation: Bool, polishing: Bool) {
