@@ -896,6 +896,19 @@ public final class ClaudeSessionRegistry: Sendable {
         }
     }
 
+    /// A remote session's mod polled on the channel `token` names (#1412): its
+    /// TTL counts from now. A remote pid names another machine's process, so
+    /// polls are the session's liveness there.
+    package func modChannelSeen(sessionID: String, token: UInt64) {
+        let timestamp = now()
+        state.withLock { state in
+            guard let channel = state.sessions[sessionID]?.modChannel, channel.token == token else { return }
+            state.sessions[sessionID]?.modChannel = ClaudeModChannelLiveness(
+                token: token, claudePID: channel.claudePID, lastSeen: timestamp
+            )
+        }
+    }
+
     /// The channel `token` names detached. After the mod's `bye` the session
     /// ended and goes now; otherwise its TTL counts from this moment, so a
     /// reloaded mod finds it still there to attach again.

@@ -403,7 +403,11 @@ public final class ClaudeRemoteModChannels: Sendable {
             return .attach(id)
         }
         switch found {
-        case .held(let id): return id
+        case .held(let id):
+            if let token = state.withLock({ $0.leases[sessionID]?.token }) {
+                registry.modChannelSeen(sessionID: sessionID, token: token)
+            }
+            return id
         case .refused: return nil
         case .attach(let id): return attach(sessionID: sessionID, hostID: hostID, leaseID: id)
         }

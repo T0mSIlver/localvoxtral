@@ -18,8 +18,10 @@ final class ClaudeRemoteModChannelsTests: XCTestCase {
         let hub: ClaudeModChannelHub
         let channels: ClaudeRemoteModChannels
 
+        let now = LockedBox(ClaudeRemoteModChannelsTests.epoch)
+
         init() {
-            registry = ClaudeSessionRegistry(now: { ClaudeRemoteModChannelsTests.epoch }, isProcessAlive: { _ in true })
+            registry = ClaudeSessionRegistry(now: { [now] in now.value }, isProcessAlive: { _ in true })
             hub = ClaudeModChannelHub(sleep: { [hubClock] in await hubClock.sleep($0) })
             channels = ClaudeRemoteModChannels(
                 hub: hub, registry: registry, hold: .seconds(25), grace: .seconds(10),
@@ -134,6 +136,31 @@ final class ClaudeRemoteModChannelsTests: XCTestCase {
         await fulfillment(of: [detached], timeout: 10)
         XCTAssertFalse(fixture.hub.isAttached(scoped))
         XCTAssertFalse(fixture.channels.hasLease(scoped))
+    }
+
+    /// A remote pid means nothing on this Mac, so polls are the session's
+    /// liveness (#1412): a poll within the TTL keeps it past the TTL from its
+    /// last hook, and without one it expires as before.
+    func testPollsKeepARemoteSessionPastItsTTL() async throws {
+        let ttl = ClaudeRegistryLimits.default.sessionTTL
+        for polledLate in [true, false] {
+            let fixture = Fixture()
+            fixture.announce("sess-1", on: "h1")
+            let scoped = ClaudeRemoteSessionScope.scopedSessionID(hostID: "h1", sessionID: "sess-1")
+            let first = poll(fixture)
+            await fixture.clock.waitForSleepers(1)
+            XCTAssertTrue(fixture.hub.post(.init(kind: .state), to: scoped))
+            _ = await first.value
+
+            if polledLate {
+                fixture.now.set(Self.epoch.addingTimeInterval(ttl - 60))
+                _ = poll(fixture, acked: 1)
+                await fixture.clock.waitForSleepers(3)
+            }
+            fixture.now.set(Self.epoch.addingTimeInterval(ttl + 600))
+
+            XCTAssertEqual(fixture.registry.snapshot(sessionID: scoped) != nil, polledLate, "polled late: \(polledLate)")
+        }
     }
 
     func testAFullQueueRefusesTheLine() async throws {
