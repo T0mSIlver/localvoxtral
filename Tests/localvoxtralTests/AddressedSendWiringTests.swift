@@ -480,6 +480,41 @@ final class AddressedSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.viewModel.statusText, DictationViewModel.StatusStrings.overlayCopiedToClipboard)
     }
 
+    /// A new dictation that starts while the route still answers takes the
+    /// stop's status, not the text: a refusal after it is still copied with
+    /// History off (#1658).
+    func testARefusedHerdrWriteANewDictationSupersededIsStillCopied() async throws {
+        let (arrived, arrival) = AsyncStream<Void>.makeStream()
+        let release = DispatchSemaphore(value: 0)
+        let herdr = try FakeHerdrSocket(
+            answer: FakeHerdrSocket.focusedPane("w1:p2", foreground: { [(9001, "claude")] }) { _ in
+                arrival.yield()
+                release.wait()
+                return .error("pane_send_failed")
+            }
+        )
+        addTeardownBlock {
+            release.signal()
+            herdr.stop()
+        }
+        let harness = makeHarness(text: "Run the tests, send that to payments.", herdr: herdr)
+        harness.viewModel.settings.dictationHistoryRetention = .off
+        harness.viewModel.settings.autoCopyEnabled = false
+        let copied = harness.viewModel.recordPasteboardWrites()
+
+        harness.viewModel.isDictating = false
+        harness.viewModel.isFinalizingStop = true
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        let commit = harness.viewModel.session.polishAndCommitTask
+        for await _ in arrived { break }
+        XCTAssertTrue(harness.viewModel.session.cancelPolishingForNewSessionIfNeeded(), "a new dictation starts")
+        release.signal()
+        await commit?.value
+
+        XCTAssertEqual(herdr.writes.map(\.method), ["pane.send_text"], "precondition: the route refused")
+        XCTAssertEqual(copied.values, ["Run the tests"])
+    }
+
     func testTheStatusSentencesFitThePopoverLine() {
         for sentence in [
             DictationSessionController.AddressedSendStatus.unsupported,

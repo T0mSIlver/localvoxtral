@@ -23,11 +23,15 @@ final class PasteboardWrites {
 }
 
 extension DictationViewModel {
-    /// Records every clipboard write instead of making it.
+    /// Records every clipboard write instead of making it; `onWrite` runs
+    /// after each.
     @MainActor
-    func recordPasteboardWrites() -> PasteboardWrites {
+    func recordPasteboardWrites(onWrite: @escaping @MainActor () -> Void = {}) -> PasteboardWrites {
         let written = PasteboardWrites()
-        dependencies.pasteboardWriter = { written.values.append($0) }
+        dependencies.pasteboardWriter = {
+            written.values.append($0)
+            onWrite()
+        }
         return written
     }
 }

@@ -229,6 +229,8 @@ extension DictationSessionController {
             return
         }
         liveGoToTask = Task { @MainActor [weak self] in
+            // Assigned before this body runs.
+            let task = self?.liveGoToTask
             let resolution = await navigator.resolve(spokenName: spokenName)
             guard let self, !Task.isCancelled else { return }
             switch resolution {
@@ -261,6 +263,10 @@ extension DictationSessionController {
                     self.statusText = status
                 }
             }
+            // A name that resolved to nothing was delivered as a spoken send,
+            // which may have started its own pane read-back: that task holds
+            // the queue now and drains it when it is done.
+            guard self.liveGoToTask == task else { return }
             self.liveGoToTask = nil
             self.drainLiveGoToQueue()
         }

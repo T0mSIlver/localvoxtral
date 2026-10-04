@@ -33,6 +33,9 @@ there is not.
   dictation clears it. "Send that to <name>" into a terminal pane is judged
   the same way against the pane's pid and the named session; its Return, or
   a failed typing, clears a landing in that session and no other (#1480).
+  A route or mod refusal that answers late clears only the landing of the
+  dictation that handed its text off, by its start generation: a later
+  commit to the same session keeps its continuation space (#1660).
   Anything looser puts a space in front of `/compact`
   in a fresh prompt. No trailing space after a commit. Where the joined
   session's mod read its prompt box at the stop (a polished commit into a
@@ -841,7 +844,10 @@ there is not.
   in the wrong app, or in twice. A refusal that answers after the next
   dictation started, or after a go-to moved the keys, stays in History
   too (#1466): the keyboard path and its pending text belong to that
-  dictation or pane now, and would carry the text into its route. With
+  dictation or pane now, and would carry the text into its route. That
+  holds for an Overlay Buffer commit's own fallback and for a fill the
+  session's mod gave back, which carry the start generation of the
+  dictation that handed the text off (#1657). With
   History off, every path below that keeps text puts all of it on the
   clipboard instead and says so (`keepUndeliveredAgentText`, #1499): Copy
   last dictation alone would lose it to the next dictation.

@@ -2608,6 +2608,123 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(typed.text, "", "the late text is typed nowhere")
     }
 
+    /// An Overlay Buffer commit's own relay fallback: dictation 1's append
+    /// is refused after dictation 2 started. The text is kept (on the
+    /// clipboard, History being off) and typed nowhere (#1657).
+    func testLateOverlayRelayRefusalIsKeptNotTypedIntoTheNextDictation() async throws {
+        let firstArrived = BoundedWait()
+        let releaseFirst = BoundedWait()
+        let firstRoute = ScriptedPromptRoute { _ in
+            firstArrived.resolve()
+            _ = await releaseFirst.value(failAfter: 10)
+            return .typeInstead
+        }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.overlay.insertsThroughCommitter = true
+        pipeline.viewModel.settings.dictationHistoryRetention = .off
+        pipeline.viewModel.settings.autoCopyEnabled = false
+        let copiedOnce = BoundedWait()
+        let copied = pipeline.viewModel.recordPasteboardWrites { copiedOnce.resolve() }
+        let typed = recordTypedText(pipeline)
+
+        await dictate(pipeline, "First.") { armPromptRoute(pipeline, firstRoute) }
+        let firstInFlight = await firstArrived.value(failAfter: 10)
+        XCTAssertTrue(firstInFlight, "precondition: dictation 1's append is still open")
+
+        pipeline.viewModel.context.agentPromptRoute = nil
+        pipeline.server.forgetFrames()
+        await startAndSpeak(pipeline)
+        releaseFirst.resolve()
+        let kept = await copiedOnce.value(failAfter: 10)
+        pipeline.server.send(["type": "transcription.delta", "delta": "Second."])
+        await stopAndFinalize(pipeline, finalText: "Second.")
+
+        XCTAssertTrue(kept, "the late text is kept")
+        XCTAssertEqual(copied.values, ["First."])
+        XCTAssertEqual(firstRoute.calls, [.append("First.")])
+        XCTAssertEqual(typed.text, "Second.", "the late text is typed nowhere")
+    }
+
+    /// Dictation 1's relay refuses after dictation 2 committed to the same
+    /// prompt. The refusal forgets dictation 1's landing, not dictation 2's:
+    /// dictation 3 still continues dictation 2's text with a space.
+    func testALateOverlayRelayRefusalKeepsTheNextCommitsLanding() async throws {
+        let relay = try FakeOpencodePromptRelay()
+        addTeardownBlock { relay.stop() }
+        let firstArrived = BoundedWait()
+        let releaseFirst = BoundedWait()
+        let route = ScriptedPromptRoute { call in
+            guard call == .append("that's what I was doing.") else { return .delivered }
+            firstArrived.resolve()
+            _ = await releaseFirst.value(failAfter: 10)
+            return .typeInstead
+        }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.overlay.insertsThroughCommitter = true
+        pipeline.overlay.commitTargetAppPID = 4343
+        pipeline.overlay.passesTargetPIDToCommitter = false
+        joinOpencodePane(pipeline, relay: relay.relay(sessionID: "ses_a").address)
+        // Polishing on: the context join is what lets a commit continue the
+        // prompt.
+        pipeline.viewModel.settings.llmPolishingEnabled = true
+        pipeline.viewModel.settings.llmPolishingEndpointURL = "http://127.0.0.1:8080/v1/chat/completions"
+        pipeline.viewModel.settings.terminalScreenContextEnabled = true
+        pipeline.viewModel.llmPolishingService = FakePolishingService()
+        pipeline.viewModel.settings.dictationHistoryRetention = .off
+        pipeline.viewModel.settings.autoCopyEnabled = false
+        let copiedOnce = BoundedWait()
+        let copied = pipeline.viewModel.recordPasteboardWrites { copiedOnce.resolve() }
+        let typed = recordTypedText(pipeline)
+
+        await dictate(pipeline, "that's what I was doing.") { armPromptRoute(pipeline, route) }
+        let firstInFlight = await firstArrived.value(failAfter: 10)
+        XCTAssertTrue(firstInFlight, "precondition: dictation 1's append is still open")
+        await dictate(pipeline, "Usually") { armPromptRoute(pipeline, route) }
+        XCTAssertNotNil(pipeline.viewModel.session.lastOverlayCommitLanding, "precondition: dictation 2 landed")
+
+        releaseFirst.resolve()
+        let kept = await copiedOnce.value(failAfter: 10)
+        var sink: AgentPromptSink?
+        await dictate(pipeline, "it works.") {
+            armPromptRoute(pipeline, route)
+            sink = pipeline.viewModel.textInsertion.promptRelaySink
+        }
+        await sink?.waitUntilIdle()
+
+        XCTAssertTrue(kept, "dictation 1's refused text is kept")
+        XCTAssertEqual(copied.values, ["that's what I was doing."])
+        XCTAssertEqual(route.calls.last, .append(" it works."), "calls: \(route.calls)")
+        XCTAssertEqual(typed.text, "")
+        XCTAssertEqual(relay.calls, [], "every call took the scripted route")
+    }
+
+    /// The same for a fill the session's mod refuses after the next
+    /// dictation started, with the session's pane still in front (#1657).
+    func testAModFillRefusedAfterTheNextDictationStartedIsKeptNotTyped() async throws {
+        let answered = BoundedWait()
+        let (pipeline, typed, fills) = try await modChannelPipeline(answers: [.refuse], answerGate: answered)
+        pipeline.viewModel.settings.dictationHistoryRetention = .off
+        pipeline.viewModel.settings.autoCopyEnabled = false
+        let copied = pipeline.viewModel.recordPasteboardWrites()
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "run the tests.")
+        pipeline.server.forgetFrames()
+        await startAndSpeak(pipeline)
+        answered.resolve()
+        let done = await settled.wait(for: 1)
+        pipeline.viewModel.context.claudeModChannels = nil
+        pipeline.server.send(["type": "transcription.delta", "delta": "/compact"])
+        await stopAndFinalize(pipeline, finalText: "/compact")
+
+        XCTAssertTrue(done)
+        XCTAssertEqual(fills.texts, ["run the tests."])
+        XCTAssertEqual(copied.values, ["run the tests."])
+        XCTAssertEqual(typed.text, "/compact", "the refused fill is typed nowhere")
+    }
+
     /// Arms `route` for the dictation running now, as its start would.
     private func armPromptRoute(_ pipeline: Pipeline, _ route: any AgentPromptRoute) {
         pipeline.viewModel.context.agentPromptRoute = route

@@ -290,11 +290,12 @@ extension DictationSessionController {
                     joined: historyJoin
                 )
             }
+            let addressedText = transcript.currentDictationEventText
             polishAndCommitTask = Task { @MainActor [weak self] in
                 guard let self,
                       let addressed = await self.commitOverlayAddressed(to: addressedTo)
                 else { return }
-                self.finishAddressedCommit(addressed, sessionMode: sessionMode)
+                self.finishAddressedCommit(addressed, text: addressedText, sessionMode: sessionMode)
                 self.saveSessionRecord(
                     startedAt: capturedSessionStartedAt,
                     rawText: originalText,
@@ -502,7 +503,7 @@ extension DictationSessionController {
         if let addressedTo {
             // Clears the interrupted-save once the text is handed over.
             guard let addressed = await self.commitOverlayAddressed(to: addressedTo) else { return }
-            self.finishAddressedCommit(addressed, sessionMode: sessionMode)
+            self.finishAddressedCommit(addressed, text: insertedText, sessionMode: sessionMode)
             if addressed.inserted {
                 self.recordLearnedTerms(of: outcome)
             }
