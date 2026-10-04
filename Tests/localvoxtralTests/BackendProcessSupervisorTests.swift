@@ -2,6 +2,8 @@ import Darwin
 import Foundation
 import Synchronization
 import XCTest
+
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 @MainActor
@@ -131,6 +133,55 @@ final class BackendProcessSupervisorTests: XCTestCase {
         if let pid = try readPID(from: pidFile) {
             XCTAssertFalse(isProcessRunning(pid))
         }
+    }
+
+    /// The child answers readiness, then dies before the owner check: that is
+    /// a crash to restart, not a foreign listener on the port.
+    func testAChildThatDiesDuringTheOwnerCheckRestarts() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let pidFile = directory.appendingPathComponent("pid")
+        let script = try writeScript(
+            in: directory,
+            name: "backend.sh",
+            body: """
+            #!/bin/sh
+            echo $$ > "\(pidFile.path)"
+            trap 'exit 0' TERM
+            while true; do sleep 1; done
+            """
+        )
+        let exitHandled = BoundedWait()
+        let supervisor = makeSupervisor(
+            executableURL: script,
+            readinessTimeout: .seconds(3_600),
+            readinessReportsOwnerPID: true,
+            probe: { _ in FileManager.default.fileExists(atPath: pidFile.path) },
+            ownerProbe: { _ in
+                let pid = (try? String(contentsOf: pidFile, encoding: .utf8))
+                    .flatMap { pid_t($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                try? FileManager.default.removeItem(at: pidFile)
+                if let pid { kill(pid, SIGKILL) }
+                _ = await exitHandled.value(failAfter: 10)
+                return nil
+            },
+            sleepFor: { _ in await Task.yield() }
+        )
+        supervisor.debugProcessExitHandled = { _ in exitHandled.resolve() }
+        let watcher = StateWatcher(stream: supervisor.stateUpdates)
+        defer { watcher.cancel() }
+
+        await supervisor.start()
+        let state = try await watcher.waitForState { state in
+            switch state {
+            case .failed, .restarting: return true
+            default: return false
+            }
+        }
+        await supervisor.stop()
+
+        XCTAssertEqual(state, .restarting(attempt: 1))
     }
 
     /// The listener that answers is the child: it runs as before.

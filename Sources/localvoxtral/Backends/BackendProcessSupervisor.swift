@@ -265,6 +265,10 @@ final class BackendProcessSupervisor {
             if await probe(configuration.readinessURL) {
                 guard configuration.readinessReportsOwnerPID else { return .ready }
                 let reportedPID = await ownerProbe(configuration.readinessURL)
+                // A stop or the child's exit between the two requests is not
+                // a foreign listener.
+                if stoppingIntentionally || Task.isCancelled { return .cancelled }
+                if currentProcessExited || currentProcess?.isRunning == false { return .exited }
                 guard let childPID = currentProcessID, reportedPID == childPID else {
                     return .foreignListener(reportedPID: reportedPID)
                 }
