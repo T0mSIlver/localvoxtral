@@ -607,4 +607,63 @@ final class DiagnosticRecordRedactionTests: XCTestCase {
             "$ git status\n> \(DiagnosticRecordRedaction.withheldPromptPlaceholder)\nDone. 3 files changed")
         XCTAssertEqual(record.text.rawTranscript, "rename the hook publisher")
     }
+
+    // MARK: - The unsent prompt draft
+
+    /// A cursor in the middle of a one-line draft splits no line: the screen
+    /// shows `QuokkaLedger` whole, and its halves are each too short to look
+    /// for.
+    func testWithholdsAOneLineDraftTheCursorSplits() throws {
+        let draft = ClaudePromptDraft(sessionID: "s1", beforeCursor: "Quokka", afterCursor: "Ledger")
+        let screen = "$ claude\n> QuokkaLedger\n  ? for shortcuts"
+        var record = recordCarrying("files the agent recently touched")
+        record.screen?.sanitizedText = screen
+
+        DiagnosticRecordRedaction.withhold(.draft(draft), from: &record)
+
+        XCTAssertEqual(
+            record.screen?.sanitizedText,
+            "$ claude\n> \(DiagnosticRecordRedaction.withheldDraftPlaceholder)\n  ? for shortcuts")
+        XCTAssertFalse(
+            DiagnosticRecordRedaction.withholding(.draft(draft), in: screen, softWrapped: true)
+                .contains("QuokkaLedger"),
+            "the screen's harvest is taken from this text")
+    }
+
+    /// A field may hold one side of the cursor on its own, which the joined
+    /// draft's lines do not spell.
+    func testWithholdsEachSideOfTheCursorOnItsOwn() {
+        let draft = ClaudePromptDraft(
+            sessionID: "s1", beforeCursor: "rename the table\nQuokka", afterCursor: "Ledger and its tests"
+        )
+
+        let clipboard = DiagnosticRecordRedaction.withholding(
+            .draft(draft), in: "copied:\nLedger and its tests\nend", softWrapped: true)
+
+        XCTAssertEqual(clipboard, "copied:\n\(DiagnosticRecordRedaction.withheldDraftPlaceholder)\nend")
+    }
+
+    /// A prior prompt can spell part of the draft's label ("prompt box"):
+    /// masked first, it would rewrite the label, and a draft too short for
+    /// the line pass would be left behind it.
+    func testWithholdsAShortDraftWhoseLabelThePriorPromptSpells() throws {
+        var snapshot = ClaudeSessionSnapshot(
+            sessionID: "s1", origin: .localAuthenticated(peerUID: 501), agent: .claude,
+            firstSeen: Date(timeIntervalSince1970: 0)
+        )
+        snapshot.latestPriorUserPrompt = "prompt box"
+        let draft = ClaudePromptDraft(sessionID: "s1", beforeCursor: "tidy up", afterCursor: "")
+        let context = ClaudeSessionContextText.text(for: snapshot, draft: draft)
+        let withheld = [DiagnosticRecordRedaction.Withheld.priorPrompt("prompt box"), .draft(draft)]
+            .compactMap { $0 }
+        var record = recordCarrying(context)
+
+        DiagnosticRecordRedaction.withhold(withheld, from: &record)
+
+        let encoded = try XCTUnwrap(String(data: JSONEncoder().encode(record), encoding: .utf8))
+        XCTAssertFalse(encoded.contains("tidy up"), encoded)
+        XCTAssertFalse(
+            DiagnosticRecordRedaction.withholding(withheld, in: context, softWrapped: false).contains("tidy up"),
+            "the agent source's harvest is taken from this text")
+    }
 }

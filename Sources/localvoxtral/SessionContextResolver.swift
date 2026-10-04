@@ -553,7 +553,11 @@ final class SessionContextResolver {
     /// preparation, which withholds the GROUNDING as well as the rendered
     /// block — a gate that suppressed only the excerpt would still let the
     /// prior prompt's words reach the model as replacement entries.
-    func claudeSessionTextIfEnabled(join: ClaudeSessionJoin?, endpointURL: URL) -> String {
+    func claudeSessionTextIfEnabled(
+        join: ClaudeSessionJoin?,
+        endpointURL: URL,
+        draft: ClaudePromptDraft? = nil
+    ) -> String {
         guard settings.claudeRepoContextEnabled else { return "" }
         guard PolishContextClipboardReader.isPermittedContextEndpoint(
             endpointURL,
@@ -569,7 +573,20 @@ final class SessionContextResolver {
             Log.claudeContext.info("Claude session context skipped: session no longer live")
             return ""
         }
-        return ClaudeSessionContextText.text(for: join.snapshot)
+        return ClaudeSessionContextText.text(for: join.snapshot, draft: draft)
+    }
+
+    /// The joined session's prompt box, from its mod, or nil: no join, a
+    /// join this Mac cannot ask (`ClaudePromptDraft.isReadable`), a session
+    /// gone since the start, no mod, or no answer in time. Read whatever the
+    /// context settings say, since the commit's leading space uses it on
+    /// this Mac; only `claudeSessionTextIfEnabled` lets it reach polish.
+    func promptDraft(for join: ClaudeSessionJoin?) async -> ClaudePromptDraft? {
+        guard let join, ClaudePromptDraft.isReadable(through: join),
+              let hub = claudeModChannels,
+              let resolver = claudeSessionJoinResolver, resolver.isStillLive(join)
+        else { return nil }
+        return await hub.promptDraft(of: join.snapshot.sessionID, timeout: ClaudePromptDraft.readTimeout)
     }
 }
 

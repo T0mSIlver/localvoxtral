@@ -23,11 +23,12 @@ export type ChannelReply = {
   ok: boolean
   reason?: string
   text?: string
+  cursor?: number
   usage?: ChannelUsage
 }
 
 /** Whether the mod did what a message asked, why not, and any answer. */
-export type Outcome = { ok: boolean; reason?: string; text?: string; usage?: ChannelUsage }
+export type Outcome = { ok: boolean; reason?: string; text?: string; cursor?: number; usage?: ChannelUsage }
 
 // A child that ends sooner than this after it started is a publisher that
 // does not know `--attach` (an app older than the mod): stop asking it.
@@ -37,6 +38,29 @@ export const RESTART_DELAY_MS = 30000
 // arrived (the app quit mid-dictation): it clears itself. The app sends an
 // unchanged band again every 10 s, so a pause or a long polish keeps it.
 export const BAND_STALE_MS = 30000
+
+// How much of the draft a `draft` reply carries around the cursor, in UTF-16
+// code units: what polish reads, and far under the wire's 64 KiB line even
+// with every character escaped.
+export const DRAFT_BEFORE_CURSOR = 3000
+export const DRAFT_AFTER_CURSOR = 1000
+
+/**
+ * The prompt box as a `draft` reply carries it: the text around the cursor,
+ * cut without splitting a surrogate pair, and the cursor's offset into it.
+ */
+export function draftOf(box: { text: string; cursor: number }): { text: string; cursor: number } {
+  const cursor = Math.min(Math.max(0, box.cursor), box.text.length)
+  let start = Math.max(0, cursor - DRAFT_BEFORE_CURSOR)
+  let end = Math.min(box.text.length, cursor + DRAFT_AFTER_CURSOR)
+  if (start > 0 && isLowSurrogate(box.text.charCodeAt(start))) start += 1
+  if (end < box.text.length && isLowSurrogate(box.text.charCodeAt(end))) end -= 1
+  return { text: box.text.slice(start, end), cursor: cursor - start }
+}
+
+function isLowSurrogate(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff
+}
 
 /** The band a `state` message asks for; null clears it. */
 export function bandOf(message: ChannelMessage): { phase: 'listening' | 'finishing'; text: string } | null {

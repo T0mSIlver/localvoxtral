@@ -65,6 +65,35 @@ final class DiagnosticRecordBuilderRedactionTests: XCTestCase {
         XCTAssertFalse(record.text.userPrompts.joined().contains("SIGPIPE killed"))
     }
 
+    /// The unsent draft the session's mod read (#1406) leaves the record as
+    /// the prior prompt does: behind its labels in the context, line by line
+    /// on the screen, and out of every harvest.
+    func testTheBuilderWithholdsThePromptDraft() throws {
+        let draft = ClaudePromptDraft(
+            sessionID: "s1", beforeCursor: "rename the QuokkaLedger table\nand then", afterCursor: " migrate it"
+        )
+        let context = ClaudeSessionContextText.text(
+            for: ClaudeSessionSnapshot(
+                sessionID: "s1", origin: .localAuthenticated(peerUID: 501), agent: .claude,
+                firstSeen: Date(timeIntervalSince1970: 0)
+            ),
+            draft: draft
+        )
+        var inputs = DiagnosticRecordInputs.minimal(context: context)
+        inputs.screenDecision = .render(
+            excerpt: "> rename the QuokkaLedger table\nand then migrate it", startText: "", elidedChurnLines: 0
+        )
+        inputs.withheldDraft = draft
+
+        let record = DiagnosticRecordBuilder.build(id: UUID().uuidString, capturedAt: Date(), inputs: inputs)
+
+        let encoded = try XCTUnwrap(String(data: JSONEncoder().encode(record), encoding: .utf8))
+        XCTAssertFalse(encoded.contains("QuokkaLedger"), encoded)
+        XCTAssertFalse(encoded.contains("migrate it"), encoded)
+        XCTAssertTrue(encoded.contains(DiagnosticRecordRedaction.withheldDraftPlaceholder))
+        XCTAssertEqual(record.text.rawTranscript, "why did it crash")
+    }
+
     /// A source's harvest is re-derived from its text, so it would keep the
     /// prompt's identifiers while the excerpts beside it read withheld.
     /// Terms the rest of the text holds stay.
