@@ -85,6 +85,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         var transmitObserverForTesting: (@Sendable (URLSessionWebSocketTask, String) -> Void)?
         var rolloverSocketForTesting: (@Sendable () -> URLSessionWebSocketTask)?
         var rolloverDialObserverForTesting: (@Sendable (Bool) -> Void)?
+        var beforeTerminalErrorCloseForTesting: (@Sendable () -> Void)?
         #endif
     }
 
@@ -913,6 +914,9 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             finishRollover(retiring: retiring, cause: errorMessage ?? "socket closed")
             return
         }
+        #if DEBUG
+        state.withLock { $0.beforeTerminalErrorCloseForTesting }?()
+        #endif
 
         var unsentBytes = 0
         let outcome:
@@ -1109,6 +1113,13 @@ extension RealtimeAPIWebSocketClient {
     /// false when the client had moved on.
     package func debugObserveRolloverDial(_ observer: (@Sendable (Bool) -> Void)?) {
         state.withLock { $0.rolloverDialObserverForTesting = observer }
+    }
+
+    /// Runs as a terminal socket error is handled, before the client decides
+    /// between a rollover and a disconnect, so a test can start a rollover
+    /// there (#1724).
+    package func debugSetBeforeTerminalErrorClose(_ hook: (@Sendable () -> Void)?) {
+        state.withLock { $0.beforeTerminalErrorCloseForTesting = hook }
     }
 
     /// Hears every frame as it is handed to a socket, in order.
