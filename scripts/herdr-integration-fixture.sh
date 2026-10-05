@@ -891,9 +891,11 @@ start_surface() {
   local -a inner
   # `script` writes ^D to the pty when its stdin reaches EOF. An attach client
   # forwards that ^D to the pane's shell, which exits and takes the terminal
-  # with it, so an attach surface reads a FIFO it holds open itself, which
-  # never ends.
-  local input=/dev/null
+  # with it, so an attach surface's stdin is a pipe whose writer never writes
+  # and lives until teardown. Not a FIFO: macOS 27's `script` exits 1 on one
+  # ("tcgetattr/ioctl: Operation not supported on socket"), measured on
+  # herdr 0.9.1's lane host.
+  local hold_stdin=0
   case "$mode" in
     app) inner=("$HERDR_BINARY") ;;
     attach)
@@ -905,8 +907,7 @@ start_surface() {
       terminal="$({ herdr_cli pane get "$pane" 2>/dev/null || true; } \
         | lv_json_value result.pane.terminal_id || true)"
       inner=("$HERDR_BINARY" terminal attach "${terminal:-$pane}")
-      input="$dir/surface-$name.stdin"
-      mkfifo "$input"
+      hold_stdin=1
       ;;
     observe)
       [[ -n "$pane" ]] || die "surface mode 'observe' needs a pane id"
@@ -934,25 +935,35 @@ start_surface() {
   if [[ -d "$dir/client-state-home" ]]; then
     surface_env+=("XDG_STATE_HOME=$dir/client-state-home")
   fi
-  env -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID -u HERDR_SESSION \
-    "${surface_env[@]}" \
-    script -q -t 0 "$dir/surface-$name.log" \
-    /bin/sh -c '
-      rows="$1"; columns="$2"; geometry="$3"; shift 3
-      stty rows "$rows" cols "$columns"
-      {
-        printf "pty.rows_cols="; stty size
-        printf "pty.stdin=%s stdout=%s stderr=%s controlling_tty=%s\n" \
-          "$([[ -t 0 ]] && echo tty || echo not-a-tty)" \
-          "$([[ -t 1 ]] && echo tty || echo not-a-tty)" \
-          "$([[ -t 2 ]] && echo tty || echo not-a-tty)" \
-          "$(tty 2>/dev/null || echo none)"
-        printf "env.TERM=%s env.COLUMNS=%s env.LINES=%s\n" \
-          "${TERM:-<unset>}" "${COLUMNS:-<unset>}" "${LINES:-<unset>}"
-      } > "$geometry"
-      exec "$@"
-    ' fixture-surface "$SURFACE_ROWS" "$SURFACE_COLUMNS" "$geometry" "${inner[@]}" \
-    0<>"$input" >/dev/null 2>&1 &
+  # Always run in the background: `exec` keeps `$!` the pid of `script`
+  # itself, which teardown kills.
+  launch_surface() {
+    exec env -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID -u HERDR_SESSION \
+      "${surface_env[@]}" \
+      script -q -t 0 "$dir/surface-$name.log" \
+      /bin/sh -c '
+        rows="$1"; columns="$2"; geometry="$3"; shift 3
+        stty rows "$rows" cols "$columns"
+        {
+          printf "pty.rows_cols="; stty size
+          printf "pty.stdin=%s stdout=%s stderr=%s controlling_tty=%s\n" \
+            "$([[ -t 0 ]] && echo tty || echo not-a-tty)" \
+            "$([[ -t 1 ]] && echo tty || echo not-a-tty)" \
+            "$([[ -t 2 ]] && echo tty || echo not-a-tty)" \
+            "$(tty 2>/dev/null || echo none)"
+          printf "env.TERM=%s env.COLUMNS=%s env.LINES=%s\n" \
+            "${TERM:-<unset>}" "${COLUMNS:-<unset>}" "${LINES:-<unset>}"
+        } > "$geometry"
+        exec "$@"
+      ' fixture-surface "$SURFACE_ROWS" "$SURFACE_COLUMNS" "$geometry" "${inner[@]}"
+  }
+  if (( hold_stdin )); then
+    # The writer records its own pid so teardown kills it with the surface.
+    sh -c 'echo $$ >> "$1"; exec sleep 2147483647' stdin-holder "$dir/surface.pids" \
+      | launch_surface >/dev/null 2>&1 &
+  else
+    launch_surface </dev/null >/dev/null 2>&1 &
+  fi
   echo $! >> "$dir/surface.pids"
   local waited=0
   until [[ -s "$geometry" ]]; do
