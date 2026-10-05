@@ -174,6 +174,27 @@ struct SettingsOpenerHandoff: View {
     }
 }
 
+/// The answer to a `.terminateLater`, sent once.
+@MainActor
+private final class QuitReply {
+    private let application: NSApplication
+    private(set) var isSent = false
+
+    init(application: NSApplication) {
+        self.application = application
+    }
+
+    func send() {
+        guard !isSent else { return }
+        isSent = true
+        // Async: the session may answer inside `applicationShouldTerminate`,
+        // before it has returned `.terminateLater`.
+        DispatchQueue.main.async { [application] in
+            application.reply(toApplicationShouldTerminate: true)
+        }
+    }
+}
+
 /// Owns the shared model graph and presents the first-launch onboarding wizard.
 /// A menu-bar (LSUIElement) app has no launch window scene, so the wizard is
 /// shown here from `applicationDidFinishLaunching`.
@@ -364,6 +385,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .nothing:
             break
         }
+    }
+
+    /// A quit during a dictation waits, bounded, for the backend's last
+    /// words before `applicationWillTerminate` saves it (#1756).
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let reply = QuitReply(application: sender)
+        guard viewModel.finalizeDictationBeforeQuit(then: { reply.send() }) else { return .terminateNow }
+        // The stop's own bound ends the wait; this one holds if its tasks
+        // never run. A quit must never hang.
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + TimingConstants.quitStopFinalizationTimeout + 2.0
+        ) {
+            MainActor.assumeIsolated {
+                if !reply.isSent {
+                    Log.backends.error("quit: the stop's finalization did not end within its bound; quitting")
+                }
+                reply.send()
+            }
+        }
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {

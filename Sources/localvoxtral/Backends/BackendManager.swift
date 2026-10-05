@@ -709,7 +709,8 @@ final class BackendManager: ManagedBackendManaging {
             environment: processEnvironment(),
             readinessURL: URL(string: "http://127.0.0.1:\(spec.port)/health")!,
             readinessTimeout: readinessTimeout(for: spec),
-            readinessReportsOwnerPID: spec.id == BackendCatalog.speechd.id
+            // Both helpers name their pid on /health (#1760, #1786).
+            readinessReportsOwnerPID: true
         )
     }
 

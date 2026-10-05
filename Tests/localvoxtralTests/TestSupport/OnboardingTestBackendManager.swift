@@ -43,7 +43,13 @@ final class OnboardingTestBackendManager: ManagedBackendManaging {
     }
 
     func stopAll() async { stopAllCallCount += 1 }
-    func stopDictation() async { stopDictationCallCount += 1 }
+    /// Called on every `stopDictation`, after the count moves.
+    @ObservationIgnored var onStopDictation: (() -> Void)?
+
+    func stopDictation() async {
+        stopDictationCallCount += 1
+        onStopDictation?()
+    }
     func stopPolishing() async { stopPolishingCallCount += 1 }
     func pauseModelDownload(for spec: ManagedBackendSpec) async {
         pausedDownloadSpecIDs.append(spec.id)

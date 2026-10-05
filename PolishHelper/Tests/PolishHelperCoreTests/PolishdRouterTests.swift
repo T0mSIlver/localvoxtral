@@ -54,10 +54,14 @@ final class PolishdRouterTests: XCTestCase {
         XCTAssertEqual(get.status, 405)
     }
 
-    func testHealthAnswersOK() async {
+    /// The supervisor compares the pid with the child it launched (#1786).
+    func testHealthAnswersOKWithTheHelpersPID() async throws {
         let router = PolishdRouter(responder: StubResponder(), modelName: "m")
         let response = await router.handle(HTTPRequest(method: "GET", path: "/health"))
         XCTAssertEqual(response.status, 200)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+        XCTAssertEqual(body["status"] as? String, "ok")
+        XCTAssertEqual(body["pid"] as? Int, Int(ProcessInfo.processInfo.processIdentifier))
     }
 
     func testChatCompletionRoundTripsContentAndParameters() async throws {

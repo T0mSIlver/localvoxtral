@@ -32,6 +32,15 @@ final class EnginesModel {
         )
     }
 
+    /// Installed by the owner, like `interruptConnectingSession`: whether a
+    /// dictation is listening or finalizing, and a wait until none is. A restart of the managed speech engine waits on it, so the
+    /// helper keeps the words its decoder holds until the stop's final
+    /// commit has them (#1759).
+    @ObservationIgnored
+    var isDictationIdle: @MainActor () -> Bool = { true }
+    @ObservationIgnored
+    var waitUntilDictationIsIdle: @MainActor () async -> Void = {}
+
     /// Result of the Engines pane's "Check key" row. Observable so the row's
     /// one-line label follows it; reset to `.idle` is the caller's business.
     var mistralAPIKeyCheckState: MistralAPIKeyCheckState = .idle
@@ -146,7 +155,8 @@ final class EnginesModel {
             interruptConnectingSession()
             dictationWarmupTask?.cancel()
             dictationShutdownTask?.cancel()
-            dictationShutdownTask = Task { @MainActor [backendManager] in
+            dictationShutdownTask = Task { @MainActor [weak self, backendManager] in
+                await self?.waitForIdleDictation(before: "stopping managed speechd")
                 guard !Task.isCancelled else { return }
                 await backendManager.stopDictation()
             }
@@ -318,11 +328,24 @@ final class EnginesModel {
         dictationWarmupTask?.cancel()
         dictationShutdownTask?.cancel()
         dictationShutdownTask = Task { @MainActor [weak self, backendManager] in
+            await self?.waitForIdleDictation(before: "restarting the dictation engine")
             guard !Task.isCancelled else { return }
             await backendManager.stopDictation()
             guard !Task.isCancelled, let self else { return }
             self.startManagedBackendWarmup(dictation: true, polishing: false)
         }
+    }
+
+    /// A dictation still running keeps its engine until it ends: the stop's
+    /// final commit is what makes speechd return the last words (#1759).
+    private func waitForIdleDictation(before action: String) async {
+        guard !isDictationIdle() else { return }
+        Log.backends.notice(
+            "managed dictation engine change deferred until the dictation ends; then \(action, privacy: .public)"
+        )
+        await waitUntilDictationIsIdle()
+        guard !Task.isCancelled else { return }
+        Log.backends.info("dictation ended; \(action, privacy: .public)")
     }
 
     func applyLLMPolishingModelChange(_ model: String) {
