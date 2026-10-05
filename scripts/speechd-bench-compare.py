@@ -50,6 +50,8 @@ def main(paths):
         run = parse(path)
         if run["sha"] != base["sha"] or len(run["words"]) != len(base["words"]):
             median, counts = "transcript differs", ""
+        elif not run["words"]:
+            median, counts = "no words", ""
         else:
             deltas = [round((r - b) * 1000) for r, b in zip(run["words"], base["words"])]
             median = f"{statistics.median(deltas):+.0f} ms ({len(deltas)} words)"
