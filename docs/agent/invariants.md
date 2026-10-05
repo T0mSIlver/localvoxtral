@@ -1209,7 +1209,10 @@ there is not.
     dictation started in is frontmost with its focused pane on the session,
     and stay in History otherwise. An `ack` with no answer, or a channel
     gone mid-dictation, leaves every unconfirmed delta possibly filled: all
-    of them stay in History, none is typed. *One attach:* the route writes
+    of them stay in History, none is typed. A spoken send's `send` that the
+    mod refuses, does not submit, or leaves unanswered types nothing and
+    presses no Return, since the words are in the box; the popover says it
+    was not sent, or may not have been (#1816). *One attach:* the route writes
     and asks only the attach of the mod it opened on. A mod that reloads
     attaches again under the same session with a fresh stream, whose count
     says nothing about what the old one filled, so the route treats it as
@@ -2839,7 +2842,9 @@ there is not.
   host setup run the user clicked. They carry no token at all, and no byte of their
   output reaches a verdict, an alert, or the log. The whole action has a
   finite timeout, and every captured result, thrown error, alert, and log string
-  is token-redacted before it leaves the service. Keep the filesystem and
+  is token-redacted before it leaves the service. A plugin version the host's
+  listing reports reaches an error only as dot-separated numbers; anything
+  else reads as unreadable (#1817). Keep the filesystem and
   process runners injected; the no-runner service must continue to throw
   `.executionNotConfigured`.
   `ClaudeIntegrationSettingsModel` (`@MainActor @Observable`, all seams
