@@ -2839,7 +2839,9 @@ there is not.
   host setup run the user clicked. They carry no token at all, and no byte of their
   output reaches a verdict, an alert, or the log. The whole action has a
   finite timeout, and every captured result, thrown error, alert, and log string
-  is token-redacted before it leaves the service. Keep the filesystem and
+  is token-redacted before it leaves the service. A plugin version the host's
+  listing reports reaches an error only as dot-separated numbers; anything
+  else reads as unreadable (#1817). Keep the filesystem and
   process runners injected; the no-runner service must continue to throw
   `.executionNotConfigured`.
   `ClaudeIntegrationSettingsModel` (`@MainActor @Observable`, all seams
