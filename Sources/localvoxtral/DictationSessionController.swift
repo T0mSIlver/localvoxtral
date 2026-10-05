@@ -584,6 +584,9 @@ final class DictationSessionController {
     var sessionPickedPane: (sessionID: String, bundleID: String)?
     @ObservationIgnored
     var sessionStartedAt: Date?
+    /// When `stopDictation` ran, for History's stop-to-commit time (#1792).
+    @ObservationIgnored
+    var sessionStoppedAt: Date?
     /// This start's press → socket → microphone → first buffer line (#527).
     @ObservationIgnored
     var sessionCaptureTimeline: CaptureTimeline?
@@ -1026,6 +1029,7 @@ final class DictationSessionController {
     ) {
         guard isDictating else { return }
         debugLog("stopDictation reason=\(reason)")
+        sessionStoppedAt = dependencies.clock.now()
         shortcuts.clearPushToTalkShortcutSessionAttempt()
         disarmSilenceAutoStop()
         disarmSpokenStop()

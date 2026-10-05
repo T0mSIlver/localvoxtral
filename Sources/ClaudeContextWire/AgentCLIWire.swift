@@ -209,6 +209,14 @@ public struct AgentCLIDictation: Sendable, Equatable, Codable {
     /// False when the text never reached the target app.
     public var inserted: Bool
     public var status: String
+    /// When the user stopped it; `finishedAt` minus this is stop to commit.
+    /// Nil when History did not record it.
+    public var stoppedAt: Date?
+    /// The backend that answered the polish request (`mistral`,
+    /// `bundledHelper`, `userServer`) and the model id, never the endpoint.
+    /// Nil when no polish request went out.
+    public var polishBackend: String?
+    public var polishModel: String?
 
     public init(
         id: String,
@@ -220,7 +228,10 @@ public struct AgentCLIDictation: Sendable, Equatable, Codable {
         rawText: String,
         finalText: String,
         inserted: Bool,
-        status: String
+        status: String,
+        stoppedAt: Date? = nil,
+        polishBackend: String? = nil,
+        polishModel: String? = nil
     ) {
         self.id = id
         self.startedAt = startedAt
@@ -232,6 +243,9 @@ public struct AgentCLIDictation: Sendable, Equatable, Codable {
         self.finalText = finalText
         self.inserted = inserted
         self.status = status
+        self.stoppedAt = stoppedAt
+        self.polishBackend = polishBackend
+        self.polishModel = polishModel
     }
 }
 

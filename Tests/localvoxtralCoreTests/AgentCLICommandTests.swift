@@ -173,7 +173,10 @@ final class AgentCLIBrokerTests: XCTestCase {
                 rawText: "the mac queue is stuck",
                 finalText: "The Mac queue is stuck.",
                 inserted: true,
-                status: "completed"
+                status: "completed",
+                stoppedAt: Date(timeIntervalSince1970: 1_789_996_403),
+                polishBackend: "mistral",
+                polishModel: "zai-glm-5-3"
             ),
         ]
         return FixtureAgentCLIDataSource(state)
@@ -185,6 +188,10 @@ final class AgentCLIBrokerTests: XCTestCase {
         XCTAssertEqual(outcome.exitCode, .answered)
         let response = try XCTUnwrap(AgentCLIWire.decodeResponse(Data(outcome.stdout.utf8)))
         XCTAssertEqual(response.history?.dictations.map(\.finalText), ["The Mac queue is stuck."])
+        let printed = try XCTUnwrap(response.history?.dictations.first)
+        XCTAssertEqual(printed.stoppedAt, Date(timeIntervalSince1970: 1_789_996_403))
+        XCTAssertEqual(printed.polishBackend, "mistral")
+        XCTAssertEqual(printed.polishModel, "zai-glm-5-3")
 
         let text = try command(["history", "search", "queue"])
         XCTAssertEqual(

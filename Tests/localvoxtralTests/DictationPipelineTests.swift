@@ -929,6 +929,32 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.records.all.first?.polishedText, "<\(whole)>")
     }
 
+    /// History keeps when the user stopped a polished Overlay Buffer
+    /// dictation and which backend and model polished it, never the
+    /// endpoint, and `localvoxtral history --json` prints both (#1792).
+    func testAPolishedDictationKeepsItsStopTimeAndPolishModelInHistory() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish, earlyPolish: false)
+        pipeline.viewModel.settings.llmPolishingModel = "fake-polish-model"
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
+        pipeline.viewModel.sessionStore = store
+
+        await startAndSpeak(pipeline)
+        let stoppedAt = pipeline.clock.clock.now()
+        await stopAndFinalize(pipeline)
+
+        let entries = await store.entries()
+        let entry = try XCTUnwrap(entries.first)
+        XCTAssertEqual(entry.polishedText, "<\(Self.phrase)>")
+        XCTAssertEqual(entry.stoppedAt, stoppedAt)
+        XCTAssertEqual(entry.polishBackend, "userServer")
+        XCTAssertEqual(entry.polishModel, "fake-polish-model")
+        let printed = AgentCLIAppDataSource.dictation(entry)
+        XCTAssertEqual(printed.stoppedAt, stoppedAt)
+        XCTAssertEqual(printed.polishBackend, "userServer")
+        XCTAssertEqual(printed.polishModel, "fake-polish-model")
+    }
+
     /// Grounding is sampled at stop: when the stop's request carries context
     /// the piece was polished without (here the clipboard), the piece is
     /// discarded and the whole text is polished in one request, as before.

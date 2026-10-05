@@ -94,6 +94,7 @@ extension DictationSessionController {
         /// Taken at stop, before a polish that can outlast the next session's
         /// start.
         let audio: Data?
+        var stoppedAt: Date? = nil
     }
 
     /// What an Overlay Buffer commit samples at the stop itself, before a
@@ -144,7 +145,8 @@ extension DictationSessionController {
                 model: sessionModelName ?? settings.effectiveModelName,
                 outputMode: sessionMode.rawValue,
                 targetAppBundleID: resolveTargetAppBundleID(),
-                audio: sessionStoresAudio ? sessionAudio : nil
+                audio: sessionStoresAudio ? sessionAudio : nil,
+                stoppedAt: sessionStoppedAt
             ),
             polishingConfig: polishingConfig,
             // The world as it was at stop: clipboard, screen, join and
@@ -236,6 +238,7 @@ extension DictationSessionController {
         let capturedOutputMode = sample.record.outputMode
         let capturedTargetBundleID = sample.record.targetAppBundleID
         let capturedAudio = sample.record.audio
+        let capturedStoppedAt = sample.record.stoppedAt
         // The capture exists exactly when the configuration does: both were
         // taken together at stop, ahead of the profile, which reads the join
         // the capture consumed.
@@ -297,7 +300,8 @@ extension DictationSessionController {
                         model: capturedModel,
                         outputMode: capturedOutputMode,
                         targetAppBundleID: capturedTargetBundleID,
-                        audio: capturedAudio
+                        audio: capturedAudio,
+                        stoppedAt: capturedStoppedAt
                     ),
                     polishProfile: capturedPolishProfile,
                     spokenSend: spokenSend,
@@ -348,6 +352,7 @@ extension DictationSessionController {
                     status: llmConfigurationFailure == nil ? .sttCompleted : .llmFailed,
                     commitSucceeded: addressed.inserted,
                     polishContextSummary: payloadProvenanceSummary,
+                    stoppedAt: capturedStoppedAt,
                     clipboardPayload: clipboardPayload,
                     audio: capturedAudio,
                     joined: historyJoin
@@ -473,6 +478,7 @@ extension DictationSessionController {
             status: llmConfigurationFailure == nil ? .sttCompleted : .llmFailed,
             commitSucceeded: overlayCommit.succeeded,
             polishContextSummary: preparation.payloadProvenanceSummary,
+            stoppedAt: record.stoppedAt,
             clipboardPayload: preparation.clipboardPayload,
             audio: record.audio,
             joined: historyJoin
@@ -556,6 +562,9 @@ extension DictationSessionController {
         var recordPolishedOutput: String?
         var recordCommittedText: String?
 
+        // What History names as the polish: only a request that went out.
+        let sentPolish: LLMPolishingConfiguration? =
+            if case .notSent = outcome.reply { nil } else { polishingConfig }
         switch outcome.reply {
         case .notSent:
             // Nothing to polish (blank text): end the sweep started above.
@@ -632,6 +641,8 @@ extension DictationSessionController {
                     )
                 ),
                 polishPromptTokens: polishPromptTokens,
+                stoppedAt: record.stoppedAt,
+                polish: sentPolish,
                 clipboardPayload: preparation.clipboardPayload,
                 audio: record.audio,
                 joined: capture.claudeJoin.map(AgentCLIJoin.init)
@@ -719,6 +730,8 @@ extension DictationSessionController {
                 )
             ),
             polishPromptTokens: polishPromptTokens,
+            stoppedAt: record.stoppedAt,
+            polish: sentPolish,
             clipboardPayload: preparation.clipboardPayload,
             audio: record.audio,
             joined: capture.claudeJoin.map(AgentCLIJoin.init)
@@ -1071,6 +1084,8 @@ extension DictationSessionController {
         polishProfile: String? = nil,
         polishContextSummary: String? = nil,
         polishPromptTokens: Int? = nil,
+        stoppedAt: Date? = nil,
+        polish: LLMPolishingConfiguration? = nil,
         clipboardPayload: String? = nil,
         quickCaptureDestination: String? = nil,
         audio: Data? = nil,
@@ -1105,6 +1120,10 @@ extension DictationSessionController {
         record.projectName = joined?.project?.name
         record.joinedAgent = joined?.agent
         record.polishPromptTokens = polishPromptTokens
+        record.stoppedAt = stoppedAt
+        // The backend kind and model id only, never the endpoint URL.
+        record.polishBackend = polish?.usageBackend.rawValue
+        record.polishModel = polish?.model
         lastDictationJoin = joined
         dependencies.onSessionRecord?(record)
         let retention = settings.reloadHistoryStorageSettings()

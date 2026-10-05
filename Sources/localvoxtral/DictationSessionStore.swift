@@ -28,6 +28,9 @@ struct DictationHistoryEntry: Identifiable, Equatable, Sendable {
     /// `EditSignalOutcome`'s raw value, nil when nothing was watched.
     var editOutcome: String? = nil
     var polishPromptTokens: Int? = nil
+    var stoppedAt: Date? = nil
+    var polishBackend: String? = nil
+    var polishModel: String? = nil
 
     /// What the dictation ended up as, the transcript when nothing changed it.
     var finalText: String { polishedText ?? rawText }
@@ -58,7 +61,8 @@ struct DictationHistoryEntry: Identifiable, Equatable, Sendable {
             polishContextSummary: polishContextSummary, projectKey: projectKey,
             projectName: projectName, joinedAgent: joinedAgent,
             quickCaptureDestination: quickCaptureDestination, editOutcome: editOutcome,
-            polishPromptTokens: polishPromptTokens)
+            polishPromptTokens: polishPromptTokens, stoppedAt: stoppedAt,
+            polishBackend: polishBackend, polishModel: polishModel)
     }
 
     /// What "Copy last dictation" copies, nil when there is no text.
@@ -90,7 +94,10 @@ extension DictationHistoryEntry {
             joinedAgent: record.joinedAgent,
             quickCaptureDestination: record.quickCaptureDestination,
             editOutcome: record.editOutcome,
-            polishPromptTokens: record.polishPromptTokens
+            polishPromptTokens: record.polishPromptTokens,
+            stoppedAt: record.stoppedAt,
+            polishBackend: record.polishBackend,
+            polishModel: record.polishModel
         )
     }
 
@@ -117,6 +124,9 @@ extension DictationHistoryEntry {
             editOutcome: editOutcome
         )
         record.polishPromptTokens = polishPromptTokens
+        record.stoppedAt = stoppedAt
+        record.polishBackend = polishBackend
+        record.polishModel = polishModel
         return record
     }
 }
