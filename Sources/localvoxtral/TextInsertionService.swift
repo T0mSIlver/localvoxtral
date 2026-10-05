@@ -428,6 +428,7 @@ final class TextInsertionService {
     func beginPromptRelay(
         _ route: (any AgentPromptRoute)?,
         kept: @escaping @MainActor (String) -> Void = { _ in },
+        submitted: @escaping @MainActor (AgentPromptSubmission) -> Void = { _ in },
         fallback: (@MainActor (String) -> Void)? = nil
     ) {
         promptRelayKeptText = false
@@ -452,7 +453,7 @@ final class TextInsertionService {
             }
             kept(text)
         }
-        promptRelaySink = AgentPromptSink(route: route, kept: noteKept) { [weak self] text in
+        promptRelaySink = AgentPromptSink(route: route, kept: noteKept, submitted: submitted) { [weak self] text in
             if let fallback {
                 fallback(text)
                 return

@@ -21,7 +21,27 @@ extension DictationSessionController {
             guard let self else { return }
             self.lastError = self.keepUndeliveredAgentText(kept.text)
             self.forgetLanding(ofSession: sessionID, generation: generation)
+        }, submitted: { [weak self] submission in
+            // A Live Auto-Paste spoken send through the mod: its words are
+            // in the box whatever happened to the submit, so only the
+            // status says it did not go.
+            guard let self, self.sessionStartGeneration == generation,
+                  let status = Self.promptRelaySubmissionStatus(submission)
+            else { return }
+            self.lastError = status
         })
+    }
+
+    /// The popover line for a submit the route delivered, or nil when it
+    /// went.
+    static func promptRelaySubmissionStatus(_ submission: AgentPromptSubmission) -> String? {
+        switch submission {
+        case .submitted: nil
+        case .queued: ModChannelStatus.queued
+        case .notSubmitted: ModChannelStatus.filledNotSent
+        case .notInTheBox: ModChannelStatus.notRestored
+        case .unanswered: ModChannelStatus.unanswered
+        }
     }
 
     /// What the overlay commit inserts through: the route while it takes

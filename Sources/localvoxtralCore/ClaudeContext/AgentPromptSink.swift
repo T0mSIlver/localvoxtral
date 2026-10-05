@@ -8,6 +8,21 @@ package enum AgentPromptCall: Sendable, Equatable {
     case submit
 }
 
+/// What became of a submit the route delivered, for a route that learns
+/// it only from the target's answer (the Claude Code mod's): the text is
+/// in the prompt either way, so nothing is typed, but the person is told.
+package enum AgentPromptSubmission: Sendable, Equatable {
+    case submitted
+    /// The submit waits for the agent's running turn.
+    case queued
+    /// Not submitted; the text stays in the prompt box.
+    case notSubmitted
+    /// Not submitted, and the box did not take the text back (#1803).
+    case notInTheBox
+    /// No answer: it may have been submitted.
+    case unanswered
+}
+
 /// What became of one call, and so where its text goes.
 package enum AgentPromptDelivery: Sendable, Equatable {
     /// The target confirmed the call reached the prompt.
@@ -41,6 +56,9 @@ package protocol AgentPromptRoute: Sendable {
     /// handed it that has not landed yet. Called once no call is being
     /// handed over.
     func cancel()
+    /// What became of the last submit `deliver` answered `delivered`, once,
+    /// or nil for a route whose delivery says it all.
+    func takeSubmission() -> AgentPromptSubmission?
 }
 
 /// What `AgentPromptRoute.settle` found: the texts that did not land, in
@@ -66,6 +84,8 @@ extension AgentPromptRoute {
 
     /// A route that answers each call once it landed holds nothing back.
     package func cancel() {}
+
+    package func takeSubmission() -> AgentPromptSubmission? { nil }
 }
 
 /// One dictation's writes into a route, delivered in the order they were
@@ -88,6 +108,7 @@ package final class AgentPromptSink {
     package let route: any AgentPromptRoute
     private let fallback: @MainActor (String) -> Void
     private let kept: @MainActor (String) -> Void
+    private let submitted: @MainActor (AgentPromptSubmission) -> Void
     /// Each step with the fallback its text goes to if it is refused.
     private var queue: [(step: Step, fallback: (@MainActor (String) -> Void)?)] = []
     private var draining = false
@@ -110,13 +131,17 @@ package final class AgentPromptSink {
     ///   - fallback: types a text the route did not take.
     ///   - kept: told of a text that is typed nowhere, so the user can be
     ///     pointed to History.
+    ///   - submitted: told what became of a delivered submit, when the
+    ///     route knows more than that it was delivered.
     package init(
         route: any AgentPromptRoute,
         kept: @escaping @MainActor (String) -> Void = { _ in },
+        submitted: @escaping @MainActor (AgentPromptSubmission) -> Void = { _ in },
         fallback: @escaping @MainActor (String) -> Void
     ) {
         self.route = route
         self.kept = kept
+        self.submitted = submitted
         self.fallback = fallback
     }
 
@@ -208,6 +233,9 @@ package final class AgentPromptSink {
             // A cancel during the call: nothing it gave back is typed.
             if cancelled { break }
             if outcome == .delivered {
+                if case .call(.submit) = next.step, let submission = route.takeSubmission() {
+                    submitted(submission)
+                }
                 queue.removeFirst()
                 continue
             }

@@ -38,6 +38,8 @@ package final class ClaudeModPromptRoute: AgentPromptRoute {
         var written: [String] = []
         /// What a failed submit's `ack` found, for the sink's `settle`.
         var settled: AgentPromptSettlement?
+        /// What the mod answered the last delivered submit.
+        var submission: AgentPromptSubmission?
     }
 
     private let state = Mutex(State())
@@ -101,17 +103,40 @@ package final class ClaudeModPromptRoute: AgentPromptRoute {
             let exchange = await hub.exchange(
                 .init(kind: .send, text: ""), with: sessionID, attachment: attachment, timeout: submitTimeout
             )
-            let reply = exchange.reply
-            if reply?.ok == true, reply?.submitted == true {
-                Log.backends.notice("Claude Code mod: spoken send submitted queued=\(reply?.queued == true, privacy: .public)")
+            let submission = Self.submission(of: exchange)
+            if submission == .submitted || submission == .queued {
+                Log.backends.notice("Claude Code mod: spoken send submitted queued=\(submission == .queued, privacy: .public)")
             } else {
-                // The text is in the box either way; only the submit is
-                // missing, and no key may stand in for it.
+                // The text was filled either way; only the submit is
+                // missing, and no key may stand in for it (#1806 follow-up):
+                // the sink tells the person.
                 Log.backends.notice(
-                    "Claude Code mod: spoken send not submitted (\(reply?.reason ?? "unanswered", privacy: .public)); the text stays in the box"
+                    "Claude Code mod: spoken send not submitted (\(exchange.reply?.reason ?? "unanswered", privacy: .public))"
                 )
             }
+            state.withLock { $0.submission = submission }
             return .delivered
+        }
+    }
+
+    package func takeSubmission() -> AgentPromptSubmission? {
+        state.withLock { state in
+            defer { state.submission = nil }
+            return state.submission
+        }
+    }
+
+    /// What the mod's answer to an empty `send` says became of the submit.
+    package static func submission(of exchange: ClaudeModChannelHub.Exchange) -> AgentPromptSubmission {
+        switch exchange {
+        case .replied(let reply) where reply.ok && reply.submitted == true:
+            return reply.queued == true ? .queued : .submitted
+        case .replied(let reply) where reply.reason == ClaudeModChannelWire.Reply.notRestoredReason:
+            return .notInTheBox
+        case .replied, .notDelivered:
+            return .notSubmitted
+        case .unanswered:
+            return .unanswered
         }
     }
 
