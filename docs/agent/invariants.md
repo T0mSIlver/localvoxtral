@@ -2538,8 +2538,9 @@ there is not.
     registry session: focus in the primary pane's prompt, and the id
     reported by this session alone. An ambiguous id, focus left in the
     sidebar or a second pane, or no answer within 2 s is `.unverified`, and
-    the answer shortcut starts no dictation. "Send that to" keeps refusing
-    Desktop: its Return exception is ruled for terminal tabs only. The link
+    the answer shortcut starts no dictation. "Send that to" types and
+    presses Return in Desktop only after this `.focused`, and again only if
+    a second read-back still shows the session (#1825). The link
     and the id are UNDOCUMENTED; a Desktop update that drops them leaves the
     read-back failing, never a dictation in the wrong session.
   - **"Were you looking at it" asks only local questions** (#717). A turn's
