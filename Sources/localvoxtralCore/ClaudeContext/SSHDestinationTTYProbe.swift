@@ -71,6 +71,11 @@ package struct SSHSurfaceConnection: Sendable, Equatable {
     /// accepted `-J` (it never looks at a socket), and only the plain-ssh arm
     /// must abstain on it.
     package var usesProxyJump: Bool
+    /// The argv set the port (`-p`). The destination then names the enrolled
+    /// host while the connection reaches another sshd on that address, so an
+    /// enrolled alias's default port says nothing about what this terminal
+    /// shows.
+    package var overridesPort: Bool
     /// The ESTABLISHED TCP sockets of the surface's ssh process, or nil when
     /// the fd table could not be read. Nil is UNREADABLE, never "none": an
     /// empty array is a positive claim about a process and a failed syscall
@@ -89,6 +94,7 @@ package struct SSHSurfaceConnection: Sendable, Equatable {
         hasCompetingHerdrClient: Bool,
         herdr: HerdrInvocation,
         usesProxyJump: Bool = false,
+        overridesPort: Bool = false,
         sockets: [SSHClientSocket]? = nil,
         siblings: SSHSiblingSurvey = SSHSiblingSurvey(),
         surfaceProcessStartTime: Date? = nil
@@ -97,6 +103,7 @@ package struct SSHSurfaceConnection: Sendable, Equatable {
         self.hasCompetingHerdrClient = hasCompetingHerdrClient
         self.herdr = herdr
         self.usesProxyJump = usesProxyJump
+        self.overridesPort = overridesPort
         self.sockets = sockets
         self.siblings = siblings
         self.surfaceProcessStartTime = surfaceProcessStartTime
@@ -445,6 +452,7 @@ package enum SSHDestinationTTYProbe {
                 ),
                 herdr: parsed.herdr,
                 usesProxyJump: parsed.usesProxyJump,
+                overridesPort: parsed.overridesPort,
                 // Read for the ONE process the surface rules just proved is
                 // the foreground ssh on the focused tty — never machine-wide.
                 sockets: readSockets(surfaceProcess.pid),
@@ -634,11 +642,17 @@ package enum SSHDestinationTTYProbe {
         /// needs no flag of its own: every `-o` but `SetEnv`/`SendEnv` already
         /// refuses the whole parse.
         package var usesProxyJump: Bool = false
+        /// A `-p` appeared before the destination operand. `-o Port=…` is
+        /// refused with every other `-o`.
+        package var overridesPort: Bool = false
 
-        package init(destination: String, herdr: HerdrInvocation, usesProxyJump: Bool = false) {
+        package init(
+            destination: String, herdr: HerdrInvocation, usesProxyJump: Bool = false, overridesPort: Bool = false
+        ) {
             self.destination = destination
             self.herdr = herdr
             self.usesProxyJump = usesProxyJump
+            self.overridesPort = overridesPort
         }
     }
 
@@ -670,6 +684,7 @@ package enum SSHDestinationTTYProbe {
 
         var index = 1
         var usesProxyJump = false
+        var overridesPort = false
         while index < argv.count {
             let token = argv[index]
             if token == "--" {
@@ -677,7 +692,8 @@ package enum SSHDestinationTTYProbe {
                 return invocation(
                     destinationOperand: argv[index + 1],
                     remoteCommand: Array(argv.dropFirst(index + 2)),
-                    usesProxyJump: usesProxyJump
+                    usesProxyJump: usesProxyJump,
+                    overridesPort: overridesPort
                 )
             }
             if token.hasPrefix("-"), token.count > 1 {
@@ -688,6 +704,7 @@ package enum SSHDestinationTTYProbe {
                     continue
                 }
                 if namesProxyJump(optionToken: token) { usesProxyJump = true }
+                if names("p", optionToken: token) { overridesPort = true }
                 switch consumption(ofOptionToken: token) {
                 case .unrecognized, .refused:
                     return nil
@@ -701,7 +718,8 @@ package enum SSHDestinationTTYProbe {
             return invocation(
                 destinationOperand: token,
                 remoteCommand: Array(argv.dropFirst(index + 1)),
-                usesProxyJump: usesProxyJump
+                usesProxyJump: usesProxyJump,
+                overridesPort: overridesPort
             )
         }
         return nil
@@ -715,9 +733,15 @@ package enum SSHDestinationTTYProbe {
     /// the walk stops at the first argument-taking letter, which is where the
     /// option letters end.
     package static func namesProxyJump(optionToken token: String) -> Bool {
+        names("J", optionToken: token)
+    }
+
+    /// Does this option token carry the argument-taking option `letter`? The
+    /// walk `namesProxyJump` describes, for any such letter.
+    private static func names(_ letter: Character, optionToken token: String) -> Bool {
         for character in token.dropFirst() {
             if flagOptions.contains(character) { continue }
-            return character == "J"
+            return character == letter
         }
         return false
     }
@@ -725,13 +749,15 @@ package enum SSHDestinationTTYProbe {
     private static func invocation(
         destinationOperand: String,
         remoteCommand: [String],
-        usesProxyJump: Bool
+        usesProxyJump: Bool,
+        overridesPort: Bool
     ) -> ParsedInvocation? {
         guard let destination = normalizedDestination(destinationOperand) else { return nil }
         return ParsedInvocation(
             destination: destination,
             herdr: classifyHerdrCommand(remoteCommand),
-            usesProxyJump: usesProxyJump
+            usesProxyJump: usesProxyJump,
+            overridesPort: overridesPort
         )
     }
 

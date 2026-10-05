@@ -287,6 +287,99 @@ final class RemoteHerdrJoinTests: XCTestCase, RemoteHerdrJoinFixture {
         XCTAssertEqual(join.mechanism, .remoteHerdrPane)
     }
 
+    /// A herdr 0.9 client on the far side of ssh that federates other
+    /// machines renders this server's token while it shows another machine,
+    /// and its focused pane is not the one the user sees. Neither the panel
+    /// nor the argv fallback may join through it, read or unread argv alike.
+    func testAFederatedClientOnTheFarSideOfSSHJoinsNothing() async {
+        let token = HerdrPanelBindingProbe.token(randomBits: 11)
+        let grid = """
+             machines              │ $ make test
+             ▾ Local               │
+               1 api               │
+             ▾ gpu-box             │
+             agents                │
+             claude  \(token)     │
+            """
+        let sshResults: [SSHDestinationTTYProbeResult] = [
+            .connection(SSHSurfaceConnection(
+                destination: "builder",
+                hasCompetingHerdrClient: false,
+                herdr: .plainClient(sessionSelector: nil)
+            )),
+            .undeterminable(.unreadableArguments),
+        ]
+        for sshResult in sshResults {
+            let registry = makeRegistry()
+            ingestRemoteHerdrSession(into: registry)
+            let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+            let forwards = RecordingForwards()
+
+            let join = await resolver(
+                registry: registry,
+                panes: panes,
+                forwards: forwards,
+                sshResult: sshResult,
+                panelMetadata: panes,
+                panelGrid: grid,
+                panelRandomBits: 11
+            ).resolve(target: ghostty)
+
+            XCTAssertNil(join, "\(sshResult)")
+            XCTAssertEqual(forwards.openCount, 1, "no argv fallback after the panel saw a federated client")
+            XCTAssertEqual(forwards.closeCount, 1)
+            XCTAssertEqual(panes.panelReports.withLock { $0.last?.value }, nil, "the stamped token is cleared")
+            XCTAssertFalse(panes.requests.withLock { $0 }.contains { $0.method == "pane.process_info" })
+        }
+    }
+
+    /// `ssh -p 2222 builder herdr` reaches another sshd on builder's address.
+    /// With no panel proof, the argv fallback would match the enrolled alias
+    /// `builder` at its own port and join the agent there. Fed through the
+    /// real ssh probe; without the `-p` the same probe joins.
+    func testAPortOverrideCannotAuthorizeTheEnrolledAliasDefaultEndpoint() async throws {
+        func probed(_ arguments: [String]) -> SSHDestinationTTYProbeResult {
+            SSHDestinationTTYProbe.connection(
+                onTTYDevicePath: surfaceTTY,
+                deviceID: { _ in 42 },
+                sshProcesses: {
+                    [SSHClientProcess(
+                        pid: 501,
+                        ttyDevice: 42,
+                        processGroupID: 501,
+                        terminalForegroundGroupID: 501,
+                        executablePath: "/usr/bin/ssh",
+                        arguments: arguments
+                    )]
+                }
+            )
+        }
+        func resolve(_ arguments: [String]) async -> (ClaudeSessionJoin?, RecordingForwards) {
+            let registry = makeRegistry()
+            ingestRemoteHerdrSession(into: registry)
+            let forwards = RecordingForwards()
+            let join = await resolver(
+                registry: registry,
+                panes: RemoteJoinHerdrPanes(focused: focusedPane()),
+                forwards: forwards,
+                sshResult: probed(arguments)
+            ).resolve(target: ghostty)
+            return (join, forwards)
+        }
+
+        let (control, _) = await resolve(["/usr/bin/ssh", "builder", "herdr"])
+        XCTAssertEqual(try XCTUnwrap(control).mechanism, .remoteHerdrPane)
+
+        for arguments in [
+            ["/usr/bin/ssh", "-p", "2222", "builder", "herdr"],
+            ["/usr/bin/ssh", "-tp2222", "builder", "herdr"],
+        ] {
+            let (join, forwards) = await resolve(arguments)
+            XCTAssertNil(join, "\(arguments)")
+            XCTAssertEqual(forwards.openCount, 0, "\(arguments)")
+        }
+    }
+
     func testTwoLiveSocketsResolveToTheOneWhoseNonceRenders() async throws {
         // Two herdr servers (or one live plus one stale registration) on one
         // host used to abstain outright. The nonce disambiguates: each socket

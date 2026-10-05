@@ -11,8 +11,8 @@ import Glibc
 import Glibc
 #endif
 
-/// Is a herdr client (app-mode `herdr` process) in the foreground of this TTY
-/// device?
+/// Is a whole-view herdr client (app-mode `herdr` process) in the foreground
+/// of this TTY device?
 /// This is what binds "Ghostty's focused surface" to "herdr is what that
 /// surface displays" — the socket API has no client introspection.
 package protocol HerdrClientTTYProbing: Sendable {
@@ -27,14 +27,16 @@ package enum HerdrClientTTYProbe {
         isHerdrClient(
             onTTYDevicePath: path,
             deviceID: liveDeviceID,
-            processes: TTYProcessTable.entries(onDevice:)
+            processes: TTYProcessTable.entries(onDevice:),
+            arguments: SSHDestinationTTYProbe.processArguments(pid:)
         )
     }
 
     package static func isHerdrClient(
         onTTYDevicePath path: String,
         deviceID: @Sendable (String) -> dev_t?,
-        processes: @Sendable (dev_t) -> [TTYProcessTable.Entry]?
+        processes: @Sendable (dev_t) -> [TTYProcessTable.Entry]?,
+        arguments: (Int32) -> [String]?
     ) -> Bool {
         guard let device = deviceID(path),
               let entries = processes(device)
@@ -43,8 +45,20 @@ package enum HerdrClientTTYProbe {
         // suspended client (Ctrl-Z) keeps the tty while its shell is what the
         // surface shows, and the inner agent it hides still passes every pane
         // check (#1602).
-        return entries.contains {
+        let clients = entries.filter {
             $0.name == "herdr" && $0.processGroupID > 0 && $0.processGroupID == $0.terminalForegroundGroupID
+        }
+        // Every herdr process in that job must be a whole-view client, by the
+        // classifier the remote arm applies to an ssh command. The arms read
+        // the server's one focused pane; `herdr terminal attach <id>` shows
+        // ONE pane without moving that focus, and `herdr --remote` shows another
+        // server, so either would bind a pane the surface does not show.
+        // Unreadable argv refuses.
+        return !clients.isEmpty && clients.allSatisfy { client in
+            guard let argv = arguments(client.pid),
+                  case .plainClient = SSHDestinationTTYProbe.classifyHerdrCommand(argv)
+            else { return false }
+            return true
         }
     }
 

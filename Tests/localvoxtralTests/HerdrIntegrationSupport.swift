@@ -557,6 +557,39 @@ final class HerdrLiveFixture {
         return surface
     }
 
+    /// The controlling tty of a surface's client, as its pty recorded it at
+    /// start (`controlling_tty=` in the geometry file).
+    func surfaceTTY(name: String) throws -> String {
+        let path = "\(info.workdir)/surface-\(name).geometry"
+        let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+        let key = "controlling_tty="
+        guard let field = text.split(whereSeparator: { $0 == " " || $0 == "\n" })
+            .first(where: { $0.hasPrefix(key) }),
+            field.dropFirst(key.count).hasPrefix("/dev/")
+        else {
+            throw HerdrLaneError.fixtureFailed("surface '\(name)' recorded no controlling tty in \(path)")
+        }
+        return String(field.dropFirst(key.count))
+    }
+
+    /// The herdr processes in the foreground job of a surface's tty, each
+    /// printed with its argv. Empty means the client exited or was never the
+    /// foreground job, so a surface that "renders nothing" proves nothing.
+    func foregroundHerdrClients(surface name: String) throws -> [TTYProcessTable.Entry] {
+        let tty = try surfaceTTY(name: name)
+        let entries = TTYProcessTable.liveDeviceID(tty).flatMap(TTYProcessTable.entries(onDevice:)) ?? []
+        for entry in entries {
+            let argv = SSHDestinationTTYProbe.processArguments(pid: entry.pid) ?? ["<unreadable>"]
+            print(
+                "[herdr-fixture] surface.\(name) tty=\(tty) pid=\(entry.pid) name=\(entry.name) "
+                    + "pgid=\(entry.processGroupID) fg=\(entry.terminalForegroundGroupID) argv=\(argv)"
+            )
+        }
+        return entries.filter {
+            $0.name == "herdr" && $0.processGroupID > 0 && $0.processGroupID == $0.terminalForegroundGroupID
+        }
+    }
+
     /// Preserve the evidence before the fixture removes its temporary tree.
     /// This runs for green tests too, which makes runner and SSH-account runs
     /// directly comparable instead of leaving diagnostics only for failures.
