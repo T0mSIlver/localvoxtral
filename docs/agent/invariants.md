@@ -542,6 +542,23 @@ there is not.
   It does so once until a poll redeems a challenge, so a replayed poll
   cannot fill the queue, and the unchallenged poll itself still gets only a
   new challenge.
+
+- **A remote `/inbox` sends capture titles to the host, never the words**
+  (#1412, the owner's ruling of 2026-10-04). It is the first route that sends
+  quick capture data to a host unasked by a draft: `POST /v1/mod/inbox` lists,
+  `POST /v1/mod/inbox/open` opens, both signed both ways like a poll, so a
+  squatter on the forward port neither reads the list nor feeds the pane one.
+  The list holds what the local pane shows and nothing else: id, drafted
+  title, kind, state and capture date (`RemoteInboxRoute.Capture` is the
+  whole wire type). A capture with no drafted title goes with an empty one,
+  because the title the Mac derives for it is the start of its words. Its
+  text, note, draft body, changes and repository never cross. It lists only
+  the captures of the project the asking session is in
+  (`RemoteQuickCaptureRequests.remoteProjectKey`), for a session id scoped
+  under the authenticated host that a hook of that host named; any other
+  session gets 409. An open takes a capture id and opens it only when it is
+  a capture of that same project, so an id read elsewhere opens nothing.
+  `RemoteInboxRouteTests` pins all of this over a socket.
 - **The Mistral second pass holds the text back, never the world** (#317).
   An Overlay Buffer dictation in Mistral API mode is sent whole to the batch
   endpoint on stop (`DictationSessionController+StopCommit.swift`,

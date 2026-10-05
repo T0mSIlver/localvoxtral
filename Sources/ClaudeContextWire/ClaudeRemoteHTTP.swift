@@ -381,8 +381,10 @@ public enum ClaudeRemoteHTTPCodec {
         if status == 200, let doctorFailed, doctorFailed >= 0 {
             head += "\(doctorFailedHeaderName): \(doctorFailed)\r\n"
         }
-        // A remote mod channel answer's HMAC (#1412): 64 hex digits or nothing.
-        if status == 200, let modProof, modProof.utf8.count == 64,
+        // A remote mod answer's HMAC (#1412): 64 hex digits or nothing. A
+        // refusal carries one too, so the mod can tell the app's from a
+        // squatter's.
+        if let modProof, modProof.utf8.count == 64,
            modProof.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) {
             head += "\(modProofHeaderName): \(modProof)\r\n"
         }

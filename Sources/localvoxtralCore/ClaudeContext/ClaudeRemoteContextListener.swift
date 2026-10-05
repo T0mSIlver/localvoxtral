@@ -140,6 +140,9 @@ public final class ClaudeRemoteContextListener: Sendable {
     /// The remote sessions' mod channels (#1412). Nil without a hub; the
     /// routes then 404, which the mod reads as an app without them.
     private let modChannels: ClaudeRemoteModChannels?
+    /// A remote session's `/inbox` (#1412), behind the mod channel's proofs.
+    /// Nil without an Inbox; the routes then 404.
+    private let inbox: RemoteInboxRoute?
 
     #if DEBUG
     private let debugPostAuthenticationHook = Mutex<(@Sendable () -> Void)?>(nil)
@@ -193,10 +196,12 @@ public final class ClaudeRemoteContextListener: Sendable {
         projectTerms: RemoteProjectTermRequests? = nil,
         quickCapture: RemoteQuickCaptureRequests? = nil,
         doctor: RemoteDoctorRoute? = nil,
-        modChannels: ClaudeRemoteModChannels? = nil
+        modChannels: ClaudeRemoteModChannels? = nil,
+        inbox: RemoteInboxRoute? = nil
     ) {
         self.doctor = doctor
         self.modChannels = modChannels
+        self.inbox = inbox
         self.projectTerms = projectTerms
         self.quickCapture = quickCapture
         self.registry = registry
@@ -609,6 +614,14 @@ public final class ClaudeRemoteContextListener: Sendable {
             return false
         }
 
+        if request.path == RemoteInboxRoute.listPath || request.path == RemoteInboxRoute.openPath {
+            serveInbox(
+                fd: fd, request: request, buffer: &buffer, bodyOffset: bodyOffset,
+                deadline: deadline, token: token, host: host
+            )
+            return false
+        }
+
         if request.path == ClaudeRemoteModWire.pollPath || request.path == ClaudeRemoteModWire.replyPath {
             return serveModChannel(
                 fd: fd, request: request, buffer: &buffer, bodyOffset: bodyOffset,
@@ -977,35 +990,11 @@ public final class ClaudeRemoteContextListener: Sendable {
             return false
         }
         let isPoll = request.path == ClaudeRemoteModWire.pollPath
-        guard request.contentLength <= (isPoll ? ClaudeRemoteModWire.maxPollBytes : ClaudeRemoteModWire.maxReplyBytes)
-        else {
-            Log.backends.error("Remote mod channel: refused a request over the body cap")
-            respond(fd: fd, status: 413)
-            return false
-        }
-        while buffer.count - bodyOffset < request.contentLength {
-            guard readMore(fd: fd, into: &buffer, deadline: deadline) else {
-                respond(fd: fd, status: 400)
-                return false
-            }
-        }
-        let bodyStart = buffer.index(buffer.startIndex, offsetBy: bodyOffset)
-        let body = Data(buffer[bodyStart..<buffer.index(bodyStart, offsetBy: request.contentLength)])
-        // Re-authenticated, as ingest is: a host revoked or rotated since the
-        // first check has no key.
-        guard let key = hosts.modChannelKey(token: token, expectedHostID: host.id) else {
-            Log.claudeContext.error("Rejected remote mod channel request: host was revoked")
-            respond(fd: fd, status: 401)
-            return false
-        }
-        let proof = request.headers[ClaudeRemoteModWire.proofHeaderName.lowercased()] ?? ""
-        guard ClaudeRemoteModWire.sameProof(proof, ClaudeRemoteModWire.requestProof(key: key, body: body)) else {
-            Log.backends.error(
-                "Remote mod channel: refused a request from host \(host.id, privacy: .public) without the channel key's proof; run setup again for that host"
-            )
-            respond(fd: fd, status: 403)
-            return false
-        }
+        guard let (body, key) = readSignedModBody(
+            fd: fd, request: request, buffer: &buffer, bodyOffset: bodyOffset, deadline: deadline,
+            token: token, host: host,
+            cap: isPoll ? ClaudeRemoteModWire.maxPollBytes : ClaudeRemoteModWire.maxReplyBytes
+        ) else { return false }
 
         guard isPoll else {
             if ClaudeModChannelWire.isReply(body),
@@ -1086,6 +1075,97 @@ public final class ClaudeRemoteContextListener: Sendable {
             modProof: ClaudeRemoteModWire.answerProof(key: key, nonce: poll.nonce, body: answer)
         )
         return true
+    }
+
+    /// A mod request's body, once the host is re-authenticated and the body
+    /// carries the channel key's proof; nil after answering the refusal.
+    private func readSignedModBody(
+        fd: Int32,
+        request: ClaudeRemoteHTTPRequest,
+        buffer: inout Data,
+        bodyOffset: Int,
+        deadline: UInt64,
+        token: String,
+        host: ClaudeRemoteHost,
+        cap: Int
+    ) -> (body: Data, key: String)? {
+        guard request.contentLength <= cap else {
+            Log.backends.error("Remote mod channel: refused a request over the body cap")
+            respond(fd: fd, status: 413)
+            return nil
+        }
+        while buffer.count - bodyOffset < request.contentLength {
+            guard readMore(fd: fd, into: &buffer, deadline: deadline) else {
+                respond(fd: fd, status: 400)
+                return nil
+            }
+        }
+        let bodyStart = buffer.index(buffer.startIndex, offsetBy: bodyOffset)
+        let body = Data(buffer[bodyStart..<buffer.index(bodyStart, offsetBy: request.contentLength)])
+        // Re-authenticated, as ingest is: a host revoked or rotated since the
+        // first check has no key.
+        guard let key = hosts.modChannelKey(token: token, expectedHostID: host.id) else {
+            Log.claudeContext.error("Rejected remote mod channel request: host was revoked")
+            respond(fd: fd, status: 401)
+            return nil
+        }
+        let proof = request.headers[ClaudeRemoteModWire.proofHeaderName.lowercased()] ?? ""
+        guard ClaudeRemoteModWire.sameProof(proof, ClaudeRemoteModWire.requestProof(key: key, body: body)) else {
+            Log.backends.error(
+                "Remote mod channel: refused a request from host \(host.id, privacy: .public) without the channel key's proof; run setup again for that host"
+            )
+            respond(fd: fd, status: 403)
+            return nil
+        }
+        return (body, key)
+    }
+
+    /// A remote session's Inbox list or open (#1412). Signed both ways like a
+    /// poll, so a squatter on the forward port neither reads the titles nor
+    /// hands the pane a list of its own.
+    private func serveInbox(
+        fd: Int32,
+        request: ClaudeRemoteHTTPRequest,
+        buffer: inout Data,
+        bodyOffset: Int,
+        deadline: UInt64,
+        token: String,
+        host: ClaudeRemoteHost
+    ) {
+        guard let inbox else {
+            respond(fd: fd, status: 404)
+            return
+        }
+        guard let (body, key) = readSignedModBody(
+            fd: fd, request: request, buffer: &buffer, bodyOffset: bodyOffset, deadline: deadline,
+            token: token, host: host, cap: RemoteInboxRoute.maxRequestBytes
+        ) else { return }
+        guard let asked = RemoteInboxRoute.decode(body, opening: request.path == RemoteInboxRoute.openPath) else {
+            Log.backends.error("Remote inbox: refused an unreadable request")
+            respond(fd: fd, status: 400)
+            return
+        }
+        let answer = inbox.answer(hostID: host.id, request: asked)
+        // Again after the wait, as after a poll's hold: a host revoked or
+        // rotated meanwhile gets nothing under the key it had.
+        guard hosts.modChannelKey(token: token, expectedHostID: host.id) == key else {
+            Log.claudeContext.error("Rejected remote inbox answer: host was revoked while it waited")
+            respond(fd: fd, status: 401)
+            return
+        }
+        let sign = { (body: Data) in ClaudeRemoteModWire.answerProof(key: key, nonce: asked.nonce, body: body) }
+        switch answer {
+        case .list(let list):
+            respond(fd: fd, status: 200, body: list, modProof: sign(list))
+        case .opened:
+            respond(fd: fd, status: 200, body: Data(), modProof: sign(Data()))
+        case .unknownSession:
+            respond(fd: fd, status: 409, body: Data(), modProof: sign(Data()))
+        case .unknownCapture:
+            respond(fd: fd, status: 404, body: Data(), modProof: sign(Data()))
+        case .timedOut:
+            respond(fd: fd, status: 503, body: Data(), modProof: sign(Data()))
+        }
     }
 
     /// A host's doctor asks for the Mac's checks. Reads no body, records no

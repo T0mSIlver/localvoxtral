@@ -57,14 +57,24 @@ public enum ClaudeRemoteModWire {
     package static func decodePoll(_ data: Data) -> PollRequest? {
         guard let poll = try? JSONDecoder().decode(PollRequest.self, from: data),
               poll.modPoll == ClaudeModChannelWire.version,
-              (1...64).contains(poll.sessionID.utf8.count),
-              poll.sessionID.utf8.allSatisfy({ isASCIIAlphanumeric($0) || $0 == UInt8(ascii: "-") }),
-              isHex(poll.instance, count: 32), isHex(poll.nonce, count: 32),
+              isSessionID(poll.sessionID),
+              isHex(poll.instance, count: 32), isNonce(poll.nonce),
               poll.challenge.isEmpty || isHex(poll.challenge, count: 32),
               // An answer adds 1 to it: a trapping overflow would end the app.
               (0..<Int(Int32.max)).contains(poll.acked)
         else { return nil }
         return poll
+    }
+
+    /// A session id as post.sh sends it: it lands in a scoped key.
+    package static func isSessionID(_ text: String) -> Bool {
+        (1...64).contains(text.utf8.count)
+            && text.utf8.allSatisfy { isASCIIAlphanumeric($0) || $0 == UInt8(ascii: "-") }
+    }
+
+    /// 16 random bytes as lowercase hex.
+    package static func isNonce(_ text: String) -> Bool {
+        isHex(text, count: 32)
     }
 
     /// The host's channel key, from the token hash its registry entry holds.

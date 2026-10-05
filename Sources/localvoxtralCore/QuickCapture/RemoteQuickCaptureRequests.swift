@@ -186,7 +186,9 @@ public final class RemoteQuickCaptureRequests: @unchecked Sendable {
         }
     }
 
-    private static func remoteProjectKey(of workspace: ClaudeWorkspaceReference?) -> String? {
+    /// The `remote:` project key a remote session's workspace names; nil for
+    /// a local or unnamed one.
+    package static func remoteProjectKey(of workspace: ClaudeWorkspaceReference?) -> String? {
         guard case .remoteOpaque? = workspace,
               let project = LearnedTermProjectResolver.resolve(repositoryRoot: .unknown, workspace: workspace),
               project.key.hasPrefix(LearnedTermProjectResolver.remoteKeyPrefix)

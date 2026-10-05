@@ -92,7 +92,8 @@ public final class ClaudeRemoteListenerCoordinator: ClaudeRemoteListenerControll
         projectTerms: RemoteProjectTermRequests? = nil,
         quickCapture: RemoteQuickCaptureRequests? = nil,
         doctor: RemoteDoctorRoute? = nil,
-        modChannels: ClaudeRemoteModChannels? = nil
+        modChannels: ClaudeRemoteModChannels? = nil,
+        inbox: RemoteInboxRoute? = nil
     ) {
         self.init(hosts: hosts, sessions: sessions, modChannels: modChannels) { registry, rejections in
             ClaudeRemoteContextListener(
@@ -105,7 +106,8 @@ public final class ClaudeRemoteListenerCoordinator: ClaudeRemoteListenerControll
                 projectTerms: projectTerms,
                 quickCapture: quickCapture,
                 doctor: doctor,
-                modChannels: modChannels
+                modChannels: modChannels,
+                inbox: inbox
             )
         }
     }

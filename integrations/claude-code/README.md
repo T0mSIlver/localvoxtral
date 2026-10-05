@@ -446,7 +446,8 @@ each with **Open in localvoxtral**, which brings the app's Inbox forward on
 that capture. Editing and filing stay in the app, and the captures' words
 stay in the pane: none reaches the session's prompt. The pane needs the
 `localvoxtral` command (see `docs/coding-agents.md`) or the app in
-/Applications.
+/Applications. On a remote host the pane asks the app through the tunnel and
+shows only titles, kinds, states and ages (`docs/remote-claude-context.md`).
 
 While the mod is connected, the app keeps the session joinable however long
 it sits idle, and drops it the moment the session ends or `/clear` starts a
