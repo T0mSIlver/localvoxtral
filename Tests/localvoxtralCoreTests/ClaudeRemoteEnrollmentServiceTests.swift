@@ -2600,6 +2600,30 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         }
     }
 
+    /// The host's listing is the host's word: a version that carries the
+    /// token, or anything that is not a version, never reaches the setup
+    /// alert as written.
+    func testPluginSetupReadBackNeverEchoesTheTokenOrAnUnreadableVersion() throws {
+        let token = String(repeating: "Ab3_", count: 10) + "xyz"
+        for version in ["1.6.0-\(token)", "\(token)", "1.6.0 see https://example.com"] {
+            let service = ClaudeRemoteEnrollmentService(
+                runner: pluginSetupRunner(before: "1.6.0", after: version, calls: PluginSetupCalls())
+            )
+            XCTAssertThrowsError(
+                try service.setupRemotePlugin(sshHostAlias: "builder", token: token, remoteForwardPort: 28_511)
+            ) { error in
+                guard case ClaudeRemoteEnrollmentService.ServiceError.commandFailed(_, _, 43, let message) = error
+                else { return XCTFail("expected the read-back diagnosis, got \(error)") }
+                XCTAssertFalse(message.contains(token), message)
+                XCTAssertEqual(
+                    message,
+                    "The plugin reports an unreadable version after setup, not "
+                        + "\(ClaudeRemoteEnrollmentService.remotePluginVersion)."
+                )
+            }
+        }
+    }
+
     func testPluginListingDecoderPrefersTheUserScopeEntryAndRefusesUnreadableCaptures() throws {
         let reference = ClaudeRemoteEnrollmentService.remotePluginReference
         let twoScopes = ClaudeRemoteEnrollmentService.pluginListFrameBegin + "\n"
