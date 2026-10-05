@@ -259,14 +259,26 @@ extension ClaudeRemoteEnrollmentService {
 
         let after = try installedVersion(command: "verify remote plugin")
         guard after == expected else {
+            // The host's listing could carry anything, the token among it:
+            // only a version shape reaches the alert, and redacted too.
+            let reported = after.map { Self.looksLikePluginVersion($0) ? "version \($0)" : "an unreadable version" }
+                ?? "version none"
             throw ServiceError.commandFailed(
                 step: 0,
                 command: "install and verify remote plugin",
                 exitCode: 43,
-                message: "The plugin reports version \(after ?? "none") after setup, not \(expected)."
+                message: ClaudeRemoteTokenRedaction.redact(
+                    "The plugin reports \(reported) after setup, not \(expected).", token: token ?? ""
+                )
             )
         }
         return outcome
+    }
+
+    /// Dot-separated numbers, as every version this plugin ships carries.
+    static func looksLikePluginVersion(_ version: String) -> Bool {
+        version.count <= 32 && version.split(separator: ".", omittingEmptySubsequences: false)
+            .allSatisfy { !$0.isEmpty && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) }
     }
 
     /// What the mutation script exits with when `claude plugin configure`
