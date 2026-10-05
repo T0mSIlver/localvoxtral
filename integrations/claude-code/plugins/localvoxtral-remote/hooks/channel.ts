@@ -60,6 +60,18 @@ export const SESSION_CHANGED = 'session_changed'
 /** The refusal of an `abort` while no main-loop turn runs. */
 export const NO_TURN = 'no_turn'
 
+/**
+ * A send's reason when a hook dropped its submit and the box did not take
+ * the text back in time: the mod keeps trying, then copies it (#1803).
+ */
+export const NOT_RESTORED = 'not_restored'
+
+// How long a dropped send's text keeps trying to go back in the box, one
+// try a second: a dialog holds the box until the person closes it. After
+// that it goes on the clipboard.
+export const PUT_BACK_RETRY_MS = 1000
+export const PUT_BACK_TRIES = 120
+
 // A child that ends sooner than this after it started is a publisher that
 // does not know `--attach` (an app older than the mod): stop asking it.
 export const SHORTEST_LIFE_MS = 5000
@@ -188,6 +200,11 @@ export class AppendStream {
   settle(isFilled: boolean): void {
     if (isFilled) this.filled += 1
     else this.ended = true
+  }
+
+  /** Its dictation was cancelled (#1805): nothing more fills until the next `ack`. */
+  end(): void {
+    this.ended = true
   }
 
   /** How many filled, in order from the first; the next append starts at 1. */

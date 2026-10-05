@@ -15,8 +15,11 @@ import {
   NEW_SESSION_POLL_MS,
   NEW_SESSION_WAIT_MS,
   NO_TURN,
+  NOT_RESTORED,
   type Outcome,
   parseMessage,
+  PUT_BACK_RETRY_MS,
+  PUT_BACK_TRIES,
   waitingLine,
   RESTART_DELAY_MS,
   SESSION_CHANGED,
@@ -229,8 +232,9 @@ function dispatch($: EngineInterface, link: Link, sessionID: string, message: Ch
   if (message.kind === 'state' && message.waiting !== undefined) void update($, waiting, () => message.waiting ?? [])
   else if (message.kind === 'state') void showBand($, message)
   else if (message.kind === 'append') queueAppend($, sessionID, message)
-  // After every append written before it, so its count is final.
-  else if (message.kind === 'ack') appends = appends.then(() => answer($, link, sessionID, message))
+  // Marks every append that arrived before it, queued behind a slow fill
+  // or not, as the cancelled dictation's (#1805). Not answered.
+  else if (message.kind === 'cancel') cancels += 1
   else void answer($, link, sessionID, message)
   return undefined
 }
@@ -394,13 +398,7 @@ async function answer(
 ): Promise<void> {
   let outcome: Outcome
   try {
-    // A /clear or a resume moves the process to another session before
-    // `session.end` cuts this attach. A request issued for this session
-    // must not act on that one's prompt box or transcript.
-    outcome =
-      message.kind !== 'ping' && (await $.session.id()) !== sessionID
-        ? { ok: false, reason: SESSION_CHANGED }
-        : await handle($, message)
+    outcome = await handle($, sessionID, message)
   } catch {
     outcome = { ok: false, reason: 'failed' }
   }
@@ -412,20 +410,49 @@ async function answer(
   }
 }
 
-// Live Auto-Paste's deltas (#1645), filled one after another in the order
-// they arrived: a fill awaits the engine, and two in flight could land
-// swapped.
+// Every write to the prompt box, one at a time in the order the app's
+// messages arrived (#1804): a fill awaits the engine and its hooks, so a
+// send's read, fill and emptying could otherwise straddle another fill and
+// empty it, and two appends could land swapped. Only what touches the box
+// waits its turn: a submit's wait for a running turn does not.
+let box: Promise<unknown> = Promise.resolve()
+
+/** Runs `work` once every box write queued before it is done. */
+function inTurn<T>(work: () => Promise<T>): Promise<T> {
+  const done = box.then(work)
+  box = done.catch(() => {})
+  return done
+}
+
+/**
+ * Whether the process left `sessionID`: a /clear or a resume moves it to
+ * another session before `session.end` cuts this attach, and a request
+ * issued for this session must not act on that one's prompt box or
+ * transcript.
+ */
+async function moved($: EngineInterface, sessionID: string): Promise<boolean> {
+  return (await $.session.id()) !== sessionID
+}
+
+// Live Auto-Paste's deltas (#1645), filled in turn in the order they arrived.
 const stream = new AppendStream()
-let appends: Promise<void> = Promise.resolve()
+// How many `cancel`s arrived: an append that arrived before the last one
+// belongs to a dictation the person threw away.
+let cancels = 0
 
 /** Queues one `append`; it is not answered, the stop's `ack` counts it. */
 function queueAppend($: EngineInterface, sessionID: string, message: ChannelMessage): void {
-  appends = appends.then(async () => {
+  const arrivedAfter = cancels
+  void inTurn(async () => {
+    if (arrivedAfter !== cancels) {
+      stream.end()
+      return
+    }
     if (!stream.admits(message.seq)) return
     let isFilled = false
     try {
       // A delta meant for the session the process left goes nowhere.
-      if (message.text !== undefined && message.text !== '' && (await $.session.id()) === sessionID) {
+      if (message.text !== undefined && message.text !== '' && !(await moved($, sessionID))) {
         isFilled = (await $.prompt.fill({ text: message.text, mode: 'insert' })).isFilled
       }
     } catch {
@@ -453,24 +480,36 @@ async function showBand($: EngineInterface, message: ChannelMessage): Promise<vo
   }
 }
 
-/** Does what one message asks. A kind this build does not know is not done. */
-async function handle($: EngineInterface, message: ChannelMessage): Promise<Outcome> {
+/**
+ * Does what one message asks, for `sessionID` only. A kind this build does
+ * not know is not done. The kinds that write the box, and `ack`, which
+ * counts the appends before it, take their turn before any await.
+ */
+async function handle($: EngineInterface, sessionID: string, message: ChannelMessage): Promise<Outcome> {
+  const changed = { ok: false, reason: SESSION_CHANGED }
   switch (message.kind) {
     case 'ping':
       return { ok: true }
     case 'fill': {
+      const { text } = message
       // At the cursor, as typing would put it (#1409). The app gives the
       // text back to the keyboard on anything but ok.
-      if (message.text === undefined || message.text === '') return { ok: false, reason: 'no_text' }
-      const filled = await $.prompt.fill({ text: message.text, mode: 'insert' })
-      return filled.isFilled ? { ok: true } : { ok: false, reason: filled.refusal ?? 'refused' }
+      if (text === undefined || text === '') return { ok: false, reason: 'no_text' }
+      return inTurn(async () => {
+        if (await moved($, sessionID)) return changed
+        const filled = await $.prompt.fill({ text, mode: 'insert' })
+        return filled.isFilled ? { ok: true } : { ok: false, reason: filled.refusal ?? 'refused' }
+      })
     }
     case 'send':
       // An empty text submits the box as the appends left it (#1645).
       if (message.text === undefined) return { ok: false, reason: 'no_text' }
-      return send($, message.text)
+      return send($, sessionID, message.text)
     case 'ack':
-      return { ok: true, seq: stream.ack() }
+      return inTurn(async () => ((await moved($, sessionID)) ? changed : { ok: true, seq: stream.ack() }))
+  }
+  if (await moved($, sessionID)) return changed
+  switch (message.kind) {
     case 'abort': {
       // A spoken stop phrase (#1696): ends the main loop's running turn, as
       // Escape would, with no key. Nothing running is not an error the
@@ -513,49 +552,75 @@ let runningTurn: string | undefined
  * waits for a running turn; a submit refused later puts the text back.
  * An empty text submits the box as it stands (#1645).
  */
-async function send($: EngineInterface, text: string): Promise<Outcome> {
-  const box = await $.prompt.read()
-  if (text === '' && box.text.trim() === '') return { ok: false, reason: 'no_text' }
-  const reason = needsKeys(insertedAt(box, text))
-  if (reason !== undefined) return { ok: false, reason }
-  let whole = box.text
-  if (text !== '') {
-    const filled = await $.prompt.fill({ text, mode: 'insert' })
-    if (!filled.isFilled) return { ok: false, reason: filled.refusal ?? 'refused' }
-    whole = filled.text
-  }
-  const emptied = await $.prompt.fill({ text: '', mode: 'replace' })
-  if (!emptied.isFilled) return { ok: true, submitted: false, reason: emptied.refusal ?? 'refused' }
+async function send($: EngineInterface, sessionID: string, text: string): Promise<Outcome> {
+  const prepared = await inTurn(async (): Promise<Outcome | string> => {
+    if (await moved($, sessionID)) return { ok: false, reason: SESSION_CHANGED }
+    const box = await $.prompt.read()
+    if (text === '' && box.text.trim() === '') return { ok: false, reason: 'no_text' }
+    const reason = needsKeys(insertedAt(box, text))
+    if (reason !== undefined) return { ok: false, reason }
+    let whole = box.text
+    if (text !== '') {
+      const filled = await $.prompt.fill({ text, mode: 'insert' })
+      if (!filled.isFilled) return { ok: false, reason: filled.refusal ?? 'refused' }
+      whole = filled.text
+    }
+    const emptied = await $.prompt.fill({ text: '', mode: 'replace' })
+    if (!emptied.isFilled) return { ok: true, submitted: false, reason: emptied.refusal ?? 'refused' }
+    return whole
+  })
+  if (typeof prepared !== 'string') return prepared
+  const whole = prepared
 
   const busy = runningTurn !== undefined
   const submitted = $.prompt.submit({ text: whole, asUser: true }).then(
-    async (result) => {
-      if (result.drop === undefined) return 'sent' as const
-      await putBack($, whole)
-      return 'dropped' as const
-    },
-    async () => {
-      await putBack($, whole)
-      return 'dropped' as const
-    },
+    (result) => (result.drop === undefined ? ('sent' as const) : putBack($, sessionID, whole)),
+    () => putBack($, sessionID, whole),
   )
   if (busy) return { ok: true, submitted: true, queued: true }
   const first = await Promise.race([submitted, $.clock.sleep(SUBMIT_ANSWER_MS).then(() => 'waiting' as const)])
-  if (first === 'dropped') return { ok: true, submitted: false, reason: 'dropped' }
+  if (first === 'restored') return { ok: true, submitted: false, reason: 'dropped' }
+  if (first === 'not_restored') return { ok: true, submitted: false, reason: NOT_RESTORED }
   return first === 'sent' ? { ok: true, submitted: true } : { ok: true, submitted: true, queued: true }
 }
 
 /**
  * A submit that did not go: its text back in the box, after anything typed
- * since, so neither is cut into the other.
+ * since, so neither is cut into the other. Says whether the first try put
+ * it back; a box that refused it (a dialog) is tried again a second apart
+ * (#1803). The text goes only into the box of the session it was sent
+ * from (#1802): once the process left it, or the tries ran out, it goes on
+ * the clipboard, since the box was emptied for the send and holds it
+ * nowhere else.
  */
-async function putBack($: EngineInterface, text: string): Promise<void> {
-  try {
-    const box = await $.prompt.read()
-    await $.prompt.fill({ text: box.text === '' ? text : ` ${text}`, mode: 'append' })
-  } catch {
-    // The engine shows the drop's reason; nothing else to do.
-  }
+async function putBack($: EngineInterface, sessionID: string, text: string): Promise<'restored' | 'not_restored'> {
+  const tryOnce = () =>
+    inTurn(async () => {
+      if (await moved($, sessionID)) return 'moved' as const
+      const box = await $.prompt.read()
+      const filled = await $.prompt.fill({ text: box.text === '' ? text : ` ${text}`, mode: 'append' })
+      return filled.isFilled ? ('restored' as const) : ('refused' as const)
+    }).catch(() => 'refused' as const)
+  const first = await tryOnce()
+  if (first === 'restored') return 'restored'
+  void (async () => {
+    let last = first
+    for (let tries = 1; last === 'refused' && tries < PUT_BACK_TRIES; tries += 1) {
+      await $.clock.sleep(PUT_BACK_RETRY_MS)
+      last = await tryOnce()
+    }
+    if (last === 'restored') return
+    const copied = await $.ui.copy({ text }).then(
+      (result) => result.isCopied,
+      () => false,
+    )
+    $.ui.toast(
+      copied
+        ? 'localvoxtral could not send your prompt or put it back in the box: it is on the clipboard.'
+        : 'localvoxtral could not send your prompt or put it back in the box.',
+    )
+  })().catch(() => {})
+  return 'not_restored'
 }
 
 // How the channel reaches the app, once `session.start` found a way.

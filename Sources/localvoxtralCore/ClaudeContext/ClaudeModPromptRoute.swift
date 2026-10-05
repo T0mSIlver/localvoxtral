@@ -125,6 +125,18 @@ package final class ClaudeModPromptRoute: AgentPromptRoute {
         return await ack()
     }
 
+    /// Tells the mod no append written so far may fill any more (#1805);
+    /// one filling now may still land. Nothing is settled: a cancel types
+    /// nothing.
+    package func cancel() {
+        state.withLock { $0.written = [] }
+        guard hub.post(.init(kind: .cancel), to: sessionID, attachment: attachment) else {
+            Log.backends.notice("Claude Code mod: cancel not written")
+            return
+        }
+        Log.backends.notice("Claude Code mod: cancel written")
+    }
+
     /// Asks the mod how far the stream got, and starts the next one.
     private func ack() async -> AgentPromptSettlement {
         let written = state.withLock { state -> [String] in

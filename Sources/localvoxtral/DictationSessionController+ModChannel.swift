@@ -76,6 +76,8 @@ extension DictationSessionController {
             lastError = ModChannelStatus.queued
         case .filledNotSent:
             lastError = ModChannelStatus.filledNotSent
+        case .notRestored:
+            lastError = ModChannelStatus.notRestored
         case .refused, .unanswered:
             let typed = await commitOverlayTextTheModDidNotFill(
                 text, preferredAppPID: pid, sessionID: sessionID, terminalPID: terminalPID,
@@ -164,6 +166,9 @@ enum ModChannelCommitOutcome: Equatable {
     case queued
     /// Filled, and the submit did not happen: the text is in the box.
     case filledNotSent
+    /// Filled, then a hook dropped the submit and the box did not take the
+    /// text back (#1803): the mod keeps it, and no key types it.
+    case notRestored
     /// The mod refused, or never got the request: nothing changed.
     case refused
     /// The mod got the request and did not answer: it may have landed.
@@ -228,6 +233,8 @@ final class ModChannelOverlayCommitter: OverlayTextCommitting {
                 Log.overlay.notice(
                     "overlay commit: the mod filled but did not submit (\(exchange.reply?.reason ?? "no reason", privacy: .public))"
                 )
+            case .notRestored:
+                Log.overlay.notice("overlay commit: the mod's submit was dropped and the box did not take the text back")
             case .refused:
                 Log.overlay.notice(
                     "overlay commit: the mod did not fill (\(exchange.reply?.reason ?? "not delivered", privacy: .public)); keyboard instead"
@@ -237,7 +244,7 @@ final class ModChannelOverlayCommitter: OverlayTextCommitting {
             }
             await settled(text, preferredAppPID, outcome)
             #if DEBUG
-            ModChannelOverlayCommitter.debugFillSettled?([.filled, .sent, .queued, .filledNotSent].contains(outcome))
+            ModChannelOverlayCommitter.debugFillSettled?([.filled, .sent, .queued, .filledNotSent, .notRestored].contains(outcome))
             #endif
         }
         return .insertedByAccessibility
@@ -251,7 +258,9 @@ final class ModChannelOverlayCommitter: OverlayTextCommitting {
         switch exchange {
         case .replied(let reply) where reply.ok:
             guard submits else { return .filled }
-            guard reply.submitted == true else { return .filledNotSent }
+            guard reply.submitted == true else {
+                return reply.reason == ClaudeModChannelWire.Reply.notRestoredReason ? .notRestored : .filledNotSent
+            }
             return reply.queued == true ? .queued : .sent
         case .replied, .notDelivered:
             return .refused

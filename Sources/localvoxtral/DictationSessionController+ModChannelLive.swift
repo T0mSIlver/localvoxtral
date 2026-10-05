@@ -21,7 +21,7 @@ extension DictationSessionController {
     func settleModRoute(_ sink: AgentPromptSink) async {
         if textInsertion.promptRelaySink === sink {
             guard !wasCancelled else {
-                textInsertion.retirePromptRelay(settling: false)
+                textInsertion.retirePromptRelay(cancelling: true)
                 return
             }
             sink.finish()
@@ -40,7 +40,7 @@ extension DictationSessionController {
         // A cancel types nothing more (#1222): what the mod did not fill is
         // dropped with the dictation, never typed.
         guard !wasCancelled else {
-            textInsertion.retirePromptRelay(settling: false)
+            textInsertion.retirePromptRelay(cancelling: true)
             return false
         }
         isFinalizingStop = true
