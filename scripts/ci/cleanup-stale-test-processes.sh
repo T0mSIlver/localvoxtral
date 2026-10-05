@@ -71,6 +71,7 @@ current_uid="$(id -u)"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/lv-stale-tests.XXXXXX")"
 snapshot="$tmp_dir/processes.tsv"
 metadata="$tmp_dir/metadata.tsv"
+ps_records="$tmp_dir/ps.txt"
 lsof_records="$tmp_dir/lsof.txt"
 candidates="$tmp_dir/candidates.tsv"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -88,6 +89,8 @@ done
 # Do not inspect or print full command lines: agent/tool invocations sometimes
 # carry secrets there. One ps snapshot plus one lsof field-mode snapshot avoids
 # per-process forks; neither command requests argv. Join them by PID in awk.
+ps -axo pid=,uid=,state=,ucomm=,lstart= >"$ps_records" \
+  || fail "ps failed; cannot tell which processes are abandoned"
 while read -r pid uid state executable identity; do
   [[ "$pid" =~ ^[0-9]+$ ]] || continue
   [[ "$uid" == "$current_uid" && "$state" != Z* ]] || continue
@@ -98,9 +101,16 @@ while read -r pid uid state executable identity; do
   [[ -n "$identity" ]] || continue
   printf '%s\t%s\t%s\t%s\t%s\n' \
     "$pid" "$uid" "$state" "$executable" "$identity"
-done < <(ps -axo pid=,uid=,state=,ucomm=,lstart=) >"$metadata"
+done <"$ps_records" >"$metadata"
 
-lsof -n -P -u "$current_uid" -a -d cwd,txt -F pn >"$lsof_records" 2>/dev/null || true
+# lsof exits 1 when it cannot inspect one process, and still prints the rest.
+# Exiting nonzero with no record at all means there is no evidence, and an
+# empty join would read as "nothing abandoned" (#1721).
+lsof_status=0
+lsof -n -P -u "$current_uid" -a -d cwd,txt -F pn >"$lsof_records" 2>/dev/null || lsof_status=$?
+if (( lsof_status != 0 )) && [[ ! -s "$lsof_records" ]]; then
+  fail "lsof exited $lsof_status with no records; cannot tell which processes are abandoned"
+fi
 awk -F '\t' '
   FNR == NR { metadata[$1] = $0; next }
   substr($0, 1, 1) == "p" { pid = substr($0, 2); next }

@@ -3,6 +3,7 @@ import ClaudeContextWire
 import CoreGraphics
 #endif
 import Foundation
+import Synchronization
 import XCTest
 @testable import localvoxtralCore
 
@@ -21,6 +22,15 @@ import XCTest
 /// The tty the arm compares against is read the way the LOCAL arm reads it,
 /// through the terminal's own scripting interface. Nothing the remote host
 /// says decides which window is focused.
+/// The focused tty each read returns, in order; the last one stays.
+final class FocusedTTYs: Sendable {
+    private let reads: Mutex<[String]>
+    init(_ reads: [String]) { self.reads = Mutex(reads) }
+    func next() -> String? {
+        reads.withLock { $0.count > 1 ? $0.removeFirst() : $0.first }
+    }
+}
+
 @MainActor
 final class RemoteLocalTTYJoinTests: XCTestCase {
     private let epoch = Date(timeIntervalSince1970: 1_700_000_000)
@@ -104,13 +114,14 @@ final class RemoteLocalTTYJoinTests: XCTestCase {
         registry: ClaudeSessionRegistry,
         sshResult: SSHDestinationTTYProbeResult,
         hosts: [ClaudeRemoteHost]? = nil,
-        focusedTTY: String? = nil
+        focusedTTY: String? = nil,
+        focusedTTYs: FocusedTTYs? = nil
     ) -> ClaudeSessionJoinResolver {
         let hostList = hosts ?? [enrolledHost()]
         let tty = focusedTTY ?? surfaceTTY
         return ClaudeSessionJoinResolver(
             registry: registry,
-            focusedTerminalTTY: { _ in tty },
+            focusedTerminalTTY: { _ in focusedTTYs?.next() ?? tty },
             focusedWindowID: { _ in 101 },
             herdrClientProbe: { _ in false },
             sshDestinationProbe: { _ in sshResult },
@@ -119,6 +130,28 @@ final class RemoteLocalTTYJoinTests: XCTestCase {
             },
             speculativeHosts: { hostList }
         )
+    }
+
+    // MARK: - The keyboard fallback
+
+    /// A remote mod refused a fill: keys go only while the focused tty is
+    /// still the one the session reported (Codex review of #1780,
+    /// 2026-10-04). A tab switch between the join's read of the tty and the
+    /// last one, either way round, types nothing.
+    func testTheFallbackTypesOnlyWhileTheSessionsTTYIsStillFocused() async throws {
+        let sessionID = try XCTUnwrap(ingestRemoteSession(into: makeRegistry())).sessionID
+        for (name, reads, expected) in [
+            ("still focused", [surfaceTTY], true),
+            ("switched away after the join", [surfaceTTY, "/dev/ttys009"], false),
+            ("switched to it and back", ["/dev/ttys009", surfaceTTY, "/dev/ttys009"], false),
+        ] {
+            let registry = makeRegistry()
+            ingestRemoteSession(into: registry)
+            let shown = await resolver(
+                registry: registry, sshResult: surfaceConnection(), focusedTTYs: FocusedTTYs(reads)
+            ).shows(sessionID, target: ghostty)
+            XCTAssertEqual(shown, expected, name)
+        }
     }
 
     // MARK: - The join

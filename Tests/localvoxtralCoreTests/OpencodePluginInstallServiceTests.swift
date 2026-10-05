@@ -450,4 +450,56 @@ final class OpencodePluginInstallServiceTests: XCTestCase {
             XCTAssertEqual(error as? OpencodePluginInstallService.ServiceError, .isSymlink)
         }
     }
+
+    /// The live file system, with the user saving `tui.json` right after
+    /// setup's read.
+    private struct SavesAfterTheRead: OpencodePluginFileSystem {
+        let live: LiveOpencodePluginFileSystem
+        let save: @Sendable () throws -> Void
+        func readState() throws -> OpencodePluginState {
+            let state = try live.readState()
+            try save()
+            return state
+        }
+        func createPluginsDirectory(permissions: UInt16) throws { try live.createPluginsDirectory(permissions: permissions) }
+        func createConfigDirectory(permissions: UInt16) throws { try live.createConfigDirectory(permissions: permissions) }
+        func atomicWritePlugin(_ data: Data, permissions: UInt16, replacing expected: Data?) throws {
+            try live.atomicWritePlugin(data, permissions: permissions, replacing: expected)
+        }
+        func atomicWriteTUI(_ data: Data, permissions: UInt16, replacing expected: Data?) throws {
+            try live.atomicWriteTUI(data, permissions: permissions, replacing: expected)
+        }
+        func deletePlugin() throws { try live.deletePlugin() }
+        func deleteTUI(replacing expected: Data) throws { try live.deleteTUI(replacing: expected) }
+    }
+
+    /// A theme saved in `tui.json` while setup runs is kept: install and
+    /// remove refuse instead of replacing it with what they read (#1726).
+    func testASaveToTUIJSONMadeWhileSetupRunsIsKeptAndSetupRefuses() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-opencode-save.\(UUID().uuidString)", isDirectory: true)
+        let tui = home.appendingPathComponent(LiveOpencodePluginFileSystem.tuiRelativePath)
+        try FileManager.default.createDirectory(
+            at: tui.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: home) }
+        let live = LiveOpencodePluginFileSystem(homeDirectoryURL: home)
+        let service = { (fileSystem: any OpencodePluginFileSystem) in
+            OpencodePluginInstallService(bundledPluginData: { Self.bundledJS }, fileSystem: fileSystem)
+        }
+
+        try tuiJSON(["theme": "dark"]).write(to: tui)
+        let saved = try tuiJSON(["theme": "light"])
+        XCTAssertThrowsError(try service(SavesAfterTheRead(live: live) { try saved.write(to: tui) }).install()) { error in
+            XCTAssertEqual(error as? OpencodePluginInstallService.ServiceError, .changedOnDisk)
+        }
+        XCTAssertEqual(try Data(contentsOf: tui), saved, "install keeps the save")
+
+        // Our entry alone, which remove would delete with the file.
+        try tuiJSON([OpencodePluginInstallService.tuiPluginKey: [OpencodePluginInstallService.tuiPluginEntry]]).write(to: tui)
+        XCTAssertThrowsError(try service(SavesAfterTheRead(live: live) { try saved.write(to: tui) }).remove()) { error in
+            XCTAssertEqual(error as? OpencodePluginInstallService.ServiceError, .changedOnDisk)
+        }
+        XCTAssertEqual(try Data(contentsOf: tui), saved, "remove keeps the save")
+    }
 }

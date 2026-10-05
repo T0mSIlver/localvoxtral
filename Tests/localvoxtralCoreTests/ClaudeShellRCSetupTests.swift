@@ -352,7 +352,7 @@ final class ClaudeShellRCSetupTests: XCTestCase {
 
         func readState() throws -> ClaudeShellRCState { state }
         func createDirectory(permissions: UInt16) throws { createdDirectory = true }
-        func atomicWrite(_ data: Data, permissions: UInt16) throws {
+        func atomicWrite(_ data: Data, permissions: UInt16, replacing _: Data?) throws {
             written = (data, permissions)
         }
     }
@@ -579,6 +579,47 @@ final class ClaudeShellRCSetupTests: XCTestCase {
             try String(contentsOf: home.appendingPathComponent(".zshrc"), encoding: .utf8),
             "export EDITOR=vim\n"
         )
+    }
+
+    /// The live file system, with the user's editor saving the file right
+    /// after setup's read.
+    private struct SavesAfterTheRead: ClaudeShellRCFileSystem {
+        let live: LiveClaudeShellRCFileSystem
+        let save: @Sendable () throws -> Void
+        func readState() throws -> ClaudeShellRCState {
+            let state = try live.readState()
+            try save()
+            return state
+        }
+        func createDirectory(permissions: UInt16) throws { try live.createDirectory(permissions: permissions) }
+        func atomicWrite(_ data: Data, permissions: UInt16, replacing expected: Data?) throws {
+            try live.atomicWrite(data, permissions: permissions, replacing: expected)
+        }
+    }
+
+    /// A save made while setup runs is kept: setup refuses instead of
+    /// replacing it with the text it read plus the block, and running it
+    /// again applies the block to the saved file (#1726).
+    func testASaveMadeWhileSetupRunsIsKeptAndSetupRefuses() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lvx-rc-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let rc = home.appendingPathComponent(".zshrc")
+        try Data("export EDITOR=vim\n".utf8).write(to: rc)
+        let saved = Data("export EDITOR=nvim\n".utf8)
+        let live = LiveClaudeShellRCFileSystem(relativePath: ".zshrc", homeDirectoryURL: home)
+
+        let writer = ClaudeShellRCWriter(fileSystem: SavesAfterTheRead(live: live) { try saved.write(to: rc) })
+        XCTAssertThrowsError(try writer.apply(shell: .zsh)) { error in
+            XCTAssertEqual(error as? ClaudeShellRCError, .changedOnDisk)
+        }
+        XCTAssertEqual(try Data(contentsOf: rc), saved, "the save survives")
+
+        try ClaudeShellRCWriter(fileSystem: live).apply(shell: .zsh)
+        let applied = try String(contentsOf: rc, encoding: .utf8)
+        XCTAssertTrue(applied.hasPrefix("export EDITOR=nvim\n"))
+        XCTAssertTrue(ClaudeShellRCSetup.containsBlock(applied))
     }
 
     func testNonUTF8ContentIsRefusedRatherThanOverwritten() {

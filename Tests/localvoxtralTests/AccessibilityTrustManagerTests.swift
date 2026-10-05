@@ -76,9 +76,10 @@ final class AccessibilityTrustManagerTests: XCTestCase {
             pollingTimeoutSeconds: 1
         )
 
-        manager.promptIfNeeded()
-        await Task.yield()
-        await Task.yield()
+        // The polling task's refresh is the write this waits for.
+        await awaitNextWrite(of: { manager.isTrusted }) {
+            manager.promptIfNeeded()
+        }
 
         XCTAssertTrue(manager.isTrusted)
         XCTAssertGreaterThanOrEqual(sleepCalls, 1)

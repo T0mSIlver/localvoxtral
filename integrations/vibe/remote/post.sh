@@ -182,7 +182,7 @@ write_header() {
   cat 2>/dev/null >"$1" <<HEADERS
 Authorization: Bearer $2
 X-Lvx-Agent: vibe
-X-Lvx-Vibe-Hooks-Version: 1.17.0
+X-Lvx-Vibe-Hooks-Version: 1.20.0
 HEADERS
 }
 write_header "$WORK/header" "$TOKEN" || exit 0
@@ -373,6 +373,20 @@ if [ "$HOOK_EVENT" = post_agent ]; then
   ) 2>/dev/null || :
 fi
 
+# Sets _lvx_dir to the project directory: the git root, else the working
+# directory. Command substitution strips every trailing newline, including
+# ones in the name, which would name a sibling directory (#1727): an `x`
+# after the output keeps them, and a name holding a newline is refused.
+lvx_project_dir() {
+  _lvx_dir="$(git rev-parse --show-toplevel 2>/dev/null && echo x)" || _lvx_dir=""
+  case "$_lvx_dir" in /*) ;; *) _lvx_dir="$(pwd -P 2>/dev/null && echo x)" || return 1 ;; esac
+  _lvx_dir="${_lvx_dir%x}"
+  _lvx_dir="${_lvx_dir%?}"
+  case "$_lvx_dir" in /*) ;; *) return 1 ;; esac
+  case "$_lvx_dir" in *"
+"*) return 1 ;; esac
+}
+
 # --- Project terms (#641) ----------------------------------------------------
 # `X-Lvx-Terms: wanted` on a 200 reply is the Mac asking for this session's
 # project terms, once, after a dictation joined the session. The Mac cannot
@@ -399,9 +413,7 @@ lvx_terms_start() {
   _lvx_vibe="${4:-}"
   [ -n "$STAMP_DIR" ] && [ -n "$NOW" ] && [ -n "$_lvx_session" ] && [ -n "${HOME:-}" ] || return 0
   [ -r "$_lvx_runner" ] || return 0
-  _lvx_dir="$(git rev-parse --show-toplevel 2>/dev/null)" || _lvx_dir=""
-  case "$_lvx_dir" in /*) ;; *) _lvx_dir="$(pwd -P 2>/dev/null)" || return 0 ;; esac
-  case "$_lvx_dir" in /*) ;; *) return 0 ;; esac
+  lvx_project_dir || return 0
   _lvx_sum="$(echo "$_lvx_dir" | cksum 2>/dev/null)" || return 0
   _lvx_crc="${_lvx_sum%% *}"
   _lvx_len="${_lvx_sum##* }"
@@ -467,9 +479,7 @@ lvx_capture_start() {
   _lvx_vibe="${6:-}"
   [ -n "$STAMP_DIR" ] && [ -n "$NOW" ] && [ -n "$_lvx_session" ] && [ -n "${HOME:-}" ] || return 0
   [ -r "$_lvx_runner" ] || return 0
-  _lvx_dir="$(git rev-parse --show-toplevel 2>/dev/null)" || _lvx_dir=""
-  case "$_lvx_dir" in /*) ;; *) _lvx_dir="$(pwd -P 2>/dev/null)" || return 0 ;; esac
-  case "$_lvx_dir" in /*) ;; *) return 0 ;; esac
+  lvx_project_dir || return 0
   _lvx_base="$STAMP_DIR/capture"
   { mkdir -p "$_lvx_base" && chmod 700 "$STAMP_DIR" "$_lvx_base"; } 2>/dev/null || return 0
   _lvx_lock=""

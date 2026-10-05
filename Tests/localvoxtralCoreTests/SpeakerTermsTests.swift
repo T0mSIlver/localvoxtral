@@ -105,4 +105,14 @@ final class SpeakerTermsTests: XCTestCase {
             ["vLLM", "iPhone", "GitHub"]
         )
     }
+
+    /// Over the cap, the terms not saved yet go, newest first; a saved term
+    /// stays wherever the merge put it.
+    func testSanitizedKeepingSavedDropsUnsavedTermsFirst() {
+        let start = (1..<SpeakerTerms.maxTerms).map { "Term\($0)" }
+        let merged = start + ["Voxtral", "Ghostty"]
+
+        XCTAssertEqual(SpeakerTerms.sanitized(merged, keeping: start + ["ghostty"]), start + ["Ghostty"])
+        XCTAssertEqual(SpeakerTerms.sanitized(merged, keeping: start), start + ["Voxtral"])
+    }
 }

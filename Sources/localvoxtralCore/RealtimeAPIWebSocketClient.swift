@@ -15,11 +15,13 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         case awaitingFinalCommitTranscriptionDone
     }
 
-    /// A frame held until the handshake, with the PCM bytes it carries (zero
-    /// for a control frame) so audio is counted only once it is sent.
+    /// A frame held until the handshake, with the PCM it carries (nil for a
+    /// control frame): audio is counted only once it is sent, and a socket
+    /// that closes first hands it back to the session (#1672).
     private struct PendingFrame {
         let text: String
-        let audioBytes: Int
+        var audio: Data?
+        var audioBytes: Int { audio?.count ?? 0 }
     }
 
     /// A rollover under way (#1139): the retiring socket's final commit is
@@ -48,6 +50,10 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         var isGenerationInProgress = false
         var finalCommitCompletionGate: FinalCommitCompletionGate = .idle
         var pendingMessages: [PendingFrame] = []
+        /// Audio a socket closed on before sending it: queued for its
+        /// handshake, the carried audio of a rollover above all. No server
+        /// took it, so the session replays it on the next socket (#1672).
+        var unsentAudio = Data()
         /// The handshake's replay of `pendingMessages` is under way: new
         /// frames queue behind it until it has emptied the queue (#1058).
         var isReplayingHandshakeQueue = false
@@ -79,6 +85,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         var transmitObserverForTesting: (@Sendable (URLSessionWebSocketTask, String) -> Void)?
         var rolloverSocketForTesting: (@Sendable () -> URLSessionWebSocketTask)?
         var rolloverDialObserverForTesting: (@Sendable (Bool) -> Void)?
+        var beforeTerminalErrorCloseForTesting: (@Sendable () -> Void)?
         #endif
     }
 
@@ -103,6 +110,14 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             // A stop polled while a rollover's socket opens must not take it
             // for a dead one and finish without the carried audio (#1139).
             s.base.socketState == .connected || (s.base.socketState == .connecting && s.isRolloverSocketOpening)
+        }
+    }
+    package var isSessionReady: Bool {
+        state.withLock { s in
+            // A rollover holds the audio it carries until the retiring
+            // socket's `done`, up to `rolloverDoneTimeout`.
+            s.base.socketState == .connected && (s.hasReceivedSessionCreated || s.hasBypassedSessionCreatedGate)
+                && s.rollover == nil
         }
     }
     package var connectionGeneration: RealtimeConnectionGeneration {
@@ -159,6 +174,9 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
 
         let previousUsage: SocketUsage? = state.withLock { s in
             s.configuration = configuration
+            // A new session or a reconnect: the one that could have replayed
+            // it has taken it or moved on.
+            s.unsentAudio.removeAll()
             let usage = takeUsageLocked(&s)
             closeSocketLocked(&s, cancelTask: true)
             // Stamped in the SAME locked block as the swap. A separate
@@ -245,7 +263,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         }
         if case .carry = next { return true }
         debugLog("send append bytes=\(pcm16Data.count)")
-        guard send(event: Self.appendPayload(pcm16Data), audioBytes: pcm16Data.count) else { return false }
+        guard send(event: Self.appendPayload(pcm16Data), audio: pcm16Data) else { return false }
         if case .sendThenRollOver(let reason) = next {
             beginRollover(reason: reason)
         }
@@ -367,7 +385,15 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                 payload["final"] = true
             }
             debugLog("send rollover commit final=\(shouldMarkFinal)")
-            send(event: payload)
+            // Only to the retiring socket: one that failed as the first
+            // commit went out was replaced, and its final would end the
+            // replacement's run while the user still talks (#1725).
+            guard send(event: payload, onlyTo: started.generation) else {
+                Log.backends.notice(
+                    "realtime rollover: connection \(started.generation.description, privacy: .public) went before its commits were out; the rest dropped"
+                )
+                break
+            }
         }
 
         let clock = clock
@@ -445,7 +471,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             var carriedBytes = 0
             for chunk in rollover.carried {
                 guard let text = Self.frameText(Self.appendPayload(chunk)) else { continue }
-                s.pendingMessages.append(PendingFrame(text: text, audioBytes: chunk.count))
+                s.pendingMessages.append(PendingFrame(text: text, audio: chunk))
                 carriedBytes += chunk.count
             }
             s.socketAudioBytes = carriedBytes
@@ -460,7 +486,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             }
             for commit in commits {
                 if let text = Self.frameText(commit) {
-                    s.pendingMessages.append(PendingFrame(text: text, audioBytes: 0))
+                    s.pendingMessages.append(PendingFrame(text: text))
                 }
             }
             s.isGenerationInProgress = true
@@ -658,8 +684,14 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     // MARK: - Post-Connect
 
     override func didOpenConnection(on webSocketTask: URLSessionWebSocketTask) {
-        startPingTimer()
-        startSessionReadyTimer()
+        state.withLock { s in
+            // A disconnect between the open and this call has already stopped
+            // the timers; arming them now would leave a ping loop running on a
+            // closed client.
+            guard s.base.webSocketTask === webSocketTask, s.base.socketState == .connected else { return }
+            startPingTimerLocked(&s)
+            startSessionReadyTimerLocked(&s)
+        }
     }
 
     // MARK: - Send Helpers
@@ -671,8 +703,12 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     }
 
     /// False when the frame went nowhere: no socket, or no frame to send.
+    /// `onlyTo` is the connection whose rollover sends the frame: once it has
+    /// been replaced, the frame is dropped.
     @discardableResult
-    private func send(event: [String: Any], audioBytes: Int = 0) -> Bool {
+    private func send(
+        event: [String: Any], audio: Data? = nil, onlyTo retiring: RealtimeConnectionGeneration? = nil
+    ) -> Bool {
         guard JSONSerialization.isValidJSONObject(event) else {
             emit(.error("Invalid JSON payload generated."), from: currentConnectionGeneration)
             return false
@@ -688,7 +724,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
             if let type = event["type"] as? String {
                 debugLog("queue event type=\(type)")
             }
-            return sendText(text, audioBytes: audioBytes)
+            return sendText(text, audio: audio, onlyTo: retiring)
         } catch {
             emit(
                 .error("Failed to serialize WebSocket payload: \(error.localizedDescription)"),
@@ -698,8 +734,11 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     }
 
     @discardableResult
-    private func sendText(_ text: String, audioBytes: Int = 0) -> Bool {
+    private func sendText(
+        _ text: String, audio: Data? = nil, onlyTo retiring: RealtimeConnectionGeneration? = nil
+    ) -> Bool {
         let action: SendAction = state.withLock { s in
+            if let retiring, s.rollover?.retiring != retiring { return .dropped }
             switch s.base.socketState {
             case .connected:
                 // Behind the handshake's replay too: sent now, this frame
@@ -707,17 +746,17 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                 guard s.hasReceivedSessionCreated || s.hasBypassedSessionCreatedGate,
                       !s.isReplayingHandshakeQueue
                 else {
-                    s.pendingMessages.append(PendingFrame(text: text, audioBytes: audioBytes))
+                    s.pendingMessages.append(PendingFrame(text: text, audio: audio))
                     return .queued
                 }
                 guard let webSocketTask = s.base.webSocketTask else { return .dropped }
                 // Counted when handed to the socket, as the Mistral client
                 // does: a send that fails as the socket dies over-counts by
                 // the frames in flight.
-                s.sentAudioBytes += audioBytes
+                s.sentAudioBytes += audio?.count ?? 0
                 return .send(task: webSocketTask, text: text)
             case .connecting:
-                s.pendingMessages.append(PendingFrame(text: text, audioBytes: audioBytes))
+                s.pendingMessages.append(PendingFrame(text: text, audio: audio))
                 return .queued
             case .disconnected:
                 return .dropped
@@ -744,7 +783,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
            let data = try? JSONSerialization.data(withJSONObject: ["type": "session.update", "model": modelName]),
            let text = String(data: data, encoding: .utf8) {
             s.hasSentSessionUpdate = true
-            s.pendingMessages.insert(PendingFrame(text: text, audioBytes: 0), at: 0)
+            s.pendingMessages.insert(PendingFrame(text: text), at: 0)
             debugLog("queue event type=session.update")
         }
         s.isReplayingHandshakeQueue = true
@@ -792,14 +831,6 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     }
 
     // MARK: - Timers
-
-    private func startPingTimer() {
-        state.withLock { startPingTimerLocked(&$0) }
-    }
-
-    private func startSessionReadyTimer() {
-        state.withLock { startSessionReadyTimerLocked(&$0) }
-    }
 
     private func startPingTimerLocked(_ s: inout State) {
         stopPingTimerLocked(&s)
@@ -880,44 +911,84 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     override func handleTerminalSocketError(
         for task: URLSessionWebSocketTask, errorMessage: String?
     ) {
-        // The retiring socket died before its `done` (a 1012 from a server
-        // that ran out of context, say): the session goes on to the next
-        // socket with the carried audio rather than through a reconnect,
-        // which would drop it.
-        let retiring: RealtimeConnectionGeneration? = state.withLock { s in
-            guard s.base.socketState != .disconnected, s.base.webSocketTask === task,
-                  let rollover = s.rollover, !s.base.isUserInitiatedDisconnect
-            else { return nil }
-            return rollover.retiring
+        let errorMessage = Self.terminalErrorMessage(
+            errorMessage: errorMessage,
+            httpStatusCode: (task.response as? HTTPURLResponse)?.statusCode
+        )
+        #if DEBUG
+        state.withLock { $0.beforeTerminalErrorCloseForTesting }?()
+        #endif
+
+        // One critical section decides and closes: a rollover that started
+        // between a separate check and the close would lose the audio it
+        // carries, which the close deletes (#1724).
+        enum Outcome {
+            case stale
+            case rollover(retiring: RealtimeConnectionGeneration)
+            case closed(
+                error: String?, usage: SocketUsage?, generation: RealtimeConnectionGeneration, unsentBytes: Int)
         }
-        if let retiring {
-            finishRollover(retiring: retiring, cause: errorMessage ?? "socket closed")
+        let decided: Outcome = state.withLock { s in
+            guard s.base.socketState != .disconnected, s.base.webSocketTask === task else {
+                return .stale
+            }
+            // The retiring socket died before its `done` (a 1012 from a server
+            // that ran out of context, say): the session goes on to the next
+            // socket with the carried audio rather than through a reconnect,
+            // which would drop it.
+            if let rollover = s.rollover, !s.base.isUserInitiatedDisconnect {
+                return .rollover(retiring: rollover.retiring)
+            }
+
+            let shouldEmitError = !s.base.isUserInitiatedDisconnect
+            let generation = s.base.connectionGeneration
+            let usage = takeUsageLocked(&s)
+            // Taken before the close erases the queue.
+            for frame in s.pendingMessages {
+                if let audio = frame.audio { s.unsentAudio.append(audio) }
+            }
+            let unsentBytes = s.unsentAudio.count
+            closeSocketLocked(&s, cancelTask: false)
+            return .closed(
+                error: shouldEmitError ? errorMessage : nil, usage: usage, generation: generation,
+                unsentBytes: unsentBytes)
+        }
+        guard case .closed(let error, let usage, let generation, let unsentBytes) = decided else {
+            if case .rollover(let retiring) = decided {
+                finishRollover(retiring: retiring, cause: errorMessage ?? "socket closed")
+            }
             return
         }
-
-        let outcome:
-            (
-                error: String?, disconnected: Bool, usage: SocketUsage?,
-                generation: RealtimeConnectionGeneration
-            ) =
-            state.withLock { s in
-                guard s.base.socketState != .disconnected, s.base.webSocketTask === task else {
-                    return (nil, false, nil, .none)
-                }
-
-                let shouldEmitError = !s.base.isUserInitiatedDisconnect
-                let generation = s.base.connectionGeneration
-                let usage = takeUsageLocked(&s)
-                closeSocketLocked(&s, cancelTask: false)
-                return (shouldEmitError ? errorMessage : nil, true, usage, generation)
-            }
-        recordUsage(outcome.usage)
-
-        if let error = outcome.error {
-            emit(.error(error), from: outcome.generation)
+        recordUsage(usage)
+        if unsentBytes > 0 {
+            Log.backends.notice(
+                "realtime connection \(generation.description, privacy: .public) closed with \(String(format: "%.1f", Double(unsentBytes) / Double(AudioChunkBuffer.bytesPerSecond)), privacy: .public)s of audio it never sent; kept for the next socket"
+            )
         }
-        if outcome.disconnected {
-            emit(.disconnected, from: outcome.generation)
+
+        if let error {
+            emit(.error(error), from: generation)
+        }
+        emit(.disconnected, from: generation)
+    }
+
+    /// The socket error text a terminal failure reports, with the HTTP
+    /// status of a rejected upgrade folded in. URLSession reports a 401, 403
+    /// or 429 upgrade as a bare `NSURLErrorBadServerResponse` (-1011), which
+    /// the failure classifier reads as a wrong path; `task.response` still
+    /// carries the status, and the classifier's `http 401`, `http 403` and
+    /// `http 429` rules name the real cause. Mistral words its own
+    /// (`MistralRealtimeWebSocketClient.terminalErrorMessage`).
+    static func terminalErrorMessage(errorMessage: String?, httpStatusCode: Int?) -> String? {
+        guard let errorMessage else { return nil }
+        guard let httpStatusCode, httpStatusCode >= 400 else { return errorMessage }
+        return "The server refused the connection (HTTP \(httpStatusCode)): \(errorMessage)"
+    }
+
+    package func takeUnsentAudio() -> Data {
+        state.withLock { s in
+            defer { s.unsentAudio = Data() }
+            return s.unsentAudio
         }
     }
 
@@ -1061,6 +1132,13 @@ extension RealtimeAPIWebSocketClient {
         state.withLock { $0.rolloverDialObserverForTesting = observer }
     }
 
+    /// Runs as a terminal socket error is handled, before the client decides
+    /// between a rollover and a disconnect, so a test can start a rollover
+    /// there (#1724).
+    package func debugSetBeforeTerminalErrorClose(_ hook: (@Sendable () -> Void)?) {
+        state.withLock { $0.beforeTerminalErrorCloseForTesting = hook }
+    }
+
     /// Hears every frame as it is handed to a socket, in order.
     package func debugObserveTransmits(_ observer: (@Sendable (URLSessionWebSocketTask, String) -> Void)?) {
         state.withLock { $0.transmitObserverForTesting = observer }
@@ -1091,7 +1169,7 @@ extension RealtimeAPIWebSocketClient {
             s.usageBackend = usageBackend
             s.usageModel = usageModel
             s.sentAudioBytes = 0
-            s.pendingMessages = [PendingFrame(text: "pending-message", audioBytes: 0)]
+            s.pendingMessages = [PendingFrame(text: "pending-message")]
             s.hasUncommittedAudio = true
             s.isGenerationInProgress = true
             startPingTimerLocked(&s)

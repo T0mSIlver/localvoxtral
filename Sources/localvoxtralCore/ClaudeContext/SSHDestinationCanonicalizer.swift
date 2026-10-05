@@ -418,8 +418,12 @@ package final class SSHDestinationCanonicalizer: Sendable {
 
 #if canImport(Darwin) || canImport(Glibc)
 extension SSHDestinationCanonicalizer {
-    package static func live() -> SSHDestinationCanonicalizer {
-        let liveRunner = ClaudeRemoteEnrollmentService.processRunner(sshExecutableURL: executableURL)
+    package static func live(
+        environment: @escaping @Sendable () -> [String: String] = { ProcessInfo.processInfo.environment }
+    ) -> SSHDestinationCanonicalizer {
+        let liveRunner = ClaudeRemoteEnrollmentService.processRunner(
+            sshExecutableURL: executableURL, environment: environment
+        )
         return SSHDestinationCanonicalizer { executableURL, invocation in
             guard executableURL == Self.executableURL else {
                 throw LiveRunnerError.unexpectedExecutable

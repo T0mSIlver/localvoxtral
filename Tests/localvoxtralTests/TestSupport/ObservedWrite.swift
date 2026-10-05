@@ -26,3 +26,27 @@ func awaitNextWrite<Value>(
     if await written.value(failAfter: failAfter) { return }
     XCTFail("the watched value was never written", file: file, line: line)
 }
+
+/// Returns once `condition` holds, re-reading it after each write to what it
+/// reads: a wait on whichever main-actor task makes it true, with no fixed
+/// number of yields. Bounded like `awaitNextWrite`: each wait for the next
+/// write fails after `failAfter` seconds of wall time.
+@MainActor
+func awaitCondition(
+    failAfter: TimeInterval = 10,
+    file: StaticString = #filePath,
+    line: UInt = #line,
+    _ condition: @escaping @MainActor () -> Bool
+) async {
+    while !condition() {
+        let written = BoundedWait()
+        withObservationTracking {
+            _ = condition()
+        } onChange: {
+            written.resolve()
+        }
+        guard await written.value(failAfter: failAfter) else {
+            return XCTFail("the condition never held", file: file, line: line)
+        }
+    }
+}

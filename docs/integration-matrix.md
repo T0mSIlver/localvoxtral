@@ -17,7 +17,7 @@ dictation. Transport is how the app learns about the session.
   default), Accessibility, and a permitted polish endpoint.
 - **Repo.** Git status, uncommitted diffs, and the files the agent just
   touched, read from the local filesystem. It needs **Send diff, recent files
-  and last prompt** (off by default).
+  and prompts** (off by default).
 - **Prompt.** The session's prior user prompt, reported by the agent's own
   hooks. For Claude Code it also carries the labels of recently touched
   files.

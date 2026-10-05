@@ -13,10 +13,14 @@ extension DictationSessionController {
     /// the insertion service, or disarms the previous one.
     func armPromptRelayForSession() {
         let sessionID = context.agentPromptRoute == nil ? nil : context.claudeSessionJoin?.snapshot.sessionID
+        let generation = sessionStartGeneration
         promptRelaySessionID = sessionID
-        textInsertion.beginPromptRelay(context.agentPromptRoute, kept: { [weak self] _ in
-            self?.lastError = StatusStrings.agentPromptTextKeptInHistory
-            self?.forgetLanding(ofSession: sessionID)
+        let kept = UndeliveredAgentText()
+        textInsertion.beginPromptRelay(context.agentPromptRoute, kept: { [weak self] text in
+            kept.text += text
+            guard let self else { return }
+            self.lastError = self.keepUndeliveredAgentText(kept.text)
+            self.forgetLanding(ofSession: sessionID, generation: generation)
         })
     }
 
@@ -29,9 +33,27 @@ extension DictationSessionController {
         // Read now: an answer that comes after the next dictation armed its
         // own relay still belongs to this one.
         let sessionID = promptRelaySessionID
+        let generation = sessionStartGeneration
         return PromptRelayOverlayCommitter(sink: sink) { [weak self] text, pid in
-            self?.commitOverlayTextThePromptRelayRefused(text, preferredAppPID: pid, sessionID: sessionID)
+            guard let self else { return }
+            guard self.sessionStartGeneration == generation else {
+                self.keepOverlayTextOfARetiredDictation(text, sessionID: sessionID, generation: generation)
+                return
+            }
+            self.commitOverlayTextThePromptRelayRefused(
+                text, preferredAppPID: pid, sessionID: sessionID, generation: generation
+            )
         }
+    }
+
+    /// An overlay commit's text that the relay or the mod gave back after
+    /// the next dictation started: the keys serve that dictation now, so the
+    /// text is kept, never typed (#1466, #1657). The status line is the new
+    /// dictation's.
+    func keepOverlayTextOfARetiredDictation(_ text: String, sessionID: String?, generation: UInt64) {
+        Log.overlay.notice("overlay commit: refused after the next dictation started; text kept")
+        _ = keepUndeliveredAgentText(text)
+        forgetLanding(ofSession: sessionID, generation: generation)
     }
 
     /// The overlay's text the relay did not take, committed the way the
@@ -39,23 +61,26 @@ extension DictationSessionController {
     /// commit named when it handed the text off (the overlay may have reset
     /// since). Under Secure Keyboard Entry, or when no key lands, the text
     /// goes on the clipboard: the panel is gone, and it may exist nowhere
-    /// else.
-    private func commitOverlayTextThePromptRelayRefused(
-        _ text: String, preferredAppPID pid: pid_t?, sessionID: String?
-    ) {
+    /// else. The session's mod (#1409) gives its refusals back here too.
+    ///
+    /// - Returns: whether keys put the text in.
+    @discardableResult
+    func commitOverlayTextThePromptRelayRefused(
+        _ text: String, preferredAppPID pid: pid_t?, sessionID: String?, generation: UInt64
+    ) -> Bool {
         if !TerminalTargetDetector.isSecureKeyboardEntryEnabled(),
            textInsertion.insertTextPrioritizingKeyboard(text, preferredAppPID: pid).isSuccess
             || textInsertion.pasteUsingCommandV(text, preferredAppPID: pid) {
             Log.overlay.notice("overlay commit: relay refused; text inserted by keyboard")
-            return
+            return true
         }
         Log.overlay.error("overlay commit: relay refused and keyboard insertion unavailable; text copied")
-        forgetLanding(ofSession: sessionID)
+        forgetLanding(ofSession: sessionID, generation: generation)
         #if DEBUG
         // A test must never write the host's clipboard.
         if TerminalTargetDetector.isRunningUnderXCTest {
             lastError = StatusStrings.overlayCopiedToClipboard
-            return
+            return false
         }
         #endif
         let pasteboard = NSPasteboard.general
@@ -63,6 +88,7 @@ extension DictationSessionController {
         lastError = pasteboard.setString(text, forType: .string)
             ? StatusStrings.overlayCopiedToClipboard
             : "Unable to insert buffered text into the focused app."
+        return false
     }
 
     /// The commit recorded its landing when it handed the text off. Text the
@@ -70,11 +96,14 @@ extension DictationSessionController {
     /// so the next commit there must not continue it: a leading space would
     /// turn `/compact` into text (docs/agent/invariants.md, "An Overlay
     /// Buffer commit starts with a space only when it continues the unsent
-    /// prompt").
-    private func forgetLanding(ofSession sessionID: String?) {
-        guard let sessionID, lastOverlayCommitLanding?.sessionID == sessionID
+    /// prompt"). Only the landing of the dictation that handed the text off:
+    /// a refusal that answers after a later commit to the same session must
+    /// not forget that commit's landing.
+    func forgetLanding(ofSession sessionID: String?, generation: UInt64) {
+        guard let sessionID, let landing = lastOverlayCommitLanding,
+              landing.sessionID == sessionID, landing.generation == generation
         else { return }
-        Log.overlay.notice("overlay commit: relay text not in the prompt; next commit adds no space")
+        Log.overlay.notice("overlay commit: handed-off text not in the prompt; next commit adds no space")
         lastOverlayCommitLanding = nil
     }
 }

@@ -333,6 +333,7 @@ public enum ClaudeRemoteHTTPCodec {
     /// the Mac's checks failed, in decimal. The host's `localvoxtral doctor`
     /// takes its exit status from this number, not from the body's wording.
     public static let doctorFailedHeaderName = "X-Lvx-Doctor-Failed"
+    public static let modProofHeaderName = "X-Lvx-Mod-Proof"
 
     /// A draft id as the Mac mints it and the host shim accepts it: 32
     /// lowercase hex digits.
@@ -354,6 +355,7 @@ public enum ClaudeRemoteHTTPCodec {
         readmeWanted: Bool = false,
         draftID: String? = nil,
         doctorFailed: Int? = nil,
+        modProof: String? = nil,
         contentType: String = "application/json"
     ) -> Data {
         var head = "HTTP/1.1 \(status) \(reasonPhrase(for: status))\r\n"
@@ -378,6 +380,13 @@ public enum ClaudeRemoteHTTPCodec {
         }
         if status == 200, let doctorFailed, doctorFailed >= 0 {
             head += "\(doctorFailedHeaderName): \(doctorFailed)\r\n"
+        }
+        // A remote mod answer's HMAC (#1412): 64 hex digits or nothing. A
+        // refusal carries one too, so the mod can tell the app's from a
+        // squatter's.
+        if let modProof, modProof.utf8.count == 64,
+           modProof.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) {
+            head += "\(modProofHeaderName): \(modProof)\r\n"
         }
         head += "\r\n"
         var data = Data(head.utf8)
@@ -408,6 +417,7 @@ public enum ClaudeRemoteHTTPCodec {
         case 204: return "No Content"
         case 400: return "Bad Request"
         case 401: return "Unauthorized"
+        case 403: return "Forbidden"
         case 404: return "Not Found"
         case 405: return "Method Not Allowed"
         case 411: return "Length Required"

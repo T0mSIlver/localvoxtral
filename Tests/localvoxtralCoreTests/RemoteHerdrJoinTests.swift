@@ -58,6 +58,14 @@ private final class RemoteJoinSSHConfigRunner: @unchecked Sendable {
     }
 }
 
+/// A value a test changes while a join is in flight.
+private final class LockedBox<Value: Sendable>: Sendable {
+    private let value: Mutex<Value>
+    init(_ value: Value) { self.value = Mutex(value) }
+    func get() -> Value { value.withLock { $0 } }
+    func set(_ new: Value) { value.withLock { $0 = new } }
+}
+
 // MARK: - Resolver: the remote herdr arm
 
 /// A Claude Code session inside a herdr on an ENROLLED REMOTE host.
@@ -157,6 +165,41 @@ final class RemoteHerdrJoinTests: XCTestCase, RemoteHerdrJoinFixture {
         }
     }
 
+    // MARK: Keyboard fallback
+
+    /// A remote mod refused a fill: keys go to the terminal only while it
+    /// still shows the joined pane (Codex review of #1780, 2026-10-04). The
+    /// arm reads the focused pane before its foreground query; a pane or tab
+    /// switch during that query must not leave the answer true.
+    func testAPaneOrTabSwitchDuringTheForegroundQueryTypesNothing() async throws {
+        let sessionID = try XCTUnwrap(ingestRemoteHerdrSession(into: makeRegistry())).sessionID
+        for (name, moves) in [("no switch", false), ("pane switch", true)] {
+            let registry = makeRegistry()
+            ingestRemoteHerdrSession(into: registry)
+            let other = focusedPane(paneID: "pane-remote-8")
+            let panes = LockedBox<RemoteJoinHerdrPanes?>(nil)
+            let fake = RemoteJoinHerdrPanes(
+                focused: focusedPane(),
+                duringForegroundQuery: { if moves { panes.get()?.focus(other) } }
+            )
+            panes.set(fake)
+
+            let shown = await resolver(registry: registry, panes: fake, forwards: RecordingForwards())
+                .shows(sessionID, target: ghostty)
+
+            XCTAssertEqual(shown, !moves, name)
+        }
+
+        let registry = makeRegistry()
+        ingestRemoteHerdrSession(into: registry)
+        let tty = LockedBox<String?>(surfaceTTY)
+        let fake = RemoteJoinHerdrPanes(focused: focusedPane(), duringForegroundQuery: { tty.set("/dev/ttys-other-tab") })
+        let afterTabSwitch = await resolver(
+            registry: registry, panes: fake, forwards: RecordingForwards(), focusedTTY: { tty.get() }
+        ).shows(sessionID, target: ghostty)
+        XCTAssertFalse(afterTabSwitch, "tab switch")
+    }
+
     // MARK: Happy path
 
     func testPanelBindingIsPrimaryWhenSSHArgvSaysPlainShell() async throws {
@@ -242,6 +285,99 @@ final class RemoteHerdrJoinTests: XCTestCase, RemoteHerdrJoinFixture {
         ).resolve(target: ghostty))
 
         XCTAssertEqual(join.mechanism, .remoteHerdrPane)
+    }
+
+    /// A herdr 0.9 client on the far side of ssh that federates other
+    /// machines renders this server's token while it shows another machine,
+    /// and its focused pane is not the one the user sees. Neither the panel
+    /// nor the argv fallback may join through it, read or unread argv alike.
+    func testAFederatedClientOnTheFarSideOfSSHJoinsNothing() async {
+        let token = HerdrPanelBindingProbe.token(randomBits: 11)
+        let grid = """
+             machines              │ $ make test
+             ▾ Local               │
+               1 api               │
+             ▾ gpu-box             │
+             agents                │
+             claude  \(token)     │
+            """
+        let sshResults: [SSHDestinationTTYProbeResult] = [
+            .connection(SSHSurfaceConnection(
+                destination: "builder",
+                hasCompetingHerdrClient: false,
+                herdr: .plainClient(sessionSelector: nil)
+            )),
+            .undeterminable(.unreadableArguments),
+        ]
+        for sshResult in sshResults {
+            let registry = makeRegistry()
+            ingestRemoteHerdrSession(into: registry)
+            let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+            let forwards = RecordingForwards()
+
+            let join = await resolver(
+                registry: registry,
+                panes: panes,
+                forwards: forwards,
+                sshResult: sshResult,
+                panelMetadata: panes,
+                panelGrid: grid,
+                panelRandomBits: 11
+            ).resolve(target: ghostty)
+
+            XCTAssertNil(join, "\(sshResult)")
+            XCTAssertEqual(forwards.openCount, 1, "no argv fallback after the panel saw a federated client")
+            XCTAssertEqual(forwards.closeCount, 1)
+            XCTAssertEqual(panes.panelReports.withLock { $0.last?.value }, nil, "the stamped token is cleared")
+            XCTAssertFalse(panes.requests.withLock { $0 }.contains { $0.method == "pane.process_info" })
+        }
+    }
+
+    /// `ssh -p 2222 builder herdr` reaches another sshd on builder's address.
+    /// With no panel proof, the argv fallback would match the enrolled alias
+    /// `builder` at its own port and join the agent there. Fed through the
+    /// real ssh probe; without the `-p` the same probe joins.
+    func testAPortOverrideCannotAuthorizeTheEnrolledAliasDefaultEndpoint() async throws {
+        func probed(_ arguments: [String]) -> SSHDestinationTTYProbeResult {
+            SSHDestinationTTYProbe.connection(
+                onTTYDevicePath: surfaceTTY,
+                deviceID: { _ in 42 },
+                sshProcesses: {
+                    [SSHClientProcess(
+                        pid: 501,
+                        ttyDevice: 42,
+                        processGroupID: 501,
+                        terminalForegroundGroupID: 501,
+                        executablePath: "/usr/bin/ssh",
+                        arguments: arguments
+                    )]
+                }
+            )
+        }
+        func resolve(_ arguments: [String]) async -> (ClaudeSessionJoin?, RecordingForwards) {
+            let registry = makeRegistry()
+            ingestRemoteHerdrSession(into: registry)
+            let forwards = RecordingForwards()
+            let join = await resolver(
+                registry: registry,
+                panes: RemoteJoinHerdrPanes(focused: focusedPane()),
+                forwards: forwards,
+                sshResult: probed(arguments)
+            ).resolve(target: ghostty)
+            return (join, forwards)
+        }
+
+        let (control, _) = await resolve(["/usr/bin/ssh", "builder", "herdr"])
+        XCTAssertEqual(try XCTUnwrap(control).mechanism, .remoteHerdrPane)
+
+        for arguments in [
+            ["/usr/bin/ssh", "-p", "2222", "builder", "herdr"],
+            ["/usr/bin/ssh", "-tp2222", "builder", "herdr"],
+        ] {
+            let (join, forwards) = await resolve(arguments)
+            XCTAssertNil(join, "\(arguments)")
+            XCTAssertEqual(forwards.openCount, 0, "\(arguments)")
+        }
     }
 
     func testTwoLiveSocketsResolveToTheOneWhoseNonceRenders() async throws {
@@ -1086,6 +1222,43 @@ final class RemoteHerdrJoinTests: XCTestCase, RemoteHerdrJoinFixture {
 
         XCTAssertEqual(join.mechanism, .remoteHerdrPane)
         XCTAssertEqual(forwards.openCount, 1)
+    }
+
+    /// `herdr --session review` shows the review server, not the one the sole
+    /// registered agent lives on: the argv fallback must not join across
+    /// sessions, in either direction. A client of the session the socket
+    /// belongs to still joins.
+    func testTheArgvFallbackJoinsOnlyTheSessionTheClientNamed() async {
+        let defaultSocket = "/home/dev/.config/herdr/herdr.sock"
+        let reviewSocket = "/home/dev/.config/herdr/sessions/review/herdr.sock"
+        let cases: [(selector: String?, socket: String, joins: Bool)] = [
+            ("review", remoteSocketPath, false),
+            ("review", defaultSocket, false),
+            (nil, reviewSocket, false),
+            ("ci", reviewSocket, false),
+            ("review", reviewSocket, true),
+            (nil, defaultSocket, true),
+            ("default", defaultSocket, true),
+        ]
+        for (selector, socket, joins) in cases {
+            let registry = makeRegistry()
+            ingestRemoteHerdrSession(into: registry, socketPath: socket)
+
+            let join = await resolver(
+                registry: registry,
+                panes: RemoteJoinHerdrPanes(focused: focusedPane()),
+                forwards: RecordingForwards(),
+                sshResult: .connection(
+                    SSHSurfaceConnection(
+                        destination: "builder",
+                        hasCompetingHerdrClient: false,
+                        herdr: .plainClient(sessionSelector: selector)
+                    )
+                )
+            ).resolve(target: ghostty)
+
+            XCTAssertEqual(join != nil, joins, "--session \(selector ?? "(none)") on \(socket)")
+        }
     }
 
     // MARK: herdr-or-nothing starts at CONFIRMATION (review round 3, blocker 1b)

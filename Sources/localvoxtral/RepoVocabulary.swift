@@ -460,9 +460,9 @@ enum RepoVocabularyService {
         }
 
         let paths = RepoIndexing.parseNullDelimitedPaths(output.data)
-        // The file's terms come first: where one normalizes like a path-derived
-        // term, the matcher keeps the first, and the spelling someone wrote
-        // down beats the one inferred from a file name. They skip
+        // The file's terms come first and are preferred: where one normalizes
+        // like a path-derived term, the spelling someone wrote down beats the
+        // one inferred from a file name. They skip
         // `isTechnicalTerm` because a person chose them; "Voxtral" has no
         // machine-checkable signal and is exactly what the file is for.
         let fileTerms = DictationTermsFile.read(root: root, fileManager: fileManager)
@@ -478,7 +478,8 @@ enum RepoVocabularyService {
             Log.polishing.info("Repo vocabulary: repo yielded no technical terms")
             return nil
         }
-        let vocabulary = RepoVocabulary(terms: terms, branch: branch)
+        let vocabulary = RepoVocabulary(
+            terms: terms, branch: branch, preferredTermCount: fileTerms.count)
         cache.insert(
             root: root,
             vocabulary: vocabulary,

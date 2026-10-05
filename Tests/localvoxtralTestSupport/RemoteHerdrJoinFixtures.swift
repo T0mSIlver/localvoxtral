@@ -36,7 +36,7 @@ package final class RemoteJoinHerdrPanes:
     }
 
     package let requests = Mutex<[Request]>([])
-    private let focused: HerdrFocusedPane?
+    private let focused: Mutex<HerdrFocusedPane?>
     private let foreground: HerdrPaneForegroundInfo?
     private let visibleTexts = Mutex<[String?]>([])
     package let panelReports = Mutex<[(socketPath: String, paneID: String, value: String?, ttl: Int?)]>([])
@@ -44,6 +44,9 @@ package final class RemoteJoinHerdrPanes:
     /// Awaited inside every `pane.read` after it is recorded, so a test can
     /// hold a stop-side read in flight while it changes the world around it.
     private let paneReadGate: (@Sendable () async -> Void)?
+    /// Run inside every `pane.process_info`, so a test can move the focus
+    /// while that query is in flight.
+    private let duringForegroundQuery: (@Sendable () -> Void)?
 
     package init(
         focused: HerdrFocusedPane?,
@@ -52,9 +55,11 @@ package final class RemoteJoinHerdrPanes:
         ),
         texts: [String?] = [],
         panelReportSucceeds: Bool = true,
-        paneReadGate: (@Sendable () async -> Void)? = nil
+        paneReadGate: (@Sendable () async -> Void)? = nil,
+        duringForegroundQuery: (@Sendable () -> Void)? = nil
     ) {
-        self.focused = focused
+        self.focused = Mutex(focused)
+        self.duringForegroundQuery = duringForegroundQuery
         self.foreground = foreground
         self.panelReportSucceeds = panelReportSucceeds
         self.paneReadGate = paneReadGate
@@ -65,7 +70,12 @@ package final class RemoteJoinHerdrPanes:
         requests.withLock {
             $0.append(Request(method: "pane.current", socketPath: socketPath, paneID: nil))
         }
-        return focused
+        return focused.withLock { $0 }
+    }
+
+    /// The user focuses another pane.
+    package func focus(_ pane: HerdrFocusedPane?) {
+        focused.withLock { $0 = pane }
     }
 
     package func paneForegroundInfo(socketPath: String, paneID: String) async -> HerdrPaneForegroundInfo? {
@@ -74,6 +84,7 @@ package final class RemoteJoinHerdrPanes:
                 Request(method: "pane.process_info", socketPath: socketPath, paneID: paneID)
             )
         }
+        duringForegroundQuery?()
         return foreground
     }
 
@@ -352,14 +363,17 @@ extension RemoteHerdrJoinFixture {
         exactHosts: [ClaudeRemoteHost]? = nil,
         // When set, every host lookup reads this at call time instead of
         // `hosts`, so a test can revoke a host while a join is in flight.
-        liveHosts: (@MainActor () -> [ClaudeRemoteHost])? = nil
+        liveHosts: (@MainActor () -> [ClaudeRemoteHost])? = nil,
+        // When set, the focused tty is read from here at call time, so a test
+        // can switch tabs while a join is in flight.
+        focusedTTY: (@Sendable () -> String?)? = nil
     ) -> ClaudeSessionJoinResolver {
         let fixedHosts = hosts ?? [enrolledHost()]
         let currentHosts: @MainActor () -> [ClaudeRemoteHost] = { liveHosts?() ?? fixedHosts }
         let fixedNow = epoch
         return ClaudeSessionJoinResolver(
             registry: registry,
-            focusedTerminalTTY: { [surfaceTTY] _ in surfaceTTY },
+            focusedTerminalTTY: { [surfaceTTY] _ in focusedTTY.map { $0() } ?? surfaceTTY },
             focusedWindowID: { _ in 101 },
             // The surface is NOT a local herdr client: that arm has to have
             // declined before this one is even reached.

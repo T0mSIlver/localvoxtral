@@ -121,6 +121,27 @@ final class AddressedSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.viewModel.statusText, DictationSessionController.GoToSessionStatus.ambiguous)
     }
 
+    /// With History off the next dictation would replace the only copy, so
+    /// the words before the phrase go on the clipboard (#1546).
+    func testAnAmbiguousNameWithHistoryOffCopiesTheText() async {
+        let harness = makeHarness(
+            text: "fix it, send that to localvoxtral",
+            sessions: [
+                session("a", cwd: "/r/localvoxtral", tty: "/dev/ttys001"),
+                session("b", cwd: "/r/localvoxtral", tty: "/dev/ttys002"),
+            ]
+        )
+        harness.viewModel.settings.dictationHistoryRetention = .off
+        harness.viewModel.settings.autoCopyEnabled = false
+        let copied = harness.viewModel.recordPasteboardWrites()
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.inserted.value.count, 0)
+        XCTAssertEqual(copied.values, ["fix it"])
+        XCTAssertEqual(harness.viewModel.statusText, DictationViewModel.StatusStrings.overlayCopiedToClipboard)
+    }
+
     /// The owner's ruling: no key without the pane's own evidence.
     func testAPaneThatDoesNotReadBackAsTheSessionGetsNoKey() async {
         for outcome in [
@@ -279,6 +300,28 @@ final class AddressedSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.viewModel.statusText, DictationSessionController.AddressedSendStatus.notSent)
     }
 
+    /// The same with History off: nothing was typed, so the text goes on
+    /// the clipboard (#1499).
+    func testAnotherAppFrontmostWithHistoryOffCopiesTheText() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments")]
+        )
+        harness.viewModel.settings.dictationHistoryRetention = .off
+        harness.viewModel.settings.autoCopyEnabled = false
+        let copied = harness.viewModel.recordPasteboardWrites()
+        harness.frontmost.value = Self.focusedAppPID
+        harness.viewModel.dependencies.bundleIdentifier = { pid in
+            pid == Self.namedTerminalPID ? TerminalScreenAllowlist.ghosttyBundleID : "com.apple.Safari"
+        }
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.inserted.value.count, 0)
+        XCTAssertEqual(copied.values, ["Run the tests"])
+        XCTAssertEqual(harness.viewModel.statusText, DictationViewModel.StatusStrings.overlayCopiedToClipboard)
+    }
+
     func testSecureKeyboardEntryTypesNothing() async {
         let harness = makeHarness(
             text: "Run the tests, send that to payments.",
@@ -304,6 +347,22 @@ final class AddressedSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.returns.value, [])
         XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false])
         XCTAssertEqual(harness.viewModel.statusText, DictationSessionController.AddressedSendStatus.unsupported)
+    }
+
+    /// The same with History off: the text goes on the clipboard (#1546).
+    func testASessionWithNoRouteWithHistoryOffCopiesTheText() async {
+        var desktop = session("pay", cwd: "/r/payments")
+        desktop.process?.desktopSessionID = "local_x"
+        let harness = makeHarness(text: "Run the tests, send that to payments.", sessions: [desktop])
+        harness.viewModel.settings.dictationHistoryRetention = .off
+        harness.viewModel.settings.autoCopyEnabled = false
+        let copied = harness.viewModel.recordPasteboardWrites()
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.inserted.value.count, 0)
+        XCTAssertEqual(copied.values, ["Run the tests"])
+        XCTAssertEqual(harness.viewModel.statusText, DictationViewModel.StatusStrings.overlayCopiedToClipboard)
     }
 
     /// "send it" in the text is text: the addressed send is the only submit,
@@ -399,6 +458,128 @@ final class AddressedSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.viewModel.statusText, DictationSessionController.AddressedSendStatus.notSent)
     }
 
+    /// With History off, Copy last dictation alone holds the text until the
+    /// next dictation: a refused route's text goes on the clipboard, and the
+    /// popover says so (#1499).
+    func testARefusedHerdrWriteWithHistoryOffIsCopied() async throws {
+        let herdr = try FakeHerdrSocket(
+            answer: FakeHerdrSocket.focusedPane("w1:p2", foreground: { [(9001, "claude")] }) { _ in
+                .error("pane_send_failed")
+            }
+        )
+        addTeardownBlock { herdr.stop() }
+        let harness = makeHarness(text: "Run the tests, send that to payments.", herdr: herdr)
+        harness.viewModel.settings.dictationHistoryRetention = .off
+        harness.viewModel.settings.autoCopyEnabled = false
+        let copied = harness.viewModel.recordPasteboardWrites()
+
+        await harness.stop()
+
+        XCTAssertEqual(herdr.writes.map(\.method), ["pane.send_text"], "precondition: the route refused")
+        XCTAssertEqual(copied.values, ["Run the tests"])
+        XCTAssertEqual(harness.viewModel.statusText, DictationViewModel.StatusStrings.overlayCopiedToClipboard)
+    }
+
+    /// A new dictation that starts while the route still answers takes the
+    /// stop's status, not the text: a refusal after it is still copied with
+    /// History off (#1658).
+    func testARefusedHerdrWriteANewDictationSupersededIsStillCopied() async throws {
+        let (arrived, arrival) = AsyncStream<Void>.makeStream()
+        let release = DispatchSemaphore(value: 0)
+        let herdr = try FakeHerdrSocket(
+            answer: FakeHerdrSocket.focusedPane("w1:p2", foreground: { [(9001, "claude")] }) { _ in
+                arrival.yield()
+                release.wait()
+                return .error("pane_send_failed")
+            }
+        )
+        addTeardownBlock {
+            release.signal()
+            herdr.stop()
+        }
+        let harness = makeHarness(text: "Run the tests, send that to payments.", herdr: herdr)
+        harness.viewModel.settings.dictationHistoryRetention = .off
+        harness.viewModel.settings.autoCopyEnabled = false
+        let copied = harness.viewModel.recordPasteboardWrites()
+
+        harness.viewModel.isDictating = false
+        harness.viewModel.isFinalizingStop = true
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        let commit = harness.viewModel.session.polishAndCommitTask
+        for await _ in arrived { break }
+        XCTAssertTrue(harness.viewModel.session.cancelPolishingForNewSessionIfNeeded(), "a new dictation starts")
+        release.signal()
+        await commit?.value
+
+        XCTAssertEqual(herdr.writes.map(\.method), ["pane.send_text"], "precondition: the route refused")
+        XCTAssertEqual(copied.values, ["Run the tests"])
+    }
+
+    /// Escape while a route delivers: the route has the text and writes it
+    /// whatever the app does next, so Escape goes back to the focused app
+    /// once the text is handed over, instead of showing a cancel while the
+    /// text is still sent and submitted (#1666).
+    func testEscapeIsReleasedOnceTheRouteHasTheText() async throws {
+        let (herdr, held, release) = try herdrHoldingTheAppendsForegroundQuery()
+        let harness = makeHarness(text: "Run the tests, send that to payments.", herdr: herdr)
+        // The build host has no GUI session to register the Carbon hotkey in.
+        EscapeCancelHandler.debugConfigureRegistration(status: noErr)
+        let escape = harness.viewModel.session.escapeCancelHandler
+        escape.start()
+        addTeardownBlock { @MainActor in
+            escape.stop()
+            EscapeCancelHandler.resetDebugState()
+        }
+        XCTAssertTrue(escape.debugIsRegistered, "precondition: the stop keeps Escape")
+
+        let commit = harness.startStop()
+        for await _ in held { break }
+        XCTAssertFalse(escape.debugIsRegistered, "Escape goes back to the focused app")
+        escape.debugPressEscape()
+        release.signal()
+        await commit?.value
+
+        XCTAssertFalse(harness.viewModel.session.wasCancelled)
+        XCTAssertEqual(herdr.writes.map(\.method), ["pane.send_text", "pane.send_keys"])
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [true])
+        XCTAssertEqual(harness.viewModel.statusText, "Ready")
+    }
+
+    /// Quit while a route delivers: the dictation is saved as not inserted
+    /// before the quit drains History, and the route's answer adds no second
+    /// record (#1667).
+    func testAQuitWhileTheRouteDeliversSavesOneRecordNotInserted() async throws {
+        let (herdr, held, release) = try herdrHoldingTheAppendsForegroundQuery()
+        let harness = makeHarness(text: "Run the tests, send that to payments.", herdr: herdr)
+        let store = try XCTUnwrap(harness.viewModel.sessionStore)
+
+        let commit = harness.startStop()
+        for await _ in held { break }
+        // What `applicationWillTerminate` runs before it drains History.
+        harness.viewModel.saveStoppedDictationForQuit()
+        await store.pendingWrites?.value
+
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false], "the quit lost the dictation")
+        XCTAssertEqual(harness.records.value.map(\.rawText), ["Run the tests"], "the phrase cut, as a sent record")
+
+        release.signal()
+        await commit?.value
+        XCTAssertEqual(harness.records.value.count, 1, "the route answering later saves nothing more")
+    }
+
+    /// The normal path still saves its one record, inserted, and a later
+    /// quit saves nothing more.
+    func testADeliveredRouteSendLeavesNothingForAQuit() async throws {
+        let herdr = try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane("w1:p2") { [(9001, "claude")] })
+        addTeardownBlock { herdr.stop() }
+        let harness = makeHarness(text: "Run the tests, send that to payments.", herdr: herdr)
+
+        await harness.stop()
+        harness.viewModel.saveStoppedDictationForQuit()
+
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [true], "one record, inserted")
+    }
+
     func testTheStatusSentencesFitThePopoverLine() {
         for sentence in [
             DictationSessionController.AddressedSendStatus.unsupported,
@@ -407,6 +588,251 @@ final class AddressedSendWiringTests: XCTestCase {
         ] {
             XCTAssertLessThanOrEqual(sentence.count, 44, sentence)
         }
+    }
+
+    // MARK: - Through the named session's mod (#1693)
+
+    /// The named session's mod is attached: it fills and submits by session
+    /// id. The pane is never brought forward and no key is posted anywhere.
+    func testAnAttachedModSubmitsInTheUnfocusedSessionWithNoFocusAndNoKey() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001"), session("web", cwd: "/r/web")]
+        )
+        let mod = attachMod(harness, sessionID: "pay", answer: .submitted)
+
+        await harness.stop()
+
+        XCTAssertEqual(mod.sends.value, ["Run the tests"], "the phrase is cut")
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, [], "the pane stays where it is")
+        XCTAssertEqual(harness.inserted.value.map(\.text), [], "no key typed")
+        XCTAssertEqual(harness.returns.value, [], "no Return")
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [true])
+        XCTAssertEqual(harness.viewModel.statusText, "Ready")
+    }
+
+    /// The box holds an unsent draft ending in a word: the text continues it
+    /// with a space, and the mod submits the whole box.
+    func testTheModSendSpacesADraftEndingInAWord() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
+        )
+        let mod = attachMod(harness, sessionID: "pay", answer: .submitted, draft: "then")
+
+        await harness.stop()
+
+        XCTAssertEqual(mod.sends.value, [" Run the tests"])
+    }
+
+    /// The mod did not say what the box holds: the last commit's evidence
+    /// decides the space, as on the typed route.
+    func testWithoutADraftTheModSendSpacesTheUnsentPromptItContinues() async {
+        let registry = ClaudeSessionRegistry(now: { Date(timeIntervalSince1970: 3_000_000) }, isProcessAlive: { _ in true })
+        registry.ingest(
+            ClaudeHookRecord(
+                event: .sessionStart, sessionID: "pay", timestamp: 0, rawCwd: "/r/payments", prompt: nil, files: [],
+                process: ClaudeHookProcessInfo(hookPID: 1, claudePID: Self.agentPID, tty: "/dev/ttys001", termProgram: "ghostty")
+            ),
+            origin: local
+        )
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.", sessions: registry.liveSessions(), registry: registry
+        )
+        harness.viewModel.session.lastOverlayCommitLanding = OverlayCommitLanding(
+            targetPID: Self.namedTerminalPID, sessionID: "pay",
+            promptsSubmitted: registry.snapshot(sessionID: "pay")?.promptsSubmitted ?? -1
+        )
+        let mod = attachMod(harness, sessionID: "pay", answer: .submitted, draft: nil)
+
+        await harness.stop()
+
+        XCTAssertEqual(mod.sends.value, [" Run the tests"])
+        XCTAssertNil(harness.viewModel.session.lastOverlayCommitLanding, "submitted: nothing left to continue")
+    }
+
+    /// The session is mid-turn: the popover says the prompt runs after it.
+    func testAQueuedModSendSaysItRunsAfterTheTurn() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
+        )
+        _ = attachMod(harness, sessionID: "pay", answer: .queued)
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, [])
+        XCTAssertEqual(harness.viewModel.statusText, DictationSessionController.ModChannelStatus.queued)
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [true])
+    }
+
+    /// The mod refused (a dialog holds the box): nothing changed in the
+    /// session, so the focus path runs as it does without a mod.
+    func testAModRefusalFallsBackToTheFocusPath() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
+        )
+        let mod = attachMod(harness, sessionID: "pay", answer: .refused("dialog"))
+
+        await harness.stop()
+
+        XCTAssertEqual(mod.sends.value, ["Run the tests"])
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, ["pay"])
+        XCTAssertEqual(harness.inserted.value.map(\.text), ["Run the tests"])
+        XCTAssertEqual(harness.returns.value, [Self.namedTerminalPID])
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [true])
+    }
+
+    /// A mod refusal gives the text back to the terminal tab's route, and
+    /// Escape with it: a cancel during the read-back still stops the Return.
+    func testEscapeAfterAModRefusalStillStopsTheTerminalsReturn() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
+        )
+        _ = attachMod(harness, sessionID: "pay", answer: .refused("dialog"))
+        // The build host has no GUI session to register the Carbon hotkey in.
+        EscapeCancelHandler.debugConfigureRegistration(status: noErr)
+        let escape = harness.viewModel.session.escapeCancelHandler
+        escape.start()
+        addTeardownBlock { @MainActor in
+            escape.stop()
+            EscapeCancelHandler.resetDebugState()
+        }
+        var registeredAtReadBack: Bool?
+        harness.focuser.onReadBack = { _ in
+            registeredAtReadBack = escape.debugIsRegistered
+            escape.debugPressEscape()
+        }
+
+        await harness.stop()
+
+        XCTAssertEqual(registeredAtReadBack, true, "Escape is the app's again for the terminal's route")
+        XCTAssertEqual(harness.inserted.value.map(\.text), ["Run the tests"])
+        XCTAssertEqual(harness.returns.value, [], "the cancel stops the Return")
+        XCTAssertEqual(harness.records.value.count, 1)
+    }
+
+    /// The channel is there but the write fails: the mod never got the
+    /// request, so the focus path runs.
+    func testAModThatNeverGetsTheRequestFallsBackToTheFocusPath() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
+        )
+        _ = attachMod(harness, sessionID: "pay", answer: .undeliverable)
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, ["pay"])
+        XCTAssertEqual(harness.inserted.value.map(\.text), ["Run the tests"])
+        XCTAssertEqual(harness.returns.value, [Self.namedTerminalPID])
+    }
+
+    /// Only the named session's mod counts: another session's attached mod
+    /// leaves this one on the focus path.
+    func testAnotherSessionsModLeavesTheNamedOneOnTheFocusPath() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001"), session("web", cwd: "/r/web")]
+        )
+        let mod = attachMod(harness, sessionID: "web", answer: .submitted)
+
+        await harness.stop()
+
+        XCTAssertEqual(mod.sends.value, [])
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, ["pay"])
+        XCTAssertEqual(harness.returns.value, [Self.namedTerminalPID])
+    }
+
+    /// The mod got the request and never answered: it may have submitted,
+    /// so nothing is typed or sent another way, and the text is kept.
+    func testAnUnansweredModSendIsKeptAndNeverRetyped() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
+        )
+        _ = attachMod(harness, sessionID: "pay", answer: .silent)
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, [])
+        XCTAssertEqual(harness.inserted.value.map(\.text), [])
+        XCTAssertEqual(harness.returns.value, [])
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false])
+        XCTAssertEqual(harness.viewModel.statusText, DictationViewModel.StatusStrings.agentPromptTextKeptInHistory)
+    }
+
+    /// The mod's process moved to another session (`/clear`) after the
+    /// name resolved: its pane shows that session now, so nothing is sent
+    /// there by any path (#1651).
+    func testASessionChangedRefusalIsKeptAndTakesNoOtherPath() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
+        )
+        _ = attachMod(
+            harness, sessionID: "pay", answer: .refused(ClaudeModChannelWire.Reply.sessionChangedReason)
+        )
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, [])
+        XCTAssertEqual(harness.inserted.value.map(\.text), [])
+        XCTAssertEqual(harness.returns.value, [])
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false])
+    }
+
+    /// The draft read already met `session_changed`, then the channel
+    /// closed before the send: the old registry entry still matches the
+    /// pane after `/clear`, so the focus path would type into the session
+    /// that replaced it. Nothing is sent by any path (Codex review of #1702).
+    func testASessionChangedDraftReadKeepsTheTextWhenTheSendIsNotDelivered() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
+        )
+        _ = attachMod(
+            harness, sessionID: "pay", answer: .undeliverable,
+            draftRefusal: ClaudeModChannelWire.Reply.sessionChangedReason
+        )
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.focuser.focusedSessionIDs, [])
+        XCTAssertEqual(harness.inserted.value.map(\.text), [])
+        XCTAssertEqual(harness.returns.value, [])
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false])
+        XCTAssertEqual(harness.viewModel.statusText, DictationViewModel.StatusStrings.agentPromptTextKeptInHistory)
+    }
+
+    /// A new dictation committed into the same unsent prompt while the
+    /// cancelled send waited: the send's late "submitted" forgets only the
+    /// landings recorded before it, not the newer one (Codex review of #1702).
+    func testALateModReplyKeepsTheLandingANewerDictationRecorded() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [session("pay", cwd: "/r/payments", tty: "/dev/ttys001")]
+        )
+        let mod = attachMod(harness, sessionID: "pay", answer: .held)
+
+        harness.viewModel.isDictating = false
+        harness.viewModel.isFinalizingStop = true
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: false)
+        let commit = harness.viewModel.session.polishAndCommitTask
+        for await _ in mod.arrived { break }
+        XCTAssertTrue(harness.viewModel.session.cancelPolishingForNewSessionIfNeeded(), "a new dictation starts")
+        let newer = OverlayCommitLanding(
+            targetPID: Self.namedTerminalPID, sessionID: "pay", promptsSubmitted: 0,
+            generation: harness.viewModel.session.sessionStartGeneration &+ 1
+        )
+        harness.viewModel.session.lastOverlayCommitLanding = newer
+        mod.answerHeld(.submitted)
+        await commit?.value
+
+        XCTAssertEqual(mod.sends.value, ["Run the tests"], "precondition: the mod got the send")
+        XCTAssertEqual(harness.viewModel.session.lastOverlayCommitLanding, newer)
     }
 
     // MARK: - Harness
@@ -424,6 +850,16 @@ final class AddressedSendWiringTests: XCTestCase {
         /// The pids in every tty's foreground process group.
         let foreground: Box<[Int32]>
 
+        /// Stops the dictation and returns its commit task, without
+        /// awaiting it.
+        @MainActor
+        func startStop() -> Task<Void, Never>? {
+            viewModel.isDictating = false
+            viewModel.isFinalizingStop = true
+            viewModel.session.finishStoppedSession(promotePendingSegment: false)
+            return viewModel.session.polishAndCommitTask
+        }
+
         @MainActor
         func stop() async {
             viewModel.isDictating = false
@@ -431,6 +867,111 @@ final class AddressedSendWiringTests: XCTestCase {
             viewModel.session.finishStoppedSession(promotePendingSegment: false)
             await awaitStoppedSessionCommit(viewModel)
         }
+    }
+
+    private enum ModAnswer: Equatable {
+        case submitted, queued, silent, undeliverable
+        case refused(String)
+        /// Waits for the test's `answerHeld`.
+        case held
+    }
+
+    private struct FakeMod {
+        /// The texts of the `send` requests the mod got.
+        let sends: Box<[String]>
+        /// Yields once per `send` the mod got.
+        let arrived: AsyncStream<Void>
+        /// Answers the `send` a `.held` mod got.
+        let answerHeld: @MainActor (ModAnswer) -> Void
+    }
+
+    /// Attaches a fake mod for `sessionID` that answers each `send` with
+    /// `answer` and each `draft` with `draft` before an empty cursor tail,
+    /// or not at all when `draft` is nil.
+    /// A silent mod's request times out at once.
+    private func attachMod(
+        _ harness: Harness, sessionID: String, answer: ModAnswer, draft: String? = "", draftRefusal: String? = nil
+    ) -> FakeMod {
+        let sleep: @Sendable (Duration) async -> Void = answer == .silent
+            ? { @Sendable _ in }
+            : { @Sendable _ in try? await Task.sleep(for: .seconds(3600)) }
+        let hub = ClaudeModChannelHub(sleep: sleep)
+        let sends = Box<[String]>([])
+        let heldID = Box<String?>(nil)
+        let (arrived, arrival) = AsyncStream<Void>.makeStream()
+        let answerSend: @Sendable (ModAnswer, String) -> Void = { answer, id in
+            switch answer {
+            case .undeliverable, .silent, .held:
+                break
+            case .submitted, .queued:
+                hub.deliver(.init(
+                    sessionID: sessionID, id: id, ok: true,
+                    submitted: true, queued: answer == .queued ? true : nil
+                ))
+            case .refused(let reason):
+                hub.deliver(.init(sessionID: sessionID, id: id, ok: false, reason: reason))
+            }
+        }
+        _ = hub.attach(sessionID: sessionID, channel: .init(
+            write: { line in
+                guard let message = ClaudeModChannelWire.decode(
+                    ClaudeModChannelWire.Message.self, from: line.dropLast()
+                ) else { return false }
+                if message.kind == .draft, let draftRefusal {
+                    hub.deliver(.init(sessionID: sessionID, id: message.id, ok: false, reason: draftRefusal))
+                    return true
+                }
+                if message.kind == .draft {
+                    // A mod older than `draft` never answers it.
+                    guard let draft else { return false }
+                    hub.deliver(.init(
+                        sessionID: sessionID, id: message.id, ok: true, text: draft, cursor: draft.utf16.count
+                    ))
+                    return true
+                }
+                guard message.kind == .send else { return false }
+                sends.value.append(message.text ?? "")
+                // Record the held id before waking the test, which may answer it at once.
+                if answer == .held { heldID.value = message.id }
+                arrival.yield()
+                guard answer != .undeliverable else { return false }
+                answerSend(answer, message.id)
+                return true
+            },
+            close: {}
+        ))
+        harness.viewModel.session.context.claudeModChannels = hub
+        return FakeMod(sends: sends, arrived: arrived) { late in
+            guard let id = heldID.value else { return XCTFail("no held send to answer") }
+            answerSend(late, id)
+        }
+    }
+
+    /// A herdr pane of "payments" whose second foreground query, the one
+    /// the route's append asks after the route resolved, waits for `release`.
+    /// `held` yields when it starts waiting.
+    private func herdrHoldingTheAppendsForegroundQuery(
+    ) throws -> (FakeHerdrSocket, AsyncStream<Void>, DispatchSemaphore) {
+        let (held, arrival) = AsyncStream<Void>.makeStream()
+        let release = DispatchSemaphore(value: 0)
+        let queries = Box(0)
+        let lock = NSLock()
+        let herdr = try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane("w1:p2") {
+            let query = lock.withLock {
+                queries.value += 1
+                return queries.value
+            }
+            if query == 2 {
+                arrival.yield()
+                release.wait()
+            }
+            return [(9001, "claude")]
+        })
+        addTeardownBlock {
+            release.signal()
+            herdr.stop()
+        }
+        return (herdr, held, release)
     }
 
     private func session(_ id: String, cwd: String, tty: String = "/dev/ttys009") -> ClaudeSessionSnapshot {
@@ -482,6 +1023,7 @@ final class AddressedSendWiringTests: XCTestCase {
             startRuntimeServices: false
         )
         viewModel.appConfigStore = MockAppConfigStore()
+        viewModel.sessionStore = DictationSessionStore.inMemory()
         if let polishingService {
             viewModel.llmPolishingService = polishingService
             viewModel.dependencies.clock = ManualSessionClock().clock

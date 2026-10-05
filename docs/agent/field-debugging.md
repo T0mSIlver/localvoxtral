@@ -189,7 +189,7 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   `DEMO_TERMINAL_AGENT=herdr` (explicit only, never auto) records the herdr
   pane-join scene — split panes in an isolated named herdr session, dictation
   into the focused Claude pane, log-asserted herdr join + pane.read context.
-- **Diagnostic records** (`Sources/localvoxtral/DiagnosticRecords`): the app
+- **Diagnostic records** (`Sources/localvoxtral*/DiagnosticRecords`): the app
   logs context counts only, and each polished dictation also writes a local
   JSON record of what the context pipeline saw and decided, named by its
   History id, with the post-commit edit signal patched in. On by default in

@@ -491,6 +491,39 @@ final class WebSocketClientLifecycleTests: XCTestCase {
         XCTAssertEqual(events.count, 0, "No events should be emitted for stale task")
     }
 
+    /// A disconnect that lands between the socket opening and the timers
+    /// being armed, here from the `.connected` handler itself, must not leave
+    /// a ping loop running on the closed client.
+    func testADisconnectDuringTheOpenLeavesNoTimersArmed() {
+        let clock = ManualSessionClock()
+        let realtime = RealtimeAPIWebSocketClient(clock: clock.clock)
+        let mistral = MistralRealtimeWebSocketClient(clock: clock.clock)
+        let (session, task) = makeWebSocketTask()
+        let (mistralSession, mistralTask) = makeWebSocketTask()
+        defer {
+            task.cancel(); session.invalidateAndCancel()
+            mistralTask.cancel(); mistralSession.invalidateAndCancel()
+        }
+        realtime.setEventHandler { event, _ in
+            if case .connected = event { realtime.disconnect() }
+        }
+        mistral.setEventHandler { event, _ in
+            if case .connected = event { mistral.disconnect() }
+        }
+        realtime.debugPrimeConnectedStateForTesting(task: task)
+        mistral.debugPrimeConnectedStateForTesting(task: mistralTask)
+
+        realtime.urlSession(session, webSocketTask: task, didOpenWithProtocol: nil)
+        mistral.urlSession(mistralSession, webSocketTask: mistralTask, didOpenWithProtocol: nil)
+
+        let after = realtime.debugStateSnapshot()
+        XCTAssertFalse(after.isConnected)
+        XCTAssertFalse(after.hasPingTimer)
+        XCTAssertFalse(after.hasSessionReadyTimer)
+        XCTAssertFalse(mistral.debugStateSnapshot().isConnected)
+        XCTAssertFalse(mistral.debugStateSnapshot().hasPingTimer)
+    }
+
     // MARK: - Double Disconnect
 
     func testRealtimeDoubleTerminalErrorIsNoOp() {

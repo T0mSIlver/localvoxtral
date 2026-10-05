@@ -84,40 +84,57 @@ package func postToRemoteListener(
     return RemoteListenerResponse(status: status, headers: parsed, body: Data(received[split.upperBound...]))
 }
 
-/// A sleep seam whose sleepers wake only when a test says so.
+/// A sleep seam whose sleepers wake only when a test says so. A cancelled
+/// sleeper keeps waiting and keeps counting, so a test that waits for the
+/// next sleeper waits for `sleepers + 1`, not for 1.
 package final class ManualSleeper: @unchecked Sendable {
     private struct State {
         var sleepers: [CheckedContinuation<Void, Never>] = []
-        var watchers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+        var watchers: [(count: Int, wait: BoundedWait)] = []
     }
 
     private let state = Mutex(State())
 
     package init() {}
 
+    /// How many sleepers are waiting.
+    package var sleepers: Int { state.withLock { $0.sleepers.count } }
+
     package func sleep(_ seconds: TimeInterval) async {
         await withCheckedContinuation { continuation in
-            let ready = state.withLock { state -> [CheckedContinuation<Void, Never>] in
+            let ready = state.withLock { state -> [BoundedWait] in
                 state.sleepers.append(continuation)
                 let count = state.sleepers.count
-                let ready = state.watchers.filter { $0.count <= count }.map(\.continuation)
+                let ready = state.watchers.filter { $0.count <= count }.map(\.wait)
                 state.watchers.removeAll { $0.count <= count }
                 return ready
             }
-            ready.forEach { $0.resume() }
+            ready.forEach { $0.resolve() }
         }
     }
 
-    /// Returns once `count` sleepers are waiting.
-    package func waitForSleepers(_ count: Int) async {
-        await withCheckedContinuation { continuation in
-            let now = state.withLock { state -> Bool in
-                if state.sleepers.count >= count { return true }
-                state.watchers.append((count, continuation))
-                return false
-            }
-            if now { continuation.resume() }
+    /// Returns once `count` sleepers are waiting. Fails the test instead of
+    /// hanging it when none comes within `failAfter` seconds.
+    package func waitForSleepers(
+        _ count: Int,
+        failAfter: TimeInterval = 10,
+        isolation: isolated (any Actor)? = #isolation,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let wait = BoundedWait()
+        let ready = state.withLock { state -> Bool in
+            if state.sleepers.count >= count { return true }
+            state.watchers.append((count, wait))
+            return false
         }
+        if ready { return }
+        if await wait.value(failAfter: failAfter) { return }
+        let waiting = state.withLock { state -> Int in
+            state.watchers.removeAll { $0.wait === wait }
+            return state.sleepers.count
+        }
+        XCTFail("waited for \(count) sleeper(s), saw \(waiting)", file: file, line: line)
     }
 
     /// Wakes every sleeper.

@@ -33,8 +33,39 @@ there is not.
   dictation clears it. "Send that to <name>" into a terminal pane is judged
   the same way against the pane's pid and the named session; its Return, or
   a failed typing, clears a landing in that session and no other (#1480).
+  A route or mod refusal that answers late clears only the landing of the
+  dictation that handed its text off, by its start generation: a later
+  commit to the same session keeps its continuation space (#1660).
   Anything looser puts a space in front of `/compact`
-  in a fresh prompt. No trailing space after a commit.
+  in a fresh prompt. No trailing space after a commit. Where the joined
+  session's mod read its prompt box at the stop (a polished commit into a
+  local Claude Code session, below), the box decides instead: a space only
+  when the cursor follows a character that is not whitespace, so text typed
+  by hand is continued too, and a box cleared without a submit takes
+  `/compact` as written. An empty answer from a Claude Desktop session does
+  not decide, since a surface that draws its own prompt box gives the mod
+  `""` whatever it holds (the Code tab binds none: a fill there answers
+  `no_composer`, #1643); there the guess above still runs, as it does for
+  an unpolished commit, a mod that does not answer, and every other agent.
+- **The prompt draft is the person's unsent words, read only from the
+  joined session's own mod** (#1406). At the stop of a polished Overlay
+  Buffer commit, `SessionContextResolver.promptDraft` asks the mod of the
+  joined session for `$.prompt.read`, only for a Claude Code session on this
+  Mac joined by an exact mechanism (tty, local herdr pane, cmux surface,
+  Claude Desktop; `ClaudePromptDraft.isReadable`) and still live, with a
+  1.5 s cap that the repository reads overlap. The reply names its session
+  and is dropped for any other; the mod sends at most 3,000 UTF-16 units
+  before the cursor and 1,000 after. The draft reaches polish only through
+  `claudeSessionTextIfEnabled`, under the session block's three gates, and
+  leaves with it when consent is withdrawn at the stop; it leads that block,
+  one line per side of the cursor behind `ClaudePromptDraft`'s labels. The
+  leading space reads it whatever the context settings say, since that never
+  leaves the Mac. The app logs its length only. A diagnostic record takes it
+  out as it takes out the prior prompt (`DiagnosticRecordRedaction.Withheld`):
+  behind its labels, line by line, and soft-wrapped on the screen; lines
+  under eight characters that the screen shows outside the label stay, as
+  for the prior prompt. The draft is read at the stop, and the commit lands
+  after the polish: words typed in between are not seen.
 - **A mid-dictation reconnect resumes the session; it never replays it.**
   When the realtime socket drops without the user asking
   (`DictationSessionController+Reconnect.swift`, #380), the mic keeps recording and the
@@ -44,18 +75,44 @@ there is not.
   (`sessionRealtimeConfiguration`), never a fresh read of Settings — a backend
   mode flipped mid-dictation would otherwise carry this session's audio, and
   its bearer token, to a server it never agreed to;
-  (2) it sends no commit, at any point — the reconnected backend holds no audio
-  buffer to commit;
+  (2) it sends no commit of its own — the reconnected backend holds no audio
+  buffer to commit. The one commit after a reconnect is a stop's final commit,
+  sent behind the replayed gap;
   (3) the partial in flight is promoted into the committed transcript at the
   drop, so the reconnected backend — which starts with an empty transcript of
   its own — can only produce text Live Auto-Paste has never typed. There are no
   backspaces in the insertion path, so anything typed twice stays typed twice;
-  (4) every resume point re-checks `reconnectRunID`, which every stop, cancel
-  and abort bumps. A socket that opens a moment after the user stopped finds a
-  run that no longer owns the session and changes nothing.
+  (4) every resume point re-checks `reconnectRunID`, which every cancel, abort
+  and stop without finalization bumps. A socket that opens a moment after them
+  finds a run that no longer owns the session and changes nothing. A stop that
+  finalizes keeps the run instead (#1582): once its socket is ready the gap is
+  flushed and the stop's final commit follows, and the stop's watchdog gives
+  the run no longer than a finalization may take. A run that does not get
+  through ends the stop with the text received before the drop, and the status
+  says its end may be missing. So does any stop that ends on the idle rule,
+  the timeout or a closed socket without the backend's answer to its final
+  commit, once the backend has shown it sends finals: one this session, or an
+  answered stop on the same endpoint (#1659). A backend that only streams
+  deltas ends every stop on the idle rule, silently.
+  For the bundled helper the run spends no attempt while speechd reads
+  `.starting` (#1583): the helper binds its port only once its model is
+  loaded, so every connect meanwhile is refused at once. That wait is bounded
+  by `managedHelperStartBudget`, inside the buffer's retention.
   The audio spoken into the gap is kept, not dropped: the run cancels the
   send loop so the chunks pile up in `AudioChunkBuffer` and the restarted loop
-  replays them. That buffer's retention cap is sized above
+  replays them once the new server session is ready (#1457): its handshake,
+  or the compatibility fallback, has opened the client's send gate. The
+  WebSocket upgrade alone is not enough, because audio handed over before the
+  handshake waits in the client and dies with a socket that closes first; that
+  close fails the attempt inside the run's budget instead of ending the run.
+  Audio a socket closed on before sending it (a context rollover's carried
+  audio, queued for a replacement that failed before its handshake) never
+  reached a server: the client hands it back (`takeUnsentAudio`) and the
+  session puts it ahead of the buffer (#1672). A stop that finds the socket
+  already closed, before its `.disconnected` reaches the main queue, keeps the
+  refused flush in the buffer and reconnects as if the event had come first
+  (#1673).
+  The buffer's retention cap is sized above
   `RealtimeReconnectPolicy.worstCaseDuration`, so a run that reconnects within
   its retry cap loses nothing — past the cap the OLDEST audio goes first.
   What IS lost either way is audio that was already sent when the socket died
@@ -163,6 +220,47 @@ there is not.
   only by its own bundle ID on `ReturnSubmitsAppList` (the AX probe reads the
   element focused NOW, which need not be the commit target's), and the Return
   follows only a commit that reported `.succeeded`.
+  A dictation joined to a local Claude Code session whose mod is attached
+  (#1644) is sent by the mod instead (`send`): no key, so neither focus nor
+  Secure Keyboard Entry gates it. It reaches the session the dictation
+  joined; the one other session it reaches is the one "Send that to
+  <name>" names (#1693, below). The mod fills at the cursor, then submits the
+  box's whole text as the person's own (`$.prompt.submit` with `asUser`)
+  and empties the box, so a typed draft goes with it and nothing is sent
+  twice. A box with a paste or image placeholder, an `@` mention, or a
+  leading `/` or `!` is refused unchanged, since a plugin's submit sends
+  those as plain text. A plugin's submit resolves only once a running turn
+  ends (measured on Claude Code 2.1.287), so the mod answers `queued` when a
+  main-loop turn is running or the submit has not entered within 1.5 s; the
+  popover then says the prompt runs after the turn, not that it was sent. A
+  submit a hook drops puts the text back in the box and answers not
+  submitted, only while the process is still in the session it was sent
+  from (#1802): after a `/clear` it never reaches the new session's box. A
+  box that refuses it back (a dialog) is tried again a second apart for two
+  minutes, and the reply says `not_restored`, which the popover reports as
+  not in the box (#1803); a text the box never took back, or one whose
+  session the process left, goes on the clipboard with a toast. The mod
+  makes every write to the box one at a time, in the order the app's
+  messages arrived: fills, appends, a send's read, fill and emptying, and
+  its put-back (#1804). The submit's wait for a running turn is outside
+  that order, so a later fill is never emptied by an earlier send. A
+  refusal, or a request the mod never got, is typed under the
+  fill rule below and followed by Return under this bullet's gates, judged
+  then; an unanswered one is kept, with no Return. A channel that closed
+  between the stop and the commit sends by Return under the same gates.
+- **An Overlay Buffer commit that waited types only into the pane it was
+  for** (#1056, #1668, #1712). A pid cannot tell two tabs of one terminal apart,
+  nor two Claude Desktop sessions, so as the last await before the keys
+  the focused pane is read back (`SessionNavigator.focusedPaneShows`): the
+  pane Tab picked, after the polish and after the second pass; with none
+  picked, the joined session's after the polish or a second pass with no
+  polish (#1712), when keys carry the commit (no relay or mod takes it) into the joined app and its pane can
+  be read back (any route but `.unsupported`). A pane that no longer shows the session gets nothing:
+  the text is saved not inserted; a picked pane's goes on the clipboard
+  only with History off (#1546), a joined one's always, as a commit the
+  keys could not make. With no join, or a plain ssh or cmux one, the pid
+  is the only check and a same-terminal tab switch goes unseen. The relay
+  and the mod reach the session by id, whatever pane is in front.
 - **A voice stop is the stop key, never a second commit path** (#839).
   An Overlay Buffer dictation whose words (settled segments plus the
   partial in flight: the Mistral API sends no final before the stop) end in
@@ -182,6 +280,27 @@ there is not.
   before the rest of the sentence arrives. The user's phrase list
   (`SendTriggerPhrases`) refuses one common word and anything over four
   words, and a stored list that no longer validates loads as the default.
+- **A stop phrase ends only the joined session's turn, and never by a
+  key** (#1696; owner ruling 2026-10-04). An Overlay Buffer dictation that
+  is only one of the user's stop phrases (`SpokenAbortPhrases`: empty, and
+  so off, by default; the whole dictation must be the phrase, so a common
+  word is allowed, but not a send phrase) is checked before every other
+  spoken command, and before the destination guards that keep text in
+  History during a Tab switch or once the picked pane left the front:
+  those guard an insertion, and a stop phrase inserts nothing. It asks the mod of the session the dictation joined for
+  `abort`, which ends that session's running main-loop turn
+  (`$.turn.abort` with the id `turn.start` gave; with none running it
+  answers `no_turn`). The request goes only down that session's channel,
+  under the same join rule as a fill (`modChannelSessionID`: a local
+  Claude Code session joined by tty, herdr pane or cmux surface, mod
+  attached; Claude Desktop is not measured), and the mod refuses it with
+  `session_changed` once its process left that id. With no such session,
+  or any refusal, nothing is stopped and no key is posted: an Escape sent
+  to whatever is frontmost could cancel another app's work, which is
+  worse than a turn that runs on. Either way the phrase is a command:
+  nothing is typed and nothing goes to History. The voice stop arms on it
+  as on a send phrase, so it needs no key press. Live Auto-Paste does not
+  listen for it yet (#1704).
 - **"Go to <name>" is a command only when the name resolves** (#723 step
   1). An Overlay Buffer dictation (a Live Auto-Paste segment, #747) that
   is only "go to" plus at most four words is looked up against the live
@@ -232,7 +351,9 @@ there is not.
   send; a held segment that is not a command, or is promoted at a stop, is
   typed whole, through the spoken send trigger when that withholds the
   segment. A resolved name types nothing: the terminal hold-back's tail is
-  released into the old pane first, and a focus ends the prompt relay, whose
+  released into the old pane first; text that did not land there is kept
+  (`keepUndeliveredAgentText`) and dropped from the pending buffers, never
+  retried into the new pane (#1663); and a focus ends the prompt relay, whose
   pane is the old one. Segments that end while the go-to resolves and
   focuses wait and land after it, in order; a stop waits for them too.
   History keeps the live dictation whole, the phrase included.
@@ -256,11 +377,29 @@ there is not.
   that session and is submitted there; the spoken send trigger is not
   applied, so "send it" inside the text stays text. The focused app never
   gets the text or a key. Routes, in order:
+  (0) the session's mod (#1693; owner ruling 2026-10-04, which lifts the
+  Return exception below for these sessions only): a local Claude Code
+  session outside Claude Desktop (whose fill is unmeasured, #1643) with
+  its mod attached gets a `send` addressed by its session id, the same
+  request as a spoken send, after a `draft` read that decides the leading
+  space. No pane is brought forward and no key is posted. The channel is
+  the one the session's own local hook named, and the mod refuses with
+  `session_changed` once its process left that id (#1651): that refusal,
+  to the `draft` read or to the `send`, and an unanswered request, which
+  may have submitted, keep the text in History and try no other route (a
+  detach with no clean bye leaves the old registry entry, whose tty and
+  pid still match the pane after `/clear`). A mod that refused for any other reason
+  (a dialog, a placeholder, a command, an `@` mention), or never got the
+  request, changed nothing in the session, so the routes below run as if
+  it had no mod, logged to `Log.backends`; a new dictation started by
+  then sends nothing anywhere and keeps the text.
   (1) opencode's prompt relay, from a fresh declaration by the session's
   pid; (2) the herdr pane the session's own hooks reported, only when it is
   the one live local herdr, the registry maps the pane to that session
   alone, and herdr lists the session's pid in the pane's foreground (the
-  route asks again before Enter); (3) a Ghostty, iTerm2 or Terminal.app
+  route asks both again before every append and Enter, the mapping after
+  the foreground query, since `/clear` starts another session in the same
+  process and pane); (3) a Ghostty, iTerm2 or Terminal.app
   tab. Anything else, cmux included (its route can prove a surface only
   while it is the focused one), is refused in one sentence. Every route
   refusal is `keepInHistory`, never `typeInstead`: keys would go to the
@@ -275,14 +414,26 @@ there is not.
   if it still matches, the registry still lists the session after that
   read-back, that pid is frontmost and on `ReturnSubmitsAppList`,
   and Secure Keyboard Entry is off. A failed check before the typing types
-  nothing and keeps the text in History; one after it leaves the text
+  nothing and keeps the text in History (on the clipboard with History
+  off, #1499); one after it leaves the text
   unsubmitted, and the popover says so. Right before the typing and
   again before the Return, the session's agent pid must be in its tty's
   foreground process group (the process table, the herdr route's
   foreground test), and the destination list's picked pane must pass the
   same test before its words go in: a suspended agent stays alive and
   registered, and its tab reads back as the session's, while its shell
-  owns the terminal (#1249). Correction learning and term
+  owns the terminal (#1249). **Once the text is handed over** (to a
+  route's sink, to the mod's `send`, or typed into the tab), the commit
+  awaits the delivery, and two rules hold. Escape is released at the
+  hand-off to a route or the mod (#1666): neither write can be called
+  back, so a cancel there would show while the text is still sent and
+  submitted. In a terminal tab Escape stays until the Return, and a cancel
+  during the read-back stops the Return, never the typed text. A quit
+  before the commit saves its record (#1667) saves it as not inserted,
+  exactly once (`HandedOffAddressedCommit`): the commit's own save, also
+  when a new dictation superseded it, and the quit's claim the same record. A mod
+  refusal gives the text back to the usual route, and the record with it.
+  Correction learning and term
   proposals skip an addressed dictation: they key on the join of the pane
   it started in. Live Auto-Paste has no addressed send: its words are
   typed before the phrase at the end is heard.
@@ -297,8 +448,129 @@ there is not.
   carries the Claude pid the process runs under, but it is not checked
   against the hook's: both come from the same user, the residual threat the
   hook path already accepts below, and a mismatch would only silently turn
-  the channel off. Mod replies ride one-shot connections and carry only a
-  short reason code, never text.
+  the channel off. An Overlay Buffer fill the mod refused, or never got, is
+  typed only while the commit's terminal is frontmost and its focused pane
+  still shows the session (`ClaudeSessionJoinResolver.sessionShown`): a pid
+  cannot tell two tabs apart. For a local herdr pane the focused pane is read
+  again after its foreground query, as the last await before the keys, and
+  the frontmost app after that (#1498). Otherwise, and for a fill the mod got
+  but never answered, the text stays in History (on the clipboard with
+  History off). Unless keys put it in, the next
+  commit gets no continuation space. Mod replies ride one-shot connections
+  and carry a short reason code, never what the person dictated. Two
+  replies carry text: the session model's answer to the project-terms
+  question (#1410), which the same parser and filters read as a one-shot
+  run's, and the prompt draft (#1406, above), which only the stop that
+  asked for it reads.
+  **An attached channel is the session's liveness** (#1646). While a local
+  session's channel is open and its attach named the same Claude pid as
+  the session's hooks, the registry applies no TTL to it; pid liveness
+  still does, and a pidless or mismatched session keeps its TTL. Once the
+  channel detaches, the TTL counts from the detach, so a reloaded mod or a
+  restarted publisher still finds the session to attach again. The attach
+  only extends a session a hook created, and a same-user process could
+  keep one fresh by sending hooks just as well. The mod's `session.end`
+  sends a `mod_bye` line through `--mod-reply`; the broker acts on it only
+  for a session with an attached channel: it writes a `bye` message down
+  that channel and closes it, and that detach removes the session at once.
+  A forged bye ends only an attached session early, as a forged
+  `SessionEnd` already can. After `/clear` the process goes on under a new
+  session id: the mod's channel ends with the bye and attaches again under
+  the new id, never under the old one. A request already on the old
+  attach when the process moved acts on nothing: the mod answers every kind
+  but `ping` with `session_changed` once `$.session.id()` no longer names
+  the attach's session, and the app logs it to `Log.backends` and takes its
+  own path. With no bye (an app or mod that
+  predates it, a crash), the session's own SessionEnd hook and the TTL
+  from the detach end it as before.
+- **A remote mod channel needs the host's channel key both ways** (#1412).
+  The remote plugin carries a copy of the mod's hooks module
+  (`scripts/sync-remote-mod.sh` writes it, CI checks it), which long-polls
+  `POST /v1/mod/poll` on the listener through the forward and answers on
+  `/v1/mod/reply`. The token alone does not open these routes. A process
+  squatting the forward port on the host receives the token from every hook,
+  so every request also carries `X-Lvx-Mod-Proof`, an HMAC of the body under
+  the channel key, and every poll answer carries one over the poll's nonce
+  and the body. A proven poll can still be captured by the squatter and
+  replayed once the forward is back, so a poll gets a lease or a line only
+  when it carries a challenge the listener issued in an earlier answer's
+  `next`, for that host, session and `instance`, unused and at most `grace`
+  (10 s) old; any other poll gets a fresh challenge and nothing else
+  (Codex review, 2026-10-04). The window is the Mac's clock alone, so a
+  host's clock skew cannot break or widen it. RESIDUAL: a squatter that
+  captures a poll and gets the forward back within those 10 s replays it
+  once. The key is `HMAC(storedTokenHash, "lvx-mod-channel-v1")`. The
+  Mac derives it and never stores it, and setup writes it into the plugin's
+  config through `plugin configure --values-stdin`, never through argv. The
+  key never crosses the tunnel, and a token without the salt cannot produce
+  it. Rotating the token changes the key, so a host needs setup again. The
+  mod acts on nothing whose answer proof fails and backs off as after a dead
+  dial. The listener refuses a request without the proof with 403, before
+  any lease is touched.
+  The listener scopes the poll's session id under the authenticated host and
+  attaches the hub channel under that scoped id. It attaches only when the
+  registry holds that session from a hook of the same host, the twin of the
+  local rule above. A reply's id is scoped the same way before
+  `ClaudeModChannelHub.deliver`, so one host cannot answer another's
+  request. A held poll gives back its one-shot connection slot and takes one
+  of `maxHeldPolls` (16), so hooks never queue behind polls. Lines wait
+  bounded on the Mac (64 lines, 256 KiB) and go again until a poll acks them,
+  so an answer lost with the forward loses no line. An ack counts only in
+  the attach it names (a random id, so an app restart cannot reuse one): a
+  new lease numbers its lines from 1 again. No poll for 10 s after
+  the last one ended detaches the channel, and the hub answers every waiting
+  request as unanswered. Revoking or removing a host closes its channels at
+  the same reconcile that evicts its sessions, and a held poll checks the
+  host's credential again before it answers, so a forward kept up by hand
+  carries nothing the app writes after the revoke. A mod drops its waiting
+  band whenever its transport fails. A second process of the same session (another
+  `instance`) gets 409 until the first's lease expires. The mod's dials back
+  off 300 s after a failure, as post.sh does, because each dial at a forward
+  with no app behind it prints a `connect_to` line on the Mac's terminal. A
+  newer `ok` in post.sh's `hook-status` stamp ends the wait early. A residual
+  accepted here: the reply that answers a proven request (a `draft` carries
+  the prompt box) goes in a new connection, and a squatter that took the port
+  in between reads it.
+  The commit paths use a remote session's mod for the joins that name it
+  exactly (`ClaudePromptDraft.fillsPrompt`): a remote or federated herdr
+  pane, the ssh connection, the local tty it carried, or a `cmux ssh`
+  surface. A fill, append or send the remote mod refused is typed only while
+  the frontmost terminal, joined again from scratch, still names that
+  session (`ClaudeSessionJoinResolver.shows`), since a remote session has no
+  tty on this Mac to look up. The join's arms await forwards, sockets and
+  process queries after reading the focus, so `shows` reads what the join
+  saw again after them: the tty and machine of a herdr surface, then its
+  pane last; a `cmux ssh` surface's focused id; the tty of an ssh join
+  (Codex review, 2026-10-04). An addressed send it refused keeps the text,
+  because a remote session has no other addressed route. The dictation band
+  goes to any joined Claude Code session whose mod is attached, remote ones
+  included. A remote pid means nothing on this Mac, so a remote session never
+  gets the TTL exemption of the liveness rule above. Each poll moves its
+  channel's `lastSeen` instead, so the TTL counts from the last poll, and
+  from the detach once polls stop. A mod clears its band and drops its
+  challenge whenever a poll fails on its side, even when the lease outlives
+  the failure. So an unchallenged poll from the instance holding the lease
+  makes the app send the band's state again, as after an attach (#1799).
+  It does so once until a poll redeems a challenge, so a replayed poll
+  cannot fill the queue, and the unchallenged poll itself still gets only a
+  new challenge.
+
+- **A remote `/inbox` sends capture titles to the host, never the words**
+  (#1412, the owner's ruling of 2026-10-04). It is the first route that sends
+  quick capture data to a host unasked by a draft: `POST /v1/mod/inbox` lists,
+  `POST /v1/mod/inbox/open` opens, both signed both ways like a poll, so a
+  squatter on the forward port neither reads the list nor feeds the pane one.
+  The list holds what the local pane shows and nothing else: id, drafted
+  title, kind, state and capture date (`RemoteInboxRoute.Capture` is the
+  whole wire type). A capture with no drafted title goes with an empty one,
+  because the title the Mac derives for it is the start of its words. Its
+  text, note, draft body, changes and repository never cross. It lists only
+  the captures of the project the asking session is in
+  (`RemoteQuickCaptureRequests.remoteProjectKey`), for a session id scoped
+  under the authenticated host that a hook of that host named; any other
+  session gets 409. An open takes a capture id and opens it only when it is
+  a capture of that same project, so an id read elsewhere opens nothing.
+  `RemoteInboxRouteTests` pins all of this over a socket.
 - **The Mistral second pass holds the text back, never the world** (#317).
   An Overlay Buffer dictation in Mistral API mode is sent whole to the batch
   endpoint on stop (`DictationSessionController+StopCommit.swift`,
@@ -316,10 +588,17 @@ there is not.
   never a fresh read of Settings;
   (2) the audio lives in memory for the pass, and reaches the disk only
   through the audio-store latch taken at start (`sessionStoresAudio`);
-  (3) the batch text replaces the realtime text whole when it answers in
-  time, and is never merged with it: the two segment and punctuate
-  differently, and a merge would repeat or drop words at every seam. A blank answer, a failure or a missed
-  deadline keeps the realtime text and is only logged.
+  (3) the batch text replaces the realtime text when it answers in
+  time, and is never merged with it at seams: the two segment and
+  punctuate differently, and a merge would repeat or drop words at every
+  seam. The one exception is a run of realtime words the batch text dropped
+  outright (#1649): aligned word by word, a run of at least
+  `minimumRestoredRunWords` with nothing in its place and mostly words its
+  neighbours lack goes back between the batch words around it
+  (`StopSecondPass.keepingDroppedRealtimeRuns`). Shorter runs and restarts
+  stay dropped, since removing them is the batch model's job. A blank
+  answer, a failure or a missed deadline keeps the realtime text and is
+  only logged.
   The term list leaves the Mac. The user's own words go to any endpoint, as
   they do in the polish prompt. Everything else comes from screen, session
   and repository context, so it goes only with the trusted-endpoint opt-in,
@@ -379,7 +658,11 @@ there is not.
   the exception (#695): typed key by key, a line that opens with a fence
   triggers Desktop's markdown shortcut and opens a code block that also takes
   the text after the closing fence, so that text is pasted whole with Cmd+V
-  (`MarkdownCodeFence`), and typed as above only if the paste fails. The
+  (`MarkdownCodeFence`), and typed as above only if the paste fails.
+  Desktop reads the clipboard after the post returned, so a paste never
+  replaces a clipboard an earlier paste's Cmd+V may still read (#1664): its
+  text stays pending, in order, until that paste's restore, and a stop
+  waits for it. The
   list is judged from the app frontmost when the keys
   are posted, after the insertion made its target frontmost. Listing Desktop
   under Settings → Terminals overrides the verdict (the user list wins), and
@@ -728,7 +1011,8 @@ there is not.
   owner's decision.
   (3) *Keystrokes are the fallback, not a race.* `AgentPromptSink` sends one
   call at a time, in order, and counts a call delivered only when the target
-  confirmed it; the first failure (refused, timed out, unconfirmed) hands
+  confirmed it, or, for a route whose appends go unanswered, once the
+  route's `settle` confirmed it (the Claude Code mod's, below); the first failure (refused, timed out, unconfirmed) hands
   that call's text and every append queued behind it to the keyboard path,
   in order, for the rest of the dictation, and drops any queued submit: that
   text may have landed elsewhere. A route failure records a nil landing,
@@ -737,7 +1021,16 @@ there is not.
   landed, or whose target is not where keys would go, answers
   `keepInHistory` instead: the text is typed nowhere for the rest of the
   dictation, and the popover says it is in History. Typing it would put it
-  in the wrong app, or in twice.
+  in the wrong app, or in twice. A refusal that answers after the next
+  dictation started, or after a go-to moved the keys, stays in History
+  too (#1466): the keyboard path and its pending text belong to that
+  dictation or pane now, and would carry the text into its route. That
+  holds for an Overlay Buffer commit's own fallback and for a fill the
+  session's mod gave back, which carry the start generation of the
+  dictation that handed the text off (#1657). With
+  History off, every path below that keeps text puts all of it on the
+  clipboard instead and says so (`keepUndeliveredAgentText`, #1499): Copy
+  last dictation alone would lose it to the next dictation.
   - *opencode's prompt relay* (#719, `OpencodePromptRoute`).
     *Loopback only:* the wire carries a port and a token
     (`OpencodePromptRelayAddress`), never a host; `OpencodePromptRelayClient`
@@ -832,8 +1125,11 @@ there is not.
     *Confirmed by reading back:* `.focused`, the only outcome that starts a
     dictation, needs herdr's `pane.current` to name that pane AND the
     terminal's focused tty, read again after herdr answered with the
-    terminal still frontmost (#1465), to be the window raised; the answer to
-    `pane.focus` alone never is. *Window first* (#1033): `pane.focus` is sent
+    terminal still frontmost (#1465), to be the window raised, AND the
+    registry to still resolve that pane to the session asked for
+    (`ClaudeSessionRegistry.sessionID(shownIn:)`, #1601): one opencode TUI
+    hosts several sessions in a pane, and focusing the pane cannot pick the
+    one it shows. The answer to `pane.focus` alone never is. *Window first* (#1033): `pane.focus` is sent
     only after the window reads back in front, so a window that does not
     come up leaves herdr's pane as it was, and a failure after the raise is
     `.unverified`, never an outcome that reads as nothing moved. The
@@ -898,6 +1194,41 @@ there is not.
     the join. In cmux's default `cmuxOnly` mode there is no join and so no
     route, and dictation types as before, with no alert and no setting. A
     connection refused mid-dictation falls back to keystrokes the same way.
+  - *the Claude Code mod* (#1645, `ClaudeModPromptRoute`). Live Auto-Paste
+    only; an Overlay Buffer commit fills through the mod on its own
+    (`ModChannelOverlayCommitter`). *Only a local session's own channel:*
+    a tty, local herdr or cmux join of a Claude Code session on this Mac,
+    or, with no context join, the focused pane's session as the local arms
+    alone answer it (`sessionShown`), and only once its mod answered an
+    opening `ack` (an older mod answers `unknown_kind` and the dictation
+    types as before). *Unanswered appends, counted at the stop:* each delta
+    is an `append` with its place in the stream, and counts delivered once
+    written. The mod fills them one at a time in that order; a gap or a
+    refused fill ends the stream there, so nothing lands out of order. The
+    stop (and a spoken send, before its empty `send` submits the box) asks
+    `ack`, which answers how many filled; the rest are typed, sanitized as
+    keys need, only while Secure Keyboard Entry is off and the terminal the
+    dictation started in is frontmost with its focused pane on the session,
+    and stay in History otherwise. An `ack` with no answer, or a channel
+    gone mid-dictation, leaves every unconfirmed delta possibly filled: all
+    of them stay in History, none is typed. *One attach:* the route writes
+    and asks only the attach of the mod it opened on. A mod that reloads
+    attaches again under the same session with a fresh stream, whose count
+    says nothing about what the old one filled, so the route treats it as
+    a lost channel. *A cancel stops the queue:* the sink drops what it has
+    not handed over and the route writes an unanswered `cancel`, after which
+    no append that arrived before it fills, though one already filling may
+    (#1805). A mod older than `cancel` fills them as before. The live
+    record waits for the stop's `ack`, behind a
+    go-to still running at the stop too. *No key, so no key rules:* the
+    terminal newline guard and the trailing-space policy do not apply to
+    filled text, and Secure Keyboard Entry neither refuses the start nor
+    warns. Every text the keys type instead, until the next dictation,
+    has its newline runs collapsed: what the mod gave back, and every delta
+    after the route failed over or a go-to retired it. Their trailing
+    whitespace waits for the next text or the stop, which applies the
+    trailing-space policy to what the keys typed; what the mod filled is
+    unseen to it, like a field's earlier text (#1734).
 - **Claude Code context reaches the prompt only through a positive join.**
   The joined session's repository (status, uncommitted diffs, contents
   of files the agent just touched) and its prior user prompt are attached as
@@ -981,7 +1312,13 @@ there is not.
     herdr intercepts OSC 2 per pane, so a title marker could neither reach
     Ghostty's title nor describe an inner pane). The arm runs
     only after the surface TTY positively binds to herdr (a `herdr` client
-    process on the focused terminal surface's TTY, `HerdrClientTTYProbe` —
+    process in the foreground process group of the focused terminal
+    surface's TTY, `HerdrClientTTYProbe`; a client suspended with Ctrl-Z
+    keeps the tty while its shell owns the screen, #1602; every herdr process
+    in that job must classify as a whole-view client by its argv, with the
+    ssh arm's `HerdrInvocation` classifier: `herdr terminal attach <id>`
+    shows one pane without moving the server's focus, `herdr --remote` shows
+    another server, and an unreadable argv is neither —
     herdr's socket has no client introspection, so the process table is the
     only binding; the probe needs only the surface TTY string, so the herdr
     arm works on all three supported terminals), and from that point the join
@@ -1198,7 +1535,14 @@ there is not.
     views machine A: the match proves that the surface federates that server,
     not that it displays it. This costs nothing for the argv-based arm,
     because that arm never probes a surface with no ssh and a federated client
-    has none. The federated `.federatedHerdrPane` arm is the extension that
+    has none — unless the federating client runs on the far side of ssh
+    (`ssh builder herdr`, builder's client federating B). Its panel renders
+    builder's token while B is shown, so a match in a grid that also shows
+    herdr's ` machines` sidebar header (`HerdrPanelBindingProbe
+    .showsMachineList`) is refused as `federated-client`, with no argv
+    fallback. A collapsed or hidden sidebar renders no token and no header,
+    and the argv fallback cannot see the federation: that residual stays.
+    The federated `.federatedHerdrPane` arm is the extension that
     names the machine from herdr's own selection state first (issue #286) and
     only then uses the token, which keeps its whole-view-prover and
     mic-indicator roles (it never proved freshness or display — see the
@@ -1222,7 +1566,10 @@ there is not.
     while two same-box enrollments still land in the multiple-match
     abstention. Any refused operand, spawn/timeout
     failure, or unparseable output discards the whole fallback; two canonical
-    matches remain ambiguous. Results are briefly TTL-cached because ssh config
+    matches remain ambiguous. An argv that sets the port (`-p`) is refused
+    before any match: both comparisons describe the alias's own port, while
+    `ssh -p 2222 builder` reaches another sshd on that address. The panel
+    proof needs no port, since it reads what the screen shows. Results are briefly TTL-cached because ssh config
     can change on disk. One,
     because several in a group cannot be told apart from here, and unioning
     them let a plain connection borrow a sibling's herdr signal. `SSHDestinationTTYProbe`
@@ -2487,10 +2834,11 @@ there is not.
   would replace the link and desync a dotfiles setup — or when `~/.ssh` is not
   owned by the user or is group/world-writable. Remote execution spawns only `ssh -o
   BatchMode=yes <alias> /bin/sh -s` and sends the generated token-bearing script
-  through stdin — the token must never enter an argv ON THIS MAC (on the remote
-  host `claude plugin install` takes its config as a flag and has no stdin path,
-  so the token is in that one command's argv there, and in `~/.claude` after —
-  documented in `docs/remote-claude-context.md`, not defended). The read-only
+  through stdin — the token must never enter an argv on this Mac or on the
+  host. On the host it reaches `claude plugin configure --values-stdin` in a
+  here-document, never `install --config 'token=…'`, whose argv every account
+  there could read (#1621); it is in `~/.claude` after, as documented in
+  `docs/remote-claude-context.md`. The read-only
   verification probes (`executeVerification`) are the OTHER ssh-bearing path and
   obey the same rules: `BatchMode=yes` plus `--` before the alias on all,
   `ClearAllForwardings=yes` on the plugin probe and on the FIRST tunnel probe.
@@ -2507,7 +2855,9 @@ there is not.
   host setup run the user clicked. They carry no token at all, and no byte of their
   output reaches a verdict, an alert, or the log. The whole action has a
   finite timeout, and every captured result, thrown error, alert, and log string
-  is token-redacted before it leaves the service. Keep the filesystem and
+  is token-redacted before it leaves the service. A plugin version the host's
+  listing reports reaches an error only as dot-separated numbers; anything
+  else reads as unreadable (#1817). Keep the filesystem and
   process runners injected; the no-runner service must continue to throw
   `.executionNotConfigured`.
   `ClaudeIntegrationSettingsModel` (`@MainActor @Observable`, all seams
@@ -2541,6 +2891,10 @@ there is not.
   in-app revoke runs, so this copy's app-held forward, herdr forwards and,
   after the last host, its listener come down without a relaunch. No timer
   polls the file; the next hook or query is what notices.
+  Copies starting together cannot both take the broker socket: its probe,
+  stale-file unlink and bind run under a lock every copy shares, and a
+  broker's stop unlinks the path only while it still names the socket that
+  broker bound (#1603).
   A second copy of the app (a `try-pr.sh` build) loses this port and the
   broker socket to the running copy, and then waits:
   `ClaudeHookSocketTakeover` retries only the binds it lost, each time
@@ -2797,4 +3151,14 @@ there is not.
   a draft runs for it. Each route, draft, check and filing names the
   running copy that owns it (#1288, #1507): a launch ends only those whose
   copy is gone, and writes that at once, so a copy still holding one in
-  memory cannot write it back.
+  memory cannot write it back. A filing a quit interrupted never becomes
+  fileable by itself (#1509): File and Comment append an HTML comment
+  marker with the claim's id to what they send, and the relaunch, once
+  `gh` could no longer be sending, lists the repository's issues (or the
+  issue's comments) changed since the claim, read-only. The marker found,
+  the capture is filed with that URL; GitHub answering without it, the
+  capture can be filed again; anything else, or a claim from before the
+  marker, and nothing is sent until the user picks Check GitHub Again or
+  File Anyway. A `gh` that fails after it may have sent (a timeout, a kill, no URL,
+  any nonzero exit but 4, "not logged in") gets the same lookup in the
+  running copy (#1541): the capture stays claimed until GitHub answers.

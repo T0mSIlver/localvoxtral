@@ -57,6 +57,9 @@ final class FakeSecretStore: SecretStoring, @unchecked Sendable {
         }
     }
 
+    /// The keychain recovering: writes that failed now succeed.
+    func allowWrites() { state.withLock { $0.writeFailures = [] } }
+
     var snapshot: [SecretKey: String] { state.withLock { $0.values } }
     var writtenKeys: [SecretKey] { state.withLock { $0.writtenKeys } }
 }
@@ -256,6 +259,24 @@ final class SecretStoreTests: XCTestCase {
         XCTAssertEqual(secrets.snapshot[.realtimeAPIKey], "sk-realtime")
     }
 
+    /// A key the migration left in the plist is not the user's any more once
+    /// they clear the field: the next launch must not migrate it back (#1570).
+    func testClearingAKeyAfterAFailedMigrationDoesNotBringItBack() {
+        defaults.set("mk-old", forKey: Self.legacyMistralKey)
+        let secrets = FakeSecretStore(writeFailures: [.mistralAPIKey])
+        let store = makeStore(secretStore: secrets)
+        XCTAssertEqual(store.mistralAPIKey, "mk-old")
+
+        secrets.allowWrites()
+        store.mistralAPIKey = ""
+
+        XCTAssertNil(secrets.snapshot[.mistralAPIKey])
+        XCTAssertNil(defaults.object(forKey: Self.legacyMistralKey), "the plist copy outlived the clear")
+        let relaunched = makeStore(secretStore: secrets)
+        relaunched.ensureSecretsLoaded([.mistralAPIKey])
+        XCTAssertEqual(relaunched.mistralAPIKey, "", "the cleared key came back")
+    }
+
     /// The probe that protects a newer keychain value is itself a keychain
     /// call. If it refuses, writing blind could clobber a good key — so the
     /// migration leaves everything alone.
@@ -282,6 +303,26 @@ final class SecretStoreTests: XCTestCase {
         XCTAssertEqual(
             defaults.string(forKey: Self.legacyMistralKey), "mk-should-be-ignored",
             "not read, and not rewritten either: erasing a stranger's key is not our business")
+    }
+
+    /// An older, pre-Keychain build run after the migration writes the key
+    /// back to the plist. Once the Keychain read shows it is the same key,
+    /// the plaintext copy goes (#1775); a different value is still left
+    /// alone, as above.
+    func testMigratedInstallRemovesReintroducedMatchingLegacyKey() {
+        defaults.set(true, forKey: Self.migratedFlagKey)
+        defaults.set("mk-live", forKey: Self.legacyMistralKey)
+        defaults.set("sk-other", forKey: Self.legacyRealtimeKey)
+        let secrets = InMemorySecretStore([.mistralAPIKey: "mk-live", .realtimeAPIKey: "sk-current"])
+
+        let store = makeStore(secretStore: secrets)
+        store.ensureSecretsLoaded([.mistralAPIKey, .realtimeAPIKey])
+
+        XCTAssertEqual(store.mistralAPIKey, "mk-live")
+        XCTAssertEqual(secrets.snapshot[.mistralAPIKey], "mk-live")
+        XCTAssertNil(defaults.object(forKey: Self.legacyMistralKey), "the plaintext copy outlived the launch")
+        XCTAssertEqual(store.apiKey, "sk-current")
+        XCTAssertEqual(defaults.string(forKey: Self.legacyRealtimeKey), "sk-other")
     }
 
     func testAFreshInstallMarksItselfMigratedWithoutWritingAnything() {

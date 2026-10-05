@@ -12,6 +12,10 @@ enum OverlaySpokenSend: Equatable {
     case returnKey(pid_t)
     /// The opencode prompt relay's submit, after its append (#719).
     case promptRelaySubmit
+    /// The joined Claude Code session's mod fills and submits (#1644): no
+    /// key, so neither focus nor Secure Keyboard Entry matters. A refusal
+    /// falls back to typing and Return under the `returnKey` gates.
+    case modSubmit
 }
 
 extension DictationSessionController {
@@ -29,7 +33,9 @@ extension DictationSessionController {
         case noTrigger
     }
 
-    func planOverlaySpokenSend(for text: String) -> OverlaySpokenSendPlan {
+    /// `join` is the dictation's join: the context's while it runs, the
+    /// stop sample's once a polished stop took it from the context.
+    func planOverlaySpokenSend(for text: String, join: ClaudeSessionJoin? = nil) -> OverlaySpokenSendPlan {
         guard settings.overlaySpokenSendEnabled else { return .noTrigger }
         let remainder: String
         switch SendNowCommandParser.parse(text, triggerPhrases: settings.spokenSendTriggerPhrases) {
@@ -43,6 +49,15 @@ extension DictationSessionController {
         if textInsertion.promptRelayTakesText {
             return .send(.promptRelaySubmit, remainder: remainder)
         }
+        if modChannelSessionID(join: join ?? context.claudeSessionJoin) != nil {
+            return .send(.modSubmit, remainder: remainder)
+        }
+        return keyboardSpokenSendPlan(remainder: remainder)
+    }
+
+    /// The spoken send by keys: Return in the commit's target app, only
+    /// where Return submits and never under Secure Keyboard Entry.
+    func keyboardSpokenSendPlan(remainder: String) -> OverlaySpokenSendPlan {
         guard let pid = overlayBufferCoordinator.commitTargetAppPID else {
             return .keep(reason: "no target app")
         }
@@ -61,8 +76,8 @@ extension DictationSessionController {
     /// Otherwise the text is left as dictated and nil returned. With a
     /// healthy prompt relay the commit goes to the pane's prompt, so no
     /// frontmost-app or Secure Keyboard Entry gate applies.
-    func stripOverlaySpokenSendTrigger() -> OverlaySpokenSend? {
-        switch planOverlaySpokenSend(for: transcript.currentDictationEventText) {
+    func stripOverlaySpokenSendTrigger(join: ClaudeSessionJoin?) -> OverlaySpokenSend? {
+        switch planOverlaySpokenSend(for: transcript.currentDictationEventText, join: join) {
         case .noTrigger:
             return nil
         case .keep(let reason):
@@ -75,6 +90,10 @@ extension DictationSessionController {
             case .promptRelaySubmit:
                 Log.dictation.notice(
                     "spoken send: trigger removed before commit; the prompt relay submits text_empty=\(remainder.isEmpty, privacy: .public)"
+                )
+            case .modSubmit:
+                Log.dictation.notice(
+                    "spoken send: trigger removed before commit; the session's mod submits text_empty=\(remainder.isEmpty, privacy: .public)"
                 )
             case .returnKey(let pid):
                 Log.dictation.notice(
@@ -104,6 +123,29 @@ extension DictationSessionController {
         case .promptRelaySubmit:
             textInsertion.promptRelaySink?.submit()
             Log.dictation.notice("spoken send: submit handed to the prompt relay")
+        case .modSubmit:
+            // The mod's committer submits, or presses Return itself after a
+            // refusal it typed.
+            break
+        }
+    }
+
+    /// The spoken send for a commit into `join`: a mod submit planned at
+    /// the stop whose channel is gone by the commit becomes the keyboard's,
+    /// judged now.
+    func spokenSendForCommit(_ spokenSend: OverlaySpokenSend?, join: ClaudeSessionJoin?) -> OverlaySpokenSend? {
+        guard spokenSend == .modSubmit, modChannelSessionID(join: join) == nil else { return spokenSend }
+        switch keyboardSpokenSendPlan(remainder: "") {
+        case .send(let keyboard, _):
+            Log.dictation.notice("spoken send: the session's mod went away before the commit; Return instead")
+            return keyboard
+        case .keep(let reason):
+            Log.dictation.notice(
+                "spoken send: the session's mod went away before the commit; \(reason, privacy: .public); no Return"
+            )
+            return nil
+        case .noTrigger:
+            return nil
         }
     }
 
@@ -198,7 +240,11 @@ extension DictationSessionController {
             liveGoToTask = Task { @MainActor [weak self] in
                 let shows = await navigator.focusedPaneShows(sessionID: paneSessionID, bundleID: bundleID)
                 guard let self, !Task.isCancelled else { return }
-                if shows {
+                if self.wasCancelled {
+                    // A cancel during the read-back throws the words away,
+                    // as it does the segments behind a go-to (#1656).
+                    Log.dictation.notice("spoken send: cancelled during the pane read-back; nothing typed")
+                } else if shows {
                     self.sendLiveSpokenSendFinal(remainder, in: pid, startsMidWord: startsMidWord)
                 } else {
                     Log.dictation.notice(

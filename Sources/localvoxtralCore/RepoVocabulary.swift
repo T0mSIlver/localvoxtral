@@ -14,8 +14,11 @@ import Synchronization
 package struct RepoVocabulary: Sendable {
     package let terms: [String]
     package let branch: String?
-    /// Normalized form -> exact term (first appearance wins): the exact tier.
-    package let exactIndex: [String: String]
+    /// Normalized form -> every term with that form, in appearance order: the
+    /// exact tier. `config-ts` and `config.ts` share a key, and the matcher
+    /// abstains on the span rather than pick one. A preferred term owns its
+    /// key alone.
+    package let exactIndex: [String: [String]]
     /// Fuzzy-tier candidates (normalized length >= the fuzzy threshold) keyed
     /// by normalized length, so an n-gram only edit-distance-checks terms
     /// within ±1 of its own length, with character arrays precomputed.
@@ -56,20 +59,28 @@ package struct RepoVocabulary: Sendable {
         package let normalizedCharacters: [Character]
     }
 
-    package init(terms: [String], branch: String?) {
+    /// The first `preferredTermCount` terms are spellings a person wrote down
+    /// (the dictation terms file): one of them beats a later term with the
+    /// same normalized form instead of tying with it.
+    package init(terms: [String], branch: String?, preferredTermCount: Int = 0) {
         self.terms = terms
         self.branch = branch
-        var exact: [String: String] = [:]
+        var exact: [String: [String]] = [:]
+        var preferredKeys = Set<String>()
         var buckets: [Int: [FuzzyCandidate]] = [:]
         var phoneticIndex: [String: [Int]] = [:]
         var phoneticCandidates: [PhoneticCandidate] = []
         var phoneticBuckets: [Int: [(variant: [Character], candidateIndex: Int)]] = [:]
         var aligned: [AlignedCandidate] = []
         var ngramIndex: [String: [Int]] = [:]
-        for term in terms {
+        for (offset, term) in terms.enumerated() {
             let normalized = RepoVocabularyMatcher.normalize(term)
             if normalized.count >= RepoVocabularyMatcher.minNormalizedLength {
-                if exact[normalized] == nil { exact[normalized] = term }
+                if offset < preferredTermCount {
+                    if preferredKeys.insert(normalized).inserted { exact[normalized] = [term] }
+                } else if !preferredKeys.contains(normalized) {
+                    exact[normalized, default: []].append(term)
+                }
                 if normalized.count >= RepoVocabularyMatcher.fuzzyMinNormalizedLength {
                     buckets[normalized.count, default: []].append(
                         FuzzyCandidate(term: term, normalizedCharacters: Array(normalized))

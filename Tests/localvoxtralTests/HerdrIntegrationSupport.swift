@@ -1,6 +1,7 @@
 import Foundation
 import Synchronization
 import XCTest
+import localvoxtralCore
 
 #if canImport(Darwin)
 
@@ -422,11 +423,25 @@ final class HerdrLiveFixture {
         let paneID: String
         let primarySurfaceLog: String
         let provisionedSSH: Bool
+        /// The run's own ssh config. The lane hands it to the app's ssh as
+        /// `LOCALVOXTRAL_SSH_CONFIG`, so nothing reads or writes the
+        /// account's `~/.ssh/config` (#1029).
+        let sshConfig: String
         let workdir: String
     }
 
     let info: Info
     let primarySurface: HerdrSurfaceLog
+
+    /// The environment every live ssh constructor in the lane gets: this
+    /// process's, plus `LOCALVOXTRAL_SSH_CONFIG` naming the run's config.
+    /// Passed explicitly because `setenv` need not reach
+    /// `ProcessInfo.processInfo.environment` once it has been read.
+    var sshEnvironment: [String: String] {
+        ProcessInfo.processInfo.environment.merging(
+            [SSHConfigOverride.environmentKey: info.sshConfig], uniquingKeysWith: { _, run in run }
+        )
+    }
     private let scriptURL: URL
     private let repoRoot: URL
     private let diagnosticsRoot: URL
@@ -488,6 +503,7 @@ final class HerdrLiveFixture {
                 "`up` printed no fixture description\n\(result.standardOutput)\(result.standardError)"
             )
         }
+        print("[herdr-fixture] ssh.config=\(info.sshConfig)")
         return HerdrLiveFixture(
             info: info,
             scriptURL: scriptURL,
@@ -505,10 +521,11 @@ final class HerdrLiveFixture {
             arguments: [scriptURL.path, "down", info.workdir],
             currentDirectory: repoRoot
         )
-        // The account's own herdr after the run, next to the `before` line in
-        // environment.txt: the evidence the lane left it alone.
+        // The account's own herdr and ssh config after the run, next to the
+        // `before` lines in environment.txt: the evidence the lane left them
+        // alone.
         for line in (result?.standardError ?? "").split(separator: "\n")
-        where line.contains("herdr.account.after") {
+        where line.contains("herdr.account.after") || line.contains("ssh.account.after") {
             print(line)
         }
     }
@@ -538,6 +555,39 @@ final class HerdrLiveFixture {
         let surface = HerdrSurfaceLog(path: "\(info.workdir)/surface-\(name).log")
         surfaces[name] = surface
         return surface
+    }
+
+    /// The controlling tty of a surface's client, as its pty recorded it at
+    /// start (`controlling_tty=` in the geometry file).
+    func surfaceTTY(name: String) throws -> String {
+        let path = "\(info.workdir)/surface-\(name).geometry"
+        let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+        let key = "controlling_tty="
+        guard let field = text.split(whereSeparator: { $0 == " " || $0 == "\n" })
+            .first(where: { $0.hasPrefix(key) }),
+            field.dropFirst(key.count).hasPrefix("/dev/")
+        else {
+            throw HerdrLaneError.fixtureFailed("surface '\(name)' recorded no controlling tty in \(path)")
+        }
+        return String(field.dropFirst(key.count))
+    }
+
+    /// The herdr processes in the foreground job of a surface's tty, each
+    /// printed with its argv. Empty means the client exited or was never the
+    /// foreground job, so a surface that "renders nothing" proves nothing.
+    func foregroundHerdrClients(surface name: String) throws -> [TTYProcessTable.Entry] {
+        let tty = try surfaceTTY(name: name)
+        let entries = TTYProcessTable.liveDeviceID(tty).flatMap(TTYProcessTable.entries(onDevice:)) ?? []
+        for entry in entries {
+            let argv = SSHDestinationTTYProbe.processArguments(pid: entry.pid) ?? ["<unreadable>"]
+            print(
+                "[herdr-fixture] surface.\(name) tty=\(tty) pid=\(entry.pid) name=\(entry.name) "
+                    + "pgid=\(entry.processGroupID) fg=\(entry.terminalForegroundGroupID) argv=\(argv)"
+            )
+        }
+        return entries.filter {
+            $0.name == "herdr" && $0.processGroupID > 0 && $0.processGroupID == $0.terminalForegroundGroupID
+        }
     }
 
     /// Preserve the evidence before the fixture removes its temporary tree.

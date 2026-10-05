@@ -738,6 +738,32 @@ public final class ClaudeRemoteHostRegistry: Sendable {
         }
     }
 
+    /// The remote mod channel key (#1412) of the host `token` authenticates
+    /// as `expectedHostID`, re-checked as `withAuthenticatedHost` does; nil
+    /// once it is revoked or rotated. Derived from the stored hash, never
+    /// stored, and never logged.
+    package func modChannelKey(token: String, expectedHostID: String) -> String? {
+        guard ClaudeRemoteTokenDigest.isWellFormed(token), reloadIfChanged() else { return nil }
+        return state.withLock { hosts in
+            guard let host = authenticatedHostLocked(token: token, hosts: hosts),
+                  host.id == expectedHostID, !host.tokenHash.isEmpty
+            else { return nil }
+            return ClaudeRemoteModWire.channelKey(tokenHash: host.tokenHash)
+        }
+    }
+
+    /// The channel key setup writes into `hostID`'s plugin config, or nil for
+    /// a revoked host or one with no token.
+    package func modChannelKey(hostID: String) -> String? {
+        guard reloadIfChanged() else { return nil }
+        return state.withLock { hosts in
+            guard let host = hosts.first(where: { $0.id == hostID }),
+                  host.revokedAt == nil, !host.tokenHash.isEmpty
+            else { return nil }
+            return ClaudeRemoteModWire.channelKey(tokenHash: host.tokenHash)
+        }
+    }
+
     private func authenticatedHostLocked(token: String, hosts: [StoredHost]) -> StoredHost? {
         var matched: StoredHost?
         for host in hosts {

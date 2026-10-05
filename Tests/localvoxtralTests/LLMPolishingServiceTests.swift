@@ -11,6 +11,45 @@ final class LLMPolishingServiceTests: XCTestCase {
         userPrompts: ["first", "second"]
     )
 
+    /// #1688: a server that answers 200 and then keeps the body open is cut
+    /// off at the request's whole budget, so the stop commit falls back to
+    /// the raw text instead of waiting on the session's 7-day timeout. The
+    /// budget is an hour, so URLSession's idle timer cannot be what ends it.
+    func testAResponseThatNeverFinishesTimesOutAtItsBudget() async throws {
+        let previous = StubHTTPProtocol.reply.withLock { $0 }
+        StubHTTPProtocol.reply.withLock { $0 = .stalls }
+        defer { StubHTTPProtocol.reply.withLock { $0 = previous } }
+        let clock = ManualSessionClock()
+        let service = LLMPolishingService(session: StubHTTPProtocol.session(), sleep: clock.clock.sleep)
+        let configuration = LLMPolishingConfiguration(
+            endpointURL: URL(string: "http://\(StubHTTPProtocol.host)/v1/chat/completions")!,
+            apiKey: "",
+            model: "model"
+        )
+        let request = LLMPolishingRequest(
+            inputText: "hello", systemPrompt: "system", userPrompts: ["first"], timeoutSeconds: 3_600)
+        let finished = BoundedWait()
+        let polishing = Task {
+            defer { finished.resolve() }
+            return try await service.polish(request: request, configuration: configuration)
+        }
+
+        await clock.waitForSleepers(1)
+        clock.advance(by: 3_599)
+        XCTAssertEqual(clock.pendingSleepers, 1, "not before its budget")
+        clock.advance(by: 1)
+
+        let ended = await finished.value(failAfter: 10)
+        XCTAssertTrue(ended, "the request outlived its budget")
+        guard ended else { return polishing.cancel() }
+        do {
+            _ = try await polishing.value
+            XCTFail("a response that never finished was used")
+        } catch LLMPolishingError.timedOut(let seconds) {
+            XCTAssertEqual(seconds, 3_600)
+        }
+    }
+
     /// An hour-long dictation used to get the same 40 s as a sentence and
     /// always timed out (#318). The transcript's length reaches the URLRequest.
     func testLongTranscriptGetsALongerTimeout() throws {

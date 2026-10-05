@@ -203,8 +203,16 @@ final class ClaudeHookSocketTakeoverTests: XCTestCase {
 
         let clock = ManualSessionClock()
         let exits = Exits()
+        let binds = EventCount()
+        let step = ClaudeHookSocketTakeover.Step(
+            name: setup.step.name, retryInterval: setup.step.retryInterval
+        ) {
+            let outcome = setup.step.attempt()
+            if outcome == .bound { binds.increment() }
+            return outcome
+        }
         let takeover = ClaudeHookSocketTakeover(
-            steps: [setup.step],
+            steps: [step],
             otherCopies: { [] },
             watchExit: exits.watch,
             sleepFor: { await clock.sleep($0) }
@@ -220,9 +228,9 @@ final class ClaudeHookSocketTakeoverTests: XCTestCase {
 
         setup.first.stop()
         clock.advance(by: 10)
-        // The woken retry runs on the main actor once the test yields to it.
-        for _ in 0..<1_000 where takeover.isWaiting { await Task.yield() }
+        await binds.waitFor(1)
 
+        XCTAssertFalse(takeover.isWaiting)
         XCTAssertTrue(setup.second.isListening)
         XCTAssertEqual(clock.pendingSleepers, 0, "nothing left to retry")
         XCTAssertEqual(try postDesktopPrompt(setup).status, 200)

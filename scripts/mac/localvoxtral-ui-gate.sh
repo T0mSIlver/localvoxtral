@@ -3577,12 +3577,19 @@ run_batch() {
     line="${lines[$i]}"
     shown="$(shown_command "$line")"
     printf '==lvui-batch-%s== line %s/%s begin %s\n' "$tag" "$((i + 1))" "$count" "$shown"
-    status=0
+    # Not `( … ) || status=$?`: the `||` turns errexit off for everything in
+    # the subshell, so a verb's unchecked failure (a launch whose app.state
+    # write failed, #1492) ran on and reported success. errexit is set again
+    # inside, where it holds as it does for a single verb.
+    set +e
     (
+      set -e
       trap on_exit EXIT
       BATCH_CONTEXT="batch line $((i + 1))/$count"
       dispatch_command "$line"
-    ) || status=$?
+    )
+    status=$?
+    set -e
     printf '==lvui-batch-%s== line %s/%s end status=%s\n' "$tag" "$((i + 1))" "$count" "$status"
     if (( status != 0 )); then
       printf 'localvoxtral ui gate: batch stopped at line %s/%s (status %s); %s line(s) not run\n' \

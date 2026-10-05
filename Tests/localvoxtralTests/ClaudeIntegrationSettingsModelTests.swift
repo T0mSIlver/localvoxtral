@@ -1546,20 +1546,20 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         _ = try registry.enroll(label: "buildhost", sshHostAlias: "builder")
         let listener = StubClaudeRemoteListener(hosts: registry)
         listener.bindError = ClaudeRemoteContextListener.StartFailure.bindFailed(errno: EADDRINUSE)
-        let reapCount = Mutex(0)
+        let reaps = EventCount()
         let forwards = makeForwardCoordinator(
             registry: registry,
             stubs: ForwardStubs(),
             isListenerBound: { listener.isListening },
-            reapOrphans: { reapCount.withLock { $0 += 1 } }
+            reapOrphans: { reaps.increment() }
         )
         let model = makeModel(registry: registry, listener: listener, forwards: forwards)
 
         model.synchronizeListenerAtLaunch()
-        for _ in 0..<50 { await Task.yield() }
+        await reaps.waitFor(1)
 
         XCTAssertEqual(model.listenerStatus, .portConflict(port: 8473))
-        XCTAssertEqual(reapCount.withLock { $0 }, 1)
+        XCTAssertEqual(reaps.value, 1)
     }
 
     // MARK: Last-heard and rejection diagnostics
@@ -2089,7 +2089,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         await model.enroll()
 
         let inFlight = Task { await model.runVerification() }
-        while !model.isPerformingVerification { await Task.yield() }
+        await awaitCondition { model.isPerformingVerification }
         XCTAssertTrue(model.isEnrollmentBusy)
 
         // Every write path must refuse while a check runs: they share the sheet,
@@ -2135,7 +2135,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let hostID = try XCTUnwrap(model.presentedPlan).host.id
 
         let inFlight = Task { await model.runVerification() }
-        while !model.isPerformingVerification { await Task.yield() }
+        await awaitCondition { model.isPerformingVerification }
 
         model.dismissPlan()
         await model.rotate(hostID: hostID)
@@ -2215,7 +2215,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertTrue(model.listenerIsBound, "bound when the probes are launched")
 
         let inFlight = Task { await model.runVerification() }
-        while !model.isPerformingVerification { await Task.yield() }
+        await awaitCondition { model.isPerformingVerification }
 
         // …and gone by the time they answer: our bind dropped and something
         // else now holds the port.
@@ -2482,7 +2482,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             return state
         }
         func createDirectory(permissions: UInt16) throws {}
-        func atomicWrite(_ data: Data, permissions: UInt16) throws {
+        func atomicWrite(_ data: Data, permissions: UInt16, replacing _: Data?) throws {
             writes += 1
             state.data = data
             state.fileExists = true
@@ -2994,14 +2994,19 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     @MainActor
     func testTheSetupRunInstallsTheSheetsTokenThroughStdinOnly() async throws {
         let (model, _, _, recorder) = try await enrollAndRunSetup(remoteForwardPort: 28542)
-        let token = try XCTUnwrap(model.presentedPlan).token
+        let plan = try XCTUnwrap(model.presentedPlan)
+        let token = plan.token
+        // The mod's channel key rides with it (#1412), derived from the
+        // stored hash, never from anything the host sent.
+        let channelKey = try XCTUnwrap(model.registry?.modChannelKey(hostID: plan.host.id))
         let scripts = recorder.all.map { String(decoding: $0.standardInput, as: UTF8.self) }
         XCTAssertEqual(
             scripts.filter { $0.contains(token) }.count, 1,
             "only the install call carries the token"
         )
         XCTAssertTrue(scripts.contains {
-            $0.contains("--config 'token=\(token)' --config 'port=28542'")
+            $0.contains("--config 'port=28542'\n") && $0.contains("--values-stdin")
+                && $0.contains("{\"channel_key\":\"\(channelKey)\",\"token\":\"\(token)\"}\n")
         })
         for invocation in recorder.all {
             XCTAssertFalse(invocation.argv.joined(separator: " ").contains(token), "\(invocation.argv)")

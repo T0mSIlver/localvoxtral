@@ -127,6 +127,11 @@ final class BackendManager: ManagedBackendManaging {
     // share a slot.
     @ObservationIgnored private var dictationEnsureTask: Task<Void, Error>?
     @ObservationIgnored private var polishingEnsureTask: Task<Void, Error>?
+    /// Callers parked on each shared ensure task. A cancelled caller leaves at
+    /// once; the task itself is cancelled only when its last caller leaves, so
+    /// turning voice memos off no longer aborts a dictation start waiting on
+    /// the same helper (#1511).
+    @ObservationIgnored private var ensureWaiters: [Task<Void, Error>: [UUID: CheckedContinuation<Void, Error>]] = [:]
     /// Backend ids whose in-flight ensure is being cancelled BY a pause, so the
     /// download's unwinding knows to land on `.pausedModelDownload` instead of
     /// `.stopped`. Held only for the duration of `pauseModelDownload`.
@@ -232,10 +237,69 @@ final class BackendManager: ManagedBackendManaging {
     }
 
     private func awaitEnsureReadyTask(_ task: Task<Void, Error>) async throws {
+        let waiterID = UUID()
         try await withTaskCancellationHandler {
-            try await task.value
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                // The cancel hop below runs on the main actor after this
+                // closure, so a cancel that landed earlier is only visible here.
+                guard !Task.isCancelled else {
+                    // A superseded caller can arrive cancelled with the task
+                    // it just created; with nobody else waiting, stop it.
+                    if ensureWaiters[task]?.isEmpty ?? true {
+                        cancelAndResumeAfterUnwinding(task, continuation)
+                    } else {
+                        continuation.resume(throwing: CancellationError())
+                    }
+                    return
+                }
+                ensureWaiters[task, default: [:]][waiterID] = continuation
+                Task { @MainActor in
+                    let result = await task.result
+                    self.resumeEnsureWaiter(waiterID, of: task, with: result)
+                }
+            }
         } onCancel: {
-            task.cancel()
+            Task { @MainActor in
+                self.cancelEnsureWaiter(waiterID, of: task)
+            }
+        }
+    }
+
+    private func resumeEnsureWaiter(
+        _ waiterID: UUID,
+        of task: Task<Void, Error>,
+        with result: Result<Void, Error>
+    ) {
+        guard let continuation = ensureWaiters[task]?.removeValue(forKey: waiterID) else { return }
+        if ensureWaiters[task]?.isEmpty == true {
+            ensureWaiters[task] = nil
+        }
+        continuation.resume(with: result)
+    }
+
+    private func cancelEnsureWaiter(_ waiterID: UUID, of task: Task<Void, Error>) {
+        guard let continuation = ensureWaiters[task]?.removeValue(forKey: waiterID) else { return }
+        guard ensureWaiters[task]?.isEmpty == true else {
+            continuation.resume(throwing: CancellationError())
+            Log.backends.info("ensure waiter cancelled; the shared ensure keeps running for its other waiters")
+            return
+        }
+        ensureWaiters[task] = nil
+        cancelAndResumeAfterUnwinding(task, continuation)
+    }
+
+    /// The last waiter cancels the shared task and throws only once it has
+    /// unwound, so a caller that sees `CancellationError` also sees the status
+    /// the unwinding set (`.stopped`), not the `.preparingModel` it replaces
+    /// (#1611).
+    private func cancelAndResumeAfterUnwinding(
+        _ task: Task<Void, Error>,
+        _ continuation: CheckedContinuation<Void, Error>
+    ) {
+        task.cancel()
+        Task { @MainActor in
+            _ = await task.result
+            continuation.resume(throwing: CancellationError())
         }
     }
 
@@ -442,9 +506,14 @@ final class BackendManager: ManagedBackendManaging {
         }
 
         try await prepareModel(for: spec, speechModel: speechModel)
-        try Task.checkCancellation()
+        try checkCancellationLeavingStopped(spec)
 
-        if spec.id == BackendCatalog.speechd.id {
+        // A supervisor that is launching, restarting or running owns the
+        // port's likely occupant: its own helper, which binds while the model
+        // is checked and which the defense would call foreign.
+        if spec.id == BackendCatalog.speechd.id,
+           !Self.ownsLiveProcess(supervisorIfCreated(for: spec))
+        {
             let outcome = await legacyPortDefense.clearLegacyOccupantIfNeeded(port: spec.port)
             if case .occupiedByOther = outcome {
                 let summary = "\(spec.displayName) port already in use; refusing to adopt an existing backend process."
@@ -458,9 +527,37 @@ final class BackendManager: ManagedBackendManaging {
         }
 
         setStatus(.starting, for: spec)
-        try Task.checkCancellation()
+        try checkCancellationLeavingStopped(spec)
         let supervisor = supervisor(for: spec, speechModel: speechModel)
-        try await startAndWaitUntilReady(supervisor, spec: spec)
+        do {
+            try await startAndWaitUntilReady(supervisor, spec: spec)
+        } catch where Task.isCancelled {
+            // Nobody waits for this helper any more: stop it, so `.stopped`
+            // is true.
+            await stopSupervisorKeepingEnsureTask(for: spec)
+            setStatus(.stopped, for: spec)
+            Log.backends.info("\(spec.displayName, privacy: .public) start cancelled; helper stopped")
+            throw CancellationError()
+        }
+    }
+
+    /// A cancel that lands between the phases of `ensureReady` leaves
+    /// `.stopped`, not the last phase's status (#1614). A pause caught in the
+    /// download sets `.pausedModelDownload` there; one that lands here found
+    /// the download done, and `pauseModelDownload` stops the backend.
+    private func checkCancellationLeavingStopped(_ spec: ManagedBackendSpec) throws {
+        guard Task.isCancelled else { return }
+        setStatus(.stopped, for: spec)
+        throw CancellationError()
+    }
+
+    private static func ownsLiveProcess(_ supervisor: (any ManagedBackendSupervising)?) -> Bool {
+        switch supervisor?.state {
+        case .launching, .waitingForReady, .running, .restarting:
+            return true
+        case .idle, .stopped, .failed, nil:
+            return false
+        }
     }
 
     /// `stopBackend` without the ensure-task cancellation, for a caller that is
@@ -556,6 +653,9 @@ final class BackendManager: ManagedBackendManaging {
             }
         }
 
+        // The stream also ends when the ensure is cancelled; its caller
+        // sets the status then.
+        try Task.checkCancellation()
         let message = "\(spec.displayName) stopped reporting status before it became ready."
         setStatus(.failed(summary: message, detail: nil), for: spec)
         throw ManagedBackendManagerError.backendFailed(
@@ -608,7 +708,9 @@ final class BackendManager: ManagedBackendManaging {
             arguments: arguments(for: spec, speechModel: speechModel),
             environment: processEnvironment(),
             readinessURL: URL(string: "http://127.0.0.1:\(spec.port)/health")!,
-            readinessTimeout: readinessTimeout(for: spec)
+            readinessTimeout: readinessTimeout(for: spec),
+            // Both helpers name their pid on /health (#1760, #1786).
+            readinessReportsOwnerPID: true
         )
     }
 

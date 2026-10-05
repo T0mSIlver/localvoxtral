@@ -19,58 +19,6 @@ enum TextInsertResult: Equatable {
     }
 }
 
-enum PreferredTextInsertionTargetPolicy {
-    enum PasteActivationAction: Equatable {
-        case useCurrentFrontmost
-        case activate(pid_t)
-        case deny
-    }
-
-    static func accessibilityTargetPID(
-        systemFocusedPID: pid_t?,
-        preferredPID: pid_t?,
-        selfPID: pid_t
-    ) -> pid_t? {
-        if let preferredPID = normalizedPreferredPID(preferredPID, selfPID: selfPID) {
-            return preferredPID
-        }
-
-        guard let systemFocusedPID,
-              systemFocusedPID != selfPID
-        else {
-            return nil
-        }
-
-        return systemFocusedPID
-    }
-
-    static func pasteActivationAction(
-        frontmostPID: pid_t?,
-        preferredPID: pid_t?,
-        selfPID: pid_t
-    ) -> PasteActivationAction {
-        if let preferredPID = normalizedPreferredPID(preferredPID, selfPID: selfPID) {
-            if frontmostPID == preferredPID {
-                return .useCurrentFrontmost
-            }
-            return .activate(preferredPID)
-        }
-
-        guard let frontmostPID else { return .deny }
-        return frontmostPID == selfPID ? .deny : .useCurrentFrontmost
-    }
-
-    private static func normalizedPreferredPID(_ preferredPID: pid_t?, selfPID: pid_t) -> pid_t? {
-        guard let preferredPID,
-              preferredPID != 0,
-              preferredPID != selfPID
-        else {
-            return nil
-        }
-        return preferredPID
-    }
-}
-
 @MainActor
 @Observable
 final class TextInsertionService {
@@ -103,6 +51,21 @@ final class TextInsertionService {
     /// keeps this snapshot, or it would restore the earlier paste's text.
     @ObservationIgnored
     private var pendingPasteboardRestore: (snapshot: PasteboardSnapshot, changeCount: Int)?
+    /// What a paste's restore window sleeps on: the session clock.
+    @ObservationIgnored
+    var pasteRestoreSleep: @Sendable (Duration) async -> Void = SessionClock.live.sleep
+    /// Pastes whose restore has not run. The target reads the clipboard when
+    /// it handles Cmd+V, after the post returned, so until then the
+    /// clipboard is the paste's (#1467).
+    @ObservationIgnored
+    private var pastesAwaitingRestore = 0
+    /// The latest clipboard write held back until no paste awaits its
+    /// restore.
+    @ObservationIgnored
+    private var clipboardWriteAfterPastes: (@MainActor () -> Void)?
+    /// Woken when the last pending restore runs.
+    @ObservationIgnored
+    private var pasteSettleWaiters: [CheckedContinuation<Void, Never>] = []
     private var insertionRetryTask: Task<Void, Never>?
     private var axInsertionSuccessCount = 0
     private var keyboardFallbackSuccessCount = 0
@@ -171,6 +134,32 @@ final class TextInsertionService {
     /// after `endPromptRelay`.
     @ObservationIgnored
     private(set) var promptRelayKeptText = false
+    /// The route takes text without the newline guard (the Claude Code
+    /// mod's, #1645), so the session armed none: every text the keys type
+    /// instead, what the route gave back and what follows its failure or
+    /// retirement, is guarded here.
+    @ObservationIgnored
+    private var promptRelayKeysNeedNewlineGuard = false
+    /// The trailing whitespace run of what the keys typed under that guard,
+    /// held as the hold-back stream holds a terminal session's: typed before
+    /// the next text, or at the stop under the trailing-space policy (#1734).
+    @ObservationIgnored
+    private var promptRelayKeysHeldWhitespace = ""
+    /// What the keys typed under that guard this dictation: the text the
+    /// stop's trailing-space policy judges. What the route filled before is
+    /// to it what a field's earlier text is to a terminal session's policy
+    /// (`withholdingTUIAutocompleteTrailingSpace`): unseen.
+    @ObservationIgnored
+    private var promptRelayKeysTypedText = ""
+    /// Moves when another dictation starts or the keys go to another pane,
+    /// so a sink can tell whether the live buffers and the keyboard path
+    /// still serve its dictation.
+    @ObservationIgnored
+    private var promptRelayGeneration = 0
+    /// Moves when another dictation starts: a sink's kept text marks its
+    /// dictation's landing and record only while that dictation runs.
+    @ObservationIgnored
+    private var promptRelayDictation = 0
 
 #if DEBUG
     @ObservationIgnored
@@ -242,6 +231,13 @@ final class TextInsertionService {
         preferredAppPID: pid_t? = nil
     ) -> TextInsertResult {
         guard !text.isEmpty else { return .insertedByAccessibility }
+        // Pasting now would replace the clipboard before the target read the
+        // previous paste's (#1664). The text stays pending, in order, and the
+        // restore flushes it.
+        if fencedPasteMustWait(text) {
+            Log.insertion.notice("paste of text with a code fence waits for the previous paste")
+            return .failed
+        }
         refreshAccessibilityTrustState()
 
         if tryKeyboardInsertion(
@@ -266,12 +262,65 @@ final class TextInsertionService {
         return postCommandVPaste(text)
     }
 
+    /// Runs `write`, which replaces the clipboard, once no paste's Cmd+V may
+    /// still read it: now, or after the last pending restore. A later call
+    /// replaces a write still held.
+    func writeClipboardAfterPendingPastes(_ write: @escaping @MainActor () -> Void) {
+        guard pastesAwaitingRestore > 0 else {
+            write()
+            return
+        }
+        clipboardWriteAfterPastes = write
+    }
+
+    /// True while text is pending behind a paste whose clipboard the
+    /// target may still read: the restore will flush it.
+    var pendingTextWaitsOnPaste: Bool {
+        pastesAwaitingRestore > 0 && hasPendingInsertionText
+    }
+
+    /// Returns once no paste awaits its restore.
+    func pastesSettled() async {
+        guard pastesAwaitingRestore > 0 else { return }
+        await withCheckedContinuation { pasteSettleWaiters.append($0) }
+    }
+
+    private func fencedPasteMustWait(_ text: String) -> Bool {
+        guard pastesAwaitingRestore > 0, MarkdownCodeFence.containsFenceLine(text),
+              let bundleID = TerminalTargetDetector.currentFrontmostBundleID()
+        else { return false }
+        return Self.shiftReturnNewlineBundleIDs.contains(bundleID)
+    }
+
+    private func pasteRestoreDidRun() {
+        pastesAwaitingRestore -= 1
+        guard pastesAwaitingRestore == 0 else { return }
+        // Text that waited for this paste goes first; a paste it starts
+        // holds the clipboard write back again.
+        if hasPendingInsertionText {
+            flushPendingRealtimeInsertion()
+        }
+        guard pastesAwaitingRestore == 0 else { return }
+        let waiters = pasteSettleWaiters
+        pasteSettleWaiters = []
+        waiters.forEach { $0.resume() }
+        guard let write = clipboardWriteAfterPastes else { return }
+        clipboardWriteAfterPastes = nil
+        write()
+    }
+
     /// Puts `text` on the clipboard and presses Cmd+V in the frontmost app.
     /// The clipboard is restored 150 ms later unless someone changed it.
     private func postCommandVPaste(_ text: String) -> Bool {
 #if DEBUG
         if let debugCommandVPaster {
-            return debugCommandVPaster(text)
+            guard debugCommandVPaster(text) else { return false }
+            pastesAwaitingRestore += 1
+            Task { @MainActor [weak self, sleep = pasteRestoreSleep] in
+                await sleep(.milliseconds(150))
+                self?.pasteRestoreDidRun()
+            }
+            return true
         }
         // A test that did not pin the hook must never paste into whatever
         // the host has focused.
@@ -306,14 +355,15 @@ final class TextInsertionService {
         keyDown.post(tap: .cgAnnotatedSessionEventTap)
         keyUp.post(tap: .cgAnnotatedSessionEventTap)
         // Restore clipboard only if the user did not change it after our temporary write.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, snapshot] in
-            MainActor.assumeIsolated {
-                if self?.pendingPasteboardRestore?.changeCount == insertedChangeCount {
-                    self?.pendingPasteboardRestore = nil
-                }
+        pastesAwaitingRestore += 1
+        Task { @MainActor [weak self, snapshot, sleep = pasteRestoreSleep] in
+            await sleep(.milliseconds(150))
+            if self?.pendingPasteboardRestore?.changeCount == insertedChangeCount {
+                self?.pendingPasteboardRestore = nil
             }
             let pasteboard = NSPasteboard.general
             Self.restorePasteboardSnapshot(snapshot, to: pasteboard, expectedChangeCount: insertedChangeCount)
+            self?.pasteRestoreDidRun()
         }
         return true
     }
@@ -381,27 +431,71 @@ final class TextInsertionService {
         fallback: (@MainActor (String) -> Void)? = nil
     ) {
         promptRelayKeptText = false
+        promptRelayGeneration += 1
+        promptRelayDictation += 1
+        promptRelayKeysNeedNewlineGuard = route?.takesUnsanitizedText ?? false
+        promptRelayKeysHeldWhitespace = ""
+        promptRelayKeysTypedText = ""
         guard let route else {
             promptRelaySink = nil
             return
         }
-        promptRelaySink = AgentPromptSink(route: route, kept: { [weak self] text in
-            // Kept text landed nowhere: no keyboard Return may follow it.
-            self?.liveInsertionTargetPIDs.append(nil)
-            self?.promptRelayKeptText = true
+        let generation = promptRelayGeneration
+        let dictation = promptRelayDictation
+        // Kept text landed nowhere: no keyboard Return may follow it, and
+        // the dictation's record says not inserted. Only while it is the
+        // dictation running; a go-to within it does not change that.
+        let noteKept: @MainActor (String) -> Void = { [weak self] text in
+            if let self, self.promptRelayDictation == dictation {
+                self.liveInsertionTargetPIDs.append(nil)
+                self.promptRelayKeptText = true
+            }
             kept(text)
-        }) { [weak self] text in
+        }
+        promptRelaySink = AgentPromptSink(route: route, kept: noteKept) { [weak self] text in
             if let fallback {
                 fallback(text)
-            } else {
-                self?.typeLiveTextThePromptRelayRefused(text)
+                return
             }
+            guard let self else { return }
+            // A refusal answered after the relay was retired: the pending
+            // buffers and the keys now serve another dictation or pane, and
+            // would carry this text there (#1466). It stays in History.
+            guard self.promptRelayGeneration == generation else {
+                Log.insertion.notice("\(route.name, privacy: .public) refused a call after its relay was retired; text stays in History")
+                noteKept(text)
+                return
+            }
+            self.typeLiveTextThePromptRelayRefused(text)
         }
         Log.insertion.notice("\(route.name, privacy: .public) armed for this dictation")
     }
 
+    /// The stop: no new text goes to the route. Calls already handed to it
+    /// still land, and a refusal is still typed, until the next dictation
+    /// starts. A route that confirms its appends only when asked settles
+    /// them now, behind those calls.
     func endPromptRelay() {
+        promptRelaySink?.finish()
         promptRelaySink = nil
+    }
+
+    /// The keys and the pending buffers serve something else from now on:
+    /// the next dictation, or the pane a go-to moved to. A refusal of a call
+    /// already handed to the route stays in History.
+    ///
+    /// A route that confirms its appends only when asked settles them
+    /// first. A cancel settles nothing: the queued text is dropped, and the
+    /// route tells its target to drop what has not landed (#1805).
+    func retirePromptRelay(endingDictation: Bool = false, cancelling: Bool = false) {
+        if cancelling { promptRelaySink?.cancel() } else { promptRelaySink?.finish() }
+        promptRelaySink = nil
+        // The keys' text so far is in the pane they leave: the next stop
+        // judges only what they type from here.
+        promptRelayKeysTypedText = ""
+        promptRelayKeysHeldWhitespace = ""
+        promptRelayGeneration += 1
+        if endingDictation { promptRelayDictation += 1 }
     }
 
     /// Whether text goes to the route now, to be delivered or kept in
@@ -433,6 +527,76 @@ final class TextInsertionService {
         flushPendingRealtimeInsertion()
     }
 
+    /// What the keys type of `text` now, and what they hold. While the
+    /// relay's route left the session without a newline guard, newline runs
+    /// are collapsed and the trailing whitespace run is held behind the
+    /// whitespace held before, as a terminal session's hold-back stream
+    /// does: only the stop decides whether a space follows a lone slash
+    /// command or a trailing mention.
+    private func keysTextAfterPromptRelay(_ text: String) -> (typed: String, held: String) {
+        guard promptRelayKeysNeedNewlineGuard else { return (text, "") }
+        let text = promptRelayKeysHeldWhitespace + text
+        let body = text.lastIndex { !$0.isWhitespace }.map(text.index(after:)) ?? text.startIndex
+        return (Self.collapsingNewlineRuns(String(text[..<body])), String(text[body...]))
+    }
+
+    /// Notes that the keys typed `typed` and now hold `held`.
+    private func keysTypedAfterPromptRelay(_ typed: String, holding held: String) {
+        guard promptRelayKeysNeedNewlineGuard else { return }
+        promptRelayKeysHeldWhitespace = held
+        promptRelayKeysTypedText += typed
+    }
+
+    /// The stop: the whitespace the keys held is typed, collapsed, unless
+    /// the trailing-space policy withholds it from what they typed.
+    private func releaseKeysHeldWhitespace() {
+        guard !promptRelayKeysHeldWhitespace.isEmpty else { return }
+        let run = Self.collapsingNewlineRuns(promptRelayKeysHeldWhitespace)
+        promptRelayKeysHeldWhitespace = ""
+        let keysText = promptRelayKeysTypedText + run
+        let dropCount = keysText.count - TUIAutocompleteTrailingSpace.stripped(keysText).count
+        if dropCount > 0 {
+            Log.corrector.notice(
+                "tui autocomplete: withheld \(min(dropCount, run.count), privacy: .public) trailing whitespace char(s) at stop"
+            )
+        }
+        let typed = String(run.dropLast(min(dropCount, run.count)))
+        guard !typed.isEmpty else { return }
+        switch insertTextPrioritizingKeyboard(typed) {
+        case .insertedByAccessibility, .insertedByKeyboardFallback:
+            promptRelayKeysTypedText += typed
+            liveInsertionTargetPIDs.append(confirmedLiveInsertionPID())
+        case .failed:
+            // Left for the cleanup to report, like any text the field refused;
+            // with a stream armed, as released text, never re-ingested.
+            if liveHoldBackStream != nil {
+                pendingHoldBackReleasedText += typed
+            } else {
+                pendingRealtimeInsertionText += typed
+            }
+        }
+    }
+
+    /// Every whitespace run holding a newline or a tab, as one space: a
+    /// typed newline would submit a terminal's prompt.
+    static func collapsingNewlineRuns(_ text: String) -> String {
+        var collapsed = ""
+        var run = ""
+        var runBreaks = false
+        for character in text {
+            if character.isWhitespace {
+                run.append(character)
+                runBreaks = runBreaks || character.isNewline || character == "\t"
+                continue
+            }
+            collapsed += runBreaks ? " " : run
+            run = ""
+            runBreaks = false
+            collapsed.append(character)
+        }
+        return collapsed + (runBreaks ? " " : run)
+    }
+
     func enqueueRealtimeInsertion(_ text: String) {
         guard !text.isEmpty else { return }
         pendingRealtimeInsertionText.append(text)
@@ -456,10 +620,18 @@ final class TextInsertionService {
             pendingRealtimeInsertionText.removeAll(keepingCapacity: true)
             return
         }
-        switch insertTextPrioritizingKeyboard(prepared.text) {
+        let keys = keysTextAfterPromptRelay(prepared.text)
+        guard !keys.typed.isEmpty else {
+            commitLateTerminalGuard(prepared)
+            pendingRealtimeInsertionText.removeAll(keepingCapacity: true)
+            keysTypedAfterPromptRelay("", holding: keys.held)
+            return
+        }
+        switch insertTextPrioritizingKeyboard(keys.typed) {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
             commitLateTerminalGuard(prepared)
             pendingRealtimeInsertionText.removeAll(keepingCapacity: true)
+            keysTypedAfterPromptRelay(keys.typed, holding: keys.held)
             liveInsertionTargetPIDs.append(confirmedLiveInsertionPID())
         case .failed:
             break
@@ -609,12 +781,15 @@ final class TextInsertionService {
     /// the cleanup to report.
     func discardLiveReplacementSession() {
         liveHoldBackStream = nil
+        promptRelayKeysHeldWhitespace = ""
     }
 
     func flushFinalLiveReplacementCorrections() {
         // Session stop: release the whole held tail with replacements applied.
-        guard liveHoldBackStream != nil else { return }
-        flushLiveHoldBackStream(releaseRemainder: true)
+        if liveHoldBackStream != nil {
+            flushLiveHoldBackStream(releaseRemainder: true)
+        }
+        releaseKeysHeldWhitespace()
     }
 
     // MARK: - Private
@@ -653,10 +828,17 @@ final class TextInsertionService {
             liveTypedTextForSession += prepared.text
             return
         }
-        switch insertTextPrioritizingKeyboard(prepared.text) {
+        let keys = keysTextAfterPromptRelay(prepared.text)
+        guard !keys.typed.isEmpty else {
+            commitLateTerminalGuard(prepared)
+            keysTypedAfterPromptRelay("", holding: keys.held)
+            return
+        }
+        switch insertTextPrioritizingKeyboard(keys.typed) {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
             commitLateTerminalGuard(prepared)
-            liveTypedTextForSession += prepared.text
+            liveTypedTextForSession += keys.typed
+            keysTypedAfterPromptRelay(keys.typed, holding: keys.held)
             liveInsertionTargetPIDs.append(confirmedLiveInsertionPID())
         case .failed:
             // Keep the released text verbatim for the retry task; it must
@@ -750,6 +932,8 @@ final class TextInsertionService {
         // Secure Keyboard Entry swallows posted keys while posting reports
         // success: the text would be counted typed and land nowhere.
         guard !TerminalTargetDetector.isSecureKeyboardEntryEnabled() else { return false }
+        // So does macOS for an app without Accessibility (#1762).
+        guard isAccessibilityTrusted else { return false }
         let modifiersActive = hasActiveFallbackModifiers()
         if modifiersActive {
             activeModifierFallbackCount += 1

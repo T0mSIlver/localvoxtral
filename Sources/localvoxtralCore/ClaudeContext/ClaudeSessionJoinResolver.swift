@@ -320,6 +320,64 @@ package struct ClaudeSessionJoinResolver {
     /// federated, ssh or cmux arms: this runs on every turn's end, with no
     /// dictation to justify a forward or a socket. A nil makes the cue fire,
     /// so an answer this cannot give costs a cue, never a missed one.
+    /// Whether keys typed into `target` now would reach `sessionID`'s prompt,
+    /// for a mod's keyboard fallback. A remote session has no tty on this Mac
+    /// to look up (#1412): the join `target` resolves to now must name it,
+    /// and what the join read must still be on screen after its last await.
+    package func shows(_ sessionID: String, target: TerminalScreenTarget) async -> Bool {
+        guard ClaudeRemoteSessionScope.hostID(fromScopedSessionID: sessionID) != nil else {
+            return await sessionShown(target: target) == sessionID
+        }
+        guard let join = await resolve(target: target), join.snapshot.sessionID == sessionID,
+              await stillShows(join, terminal: target)
+        else { return false }
+        return true
+    }
+
+    /// Whether `join` still describes the focused surface. The remote arms
+    /// await forwards, sockets and process queries after reading the focus,
+    /// and the fallback types on their answer: a tab, machine or pane switch
+    /// in between must count (Codex review of #1780, 2026-10-04). As for a
+    /// local herdr pane (#1498), the pane is read last: a pane switch keeps
+    /// the tty, so no slower read may follow it.
+    private func stillShows(_ join: ClaudeSessionJoin, terminal: TerminalScreenTarget) async -> Bool {
+        let shown: Bool
+        switch join.mechanism {
+        case .remoteHerdrPane, .federatedHerdrPane:
+            guard let surface = join.herdrSurface, let binding = join.herdrPane, let herdrPanes else { return false }
+            guard await displaysJoinedSurface(surface, terminal: terminal) else { return false }
+            shown = await herdrPanes.focusedPane(socketPath: binding.socketPath)?.paneID == binding.paneID
+        case .cmuxSurface:
+            guard let binding = join.cmuxSurface, let cmuxSurfaces,
+                  case .value(let focused) = await cmuxSurfaces.focusedSurface(expectedPeerPID: terminal.pid)
+            else { return false }
+            shown = focused.surfaceID == binding.surfaceID
+        case .remoteLocalTTY:
+            // The binding is the tty the session reported: the focused one,
+            // read last.
+            guard let bound = join.snapshot.remoteSessionEnvironment?.localTTY else { return false }
+            shown = await focusedTerminalTTY(terminal.bundleID) == bound
+        case .remoteSSHConnection:
+            // The binding is the connection the session reported: the
+            // focused tty's ssh must still hold it, and the tty is read
+            // again last.
+            guard let tty = await focusedTerminalTTY(terminal.bundleID),
+                  let value = join.snapshot.remoteSessionEnvironment?.sshConnection,
+                  let report = ClaudeRemoteSSHConnectionReport.parse(value),
+                  case .connection(let connection) = sshDestinationProbe(tty),
+                  let sockets = connection.sockets,
+                  sockets.filter({ Self.socket($0, matches: report) }).count == 1
+            else { return false }
+            shown = await focusedTerminalTTY(terminal.bundleID) == tty
+        default:
+            shown = false
+        }
+        if !shown {
+            Log.claudeContext.info("Remote session check: the focus moved during the join; keys stay unsent")
+        }
+        return shown
+    }
+
     package func sessionShown(target: TerminalScreenTarget) async -> String? {
         if ClaudeDesktopAllowlist.isSupported(target.bundleID) {
             guard let address = await focusedDesktopSessionURL(target.pid),
@@ -334,7 +392,20 @@ package struct ClaudeSessionJoinResolver {
         if case .resolved(let snapshot) = registry.resolve(tty: tty) {
             return snapshot.sessionID
         }
-        return await focusedLocalHerdrPane(surfaceTTY: tty, purpose: "needs-you pane check")?.snapshot.sessionID
+        guard let found = await focusedLocalHerdrPane(surfaceTTY: tty, purpose: "needs-you pane check") else {
+            return nil
+        }
+        // The pane's foreground query awaited herdr: the user may have moved
+        // to another pane or tab since, and the mod's keyboard fallback
+        // types on this answer (#1498). Both are read again, the pane last:
+        // a pane switch keeps the tty, so no slower read may follow it.
+        guard await focusedTerminalTTY(target.bundleID) == tty,
+              await herdrPanes?.focusedPane(socketPath: found.socketPath)?.paneID == found.pane.paneID
+        else {
+            Log.claudeContext.info("needs-you pane check: the focus moved during the herdr lookup")
+            return nil
+        }
+        return found.snapshot.sessionID
     }
 
     /// The herdr pane route for the focused pane of a LOCAL herdr, found

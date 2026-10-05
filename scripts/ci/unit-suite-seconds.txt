@@ -147,7 +147,7 @@
 0.005 OverlayClaudeJoinBadgeTests
 0.005 RemoteLocalTTYJoinTests
 0.005 RepoVocabularyServiceTests
-0.005 TUIAutocompleteTrailingSpaceTests
+0.005 TUIAutocompleteTrailingSpaceInsertionTests
 0.005 TerminalDescendantProcessResolverTests
 0.005 VibeHooksInstallServiceTests
 0.004 AccessibilityTrustManagerTests

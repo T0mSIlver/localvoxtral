@@ -17,6 +17,7 @@ final class FakeMicrophoneCaptureService: MicrophoneCapturing, @unchecked Sendab
         var startCount = 0
         var stopCount = 0
         var isCapturing = false
+        var capturingDeviceID: String?
         var isSilent = false
         var onConfigurationChange: (@Sendable () -> Void)?
         var onInputDevicesChanged: (@Sendable () -> Void)?
@@ -36,6 +37,9 @@ final class FakeMicrophoneCaptureService: MicrophoneCapturing, @unchecked Sendab
     }
 
     var startCount: Int { state.withLock { $0.startCount } }
+    /// The device the running capture was started on (nil for the system
+    /// default), or nil when nothing captures.
+    var capturingDeviceID: String? { state.withLock { $0.capturingDeviceID } }
     var stopCount: Int { state.withLock { $0.stopCount } }
     var pendingAccessRequestCount: Int { state.withLock { $0.pendingAccessCompletions.count } }
 
@@ -97,6 +101,14 @@ final class FakeMicrophoneCaptureService: MicrophoneCapturing, @unchecked Sendab
         XCTFail("the session never started the microphone", file: file, line: line)
     }
 
+    /// `deliver`, as audio heard by `deviceID`: it reaches the session only
+    /// when the running capture was started on that device.
+    @discardableResult
+    func deliver(_ chunk: Data, from deviceID: String) -> Bool {
+        guard capturingDeviceID == deviceID else { return false }
+        return deliver(chunk)
+    }
+
     // MARK: - MicrophoneCapturing
 
     var onConfigurationChange: (@Sendable () -> Void)? {
@@ -148,6 +160,7 @@ final class FakeMicrophoneCaptureService: MicrophoneCapturing, @unchecked Sendab
         let waiters = state.withLock { state -> [BoundedWait] in
             state.startCount += 1
             state.isCapturing = true
+            state.capturingDeviceID = preferredDeviceID
             state.chunkHandler = chunkHandler
             let waiters = state.startWaiters
             state.startWaiters = []
@@ -160,6 +173,7 @@ final class FakeMicrophoneCaptureService: MicrophoneCapturing, @unchecked Sendab
         state.withLock {
             $0.stopCount += 1
             $0.isCapturing = false
+            $0.capturingDeviceID = nil
             $0.chunkHandler = nil
         }
     }

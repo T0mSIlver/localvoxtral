@@ -236,17 +236,3 @@ final class DictationInsightsTests: XCTestCase {
         XCTAssertEqual(model.featureUsage.first?.calls, 2)
     }
 }
-
-final class TranscriptDiffHunkTests: XCTestCase {
-    func testHunksPairWhatWasRemovedWithWhatReplacedItInReadingOrder() {
-        let before = "um restart the quen server uh now"
-        let after = "Restart the Qwen server now"
-
-        let hunks = TranscriptDiff.hunks(from: before, to: after).map { hunk in
-            (hunk.removed.map { String(before[$0]) }, hunk.added.map { String(after[$0]) })
-        }
-
-        XCTAssertEqual(hunks.map(\.0), [["um", "restart"], ["quen"], ["uh"]])
-        XCTAssertEqual(hunks.map(\.1), [["Restart"], ["Qwen"], []])
-    }
-}

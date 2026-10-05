@@ -310,6 +310,12 @@ final class SpeakerTermSuggestionModel {
         task = Task { await suggest(background: true, countAtStart: countAtStart) }
     }
 
+    #if DEBUG
+    /// Test seam: the run in flight, so a suite awaits a stopped run's end
+    /// instead of yielding.
+    var debugTask: Task<Void, Never>? { task }
+    #endif
+
     /// The Stop button.
     func stop() {
         guard phase == .loading else { return }

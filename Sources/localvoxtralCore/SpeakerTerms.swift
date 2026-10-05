@@ -14,6 +14,24 @@ package enum SpeakerTerms {
 
     /// Single-line, trimmed, first spelling wins a case-insensitive duplicate.
     package static func sanitized(_ raw: [String]) -> [String] {
+        sanitized(raw, limit: maxTerms)
+    }
+
+    /// `sanitized` for a list merged with the one saved, which another running
+    /// copy may have filled: over the cap, the terms that go are the ones not
+    /// saved yet, newest first, so no term already saved is pushed out.
+    package static func sanitized(_ raw: [String], keeping saved: [String]) -> [String] {
+        var terms = sanitized(raw, limit: .max)
+        let savedKeys = Set(sanitized(saved, limit: .max).map(\.caseFoldedForMatching))
+        var index = terms.endIndex
+        while terms.count > maxTerms, index > terms.startIndex {
+            index -= 1
+            if !savedKeys.contains(terms[index].caseFoldedForMatching) { terms.remove(at: index) }
+        }
+        return Array(terms.prefix(maxTerms))
+    }
+
+    private static func sanitized(_ raw: [String], limit: Int) -> [String] {
         var seen = Set<String>()
         var result: [String] = []
         for candidate in raw {
@@ -25,7 +43,7 @@ package enum SpeakerTerms {
                   seen.insert(term.caseFoldedForMatching).inserted
             else { continue }
             result.append(term)
-            if result.count == maxTerms { break }
+            if result.count == limit { break }
         }
         return result
     }

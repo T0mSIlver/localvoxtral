@@ -278,6 +278,12 @@ run_gc_command() {
   for dir in "$HOME"/work/localvoxtral-*; do
     [[ -d "$dir" ]] || continue
     validate_work_dir "work/${dir##*/}" || continue
+    # The find below does not follow a link, so everything behind one looks
+    # stale, and the prune would then empty a tree outside ~/work (#1491).
+    if [[ -L "$dir" ]]; then
+      printf 'gc %s: a symlink — kept\n' "${dir##*/}"
+      continue
+    fi
     # -mindepth 1 skips the dir's own mtime, which gc's pruning refreshes —
     # a pruned skeleton must not look active for another whole window.
     # -maxdepth 9 reaches the deepest build products (xcodebuild packages:

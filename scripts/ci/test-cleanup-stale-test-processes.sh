@@ -89,6 +89,34 @@ fixture_name="$(ps -o ucomm= -p "$fixture_pid" | tr -d '[:space:]')"
 [[ "${fixture_name##*/}" == "xctest" ]] \
   || fail "fixture process name is '$fixture_name', expected xctest"
 
+# A failed ps or lsof snapshot is no evidence that nothing is abandoned: the
+# cleanup must fail and kill nothing, not report an empty workspace (#1721).
+REAL_PS="$(command -v ps)"
+mkdir -p "$TMP_DIR/failing-lsof" "$TMP_DIR/failing-ps"
+cat >"$TMP_DIR/failing-lsof/lsof" <<'STUB'
+#!/bin/sh
+exit 1
+STUB
+cat >"$TMP_DIR/failing-ps/ps" <<STUB
+#!/bin/sh
+case "\$*" in
+  -axo*) exit 1 ;;
+  *) exec "$REAL_PS" "\$@" ;;
+esac
+STUB
+chmod +x "$TMP_DIR/failing-lsof/lsof" "$TMP_DIR/failing-ps/ps"
+for broken in lsof ps; do
+  if PATH="$TMP_DIR/failing-$broken:$PATH" LOCALVOXTRAL_STALE_TEST_TERM_POLLS=0 \
+    "$SCRIPT" "$workspace" >"$TMP_DIR/broken.out" 2>&1; then
+    fail "cleanup succeeded with a failing $broken: $(cat "$TMP_DIR/broken.out")"
+  fi
+  ! grep -q 'no abandoned processes' "$TMP_DIR/broken.out" \
+    || fail "cleanup with a failing $broken claimed an empty workspace"
+  state="$(ps -o state= -p "$fixture_pid" 2>/dev/null | tr -d '[:space:]' || true)"
+  [[ -n "$state" && "$state" != Z* ]] || fail "cleanup with a failing $broken killed the fixture"
+done
+printf 'PASS: a failing ps or lsof fails the cleanup and kills nothing\n'
+
 LOCALVOXTRAL_STALE_TEST_TERM_POLLS=0 "$SCRIPT" "$workspace"
 state="$(ps -o state= -p "$fixture_pid" 2>/dev/null | tr -d '[:space:]' || true)"
 [[ -z "$state" || "$state" == Z* ]] \

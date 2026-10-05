@@ -35,6 +35,9 @@ package protocol AgentCLIDataSource: Sendable {
     func markCaptureFiled(
         _ id: UUID, url: String
     ) async -> Result<QuickCaptureItem, QuickCaptureInbox.MarkFiledRefusal>?
+    /// Brings the Inbox forward on the capture. False when it is no longer
+    /// there; nil when the app has no Inbox.
+    func openCapture(_ id: UUID) async -> Bool?
 }
 
 /// Answers the command's requests. Everything here is the part that does not
@@ -85,6 +88,7 @@ package struct AgentCLIService: Sendable {
         case .captureList: response = await captureList(request)
         case .captureShow: response = await captureShow(request)
         case .captureFiled: response = await captureFiled(request)
+        case .captureOpen: response = await captureOpen(request)
         }
         if let error = response.error {
             Log.backends.error(
@@ -315,6 +319,23 @@ package struct AgentCLIService: Sendable {
             case .notAnIssueKind(let kind): "a \(kind.rawValue) is never filed"
             }
             return .failure(refusal == .notFound ? .unknownCapture : .notFileable, message)
+        }
+    }
+
+    private func captureOpen(_ request: AgentCLIRequest) async -> AgentCLIResponse {
+        let item: QuickCaptureItem
+        switch await findCapture(request) {
+        case .success(let found): item = found
+        case .failure(let error): return AgentCLIResponse(error: error)
+        }
+        switch await source.openCapture(item.id) {
+        case nil:
+            return .failure(.unknownCapture, "the Inbox is not available")
+        case false?:
+            return .failure(.unknownCapture, "the capture is no longer in the Inbox")
+        case true?:
+            Log.backends.info("CLI: opened a capture in the Inbox")
+            return AgentCLIResponse(capture: AgentCLICaptureLookup.capture(item, detail: false))
         }
     }
 

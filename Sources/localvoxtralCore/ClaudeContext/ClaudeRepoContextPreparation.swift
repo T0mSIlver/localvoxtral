@@ -189,8 +189,15 @@ package enum ClaudeSessionContextText {
     /// session — see `remoteSnippetPart`. A local session never contributes
     /// them, because the same argument that rules out its transcript rules out
     /// its hook-quoted fragments: we can read the real file.
-    package static func text(for snapshot: ClaudeSessionSnapshot) -> String {
+    ///
+    /// `draft` is what the session's prompt box held at the stop, read by
+    /// its mod: the text this dictation continues. It leads the block, and
+    /// only the session's own draft is taken.
+    package static func text(for snapshot: ClaudeSessionSnapshot, draft: ClaudePromptDraft? = nil) -> String {
         var parts: [String] = []
+        if let draft, draft.sessionID == snapshot.sessionID, !draft.isEmpty {
+            parts.append(draft.sessionBlockLines.joined(separator: "\n"))
+        }
         if let workspace = snapshot.workspace {
             // `displayName`, never a path: for a remote session there IS no
             // path, and for a local one the repo block already carries the

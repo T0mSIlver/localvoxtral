@@ -13,11 +13,18 @@ struct PolishContextMaterial {
     /// The screen decision as gathered, before any consent withdrawal: the
     /// diagnostic record's socket-pane swap signal compares against it.
     let gatheredScreenDecision: TerminalScreenContextDecision
+    /// The screen decision came from the joined pane's socket read, so it
+    /// is the joined session's content and leaves with the join.
+    let screenReadThroughJoin: Bool
     /// The clipboard read at stop, nil once its consent is withdrawn.
     var clipboardContext: PolishClipboardContext?
     var repoVocabularyOutcome: RepoVocabularyMatcher.GroundingOutcome
     var claudeRepoSnapshot: ClaudeRepoSnapshot?
     var claudeSessionText: String
+    /// The joined session's prompt box at the stop, read through its mod.
+    /// Kept when consent is withdrawn: the commit's leading space reads it,
+    /// and that never leaves the Mac.
+    let promptDraft: ClaudePromptDraft?
     let screenRenderDemand: Int
     let repoRenderDemand: Int
     let allocation: [PolishContextSource: Int]
@@ -117,7 +124,16 @@ enum PolishContextGatherer {
         // on any pane-read failure it IS `capturedScreenDecision`,
         // which for these joins is vocabulary-only at best (the
         // authorizer still refuses raw AX attachment).
+        // The prompt box as the stop left it, asked of the session's mod
+        // now and awaited after the slow reads below, which hide its
+        // round trip. Not a child task: a cancelled commit returns without
+        // waiting out the mod.
+        let promptDraftRead = Task { @MainActor in
+            await context.promptDraft(for: capturedClaudeJoin)
+        }
+
         var screenDecision = capturedScreenDecision
+        let screenReadThroughJoin = capturedSocketPaneStart != nil && endpointURL != nil
         if capturedSocketPaneStart != nil,
            let endpointURL = endpointURL {
             screenDecision = await SocketPaneScreenContext.reconcileAtStop(
@@ -240,11 +256,14 @@ enum PolishContextGatherer {
         // stop both too. Checking only the setting here meant a dead
         // session's PRIOR PROMPT still rode to whatever endpoint was
         // configured, including a remote one.
+        let promptDraft = await promptDraftRead.value
+        guard !Task.isCancelled else { return nil }
         var claudeSessionText = ""
         if let endpointURL = endpointURL {
             claudeSessionText = context.claudeSessionTextIfEnabled(
                 join: capturedClaudeJoin,
-                endpointURL: endpointURL
+                endpointURL: endpointURL,
+                draft: promptDraft
             )
         }
 
@@ -397,10 +416,12 @@ enum PolishContextGatherer {
         return PolishContextMaterial(
             screenDecision: screenDecision,
             gatheredScreenDecision: screenDecision,
+            screenReadThroughJoin: screenReadThroughJoin,
             clipboardContext: capturedClipboardContext,
             repoVocabularyOutcome: repoVocabularyOutcome,
             claudeRepoSnapshot: claudeRepoSnapshot,
             claudeSessionText: claudeSessionText,
+            promptDraft: promptDraft,
             screenRenderDemand: screenRenderDemand,
             repoRenderDemand: repoRenderDemand,
             allocation: allocation,
@@ -502,10 +523,16 @@ extension PolishContextMaterial {
     /// request leaves: the source loses its excerpt and its grounding, and the
     /// merge is redone so none of its spellings are pre-applied. Learned terms
     /// have no gate beyond polishing (`learnedTermGrounding`), so they stay.
+    ///
+    /// The join is consent too (#1600): revoking a remote host during the
+    /// wait evicts its sessions, and a session that ended takes its context
+    /// with it. `joinStillLive` is asked by the caller right before this
+    /// runs (`SessionContextResolver.claudeJoinStillLive`).
     @MainActor
     func withdrawingRevokedConsent(
         settings: SettingsStore,
         endpointURL: URL?,
+        joinStillLive: Bool,
         workingText: String
     ) -> PolishContextMaterial? {
         let endpointPermitted = endpointURL.map {
@@ -523,7 +550,8 @@ extension PolishContextMaterial {
             withdrawn.append("clipboard")
         }
         if screenDecision.vocabularyGroundingText != nil,
-           !(settings.terminalScreenContextEnabled && endpointPermitted) {
+           !(settings.terminalScreenContextEnabled && endpointPermitted)
+            || (screenReadThroughJoin && !joinStillLive) {
             material.screenDecision = .drop(reason: .policyRejected)
             material.screenPreparation = .empty
             withdrawn.append("screen")
@@ -546,7 +574,7 @@ extension PolishContextMaterial {
             withdrawn.append("repo-vocabulary")
         }
         if claudeRepoSnapshot != nil || !claudeSessionText.isEmpty,
-           !(settings.claudeRepoContextEnabled && endpointPermitted) {
+           !(settings.claudeRepoContextEnabled && endpointPermitted && joinStillLive) {
             material.claudeRepoSnapshot = nil
             material.claudeRepoPreparation = .empty
             material.claudeSessionText = ""

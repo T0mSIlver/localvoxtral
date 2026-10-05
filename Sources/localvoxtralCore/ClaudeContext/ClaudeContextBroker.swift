@@ -75,6 +75,9 @@ public final class ClaudeContextBroker: Sendable {
         /// spontaneous. `stop()` waits on it so a caller that stops and
         /// immediately restarts cannot race the outgoing loop for the socket.
         var loopExit: DispatchSemaphore?
+        /// The socket inode this broker bound. Cleanup unlinks the path only
+        /// while it still names this inode (#1603).
+        var boundSocket: StoredFileStamp?
     }
 
     private let state = Mutex(State())
@@ -113,6 +116,20 @@ public final class ClaudeContextBroker: Sendable {
 
     public func debugConfigureServeHook(_ hook: (@Sendable () -> Void)?) {
         debugServeHook.withLock { $0 = hook }
+    }
+
+    /// Test seam: fires in `start()` after the probe found the path stale and
+    /// before it is unlinked, with the bind lock held.
+    private let debugStaleRecoveryHook = Mutex<(@Sendable () -> Void)?>(nil)
+    /// Test seam: fires in `start()` right before it waits for the bind lock.
+    private let debugBindLockHook = Mutex<(@Sendable () -> Void)?>(nil)
+
+    package func debugConfigureStaleRecoveryHook(_ hook: (@Sendable () -> Void)?) {
+        debugStaleRecoveryHook.withLock { $0 = hook }
+    }
+
+    package func debugConfigureBindLockHook(_ hook: (@Sendable () -> Void)?) {
+        debugBindLockHook.withLock { $0 = hook }
     }
 
     private func debugNotify(_ result: Result<ClaudeHookRecord, ClaudeHookWireError>) {
@@ -157,6 +174,17 @@ public final class ClaudeContextBroker: Sendable {
     public func start() throws {
         let directory = (socketPath as NSString).deletingLastPathComponent
         try ClaudeSocketGuard.prepareDirectory(at: directory)
+
+        // Every running copy of the app binds this one path. The probe, the
+        // unlink of a stale file and the bind are one step under a lock the
+        // copies share (#1603): two copies that both probed the same stale
+        // file would otherwise each unlink and rebind, the second removing
+        // the first's live socket.
+        #if DEBUG
+        debugBindLockHook.withLock { $0 }?()
+        #endif
+        let bindLock = Self.takeBindLock(beside: socketPath)
+        defer { withExtendedLifetime(bindLock) {} }
 
         let (listenerFD, wakeReadFD, exitSignal): (Int32, Int32, DispatchSemaphore) =
             try state.withLock { state in
@@ -219,6 +247,9 @@ public final class ClaudeContextBroker: Sendable {
                     close(fd)
                     throw StartFailure.socketOwnedByLiveInstance(socketPath)
                 }
+                #if DEBUG
+                debugStaleRecoveryHook.withLock { $0 }?()
+                #endif
                 Log.claudeContext.info("Removing stale Claude broker socket")
                 unlink(socketPath)
                 bound = attemptBind()
@@ -231,6 +262,7 @@ public final class ClaudeContextBroker: Sendable {
             // macOS has historically been inconsistent about umask on AF_UNIX
             // binds, and this is cheap.
             chmod(socketPath, 0o600)
+            let boundSocket = StoredFileStamp.of(URL(fileURLWithPath: socketPath))
 
             guard listen(fd, limits.backlog) == 0 else {
                 let code = errno
@@ -261,6 +293,7 @@ public final class ClaudeContextBroker: Sendable {
             state.wakeWriteFD = wakePipe[1]
             let exitSignal = DispatchSemaphore(value: 0)
             state.loopExit = exitSignal
+            state.boundSocket = boundSocket
             state.isRunning = true
                 return (fd, wakePipe[0], exitSignal)
             }
@@ -315,6 +348,35 @@ public final class ClaudeContextBroker: Sendable {
     }
 
     public var isRunning: Bool { state.withLock { $0.isRunning } }
+
+    /// The lock every copy takes around binding or removing the socket. Nil
+    /// when the lock file cannot be opened: the caller goes on unlocked, as
+    /// before the lock existed, and says so.
+    private static func takeBindLock(beside socketPath: String) -> StoredFileLock? {
+        let lock = StoredFileLock.holding(beside: URL(fileURLWithPath: socketPath))
+        if lock == nil {
+            Log.claudeContext.error(
+                "Could not take the Claude broker socket lock shared with other running copies; going on without it"
+            )
+        }
+        return lock
+    }
+
+    private func removeSocketFile(ifStill boundSocket: StoredFileStamp?, thenClose listenerFD: Int32) {
+        let lock = Self.takeBindLock(beside: socketPath)
+        defer {
+            close(listenerFD)
+            withExtendedLifetime(lock) {}
+        }
+        guard let boundSocket,
+              let current = StoredFileStamp.of(URL(fileURLWithPath: socketPath)),
+              current.device == boundSocket.device, current.inode == boundSocket.inode
+        else {
+            Log.claudeContext.info("Claude broker socket path no longer names this copy's socket; leaving it")
+            return
+        }
+        unlink(socketPath)
+    }
 
     /// Is something actually listening on this socket path?
     ///
@@ -386,23 +448,29 @@ public final class ClaudeContextBroker: Sendable {
             // to clear `isRunning` and nothing else: the wake pipe's write end
             // stayed open for the life of the process, and the socket file
             // stayed on disk advertising a broker that no longer existed.
-            let wakeWriteFD: Int32 = state.withLock { state in
+            let (wakeWriteFD, boundSocket): (Int32, StoredFileStamp?) = state.withLock { state in
                 state.isRunning = false
                 let fd = state.wakeWriteFD
                 state.wakeWriteFD = -1
                 state.loopExit = nil
-                return fd
+                let bound = state.boundSocket
+                state.boundSocket = nil
+                return (fd, bound)
             }
             // Non-negative only on a SPONTANEOUS exit: stop() takes this fd
             // under the same lock before writing to it, so exactly one of us
             // ever closes it.
             if wakeWriteFD >= 0 { close(wakeWriteFD) }
-            close(listenerFD)
             close(wakeReadFD)
-            // Ours to remove: we bound it, and stop() deliberately waits for
-            // this defer rather than unlinking itself, so this cannot delete a
-            // socket a subsequent start() has already bound.
-            unlink(socketPath)
+            // Ours to remove only while the path still names the inode we
+            // bound: another copy may have replaced it (#1603). The check and
+            // the unlink hold the bind lock, and the listener closes only
+            // after them: until then another copy's probe finds this socket
+            // live, so it cannot unlink it and bind a successor that reuses
+            // its inode number. stop() waits for this defer rather than
+            // unlinking itself, so a subsequent start() in this process
+            // cannot lose its socket here.
+            removeSocketFile(ifStill: boundSocket, thenClose: listenerFD)
             exitSignal?.signal()
         }
         /// Consecutive accept() failures we could not attribute. Used only to
@@ -576,6 +644,10 @@ public final class ClaudeContextBroker: Sendable {
                     deliverModReply(line)
                     continue
                 }
+                if ClaudeModChannelWire.isBye(line) {
+                    deliverModBye(line)
+                    continue
+                }
                 let handled = handle(line: line, origin: origin, peerPID: peerPID)
                 reply(to: fd, accepted: handled.accepted, version: handled.replyVersion)
             }
@@ -641,6 +713,7 @@ public final class ClaudeContextBroker: Sendable {
             return false
         }
         state.withLock { $0.admission.release() }
+        registry.modChannelAttached(sessionID: attach.sessionID, claudePID: attach.claudePID, token: token)
 
         // The publisher sends nothing after its attach, so any readable
         // event is the end: EOF, an error, a shutdown, or a peer that broke
@@ -650,7 +723,8 @@ public final class ClaudeContextBroker: Sendable {
         // Before `serve` closes the number: a send still holding the channel
         // must not write to whatever connection gets it next.
         descriptor.retire()
-        modChannels.detach(sessionID: attach.sessionID, token: token)
+        let ended = modChannels.detach(sessionID: attach.sessionID, token: token)
+        registry.modChannelDetached(sessionID: attach.sessionID, token: token, sessionEnded: ended)
         return true
     }
 
@@ -659,6 +733,14 @@ public final class ClaudeContextBroker: Sendable {
             return
         }
         _ = writeAll(fd: fd, data: line)
+    }
+
+    private func deliverModBye(_ line: Data) {
+        guard let bye = ClaudeModChannelWire.decode(ClaudeModChannelWire.Bye.self, from: line) else {
+            Log.claudeContext.error("Mod channel: dropped an unreadable bye")
+            return
+        }
+        modChannels?.bye(sessionID: bye.sessionID)
     }
 
     private func deliverModReply(_ line: Data) {

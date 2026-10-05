@@ -23,16 +23,24 @@ public final class ClaudeModChannelHub: Sendable {
         var write: @Sendable (Data) -> Bool
         /// Ends the connection, which ends the broker's hold on it.
         var close: @Sendable () -> Void
+
+        package init(write: @escaping @Sendable (Data) -> Bool, close: @escaping @Sendable () -> Void) {
+            self.write = write
+            self.close = close
+        }
     }
 
     private struct Attached {
         var token: UInt64
         var channel: Channel
+        /// The mod said its session is ending (`bye`): the detach that
+        /// follows ends the session.
+        var isEnding = false
     }
 
     private struct Pending {
         var sessionID: String
-        var continuation: CheckedContinuation<ClaudeModChannelWire.Reply?, Never>
+        var continuation: CheckedContinuation<Exchange, Never>
         /// The reply timeout; cancelled by whichever answer comes first.
         var timer: Task<Void, Never>?
     }
@@ -54,6 +62,7 @@ public final class ClaudeModChannelHub: Sendable {
         debugAttachHook.withLock { $0 = hook }
     }
     #endif
+    private let attachObserver = Mutex<(@Sendable (String) -> Void)?>(nil)
     private let maxChannels: Int
     private let sleep: @Sendable (Duration) async -> Void
     private let makeID: @Sendable () -> String
@@ -72,9 +81,51 @@ public final class ClaudeModChannelHub: Sendable {
         self.makeID = makeID
     }
 
+    /// Whether any session has a mod listening: the cheap question asked
+    /// before any lookup that would find one.
+    public var hasAttachedChannels: Bool {
+        state.withLock { !$0.channels.isEmpty }
+    }
+
     /// Whether `sessionID` has a mod listening right now.
     public func isAttached(_ sessionID: String) -> Bool {
         state.withLock { $0.channels[sessionID] != nil }
+    }
+
+    /// Which attach of `sessionID`'s mod is listening now, or nil: a mod
+    /// that reloaded and attached again under the same session gets a new
+    /// one, and its state starts over.
+    package func attachment(of sessionID: String) -> UInt64? {
+        state.withLock { $0.channels[sessionID]?.token }
+    }
+
+    /// The sessions that have a mod listening right now.
+    public func attachedSessionIDs() -> Set<String> {
+        state.withLock { Set($0.channels.keys) }
+    }
+
+    /// Called with the session's id after each attach, and when an attached
+    /// remote mod has started over (`startedOver`), on the caller's thread:
+    /// hand the work off, never block. A message posted from it waits for
+    /// the attach's answer, which is the connection's first line.
+    public func observeAttach(_ observer: (@Sendable (String) -> Void)?) {
+        attachObserver.withLock { $0 = observer }
+    }
+
+    /// How a request ended, told apart where it matters: a request the mod
+    /// never got can go another way, while one it got and did not answer may
+    /// still have done its work.
+    public enum Exchange: Equatable, Sendable {
+        case replied(ClaudeModChannelWire.Reply)
+        /// No channel, an encoding over the cap, or a failed write.
+        case notDelivered
+        /// Written, then no reply in time or the channel closed.
+        case unanswered
+
+        public var reply: ClaudeModChannelWire.Reply? {
+            if case .replied(let reply) = self { return reply }
+            return nil
+        }
     }
 
     /// Sends `message` to the mod of `sessionID` and waits for its reply.
@@ -86,22 +137,34 @@ public final class ClaudeModChannelHub: Sendable {
         to sessionID: String,
         timeout: Duration
     ) async -> ClaudeModChannelWire.Reply? {
+        await exchange(message, with: sessionID, timeout: timeout).reply
+    }
+
+    /// `send`, saying whether a request without a reply ever reached the mod.
+    /// With `attachment`, only that attach of the mod gets it; a later one
+    /// answers `notDelivered`.
+    public func exchange(
+        _ message: ClaudeModChannelWire.Message,
+        with sessionID: String,
+        attachment: UInt64? = nil,
+        timeout: Duration
+    ) async -> Exchange {
         var message = message
         message.id = makeID()
         let id = message.id
         let kind = message.kind.rawValue
         guard let line = ClaudeModChannelWire.encodeLine(message) else {
             Log.claudeContext.error("Mod channel: \(message.kind.rawValue, privacy: .public) is over the line cap")
-            return nil
+            return .notDelivered
         }
-        guard let channel = state.withLock({ $0.channels[sessionID]?.channel }) else { return nil }
+        guard let channel = channel(of: sessionID, attachment: attachment) else { return .notDelivered }
 
         return await withCheckedContinuation { continuation in
             state.withLock { $0.pending[id] = Pending(sessionID: sessionID, continuation: continuation) }
             let timer = Task { [sleep] in
                 await sleep(timeout)
                 guard !Task.isCancelled else { return }
-                if self.resume(id: id, with: nil) {
+                if self.resume(id: id, with: .unanswered) {
                     Log.claudeContext.error("Mod channel: no reply to \(kind, privacy: .public) in time")
                 }
             }
@@ -113,9 +176,35 @@ public final class ClaudeModChannelHub: Sendable {
             if !isWaiting { timer.cancel() }
             if !channel.write(line) {
                 Log.claudeContext.error("Mod channel: write failed; detaching")
-                _ = resume(id: id, with: nil)
+                _ = resume(id: id, with: .notDelivered)
                 channel.close()
             }
+        }
+    }
+
+    /// Writes `message` to the mod of `sessionID` and waits for nothing:
+    /// for messages the mod does not answer, such as `state`.
+    ///
+    /// - Returns: whether the line was written: false too when
+    ///   `attachment` no longer names the session's mod.
+    @discardableResult
+    public func post(
+        _ message: ClaudeModChannelWire.Message, to sessionID: String, attachment: UInt64? = nil
+    ) -> Bool {
+        var message = message
+        message.id = makeID()
+        guard let line = ClaudeModChannelWire.encodeLine(message),
+              let channel = channel(of: sessionID, attachment: attachment)
+        else { return false }
+        return channel.write(line)
+    }
+
+    private func channel(of sessionID: String, attachment: UInt64?) -> Channel? {
+        state.withLock { state in
+            guard let attached = state.channels[sessionID],
+                  attachment == nil || attached.token == attachment
+            else { return nil }
+            return attached.channel
         }
     }
 
@@ -150,27 +239,69 @@ public final class ClaudeModChannelHub: Sendable {
         #if DEBUG
         debugAttachHook.withLock { $0 }?(true)
         #endif
+        attachObserver.withLock { $0 }?(sessionID)
         return token
+    }
+
+    /// The mod on the channel `token` names lost what it was told, though
+    /// the channel held (#1799): the attach observer hears the session again,
+    /// as after an attach.
+    package func startedOver(sessionID: String, token: UInt64) {
+        guard state.withLock({ $0.channels[sessionID]?.token == token }) else { return }
+        Log.claudeContext.info("Mod channel: the mod started over; telling it its state again")
+        attachObserver.withLock { $0 }?(sessionID)
     }
 
     /// Forgets the channel `token` names, if it is still the session's, and
     /// answers nil to every request still waiting on it.
-    package func detach(sessionID: String, token: UInt64) {
-        let orphaned: [Pending]? = state.withLock { state in
-            guard state.channels[sessionID]?.token == token else { return nil }
+    ///
+    /// - Returns: whether the mod said `bye` first, so the session ended.
+    @discardableResult
+    package func detach(sessionID: String, token: UInt64) -> Bool {
+        let detached: (orphaned: [Pending], ended: Bool)? = state.withLock { state in
+            guard let attached = state.channels[sessionID], attached.token == token else { return nil }
             state.channels[sessionID] = nil
             let ids = state.pending.filter { $0.value.sessionID == sessionID }.map(\.key)
-            return ids.compactMap { state.pending.removeValue(forKey: $0) }
+            return (ids.compactMap { state.pending.removeValue(forKey: $0) }, attached.isEnding)
         }
-        guard let orphaned else { return }
-        Log.claudeContext.info("Mod channel detached")
+        guard let detached else { return false }
+        let (orphaned, ended) = detached
+        Log.claudeContext.info("Mod channel detached ended=\(ended, privacy: .public)")
         #if DEBUG
         debugAttachHook.withLock { $0 }?(false)
         #endif
         for pending in orphaned {
             pending.timer?.cancel()
-            pending.continuation.resume(returning: nil)
+            pending.continuation.resume(returning: .unanswered)
         }
+        return ended
+    }
+
+    /// The mod's `bye` (#1646): marks the session's channel as ending, tells
+    /// the mod with a `bye` message, and closes the channel, whose detach
+    /// then ends the session. A session with no channel is left alone: a
+    /// bye only ends what an attach proved.
+    ///
+    /// - Returns: whether a channel was attached.
+    @discardableResult
+    package func bye(sessionID: String) -> Bool {
+        let channel: Channel? = state.withLock { state in
+            guard state.channels[sessionID] != nil else { return nil }
+            state.channels[sessionID]?.isEnding = true
+            return state.channels[sessionID]?.channel
+        }
+        guard let channel else {
+            Log.claudeContext.info("Mod channel: a bye for a session with no channel; nothing ended")
+            return false
+        }
+        Log.claudeContext.info("Mod channel: the mod said bye; closing")
+        var message = ClaudeModChannelWire.Message(kind: .bye)
+        message.id = makeID()
+        if let line = ClaudeModChannelWire.encodeLine(message) {
+            _ = channel.write(line)
+        }
+        channel.close()
+        return true
     }
 
     /// Hands a reply to the request it answers. A reply that names another
@@ -184,8 +315,13 @@ public final class ClaudeModChannelHub: Sendable {
             Log.claudeContext.error("Mod channel: dropped a reply no request is waiting for")
             return
         }
+        if !reply.ok, reply.reason == ClaudeModChannelWire.Reply.sessionChangedReason {
+            Log.backends.error(
+                "Mod channel: the mod refused a request because its process moved to another session (/clear or resume)"
+            )
+        }
         pending.timer?.cancel()
-        pending.continuation.resume(returning: reply)
+        pending.continuation.resume(returning: .replied(reply))
     }
 
     /// Closes every channel; the broker calls it on stop.
@@ -195,7 +331,7 @@ public final class ClaudeModChannelHub: Sendable {
     }
 
     /// Resumes `id` once. False when something else already did.
-    private func resume(id: String, with reply: ClaudeModChannelWire.Reply?) -> Bool {
+    private func resume(id: String, with reply: Exchange) -> Bool {
         guard let pending = state.withLock({ $0.pending.removeValue(forKey: id) }) else { return false }
         pending.timer?.cancel()
         pending.continuation.resume(returning: reply)

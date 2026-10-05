@@ -57,9 +57,8 @@ final class AudioCaptureHealthMonitorUnplugTests: XCTestCase {
         )
 
         monitor.stop()
-        XCTAssertEqual(clock.pendingSleepers, 0)
+        XCTAssertEqual(clock.pendingSleepers, 0, "no timer left to wake")
         clock.advance(by: 60)
-        await Task.yield()
 
         XCTAssertEqual(state.restartedInputs, ["usb-mic"])
     }

@@ -50,6 +50,7 @@ final class SettingsStore {
         // Legacy global backend mode. Read only for one-time migration.
         static let backendMode = "settings.backend_mode"
         static let onboardingCompleted = "settings.onboarding_completed"
+        static let onboardingPolishingBeforeMistralChoice = "settings.onboarding_polishing_before_mistral_choice"
         static let opensWindowAtLaunch = "settings.opens_window_at_launch"
         static let dictationOutputMode = "settings.dictation_output_mode"
         static let dictationShortcutMode = "settings.dictation_shortcut_mode"
@@ -57,6 +58,7 @@ final class SettingsStore {
         static let overlaySpokenSendEnabled = "settings.overlay_spoken_send_enabled"
         static let liveSpokenSendEnabled = "settings.live_spoken_send_enabled"
         static let spokenSendTriggerPhrases = "settings.spoken_send_trigger_phrases"
+        static let spokenAbortPhrases = "settings.spoken_abort_phrases"
         static let spokenStopWait = "settings.spoken_stop_wait_ms"
         static let audioDuckingEnabled = "settings.audio_ducking_enabled"
         static let audioDuckingFadeDuration = "settings.audio_ducking_fade_duration"
@@ -96,6 +98,7 @@ final class SettingsStore {
         static let clipboardPayloadMacroEnabled = "settings.clipboard_payload_macro_enabled"
         static let terminalScreenContextEnabled = "settings.terminal_screen_context_enabled"
         static let repoVocabularyEnabled = "settings.repo_vocabulary_enabled"
+        static let mistralStopSecondPassEnabled = "settings.mistral_stop_second_pass_enabled"
         static let claudeRepoContextEnabled = "settings.claude_repo_context_enabled"
         static let cmuxSurfaceJoinEnabled = "settings.cmux_surface_join_enabled"
         static let polishContextTrustedEndpointEnabled =
@@ -191,6 +194,10 @@ final class SettingsStore {
     /// this property exists to prevent.
     var secretStoreFailureSummary: String?
 
+    /// Keys whose latest write the store refused: the value lives in this
+    /// process only and is gone at the next launch.
+    var unsavedSecretKeys: Set<SecretKey> = []
+
     static let defaultDictationShortcut = DictationShortcut(
         keyCode: UInt32(kVK_Space),
         carbonModifierFlags: UInt32(optionKey)
@@ -236,6 +243,28 @@ final class SettingsStore {
     /// The General settings pane's "Re-run setup…" resets it to false.
     var onboardingCompleted: Bool {
         didSet { defaults.set(onboardingCompleted, forKey: Keys.onboardingCompleted) }
+    }
+
+    /// Polishing as it stood before an unfinished setup wizard's Mistral
+    /// choice turned hosted polishing on. Stored, not held by the wizard, so a
+    /// force-quit before the wizard closes still lets the next launch's
+    /// wizard put it back (#1761). Cleared when onboarding completes.
+    var onboardingPolishingBeforeMistralChoice: PolishingSnapshot? {
+        didSet {
+            if let snapshot = onboardingPolishingBeforeMistralChoice {
+                defaults.set(
+                    ["mode": snapshot.mode.rawValue, "enabled": snapshot.enabled],
+                    forKey: Keys.onboardingPolishingBeforeMistralChoice
+                )
+            } else {
+                defaults.removeObject(forKey: Keys.onboardingPolishingBeforeMistralChoice)
+            }
+        }
+    }
+
+    struct PolishingSnapshot: Equatable {
+        let mode: BackendMode
+        let enabled: Bool
     }
 
     /// Whether a finished launch opens the localvoxtral window on History.
@@ -301,11 +330,15 @@ final class SettingsStore {
 
     /// Stores `line` for `projectKey`, cut to what the router reads; a blank
     /// line removes it. Kept untrimmed, since it is stored as the user types
-    /// (a trailing space is the next word's); the router trims it.
+    /// (a trailing space is the next word's); the router trims it. Applied to
+    /// the dictionary saved now, which another running copy may have changed
+    /// since this one read it (#1773).
     func setQuickCaptureProjectLine(_ line: String, for projectKey: String) {
         let cut = String(line.prefix(QuickCaptureProjects.maxUserLineCharacters))
-        quickCaptureProjectLines[projectKey] =
-            cut.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : cut
+        var lines = defaults.dictionary(forKey: Keys.quickCaptureProjectLines) as? [String: String]
+            ?? quickCaptureProjectLines
+        lines[projectKey] = cut.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : cut
+        quickCaptureProjectLines = lines
     }
 
     /// Hosted transcription model. Empty means
@@ -350,6 +383,13 @@ final class SettingsStore {
     /// loads as the default.
     var spokenSendTriggerPhrases: [String] {
         didSet { defaults.set(spokenSendTriggerPhrases, forKey: Keys.spokenSendTriggerPhrases) }
+    }
+
+    /// The phrases that, said alone, end the joined Claude Code session's
+    /// running turn (#1696). Empty, and so off, unless the user set some;
+    /// only a list `SpokenAbortPhrases` accepted is ever assigned.
+    var spokenAbortPhrases: [String] {
+        didSet { defaults.set(spokenAbortPhrases, forKey: Keys.spokenAbortPhrases) }
     }
 
     /// How long an Overlay Buffer dictation that ends in a send phrase waits
@@ -512,9 +552,23 @@ final class SettingsStore {
     /// The user's global terms, correct spelling only (`SpeakerTerms`).
     /// An ABSENT key means "never set", which is what lets the one-time import
     /// from the replacement dictionary tell a new install from an emptied list.
+    /// A change merges into the saved list, which another running copy may
+    /// have changed since (#1575).
     var polishSpeakerTerms: [String] {
         didSet {
-            defaults.set(polishSpeakerTerms, forKey: Keys.polishSpeakerTerms)
+            var terms = polishSpeakerTerms
+            if let saved = defaults.stringArray(forKey: Keys.polishSpeakerTerms) {
+                // Capped and deduplicated as a launch reads it, or the next
+                // launch's shorter base takes the overflow for another copy's.
+                // At the cap, this copy's addition goes, not a saved term.
+                terms = SpeakerTerms.sanitized(
+                    ListSettingMerge.merge(base: oldValue, ours: terms, saved: saved),
+                    keeping: saved)
+            }
+            // Saved first: the assignment below re-enters this observer
+            // (`@Observable`), which must find the merge already saved.
+            defaults.set(terms, forKey: Keys.polishSpeakerTerms)
+            if terms != polishSpeakerTerms { polishSpeakerTerms = terms }
             // A term the user adds by hand is no longer a refusal.
             let added = Set(polishSpeakerTerms.map(SpeakerTermSuggestions.key))
             if polishDismissedTermSuggestions.contains(where: {
@@ -529,10 +583,17 @@ final class SettingsStore {
 
     /// Suggested terms the user refused, oldest first. Never expires; only
     /// adding the term by hand or "Forget dismissed suggestions" removes one.
+    /// Merged into the saved list like `polishSpeakerTerms`.
     var polishDismissedTermSuggestions: [String] {
         didSet {
-            defaults.set(
-                polishDismissedTermSuggestions, forKey: Keys.polishDismissedTermSuggestions)
+            var dismissed = polishDismissedTermSuggestions
+            if let saved = defaults.stringArray(forKey: Keys.polishDismissedTermSuggestions) {
+                dismissed = Array(
+                    ListSettingMerge.merge(base: oldValue, ours: dismissed, saved: saved)
+                        .suffix(SpeakerTermSuggestions.maxDismissed))
+            }
+            defaults.set(dismissed, forKey: Keys.polishDismissedTermSuggestions)
+            if dismissed != polishDismissedTermSuggestions { polishDismissedTermSuggestions = dismissed }
         }
     }
 
@@ -564,6 +625,33 @@ final class SettingsStore {
     var dictationHistoryRetention: DictationHistoryRetention {
         didSet {
             defaults.set(dictationHistoryRetention.rawValue, forKey: Keys.dictationHistoryRetention)
+        }
+    }
+
+    /// The History storage settings as saved now: retention, audio and
+    /// diagnostic records, which another running copy may have changed
+    /// since this one launched. What deletes by them reads them here, or a
+    /// copy still holding Don't keep or a switch off deletes what the other
+    /// copy keeps (#1569). Returns the retention.
+    func reloadHistoryStorageSettings() -> DictationHistoryRetention {
+        let saved = defaults.string(forKey: Keys.dictationHistoryRetention)
+            .flatMap(DictationHistoryRetention.init(rawValue:)) ?? .forever
+        if saved != dictationHistoryRetention { dictationHistoryRetention = saved }
+        let audio = Self.loadBool(defaults: defaults, key: Keys.dictationAudioEnabled, fallback: false)
+        if audio != dictationAudioEnabled { dictationAudioEnabled = audio }
+        let records = Self.loadBool(defaults: defaults, key: Keys.diagnosticRecordsEnabled, fallback: true)
+        if records != diagnosticRecordsEnabled { diagnosticRecordsEnabled = records }
+        return saved
+    }
+
+    /// Transcribe each Overlay Buffer dictation on the Mistral API engine a
+    /// second time on stop (#317). On by default: it is the only thing that
+    /// recovers speech lost in a stream stall (symptom D in
+    /// docs/agent/mistral-realtime-stall.md), at half the realtime price
+    /// again (#1678).
+    var mistralStopSecondPassEnabled: Bool {
+        didSet {
+            defaults.set(mistralStopSecondPassEnabled, forKey: Keys.mistralStopSecondPassEnabled)
         }
     }
 
@@ -1127,14 +1215,18 @@ final class SettingsStore {
 
         opensWindowAtLaunch = Self.loadBool(
             defaults: defaults, key: Keys.opensWindowAtLaunch, fallback: false)
+        onboardingPolishingBeforeMistralChoice = Self.loadPolishingSnapshot(
+            defaults: defaults, key: Keys.onboardingPolishingBeforeMistralChoice)
         autoCopyEnabled = Self.loadBool(
             defaults: defaults, key: Keys.autoCopyEnabled, fallback: false)
         overlaySpokenSendEnabled = Self.loadBool(
             defaults: defaults, key: Keys.overlaySpokenSendEnabled, fallback: false)
         liveSpokenSendEnabled = Self.loadBool(
             defaults: defaults, key: Keys.liveSpokenSendEnabled, fallback: false)
-        spokenSendTriggerPhrases = SendTriggerPhrases.loaded(
-            defaults.stringArray(forKey: Keys.spokenSendTriggerPhrases))
+        let sendPhrases = SendTriggerPhrases.loaded(defaults.stringArray(forKey: Keys.spokenSendTriggerPhrases))
+        spokenSendTriggerPhrases = sendPhrases
+        spokenAbortPhrases = SpokenAbortPhrases.loaded(
+            defaults.stringArray(forKey: Keys.spokenAbortPhrases), sendPhrases: sendPhrases)
         spokenStopWait =
             (defaults.object(forKey: Keys.spokenStopWait) as? Int)
             .flatMap(SpokenStopWait.init(rawValue:)) ?? .default
@@ -1239,6 +1331,8 @@ final class SettingsStore {
             defaults: defaults, key: Keys.terminalScreenContextEnabled, fallback: false)
         repoVocabularyEnabled = Self.loadBool(
             defaults: defaults, key: Keys.repoVocabularyEnabled, fallback: false)
+        mistralStopSecondPassEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.mistralStopSecondPassEnabled, fallback: true)
         claudeRepoContextEnabled = Self.loadBool(
             defaults: defaults, key: Keys.claudeRepoContextEnabled, fallback: false)
         cmuxSurfaceJoinEnabled = Self.loadBool(
@@ -1404,6 +1498,15 @@ final class SettingsStore {
         defaults.string(forKey: key)
             ?? environment[envKey]
             ?? fallback
+    }
+
+    private static func loadPolishingSnapshot(defaults: UserDefaults, key: String) -> PolishingSnapshot? {
+        guard let stored = defaults.dictionary(forKey: key),
+              let rawMode = stored["mode"] as? String,
+              let mode = BackendMode(rawValue: rawMode),
+              let enabled = stored["enabled"] as? Bool
+        else { return nil }
+        return PolishingSnapshot(mode: mode, enabled: enabled)
     }
 
     private static func loadBool(

@@ -1203,6 +1203,12 @@ case "$CMD" in
     # stale marker behind (locally or in the remote work dir).
     trap 'cleanup_transient_marker "$EVAL_MARKER"' EXIT
     if [[ "$EVAL_MODEL" == mistral/* ]]; then
+      # The key below comes from this shell, not from the caller's endpoint,
+      # so it goes nowhere but Mistral's API (#1622).
+      if [[ ! "$EVAL_ENDPOINT" =~ ^https://api\.mistral\.ai(/[^@]*)?$ ]]; then
+        echo "eval-llm: a mistral/ model sends its key only to https://api.mistral.ai, not $EVAL_ENDPOINT" >&2
+        exit 1
+      fi
       # Mistral rejects unknown body fields, so the app sends a different
       # request shape entirely (no top_k/min_p/chat_template_kwargs/
       # thinking_budget_tokens, reasoning_effort per model). The key is a secret:

@@ -130,6 +130,11 @@ nothing.
 The name has one to four words, and sessions answer to it the way they do
 for "go to". What happens next depends on the session:
 
+- **A Claude Code session on this Mac with the localvoxtral mod**, outside
+  Claude Desktop, gets the text and sends it without coming forward and
+  without a key press. If its mod can't take the text (a dialog is open, or
+  the prompt box holds a paste or a slash command), the session is handled
+  as one without the mod, below.
 - **A Ghostty, iTerm2 or Terminal.app tab** comes forward and gets the text.
   Enter is pressed only if that pane is still the one in front.
 - **An opencode session, or a session in a
@@ -145,3 +150,18 @@ in History.
 When a delivery fails, nothing reaches the app you are in. The text stays in
 History, and the popover says whether it was typed without Enter.
 
+
+## Stop Claude Code by voice
+
+Add your phrases under **Settings → Dictation → Output → Phrases that stop
+Claude Code**, for example "stop claude". The list is empty by default, so
+nothing is stopped until you add one.
+
+In Overlay Buffer, a dictation that is only one of those phrases ends the
+running turn of the Claude Code session it joined, as Escape would, but
+without a key, so the session's pane need not be in front. Nothing is typed
+and nothing goes to History. The dictation stops on its own after the
+**Wait before pressing Return** pause, like a send phrase.
+
+It needs the localvoxtral mod in that session. Without it, or with no turn
+running, nothing is stopped and the menu bar popover says so.

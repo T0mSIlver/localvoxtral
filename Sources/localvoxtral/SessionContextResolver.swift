@@ -27,6 +27,9 @@ final class SessionContextResolver {
     /// `AppDelegate` once the broker is actually listening, and nil otherwise,
     /// so a build where broker startup failed simply never joins.
     var claudeSessionJoinResolver: ClaudeSessionJoinResolver?
+    /// The channels Claude Code sessions' mods hold open (#1408). Nil while
+    /// the broker is down; a commit then inserts as it always did.
+    var claudeModChannels: ClaudeModChannelHub?
 
     /// THE session join for the current dictation, resolved once at start.
     /// Read by three consumers (raw screen attachment, the session block,
@@ -243,10 +246,48 @@ final class SessionContextResolver {
         }
     }
 
+    /// A Live Auto-Paste dictation into a local Claude Code session whose
+    /// mod is attached and takes appends (#1645): the deltas go to its
+    /// prompt box with no key. A tty, herdr or cmux join names the session;
+    /// with no context join, the focused pane's own session, asked of the
+    /// local arms only. Asked only while some mod is attached.
+    private func resolveClaudeModRoute() async -> ClaudeModPromptRoute? {
+        guard let hub = claudeModChannels, hub.hasAttachedChannels,
+              let resolver = claudeSessionJoinResolver
+        else { return nil }
+        let start = TerminalScreenContextSource.frontmostTarget()
+        let sessionID: String
+        if let join = claudeSessionJoin {
+            guard ClaudePromptDraft.fillsPrompt(through: join) else { return nil }
+            sessionID = join.snapshot.sessionID
+        } else {
+            guard !contextJoinAskedTheArms, let start,
+                  TerminalScreenAllowlist.isSupported(start.bundleID),
+                  let shown = await resolver.sessionShown(target: start),
+                  let snapshot = resolver.registry.snapshot(sessionID: shown),
+                  snapshot.agent == .claude, snapshot.origin.isLocalAuthenticated
+            else { return nil }
+            sessionID = shown
+        }
+        let startPID = start?.pid
+        return await ClaudeModPromptRoute.opened(hub: hub, sessionID: sessionID, keysReachThePrompt: { @MainActor in
+            // The terminal the dictation started in, still frontmost, its
+            // focused pane still this session, and keys not swallowed.
+            guard !TerminalTargetDetector.isSecureKeyboardEntryEnabled(),
+                  let target = TerminalScreenContextSource.frontmostTarget(), target.pid == startPID,
+                  await resolver.shows(sessionID, target: target)
+            else { return false }
+            return TerminalScreenContextSource.frontmostTarget()?.pid == startPID
+        })
+    }
+
     /// This dictation's route into the joined agent, if any. Runs after the
     /// join. Stores nothing once `isCurrent` says the start was replaced.
-    func resolveAgentPromptRoute(isCurrent: @MainActor () -> Bool = { true }) async {
-        var route: (any AgentPromptRoute)? = await resolveOpencodePromptRoute()
+    /// The Claude Code mod's route serves Live Auto-Paste only: an Overlay
+    /// Buffer commit fills through the mod on its own (#1409).
+    func resolveAgentPromptRoute(liveAutoPaste: Bool = false, isCurrent: @MainActor () -> Bool = { true }) async {
+        var route: (any AgentPromptRoute)? = liveAutoPaste ? await resolveClaudeModRoute() : nil
+        if route == nil { route = await resolveOpencodePromptRoute() }
         if route == nil { route = await resolveHerdrPaneRoute() }
         if route == nil { route = await resolveCmuxSurfaceRoute() }
         guard isCurrent() else { return }
@@ -515,6 +556,19 @@ final class SessionContextResolver {
         )
     }
 
+    /// Whether the stop's join still stands: no join, or one the resolver
+    /// still finds live. Asked again after the stop's last await (#1600): a
+    /// revoked host's sessions leave the registry, and the context gathered
+    /// from them must leave the request too.
+    func claudeJoinStillLive(_ join: ClaudeSessionJoin?) -> Bool {
+        guard let join else { return true }
+        guard let resolver = claudeSessionJoinResolver, resolver.isStillLive(join) else {
+            Log.claudeContext.info("Claude context withdrawn at stop: session no longer live")
+            return false
+        }
+        return true
+    }
+
     /// The Claude session block's text, re-gated at commit exactly like
     /// `claudeRepoSnapshotIfEnabled` — current setting, currently permitted
     /// endpoint, this exact join still live.
@@ -537,7 +591,11 @@ final class SessionContextResolver {
     /// preparation, which withholds the GROUNDING as well as the rendered
     /// block — a gate that suppressed only the excerpt would still let the
     /// prior prompt's words reach the model as replacement entries.
-    func claudeSessionTextIfEnabled(join: ClaudeSessionJoin?, endpointURL: URL) -> String {
+    func claudeSessionTextIfEnabled(
+        join: ClaudeSessionJoin?,
+        endpointURL: URL,
+        draft: ClaudePromptDraft? = nil
+    ) -> String {
         guard settings.claudeRepoContextEnabled else { return "" }
         guard PolishContextClipboardReader.isPermittedContextEndpoint(
             endpointURL,
@@ -553,7 +611,20 @@ final class SessionContextResolver {
             Log.claudeContext.info("Claude session context skipped: session no longer live")
             return ""
         }
-        return ClaudeSessionContextText.text(for: join.snapshot)
+        return ClaudeSessionContextText.text(for: join.snapshot, draft: draft)
+    }
+
+    /// The joined session's prompt box, from its mod, or nil: no join, a
+    /// join this Mac cannot ask (`ClaudePromptDraft.isReadable`), a session
+    /// gone since the start, no mod, or no answer in time. Read whatever the
+    /// context settings say, since the commit's leading space uses it on
+    /// this Mac; only `claudeSessionTextIfEnabled` lets it reach polish.
+    func promptDraft(for join: ClaudeSessionJoin?) async -> ClaudePromptDraft? {
+        guard let join, ClaudePromptDraft.isReadable(through: join),
+              let hub = claudeModChannels,
+              let resolver = claudeSessionJoinResolver, resolver.isStillLive(join)
+        else { return nil }
+        return await hub.promptDraft(of: join.snapshot.sessionID, timeout: ClaudePromptDraft.readTimeout)
     }
 }
 

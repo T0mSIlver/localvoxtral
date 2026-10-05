@@ -139,7 +139,8 @@ extension DictationSessionController {
     }
 
     /// Stop: the session finishes once every go-to and the segments behind
-    /// them are done, with the audio recorded up to the stop. The wait counts
+    /// them are done, and text waiting behind a code-fence paste is pasted
+    /// (#1664), with the audio recorded up to the stop. The wait counts
     /// as finalizing on every stop path, so a new dictation takes the
     /// recovery that cancels it, and the transcript goes to History as not
     /// inserted.
@@ -147,7 +148,11 @@ extension DictationSessionController {
         sessionMode: DictationOutputMode,
         finish: @escaping @MainActor (_ sessionAudio: Data?) -> Void
     ) -> Bool {
-        guard liveGoToTask != nil else { return false }
+        // The hold-back's tail first: released behind a paste, it waits too.
+        if liveGoToTask == nil, !wasCancelled {
+            textInsertion.flushFinalLiveReplacementCorrections()
+        }
+        guard liveGoToTask != nil || (!wasCancelled && textInsertion.pendingTextWaitsOnPaste) else { return false }
         isFinalizingStop = true
         statusText = StatusStrings.finalizing
         let sessionAudio = audio.sessionRecording.finish()
@@ -156,6 +161,9 @@ extension DictationSessionController {
         let provider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
         let model = sessionModelName ?? settings.effectiveModelName
         let join = context.claudeSessionJoin.map(AgentCLIJoin.init)
+        // The session's mod route, if any, settles after the go-to and
+        // before the record (#1645).
+        let modSink = unsettledModRouteSink
         saveInterruptedPolishCommit = { [weak self] in
             guard let self else { return }
             self.saveSessionRecord(
@@ -179,6 +187,17 @@ extension DictationSessionController {
             while let goTo = self?.liveGoToTask {
                 await goTo.value
                 guard !Task.isCancelled else { return }
+            }
+            if self?.wasCancelled == false {
+                self?.textInsertion.flushFinalLiveReplacementCorrections()
+            }
+            while let insertion = self?.textInsertion, self?.wasCancelled == false,
+                  insertion.pendingTextWaitsOnPaste {
+                await insertion.pastesSettled()
+                guard !Task.isCancelled else { return }
+            }
+            if let modSink {
+                await self?.settleModRoute(modSink)
             }
             guard let self, !Task.isCancelled else { return }
             self.saveInterruptedPolishCommit = nil
@@ -229,6 +248,8 @@ extension DictationSessionController {
             return
         }
         liveGoToTask = Task { @MainActor [weak self] in
+            // Assigned before this body runs.
+            let task = self?.liveGoToTask
             let resolution = await navigator.resolve(spokenName: spokenName)
             guard let self, !Task.isCancelled else { return }
             switch resolution {
@@ -242,6 +263,15 @@ extension DictationSessionController {
                 // What the terminal hold-back still keeps belongs to the pane
                 // it was dictated into, not to the one coming forward.
                 self.textInsertion.flushFinalLiveReplacementCorrections()
+                // A release that failed (insertion refused mid-dictation)
+                // would be retried into the pane coming forward (#1663).
+                if self.textInsertion.hasPendingInsertionText {
+                    let undelivered = self.textInsertion.drainPendingInsertionText()
+                    Log.dictation.notice(
+                        "live go to session: \(undelivered.count, privacy: .public) chars not delivered before the focus; kept, not typed"
+                    )
+                    self.lastError = self.keepUndeliveredAgentText(undelivered)
+                }
                 let outcome = await navigator.focuser.focusPane(of: session)
                 guard !Task.isCancelled else { return }
                 Log.dictation.notice("live go to session: \(String(describing: outcome), privacy: .public)")
@@ -249,10 +279,10 @@ extension DictationSessionController {
                 case .focused:
                     // The relay writes into the pane the dictation started
                     // in; from here on the words go where the user went.
-                    self.textInsertion.endPromptRelay()
+                    self.textInsertion.retirePromptRelay()
                     self.liveGoToLanding = .verified(sessionID: session.sessionID)
                 case .unverified:
-                    self.textInsertion.endPromptRelay()
+                    self.textInsertion.retirePromptRelay()
                     self.liveGoToLanding = .unverified
                 case .paneNotFound, .unsupported:
                     break
@@ -261,6 +291,10 @@ extension DictationSessionController {
                     self.statusText = status
                 }
             }
+            // A name that resolved to nothing was delivered as a spoken send,
+            // which may have started its own pane read-back: that task holds
+            // the queue now and drains it when it is done.
+            guard self.liveGoToTask == task else { return }
             self.liveGoToTask = nil
             self.drainLiveGoToQueue()
         }

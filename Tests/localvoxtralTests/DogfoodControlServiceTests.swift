@@ -271,6 +271,10 @@ final class DogfoodControlServiceTests: XCTestCase {
             return XCTFail("the cap must be armed before its window expires")
         }
         await sleeps.waitForEntries(1)
+        Task {
+            await cap.value
+            sleeps.note()
+        }
         sleeps.releaseOne()
         await sleeps.waitForEntries(2, orUntil: { !service.isAutoStopArmed })
         XCTAssertTrue(service.isAutoStopArmed, "the prompt is still up, so the cap must not disarm")
@@ -732,6 +736,7 @@ final class DogfoodControlServiceTests: XCTestCase {
 private final class ParkedCapSleeps {
     private var parked: [CheckedContinuation<Void, Never>] = []
     private(set) var entries = 0
+    private let events = EventCount()
 
     nonisolated var sleep: DogfoodControlService.SleepClosure {
         { [self] _ in await self.park() }
@@ -739,6 +744,7 @@ private final class ParkedCapSleeps {
 
     private func park() async {
         entries += 1
+        events.increment()
         await withCheckedContinuation { parked.append($0) }
     }
 
@@ -747,13 +753,17 @@ private final class ParkedCapSleeps {
         parked.removeFirst().resume()
     }
 
-    /// Returns once `count` sleeps were entered, or once `gaveUp` holds.
+    /// Counts an event that can make `gaveUp` hold, such as the cap ending.
+    func note() { events.increment() }
+
+    /// Returns once `count` sleeps were entered, or once `gaveUp` holds,
+    /// re-checking after each sleep entered and each `note()`.
     func waitForEntries(_ count: Int, orUntil gaveUp: @MainActor () -> Bool = { false }) async {
-        for _ in 0..<1_000 {
-            if entries >= count || gaveUp() { return }
-            await Task.yield()
+        while entries < count, !gaveUp() {
+            let seen = events.value
+            await events.waitFor(seen + 1)
+            if events.value == seen { return XCTFail("the cap never went back to sleep") }
         }
-        XCTFail("the cap never went back to sleep")
     }
 }
 

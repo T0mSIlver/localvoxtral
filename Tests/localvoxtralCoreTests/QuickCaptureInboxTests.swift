@@ -108,8 +108,10 @@ final class QuickCaptureInboxTests: XCTestCase {
         let id = try XCTUnwrap(model.items.first?.id)
         model.setTitle("Dark theme", for: id)
         await model.file(id)?.value
+        let claim = try XCTUnwrap(model.items.first?.filingClaim?.id)
         XCTAssertEqual(github.created.withLock { $0 }, [[
-            "o/reach", "Dark theme", "## Scope\nAll pages.\n\nDictated:\n\n> Add a dark mode",
+            "o/reach", "Dark theme",
+            "## Scope\nAll pages.\n\nDictated:\n\n> Add a dark mode\n\n" + QuickCaptureFiling.marker(claim: claim),
         ]])
         XCTAssertEqual(model.items.first?.state, .filed)
         XCTAssertEqual(model.items.first?.filedURL, "https://github.com/o/reach/issues/9")
@@ -187,6 +189,235 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.first?.state, .filed)
     }
 
+    /// The issue was created but its URL never reached the file before the
+    /// app quit (#1509): the relaunch does not file it again.
+    func testSuccessfulFilingWithFailedResultSaveDoesNotSendAgainAfterRelaunch() async throws {
+        struct DiskFull: Error {}
+        let failing = Mutex(false)
+        let filing = ManualSleeper()
+        github.createGate = filing
+        let quitting = QuickCaptureFixture.model(
+            fileURL: fileURL, answer: ["reach": 0.9], github: github, runner: runner, processID: 1,
+            write: { data, url in
+                if failing.withLock({ $0 }) { throw DiskFull() }
+                try PrivateFile.write(data, to: url)
+            })
+        await quitting.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(quitting.items.first?.id)
+        let first = try XCTUnwrap(quitting.file(id))
+        await filing.waitForSleepers(1)
+        failing.withLock { $0 = true }
+        github.createGate = nil
+        filing.wakeAll()
+        await first.value
+        XCTAssertTrue(quitting.hasUnsavedChanges)
+
+        let relaunched = QuickCaptureFixture.model(
+            fileURL: fileURL, answer: ["reach": 0.9], github: github, runner: runner, processID: 2,
+            isProcessRunning: { $0 != 1 })
+        await relaunched.file(id)?.value
+        await relaunched.reconcileInterruptedFilings().value
+
+        XCTAssertEqual(github.created.withLock { $0.count }, 1)
+        XCTAssertEqual(relaunched.items.first?.state, .filed)
+        XCTAssertEqual(relaunched.items.first?.filedURL, "https://github.com/o/reach/issues/9")
+        XCTAssertEqual(QuickCaptureInboxFile.decode(try Data(contentsOf: fileURL)).value?.items.first?.state, .filed)
+    }
+
+    /// A filing claimed by a copy that quit, as the file has it (#1509).
+    private func seedInterruptedFiling(at: Date? = Date(timeIntervalSince1970: 1_000_000), commentOn: Int? = nil) throws -> QuickCaptureItem {
+        var item = QuickCaptureItem(capturedAt: Date(timeIntervalSince1970: 1_000_000), text: "Add a dark mode")
+        item.state = .filing
+        item.projectKey = "/w/reach"
+        item.projectName = "reach"
+        item.repository = "o/reach"
+        item.kind = .issue
+        item.title = "Dark mode"
+        item.body = "## Scope"
+        if let commentOn {
+            item.relation = .extends
+            item.relatedIssue = commentOn
+        }
+        item.filingClaim = QuickCaptureItem.FilingClaim(
+            processID: 1, launch: UUID(), at: at, commentOn: commentOn, repository: at == nil ? nil : "o/reach")
+        try QuickCaptureInboxFile.save(QuickCaptureInbox(items: [item]), to: fileURL)
+        return item
+    }
+
+    private func relaunch() -> QuickCaptureInboxModel {
+        QuickCaptureFixture.model(
+            fileURL: fileURL, answer: ["reach": 0.9], github: github, runner: runner, processID: 2,
+            isProcessRunning: { $0 != 1 })
+    }
+
+    /// The copy quit before `gh` sent anything: GitHub has no issue with
+    /// the claim's marker, so the capture can be filed (#1509).
+    func testAnInterruptedFilingThatNeverReachedGitHubCanBeFiledAgain() async throws {
+        let seeded = try seedInterruptedFiling()
+        let relaunched = relaunch()
+        XCTAssertNil(relaunched.file(seeded.id), "not before GitHub was asked")
+
+        await relaunched.reconcileInterruptedFilings().value
+        XCTAssertEqual(
+            github.lookups.withLock { $0 },
+            [["o/reach", "", QuickCaptureFiling.marker(claim: try XCTUnwrap(seeded.filingClaim?.id))]])
+        XCTAssertEqual(relaunched.items.first?.state, .ready)
+        await relaunched.file(seeded.id)?.value
+
+        XCTAssertEqual(github.created.withLock { $0.count }, 1)
+        XCTAssertEqual(relaunched.items.first?.state, .filed)
+    }
+
+    /// GitHub could not be asked (#1509): nothing is sent until the user
+    /// checks again or sends anyway.
+    func testAnInterruptedFilingGitHubCannotConfirmWaitsForTheUser() async throws {
+        let seeded = try seedInterruptedFiling()
+        github.lookupResult = .unknown
+        let relaunched = relaunch()
+        await relaunched.reconcileInterruptedFilings().value
+        XCTAssertNotNil(relaunched.items.first?.unconfirmedFiling)
+        XCTAssertEqual(relaunched.items.first?.note, QuickCaptureInboxFile.unconfirmedNote)
+        XCTAssertNil(relaunched.file(seeded.id))
+
+        github.lookupResult = nil
+        await relaunched.checkInterruptedFilingAgain(seeded.id)?.value
+        XCTAssertEqual(relaunched.items.first?.state, .ready)
+        XCTAssertNil(relaunched.items.first?.unconfirmedFiling)
+        XCTAssertEqual(github.created.withLock { $0.count }, 0)
+    }
+
+    func testSendAnywaySendsAnUnconfirmedFilingOnce() async throws {
+        let seeded = try seedInterruptedFiling()
+        github.lookupResult = .unknown
+        let relaunched = relaunch()
+        await relaunched.reconcileInterruptedFilings().value
+
+        await relaunched.sendInterruptedFilingAgain(seeded.id)?.value
+
+        XCTAssertEqual(github.created.withLock { $0.count }, 1)
+        XCTAssertEqual(relaunched.items.first?.state, .filed)
+    }
+
+    /// A claim written before the marker (#1509): GitHub cannot be asked,
+    /// so it waits for the user at once.
+    func testAnInterruptedFilingWithoutAMarkerWaitsForTheUser() async throws {
+        let seeded = try seedInterruptedFiling(at: nil)
+        let relaunched = relaunch()
+        await relaunched.reconcileInterruptedFilings().value
+
+        XCTAssertEqual(relaunched.items.first?.state, .ready)
+        XCTAssertNotNil(relaunched.items.first?.unconfirmedFiling)
+        XCTAssertNil(relaunched.checkInterruptedFilingAgain(seeded.id))
+        XCTAssertTrue(github.lookups.withLock { $0.isEmpty })
+
+        // It may have been a comment: nothing is sent, File comes back.
+        XCTAssertNil(relaunched.sendInterruptedFilingAgain(seeded.id))
+        XCTAssertEqual(relaunched.items.first?.canFile, true)
+        XCTAssertEqual(github.created.withLock { $0.count }, 0)
+    }
+
+    /// Moved after its filing went unconfirmed (#1509): Check Again looks
+    /// where the filing was sent, not where the capture files now.
+    func testCheckAgainLooksWhereTheInterruptedFilingWasSent() async throws {
+        let seeded = try seedInterruptedFiling()
+        github.lookupResult = .unknown
+        let relaunched = relaunch()
+        await relaunched.reconcileInterruptedFilings().value
+        await relaunched.move(seeded.id, toProjectKey: "remote:website")?.value
+        XCTAssertNil(relaunched.items.first?.repository)
+
+        await relaunched.checkInterruptedFilingAgain(seeded.id)?.value
+
+        XCTAssertEqual(github.lookups.withLock { $0.map(\.[0]) }, ["o/reach", "o/reach"])
+    }
+
+    /// An interrupted Comment on #N is looked for among that issue's
+    /// comments, and recorded as the comment it posted (#1509).
+    func testAnInterruptedCommentIsFoundByItsMarker() async throws {
+        let seeded = try seedInterruptedFiling(commentOn: 7)
+        let marker = QuickCaptureFiling.marker(claim: try XCTUnwrap(seeded.filingClaim?.id))
+        github.comments.withLock { $0.append(["o/reach", "7", "**Dark mode**\n\n" + marker]) }
+        let relaunched = relaunch()
+
+        await relaunched.reconcileInterruptedFilings().value
+
+        let item = try XCTUnwrap(relaunched.items.first)
+        XCTAssertEqual(item.state, .filed)
+        XCTAssertEqual(item.commentedOn, 7)
+        XCTAssertEqual(item.filedURL, "https://github.com/o/reach/issues/7#issuecomment-1")
+        XCTAssertEqual(github.comments.withLock { $0.count }, 1)
+    }
+
+    /// `gh issue create` timed out after GitHub created the issue (#1541):
+    /// the capture is not fileable again until GitHub is asked, and ends
+    /// filed with the issue GitHub has.
+    func testAFilingWhoseGhTimedOutAfterCreatingTheIssueIsNotSentAgain() async throws {
+        let model = model(answer: ["reach": 0.9])
+        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        github.createResult = .failure(.failed(exitCode: -1))
+        github.createdURL = "https://github.com/o/reach/issues/9"
+
+        await model.file(id)?.value
+        XCTAssertNil(model.file(id))
+
+        XCTAssertEqual(github.created.withLock { $0.count }, 1)
+        XCTAssertEqual(github.lookups.withLock { $0.count }, 1)
+        XCTAssertEqual(model.items.first?.state, .filed)
+        XCTAssertEqual(model.items.first?.filedURL, "https://github.com/o/reach/issues/9")
+    }
+
+    /// The same for Comment on #N, and a lookup GitHub cannot answer waits
+    /// for the user instead of offering Comment again.
+    func testACommentWhoseGhTimedOutIsLookedUpBeforeItCanBeSentAgain() async throws {
+        let item = try seedInterruptedFiling(commentOn: 7)
+        var ready = item
+        ready.state = .ready
+        ready.filingClaim = nil
+        try QuickCaptureInboxFile.save(QuickCaptureInbox(items: [ready]), to: fileURL)
+        let model = model(answer: ["reach": 0.9])
+        github.commentResult = .failure(.failed(exitCode: -1))
+        github.lookupResult = .unknown
+
+        await model.comment(item.id)?.value
+
+        XCTAssertNil(model.comment(item.id))
+        XCTAssertEqual(github.comments.withLock { $0.count }, 1)
+        XCTAssertEqual(model.items.first?.unconfirmedFiling?.commentOn, 7)
+        XCTAssertEqual(model.items.first?.note, QuickCaptureInboxFile.uncertainNote)
+    }
+
+    /// gh missing or not logged in refuses before sending: the capture is
+    /// ready again at once, with nothing looked up.
+    func testAFilingGhRefusedBeforeSendingIsReadyAtOnce() async throws {
+        let model = model(answer: ["reach": 0.9])
+        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        for refusal in [QuickCaptureFiling.Failure.ghNotFound, .failed(exitCode: 4)] {
+            github.createResult = .failure(refusal)
+            await model.file(id)?.value
+            XCTAssertEqual(model.items.first?.state, .ready)
+        }
+        XCTAssertTrue(github.lookups.withLock { $0.isEmpty })
+    }
+
+    func testALookupTrustsOnlyOneURLOfTheExpectedShape() {
+        func lookup(_ output: String, issue: Int? = nil) -> QuickCaptureFiling.Lookup {
+            QuickCaptureFiling.lookup(inOutput: Data(output.utf8), repository: "o/reach", issue: issue)
+        }
+        XCTAssertEqual(lookup(""), .notFound)
+        XCTAssertEqual(lookup("https://github.com/o/reach/issues/12\n"), .found(url: "https://github.com/o/reach/issues/12"))
+        XCTAssertEqual(lookup("https://github.com/o/other/issues/12\n"), .unknown)
+        XCTAssertEqual(lookup("https://github.com/o/reach/issues/12\nhttps://github.com/o/reach/issues/13\n"), .unknown)
+        XCTAssertEqual(
+            lookup("https://github.com/o/reach/issues/7#issuecomment-5\n", issue: 7),
+            .found(url: "https://github.com/o/reach/issues/7#issuecomment-5"))
+        XCTAssertEqual(lookup("https://github.com/o/reach/issues/8#issuecomment-5\n", issue: 7), .unknown)
+        XCTAssertEqual(
+            lookup("https://github.com/O/Reach/issues/7#issuecomment-5\n", issue: 7),
+            .found(url: "https://github.com/O/Reach/issues/7#issuecomment-5"), "GitHub's spelling of the name")
+    }
+
     /// "File it" files the draft the overlay showed (#927), also when
     /// another running copy changed it since (#1288).
     func testFileItDoesNotFileADraftAnotherCopyChanged() async throws {
@@ -221,6 +452,48 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(routed.last, "Filed in o/reach")
         XCTAssertTrue(github.created.withLock { $0.isEmpty }, "the app files nothing itself")
         XCTAssertEqual(model.markFiled(id, url: "https://github.com/o/reach/issues/13"), .failure(.notReady(.filed)))
+    }
+
+    /// File in a copy that has not read another copy's move (#1684): the
+    /// button files the draft this copy shows, never the one the file has
+    /// now in a repository the user did not see.
+    func testFileFromAStaleInboxRefusesACaptureAnotherCopyMoved() async throws {
+        let model = model(answer: ["reach": 0.9])
+        await model.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(model.items.first?.id)
+        var onDisk = try XCTUnwrap(QuickCaptureInboxFile.load(from: fileURL).value)
+        onDisk.update(id) { $0.repository = "o/website" }
+        try PrivateFile.write(QuickCaptureInboxFile.encode(onDisk), to: fileURL)
+
+        await model.file(id)?.value
+
+        XCTAssertTrue(github.created.withLock { $0.isEmpty })
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.first?.repository, "o/website")
+        XCTAssertEqual(QuickCaptureInboxFile.load(from: fileURL).value?.items.first?.state, .ready)
+    }
+
+    /// A copy that still shows the capture ready moves it while another
+    /// copy files it (#1685): the move is refused, so the filed issue and
+    /// the capture's project and repository stay together.
+    func testAStaleCopyCannotMoveAnotherCopysFiling() async throws {
+        let filing = ManualSleeper()
+        let filer = model(answer: ["reach": 0.9])
+        await filer.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let id = try XCTUnwrap(filer.items.first?.id)
+        let stale = model(answer: ["reach": 0.9])
+        github.createGate = filing
+        let sending = try XCTUnwrap(filer.file(id))
+        await filing.waitForSleepers(1)
+
+        await stale.move(id, toProjectKey: "remote:website")?.value
+        filing.wakeAll()
+        await sending.value
+
+        let item = try XCTUnwrap(QuickCaptureInboxFile.load(from: fileURL).value?.items.first)
+        XCTAssertEqual(item.state, .filed)
+        XCTAssertEqual(item.projectKey, "/w/reach")
+        XCTAssertEqual(item.repository, "o/reach")
+        XCTAssertEqual(item.filedURL, "https://github.com/o/reach/issues/9")
     }
 
     /// Another running copy moved the capture to another repository after
@@ -329,7 +602,9 @@ final class QuickCaptureInboxTests: XCTestCase {
         await model.file(id)?.value
         XCTAssertEqual(model.items.first?.state, .ready)
         XCTAssertEqual(model.items.first?.note, "Filing failed. Check that gh is logged in.")
-        XCTAssertEqual(github.created.withLock { $0.first?.last }, "Dictated:\n\n> Update the about page")
+        XCTAssertEqual(
+            github.created.withLock { $0.first?.last }?.hasPrefix("Dictated:\n\n> Update the about page\n\n<!-- localvoxtral-capture "),
+            true)
     }
 
     /// A voice memo's audio is kept under its item's id until the capture is
@@ -437,6 +712,59 @@ final class QuickCaptureInboxTests: XCTestCase {
         XCTAssertEqual(model.items.first?.repository, "me/other", "a typed repository is the user's")
         await model.file(id)?.value
         XCTAssertEqual(github.created.withLock { $0.map(\.first) }, ["them/tool"])
+    }
+
+    /// A project with no GitHub origin files in a repository the user typed.
+    /// Correcting it in Projects retargets the captures that took it, and a
+    /// repository typed for one capture stays (#1683).
+    func testChangingATypedProjectRepositoryRetargetsExistingCaptures() async throws {
+        func notes(filingIn repository: String) -> [QuickCaptureProject] {
+            [QuickCaptureProject(
+                key: "/w/notes", name: "notes", summary: nil, terms: [], userLine: nil,
+                repository: repository, issueRepository: repository)]
+        }
+        let list = ProjectListBox(notes(filingIn: "me/old"))
+        let runner = FakeQuickCaptureCheckRunner([
+            .draft(.init(title: "Verbose flag", body: "b", relation: .none, issue: nil), usage: nil),
+            .draft(.init(title: "Quiet flag", body: "b", relation: .none, issue: nil), usage: nil),
+        ])
+        let model = QuickCaptureFixture.model(
+            fileURL: fileURL, answer: ["notes": 0.95], github: github, runner: runner, currentProjects: { list.value })
+        await model.capture(text: "Add a verbose flag", historyRecordID: nil).value
+        await model.capture(text: "Add a quiet flag", historyRecordID: nil).value
+        let typed = try XCTUnwrap(model.items.first?.id)
+        let id = try XCTUnwrap(model.items.last?.id)
+        XCTAssertEqual(model.items.last?.repository, "me/old")
+        model.setRepository("me/override", for: typed)
+
+        list.value = notes(filingIn: "me/right")
+        model.adoptProjects()
+
+        XCTAssertEqual(model.items.last?.repository, "me/right")
+        XCTAssertEqual(model.items.first?.repository, "me/override", "a repository typed for one capture stays")
+        await model.file(id)?.value
+        XCTAssertEqual(github.created.withLock { $0.map(\.first) }, ["me/right"])
+    }
+
+    /// A capture from an Inbox file written before #1683 says nothing of
+    /// where its repository came from: one that is not the project's own
+    /// or its parent reads as typed for it, and stays.
+    func testACaptureFromAnOlderInboxFileKeepsARepositoryThatIsNotTheProjects() throws {
+        var item = QuickCaptureItem(capturedAt: Date(timeIntervalSince1970: 0), text: "Add a verbose flag")
+        item.state = .ready
+        item.projectKey = "/w/notes"
+        item.repository = "me/old"
+        let encoded = try JSONEncoder().encode(item)
+        let legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertNil(legacy["repositoryIsOwn"], "precondition: the field is absent")
+        let read = try JSONDecoder().decode(QuickCaptureItem.self, from: encoded)
+        let project = QuickCaptureProject(
+            key: "/w/notes", name: "notes", summary: nil, terms: [], userLine: nil,
+            repository: "me/right", issueRepository: "me/right")
+
+        let adopted = QuickCaptureInbox(items: [read]).adopting([project])
+
+        XCTAssertEqual(adopted.items.first?.repository, "me/old")
     }
 
     /// "File issues here" changed while a draft ran: the capture files

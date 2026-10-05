@@ -274,6 +274,15 @@ public final class ClaudeSessionRegistry: Sendable {
             switch record.event {
             case .focusChanged:
                 guard isValidFocusDeclarationLocked(state, record: record, origin: origin) else {
+                    // The TUI now shows a session this registry cannot join
+                    // (one the server half never announced): whatever this
+                    // tty declared before is no longer on screen. Retracted
+                    // under the same gate as a clear, which only widens
+                    // abstention and never touches a Claude TTY claim.
+                    if record.agent == .opencode, origin.isLocalAuthenticated,
+                       let tty = record.process?.tty, !tty.isEmpty {
+                        state.focusByTTY.removeValue(forKey: tty)
+                    }
                     return nil
                 }
                 recordFocusLocked(&state, record: record, now: timestamp)
@@ -876,6 +885,52 @@ public final class ClaudeSessionRegistry: Sendable {
         }
     }
 
+    /// The broker attached `sessionID`'s mod channel (#1646).
+    package func modChannelAttached(sessionID: String, claudePID: Int32, token: UInt64) {
+        let timestamp = now()
+        state.withLock { state in
+            guard state.sessions[sessionID] != nil else { return }
+            state.sessions[sessionID]?.modChannel = ClaudeModChannelLiveness(
+                token: token, claudePID: claudePID, lastSeen: timestamp
+            )
+        }
+    }
+
+    /// A remote session's mod polled on the channel `token` names (#1412): its
+    /// TTL counts from now. A remote pid names another machine's process, so
+    /// polls are the session's liveness there.
+    package func modChannelSeen(sessionID: String, token: UInt64) {
+        let timestamp = now()
+        state.withLock { state in
+            guard let channel = state.sessions[sessionID]?.modChannel, channel.token == token else { return }
+            state.sessions[sessionID]?.modChannel = ClaudeModChannelLiveness(
+                token: token, claudePID: channel.claudePID, lastSeen: timestamp
+            )
+        }
+    }
+
+    /// The channel `token` names detached. After the mod's `bye` the session
+    /// ended and goes now; otherwise its TTL counts from this moment, so a
+    /// reloaded mod finds it still there to attach again.
+    package func modChannelDetached(sessionID: String, token: UInt64, sessionEnded: Bool) {
+        let timestamp = now()
+        let ended: Bool = state.withLock { state in
+            guard let channel = state.sessions[sessionID]?.modChannel, channel.token == token else { return false }
+            if sessionEnded {
+                removeLocked(&state, sessionID: sessionID)
+                schedulePersistenceLocked(state)
+                return true
+            }
+            state.sessions[sessionID]?.modChannel = ClaudeModChannelLiveness(
+                token: nil, claudePID: channel.claudePID, lastSeen: timestamp
+            )
+            return false
+        }
+        if ended {
+            Log.claudeContext.info("Claude session registry: the mod's bye ended a session")
+        }
+    }
+
     public func evict(sessionID: String) {
         state.withLock { state in
             guard state.sessions[sessionID] != nil else { return }
@@ -958,7 +1013,10 @@ public final class ClaudeSessionRegistry: Sendable {
     }
 
     private func isFresh(_ snapshot: ClaudeSessionSnapshot, now: Date) -> Bool {
-        guard now.timeIntervalSince(snapshot.lastActivity) <= ttl(for: snapshot) else { return false }
+        if !hasAttachedModChannel(snapshot) {
+            let lastSeen = max(snapshot.lastActivity, snapshot.modChannel?.lastSeen ?? .distantPast)
+            guard now.timeIntervalSince(lastSeen) <= ttl(for: snapshot) else { return false }
+        }
         // `claudePID`, never `hookPID`. The publisher exits the instant it has
         // written its line, so probing its own pid would report every local
         // session dead microseconds after it was created — the registry would
@@ -980,6 +1038,18 @@ public final class ClaudeSessionRegistry: Sendable {
             return true
         }
         return true
+    }
+
+    /// Whether the session's mod holds its channel open (#1646): a session
+    /// that is alive by definition, so no TTL applies. Only a local session
+    /// whose hooks named the same Claude Code process as the attach: pid
+    /// liveness still applies, and a pidless or mismatched one keeps its TTL.
+    private func hasAttachedModChannel(_ snapshot: ClaudeSessionSnapshot) -> Bool {
+        guard snapshot.origin.isLocalAuthenticated,
+              let channel = snapshot.modChannel, channel.token != nil,
+              let pid = snapshot.process?.claudePID
+        else { return false }
+        return channel.claudePID == pid
     }
 
     private func pruneLocked(_ state: inout State, now: Date) {

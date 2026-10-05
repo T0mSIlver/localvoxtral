@@ -62,11 +62,11 @@ One opt-in feature outside the plugin does spend tokens. With **Ask the
 coding agent for each new project's terms** on, the app runs its own
 read-only, one-shot Claude Code run once per project, never in your session.
 That costs about $0.03 to $0.12, or the same share of a Claude.ai plan's quota
-(see [Terms from your coding agent](../../docs/dictation.md#terms-from-your-coding-agent)).
+(see [Terms from your coding agent](https://t0msilver.github.io/localvoxtral/docs/dictation/#terms-from-your-coding-agent)).
 
 On an enrolled host, the remote plugin runs that one-shot run on the host
 instead, when the Mac asks for a session's project
-([Terms from the coding agent on a host](../../docs/remote-claude-context.md#terms-from-the-coding-agent-on-a-host)).
+([Terms from the coding agent on a host](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/#terms-from-the-coding-agent-on-a-host)).
 
 The remote plugin also ships the `localvoxtral-doctor` skill. Its one-line
 description sits in each session's context on the host; the rest loads only
@@ -74,7 +74,7 @@ when you ask why dictation misbehaves.
 
 The remote plugin also drafts a quick capture routed to one of that host's
 projects. It has the same caps as the Mac's own draft, $0.50 at most
-([Quick capture on a host](../../docs/remote-claude-context.md#quick-capture-on-a-host)).
+([Quick capture on a host](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/#quick-capture-on-a-host)).
 
 ## Which terminal am I dictating into?
 
@@ -167,7 +167,7 @@ OWN Automation grant the first time it is used, under **System Settings →
 Privacy & Security → Automation → localvoxtral**.
 
 The app asks for the grant only while **Settings → Context → Send diff,
-recent files and last prompt** is on, since that is the only feature a
+recent files and prompts** is on, since that is the only feature a
 browser join serves. Firefox is not supported, because it exposes no
 AppleScript access to the focused tab's URL.
 
@@ -410,6 +410,60 @@ Code. It shows the indicator below as its own status line, with no entry in
 ~/.claude/settings.json, beside your own status line. It skips the indicator
 when your settings already show it.
 
+With the mod in a session, an Overlay Buffer dictation joined to that session
+in a terminal goes into Claude Code's prompt box through the mod instead of
+being typed: no key is posted, so Secure Keyboard Entry and a focus change
+cannot drop it. If the mod cannot take the text (a dialog holds the keys, the
+session ended), the app types it as before. A dictation that ends in the
+spoken send word is sent by the mod too, with no Return key: it submits the
+whole prompt box, your typed words included. While Claude is still working,
+the prompt waits for that turn, and the menu bar says so. A box holding a
+paste, an image, an `@` mention or a slash command is still typed and sent
+with Return. Sessions in Claude Desktop or a browser tab are still typed.
+
+"Send that to <name>" uses the same mod when the named session has one: the
+words go into that session's prompt box and are submitted there, without
+bringing its pane forward or pressing a key. If its mod cannot take them,
+the pane comes forward and the words are typed, as for a session without
+the mod.
+
+When an Overlay Buffer dictation into such a session is polished, the app
+also asks the mod what the prompt box already holds, in a terminal or the
+Claude Desktop Code tab. With **Send diff, recent files and prompts** on, polish sees
+that text and knows the dictation continues it; whatever the setting, the
+dictation starts with a space only when the box ends in a word. The text stays
+on your Mac when polishing does, is never logged, and is left out of
+diagnostic records.
+
+While an Overlay Buffer dictation is joined to a session with the mod, that
+session shows it above its prompt: **Listening** and the words so far, then
+**Finishing** while the text is polished, then nothing. The band shows
+wherever the session is drawn, a terminal, the Claude Desktop Code tab or the
+Claude app on a phone.
+
+`/inbox` opens a pane listing this project's quick captures, newest first,
+each with **Open in localvoxtral**, which brings the app's Inbox forward on
+that capture. Editing and filing stay in the app, and the captures' words
+stay in the pane: none reaches the session's prompt. The pane needs the
+`localvoxtral` command (see `docs/coding-agents.md`) or the app in
+/Applications. On a remote host the pane asks the app through the tunnel and
+shows only titles, kinds, states and ages (`docs/remote-claude-context.md`).
+
+While the mod is connected, the app keeps the session joinable however long
+it sits idle, and drops it the moment the session ends or `/clear` starts a
+new one.
+
+With **Tell me when an agent needs you** on, the band also names the other
+Claude Code sessions that wait for your answer, oldest first: "payments waits
+for you". It names sessions only, never what an agent said, and goes once
+none waits.
+
+With **Ask the coding agent for each new project's terms** on, a session with
+the mod answers that question itself when it has had at least three prompts
+and was active in the last four minutes: the app asks the session's own model
+over its transcript, which the prompt cache serves, and no separate run
+starts. A younger or idle session gets the separate run as before.
+
 Mods are early access in Claude Code, and load only where Claude Code enables
 them. Where they do not load, this plugin does nothing and the `localvoxtral`
 plugin keeps working; use the setting below instead. By hand:
@@ -503,13 +557,13 @@ row offers only **Remove**.
 
 **Settings → Claude Code → Tell Claude Code you dictate → Add** puts a short
 note in ~/.claude/CLAUDE.md saying your prompts come from speech-to-text. See
-[Telling the agent you dictate](../../docs/coding-agents.md#telling-the-agent-you-dictate).
+[Telling the agent you dictate](https://t0msilver.github.io/localvoxtral/docs/coding-agents/#telling-the-agent-you-dictate).
 
 ## Teach Claude Code to check dictation
 
 **Settings → Claude Code → Teach Claude Code to check dictation → Add** installs a
 skill in ~/.claude/skills that names `localvoxtral doctor` and `localvoxtral logs`. See
-[Teaching the agent to check dictation](../../docs/coding-agents.md#teaching-the-agent-to-check-dictation).
+[Teaching the agent to check dictation](https://t0msilver.github.io/localvoxtral/docs/coding-agents/#teaching-the-agent-to-check-dictation).
 
 ## Set up a remote host
 
@@ -547,8 +601,8 @@ wrong side fails open silently forever.
 
 The flow stops at the first failure and gives the exact fix. The sheet shows
 no token, command or file contents, only one line per step. Its **Details**
-link opens [Remote Claude Code over SSH](../../docs/remote-claude-context.md),
-whose [Commands the app runs](../../docs/remote-claude-context.md#commands-the-app-runs)
+link opens [Remote Claude Code over SSH](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/),
+whose [Commands the app runs](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/#commands-the-app-runs)
 lists every command.
 
 The consent sentence names every local file and the ssh alias the flow may
@@ -563,9 +617,9 @@ a flag and has no other input path, so the token is in that one command's
 arguments while it runs. Afterwards it sits in the plugin's config under
 ~/.claude, readable by anything running as you there. That holds whether the
 app runs the command or you paste it (see
-[A token](../../docs/remote-claude-context.md#3-a-token)).
+[A token](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/#3-a-token)).
 
-[Remote Claude Code context over SSH](../../docs/remote-claude-context.md) is
+[Remote Claude Code context over SSH](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/) is
 the full reference: what the token authorizes, the per-Mac port, multiplexer
 limits, uninstalling.
 
@@ -662,7 +716,7 @@ The plugin list prints the plugin's stored config. After a rotation that
 holds a token this app no longer knows, and so could not redact.
 
 To run the equivalent commands by hand, see
-[Checking the setup](../../docs/remote-claude-context.md#checking-the-setup).
+[Checking the setup](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/#checking-the-setup).
 
 ### Show the connection indicator on a host
 
@@ -731,7 +785,7 @@ session:
 * sessions you only ever look at through a herdr 0.9 federated view. The link
   herdr holds is not a shell of yours. It may have lost the forward to an
   earlier session that has since ended (first session wins, see
-  [A second session to the same host](../../docs/remote-claude-context.md#a-second-session-to-the-same-host))
+  [A second session to the same host](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/#a-second-session-to-the-same-host))
 
 Those sessions publish hooks like an interactive one, into a tunnel that is
 not there. As always, the failure is silent, and dictation gets no context.
@@ -739,7 +793,7 @@ not there. As always, the failure is silent, and dictation gets no context.
 So each enrolled host's row in Settings has **Keep the tunnel open**. With it
 on, localvoxtral holds that host's forward itself. It runs ssh in batch mode
 with no remote command, forwarding the host's port to 127.0.0.1:8473 on your
-Mac. The [forward supervisor](../../Sources/localvoxtral/ClaudeContext/ClaudeRemoteForwardSupervisor.swift)
+Mac. The [forward supervisor](../../Sources/localvoxtralCore/ClaudeContext/ClaudeRemoteForwardSupervisor.swift)
 builds the exact command.
 
 It is off by default, per host, because an app that opened ssh connections
@@ -1202,6 +1256,18 @@ What per-Mac ports do **not** change is that one host runs one Claude Code
 install storing one port. The Mac whose config was installed last receives the
 events, and the other Mac sees no traffic. You can see that only one Mac is
 served, and no credential reaches the wrong Mac's listener.
+
+**A process on the host that squats the forward port while no ssh holds it.**
+It receives every hook's bearer token, and the hook script's stdout gate
+keeps its answers out of the session. The mod (remote plugin 1.41.0) takes
+text and submits prompts on what the app sends, so it trusts the token
+alone for nothing. Every request and every answer on its routes carries an
+HMAC under the host's channel key, which setup stores in the plugin's
+config and which never crosses the tunnel. A squatter holding the token
+cannot attach as a session or write into the prompt. Nor can it replay a
+poll it captured once the forward is back (1.42.0): each answer names a
+challenge the next poll must carry, good once and for ten seconds, and a
+poll without one gets only a new challenge.
 
 **A process on your Mac that squats 127.0.0.1:8473 before the app binds it.**
 Loopback ports on macOS go to whoever binds first, with no ownership. A

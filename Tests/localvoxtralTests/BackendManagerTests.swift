@@ -381,7 +381,9 @@ final class BackendManagerTests: XCTestCase {
         let second = Task { @MainActor in
             try await manager.ensureReady(dictation: true, polishing: false)
         }
-        await Task.yield()
+        // The second ensure was queued on the main actor ahead of this
+        // barrier, so it has joined or started a flight when the barrier runs.
+        await Task { @MainActor in }.value
 
         XCTAssertEqual(modelPreparer.prepareCalls.map(\.backendID), [BackendCatalog.speechd.id])
         XCTAssertTrue(supervisorFactory.createdConfigurations.isEmpty)
@@ -389,6 +391,51 @@ final class BackendManagerTests: XCTestCase {
         modelPreparer.resumePrepare()
         try await first.value
         try await second.value
+        // Only the first prepare parks, so a second flight would have
+        // prepared again by now.
+        XCTAssertEqual(modelPreparer.prepareCalls.map(\.backendID), [BackendCatalog.speechd.id])
+        XCTAssertEqual(
+            supervisorFactory.supervisors[BackendCatalog.speechd.displayName]?.startCallCount,
+            1
+        )
+    }
+
+    /// A voice memo and a dictation share one cold speechd start. Turning memos
+    /// off cancels only the memo's wait: it returns at once, and the dictation
+    /// still reaches ready (#1511).
+    func testCancellingMemoWaiterPreservesDictationWaiter() async throws {
+        let modelPreparer = FakeModelPreparer(suspendBackendIDs: [BackendCatalog.speechd.id])
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
+        let manager = makeManager(
+            modelPreparer: modelPreparer,
+            supervisorFactory: supervisorFactory
+        )
+
+        let dictation = Task { @MainActor in
+            try await manager.ensureReady(dictation: true, polishing: false)
+        }
+        await modelPreparer.waitUntilPrepareStarted()
+        let memo = Task { @MainActor in
+            try await manager.ensureReady(dictation: true, polishing: false)
+        }
+        // The memo's ensure was queued ahead of this barrier, so it waits on
+        // the shared flight before the cancel lands.
+        await Task { @MainActor in }.value
+
+        memo.cancel()
+        do {
+            try await memo.value
+            XCTFail("expected the cancelled memo wait to throw")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+        XCTAssertTrue(modelPreparer.terminatedBackendIDs.isEmpty)
+
+        modelPreparer.resumePrepare()
+        try await dictation.value
+        XCTAssertEqual(manager.speechdStatus, .ready)
         XCTAssertEqual(
             supervisorFactory.supervisors[BackendCatalog.speechd.displayName]?.startCallCount,
             1
@@ -614,6 +661,39 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(manager.polishdStatus, .ready)
     }
 
+    /// The retry ran the port defense after the model check, by which time
+    /// the restarting helper had bound its port; the defense knows only the
+    /// retired voxmlx paths, so it called the app's own speechd foreign.
+    func testRetryDoesNotTreatItsOwnRestartingSpeechdAsAPortConflict() async throws {
+        let modelPreparer = FakeModelPreparer()
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
+        let portDefense = SwitchableLegacyPortDefense()
+        let manager = makeManager(
+            modelPreparer: modelPreparer,
+            legacyPortDefense: portDefense,
+            supervisorFactory: supervisorFactory
+        )
+        try await manager.ensureReady(dictation: true, polishing: false)
+        let supervisor = try XCTUnwrap(supervisorFactory.supervisors[BackendCatalog.speechd.displayName])
+
+        supervisor.emit(.restarting(attempt: 1))
+        portDefense.outcome = .occupiedByOther(ListeningProcess(
+            pid: 4242,
+            executableURL: URL(fileURLWithPath: "/Applications/localvoxtral.app/Contents/Helpers/localvoxtral-speechd")
+        ))
+        modelPreparer.holdNextPrepare()
+        let retry = Task { @MainActor in
+            try await manager.ensureReady(dictation: true, polishing: false)
+        }
+        await modelPreparer.waitUntilPrepareStarted(calls: 2)
+        supervisor.emit(.running)
+        modelPreparer.resumePrepare()
+
+        try await retry.value
+        XCTAssertEqual(manager.speechdStatus, .ready)
+    }
+
     func testBundledBackendConfigurationsUseModelLoadReadinessTimeouts() async throws {
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
@@ -725,6 +805,100 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(modelPreparer.terminatedBackendIDs, [BackendCatalog.speechd.id])
         XCTAssertTrue(supervisorFactory.createdConfigurations.isEmpty)
         XCTAssertEqual(manager.speechdStatus, .stopped)
+    }
+
+    /// A cancelled caller that was the ensure's only waiter throws only after
+    /// the ensure has unwound, so it reads `.stopped`. The fake parks the
+    /// cancelled prepare; before the fix the caller threw while the status
+    /// still read `.preparingModel` (#1611).
+    func testCancelledLastWaiterThrowsOnlyAfterTheEnsureUnwinds() async throws {
+        let modelPreparer = FakeModelPreparer(suspendBackendIDs: [BackendCatalog.speechd.id])
+        modelPreparer.holdCancelledPrepare()
+        let manager = makeManager(
+            modelPreparer: modelPreparer,
+            supervisorFactory: FakeSupervisorFactory()
+        )
+
+        let ensure = Task { @MainActor () -> ManagedBackendStatus? in
+            do {
+                try await manager.ensureReady(dictation: true, polishing: false)
+                return nil
+            } catch {
+                XCTAssertTrue(error is CancellationError, "expected CancellationError, got \(error)")
+                return manager.speechdStatus
+            }
+        }
+        await modelPreparer.waitUntilPrepareStarted()
+
+        ensure.cancel()
+        await modelPreparer.waitUntilCancelledPrepareParked()
+        modelPreparer.releaseCancelledPrepare()
+
+        let statusWhenCallerThrew = await ensure.value
+        XCTAssertEqual(statusWhenCallerThrew, ManagedBackendStatus.stopped)
+    }
+
+    /// A cancel that lands just as the download finishes leaves `.stopped`,
+    /// not the `.preparingModel` the last progress reading set (#1614). The
+    /// fake's prepare returns normally once cancelled, as a download that
+    /// completed under the cancel does.
+    func testACancelAfterThePrepareFinishesLeavesStopped() async throws {
+        let modelPreparer = FakeModelPreparer(suspendBackendIDs: [BackendCatalog.speechd.id])
+        modelPreparer.completeSuspendedPrepareOnCancel()
+        let supervisorFactory = FakeSupervisorFactory()
+        let manager = makeManager(modelPreparer: modelPreparer, supervisorFactory: supervisorFactory)
+
+        let ensure = Task { @MainActor () -> ManagedBackendStatus? in
+            do {
+                try await manager.ensureReady(dictation: true, polishing: false)
+                return nil
+            } catch {
+                XCTAssertTrue(error is CancellationError, "expected CancellationError, got \(error)")
+                return manager.speechdStatus
+            }
+        }
+        await modelPreparer.waitUntilPrepareStarted()
+
+        ensure.cancel()
+
+        let statusWhenCallerThrew = await ensure.value
+        XCTAssertEqual(statusWhenCallerThrew, ManagedBackendStatus.stopped)
+        XCTAssertTrue(supervisorFactory.createdConfigurations.isEmpty, "no helper starts after the cancel")
+    }
+
+    /// A cancel while the helper starts stops it and leaves `.stopped`, not
+    /// the `.failed` an ended state stream used to report (#1614).
+    func testACancelDuringTheSupervisorStartStopsTheHelperAndLeavesStopped() async throws {
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.launching]
+        let manager = makeManager(supervisorFactory: supervisorFactory)
+        var updates = manager.statusUpdates.makeAsyncIterator()
+
+        let ensure = Task { @MainActor () -> ManagedBackendStatus? in
+            do {
+                try await manager.ensureReady(dictation: true, polishing: false)
+                return nil
+            } catch {
+                XCTAssertTrue(error is CancellationError, "expected CancellationError, got \(error)")
+                return manager.speechdStatus
+            }
+        }
+        // The ensure's own `.starting`, then the launching supervisor's.
+        var startingUpdates = 0
+        while startingUpdates < 2, let update = await updates.next() {
+            if update.spec.id == BackendCatalog.speechd.id, update.status == .starting {
+                startingUpdates += 1
+            }
+        }
+
+        ensure.cancel()
+
+        let statusWhenCallerThrew = await ensure.value
+        XCTAssertEqual(statusWhenCallerThrew, ManagedBackendStatus.stopped)
+        XCTAssertEqual(
+            supervisorFactory.supervisors[BackendCatalog.speechd.displayName]?.stopCallCount, 1,
+            "the half-started helper is stopped"
+        )
     }
 
     func testStopPolishingCancelsInFlightEnsureBeforeSupervisorCanStart() async throws {
@@ -985,26 +1159,17 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertTrue(modelPreparer.discardedRepoIDs.isEmpty)
     }
 
-    /// Spins the main actor until the backend reaches the wanted status. The
-    /// preparer's scripted progress is delivered through a `@MainActor` hop, so
-    /// the condition is reached by yielding — no wall clock involved. Bounded so
-    /// a regression fails the test instead of hanging the runner.
+    /// Returns once the backend reaches the wanted status, re-reading it after
+    /// each write: the preparer's scripted progress arrives through a
+    /// `@MainActor` hop.
     private func waitUntilStatus(
         of spec: ManagedBackendSpec,
         on manager: BackendManager,
-        matching predicate: (ManagedBackendStatus) -> Bool,
+        matching predicate: @escaping (ManagedBackendStatus) -> Bool,
         file: StaticString = #filePath,
         line: UInt = #line
     ) async {
-        for _ in 0..<10_000 {
-            if predicate(manager.status(for: spec)) { return }
-            await Task.yield()
-        }
-        XCTFail(
-            "\(spec.displayName) never reached the expected status (last: \(manager.status(for: spec)))",
-            file: file,
-            line: line
-        )
+        await awaitCondition(file: file, line: line) { predicate(manager.status(for: spec)) }
     }
 
     func testModelPreparationFailureMarksBackendFailedWithDetails() async {
@@ -1177,6 +1342,19 @@ private struct FixedLegacyPortDefense: LegacyVoxmlxPortDefending {
     }
 }
 
+private final class SwitchableLegacyPortDefense: LegacyVoxmlxPortDefending, @unchecked Sendable {
+    private let state = Mutex<LegacyVoxmlxPortOutcome>(.available)
+
+    var outcome: LegacyVoxmlxPortOutcome {
+        get { state.withLock { $0 } }
+        set { state.withLock { $0 = newValue } }
+    }
+
+    func clearLegacyOccupantIfNeeded(port: Int) async -> LegacyVoxmlxPortOutcome {
+        outcome
+    }
+}
+
 // `prepare` is nonisolated async, so ensureReady's concurrent per-backend
 // tasks call it off the main actor simultaneously — the recorded state must
 // be lock-protected or appends race and can be lost (flaked on the runner
@@ -1192,6 +1370,12 @@ private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
         var holdNextPrepare = false
         /// A `resumePrepare` that came before the held prepare parked.
         var resumeRequested = false
+        var holdCancelledPrepare = false
+        var cancelledPrepareWaiter: CheckedContinuation<Void, Never>?
+        var cancelledPrepareParked = false
+        var cancelledPrepareRelease: CheckedContinuation<Void, Never>?
+        var cancelledPrepareReleaseRequested = false
+        var completeSuspendedPrepareOnCancel = false
     }
 
     private let scriptedProgress: [String: [ModelDownloadProgress]]
@@ -1251,38 +1435,100 @@ private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
         let shouldSuspend = suspendBackendIDs.contains(request.backendID)
             && state.withLock { $0.alreadySuspendedBackendIDs.insert(request.backendID).inserted }
         if shouldSuspend {
-            try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { continuation in
-                    // Cancellation can land BEFORE this continuation exists:
-                    // `stop` cancels the ensure the moment the test sees the
-                    // prepare start, and on a loaded host the handler above
-                    // then runs first, finds nothing to resume, and the
-                    // continuation parked here would never be resumed (the
-                    // hosted unit-suite hang, run 34163270101). Park it only
-                    // when the task is still live; the check and the store
-                    // share the lock with the handler, so no interleaving
-                    // resumes twice or not at all.
-                    let orphaned: CheckedContinuation<Void, Error>? = state.withLock {
-                        if Task.isCancelled { return continuation }
-                        $0.prepareResumeContinuation = continuation
-                        return nil
-                    }
-                    orphaned?.resume(throwing: CancellationError())
-                }
-            } onCancel: {
-                let continuation: CheckedContinuation<Void, Error>? = self.state.withLock {
-                    $0.terminatedBackendIDs.append(request.backendID)
-                    let continuation = $0.prepareResumeContinuation
-                    $0.prepareResumeContinuation = nil
-                    return continuation
-                }
-                continuation?.resume(throwing: CancellationError())
+            do {
+                try await suspendUntilCancelled(request)
+            } catch is CancellationError where state.withLock({ $0.holdCancelledPrepare }) {
+                await parkCancelledPrepare()
+                throw CancellationError()
+            } catch is CancellationError where state.withLock({ $0.completeSuspendedPrepareOnCancel }) {
+                return
             }
         }
 
         if let failure = failures[request.backendID] {
             throw failure
         }
+    }
+
+    private func suspendUntilCancelled(_ request: ModelPreparationRequest) async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                // Cancellation can land BEFORE this continuation exists:
+                // `stop` cancels the ensure the moment the test sees the
+                // prepare start, and on a loaded host the handler above
+                // then runs first, finds nothing to resume, and the
+                // continuation parked here would never be resumed (the
+                // hosted unit-suite hang, run 34163270101). Park it only
+                // when the task is still live; the check and the store
+                // share the lock with the handler, so no interleaving
+                // resumes twice or not at all.
+                let orphaned: CheckedContinuation<Void, Error>? = state.withLock {
+                    if Task.isCancelled { return continuation }
+                    $0.prepareResumeContinuation = continuation
+                    return nil
+                }
+                orphaned?.resume(throwing: CancellationError())
+            }
+        } onCancel: {
+            let continuation: CheckedContinuation<Void, Error>? = self.state.withLock {
+                $0.terminatedBackendIDs.append(request.backendID)
+                let continuation = $0.prepareResumeContinuation
+                $0.prepareResumeContinuation = nil
+                return continuation
+            }
+            continuation?.resume(throwing: CancellationError())
+        }
+    }
+
+    /// Parks a cancelled prepare before it throws, until
+    /// `releaseCancelledPrepare`, so a test can look at the manager while the
+    /// ensure task has not unwound yet.
+    private func parkCancelledPrepare() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let (waiter, released): (CheckedContinuation<Void, Never>?, Bool) = state.withLock {
+                $0.cancelledPrepareParked = true
+                let waiter = $0.cancelledPrepareWaiter
+                $0.cancelledPrepareWaiter = nil
+                if $0.cancelledPrepareReleaseRequested { return (waiter, true) }
+                $0.cancelledPrepareRelease = continuation
+                return (waiter, false)
+            }
+            waiter?.resume()
+            if released { continuation.resume() }
+        }
+    }
+
+    /// Makes the suspended prepare return normally once cancelled: the
+    /// download finished as the cancel landed.
+    func completeSuspendedPrepareOnCancel() {
+        state.withLock { $0.completeSuspendedPrepareOnCancel = true }
+    }
+
+    /// Makes the suspended prepare park once cancelled instead of throwing.
+    func holdCancelledPrepare() {
+        state.withLock { $0.holdCancelledPrepare = true }
+    }
+
+    /// Returns once a cancelled prepare has parked.
+    func waitUntilCancelledPrepareParked() async {
+        await withCheckedContinuation { continuation in
+            let parked: Bool = state.withLock {
+                if $0.cancelledPrepareParked { return true }
+                $0.cancelledPrepareWaiter = continuation
+                return false
+            }
+            if parked { continuation.resume() }
+        }
+    }
+
+    func releaseCancelledPrepare() {
+        let continuation: CheckedContinuation<Void, Never>? = state.withLock {
+            let continuation = $0.cancelledPrepareRelease
+            $0.cancelledPrepareRelease = nil
+            if continuation == nil { $0.cancelledPrepareReleaseRequested = true }
+            return continuation
+        }
+        continuation?.resume()
     }
 
     func discardPartialDownloads(for request: ModelPreparationRequest) {

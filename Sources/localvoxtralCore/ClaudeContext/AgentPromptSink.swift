@@ -28,6 +28,44 @@ package protocol AgentPromptRoute: Sendable {
     /// For the log: which route refused or delivered.
     var name: String { get }
     func deliver(_ call: AgentPromptCall) async -> AgentPromptDelivery
+    /// The appends this route answered `delivered` on hand-off but has not
+    /// confirmed landed, settled now: a route whose appends go unanswered
+    /// (the Claude Code mod's, #1645) learns here how far the target got.
+    /// What did not land comes back in order, with where it goes.
+    func settle() async -> AgentPromptSettlement
+    /// Whether text goes to this route as dictated, without the terminal's
+    /// newline guard and trailing-space policy, which exist for keys. What
+    /// such a route gives back is sanitized before it is typed.
+    var takesUnsanitizedText: Bool { get }
+    /// The dictation was cancelled: the target drops what this route
+    /// handed it that has not landed yet. Called once no call is being
+    /// handed over.
+    func cancel()
+}
+
+/// What `AgentPromptRoute.settle` found: the texts that did not land, in
+/// the order they were appended, and whether they are typed or kept.
+package struct AgentPromptSettlement: Sendable, Equatable {
+    package var unlanded: [String]
+    /// `typeInstead` or `keepInHistory` when `unlanded` is not empty.
+    package var outcome: AgentPromptDelivery
+
+    package init(unlanded: [String] = [], outcome: AgentPromptDelivery = .delivered) {
+        self.unlanded = unlanded
+        self.outcome = outcome
+    }
+
+    package static let allLanded = AgentPromptSettlement()
+}
+
+extension AgentPromptRoute {
+    /// A route that answers each call once it landed has nothing to settle.
+    package func settle() async -> AgentPromptSettlement { .allLanded }
+
+    package var takesUnsanitizedText: Bool { false }
+
+    /// A route that answers each call once it landed holds nothing back.
+    package func cancel() {}
 }
 
 /// One dictation's writes into a route, delivered in the order they were
@@ -37,19 +75,28 @@ package protocol AgentPromptRoute: Sendable {
 /// straight there. When the route says `keepInHistory`, they go to `kept`
 /// instead and nothing is typed. A submit queued behind a failure is
 /// dropped, never turned into a key: the text it would have sent may have
-/// gone elsewhere.
+/// gone elsewhere. Appends the route accepted without confirming them go
+/// first, once it settles them: after a failure, and at `finish`.
 @MainActor
 package final class AgentPromptSink {
+    /// One entry of the queue: a call, or the stop's settling of the route.
+    private enum Step {
+        case call(AgentPromptCall)
+        case settle
+    }
+
     package let route: any AgentPromptRoute
     private let fallback: @MainActor (String) -> Void
     private let kept: @MainActor (String) -> Void
-    /// Each call with the fallback its text goes to if it is refused.
-    private var queue: [(call: AgentPromptCall, fallback: (@MainActor (String) -> Void)?)] = []
+    /// Each step with the fallback its text goes to if it is refused.
+    private var queue: [(step: Step, fallback: (@MainActor (String) -> Void)?)] = []
     private var draining = false
     private var idleWaiters: [CheckedContinuation<Void, Never>] = []
 
     /// Set by the first failed call: where every later text goes.
     private var failure: AgentPromptDelivery?
+    /// Set by `cancel`: nothing more is handed to the route.
+    private var cancelled = false
 
     /// False from the first failed call on.
     package var isHealthy: Bool { failure == nil }
@@ -79,7 +126,7 @@ package final class AgentPromptSink {
     package func append(_ text: String, fallback: (@MainActor (String) -> Void)? = nil) {
         guard !text.isEmpty else { return }
         guard let failure else {
-            enqueue(.append(text), fallback: fallback)
+            enqueue(.call(.append(text)), fallback: fallback)
             return
         }
         divert(text, after: failure, fallback: fallback)
@@ -91,7 +138,26 @@ package final class AgentPromptSink {
             Log.backends.notice("\(self.route.name, privacy: .public): route failed earlier; submit dropped")
             return
         }
-        enqueue(.submit, fallback: nil)
+        enqueue(.call(.submit), fallback: nil)
+    }
+
+    /// The stop: once every call made before it was handled, the route
+    /// settles the appends it has not confirmed, and what did not land is
+    /// typed or kept like a refusal.
+    package func finish() {
+        guard isHealthy else { return }
+        enqueue(.settle, fallback: nil)
+    }
+
+    /// The dictation was cancelled (#1805): what is queued is dropped,
+    /// never delivered or typed, and the route drops what it handed over
+    /// that has not landed. A call in flight finishes first.
+    package func cancel() {
+        guard !cancelled else { return }
+        cancelled = true
+        queue.removeAll()
+        Log.backends.notice("\(self.route.name, privacy: .public): dictation cancelled; queued text dropped")
+        if !draining { route.cancel() }
     }
 
     /// Returns once nothing is queued or in flight.
@@ -100,8 +166,9 @@ package final class AgentPromptSink {
         await withCheckedContinuation { idleWaiters.append($0) }
     }
 
-    private func enqueue(_ call: AgentPromptCall, fallback: (@MainActor (String) -> Void)?) {
-        queue.append((call, fallback))
+    private func enqueue(_ step: Step, fallback: (@MainActor (String) -> Void)?) {
+        guard !cancelled else { return }
+        queue.append((step, fallback))
         guard !draining else { return }
         draining = true
         Task { await drain() }
@@ -120,20 +187,40 @@ package final class AgentPromptSink {
     }
 
     private func drain() async {
-        while let next = queue.first {
-            let outcome = await route.deliver(next.call)
+        while !cancelled, let next = queue.first {
+            var unlanded: [String] = []
+            var outcome: AgentPromptDelivery
+            switch next.step {
+            case .call(let call):
+                outcome = await route.deliver(call)
+                if outcome != .delivered {
+                    // Appends accepted before this one may not have landed
+                    // either: they go first, where the route says.
+                    let settlement = await route.settle()
+                    unlanded = settlement.unlanded
+                    if !unlanded.isEmpty, settlement.outcome == .keepInHistory { outcome = .keepInHistory }
+                }
+            case .settle:
+                let settlement = await route.settle()
+                unlanded = settlement.unlanded
+                outcome = unlanded.isEmpty ? .delivered : settlement.outcome
+            }
+            // A cancel during the call: nothing it gave back is typed.
+            if cancelled { break }
             if outcome == .delivered {
                 queue.removeFirst()
                 continue
             }
             failure = outcome
-            let pending = queue
+            var pending = queue
             queue.removeAll()
-            let refused = pending.compactMap { entry -> (String, (@MainActor (String) -> Void)?)? in
-                if case .append(let text) = entry.call { return (text, entry.fallback) }
-                return nil
-            }
-            let droppedSubmits = pending.count - refused.count
+            if case .settle = next.step { pending.removeFirst() }
+            let refused = unlanded.map { ($0, Optional<@MainActor (String) -> Void>.none) }
+                + pending.compactMap { entry -> (String, (@MainActor (String) -> Void)?)? in
+                    if case .call(.append(let text)) = entry.step { return (text, entry.fallback) }
+                    return nil
+                }
+            let droppedSubmits = pending.filter { if case .call(.submit) = $0.step { true } else { false } }.count
             let destination = outcome == .keepInHistory ? "stay in History" : "go by keystrokes"
             Log.backends.notice(
                 "\(self.route.name, privacy: .public): route failed; \(refused.count, privacy: .public) appends \(destination, privacy: .public), \(droppedSubmits, privacy: .public) submits dropped"
@@ -141,6 +228,7 @@ package final class AgentPromptSink {
             for (text, callFallback) in refused { divert(text, after: outcome, fallback: callFallback) }
         }
         draining = false
+        if cancelled { route.cancel() }
         let waiters = idleWaiters
         idleWaiters.removeAll()
         for waiter in waiters { waiter.resume() }

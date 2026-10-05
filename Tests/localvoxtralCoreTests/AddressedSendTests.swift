@@ -89,6 +89,48 @@ final class AddressedSendTests: XCTestCase {
         ], "the session's own pane, not herdr's focused one")
     }
 
+    /// `/clear` ends the named session and starts another in the same process
+    /// and pane, so the pid check alone still passes. Whether the other
+    /// session takes the pane before the append or between append and Return,
+    /// nothing more reaches herdr and the dictation stays in History.
+    @MainActor
+    func testASessionThatTakesTheNamedPaneGetsNothing() async throws {
+        let herdr = try FakeHerdrSocket(answer: FakeHerdrSocket.focusedPane("w1:p2") { [(9001, "claude")] })
+        defer { herdr.stop() }
+
+        func replaced(_ registry: ClaudeSessionRegistry) {
+            registry.ingest(herdrRecord("s1", pid: 9001, pane: "w1:p2", socket: herdr.socketPath, event: .sessionEnd), origin: local)
+            registry.ingest(herdrRecord("s2", pid: 9001, pane: "w1:p2", socket: herdr.socketPath), origin: local)
+        }
+
+        let beforeAppend = registry()
+        beforeAppend.ingest(herdrRecord("s1", pid: 9001, pane: "w1:p2", socket: herdr.socketPath), origin: local)
+        let named = try XCTUnwrap(beforeAppend.liveSessions().first)
+        guard case .prompt(let first) = await resolver(beforeAppend).addressedRoute(for: named) else {
+            return XCTFail("the pane runs the session's agent")
+        }
+        replaced(beforeAppend)
+        let appended = await first.deliver(.append("run the tests"))
+        let submitted = await first.deliver(.submit)
+        XCTAssertEqual(appended, .keepInHistory)
+        XCTAssertEqual(submitted, .keepInHistory)
+        XCTAssertEqual(herdr.writes, [])
+
+        let beforeReturn = registry()
+        beforeReturn.ingest(herdrRecord("s1", pid: 9001, pane: "w1:p2", socket: herdr.socketPath), origin: local)
+        guard case .prompt(let second) = await resolver(beforeReturn).addressedRoute(for: named) else {
+            return XCTFail("the pane runs the session's agent")
+        }
+        let delivered = await second.deliver(.append("run the tests"))
+        XCTAssertEqual(delivered, .delivered)
+        replaced(beforeReturn)
+        let withheld = await second.deliver(.submit)
+        XCTAssertEqual(withheld, .keepInHistory)
+        XCTAssertEqual(herdr.writes, [
+            .init(method: "pane.send_text", paneID: "w1:p2", text: "run the tests", keys: nil),
+        ], "no Return after another session took the pane")
+    }
+
     @MainActor
     func testARefusedHerdrWriteStaysInHistoryAndIsNeverTyped() async throws {
         let herdr = try FakeHerdrSocket(
@@ -182,9 +224,11 @@ final class AddressedSendTests: XCTestCase {
         )
     }
 
-    private func herdrRecord(_ session: String, pid: Int32, pane: String, socket: String) -> ClaudeHookRecord {
+    private func herdrRecord(
+        _ session: String, pid: Int32, pane: String, socket: String, event: ClaudeHookEvent = .sessionStart
+    ) -> ClaudeHookRecord {
         ClaudeHookRecord(
-            event: .sessionStart, sessionID: session, timestamp: 0, rawCwd: "/repo", prompt: nil, files: [],
+            event: event, sessionID: session, timestamp: 0, rawCwd: "/repo", prompt: nil, files: [],
             process: ClaudeHookProcessInfo(
                 hookPID: pid, claudePID: pid, tty: "/dev/ttys-\(session)",
                 herdrPaneID: pane, herdrSocketPath: socket

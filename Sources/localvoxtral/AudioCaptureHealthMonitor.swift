@@ -48,11 +48,16 @@ final class AudioCaptureHealthMonitor {
 
     var isMonitoring: Bool { callbacks != nil }
 
-    func start(microphone: any MicrophoneCapturing, callbacks: Callbacks, clock: SessionClock) {
+    /// `captureInputID` is the input the capture already runs on; nil reads
+    /// the selection.
+    func start(
+        microphone: any MicrophoneCapturing, callbacks: Callbacks, clock: SessionClock,
+        captureInputID: String? = nil
+    ) {
         self.microphone = microphone
         self.callbacks = callbacks
         self.clock = clock
-        captureInputID = callbacks.selectedInputDeviceID()
+        self.captureInputID = captureInputID ?? callbacks.selectedInputDeviceID()
         resetState()
         startupCaptureGraceUntil = clock.now().addingTimeInterval(Self.startupCaptureGraceSeconds)
         restartCaptureHealthTask()

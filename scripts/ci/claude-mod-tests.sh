@@ -18,6 +18,8 @@ else
 fi
 
 status=0
+# The remote plugin carries a copy of the mod's hooks module (#1412).
+"$ROOT/scripts/sync-remote-mod.sh" --check || status=1
 for manifest in "$ROOT"/integrations/claude-code/plugins/*/hooks/hooks.json; do
   grep -q '"modules"' "$manifest" || continue
   plugin="$(dirname "$(dirname "$manifest")")"

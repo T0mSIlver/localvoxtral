@@ -9,7 +9,9 @@ import os
 /// Rotation keeps the newest snapshot of each of the last seven days, the
 /// ten newest event snapshots, and always the newest snapshot that holds a
 /// dictation: a store that lost its rows must never rotate away the copy
-/// that still has them. Files it cannot parse are left alone.
+/// that still has them. Files it cannot parse are left alone. Delete All and
+/// Don't keep delete every snapshot when the user ticks "Also delete the
+/// backups" (#1574).
 struct DictationHistoryBackups: Sendable {
     enum Reason: String, Sendable {
         case daily
@@ -129,6 +131,21 @@ struct DictationHistoryBackups: Sendable {
         }
     }
 
+    /// Deletes every snapshot: the user deleted all of History or chose
+    /// Don't keep, and asked for the backups to go too (#1574).
+    /// Files it cannot parse are left alone, as rotation leaves them.
+    func removeAll() {
+        let snapshots = snapshots()
+        for snapshot in snapshots { Self.removeFiles(at: snapshot.url) }
+        if !snapshots.isEmpty {
+            Log.persistence.info("History: deleted \(snapshots.count, privacy: .public) snapshot(s)")
+        }
+    }
+
+    /// Whether a snapshot still holds a dictation. A daily copy of an
+    /// empty store holds nothing a user could want back.
+    var holdDictations: Bool { snapshots().contains { $0.dictations > 0 } }
+
     // MARK: - Names
 
     /// `history-20260928T114325Z-migration-n652.store`.
@@ -167,7 +184,9 @@ struct DictationHistoryBackups: Sendable {
 /// Where the automatic sweeps put the recordings and diagnostic records they
 /// would have deleted: a folder per day, emptied after 30 days. A snapshot of
 /// the store cannot bring back a WAV; this can. What the user deletes
-/// (Delete, Delete All, turning a setting off) is deleted for real.
+/// (Delete, Delete All, turning a setting off) is deleted for real, and
+/// Delete All, Don't keep and turning a setting off also empty this of
+/// what they deleted when the user ticks "Also delete the backups" (#1574).
 struct DictationHistoryQuarantine: Sendable {
     static let keptDays = 30
 
@@ -188,6 +207,36 @@ struct DictationHistoryQuarantine: Sendable {
     func folder(for kind: String) -> URL {
         directoryURL.appendingPathComponent(Self.day(now()), isDirectory: true)
             .appendingPathComponent(kind, isDirectory: true)
+    }
+
+    /// Whether any day folder holds a file of `kind`.
+    func holdsFiles(of kind: String) -> Bool {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directoryURL.path)) ?? []
+        return names.contains { name in
+            guard name.count == 8, Int(name) != nil else { return false }
+            let folder = directoryURL.appendingPathComponent(name, isDirectory: true)
+                .appendingPathComponent(kind, isDirectory: true)
+            let files = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+            return !files.isEmpty
+        }
+    }
+
+    /// Deletes what every day folder holds of `kind`.
+    func removeAll(of kind: String) {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directoryURL.path)) ?? []
+        for name in names where name.count == 8 && Int(name) != nil {
+            let folder = directoryURL.appendingPathComponent(name, isDirectory: true)
+                .appendingPathComponent(kind, isDirectory: true)
+            guard FileManager.default.fileExists(atPath: folder.path) else { continue }
+            do {
+                try FileManager.default.removeItem(at: folder)
+                Log.persistence.info("History: emptied quarantined \(kind, privacy: .public) of \(name, privacy: .public)")
+            } catch {
+                Log.persistence.error(
+                    "History: could not empty quarantined \(kind, privacy: .public) of \(name, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+            }
+        }
     }
 
     /// Deletes the day folders older than `keptDays`. Names that are not a
@@ -214,4 +263,16 @@ struct DictationHistoryQuarantine: Sendable {
         formatter.dateFormat = "yyyyMMdd"
         return formatter.string(from: date)
     }
+}
+
+/// Which of the backups hold something.
+struct DictationHistoryBackupsSummary: Equatable, Sendable {
+    /// A History snapshot holds a dictation.
+    var dictations = false
+    /// The quarantine holds a recording.
+    var audio = false
+    /// The quarantine holds a diagnostic record.
+    var diagnosticRecords = false
+
+    var holdsAnything: Bool { dictations || audio || diagnosticRecords }
 }

@@ -159,14 +159,23 @@ The terms come from:
   project is the joined session's, or the terminal's repository.
 
 If the answer comes back within 2.5 seconds plus one second per minute of
-audio, its text replaces the realtime text and polishing runs on it.
-Otherwise the realtime text stays.
+audio, its text replaces the realtime text and polishing runs on it. When
+it left out a stretch of four or more words the realtime text had, that
+stretch is put back. A later answer leaves the realtime text as it is.
 
 The app writes the audio to disk only if History keeps audio.
 
 The second pass costs 0.003 USD per minute, so hosted dictation in the
 Overlay Buffer costs 1.5 times the realtime price. Live Auto-Paste has
 already typed its text and gets no second pass.
+
+**Re-transcribe dictations on stop**, in the pane's Mistral API group, turns
+the second pass off, and the price falls back to the realtime one. It is on
+by default because Mistral's realtime stream sometimes stalls for a few
+seconds and drops the words spoken meanwhile; the second pass is what puts
+them back. With it off, those words stay lost, and the custom terms above
+no longer reach the transcript, except through polishing. A dictation
+already under way keeps the setting it started with.
 
 ### The usage estimate
 

@@ -87,6 +87,13 @@ package enum RealtimeEvent: Sendable {
 package protocol RealtimeClient: AnyObject, Sendable {
     var supportsPeriodicCommit: Bool { get }
     var isConnected: Bool { get }
+    /// The server session takes audio: the socket is open, its handshake, or
+    /// the compatibility fallback standing in for one, has opened the send
+    /// gate, and no context rollover is moving the dictation to a new socket.
+    /// `isConnected` turns true earlier, on the WebSocket upgrade, and
+    /// whatever is sent between the two waits in the client, lost if the
+    /// socket closes first (#1457, #1456).
+    var isSessionReady: Bool { get }
     /// The generation stamped on the socket the most recent `connect()` opened,
     /// `.none` before the first one. Read right after a successful `connect()`:
     /// that is the connection the session is now on.
@@ -110,4 +117,13 @@ package protocol RealtimeClient: AnyObject, Sendable {
     /// `connect()`, so a reconnect stays under it; the session sets it at
     /// every start.
     func setContextBudget(_ budget: RealtimeContextBudget?)
+    /// Audio the client took but no server did: a socket that closed before
+    /// its handshake sent what was queued for it (#1672). Handed over once;
+    /// the session replays it ahead of its buffer on the next socket.
+    func takeUnsentAudio() -> Data
+}
+
+extension RealtimeClient {
+    /// A client that holds no audio for its handshake has none to hand back.
+    package func takeUnsentAudio() -> Data { Data() }
 }

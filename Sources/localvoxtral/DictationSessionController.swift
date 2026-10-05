@@ -35,8 +35,12 @@ final class DictationSessionController {
         DictationViewModel.secureKeyboardEntryWarningMessage
     }
 
-    var isDictating = false
-    var isFinalizingStop = false
+    var isDictating = false {
+        didSet { resumeIdleWaitersIfIdle() }
+    }
+    var isFinalizingStop = false {
+        didSet { resumeIdleWaitersIfIdle() }
+    }
     var isConnectingRealtimeSession = false
     var realtimeSessionIndicatorState: RealtimeSessionIndicatorState = .idle
     /// The text the realtime events built: the partial in flight, the
@@ -225,6 +229,14 @@ final class DictationSessionController {
     /// point it at a temp directory.
     @ObservationIgnored
     var diagnosticRecordStore: DiagnosticRecordStore?
+    /// History's store did not open at launch: no entry is saved, so no
+    /// record may be written, and the record deletions bypass History (#1771).
+    @ObservationIgnored
+    var historyOpenFailed = false
+    /// History's quarantine when History did not open, so "Also delete the
+    /// backups" still reaches it; with History open, History owns it.
+    @ObservationIgnored
+    var quarantineWithoutHistory: DictationHistoryQuarantine?
     /// Watches the seconds after a commit for an immediate erase, and patches
     /// that dictation's record with what it saw. `var` for the same reason as
     /// the store: tests inject the clock and the event source.
@@ -254,6 +266,12 @@ final class DictationSessionController {
     /// still be unsent; the next commit there starts with a space (#802).
     @ObservationIgnored
     var lastOverlayCommitLanding: OverlayCommitLanding?
+    /// Where this dictation's band went and what it last said (#1411).
+    @ObservationIgnored
+    var modChannelBand: ModChannelBand?
+    /// Sends `modChannelBand` again while it stays unchanged.
+    @ObservationIgnored
+    var modChannelBandHeartbeatTask: Task<Void, Never>?
     /// Asks a new project's coding agent for its terms after the first
     /// joined dictation there (#609). Nil without runtime services; tests
     /// inject one over a fake runner.
@@ -345,6 +363,18 @@ final class DictationSessionController {
     var sessionStartGeneration: UInt64 = 0
     @ObservationIgnored
     var stopFinalizationTask: Task<Void, Never>?
+    /// Answers the quit once the stop's finalization ends; set while a quit
+    /// waits on the helper's last words (#1756).
+    @ObservationIgnored
+    var quitFinalizationReply: (@MainActor () -> Void)?
+    /// The stopped session is the quit's to save, from the quit's stop until
+    /// `saveStoppedDictationForQuit`: an event that ends the finalization
+    /// later (the socket's close) must not commit it.
+    @ObservationIgnored
+    var quitHoldsStoppedSession = false
+    /// What `waitUntilDictationIsIdle` suspends on (#1759).
+    @ObservationIgnored
+    var idleWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
     @ObservationIgnored
     var connectTimeoutTask: Task<Void, Never>?
     /// Stops an Overlay Buffer tap session that has gone quiet
@@ -396,6 +426,11 @@ final class DictationSessionController {
     /// line and the outcome of every realtime event the dying socket emits.
     @ObservationIgnored
     var isReconnectingRealtimeSession = false
+    /// Whether this session dials the bundled speechd, latched at connect.
+    /// A reconnect waits on that helper's restart instead of spending its
+    /// attempts on a port nobody listens on yet (#1583).
+    @ObservationIgnored
+    var sessionUsesManagedSpeechHelper = false
     /// Bumped by every start and every cancel. A run compares it against the
     /// value it was launched with, so a stop, a cancel or a newer session can
     /// never be undone by an attempt that was already in flight.
@@ -411,6 +446,35 @@ final class DictationSessionController {
     /// otherwise turn the red icon back to idle as soon as it completes.
     @ObservationIgnored
     var holdFailureIndicatorUntilStopCompletes = false
+    /// Set when the backend answered the stop with an error: what the
+    /// final commit was to return may be lost, so the stop is not Ready.
+    @ObservationIgnored
+    var realtimeErrorDuringStop = false
+    /// The stop sent, or will send, a final commit and waits for the
+    /// backend's answer; cleared once `.transcriptionFinalized` brings it.
+    /// Still set when the stop ends, it ended on the idle rule, the timeout
+    /// or a closed socket instead (#1659).
+    @ObservationIgnored
+    var stopAwaitsBackendFinal = false
+    /// This session's backend sent a final: it answers a final commit, so a
+    /// stop that ends without that answer may be missing its end (#1659). A
+    /// backend that only streams deltas never sets it, and its stops end on
+    /// the idle rule by design.
+    @ObservationIgnored
+    var sessionBackendSendsFinals = false
+    /// Endpoints whose server answered a stop's final commit in this run of
+    /// the app: speechd, for one, sends no final until the stop.
+    @ObservationIgnored
+    var endpointsThatAnswerFinalCommits: Set<String> = []
+    /// How long the stop in progress waits for the server's last words.
+    @ObservationIgnored
+    var stopFinalizationTimeout = TimingConstants.stopFinalizationTimeout
+    /// The stop in progress sent a reconnect's whole gap behind its final
+    /// commit. The server decodes all of it before answering, with no delta
+    /// across a pause in the speech, so the idle rule would close on it
+    /// (#1758): only the final, a closed socket or the timeout end the stop.
+    @ObservationIgnored
+    var stopReplaysReconnectGap = false
     @ObservationIgnored
     var finalizationWatchdogTask: Task<Void, Never>?
     @ObservationIgnored
@@ -484,6 +548,10 @@ final class DictationSessionController {
     /// target app nor History (#526).
     @ObservationIgnored
     var saveInterruptedPolishCommit: (() -> Void)?
+    /// Addressed commits whose text a route or the mod holds while the
+    /// commit awaits the delivery: quit saves each one's record (#1667).
+    @ObservationIgnored
+    var handedOffAddressedCommits: [HandedOffAddressedCommit] = []
     @ObservationIgnored
     // Several finalization callbacks can converge here; keep stop cleanup
     // idempotent until commit/post-processing fully finishes.
@@ -516,6 +584,9 @@ final class DictationSessionController {
     var sessionPickedPane: (sessionID: String, bundleID: String)?
     @ObservationIgnored
     var sessionStartedAt: Date?
+    /// When `stopDictation` ran, for History's stop-to-commit time (#1792).
+    @ObservationIgnored
+    var sessionStoppedAt: Date?
     /// This start's press → socket → microphone → first buffer line (#527).
     @ObservationIgnored
     var sessionCaptureTimeline: CaptureTimeline?
@@ -532,6 +603,10 @@ final class DictationSessionController {
     /// which is transcribed again on stop (#317).
     @ObservationIgnored
     var sessionHasStopSecondPass = false
+    /// Latched at start: such a dictation, with the second pass turned off
+    /// in Settings (#1678).
+    @ObservationIgnored
+    var sessionStopSecondPassTurnedOff = false
     /// Where the second pass reports what it cost; the realtime client and
     /// the polishing service hold the same ledger.
     @ObservationIgnored
@@ -616,6 +691,7 @@ final class DictationSessionController {
         self.audio = audio
         self.overlayBufferCoordinator = overlayBufferCoordinator
         self.dependencies = dependencies
+        textInsertion.pasteRestoreSleep = dependencies.clock.sleep
         self.realtimeAPIClient = RealtimeAPIWebSocketClient(clock: dependencies.clock)
         self.mistralRealtimeClient = MistralRealtimeWebSocketClient(clock: dependencies.clock)
     }
@@ -758,12 +834,16 @@ final class DictationSessionController {
         audio.refreshMicrophoneInputs()
     }
 
-    /// Saves and selects the input; a running dictation restarts on it.
+    /// Saves and selects the input; a running dictation restarts on it,
+    /// and a connecting one moves its microphone onto it.
     func selectMicrophoneInput(id: String) {
         guard audio.selectMicrophoneInput(id: id) else { return }
 
-        guard isDictating else { return }
-        restartOnNewInput(reason: "input device changed by user")
+        if isDictating {
+            restartOnNewInput(reason: "input device changed by user")
+        } else {
+            restartConnectingSessionMicrophone(reason: "input device changed by user")
+        }
     }
 
     var selectedInputDeviceChannelCount: UInt32 { audio.selectedInputDeviceChannelCount }
@@ -773,8 +853,11 @@ final class DictationSessionController {
     func selectMicrophoneInputChannel(_ channel: Int) {
         guard audio.selectMicrophoneInputChannel(channel) else { return }
 
-        guard isDictating else { return }
-        restartOnNewInput(reason: "input channel changed by user")
+        if isDictating {
+            restartOnNewInput(reason: "input channel changed by user")
+        } else {
+            restartConnectingSessionMicrophone(reason: "input channel changed by user")
+        }
     }
 
     /// Stops the running session and starts the same kind again: a quick
@@ -937,16 +1020,29 @@ final class DictationSessionController {
         audio.microphoneAuthorizationStatus()
     }
 
-    func stopDictation(reason: String = "unspecified", finalizeRemainingAudio: Bool = true) {
+    /// `finalizationTimeout` bounds the wait for the server's last words:
+    /// the stop then keeps what arrived.
+    func stopDictation(
+        reason: String = "unspecified",
+        finalizeRemainingAudio: Bool = true,
+        finalizationTimeout: TimeInterval = TimingConstants.stopFinalizationTimeout
+    ) {
         guard isDictating else { return }
         debugLog("stopDictation reason=\(reason)")
+        sessionStoppedAt = dependencies.clock.now()
         shortcuts.clearPushToTalkShortcutSessionAttempt()
         disarmSilenceAutoStop()
         disarmSpokenStop()
 
-        // Before anything else: a reconnect run still in flight must not be
-        // allowed to hand this session a socket after the user stopped it.
-        cancelRealtimeReconnect()
+        // The speech captured since the socket dropped waits in the buffer
+        // for the socket a reconnect run opens. A stop that finalizes keeps
+        // the run going, so that speech reaches the server with the final
+        // commit behind it (#1582); any other stop ends the run before it
+        // can hand the stopped session a socket.
+        var finalizesAcrossReconnect = finalizeRemainingAudio && isReconnectingRealtimeSession
+        if !finalizesAcrossReconnect {
+            cancelRealtimeReconnect()
+        }
         polishAndCommitTask?.cancel()
         polishAndCommitTask = nil
         audio.cancelSendAndCommitTasks()
@@ -955,7 +1051,19 @@ final class DictationSessionController {
 
         audio.stopSessionAudioCapture()
         audio.audioDucking.restoreAfterSession()
-        audio.flushBufferedAudio(to: activeRealtimeClient)
+        if !finalizesAcrossReconnect, !audio.flushBufferedAudio(to: activeRealtimeClient),
+           finalizeRemainingAudio
+        {
+            // The socket closed and its `.disconnected` is still on its way
+            // to the main queue. The tail it refused waits in the buffer, and
+            // the stop reconnects for it as it would had the event come
+            // first (#1673).
+            Log.backends.notice("stop: the socket closed before the tail went out; reconnecting to finalize it")
+            finalizesAcrossReconnect = beginRealtimeReconnectIfPossible()
+            if !finalizesAcrossReconnect {
+                realtimeErrorDuringStop = true
+            }
+        }
         isDictating = false
         // An Overlay Buffer stop keeps Escape until its commit is done:
         // the text waits there on the final and the polish, and Escape
@@ -975,11 +1083,20 @@ final class DictationSessionController {
         }
 
         isFinalizingStop = true
+        stopAwaitsBackendFinal = true
+        stopFinalizationTimeout = finalizationTimeout
         statusText = StatusStrings.finalizing
-        setRealtimeIndicatorConnected()
         if isOverlayBufferModeEnabled {
             beginOverlayFinalization()
         }
+        if finalizesAcrossReconnect {
+            // The run finalizes once it is on a ready socket; the watchdog
+            // bounds how long the stop waits for that.
+            Log.backends.notice("stop during a reconnect; finalizing once the run reaches the server")
+            startStopFinalizationWatchdog()
+            return
+        }
+        setRealtimeIndicatorConnected()
         scheduleStopFinalization()
         startStopFinalizationWatchdog()
     }
@@ -1023,11 +1140,15 @@ final class DictationSessionController {
     /// Live Auto-Paste with "Copy on stop" on: after each final, the
     /// dictation so far goes to the clipboard, so it holds the whole
     /// dictation once the session stops. Silent, since the status line
-    /// belongs to the running session.
+    /// belongs to the running session. A segment pasted with Cmd+V (a code
+    /// fence in Claude Desktop) is read from the clipboard after this
+    /// returns, so the copy waits for the paste's restore (#1467).
     func autoCopyDictationSoFar() {
         let segment = lastFinalSegment.trimmed
         guard !segment.isEmpty else { return }
-        writeToPasteboard(segment)
+        textInsertion.writeClipboardAfterPendingPastes { [weak self] in
+            self?.writeToPasteboard(segment)
+        }
     }
 
     /// Copies the RAW (pre-polish) transcript of the last polish-changed commit
@@ -1129,8 +1250,10 @@ final class DictationSessionController {
         preCapturedSessionTargetVerdict = nil
         sessionTargetIsTerminalLike = verdict.decision.isTerminalLike
         sessionSecureInputActive = verdict.secureKeyboardEntryEnabled
+        // The session's mod takes the live text with no key (#1645).
+        let modTakesTheKeys = isLiveAutoPasteModeEnabled && context.agentPromptRoute is ClaudeModPromptRoute
 
-        if verdict.secureKeyboardEntryEnabled {
+        if verdict.secureKeyboardEntryEnabled, !modTakesTheKeys {
             // Never mask the Accessibility-trust warning — it explains a
             // total insertion failure, which outranks a secure-input maybe.
             if currentErrorToken != .accessibilityPermissionRequired {
@@ -1218,6 +1341,6 @@ extension DictationSessionController {
         joinedRepositoryRootLookup?.cancel()
         joinedRepositoryRootLookup = Task { [weak self] in await self?.lookUpJoinedRepositoryRoot() }
         noteDictationJoinedAgentSession(context.claudeSessionJoin?.snapshot.sessionID)
-        await context.resolveAgentPromptRoute(isCurrent: isCurrent)
+        await context.resolveAgentPromptRoute(liveAutoPaste: isLiveAutoPasteModeEnabled, isCurrent: isCurrent)
     }
 }
