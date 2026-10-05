@@ -4,7 +4,8 @@ import Foundation
 /// `https://claude.ai/epitaxy/project/chan_<id>`, with `?thread=cmsg_<id>`
 /// while one of its threads is open. MEASURED on Claude Desktop 2.16120.0
 /// (2026-10-01, #1194): the address of the web view holding the project chat's
-/// prompt box, and of the same view with a thread open.
+/// prompt box. The thread form is how the page links its threads; the
+/// address with a thread open is not measured yet.
 ///
 /// The page names the project and the thread, never a Claude Code session, so
 /// it joins nothing. It tells the app only that the dictation goes to coding

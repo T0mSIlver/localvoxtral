@@ -2288,7 +2288,7 @@ there is not.
     changes panel, or in the sidebar, is no join because the dictation is
     not going to a session. Each refusal logs its reason. One exception: a
     Claude project's page (`https://claude.ai/epitaxy/project/chan_…`, a
-    thread open or not; MEASURED on 2.16120.0, #1194) has no chat panel
+    thread open or not; MEASURED on 2.16120.0 for the project chat, #1194) has no chat panel
     element, so its address is read from anywhere in the primary pane. It
     names no session and joins nothing; it only gives the dictation the agent
     polish profile (`ClaudeJoinResolution.focusedClaudeProject`). `ClaudeDesktopSessionURL` parses

@@ -132,8 +132,8 @@ final class DesktopSessionClaudeJoinTests: XCTestCase {
 
     // MARK: - Claude projects (#1194)
 
-    // A Claude project's page, measured on Claude Desktop 2.16120.0: the
-    // project chat and the same page with a thread open. It names no session,
+    // A Claude project's page, measured on Claude Desktop 2.16120.0 for the
+    // project chat; the thread form is the page's own link. It names no session,
     // so nothing joins even with a live session, but the resolution says the
     // dictation goes to agents, and it is not an unmatched session view.
     func testAProjectPageJoinsNothingAndSaysItIsAProject() async {
