@@ -352,6 +352,7 @@ extension DictationSessionController {
                     status: llmConfigurationFailure == nil ? .sttCompleted : .llmFailed,
                     commitSucceeded: addressed.inserted,
                     polishContextSummary: payloadProvenanceSummary,
+                    stoppedAt: capturedStoppedAt,
                     clipboardPayload: clipboardPayload,
                     audio: capturedAudio,
                     joined: historyJoin
