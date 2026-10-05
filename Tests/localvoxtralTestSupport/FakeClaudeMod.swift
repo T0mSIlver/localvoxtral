@@ -30,14 +30,25 @@ package final class FakeClaudeMod: Sendable {
     package let knowsAppend: Bool
     /// Whether appends wait for `releaseHeldFills`, as behind a slow fill.
     package let holdsFills: Bool
+    /// The reason a `send` is refused with, the box left as it is.
+    package let refusesSend: String?
+    /// Counts every `send` written to it.
+    package let sends = EventCount()
     /// Counts every append written to it, filled or not.
     package let appends = EventCount()
 
-    package init(refuses: String? = nil, acksToAnswer: Int = .max, knowsAppend: Bool = true, holdsFills: Bool = false) {
+    package init(
+        refuses: String? = nil,
+        acksToAnswer: Int = .max,
+        knowsAppend: Bool = true,
+        holdsFills: Bool = false,
+        refusesSend: String? = nil
+    ) {
         self.refuses = refuses
         self.acksToAnswer = acksToAnswer
         self.knowsAppend = knowsAppend
         self.holdsFills = holdsFills
+        self.refusesSend = refusesSend
     }
 
     /// Fills the held appends in order, as the slow fill ahead of them ends.
@@ -111,6 +122,10 @@ package final class FakeClaudeMod: Sendable {
                 }
                 return .init(sessionID: sessionID, id: message.id, ok: true, seq: state.filled)
             case .send:
+                sends.increment()
+                if let refusesSend {
+                    return .init(sessionID: sessionID, id: message.id, ok: false, reason: refusesSend)
+                }
                 state.submitted.append(state.box + (message.text ?? ""))
                 state.box = ""
                 return .init(sessionID: sessionID, id: message.id, ok: true, submitted: true)

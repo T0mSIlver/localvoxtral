@@ -2138,6 +2138,28 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(typed.text, "")
     }
 
+    /// "send it" through the mod: the box held a slash command, so the mod
+    /// refused to submit. The words are in the box, nothing is typed or
+    /// returned, and the popover says the prompt was not sent.
+    func testALiveSpokenSendTheModRefusesSaysItWasNotSent() async throws {
+        let mod = FakeClaudeMod(refusesSend: "command")
+        let (pipeline, typed) = try await modLivePipeline(mod)
+        pipeline.viewModel.settings.liveSpokenSendEnabled = true
+
+        await startAndSpeak(pipeline)
+        let sink = try XCTUnwrap(pipeline.viewModel.textInsertion.promptRelaySink)
+        pipeline.server.send(["type": "transcription.delta", "delta": "run the tests, send"])
+        pipeline.server.send(["type": "transcription.done", "text": "run the tests, send it."])
+        await mod.sends.waitFor(1)
+        await sink.waitUntilIdle()
+
+        XCTAssertEqual(mod.box, "run the tests")
+        XCTAssertEqual(mod.submitted, [])
+        XCTAssertEqual(typed.text, "")
+        XCTAssertEqual(pipeline.viewModel.lastError, DictationSessionController.ModChannelStatus.filledNotSent)
+        await stopAndFinalize(pipeline, finalText: "run the tests, send it.")
+    }
+
     /// A newline the server sends is filled as text, where the keys would
     /// have turned it into a space so it could not submit the prompt.
     func testANewlineGoesToTheModAsText() async throws {
