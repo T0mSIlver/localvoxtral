@@ -178,24 +178,34 @@ final class AddressedSendTests: XCTestCase {
     }
 
     @MainActor
-    func testATerminalTabIsFocusedAndEverythingElseIsUnsupported() async {
+    func testATerminalTabOrADesktopSessionIsFocusedAndEverythingElseIsUnsupported() async {
         let registry = registry()
         let resolver = resolver(registry)
         var tab = ClaudeSessionSnapshot(sessionID: "tab", origin: local, firstSeen: Self.epoch)
         tab.process = ClaudeHookProcessInfo(hookPID: 1, claudePID: 2, tty: "/dev/ttys004", termProgram: "ghostty")
         var desktop = tab
-        desktop.process?.desktopSessionID = "local_x"
+        desktop.process?.desktopSessionID = "local_6d880b94-4414-4764-a024-c95df1af4456"
+        // An ssh-host Desktop session: its view is on this Mac (#1825).
+        var sshDesktop = ClaudeSessionSnapshot(sessionID: "ssh", origin: .remote(channel: "host-a"), firstSeen: Self.epoch)
+        sshDesktop.remoteEnvironment = ClaudeRemoteSessionEnvironment(
+            desktopSessionID: "local_eeda27ee-43ae-4ab3-8e26-0fdc50fb1c7c"
+        )
+        var oddDesktop = tab
+        oddDesktop.process?.desktopSessionID = "local_a.b"
         var cmux = tab
         cmux.process?.cmuxSurfaceID = "surface-1"
         let remote = ClaudeSessionSnapshot(
             sessionID: "far", origin: .remote(channel: "host-a"), firstSeen: Self.epoch
         )
 
-        guard case .terminalPane = await resolver.addressedRoute(for: tab) else {
-            return XCTFail("a plain terminal tab is focused, typed into, then Return")
+        for (session, label) in [(tab, "a plain terminal tab"), (desktop, "a Desktop session"), (sshDesktop, "an ssh-host Desktop session")] {
+            guard case .focusedPane = await resolver.addressedRoute(for: session) else {
+                XCTFail("\(label) is focused, typed into, then Return")
+                continue
+            }
         }
         let cases: [(ClaudeSessionSnapshot, SessionPaneFocusUnsupported)] = [
-            (desktop, .claudeDesktop), (cmux, .cmux), (remote, .remote),
+            (oddDesktop, .claudeDesktop), (cmux, .cmux), (remote, .remote),
         ]
         for (session, expected) in cases {
             guard case .unsupported(let reason) = await resolver.addressedRoute(for: session) else {
