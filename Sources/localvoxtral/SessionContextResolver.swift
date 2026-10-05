@@ -258,10 +258,7 @@ final class SessionContextResolver {
         let start = TerminalScreenContextSource.frontmostTarget()
         let sessionID: String
         if let join = claudeSessionJoin {
-            let terminal: [ClaudeSessionJoinMechanism] = [.ttyDevice, .herdrPane, .cmuxSurface]
-            guard join.snapshot.agent == .claude, join.snapshot.origin.isLocalAuthenticated,
-                  terminal.contains(join.mechanism)
-            else { return nil }
+            guard ClaudePromptDraft.fillsPrompt(through: join) else { return nil }
             sessionID = join.snapshot.sessionID
         } else {
             guard !contextJoinAskedTheArms, let start,
@@ -278,7 +275,7 @@ final class SessionContextResolver {
             // focused pane still this session, and keys not swallowed.
             guard !TerminalTargetDetector.isSecureKeyboardEntryEnabled(),
                   let target = TerminalScreenContextSource.frontmostTarget(), target.pid == startPID,
-                  await resolver.sessionShown(target: target) == sessionID
+                  await resolver.shows(sessionID, target: target)
             else { return false }
             return TerminalScreenContextSource.frontmostTarget()?.pid == startPID
         })

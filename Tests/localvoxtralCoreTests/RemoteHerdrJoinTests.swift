@@ -58,6 +58,14 @@ private final class RemoteJoinSSHConfigRunner: @unchecked Sendable {
     }
 }
 
+/// A value a test changes while a join is in flight.
+private final class LockedBox<Value: Sendable>: Sendable {
+    private let value: Mutex<Value>
+    init(_ value: Value) { self.value = Mutex(value) }
+    func get() -> Value { value.withLock { $0 } }
+    func set(_ new: Value) { value.withLock { $0 = new } }
+}
+
 // MARK: - Resolver: the remote herdr arm
 
 /// A Claude Code session inside a herdr on an ENROLLED REMOTE host.
@@ -155,6 +163,41 @@ final class RemoteHerdrJoinTests: XCTestCase, RemoteHerdrJoinFixture {
                 )
             }
         }
+    }
+
+    // MARK: Keyboard fallback
+
+    /// A remote mod refused a fill: keys go to the terminal only while it
+    /// still shows the joined pane (Codex review of #1780, 2026-10-04). The
+    /// arm reads the focused pane before its foreground query; a pane or tab
+    /// switch during that query must not leave the answer true.
+    func testAPaneOrTabSwitchDuringTheForegroundQueryTypesNothing() async throws {
+        let sessionID = try XCTUnwrap(ingestRemoteHerdrSession(into: makeRegistry())).sessionID
+        for (name, moves) in [("no switch", false), ("pane switch", true)] {
+            let registry = makeRegistry()
+            ingestRemoteHerdrSession(into: registry)
+            let other = focusedPane(paneID: "pane-remote-8")
+            let panes = LockedBox<RemoteJoinHerdrPanes?>(nil)
+            let fake = RemoteJoinHerdrPanes(
+                focused: focusedPane(),
+                duringForegroundQuery: { if moves { panes.get()?.focus(other) } }
+            )
+            panes.set(fake)
+
+            let shown = await resolver(registry: registry, panes: fake, forwards: RecordingForwards())
+                .shows(sessionID, target: ghostty)
+
+            XCTAssertEqual(shown, !moves, name)
+        }
+
+        let registry = makeRegistry()
+        ingestRemoteHerdrSession(into: registry)
+        let tty = LockedBox<String?>(surfaceTTY)
+        let fake = RemoteJoinHerdrPanes(focused: focusedPane(), duringForegroundQuery: { tty.set("/dev/ttys-other-tab") })
+        let afterTabSwitch = await resolver(
+            registry: registry, panes: fake, forwards: RecordingForwards(), focusedTTY: { tty.get() }
+        ).shows(sessionID, target: ghostty)
+        XCTAssertFalse(afterTabSwitch, "tab switch")
     }
 
     // MARK: Happy path

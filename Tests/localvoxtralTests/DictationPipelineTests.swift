@@ -1758,6 +1758,36 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(recorder.states.last?.phase, .done)
     }
 
+    /// A session on an enrolled host whose mod polls through the forward
+    /// (#1412): the commit fills its prompt through the mod, and no key goes
+    /// to the terminal running ssh.
+    func testAnOverlayCommitIntoARemoteSessionWithAModFillsItsPromptAndTypesNothing() async throws {
+        let (pipeline, typed, fills) = try await modChannelPipeline(answers: [.fill], remote: true)
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "run the tests.")
+        let filled = await settled.wait(for: 1)
+
+        XCTAssertTrue(filled)
+        XCTAssertEqual(fills.texts, ["run the tests."])
+        XCTAssertEqual(typed.text, "", "no key went to the terminal")
+    }
+
+    /// The remote mod refused: the words are typed, because the frontmost
+    /// terminal's join, resolved again, still names the session; a remote
+    /// session has no tty on this Mac to look up instead.
+    func testARemoteFillTheModRefusesIsTypedWhileTheTerminalStillJoinsTheSession() async throws {
+        let (pipeline, typed, fills) = try await modChannelPipeline(answers: [.refuse], remote: true)
+
+        await dictate(pipeline, "run the tests.")
+        let typedAll = await typed.waitFor("run the tests.")
+
+        XCTAssertTrue(typedAll, "typed: \(typed.text.debugDescription)")
+        XCTAssertEqual(fills.texts, ["run the tests."])
+    }
+
     /// The mod could not fill (a dialog held the keys): the words go in by
     /// keyboard, once.
     func testAFillTheModRefusesIsTypedInstead() async throws {
@@ -2032,6 +2062,7 @@ final class DictationPipelineTests: XCTestCase {
         answerGate: BoundedWait? = nil,
         drafts: [(text: String, cursor: Int)] = [],
         returnKeyPoster: ((pid_t) -> Bool)? = nil,
+        remote: Bool = false,
         beforeAnswer: @escaping @Sendable () -> Void = {}
     ) async throws -> (Pipeline, TypedText, FillRecorder) {
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
@@ -2039,7 +2070,10 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.overlay.insertsThroughCommitter = true
         pipeline.overlay.commitTargetAppPID = 4343
         pipeline.overlay.passesTargetPIDToCommitter = false
-        if let herdr {
+        let sessionID = remote ? joinRemoteHerdrPane(pipeline) : "s1"
+        if remote {
+            // Joined above.
+        } else if let herdr {
             joinHerdrPane(pipeline, herdr: herdr, ttyRead: { herdrFocus?.read(.tty) })
         } else {
             var focusedTTY: (@Sendable () -> String)?
@@ -2055,7 +2089,7 @@ final class DictationPipelineTests: XCTestCase {
             : { @Sendable _ in try? await Task.sleep(for: .seconds(3600)) }
         let hub = ClaudeModChannelHub(sleep: sleep)
         let fills = FillRecorder()
-        _ = hub.attach(sessionID: "s1", channel: .init(
+        _ = hub.attach(sessionID: sessionID, channel: .init(
             write: { line in
                 guard let message = ClaudeModChannelWire.decode(
                     ClaudeModChannelWire.Message.self, from: line.dropLast()
@@ -2068,7 +2102,7 @@ final class DictationPipelineTests: XCTestCase {
                     // A mod older than `draft` is one that is never asked.
                     guard !drafts.isEmpty else { return false }
                     let box = drafts[min(fills.takeDraftIndex(), drafts.count - 1)]
-                    hub.deliver(.init(sessionID: "s1", id: message.id, ok: true, text: box.text, cursor: box.cursor))
+                    hub.deliver(.init(sessionID: sessionID, id: message.id, ok: true, text: box.text, cursor: box.cursor))
                     return true
                 }
                 if message.kind == .abort {
@@ -2078,7 +2112,7 @@ final class DictationPipelineTests: XCTestCase {
                     guard answer != .silent else { return true }
                     let ok = answer != .refuse
                     hub.deliver(.init(
-                        sessionID: "s1", id: message.id, ok: ok,
+                        sessionID: sessionID, id: message.id, ok: ok,
                         reason: ok ? nil : ClaudeModChannelWire.Reply.noTurnReason
                     ))
                     return true
@@ -2090,7 +2124,7 @@ final class DictationPipelineTests: XCTestCase {
                 if answer != .silent {
                     let ok = answer != .refuse
                     let reply = ClaudeModChannelWire.Reply(
-                        sessionID: "s1", id: message.id, ok: ok, reason: ok ? nil : "dialog",
+                        sessionID: sessionID, id: message.id, ok: ok, reason: ok ? nil : "dialog",
                         submitted: message.kind == .send && ok ? true : nil,
                         queued: answer == .queued ? true : nil
                     )
@@ -3625,6 +3659,37 @@ final class DictationPipelineTests: XCTestCase {
             TerminalTargetDetector.debugSecureEventInputOverride = nil
         }
         return registry
+    }
+
+    /// Joins the dictation to a Claude Code session in a herdr pane on an
+    /// enrolled host (#1412), through the remote herdr arm and the shared
+    /// fixture world, with polishing on (a fake polisher) and screen context.
+    /// Returns the session's scoped id.
+    private func joinRemoteHerdrPane(_ pipeline: Pipeline) -> String {
+        let settings = pipeline.viewModel.settings
+        settings.llmPolishingEnabled = true
+        settings.llmPolishingEndpointURL = "http://127.0.0.1:8080/v1/chat/completions"
+        settings.terminalScreenContextEnabled = true
+        pipeline.viewModel.llmPolishingService = FakePolishingService()
+        let registry = makeRegistry()
+        let snapshot = ingestRemoteHerdrSession(into: registry)
+        pipeline.viewModel.context.claudeSessionJoinResolver = resolver(
+            registry: registry,
+            panes: RemoteJoinHerdrPanes(focused: focusedPane()),
+            forwards: RecordingForwards()
+        )
+        let ghostty = TerminalScreenAllowlist.ghosttyBundleID
+        TerminalScreenContextSource.debugFrontmostTargetOverride = {
+            TerminalScreenTarget(pid: 4343, bundleID: ghostty)
+        }
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { ghostty }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        addTeardownBlock { @MainActor in
+            TerminalScreenContextSource.debugFrontmostTargetOverride = nil
+            TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
+            TerminalTargetDetector.debugSecureEventInputOverride = nil
+        }
+        return snapshot?.sessionID ?? ""
     }
 
     /// Joins the dictation to a Claude Code session in herdr pane `w1:p2`
@@ -5337,3 +5402,5 @@ private final class SessionRecords {
     }
 }
 #endif
+
+extension DictationPipelineTests: RemoteHerdrJoinFixture {}
