@@ -400,17 +400,21 @@ there is not.
   route asks both again before every append and Enter, the mapping after
   the foreground query, since `/clear` starts another session in the same
   process and pane); (3) a Ghostty, iTerm2 or Terminal.app
-  tab. Anything else, cmux included (its route can prove a surface only
-  while it is the focused one), is refused in one sentence. Every route
+  tab, or a Claude Desktop session view (#1825), on this Mac or on an ssh
+  host, since its view is on this Mac either way. Anything else, cmux
+  included (its route can prove a surface only while it is the focused
+  one), is refused in one sentence. Every route
   refusal is `keepInHistory`, never `typeInstead`: keys would go to the
-  focused app. **The Return exception** (owner ruling): in a terminal tab,
+  focused app. **The Return exception** (owner ruling, which names Claude
+  Desktop with the terminals): in a terminal tab or a Desktop session view,
   and only there, Return may be pressed in an app the app itself brought
-  forward. The pane must first read back `.focused` (its tty through the
-  join's reader, never a window title) and the registry still list the
+  forward. The pane must first read back `.focused` (a tab's tty through the
+  join's reader, a Desktop view's `local_` id through the Desktop arm's
+  reader, never a window title) and the registry still list the
   session after the focus, since the shell left by an agent that exited
   holds the same tty (#1219); only then is the text typed, into
   the terminal pid that is frontmost and carries the focused bundle ID.
-  After the typing the tty is read back again, and Return is pressed only
+  After the typing the pane is read back again, and Return is pressed only
   if it still matches, the registry still lists the session after that
   read-back, that pid is frontmost and on `ReturnSubmitsAppList`,
   and Secure Keyboard Entry is off. A failed check before the typing types

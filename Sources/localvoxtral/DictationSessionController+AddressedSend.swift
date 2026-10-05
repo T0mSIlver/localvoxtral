@@ -137,8 +137,8 @@ extension DictationSessionController {
             let saveNotInserted = saveInterruptedPolishCommit
             saveInterruptedPolishCommit = nil
             return await commitOverlayThroughAddressedRoute(route, saveNotInserted: saveNotInserted)
-        case .terminalPane:
-            return await commitOverlayIntoTerminalPane(of: session)
+        case .focusedPane:
+            return await commitOverlayIntoFocusedPane(of: session)
         }
     }
 
@@ -205,10 +205,11 @@ extension DictationSessionController {
     }
 
     /// The owner's Return ruling on #723: the pane is brought forward, and
-    /// only when its tty reads back as the session's is the text typed.
-    /// Return follows only when it still does after the typing, the terminal
-    /// is frontmost, and Secure Keyboard Entry is off.
-    private func commitOverlayIntoTerminalPane(of session: ClaudeSessionSnapshot) async -> AddressedCommit? {
+    /// only when it reads back as the session's (a terminal tab by its tty,
+    /// a Claude Desktop view by its `local_` id) is the text typed. Return
+    /// follows only when it still does after the typing, the app is
+    /// frontmost, and Secure Keyboard Entry is off.
+    private func commitOverlayIntoFocusedPane(of session: ClaudeSessionSnapshot) async -> AddressedCommit? {
         guard let navigator = sessionNavigator else {
             saveInterruptedPolishCommit = nil
             return .notSent(AddressedSendStatus.unsupported)
