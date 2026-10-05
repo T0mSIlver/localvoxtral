@@ -110,6 +110,7 @@ extension ClaudeRemoteEnrollmentService {
     public func setupRemotePlugin(
         sshHostAlias: String,
         token: String?,
+        channelKey: String? = nil,
         remoteForwardPort: UInt16,
         marketplace: ClaudeRemoteMarketplaceFiles? = .bundled(),
         timeout: TimeInterval = defaultRemoteSetupTimeout
@@ -129,9 +130,6 @@ extension ClaudeRemoteEnrollmentService {
                 message: "This build's remote plugin files are missing."
             )
         }
-        let tokenArguments = token.map {
-            " --config '\(Self.tokenConfigKey)=\($0)'"
-        } ?? ""
 
         func run(_ script: String, command: String) throws -> RunResult {
             do {
@@ -200,7 +198,8 @@ extension ClaudeRemoteEnrollmentService {
         let preamble = "set -eu\n" + Self.claudePathResolverPreamble
             + Self.remoteMarketplaceWriteScript(marketplace)
             + "claude plugin marketplace add \"$M\"\n"
-        let install = "claude plugin install \(reference)\(tokenArguments) --config '\(Self.portConfigKey)=\(remoteForwardPort)'"
+        let install = "claude plugin install \(reference) --config '\(Self.portConfigKey)=\(remoteForwardPort)'"
+            + Self.remoteSecretsConfigureScript(token: token, channelKey: channelKey, removeOnFailure: before == nil)
         let mutation: String
         let outcome: PluginSetupOutcome
         switch before {
@@ -236,6 +235,15 @@ extension ClaudeRemoteEnrollmentService {
         }
 
         let mutationResult = try run(mutation, command: "install and verify remote plugin")
+        if mutationResult.exitCode == Self.tokenConfigureExitCode {
+            throw ServiceError.commandFailed(
+                step: 0,
+                command: "install and verify remote plugin",
+                exitCode: mutationResult.exitCode,
+                message: "Claude Code on the host could not store the token. "
+                    + "Update Claude Code there, then run setup again."
+            )
+        }
         guard mutationResult.succeeded else {
             let message = mutationResult.exitCode == 127
                 ? "Claude CLI was not found on the remote host. "
@@ -251,13 +259,78 @@ extension ClaudeRemoteEnrollmentService {
 
         let after = try installedVersion(command: "verify remote plugin")
         guard after == expected else {
+            // The host's listing could carry anything, the token among it:
+            // only a version shape reaches the alert, and redacted too.
+            let reported = after.map { Self.looksLikePluginVersion($0) ? "version \($0)" : "an unreadable version" }
+                ?? "version none"
             throw ServiceError.commandFailed(
                 step: 0,
                 command: "install and verify remote plugin",
                 exitCode: 43,
-                message: "The plugin reports version \(after ?? "none") after setup, not \(expected)."
+                message: ClaudeRemoteTokenRedaction.redact(
+                    "The plugin reports \(reported) after setup, not \(expected).", token: token ?? ""
+                )
             )
         }
         return outcome
+    }
+
+    /// Dot-separated numbers, as every version this plugin ships carries.
+    static func looksLikePluginVersion(_ version: String) -> Bool {
+        version.count <= 32 && version.split(separator: ".", omittingEmptySubsequences: false)
+            .allSatisfy { !$0.isEmpty && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) }
+    }
+
+    /// What the mutation script exits with when `claude plugin configure`
+    /// refused the token, typically a Claude Code too old to have
+    /// `--values-stdin`.
+    package static let tokenConfigureExitCode: Int32 = 48
+
+    /// Stores `token` in the installed plugin's config from a here-document,
+    /// never from argv: a host's process list shows every account each
+    /// process's command line, and `install --config 'token=…'` put the token
+    /// there for as long as the install ran (#1621). `--values-stdin` merges
+    /// per key, so the port stays, and stores the value where `--config` does
+    /// (both verified on Claude Code 2.1.287). The JSON is one line, so the
+    /// token cannot end the here-document early.
+    ///
+    /// A fresh install that cannot take its token is removed again, so the
+    /// next setup installs it with one instead of reporting a tokenless
+    /// plugin current.
+    package static func remoteTokenConfigureScript(
+        token: String, channelKey: String? = nil, removeOnFailure: Bool
+    ) -> String {
+        var values = [tokenConfigKey: token]
+        values[channelKeyConfigKey] = channelKey
+        return configureScript(values: values, onFailure: "{ \(removeOnFailure ? uninstallQuietly : "")exit \(tokenConfigureExitCode); }")
+    }
+
+    /// The plugin's secrets for this run: the token, when the run has one,
+    /// with the mod channel key (#1412); otherwise the key alone, which a
+    /// host set up before the key existed gets on its next setup with no new
+    /// token. A Claude Code that cannot store the key alone fails nothing:
+    /// it is too old to load the mod that reads it.
+    package static func remoteSecretsConfigureScript(
+        token: String?, channelKey: String?, removeOnFailure: Bool
+    ) -> String {
+        if let token {
+            return "\n" + remoteTokenConfigureScript(token: token, channelKey: channelKey, removeOnFailure: removeOnFailure)
+        }
+        guard let channelKey else { return "" }
+        return "\n" + configureScript(values: [channelKeyConfigKey: channelKey], onFailure: "true")
+    }
+
+    private static let uninstallQuietly = "claude plugin uninstall \(remotePluginReference) >/dev/null 2>&1 || true; "
+
+    private static func configureScript(values: [String: String], onFailure: String) -> String {
+        let json = (try? JSONSerialization.data(
+            withJSONObject: values, options: [.sortedKeys]
+        )).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+        let delimiter = heredocDelimiter(for: json, seed: "TOKEN")
+        return """
+            claude plugin configure \(remotePluginReference) --values-stdin <<'\(delimiter)' || \(onFailure)
+            \(json)
+            \(delimiter)
+            """
     }
 }

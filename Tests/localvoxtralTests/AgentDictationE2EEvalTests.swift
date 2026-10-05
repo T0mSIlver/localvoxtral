@@ -951,7 +951,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             guard (response as? HTTPURLResponse)?.statusCode == 200 else {
                 throw EvalInfraError("download failed for \(name): \(response)")
             }
-            try FileManager.default.moveItem(at: temporary, to: destination)
+            try SharedCacheFile.publish(temporary, at: destination)
         }
 
         if pinnedRevision == nil {

@@ -23,7 +23,13 @@ package enum ClaudeIntegrationLiveIO {
     /// same-filesystem and atomic. Mirrors the two existing writers syscall
     /// for syscall (`O_EXCL | O_NOFOLLOW`, `fchmod`, full write with EINTR
     /// retry, `fsync`, `rename`, unlink-on-failure).
-    package static func atomicWrite(_ data: Data, to destinationURL: URL, permissions: UInt16) throws {
+    ///
+    /// With `replacing`, the rename happens only while the destination still
+    /// holds those bytes (`.some(nil)`: no file), the ones the caller read;
+    /// otherwise nothing is written and `ChangedOnDisk` is thrown (#1726).
+    package static func atomicWrite(
+        _ data: Data, to destinationURL: URL, permissions: UInt16, replacing expected: Data?? = nil
+    ) throws {
         let directoryURL = destinationURL.deletingLastPathComponent()
         let temporaryURL = directoryURL.appendingPathComponent(
             ".localvoxtral-install.\(UUID().uuidString)", isDirectory: false
@@ -60,11 +66,24 @@ package enum ClaudeIntegrationLiveIO {
             }
         }
         guard fsync(descriptor) == 0 else { throw POSIXFailure(operation: "fsync", code: errno) }
+        if let expected, !leaf(at: destinationURL, holds: expected) { throw ChangedOnDisk() }
         let moved = temporaryURL.path.withCString { source in
             destinationURL.path.withCString { destination in rename(source, destination) }
         }
         guard moved == 0 else { throw POSIXFailure(operation: "rename", code: errno) }
         renamed = true
+    }
+
+    /// The destination no longer holds what the caller read: another
+    /// program saved it in between.
+    package struct ChangedOnDisk: Error {}
+
+    /// Whether the leaf at `url` holds `expected`, nil meaning no file. A
+    /// symlink or a failed read holds nothing a caller read.
+    package static func leaf(at url: URL, holds expected: Data?) -> Bool {
+        let current = readLeaf(at: url)
+        guard current.exists else { return expected == nil }
+        return !current.isSymlink && current.data != nil && current.data == expected
     }
 
     /// Read-or-absent for a leaf file: nil data with `exists == true` means
@@ -213,12 +232,16 @@ package struct LiveOpencodePluginFileSystem: OpencodePluginFileSystem {
         )
     }
 
-    package func atomicWritePlugin(_ data: Data, permissions: UInt16) throws {
-        try ClaudeIntegrationLiveIO.atomicWrite(data, to: pluginURL, permissions: permissions)
+    package func atomicWritePlugin(_ data: Data, permissions: UInt16, replacing expected: Data?) throws {
+        try Self.refusingAChangedFile {
+            try ClaudeIntegrationLiveIO.atomicWrite(data, to: pluginURL, permissions: permissions, replacing: expected)
+        }
     }
 
-    package func atomicWriteTUI(_ data: Data, permissions: UInt16) throws {
-        try ClaudeIntegrationLiveIO.atomicWrite(data, to: tuiURL, permissions: permissions)
+    package func atomicWriteTUI(_ data: Data, permissions: UInt16, replacing expected: Data?) throws {
+        try Self.refusingAChangedFile {
+            try ClaudeIntegrationLiveIO.atomicWrite(data, to: tuiURL, permissions: permissions, replacing: expected)
+        }
     }
 
     package func deletePlugin() throws {
@@ -227,9 +250,18 @@ package struct LiveOpencodePluginFileSystem: OpencodePluginFileSystem {
         }
     }
 
-    package func deleteTUI() throws {
-        if FileManager.default.fileExists(atPath: tuiURL.path) {
-            try FileManager.default.removeItem(at: tuiURL)
+    package func deleteTUI(replacing expected: Data) throws {
+        guard ClaudeIntegrationLiveIO.leaf(at: tuiURL, holds: expected) else {
+            throw OpencodePluginInstallService.ServiceError.changedOnDisk
+        }
+        try FileManager.default.removeItem(at: tuiURL)
+    }
+
+    private static func refusingAChangedFile(_ body: () throws -> Void) throws {
+        do {
+            try body()
+        } catch is ClaudeIntegrationLiveIO.ChangedOnDisk {
+            throw OpencodePluginInstallService.ServiceError.changedOnDisk
         }
     }
 }

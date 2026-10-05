@@ -11,7 +11,8 @@ import Glibc
 import Glibc
 #endif
 
-/// Is a herdr client (app-mode `herdr` process) attached to this TTY device?
+/// Is a whole-view herdr client (app-mode `herdr` process) in the foreground
+/// of this TTY device?
 /// This is what binds "Ghostty's focused surface" to "herdr is what that
 /// surface displays" — the socket API has no client introspection.
 package protocol HerdrClientTTYProbing: Sendable {
@@ -26,30 +27,45 @@ package enum HerdrClientTTYProbe {
         isHerdrClient(
             onTTYDevicePath: path,
             deviceID: liveDeviceID,
-            processNames: liveProcessNames
+            processes: TTYProcessTable.entries(onDevice:),
+            arguments: SSHDestinationTTYProbe.processArguments(pid:)
         )
     }
 
     package static func isHerdrClient(
         onTTYDevicePath path: String,
         deviceID: @Sendable (String) -> dev_t?,
-        processNames: @Sendable (dev_t) -> [String]?
+        processes: @Sendable (dev_t) -> [TTYProcessTable.Entry]?,
+        arguments: (Int32) -> [String]?
     ) -> Bool {
         guard let device = deviceID(path),
-              let names = processNames(device)
+              let entries = processes(device)
         else { return false }
-        return names.contains("herdr")
+        // The client must be the job the terminal gives its input to. A
+        // suspended client (Ctrl-Z) keeps the tty while its shell is what the
+        // surface shows, and the inner agent it hides still passes every pane
+        // check (#1602).
+        let clients = entries.filter {
+            $0.name == "herdr" && $0.processGroupID > 0 && $0.processGroupID == $0.terminalForegroundGroupID
+        }
+        // Every herdr process in that job must be a whole-view client, by the
+        // classifier the remote arm applies to an ssh command. The arms read
+        // the server's one focused pane; `herdr terminal attach <id>` shows
+        // ONE pane without moving that focus, and `herdr --remote` shows another
+        // server, so either would bind a pane the surface does not show.
+        // Unreadable argv refuses.
+        return !clients.isEmpty && clients.allSatisfy { client in
+            guard let argv = arguments(client.pid),
+                  case .plainClient = SSHDestinationTTYProbe.classifyHerdrCommand(argv)
+            else { return false }
+            return true
+        }
     }
 
     /// Both live reads are the SHARED walk (`TTYProcessTable`), so this probe
     /// and the ssh-destination probe cannot drift apart on what "on this tty"
-    /// means. The injected-seam signatures above are unchanged: this one only
-    /// ever needs names, and says so by throwing the pids away here.
+    /// means.
     private static let liveDeviceID: @Sendable (String) -> dev_t? = TTYProcessTable.liveDeviceID
-
-    private static let liveProcessNames: @Sendable (dev_t) -> [String]? = { device in
-        TTYProcessTable.entries(onDevice: device)?.map(\.name)
-    }
 
     /// How many terminal surfaces this user has a herdr client on, or nil when
     /// the process table cannot be walked.

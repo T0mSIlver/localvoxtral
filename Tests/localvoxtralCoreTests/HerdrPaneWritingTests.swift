@@ -140,6 +140,22 @@ final class HerdrPaneWritingTests: XCTestCase {
         XCTAssertEqual(toWrongType, .unknown)
     }
 
+    /// An answer carrying both `result` and `error` contradicts itself: the
+    /// write may have landed, so it is not a refusal that would let the
+    /// keyboard fallback type the text a second time.
+    func testAnAnswerWithBothResultAndErrorIsUnknown() async throws {
+        let herdr = try FakeHerdrSocket { _ in
+            .result(#"{"type":"ok"},"error":{"code":"pane_not_found","message":"m"}"#)
+        }
+        defer { herdr.stop() }
+
+        let sent = await client.sendText(socketPath: herdr.socketPath, paneID: "w1:p2", text: "x")
+        let pressed = await client.pressEnter(socketPath: herdr.socketPath, paneID: "w1:p2")
+
+        XCTAssertEqual(sent, .unknown)
+        XCTAssertEqual(pressed, .unknown)
+    }
+
     /// Nothing reached a socket: a refusal.
     func testARelativeOrMissingSocketPathIsRefused() async {
         let relative = await client.sendText(socketPath: "herdr.sock", paneID: "w1:p2", text: "x")

@@ -70,8 +70,11 @@ final class DictationViewModelAudioDuckingTests: XCTestCase {
         let (viewModel, volume) = await makeDuckedSession(
             lifecycleCenter: NotificationCenter(), workspaceCenter: workspaceCenter)
 
-        workspaceCenter.post(name: NSWorkspace.willSleepNotification, object: nil)
-        await Task.yield()
+        // The observer stops the session from a task of its own; the stop
+        // starts the restore fade before it clears `isDictating`.
+        await awaitNextWrite(of: { viewModel.isDictating }) {
+            workspaceCenter.post(name: NSWorkspace.willSleepNotification, object: nil)
+        }
         await viewModel.audio.audioDucking.debugFadeTask?.value
 
         assertVolume(volume.volume(of: Self.deviceA), Self.original)

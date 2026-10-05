@@ -46,6 +46,12 @@ package final class QuickCaptureInboxModel {
     private let launch = UUID()
     private let isProcessRunning: (Int32) -> Bool
     private let write: (Data, URL) throws -> Void
+    /// Waits out the time an interrupted filing may still reach GitHub.
+    private let sleep: @Sendable (TimeInterval) async -> Void
+    /// The filings this copy's File or Comment is sending now, by claim.
+    private var sending: Set<UUID> = []
+    /// The interrupted filings this copy is looking up, by claim (#1509).
+    private var lookups: [UUID: Task<Void, Never>] = [:]
     /// The latest draft run per capture: an older run's answer is dropped.
     private var draftRuns: [UUID: Int] = [:]
     private var draftRunCount = 0
@@ -82,8 +88,10 @@ package final class QuickCaptureInboxModel {
         now: @escaping @MainActor () -> Date = { Date() },
         processID: Int32 = getpid(),
         isProcessRunning: @escaping (Int32) -> Bool = QuickCaptureInboxModel.isRunning,
-        write: @escaping (Data, URL) throws -> Void = PrivateFile.write
+        write: @escaping (Data, URL) throws -> Void = PrivateFile.write,
+        sleep: @escaping @Sendable (TimeInterval) async -> Void = { try? await Task.sleep(for: .seconds($0)) }
     ) {
+        self.sleep = sleep
         self.processID = processID
         self.isProcessRunning = isProcessRunning
         self.write = write
@@ -107,6 +115,7 @@ package final class QuickCaptureInboxModel {
         inbox = loaded
         recoverAbandonedRuns()
         adoptProjects()
+        reconcileInterruptedFilings()
     }
 
     /// This copy, as the runs it starts name it.
@@ -128,12 +137,149 @@ package final class QuickCaptureInboxModel {
 
     /// Ends the runs and filings a quit left (#1507), as one transaction
     /// with every other running copy: a copy that still holds one of those
-    /// runs in memory then writes on top of the recovery, not over it.
+    /// runs in memory then writes on top of the recovery, not over it. An
+    /// interrupted filing becomes this copy's to look up on GitHub (#1509).
     private func recoverAbandonedRuns() {
         let isLive = self.isLive
-        guard QuickCaptureInboxFile.resumingInterrupted(inbox, isLive: isLive) != inbox else { return }
+        let owner = self.owner
+        guard QuickCaptureInboxFile.resumingInterrupted(inbox, isLive: isLive, reconciler: owner) != inbox else { return }
         Log.persistence.notice("Quick capture inbox: ending runs a quit left")
-        mutate { $0 = QuickCaptureInboxFile.resumingInterrupted($0, isLive: isLive) }
+        mutate { $0 = QuickCaptureInboxFile.resumingInterrupted($0, isLive: isLive, reconciler: owner) }
+    }
+
+    // MARK: Interrupted filings (#1509)
+
+    /// Looks up on GitHub each filing a quit interrupted that this copy
+    /// took over: found, the capture is filed with its URL; ruled out, it
+    /// can be filed again; neither, it waits for the user. Returns a task
+    /// that ends when every lookup has, for tests to await.
+    @discardableResult
+    package func reconcileInterruptedFilings() -> Task<Void, Never> {
+        let owner = self.owner
+        for item in inbox.items where item.state == .filing {
+            guard let claim = item.filingClaim, claim.copy == owner, let at = claim.at,
+                  !sending.contains(claim.id), lookups[claim.id] == nil,
+                  let repository = claim.repository ?? item.repository
+            else { continue }
+            lookUp(item.id, claim: claim, at: at, repository: repository)
+        }
+        let pending = Array(lookups.values)
+        return Task { for task in pending { await task.value } }
+    }
+
+    /// Starts the GitHub lookup of claim `claim`, which this copy holds.
+    @discardableResult
+    private func lookUp(
+        _ id: UUID, claim: QuickCaptureItem.FilingClaim, at: Date, repository: String,
+        notFoundNote: String = "The interrupted filing never reached GitHub.",
+        unknownNote: String = QuickCaptureInboxFile.unconfirmedNote
+    ) -> Task<Void, Never> {
+        let task = Task { @MainActor [weak self] in
+            await self?.reconcile(
+                id, claim: claim, at: at, repository: repository, notFoundNote: notFoundNote, unknownNote: unknownNote)
+            self?.lookups[claim.id] = nil
+        }
+        lookups[claim.id] = task
+        return task
+    }
+
+    /// A File or Comment whose `gh` failed after it may have sent (#1541):
+    /// the capture stays claimed until GitHub is asked, as after a relaunch.
+    private func lookUpUncertainFiling(
+        _ id: UUID, claim: QuickCaptureItem.FilingClaim, repository: String, failedNote: String
+    ) async {
+        guard let at = claim.at else { return }
+        Log.backends.notice("Quick capture: gh failed after it may have sent; looking on GitHub before sending again")
+        let lookup = lookUp(
+            id, claim: claim, at: at, repository: repository,
+            notFoundNote: failedNote, unknownNote: QuickCaptureInboxFile.uncertainNote)
+        mutate { inbox in
+            inbox.update(id) {
+                guard $0.state == .filing, $0.filingClaim?.id == claim.id else { return }
+                $0.note = QuickCaptureInboxFile.checkingGitHubNote
+            }
+        }
+        await lookup.value
+    }
+
+    private func reconcile(
+        _ id: UUID, claim: QuickCaptureItem.FilingClaim, at: Date, repository: String,
+        notFoundNote: String, unknownNote: String
+    ) async {
+        let wait = at.addingTimeInterval(QuickCaptureFiling.settleSeconds).timeIntervalSince(now())
+        if wait > 0 {
+            Log.backends.notice("Quick capture: an interrupted filing may still reach GitHub, looking in \(Int(wait), privacy: .public) s")
+            await sleep(wait)
+        }
+        let lookup = await github.findFiled(
+            repository: repository, issue: claim.commentOn, marker: QuickCaptureFiling.marker(claim: claim.id), since: at)
+        let moment = now()
+        var filed: QuickCaptureItem?
+        let saveFailure = mutate { inbox in
+            inbox.update(id) { item in
+                guard item.state == .filing, item.filingClaim?.id == claim.id else { return }
+                switch lookup {
+                case .found(let url):
+                    item.state = .filed
+                    item.filedURL = url
+                    item.filedAt = moment
+                    item.commentedOn = claim.commentOn
+                    item.note = nil
+                    filed = item
+                case .notFound:
+                    item.state = .ready
+                    item.note = notFoundNote
+                case .unknown:
+                    item.state = .ready
+                    item.unconfirmedFiling = claim
+                    item.note = unknownNote
+                }
+            }
+        }
+        guard let filed else { return }
+        Log.backends.notice("Quick capture: an interrupted filing had reached GitHub, recorded")
+        if saveFailure == nil {
+            for captureID in filed.captureIDs { onDone?(captureID) }
+        }
+        let destination = claim.commentOn.map { "Commented on \(repository)#\($0)" } ?? "Filed in \(repository)"
+        for recordID in historyRecordIDs(filed) { onRouted?(recordID, destination) }
+    }
+
+    /// Check Again: looks up an unconfirmed filing once more. Nil when it
+    /// carried no marker to look for.
+    @discardableResult
+    package func checkInterruptedFilingAgain(_ id: UUID) -> Task<Void, Never>? {
+        guard let claim = inbox.items.first(where: { $0.id == id })?.unconfirmedFiling, claim.at != nil else { return nil }
+        let owner = self.owner
+        mutate { inbox in
+            inbox.update(id) {
+                guard $0.state == .ready, $0.unconfirmedFiling?.id == claim.id else { return }
+                $0.unconfirmedFiling = nil
+                $0.state = .filing
+                $0.filingClaim = claim.owned(by: owner)
+                $0.note = QuickCaptureInboxFile.checkingGitHubNote
+            }
+        }
+        return reconcileInterruptedFilings()
+    }
+
+    /// Send Anyway: the user checked GitHub and found nothing, so File or
+    /// Comment on #N, as the interrupted filing was, sends again. A claim
+    /// from before #1509 does not say which it was: File and Comment come
+    /// back, and the user picks.
+    @discardableResult
+    package func sendInterruptedFilingAgain(_ id: UUID) -> Task<Void, Never>? {
+        guard let claim = inbox.items.first(where: { $0.id == id })?.unconfirmedFiling else { return nil }
+        mutate { inbox in
+            inbox.update(id) {
+                guard $0.unconfirmedFiling?.id == claim.id else { return }
+                $0.unconfirmedFiling = nil
+                $0.note = nil
+            }
+        }
+        Log.backends.notice("Quick capture: the user sends an unconfirmed filing again")
+        guard claim.at != nil else { return nil }
+        return claim.commentOn == nil ? file(id) : comment(id)
     }
 
     package var items: [QuickCaptureItem] { inbox.items }
@@ -378,7 +524,13 @@ package final class QuickCaptureInboxModel {
               let capture = inbox.items.first(where: { $0.id == id })
         else { return nil }
         var joined = false
-        mutate { joined = $0.join(id, into: target) }
+        // The target as the join read it: another running copy may have
+        // moved or edited it since this copy did (#1686).
+        var current = before
+        mutate { inbox in
+            current = inbox.items.first { $0.id == target } ?? before
+            joined = inbox.join(id, into: target)
+        }
         guard joined else {
             Log.backends.notice("Quick capture: not joined, another running copy filed or discarded that capture")
             return nil
@@ -386,19 +538,19 @@ package final class QuickCaptureInboxModel {
         Log.backends.notice("Quick capture: joined an open capture as its follow-up")
         onStatus?(QuickCaptureFollowUpStatus.joined)
         if let recordID = capture.historyRecordID {
-            onRouted?(recordID, "Added to \(before.projectName.map { "a \($0) capture" } ?? "an Inbox capture")")
+            onRouted?(recordID, "Added to \(current.projectName.map { "a \($0) capture" } ?? "an Inbox capture")")
         }
         // A capture with no project keeps the words and drafts nothing.
-        guard let key = before.projectKey else { return Task {} }
+        guard let key = current.projectKey else { return Task {} }
         let projects = projects()
         let input: String
-        if let draft = before.draftSnapshot {
+        if let draft = current.draftSnapshot {
             input = QuickCaptureSpokenReview.redraftCapture(
-                original: before.words, title: draft.title, body: draft.body,
-                changes: (before.changes ?? []) + ["Add what the user said next: \(capture.text)"]
+                original: current.words, title: draft.title, body: draft.body,
+                changes: (current.changes ?? []) + ["Add what the user said next: \(capture.text)"]
             )
         } else {
-            input = before.words + "\n\n" + capture.text
+            input = current.words + "\n\n" + capture.text
         }
         return Task { @MainActor [weak self] in
             await self?.draft(target, text: input, destination: .project(key), projects: projects)
@@ -550,12 +702,24 @@ package final class QuickCaptureInboxModel {
 
     package func setRepository(_ repository: String, for id: UUID) {
         let trimmed = repository.trimmingCharacters(in: .whitespacesAndNewlines)
-        mutate { inbox in inbox.update(id) { $0.repository = trimmed.isEmpty ? nil : trimmed } }
-        guard QuickCaptureInbox.isRepository(trimmed),
-              let key = inbox.items.first(where: { $0.id == id })?.projectKey,
-              let project = projects().first(where: { $0.key == key }), project.repository == nil
-        else { return }
-        onRepositoryAnswered?(key, trimmed)
+        let withoutRepository = Set(projects().filter { $0.repository == nil }.map(\.key))
+        // A project with no repository takes the answer: the capture's is the
+        // project's then, and follows it when it changes (#1683). Read from
+        // the Inbox the change applies to, which another copy may have moved
+        // the capture in.
+        var answered: String?
+        mutate { inbox in
+            answered = nil
+            inbox.update(id) {
+                if QuickCaptureInbox.isRepository(trimmed), let key = $0.projectKey, withoutRepository.contains(key) {
+                    answered = key
+                }
+                $0.repository = trimmed.isEmpty ? nil : trimmed
+                $0.repositoryIsOwn = trimmed.isEmpty ? nil : answered == nil
+            }
+        }
+        guard let answered else { return }
+        onRepositoryAnswered?(answered, trimmed)
     }
 
     /// Moves a capture to another project, or to the catch-all with nil. A
@@ -565,7 +729,17 @@ package final class QuickCaptureInboxModel {
         let projects = projects()
         let project = key.flatMap { key in projects.first { $0.keys.contains(key) } }
         guard let item = inbox.items.first(where: { $0.id == id }), item.state == .ready else { return nil }
-        mutate { $0.move(id, to: project, repository: project?.issueRepository) }
+        var moved = false
+        mutate { inbox in
+            // Ready as the file has it now: another running copy may be
+            // filing it in its repository (#1685).
+            moved = inbox.items.first(where: { $0.id == id })?.state == .ready
+            if moved { inbox.move(id, to: project, repository: project?.issueRepository) }
+        }
+        guard moved else {
+            Log.backends.notice("Quick capture: not moved, another running copy is filing or changed it")
+            return nil
+        }
         guard let project else { return nil }
         let needsDraft = item.title.isEmpty
         return Task { @MainActor [weak self] in
@@ -580,6 +754,7 @@ package final class QuickCaptureInboxModel {
                     inbox.update(id) {
                         guard $0.projectKey == project.key, $0.state == .ready, $0.repository == nil else { return }
                         $0.repository = repository
+                        $0.repositoryIsOwn = false
                     }
                 }
             }
@@ -666,22 +841,33 @@ package final class QuickCaptureInboxModel {
     }
 
     /// The only path to `gh issue create`.
-    @discardableResult
     ///
-    /// With `shown`, it files that draft only: unchanged since and bound
-    /// for the same repository, also by another running copy.
+    /// It files the draft `shown`, else the one this copy shows, only if
+    /// the file still has it unchanged and bound for the same repository:
+    /// another running copy may have moved or edited it since (#1684).
+    @discardableResult
     package func file(_ id: UUID, shown: QuickCaptureDraftSnapshot? = nil) -> Task<Void, Never>? {
-        let eligible: (QuickCaptureItem) -> Bool = { item in
-            item.canFile && shown.map(item.matches) ?? true
-        }
-        guard inbox.items.first(where: { $0.id == id }).map(eligible) == true,
-              let item = claim(id, when: eligible), let repository = item.repository
+        guard let displayed = inbox.items.first(where: { $0.id == id }) else { return nil }
+        let shown = shown ?? QuickCaptureDraftSnapshot(
+            id: id, projectName: displayed.projectName ?? "", title: displayed.title, body: displayed.body,
+            repository: displayed.repository
+        )
+        let eligible: (QuickCaptureItem) -> Bool = { $0.canFile && $0.matches(shown) }
+        guard eligible(displayed),
+              case let (item, token)? = claim(id, when: eligible, commentOn: nil), let repository = item.repository
         else { return nil }
         let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let body = item.bodyToFile
+        let body = item.bodyToFile + "\n\n" + QuickCaptureFiling.marker(claim: token.id)
+        sending.insert(token.id)
         return Task { @MainActor [weak self] in
             guard let self else { return }
             let result = await self.github.createIssue(repository: repository, title: title, body: body)
+            self.sending.remove(token.id)
+            if case .failure(let failure) = result, failure.mayHaveSent {
+                await self.lookUpUncertainFiling(
+                    id, claim: token, repository: repository, failedNote: "Filing failed. Check that gh is logged in.")
+                return
+            }
             let saveFailure = self.mutate { inbox in
                 inbox.update(id) { item in
                     guard item.state == .filing else { return }
@@ -713,14 +899,22 @@ package final class QuickCaptureInboxModel {
     /// that extends an open issue. Like File, only on the user's click.
     @discardableResult
     package func comment(_ id: UUID) -> Task<Void, Never>? {
-        guard inbox.items.first(where: { $0.id == id })?.canComment == true,
-              let item = claim(id, when: \.canComment),
-              let repository = item.repository, let issue = item.relatedIssue
+        guard let issue = inbox.items.first(where: { $0.id == id && $0.canComment })?.relatedIssue,
+              case let (item, token)? = claim(id, when: { $0.canComment && $0.relatedIssue == issue }, commentOn: issue),
+              let repository = item.repository
         else { return nil }
-        let body = item.commentBody
+        let body = item.commentBody + "\n\n" + QuickCaptureFiling.marker(claim: token.id)
+        sending.insert(token.id)
         return Task { @MainActor [weak self] in
             guard let self else { return }
             let result = await self.github.commentOnIssue(repository: repository, issue: issue, body: body)
+            self.sending.remove(token.id)
+            if case .failure(let failure) = result, failure.mayHaveSent {
+                await self.lookUpUncertainFiling(
+                    id, claim: token, repository: repository,
+                    failedNote: "The comment failed. Check that gh is logged in.")
+                return
+            }
             let saveFailure = self.mutate { inbox in
                 inbox.update(id) { item in
                     guard item.state == .filing else { return }
@@ -757,18 +951,29 @@ package final class QuickCaptureInboxModel {
     /// copy reading the file would send it as well (#1288). Run again on
     /// another copy's write after a failed save, the change checks
     /// `eligible` again before it claims.
-    private func claim(_ id: UUID, when eligible: @escaping (QuickCaptureItem) -> Bool) -> QuickCaptureItem? {
-        let token = QuickCaptureItem.FilingClaim(processID: processID, launch: launch)
+    ///
+    /// The claim records when it was made and, for a comment, on which
+    /// issue: what a relaunch needs to find the send on GitHub (#1509).
+    private func claim(
+        _ id: UUID, when eligible: @escaping (QuickCaptureItem) -> Bool, commentOn: Int?
+    ) -> (QuickCaptureItem, QuickCaptureItem.FilingClaim)? {
+        let moment = now()
+        let claimID = UUID()
         var claimed: QuickCaptureItem?
-        let failure = mutate { inbox in
+        var token: QuickCaptureItem.FilingClaim?
+        let failure = mutate { [processID, launch] inbox in
             inbox.update(id) { item in
                 guard eligible(item) else { return }
                 claimed = item
+                // The repository it sends to, as the file has it now.
+                token = QuickCaptureItem.FilingClaim(
+                    id: claimID, processID: processID, launch: launch, at: moment, commentOn: commentOn,
+                    repository: item.repository)
                 item.state = .filing
                 item.filingClaim = token
             }
         }
-        guard let claimed else {
+        guard let claimed, let token else {
             Log.backends.notice("Quick capture: not sent, another running copy filed or changed it")
             return nil
         }
@@ -778,14 +983,14 @@ package final class QuickCaptureInboxModel {
             // copy's write, it leaves that copy's filing alone.
             mutate { inbox in
                 inbox.update(id) {
-                    guard $0.state == .filing, $0.filingClaim == token else { return }
+                    guard $0.state == .filing, $0.filingClaim?.id == claimID else { return }
                     $0.state = .ready
                     $0.note = "Not sent: the Inbox could not be saved."
                 }
             }
             return nil
         }
-        return claimed
+        return (claimed, token)
     }
 
     // MARK: Spoken review (#927)
@@ -939,6 +1144,7 @@ package final class QuickCaptureInboxModel {
             // A copy that quit may have left runs no recovery has ended yet.
             recoverAbandonedRuns()
             adoptProjects()
+            reconcileInterruptedFilings()
         case .refused(let problem)?:
             Log.persistence.error("Quick capture inbox: another copy left a file this build cannot read")
             storeProblem = problem

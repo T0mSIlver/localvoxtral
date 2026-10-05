@@ -52,23 +52,32 @@ AppKit:
 - `TranscriptAccumulator`, `TextMergingAlgorithms`, the overlay text
   assembler and `OverlayBufferStateMachine`, `PolishTokenGuard`,
   `ClipboardPayloadMacro`,
-  `PolishOutcomeClassifier`, the connection-failure classifier, `SessionClock`
+  `PolishOutcomeClassifier`, the connection-failure classifier, `SessionClock`,
+  `TranscriptDiff`
 - the vocabulary matching: `RepoVocabulary`, `RepoIndexing`,
   `RepoVocabularyMatcher`, `ClipboardVocabulary`, `DoubleMetaphone`
 - `MistralStreamHealth`, `AudioChunkBuffer`, `ClaudeStatuslineCombine`,
   `FirstChunkPreprocessor`, `LaunchWindowPolicy`, `AppWindowOpener`, `POSIXPipeRead`,
   `PipeLineReader`, `OverlayStableLineWrapper`, `PolishContextExcerptSelector`,
-  `PolishContextPreparation`
+  `PolishContextPreparation`, `LiveTerminalNewlineGuard`,
+  `TUIAutocompleteTrailingSpace`
 - the clipboard reader's rules (`PolishContextClipboardReader`; its
   pasteboard half stays in the app)
 - the model catalogs (`BackendCatalog`, `SpeechModelCatalog`, `PolishModelCatalog`)
+- which app an insertion targets (`PreferredTextInsertionTargetPolicy`);
+  `TextInsertionService` stays in the app
 - a managed backend's status (`ManagedBackendStatus`, `ModelDownloadProgress`)
   and the onboarding wizard's download items built from it
   (`OnboardingBootstrapDriving`); `BackendManager` and the live driver stay
   in the app
+- the diagnostics report (`DiagnosticsSnapshot`, `DiagnosticsExporter`); the
+  snapshot it is built from (`makeSnapshot`, which reads settings and keys)
+  stays in the app
 - the Settings sidebar's status dots (`SettingsStatusDot`,
   `IntegrationsSidebarStatus`); their rendering stays in the app
 - the Claude session snapshot and its reducer (`ClaudeSessionState`)
+- the overlay's dragged-position geometry (`OverlayManualPlacement`,
+  `OverlayManualPlacementResolver`); the `NSScreen` enumeration stays in the app
 - `DictationOutputMode`, the dogfood control socket's grammar and the WAV
   source the e2e check dictates from (`Dogfood/`); the socket stays in the app
 - the config store (`AppConfigStore`, `BundledConfigDefaultHistory`,

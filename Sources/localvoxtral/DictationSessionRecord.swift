@@ -61,6 +61,19 @@ final class DictationSessionRecord {
     /// usage. Additive optional field, like the ones above.
     var polishPromptTokens: Int?
 
+    /// When the user stopped the dictation, so `finishedAt` minus this is the
+    /// stop-to-commit time: the final transcript, then the polish. Set by the
+    /// Overlay Buffer commit; nil for other paths and older builds.
+    /// Additive optional field, like the ones above.
+    var stoppedAt: Date?
+
+    /// Who answered the polish request (`UsageEntry.Backend`: `mistral`,
+    /// `bundledHelper`, `userServer`) and the model id it named. Never the
+    /// endpoint URL. Nil when no polish request went out. Additive optional
+    /// fields, like the ones above.
+    var polishBackend: String?
+    var polishModel: String?
+
     init(
         id: UUID = UUID(),
         startedAt: Date,

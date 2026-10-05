@@ -762,9 +762,8 @@ package final class UsageLedger: UsageRecording, @unchecked Sendable {
 
     /// Named for the one backend it recorded before #837; kept so the history
     /// it holds carries on.
-    package static func defaultFileURL() -> URL {
-        return LocalvoxtralDataDirectory.url()
-            .appendingPathComponent("mistral-usage.jsonl")
+    package static func defaultFileURL(in directory: URL = LocalvoxtralDataDirectory.url()) -> URL {
+        directory.appendingPathComponent("mistral-usage.jsonl")
     }
 
     package func record(_ entry: UsageEntry) {

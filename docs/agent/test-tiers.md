@@ -266,12 +266,16 @@ release (`release.yml`) run two ways:
 - The cron stays as the fallback, for a night the scheduler's timers miss. A
   scheduled run skips green, with the reason in the step summary ("E2E eval
   (scheduled): SKIPPED", "Release skipped"), when it cannot finish by 07:00
-  UTC (`scripts/ci/night-window-guard.sh`, 30 minutes for `eval-e2e`, 20 for
-  the release) or when another run of the same workflow on main succeeded, or
-  is queued or running, in the last 20 hours (`scripts/ci/recent-run-guard.sh`),
-  which is what keeps the dispatch and the cron from both running. The
-  release chains both with the AC power guard in
-  `scripts/ci/scheduled-run-guard.sh`.
+  UTC (`scripts/ci/night-window-guard.sh`, 30 minutes for each) or when
+  another run of the same workflow on main succeeded, or is queued or
+  running, in the last 20 hours (`scripts/ci/recent-run-guard.sh`), which is
+  what keeps the dispatch and the cron from both running. The release chains
+  both with the AC power guard in `scripts/ci/scheduled-run-guard.sh`.
+- The release's 30 minutes cover a typical notarization, but Apple can hold
+  one for hours. So a daily release that starts inside the window, dispatched
+  or scheduled, cuts each notarization wait at 07:00 UTC
+  (`scripts/ci/night-deadline.sh`) and fails untagged when Apple has not
+  answered by then (#1554).
 
 A new scheduled workflow that runs inference on the Mac takes both guards.
 
@@ -489,26 +493,27 @@ Fixture and host requirements (`scripts/herdr-integration-fixture.sh`):
   server's config. Over a caller-supplied destination that patch would edit
   the second host's real config, so that one test fails up front in
   destination mode.
-- For the duration of a run the fixture appends three delimited blocks to the
-  account's `~/.ssh/config`, and refuses to start if the account already
-  defines one of its aliases (ssh keeps the first value, so the lane would
-  dial the account's host). It touches the REAL ssh config on purpose: the
-  code under test never passes `-F`, so an alias that lived only in a
-  fixture-local file would exercise an invocation shape the app never
-  produces. The ssh config is restored by REMOVING those blocks, not by
-  writing a copy back, so an edit made while the lane runs survives. The three
-  blocks are the connection block, the canonicalization-test block, and the
-  federation block (the federated target's loopback alias); federated clients
+- The fixture's three host-alias blocks (the connection block, the
+  canonicalization-test block, and the federation block, the federated
+  target's loopback alias) live in the run's own `<workdir>/ssh_config`, never
+  the account's `~/.ssh/config` (#1029). The lane sets
+  `LOCALVOXTRAL_SSH_CONFIG` to that file, so every ssh the app runs carries
+  `-F <file>`, and herdr reaches it through `<workdir>/bin/ssh`, first on the
+  PATH of every herdr the fixture starts, whose config sets `[remote]
+  manage_ssh_config = false` so herdr adds no `-F` of its own. In destination mode the file ends with an `Include` of the
+  account's config, read only. `environment.txt` and teardown log the
+  account config's hash as `ssh.account.before` / `ssh.account.after`;
+  federated clients
   run with `XDG_STATE_HOME` pointed at the run's scratch `client-state-home`
   and the hermetic remote server listens on the run's short `remote.sock`,
   never on the account's catalog or sockets.
-- Because nothing runs on SIGKILL, the pristine ssh config lives at a stable
+- Because nothing runs on SIGKILL, a run's teardown state lives at a stable
   path (`~/.localvoxtral-herdr-fixture-hold/`) with a manifest naming the run
-  that took them — never in the run's own temp dir, which a killed run would
-  strand. `up` restores a dead run's hold before touching anything and
-  refuses while a live run owns it; it will never back up an already-modified
-  file over a pristine copy, which is the step that would destroy the
-  originals. `status` and `recover` do it by hand
+  — never in the run's own temp dir, which a killed run would strand. `up`
+  releases a dead run's hold before starting anything and refuses while a
+  live run owns it. A hold from before #1029 also carries the pristine ssh
+  config, and releasing it strips that run's blocks from `~/.ssh/config`; a
+  current hold never opens that file. `status` and `recover` do it by hand
   (`scripts/mac/README.md`), and `scripts/ci/test-herdr-fixture-recovery.sh`
   holds that behavior per-push without needing herdr at all (including
   restoring the herdr copies a pre-#323 fixture's hold still carries).

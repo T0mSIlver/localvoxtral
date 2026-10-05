@@ -1,3 +1,4 @@
+import localvoxtralTestSupport
 import XCTest
 @testable import localvoxtral
 
@@ -40,6 +41,29 @@ final class TextInsertionServiceRealtimeInsertionTests: XCTestCase {
         XCTAssertEqual(snapshot.axInsertionSuccessCount, 0)
     }
 
+    /// macOS drops the keys an app without Accessibility posts: the text
+    /// stays pending instead of counting as typed (#1762).
+    func testRealtimeFlushWithoutAccessibilityPostsNoKeysAndKeepsTheText() {
+        let posted = PostedKeys()
+        let service = TextInsertionService()
+        service.debugConfigureInsertionHooks(
+            unicodePoster: { text in
+                posted.value.append(text)
+                return true
+            },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false }
+        )
+        service.debugSetAccessibilityTrusted(false)
+
+        service.enqueueRealtimeInsertion("hello")
+
+        XCTAssertEqual(posted.value, [])
+        XCTAssertEqual(service.debugInsertionSnapshot().pendingRealtimeInsertionText, "hello")
+        XCTAssertEqual(service.insertTextPrioritizingKeyboard("world"), .failed)
+        XCTAssertEqual(posted.value, [])
+    }
+
     // MARK: - Retry on the session clock (#1060)
 
     func testFailedLiveInsertionIsRetriedOnTheSessionClockAndNotAfterStop() async {
@@ -73,10 +97,9 @@ final class TextInsertionServiceRealtimeInsertionTests: XCTestCase {
         fieldAccepts = false
         service.enqueueRealtimeInsertion(" world")
         service.stopInsertionRetryTask()
-        XCTAssertEqual(clock.pendingSleepers, 0)
+        XCTAssertEqual(clock.pendingSleepers, 0, "no retry left to wake")
         fieldAccepts = true
         clock.advance(by: 60)
-        await Task.yield()
 
         XCTAssertEqual(posted.value, ["hello"])
         XCTAssertTrue(service.hasPendingInsertionText)
@@ -87,6 +110,113 @@ final class TextInsertionServiceRealtimeInsertionTests: XCTestCase {
     /// Claude Desktop dropped a newline that opened a unicode event and
     /// reordered multi-line text sent as consecutive events; Shift+Return
     /// gave a line break (measured 2026-09-26).
+    /// A go-to moves the keys mid-dictation; text the route then keeps in
+    /// History still belongs to this dictation, so it blocks a keyboard
+    /// Return and marks the record not inserted. Once the next dictation
+    /// starts, it no longer marks that one (#1466).
+    func testTextKeptAfterAGoToStillMarksItsOwnDictation() async {
+        for endingDictation in [false, true] {
+            let release = BoundedWait()
+            let route = ScriptedPromptRoute { _ in
+                _ = await release.value(failAfter: 10)
+                return .keepInHistory
+            }
+            let service = TextInsertionService()
+            var kept: [String] = []
+            service.beginPromptRelay(route, kept: { kept.append($0) })
+            let sink = service.promptRelaySink
+            service.enqueueRealtimeInsertion("hello")
+
+            service.retirePromptRelay(endingDictation: endingDictation)
+            release.resolve()
+            await sink?.waitUntilIdle()
+
+            XCTAssertEqual(kept, ["hello"])
+            XCTAssertEqual(service.promptRelayKeptText, !endingDictation, "ending: \(endingDictation)")
+            XCTAssertEqual(service.liveInsertionTargetPIDs, endingDictation ? [] : [nil], "ending: \(endingDictation)")
+        }
+    }
+
+    /// The Claude Code mod takes newlines as text, so the session arms no
+    /// newline guard. Once a spoken send's ack reports a shortfall, the
+    /// keys take over, and a newline in a later delta must not reach them:
+    /// it would submit the prompt (#1645).
+    func testDeltasTypedAfterTheModRouteFailedHaveTheirNewlinesCollapsed() async throws {
+        let (service, posted) = makeRecordingService(frontmostBundleID: TerminalScreenAllowlist.ghosttyBundleID)
+        defer { TerminalTargetDetector.debugFrontmostBundleIDOverride = nil }
+        let mod = FakeClaudeMod(refuses: "run the tests")
+        let hub = ClaudeModChannelHub(sleep: ManualSessionClock().clock.sleep)
+        mod.attach(to: hub)
+        let opened = await ClaudeModPromptRoute.opened(hub: hub, sessionID: "s1", keysReachThePrompt: { true })
+        service.beginPromptRelay(try XCTUnwrap(opened))
+        let sink = try XCTUnwrap(service.promptRelaySink)
+
+        service.enqueueRealtimeInsertion("run the tests")
+        sink.submit()
+        await sink.waitUntilIdle()
+        XCTAssertFalse(sink.isHealthy, "the shortfall failed the route over to the keys")
+        service.enqueueRealtimeInsertion(" first line\nsecond line")
+
+        XCTAssertEqual(posted.value, ["run the tests", " first line second line"])
+        XCTAssertEqual(mod.submitted, [], "the submit is dropped, never a key")
+    }
+
+    /// Once the mod route failed over, the keys get the stop's
+    /// trailing-space policy a terminal session without the mod gets: a
+    /// lone slash command ends without the space that would close Claude
+    /// Code's autocomplete, and a space with words after it is typed (#1734).
+    func testAfterTheModRouteFailedTheKeysWithholdALoneCommandsTrailingSpaceAtTheStop() async throws {
+        for (deltas, expected) in [
+            (["/compact "], ["/compact"]),
+            (["/compact ", "now "], ["/compact", " now", " "]),
+        ] {
+            let (service, posted) = makeRecordingService(frontmostBundleID: TerminalScreenAllowlist.ghosttyBundleID)
+            defer { TerminalTargetDetector.debugFrontmostBundleIDOverride = nil }
+            let mod = FakeClaudeMod(refuses: deltas[0])
+            let hub = ClaudeModChannelHub(sleep: ManualSessionClock().clock.sleep)
+            mod.attach(to: hub)
+            let opened = await ClaudeModPromptRoute.opened(hub: hub, sessionID: "s1", keysReachThePrompt: { true })
+            service.beginPromptRelay(try XCTUnwrap(opened))
+            let sink = try XCTUnwrap(service.promptRelaySink)
+
+            service.enqueueRealtimeInsertion(deltas[0])
+            sink.submit()
+            await sink.waitUntilIdle()
+            XCTAssertFalse(sink.isHealthy, "the shortfall failed the route over to the keys")
+            for delta in deltas.dropFirst() { service.enqueueRealtimeInsertion(delta) }
+            service.flushFinalLiveReplacementCorrections()
+
+            XCTAssertEqual(posted.value, expected, "\(deltas)")
+            XCTAssertFalse(service.hasPendingInsertionText, "\(deltas)")
+        }
+    }
+
+    /// A go-to moves the keys to another pane: the stop judges only what
+    /// they typed there, so a lone command in the new pane loses its space
+    /// whatever the old pane got (#1734).
+    func testAfterAGoToTheStopJudgesOnlyTheNewPanesText() async throws {
+        let (service, posted) = makeRecordingService(frontmostBundleID: TerminalScreenAllowlist.ghosttyBundleID)
+        defer { TerminalTargetDetector.debugFrontmostBundleIDOverride = nil }
+        let mod = FakeClaudeMod(refuses: "hello ")
+        let hub = ClaudeModChannelHub(sleep: ManualSessionClock().clock.sleep)
+        mod.attach(to: hub)
+        let opened = await ClaudeModPromptRoute.opened(hub: hub, sessionID: "s1", keysReachThePrompt: { true })
+        service.beginPromptRelay(try XCTUnwrap(opened))
+        let sink = try XCTUnwrap(service.promptRelaySink)
+
+        service.enqueueRealtimeInsertion("hello ")
+        sink.submit()
+        await sink.waitUntilIdle()
+        XCTAssertFalse(sink.isHealthy, "the shortfall failed the route over to the keys")
+        // The go-to's order: flush, then retire.
+        service.flushFinalLiveReplacementCorrections()
+        service.retirePromptRelay()
+        service.enqueueRealtimeInsertion("/compact ")
+        service.flushFinalLiveReplacementCorrections()
+
+        XCTAssertEqual(posted.value, ["hello", " ", "/compact"])
+    }
+
     func testClaudeDesktopGetsEachNewlineAsShiftReturn() {
         let (service, posted) = makeRecordingService(frontmostBundleID: ClaudeDesktopAllowlist.bundleID)
         defer { TerminalTargetDetector.debugFrontmostBundleIDOverride = nil }

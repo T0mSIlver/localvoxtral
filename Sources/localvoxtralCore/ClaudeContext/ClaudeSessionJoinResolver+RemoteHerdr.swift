@@ -85,6 +85,14 @@ extension ClaudeSessionJoinResolver {
         case .connection(let value):
             connection = value
         }
+        // `ssh -p 2222 builder` reaches another sshd on builder's address,
+        // while every host match below, exact or through `ssh -G`, describes
+        // the alias's own port. The panel proof above needs no port: it
+        // checks what the screen shows.
+        guard !connection.overridesPort else {
+            Self.abstainedRemoteHerdrJoin(outcome: "the ssh command on this terminal overrides the port")
+            return .declined
+        }
 
         var hosts = enrolledHosts(connection.destination)
         if hosts.isEmpty {
@@ -162,8 +170,15 @@ extension ClaudeSessionJoinResolver {
                 outcome: "this terminal attaches a partial or different herdr view"
             )
             return .declined
-        case .plainClient:
-            break
+        case .plainClient(let selector):
+            // `herdr --session review` shows the review server: the sole
+            // registered socket may belong to another session on this host.
+            guard Self.plainClient(selector: selector, mayShow: remoteSocketPath) else {
+                Self.abstainedRemoteHerdrJoin(
+                    outcome: "this terminal's herdr client names another session than the agent's"
+                )
+                return .declined
+            }
         }
         guard !connection.hasCompetingHerdrClient else {
             Self.abstainedRemoteHerdrJoin(
@@ -210,6 +225,19 @@ extension ClaudeSessionJoinResolver {
         }
         forward.close()
         return .declined
+    }
+
+    /// Whether a plain herdr client started with `--session <selector>` (nil:
+    /// none) may be showing the server at `socketPath`. A socket in herdr's
+    /// layout must belong to the named session. A relocated socket outside
+    /// that layout names no session, so only the default client may join it,
+    /// as before.
+    private static func plainClient(selector: String?, mayShow socketPath: String) -> Bool {
+        let session = selector ?? HerdrMachineProfile.defaultSessionName
+        if HerdrSessionSocket.isSocket(socketPath, ofSessionNamed: session) { return true }
+        guard session == HerdrMachineProfile.defaultSessionName else { return false }
+        let normalized = HerdrSessionSocket.normalizedSocketPath(socketPath)
+        return !normalized.hasSuffix("/" + HerdrSessionSocket.socketFileName)
     }
 
     /// Asked after an over-the-forward arm's last await, just before it
@@ -306,8 +334,9 @@ extension ClaudeSessionJoinResolver {
             randomBits: panelRandomBits
         )
         var matches: [PanelCandidateMatch] = []
+        var federatedClient = false
 
-        for host in selectedHosts {
+        hostLoop: for host in selectedHosts {
             guard let alias = host.sshHostAlias else { continue }
             let candidates = registry.liveRemoteHerdrSessions(hostID: host.id)
             // Two live sockets on one host used to abstain outright (the argv
@@ -360,6 +389,20 @@ extension ClaudeSessionJoinResolver {
                     socketPath: socketPath,
                     paneID: pane.paneID
                 ) {
+                case .matched(let match) where match.showsMachineList:
+                    // A herdr client on the far side of ssh federates other
+                    // machines, and its panel renders this server's token
+                    // whichever machine it shows. Nothing on the Mac can read
+                    // that host's selection, and the argv fallback below
+                    // would trust the same client, so the arm ends here.
+                    federatedClient = true
+                    await HerdrPanelBindingProbe.clear(
+                        metadata: herdrPanelMetadata,
+                        socketPath: socketPath,
+                        paneID: pane.paneID
+                    )
+                    forward.close()
+                    break hostLoop
                 case .matched(let match):
                     matches.append(PanelCandidateMatch(
                         host: host,
@@ -416,8 +459,8 @@ extension ClaudeSessionJoinResolver {
             }
         }
 
-        guard matches.count <= 1 else {
-            HerdrPanelBindingProbe.noteAbstention(.multiHostDoubleMatch)
+        guard !federatedClient, matches.count <= 1 else {
+            HerdrPanelBindingProbe.noteAbstention(federatedClient ? .federatedClient : .multiHostDoubleMatch)
             for match in matches {
                 await HerdrPanelBindingProbe.clear(
                     metadata: herdrPanelMetadata,

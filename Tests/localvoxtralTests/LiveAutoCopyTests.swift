@@ -8,11 +8,7 @@ import XCTest
 #if DEBUG
 @MainActor
 final class LiveAutoCopyTests: XCTestCase {
-    private final class Written {
-        var values: [String] = []
-    }
-
-    private func makeViewModel(autoCopy: Bool) -> (DictationViewModel, Written) {
+    private func makeViewModel(autoCopy: Bool) -> (DictationViewModel, PasteboardWrites) {
         let suiteName = "localvoxtral.LiveAutoCopyTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
@@ -35,9 +31,7 @@ final class LiveAutoCopyTests: XCTestCase {
             accessibilityInserter: { _, _ in false }
         )
 
-        let written = Written()
-        viewModel.dependencies.pasteboardWriter = { written.values.append($0) }
-        return (viewModel, written)
+        return (viewModel, viewModel.recordPasteboardWrites())
     }
 
     func testEachFinalCopiesTheDictationSoFar() {

@@ -116,6 +116,7 @@ final class DictationViewModel {
         static let liveDictationBlockedBySecureInput = "Secure Keyboard Entry blocks Live Auto-Paste."
         static let overlayCopiedToClipboard = "Copied for manual paste."
         static let agentPromptTextKeptInHistory = "Not delivered; the text is in History."
+        static let dictationEndMayBeMissing = "The end of the dictation may be missing."
         static let noNetworkConnection = "No network connection."
         static let microphoneAccessDenied = "Microphone access denied."
         static let finalizing = "Finalizing..."
@@ -255,8 +256,16 @@ final class DictationViewModel {
 
     func toggleDictation(outputMode: DictationOutputMode? = nil) { session.toggleDictation(outputMode: outputMode) }
     func startDictation(outputMode: DictationOutputMode? = nil) { session.startDictation(outputMode: outputMode) }
-    func stopDictation(reason: String = "unspecified", finalizeRemainingAudio: Bool = true) {
-        session.stopDictation(reason: reason, finalizeRemainingAudio: finalizeRemainingAudio)
+    func stopDictation(
+        reason: String = "unspecified",
+        finalizeRemainingAudio: Bool = true,
+        finalizationTimeout: TimeInterval = TimingConstants.stopFinalizationTimeout
+    ) {
+        session.stopDictation(
+            reason: reason,
+            finalizeRemainingAudio: finalizeRemainingAudio,
+            finalizationTimeout: finalizationTimeout
+        )
     }
     func cancelDictation() { session.cancelDictation() }
     func refreshMicrophoneInputs() { session.refreshMicrophoneInputs() }
@@ -267,7 +276,9 @@ final class DictationViewModel {
     func copyRawTranscript() { session.copyRawTranscript() }
     var canCopyLastDictation: Bool { session.canCopyLastDictation }
     func copyLastDictation() { session.copyLastDictation() }
-    func applyDictationHistoryRetention(now: Date = Date()) { session.applyDictationHistoryRetention(now: now) }
+    func applyDictationHistoryRetention(now: Date = Date(), removingBackups: Bool = false) {
+        session.applyDictationHistoryRetention(now: now, removingBackups: removingBackups)
+    }
     func prepareLLMPolishingPromptAccessIfNeeded() { session.prepareLLMPolishingPromptAccessIfNeeded() }
 
     /// What the Settings toggle and the Engines widget's "Turn off polish"
@@ -416,10 +427,15 @@ final class DictationViewModel {
         /// Mistral's batch endpoint, for the second pass an Overlay Buffer
         /// dictation gets on stop in Mistral API mode (#317).
         var batchTranscriber: any MistralBatchTranscribing
-        /// The folder holding the history store, its audio and its diagnostic
-        /// records. Nil is the app's folder in Application Support; a test
-        /// that starts runtime services passes a temporary one.
-        var historyDirectory: URL?
+        /// The folder every store the runtime services open lives in: history
+        /// and its audio, diagnostic records, the usage ledger, learned terms,
+        /// skills, the Inbox and voice memos. Nil is the app's folder in
+        /// Application Support; a test that starts runtime services passes a
+        /// temporary one, or it writes the owner's data (#1524).
+        var dataDirectory: URL?
+        /// The home folder whose Claude Code transcripts and agent skill
+        /// folders the runtime services read. Nil is the user's.
+        var home: URL?
         /// How much audio one External URL server session may take before
         /// the client rolls it over (#1139). Nil is `GET /v1/models` on the
         /// server when runtime services run, and no rollover in a unit test,
@@ -449,7 +465,8 @@ final class DictationViewModel {
             onRealtimeDeltaLogRecord: ((DebugRealtimeDeltaLogRecord) -> Void)? = nil,
             clock: SessionClock = .live,
             batchTranscriber: any MistralBatchTranscribing = MistralBatchTranscriptionClient(),
-            historyDirectory: URL? = nil,
+            dataDirectory: URL? = nil,
+            home: URL? = nil,
             realtimeContextLimit: (@Sendable (RealtimeSessionConfiguration) async -> RealtimeContextBudget?)? = nil
         ) {
             self.microphone = microphone
@@ -467,7 +484,8 @@ final class DictationViewModel {
             self.onRealtimeDeltaLogRecord = onRealtimeDeltaLogRecord
             self.clock = clock
             self.batchTranscriber = batchTranscriber
-            self.historyDirectory = historyDirectory
+            self.dataDirectory = dataDirectory
+            self.home = home
             self.realtimeContextLimit = realtimeContextLimit
         }
     }
@@ -615,6 +633,10 @@ final class DictationViewModel {
         )
         self.session = session
 
+        engines.isDictationIdle = { [weak session] in session?.isDictationIdle ?? true }
+        engines.waitUntilDictationIsIdle = { [weak session] in
+            await session?.waitUntilDictationIsIdle()
+        }
         engines.interruptConnectingSession = { [weak session] in
             guard let session else { return }
             // Cancelling the startup task mid-connect without aborting would
@@ -718,11 +740,17 @@ final class DictationViewModel {
 
         textInsertion.refreshAccessibilityTrustState()
         if startRuntimeServices {
-            switch DictationSessionStore.open(directory: dependencies.historyDirectory) {
+            let dataDirectory = dependencies.dataDirectory ?? LocalvoxtralDataDirectory.url()
+            let home = dependencies.home ?? FileManager.default.homeDirectoryForCurrentUser
+            switch DictationSessionStore.open(directory: dependencies.dataDirectory) {
             case let .success(store):
                 sessionStore = store
             case let .failure(failure):
                 historyOpenFailure = failure
+                session.historyOpenFailed = true
+                session.quarantineWithoutHistory = DictationHistoryQuarantine(
+                    directoryURL: DictationHistoryQuarantine.directory(
+                        inHistoryFolder: dependencies.dataDirectory ?? DictationHistoryStoreFile.defaultDirectoryURL()))
             }
             sessionStore?.onAccessFailureChange = { [weak self] failure in
                 self?.historyAccessFailure = failure
@@ -736,26 +764,22 @@ final class DictationViewModel {
             // Attached whatever the setting says, so Delete and retention
             // still clear recordings kept before it was turned off.
             sessionStore?.audioStore = DictationAudioStore(
-                directoryURL: dependencies.historyDirectory.map {
-                    $0.appendingPathComponent("dictation-audio", isDirectory: true)
-                } ?? DictationAudioStore.defaultDirectoryURL())
+                directoryURL: dataDirectory.appendingPathComponent("dictation-audio", isDirectory: true))
             // One store for writes and for deletes: a record follows its
             // History entry the way its audio does.
             let diagnosticRecordStore = DiagnosticRecordStore(
-                directoryURL: dependencies.historyDirectory.map {
-                    $0.appendingPathComponent("diagnostic-records", isDirectory: true)
-                })
+                directoryURL: dataDirectory.appendingPathComponent("diagnostic-records", isDirectory: true))
             session.diagnosticRecordStore = diagnosticRecordStore
             sessionStore?.diagnosticRecordStore = diagnosticRecordStore
             sessionStore?.removeOrphanedAudio()
             applyDictationHistoryRetention()
             // Before everything that calls a model, so each one records to it.
-            let usageLedger = UsageLedger(fileURL: UsageLedger.defaultFileURL()) {
+            let usageLedger = UsageLedger(fileURL: UsageLedger.defaultFileURL(in: dataDirectory)) {
                 [weak self] in
                 Task { @MainActor in self?.engines.noteUsageLedgerChanged() }
             }
             learnedTermStore = LearnedTermStore(
-                fileURL: LearnedTermStore.defaultFileURL(),
+                fileURL: LearnedTermStore.defaultFileURL(in: dataDirectory),
                 onChange: { [weak self] in
                     Task { @MainActor in
                         self?.learnedTermRevision += 1
@@ -765,9 +789,10 @@ final class DictationViewModel {
                     }
                 }
             )
-            session.agentSkillStore = AgentSkillStore(fileURL: AgentSkillStore.defaultFileURL())
+            session.agentSkillStore = AgentSkillStore(
+                fileURL: AgentSkillStore.defaultFileURL(in: dataDirectory), home: home)
             if let learnedTermStore {
-                let agentProjectScanner = AgentProjectActivityScanner(store: learnedTermStore)
+                let agentProjectScanner = AgentProjectActivityScanner(store: learnedTermStore, home: home)
                 agentProjectScanner.refreshIfStale()
                 session.agentProjectScanner = agentProjectScanner
                 let correctionLearning = CorrectionLearning(
@@ -777,13 +802,11 @@ final class DictationViewModel {
                 correctionLearnedPanel = CorrectionLearnedPanel()
                 correctionLearning.presenter = correctionLearnedPanel
                 session.correctionLearning = correctionLearning
-                let applicationSupport = LearnedTermStore.defaultFileURL().deletingLastPathComponent()
                 session.projectTermProposer = ProjectTermProposer(
                     store: learnedTermStore,
                     runner: ProjectTermProposalProcessRunner(
-                        vibeHome: applicationSupport.appendingPathComponent("vibe-home", isDirectory: true),
-                        userVibeDirectory: FileManager.default.homeDirectoryForCurrentUser
-                            .appendingPathComponent(".vibe", isDirectory: true)
+                        vibeHome: dataDirectory.appendingPathComponent("vibe-home", isDirectory: true),
+                        userVibeDirectory: home.appendingPathComponent(".vibe", isDirectory: true)
                     ),
                     now: { Date() },
                     usageRecorder: usageLedger
@@ -794,8 +817,8 @@ final class DictationViewModel {
                     settings: settings,
                     learnedTerms: { [weak self] in self?.learnedTermStore?.snapshot() ?? LearnedTerms() },
                     learnedTermStore: learnedTermStore,
-                    fileURL: QuickCaptureInboxViewModel.defaultFileURL(),
-                    applicationSupport: LearnedTermStore.defaultFileURL().deletingLastPathComponent(),
+                    fileURL: QuickCaptureInboxViewModel.defaultFileURL(in: dataDirectory),
+                    applicationSupport: dataDirectory,
                     usageRecorder: usageLedger,
                     polisher: QuickCaptureLLMPolisher(
                         settings: settings,
@@ -815,7 +838,7 @@ final class DictationViewModel {
                 launchedAt: Date()
             )
             installUsageLedger(usageLedger)
-            installVoiceMemos(usageLedger: usageLedger)
+            installVoiceMemos(usageLedger: usageLedger, dataDirectory: dataDirectory)
             refreshMicrophoneInputs()
             registerLifecycleObservers(
                 application: dependencies.lifecycleNotificationCenter ?? .default,
@@ -902,6 +925,11 @@ final class DictationViewModel {
         }
     }
 
+    /// See `DictationSessionController.finalizeDictationBeforeQuit`.
+    func finalizeDictationBeforeQuit(then reply: @escaping @MainActor () -> Void) -> Bool {
+        session.finalizeDictationBeforeQuit(then: reply)
+    }
+
     /// A stopped dictation still owed its commit is saved to History as not
     /// inserted. Quit calls this before it drains the History writes.
     func saveStoppedDictationForQuit() {
@@ -921,7 +949,13 @@ final class DictationViewModel {
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self, self.isDictating else { return }
-                    self.stopDictation(reason: "system sleep", finalizeRemainingAudio: false)
+                    // The final commit is what makes the bundled helper flush
+                    // its last words; a closed socket drops them (#1584).
+                    // Bounded short, since sleep may suspend the app any time.
+                    self.stopDictation(
+                        reason: "system sleep",
+                        finalizationTimeout: TimingConstants.sleepStopFinalizationTimeout
+                    )
                 }
             }
             lifecycleObservers.append((workspace, sleepObserver))
@@ -1001,6 +1035,9 @@ final class DictationViewModel {
     /// which a test never reaches (headless CI has no pasteboard server, and
     /// clobbering the host clipboard is antisocial).
     static func writeToSystemPasteboard(_ text: String) {
+        #if DEBUG
+        if TerminalTargetDetector.isRunningUnderXCTest { return }
+        #endif
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
@@ -1089,13 +1126,14 @@ extension DictationViewModel {
 extension DictationViewModel {
     /// Turns each voice memo in the iCloud Drive folder into a quick capture
     /// through the dictation engine, while the setting is on (#925).
-    func installVoiceMemos(usageLedger: UsageLedger) {
+    func installVoiceMemos(usageLedger: UsageLedger, dataDirectory: URL) {
         guard let inbox = quickCapture else { return }
         let controller = VoiceMemoController(
             settings: settings,
             inbox: inbox,
-            audioStore: DictationAudioStore(directoryURL: VoiceMemoController.defaultAudioDirectoryURL()),
-            ledgerURL: VoiceMemoController.defaultLedgerURL(),
+            audioStore: DictationAudioStore(
+                directoryURL: VoiceMemoController.defaultAudioDirectoryURL(in: dataDirectory)),
+            ledgerURL: VoiceMemoController.defaultLedgerURL(in: dataDirectory),
             transcriber: VoiceMemoEngineTranscriber(prepare: { [weak self] in
                 guard let self else { throw CancellationError() }
                 return try await self.voiceMemoEngine(usageLedger: usageLedger)

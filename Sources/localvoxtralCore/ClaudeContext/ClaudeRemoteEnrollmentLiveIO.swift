@@ -15,9 +15,15 @@ package struct LiveClaudeRemoteSSHConfigFileSystem: ClaudeRemoteSSHConfigFileSys
     private let sshDirectoryURL: URL
     private let configURL: URL
 
-    package init(homeDirectoryURL: URL = FileManager.default.homeDirectoryForCurrentUser) {
-        sshDirectoryURL = homeDirectoryURL.appendingPathComponent(".ssh", isDirectory: true)
-        configURL = sshDirectoryURL.appendingPathComponent("config", isDirectory: false)
+    /// `~/.ssh/config`, or the `LOCALVOXTRAL_SSH_CONFIG` file and its folder.
+    package init(
+        homeDirectoryURL: URL = FileManager.default.homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) {
+        configURL = SSHConfigOverride.configFileURL(
+            homeDirectoryURL: homeDirectoryURL, environment: environment
+        )
+        sshDirectoryURL = configURL.deletingLastPathComponent()
     }
 
     package func readState() throws -> ClaudeRemoteSSHConfigState {
@@ -377,7 +383,7 @@ package struct LiveClaudeShellRCFileSystem: ClaudeShellRCFileSystem {
         )
     }
 
-    package func atomicWrite(_ data: Data, permissions: UInt16) throws {
+    package func atomicWrite(_ data: Data, permissions: UInt16, replacing expected: Data?) throws {
         let temporaryURL = directoryURL.appendingPathComponent(
             ".localvoxtral-rc.\(UUID().uuidString)", isDirectory: false
         )
@@ -409,6 +415,11 @@ package struct LiveClaudeShellRCFileSystem: ClaudeShellRCFileSystem {
         }
         guard fsync(descriptor) == 0 else {
             throw ShellRCPOSIXFailure(operation: "fsync", code: errno)
+        }
+        // Last look before the rename: a save since the caller's read would
+        // be lost under it (#1726).
+        guard ClaudeIntegrationLiveIO.leaf(at: fileURL, holds: expected) else {
+            throw ClaudeShellRCError.changedOnDisk
         }
         let moved = temporaryURL.path.withCString { source in
             fileURL.path.withCString { destination in rename(source, destination) }
@@ -527,8 +538,12 @@ extension ClaudeRemoteEnrollmentService {
     /// closes its end early costs an `EPIPE` the thread swallows, never a
     /// signal or the `FileHandle` exception this repo bans. The loop below
     /// owns the timeout either way; killing the child ends the writer.
+    ///
+    /// `environment` is read per run: the ssh config override
+    /// (`SSHConfigOverride`) comes from it.
     package static func processRunner(
-        sshExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/ssh")
+        sshExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/ssh"),
+        environment: @escaping @Sendable () -> [String: String] = { ProcessInfo.processInfo.environment }
     ) -> Runner {
         { invocation in
             // The preload below writes the whole script into the pipe before
@@ -546,9 +561,12 @@ extension ClaudeRemoteEnrollmentService {
             let preloads = invocation.standardInput.count <= Invocation.Budget.standard.standardInputBytes
             let process = Process()
             process.executableURL = sshExecutableURL
-            process.arguments = Array(invocation.argv.dropFirst())
+            let parentEnvironment = environment()
+            process.arguments = Array(
+                SSHConfigOverride.argv(invocation.argv, environment: parentEnvironment).dropFirst()
+            )
             if !invocation.environment.isEmpty {
-                process.environment = ProcessInfo.processInfo.environment.merging(
+                process.environment = parentEnvironment.merging(
                     invocation.environment,
                     uniquingKeysWith: { _, requested in requested }
                 )

@@ -127,9 +127,19 @@ final class MicrophoneMultiChannelFormatTests: XCTestCase {
                 + "microphone channel — dictation hears nothing")
     }
 
-    /// Stereo inputs keep the standard downmix (no channel map): a tone on
-    /// the LEFT channel must still reach the mono output.
+    /// Stereo inputs are mixed down, not remapped (no channel map): a tone on
+    /// either channel must reach the mono output. A remap keeps only the left
+    /// one, so a microphone on a two-input interface's second input went
+    /// silent (#1627).
     func testStereoToMonoConversionStillDownmixes() throws {
+        for channel in 0..<2 {
+            XCTAssertGreaterThan(
+                try stereoToMonoRMS(toneOnChannel: channel), 0.05,
+                "a tone on stereo channel \(channel) did not reach the mono output")
+        }
+    }
+
+    private func stereoToMonoRMS(toneOnChannel channel: Int) throws -> Float {
         let inputFormat = try XCTUnwrap(
             AVAudioFormat(
                 commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 2,
@@ -143,9 +153,10 @@ final class MicrophoneMultiChannelFormatTests: XCTestCase {
         let inputBuffer = try XCTUnwrap(
             AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: frames))
         inputBuffer.frameLength = frames
-        let left = try XCTUnwrap(inputBuffer.floatChannelData)[0]
+        let channels = try XCTUnwrap(inputBuffer.floatChannelData)
         for frame in 0..<Int(frames) {
-            left[frame] = 0.5 * sin(2 * .pi * 440 * Float(frame) / 48000)
+            channels[channel][frame] = 0.5 * sin(2 * .pi * 440 * Float(frame) / 48000)
+            channels[1 - channel][frame] = 0
         }
 
         let outputBuffer = try XCTUnwrap(
@@ -167,7 +178,6 @@ final class MicrophoneMultiChannelFormatTests: XCTestCase {
         for frame in 0..<Int(outputBuffer.frameLength) {
             sumOfSquares += output[frame] * output[frame]
         }
-        let rms = (sumOfSquares / Float(max(outputBuffer.frameLength, 1))).squareRoot()
-        XCTAssertGreaterThan(rms, 0.05)
+        return (sumOfSquares / Float(max(outputBuffer.frameLength, 1))).squareRoot()
     }
 }

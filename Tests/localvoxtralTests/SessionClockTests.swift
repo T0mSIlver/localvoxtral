@@ -99,12 +99,9 @@ final class SessionClockTests: XCTestCase {
         XCTAssertFalse(viewModel.isAwaitingMicrophonePermission, "the prompt timed out")
 
         microphone.resolvePendingAccess(granted: true)
-        // The grant hops to the main actor; drain the hop without the wall clock.
-        var spins = 0
-        while !viewModel.isConnectingRealtimeSession, spins < 1_000 {
-            spins += 1
-            await Task.yield()
-        }
+        // The grant queues its main-actor hop before this barrier, and
+        // same-priority jobs run FIFO: once the barrier runs, the hop has.
+        await Task { @MainActor in }.value
 
         XCTAssertFalse(viewModel.isConnectingRealtimeSession, "the expired attempt must not connect")
         XCTAssertNil(viewModel.session.managedStartupTask, "nor begin startup")

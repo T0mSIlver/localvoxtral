@@ -146,7 +146,7 @@ package enum EvalSpeechStage {
                 "say failed (status \(status)) for voice \(voice ?? "default")"
             )
         }
-        try FileManager.default.moveItem(at: temporary, to: wavURL)
+        try SharedCacheFile.publish(temporary, at: wavURL)
         return try IntegrationTestSupport.extractPCMDataFromWAV(at: wavURL)
     }
 

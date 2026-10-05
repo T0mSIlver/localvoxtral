@@ -209,6 +209,14 @@ private struct EnginePage: View {
                                 .accessibilityIdentifier("onboarding.mistral.verify.status")
                         }
                     }
+
+                    if let failure = model.mistralAPIKeySaveFailure {
+                        Text(failure)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .lineLimit(1)
+                            .accessibilityIdentifier("onboarding.mistral.saveFailure")
+                    }
                 }
             }
         }

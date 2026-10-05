@@ -10,6 +10,7 @@ package enum HerdrPanelBindingAbstention: String, Sendable, Equatable {
     case forwardUnavailable = "forward-unavailable"
     case speculativeForwardUnavailable = "forward-unavailable-for-speculative-candidate"
     case multiHostDoubleMatch = "multi-host-double-match"
+    case federatedClient = "federated-client"
 }
 
 package protocol HerdrPanelMetadataReporting: Sendable {
@@ -34,9 +35,13 @@ package protocol HerdrPanelMetadataReporting: Sendable {
 package struct HerdrPanelBindingProbe {
     package struct Match: Sendable, Equatable {
         package let token: String
+        /// The grid the token rendered in also shows herdr's machine list
+        /// (`showsMachineList`).
+        package let showsMachineList: Bool
 
-        package init(token: String) {
+        package init(token: String, showsMachineList: Bool = false) {
             self.token = token
+            self.showsMachineList = showsMachineList
         }
     }
 
@@ -110,7 +115,7 @@ package struct HerdrPanelBindingProbe {
             }
             switch Self.renderedMatch(grid: grid, token: token) {
             case .full, .truncatedButSufficient:
-                return .matched(Match(token: token))
+                return .matched(Match(token: token, showsMachineList: Self.showsMachineList(grid)))
             case .truncatedTooShort(let retainedDigits):
                 // Polling cannot grow a column budget. This is the row
                 // rendering CORRECTLY and being cut by herdr's own
@@ -238,6 +243,24 @@ package struct HerdrPanelBindingProbe {
             start += 1
         }
         return best
+    }
+
+    /// Whether the grid shows herdr's machine list: the ` machines` header a
+    /// 0.9 client draws at the top of its expanded sidebar once it federates
+    /// another machine (`src/client/shell/endpoint_sidebar.rs`). Without saved
+    /// machines it draws its workspace list there. Such a client renders every
+    /// machine's agents panel rows whichever machine it shows, so a token it
+    /// renders proves federation, not display. A token renders only in the
+    /// expanded sidebar, which always carries the header. Any line counts: a
+    /// stray match costs an abstention, never a join.
+    package static func showsMachineList(_ grid: String) -> Bool {
+        let header = "machines"
+        return grid.split(separator: "\n", omittingEmptySubsequences: false).contains { line in
+            let text = line.drop(while: { $0 == " " })
+            guard text.hasPrefix(header) else { return false }
+            guard let next = text.dropFirst(header.count).first else { return true }
+            return !(next.isLetter || next.isNumber)
+        }
     }
 
     private static func isNonceCharacter(_ character: Character) -> Bool {

@@ -120,7 +120,7 @@ final class DictationHistoryModelTests: XCTestCase {
         let model = makeModel(store)
         await model.reload()
 
-        await model.deleteAll()
+        await model.deleteAll(removingBackups: false)
 
         XCTAssertEqual(model.entries, [])
         XCTAssertEqual(model.totalCount, 0)
@@ -237,6 +237,60 @@ final class DictationHistoryModelTests: XCTestCase {
         await model.reloadStorageSummary()
         XCTAssertTrue(model.turningAudioOffAsksFirst)
     }
+
+    // MARK: - An empty History with backups (#1574)
+
+    /// A store on disk in a folder of its own, with its snapshots and
+    /// quarantine beside it.
+    private func makeStoreOnDisk() throws -> DictationSessionStore {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-history-model-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let origin = origin
+        return try DictationSessionStore.open(directory: directory, now: { origin }).get()
+    }
+
+    private func quarantine(_ kind: String, in store: DictationSessionStore) throws {
+        let folder = try XCTUnwrap(store.quarantine).folder(for: kind)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data([1]).write(to: folder.appendingPathComponent("dictation-x"))
+    }
+
+    /// With nothing left to delete, a switch still asks while the quarantine
+    /// holds its kind, so the user can delete those too.
+    func testWithNothingStoredASwitchAsksWhileItsQuarantineHoldsFiles() async throws {
+        let store = try makeStoreOnDisk()
+        let model = makeModel(store)
+        await model.reloadStorageSummary()
+        XCTAssertFalse(model.turningAudioOffAsksFirst)
+        XCTAssertFalse(model.turningRecordsOffAsksFirst)
+
+        try quarantine("dictation-audio", in: store)
+        await model.reloadStorageSummary()
+        XCTAssertTrue(model.turningAudioOffAsksFirst)
+        XCTAssertFalse(model.turningRecordsOffAsksFirst)
+
+        try quarantine("diagnostic-records", in: store)
+        await model.reloadStorageSummary()
+        XCTAssertTrue(model.turningRecordsOffAsksFirst)
+    }
+
+    /// An empty History keeps Delete All, and Don't keep asks, while a
+    /// snapshot holds a dictation. Delete All with the backups ends both.
+    func testAnEmptyHistoryOffersTheBackupsWhileASnapshotHoldsDictations() async throws {
+        let store = try makeStoreOnDisk()
+        let model = makeModel(store)
+        await store.save(record("private")).value
+        try XCTUnwrap(store.backups).snapshot(of: try XCTUnwrap(store.storeURL), reason: .daily)
+        await model.deleteAll(removingBackups: false)
+        XCTAssertEqual(model.totalCount, 0)
+        XCTAssertTrue(model.canDeleteAll)
+        XCTAssertTrue(model.dontKeepAsksWithNothingToDelete)
+
+        await model.deleteAll(removingBackups: true)
+        XCTAssertFalse(model.canDeleteAll)
+        XCTAssertFalse(model.dontKeepAsksWithNothingToDelete)
+    }
 }
 
 final class DictationHistoryRowTextTests: XCTestCase {
@@ -302,58 +356,5 @@ final class DictationHistoryRowTextTests: XCTestCase {
         XCTAssertTrue(
             DictationHistoryRowText.details(for: entry(polishSeconds: 1.26, profile: "agent"))
                 .hasSuffix("s · agent"))
-    }
-}
-
-final class TranscriptDiffTests: XCTestCase {
-    private func words(_ ranges: [Range<String.Index>], in text: String) -> [String] {
-        ranges.map { String(text[$0]) }
-    }
-
-    func testIdenticalTextsHaveNoDifference() {
-        XCTAssertTrue(TranscriptDiff.words(from: "same words here", to: "same words here").isEmpty)
-        XCTAssertTrue(TranscriptDiff.words(from: "", to: "").isEmpty)
-    }
-
-    func testAReplacedWordIsRemovedOnOneSideAndAddedOnTheOther() {
-        let before = "restart the quen server now"
-        let after = "restart the Qwen server now"
-        let diff = TranscriptDiff.words(from: before, to: after)
-        XCTAssertEqual(words(diff.removed, in: before), ["quen"])
-        XCTAssertEqual(words(diff.added, in: after), ["Qwen"])
-    }
-
-    func testDroppedFillersAndAddedPunctuationAreEachMarkedOnTheirOwnSide() {
-        let before = "um so we should uh ship it today"
-        let after = "So we should ship it today."
-        let diff = TranscriptDiff.words(from: before, to: after)
-        XCTAssertEqual(words(diff.removed, in: before), ["um", "so", "uh", "today"])
-        XCTAssertEqual(words(diff.added, in: after), ["So", "today."])
-    }
-
-    func testRangesPointIntoTheOriginalStringsAcrossLineBreaks() {
-        let before = "first line\nsecond lin"
-        let after = "first line\n\nsecond line"
-        let diff = TranscriptDiff.words(from: before, to: after)
-        XCTAssertEqual(words(diff.removed, in: before), ["lin"])
-        XCTAssertEqual(words(diff.added, in: after), ["line"])
-    }
-
-    func testEverythingAddedOrEverythingRemoved() {
-        let text = "brand new text"
-        XCTAssertEqual(words(TranscriptDiff.words(from: "", to: text).added, in: text).count, 3)
-        XCTAssertEqual(words(TranscriptDiff.words(from: text, to: "").removed, in: text).count, 3)
-    }
-
-    func testARewriteLargerThanTheTableMarksTheWholeMiddleAndKeepsTheSharedEnds() {
-        let middleBefore = (0...TranscriptDiff.maxComparedWords).map { "b\($0)" }
-        let middleAfter = (0...TranscriptDiff.maxComparedWords).map { "a\($0)" }
-        let before = (["start"] + middleBefore + ["end"]).joined(separator: " ")
-        let after = (["start"] + middleAfter + ["end"]).joined(separator: " ")
-
-        let diff = TranscriptDiff.words(from: before, to: after)
-
-        XCTAssertEqual(words(diff.removed, in: before), middleBefore)
-        XCTAssertEqual(words(diff.added, in: after), middleAfter)
     }
 }

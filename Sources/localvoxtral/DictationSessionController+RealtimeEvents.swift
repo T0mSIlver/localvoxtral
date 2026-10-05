@@ -78,8 +78,8 @@ extension DictationSessionController {
     private func handleConnectedEvent() {
         cancelConnectTimeout()
         if isReconnectingRealtimeSession {
-            // The run's own poll notices the open socket and owns what happens
-            // next (status line, audio and commit tasks). Only the indicator
+            // The run's own poll notices the ready session and owns what
+            // happens next (status line, audio and commit tasks). Only the indicator
             // turns green here, as early as the news arrives.
             setRealtimeIndicatorConnected()
             return
@@ -108,8 +108,14 @@ extension DictationSessionController {
             return
         }
 
+        if isReconnectingRealtimeSession {
+            // This is the answer to the attempt in flight, not a fresh drop,
+            // also for a stop that waits on the run.
+            reconnectAttemptDidFail = true
+            return
+        }
         if isFinalizingStop {
-            finishStoppedSession(promotePendingSegment: true)
+            finishStopOnClosedSocket()
             return
         }
         guard isDictating else {
@@ -119,11 +125,6 @@ extension DictationSessionController {
             if realtimeSessionIndicatorState != .recentFailure {
                 setRealtimeIndicatorIdle()
             }
-            return
-        }
-        if isReconnectingRealtimeSession {
-            // This is the answer to the attempt in flight, not a fresh drop.
-            reconnectAttemptDidFail = true
             return
         }
         guard !beginRealtimeReconnectIfPossible() else { return }
@@ -186,6 +187,7 @@ extension DictationSessionController {
 
     private func handleFinalTranscriptEvent(_ text: String) {
         guard acceptsRealtimeEvents else { return }
+        sessionBackendSendsFinals = true
         let processedText = preprocessIncomingTranscriptChunk(text)
         if isFinalizingStop {
             realtimeFinalizationLastActivityAt = dependencies.clock.now()
@@ -239,6 +241,11 @@ extension DictationSessionController {
 
     private func handleTranscriptionFinalizedEvent() {
         guard isFinalizingStop else { return }
+        stopAwaitsBackendFinal = false
+        sessionBackendSendsFinals = true
+        if let endpoint = sessionRealtimeConfiguration?.endpoint.absoluteString {
+            endpointsThatAnswerFinalCommits.insert(endpoint)
+        }
         debugLog("transcription finalized, disconnecting")
         activeRealtimeClient.disconnect()
     }
@@ -271,11 +278,14 @@ extension DictationSessionController {
             return
         }
         if isFinalizingStop {
-            // The stop's final commit may be what failed; the text so far still
-            // commits, so the log is the only trace of a lost tail.
+            // The stop's final commit may be what failed. The text so far
+            // still commits; the stop then reports that its end may be
+            // missing instead of Ready (#1482).
             Log.backends.error(
                 "realtime error while finalizing the stop: \(RealtimeConnectionFailureClassifier.publicLogDescription(of: message), privacy: .public) \(message, privacy: .private)"
             )
+            realtimeErrorDuringStop = true
+            holdFailureIndicatorUntilStopCompletes = true
             return
         }
 

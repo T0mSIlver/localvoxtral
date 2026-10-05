@@ -450,6 +450,14 @@ stop_one() {
     done
     pids="$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
     [[ -n "$pids" ]] && kill -KILL $pids 2>/dev/null || true
+    local killed_wait=0
+    while (( killed_wait < STOP_GRACE )) && healthy "$cname"; do sleep 1; killed_wait=$((killed_wait + 1)); done
+    # A listener neither launchd nor this account's lsof reaches (another
+    # account's process on the port) survives all of the above (#1722).
+    if healthy "$cname"; then
+      echo "still answering on port ${port} after SIGTERM and SIGKILL; its listener is not this account's"
+      return 1
+    fi
     echo "stopped (SIGTERM ignored → SIGKILL after ${waited}s)"
   else
     echo "stopped (trigger removed + SIGTERM, drained in ${waited}s)"
@@ -519,7 +527,9 @@ cmd_stop() {
       echo "unknown service: $name" >&2; rc=2; continue
     fi
     if [[ -e "$(trigger_for "$name")" ]] || healthy "$name"; then
-      printf 'stop %s: %s\n' "$(canonical "$name")" "$(stop_one "$name")"
+      local outcome
+      outcome="$(stop_one "$name")" || rc=1
+      printf 'stop %s: %s\n' "$(canonical "$name")" "$outcome"
     else
       echo "stop $(canonical "$name"): already down"
     fi

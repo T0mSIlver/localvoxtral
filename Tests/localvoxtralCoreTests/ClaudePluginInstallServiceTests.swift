@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import XCTest
 @testable import localvoxtralCore
 
@@ -194,6 +195,46 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
         XCTAssertNoThrow(try service.updateInstalledPlugin())
         XCTAssertNoThrow(try service.uninstallPlugin())
         XCTAssertEqual(runner.argumentLists.last, ["plugin", "marketplace", "remove", "localvoxtral"])
+    }
+
+    /// A failed mod step or listing leaves a reason in the log (#1689,
+    /// #1690): the step and its exit code or runner failure, never what the
+    /// CLI printed.
+    func testFailedModStepsAndListingsAreLoggedWithoutTheirOutput() throws {
+        let logged = Mutex<[String]>([])
+        let modTimesOut = Mutex(false)
+        let service = ClaudePluginInstallService(
+            claudeExecutableURL: claude,
+            marketplaceURL: marketplace,
+            runner: { invocation in
+                if invocation.arguments.contains("localvoxtral-mod@localvoxtral") {
+                    if modTimesOut.withLock({ $0 }) {
+                        throw ClaudePluginInstallService.ServiceError.commandTimedOut(
+                            action: nil, arguments: invocation.arguments, seconds: 60)
+                    }
+                    return .init(exitCode: 3, message: "secret stderr")
+                }
+                if invocation.arguments.contains("list") { return .init(exitCode: 1, message: "secret stderr") }
+                return .init(exitCode: 0, message: "ok")
+            },
+            logFailure: { line in logged.withLock { $0.append(line) } }
+        )
+
+        XCTAssertNoThrow(try service.installPlugin())
+        XCTAssertNoThrow(try service.updateInstalledPlugin())
+        modTimesOut.withLock { $0 = true }
+        XCTAssertNoThrow(try service.updatePlugin())
+        XCTAssertNil(try service.pluginListOutput())
+        XCTAssertNil(try service.marketplaceListOutput())
+
+        XCTAssertEqual(logged.withLock { $0 }, [
+            "Claude plugin: mod step installMod failed (exit 3); the context hooks are unaffected",
+            "Claude plugin: mod step updateMod failed (exit 3); the context hooks are unaffected",
+            "Claude plugin: mod step uninstallMod failed (timed out after 60 s); the context hooks are unaffected",
+            "Claude plugin: mod step installMod failed (timed out after 60 s); the context hooks are unaffected",
+            "Claude plugin: `plugin list` exited 1; status unknown",
+            "Claude plugin: `marketplace list` exited 1; status unknown",
+        ])
     }
 
     /// A failed install of the plugin itself stops before the mod: a mod

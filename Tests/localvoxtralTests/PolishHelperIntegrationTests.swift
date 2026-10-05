@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 
+import localvoxtralTestSupport
 @testable import localvoxtral
 
 /// Integration tests for the bundled MLX Swift polishing helper
@@ -539,6 +540,46 @@ final class PolishHelperIntegrationTests: XCTestCase {
     /// The memory-contract proof: when the process that passed --parent-pid
     /// dies, the helper exits on its own (freeing all model memory), exactly
     /// like the old fork's Python watchdog.
+    /// The real helper's /health names the pid the supervisor launched, so
+    /// the owner check (#1786) accepts it and the backend runs.
+    func testSupervisorAcceptsTheHelpersOwnReadiness() async throws {
+        let (binary, model) = try helperConfiguration()
+        try await ensurePolishModelCached(model)
+
+        let port = try unusedLoopbackPort()
+        var arguments = ["--model", model, "--port", "\(port)"]
+        if let revision = PolishModelCatalog.option(forRepoID: model)?.revision {
+            arguments.append(contentsOf: ["--model-revision", revision])
+        }
+        let supervisor = BackendProcessSupervisor(
+            configuration: BackendProcessConfiguration(
+                name: "polishd-integration",
+                executableURL: binary,
+                arguments: arguments,
+                environment: ProcessInfo.processInfo.environment,
+                readinessURL: URL(string: "http://127.0.0.1:\(port)/health")!,
+                readinessTimeout: .seconds(Int64(PolishModelSnapshot.helperReadyTimeout)),
+                maxConsecutiveRestartFailures: 1,
+                readinessReportsOwnerPID: true
+            )
+        )
+        let updates = supervisor.stateUpdates
+        await supervisor.start()
+
+        var settled: BackendProcessSupervisor.State?
+        for await state in updates {
+            switch state {
+            case .running, .failed, .stopped:
+                settled = state
+            default:
+                continue
+            }
+            break
+        }
+        await supervisor.stop()
+        XCTAssertEqual(settled, .running, "recent output: \(supervisor.recentOutput.suffix(20))")
+    }
+
     func testHelperExitsWhenParentPIDDies() async throws {
         let (binary, model) = try helperConfiguration()
         try await ensurePolishModelCached(model)

@@ -13,6 +13,34 @@ final class AppConfigStoreTests: XCTestCase {
         super.tearDown()
     }
 
+    /// Another copy created the file between the existence check and the
+    /// seed's publication: the seed must not replace it (#1576).
+    func testSeedingKeepsAFileCreatedJustBeforeItPublishes() throws {
+        let directory = makeTemporaryConfigDirectory()
+        let destination = directory.appendingPathComponent("replacement_dictionary.toml")
+        let custom = Data("# the user's rules\n".utf8)
+        let fileSystem = DurableFileSystem(
+            sync: { descriptor, path in
+                if path.hasSuffix(".tmp"), path.contains("replacement_dictionary.toml"),
+                   !FileManager.default.fileExists(atPath: destination.path) {
+                    try? custom.write(to: destination)
+                }
+                return DurableFileSystem.live.sync(descriptor, path)
+            },
+            rename: DurableFileSystem.live.rename)
+        let store = AppConfigStore(configDirectoryOverride: directory, durableFileSystem: fileSystem)
+
+        _ = store.configDirectoryURL()
+
+        XCTAssertEqual(try Data(contentsOf: destination), custom)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: directory.appendingPathComponent("terminal_apps.toml").path),
+            "the other files are still seeded")
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            .filter { $0.hasSuffix(".tmp") }
+        XCTAssertEqual(leftovers, [], "the refused seed leaves no temporary file")
+    }
+
     func testConfigBootstrapCreatesExpectedFiles() throws {
         let directory = makeTemporaryConfigDirectory()
         let store = AppConfigStore(configDirectoryOverride: directory)

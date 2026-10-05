@@ -625,13 +625,14 @@ jobs:
         run: ./scripts/ci/claude-mod-tests.sh
 
       # VibeRemoteShimTests run the real remote Vibe shim, which needs python3
-      # and ps, and the usage tests run the shipped terms.sh and capture.sh,
-      # which need curl; the image ships none of them.
+      # and ps, the usage tests run the shipped terms.sh and capture.sh, which
+      # need curl, and SSHConfigOverrideTests run `ssh -G`; the image ships
+      # none of them.
       - name: Core tests (localvoxtralCore, hook publisher)
         run: |
           docker run --rm -v "$PWD:/src" -w /src \
             swift:6.2.0-bookworm@sha256:1fc848c3953417e3ba101ff35458fc0ad048b2401899fd51853bc5979f6220f5 \
-            sh -c 'apt-get update -qq && apt-get install -qq -y --no-install-recommends python3 procps curl >/dev/null && ./scripts/core-tests-linux.sh'
+            sh -c 'apt-get update -qq && apt-get install -qq -y --no-install-recommends python3 procps curl openssh-client >/dev/null && ./scripts/core-tests-linux.sh'
 
   # EVERYTHING THAT NEEDS THIS PARTICULAR MAC, and nothing else.
   #
@@ -1409,9 +1410,9 @@ jobs:
         # over a forward the app's own coordinator opens, and pins the
         # EXTERNAL herdr assumptions the surface-authorization argument rests
         # on (docs/agent/remote-herdr-panel-binding.md). Self-hosted only, and
-        # not because of cost: the fixture provisions a loopback sshd and
-        # appends blocks to the account's ~/.ssh/config, which a hosted fork-PR runner
-        # must never be asked to do. Local equivalent:
+        # not because of cost: the fixture provisions a loopback sshd, which a
+        # hosted fork-PR runner must never be asked to do. Its host aliases
+        # live in the run's own ssh config (LOCALVOXTRAL_SSH_CONFIG, #1029). Local equivalent:
         # ./scripts/remote-build.sh integration-herdr
         if: steps.ci_scope.outputs.docs_only != 'true' && steps.herdr_lane.outputs.run == 'true'
         env:

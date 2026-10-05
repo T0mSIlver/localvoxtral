@@ -227,7 +227,7 @@ from your issue and say so in your report. Don't ask whether to file it.
   `docs/agent/field-debugging.md`. Dispatch `mac-crashlog.yml` before
   theorizing; install builds with `./scripts/try-pr.sh`.
 - CI lanes and evals: `docs/agent/test-tiers.md`.
-- The diagnostic record (`Sources/localvoxtral/DiagnosticRecords`): its
+- The diagnostic record (`Sources/localvoxtral*/DiagnosticRecords`): its
   privacy rules in `docs/agent/diagnostic-records.md`. It ships on by
   default; never add a field that holds the prompt sent to the agent.
 - Showing the owner what a view looks like: `docs/agent/view-snapshots.md`
@@ -243,6 +243,10 @@ from your issue and say so in your report. Don't ask whether to file it.
 
 - `README.md` is a landing page. User docs live in `docs/`, agent guides in
   `docs/agent/`, machine-local scratch in the gitignored `local-notes/`.
+- People read the docs site, agents the Markdown: a link a person follows
+  (README, app, integration READMEs, release notes) goes to
+  t0msilver.github.io/localvoxtral, never to a `docs/*.md`
+  (`scripts/ci/test-human-doc-links.sh`).
 - Changed a model pin or backend copy? Update `docs/under-the-hood.md` in the
   same PR.
 - Moved or renamed a section that a comment points at? Fix the pointer in the

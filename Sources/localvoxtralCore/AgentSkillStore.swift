@@ -101,8 +101,8 @@ package final class AgentSkillStore: @unchecked Sendable {
         }
     }
 
-    package static func defaultFileURL() -> URL {
-        LearnedTermStore.defaultFileURL().deletingLastPathComponent().appendingPathComponent("agent-skills.json")
+    package static func defaultFileURL(in directory: URL = LocalvoxtralDataDirectory.url()) -> URL {
+        directory.appendingPathComponent("agent-skills.json")
     }
 
     package func names() -> [String] {

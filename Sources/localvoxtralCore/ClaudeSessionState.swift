@@ -39,6 +39,16 @@ public struct ClaudeRecentFile: Sendable, Equatable {
 ///
 /// What is never stored: transcript contents (we do not even receive the
 /// path), file contents, command output, or model responses.
+/// A session's mod channel, for its liveness (#1646).
+package struct ClaudeModChannelLiveness: Sendable, Equatable {
+    /// The hub's token for the attached channel; nil once it detached.
+    package var token: UInt64?
+    /// The Claude Code process the `--attach` ran under.
+    package var claudePID: Int32
+    /// When the channel was last known open: its attach, then its detach.
+    package var lastSeen: Date
+}
+
 public struct ClaudeSessionSnapshot: Sendable, Equatable {
     public var sessionID: String
     /// Assigned by the broker from peer credentials. Never from the record.
@@ -100,6 +110,10 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
     /// Vibe hook re-sends the newest prompt, so a submit carrying this id
     /// again is that prompt read again, not a new one. Not persisted.
     package var lastSubmittedPromptID: String?
+    /// The session's mod channel as the broker last saw it (#1646). While it
+    /// is attached the session does not expire; once it detaches, the TTL
+    /// counts from then. In memory only: a channel ends with the app.
+    package var modChannel: ClaudeModChannelLiveness?
     public var firstSeen: Date
     public var lastActivity: Date
 

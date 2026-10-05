@@ -101,6 +101,12 @@ package enum ClipboardPayloadMacro {
         return count
     }
 
+    /// Every occurrence of `placeholder` in `text`, standalone or glued: the
+    /// ones `substitutePayload` expands.
+    package static func placeholderOccurrenceCount(in text: String) -> Int {
+        text.components(separatedBy: placeholder).count - 1
+    }
+
     // MARK: - Payload substitution
 
     /// Replaces every `placeholder` occurrence in `text` with the formatted

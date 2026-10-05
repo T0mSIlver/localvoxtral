@@ -27,10 +27,23 @@ package enum PolishOutcomeClassifier {
                 ClipboardPayloadMacro.standalonePlaceholderCount(
                     in: committedText
                 )
-            if actualPlaceholders != expectedPlaceholders {
+            // Substitution expands every occurrence, glued ones included, so
+            // a reply that adds a corrupted one (`$LV_CLIPBOARD_PAYLOAD_X`)
+            // would paste the payload twice while the standalone count holds.
+            let expectedOccurrences =
+                ClipboardPayloadMacro.placeholderOccurrenceCount(
+                    in: groundedWorkingText
+                )
+            let actualOccurrences =
+                ClipboardPayloadMacro.placeholderOccurrenceCount(
+                    in: committedText
+                )
+            if actualPlaceholders != expectedPlaceholders
+                || actualOccurrences != expectedOccurrences
+            {
                 committedText = groundedWorkingText
                 CoreLog.polishing.warning(
-                    "Clipboard payload macro: polish changed placeholder count (\(expectedPlaceholders, privacy: .public) -> \(actualPlaceholders, privacy: .public)); polish discarded"
+                    "Clipboard payload macro: polish changed placeholder count (standalone \(expectedPlaceholders, privacy: .public) -> \(actualPlaceholders, privacy: .public), all \(expectedOccurrences, privacy: .public) -> \(actualOccurrences, privacy: .public)); polish discarded"
                 )
             }
         }

@@ -38,9 +38,20 @@ enum TimingConstants {
     /// text is promoted.
     static let stopFinalizationTimeout: TimeInterval = 7.0
 
-    /// Minimum time the finalization phase stays open before the inactivity
-    /// check kicks in. Prevents premature disconnect if the first transcript
-    /// delta arrives slowly.
+    /// The same bound for the stop the Mac's sleep makes (#1584). macOS
+    /// promises no time between `willSleep` and suspending the process, so
+    /// the helper gets one second to return its tail; past it the stop keeps
+    /// what arrived, as it did when sleep skipped the final commit.
+    static let sleepStopFinalizationTimeout: TimeInterval = 1.0
+
+    /// The same bound for the stop a quit makes (#1756): the quit waits this
+    /// long for the helper's tail, then saves what arrived.
+    static let quitStopFinalizationTimeout: TimeInterval = 1.0
+
+    /// Minimum time the finalization phase stays open, counted from when the
+    /// final commit left for the server, before the inactivity check kicks
+    /// in. Prevents premature disconnect if the first transcript delta
+    /// arrives slowly.
     static let finalizationMinimumOpen: TimeInterval = 1.5
 
     /// If no realtime event arrives within this window (after the minimum open

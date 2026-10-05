@@ -50,10 +50,12 @@ cat >"$TMP_DIR/bin/nc" <<STUB
 #!/usr/bin/env bash
 [[ -e "$STATE/up" ]]
 STUB
-# launchctl logs its arguments; a kill takes the server down.
+# launchctl logs its arguments; a kill takes the server down, unless
+# state/foreign-listener says another account's process holds the port.
 cat >"$TMP_DIR/bin/launchctl" <<STUB
 #!/usr/bin/env bash
 printf 'launchctl %s\n' "\$*" >>"$CALLS"
+[[ -e "$STATE/foreign-listener" ]] && exit 3
 [[ "\$1" == kill ]] && rm -f "$STATE/up"
 exit 0
 STUB
@@ -226,3 +228,19 @@ servers diagnose bogus >/dev/null 2>&1 || status=$?
 [[ "$status" == 2 ]] || fail "diagnose of an unknown service exited $status, expected 2"
 
 echo "PASS: test-server reaper counts clients as use; diagnose names the cause"
+
+# ---- a stop that leaves the listener answering is no stop ------------------
+
+# Another account's process holds port 8000: launchctl reaches no job, and an
+# unprivileged lsof finds no pid. `stop` used to say "stopped" and exit 0
+# (#1722).
+start_idle_server
+: >"$STATE/lsof"
+touch "$STATE/foreign-listener"
+if servers stop speechd >"$TMP_DIR/out" 2>&1; then
+  fail "stop exited 0 while the listener still answers: $(cat "$TMP_DIR/out")"
+fi
+assert_lacks "$TMP_DIR/out" "stopped"
+assert_has "$TMP_DIR/out" "stop speechd-voxtral: still answering on port 8000"
+rm -f "$STATE/foreign-listener"
+printf 'PASS: a stop that leaves the listener answering fails\n'

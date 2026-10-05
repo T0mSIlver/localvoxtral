@@ -42,6 +42,22 @@ package class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate
 
     let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
 
+    /// What a frame the client could not read was (#1691).
+    enum RejectedFrame: String {
+        case binaryNotUTF8 = "binary frame that is not UTF-8"
+        case notJSON = "text frame that is not JSON"
+        case notJSONObject = "JSON frame that is not an object"
+        case unknownMessage = "frame of an unknown kind"
+    }
+
+    /// Rejected frames logged per connection; past it one line says the rest
+    /// go unlogged, so a misbehaving server cannot flood the log.
+    static let rejectedFrameLogLimit = 5
+    private let rejectedFrameTally = Mutex<(generation: RealtimeConnectionGeneration, count: Int)>((.none, 0))
+    #if DEBUG
+    private let rejectedFrameObserver = Mutex<(@Sendable (String) -> Void)?>(nil)
+    #endif
+
     // MARK: - Abstract interface (override in subclasses)
 
     /// Protocol-specific JSON event handling. `generation` is the socket the
@@ -219,11 +235,13 @@ package class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate
             handle(text: text, from: generation)
         case .data(let data):
             guard let text = String(data: data, encoding: .utf8) else {
+                logRejectedFrame(.binaryNotUTF8, bytes: data.count, from: generation)
                 emit(.status("Received binary frame of \(data.count) bytes."), from: generation)
                 return
             }
             handle(text: text, from: generation)
         @unknown default:
+            logRejectedFrame(.unknownMessage, bytes: 0, from: generation)
             emit(.status("Received an unknown WebSocket frame."), from: generation)
         }
     }
@@ -233,18 +251,52 @@ package class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate
 
         do {
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                debugLog("received non-dictionary JSON frame")
+                logRejectedFrame(.notJSONObject, bytes: data.count, from: generation)
                 emit(.status("Received non-JSON frame."), from: generation)
                 return
             }
             handle(json: json, from: generation)
         } catch {
+            // The parser's description can quote the frame: debug log only.
             debugLog("JSON parse error: \(error.localizedDescription)")
+            logRejectedFrame(.notJSON, bytes: data.count, from: generation)
             emit(.status("Received non-JSON frame."), from: generation)
         }
     }
 
+    /// One Backends line per rejected frame, up to `rejectedFrameLogLimit`
+    /// per connection: what kind of frame and how big, never its contents.
+    private func logRejectedFrame(
+        _ frame: RejectedFrame, bytes: Int, from generation: RealtimeConnectionGeneration
+    ) {
+        let count: Int = rejectedFrameTally.withLock { tally in
+            if tally.generation != generation { tally = (generation, 0) }
+            tally.count += 1
+            return tally.count
+        }
+        guard count <= Self.rejectedFrameLogLimit + 1 else { return }
+        let line =
+            count <= Self.rejectedFrameLogLimit
+            ? "realtime connection \(generation.description) rejected a \(frame.rawValue), \(bytes) bytes"
+            : "realtime connection \(generation.description) rejected more than \(Self.rejectedFrameLogLimit) frames; the rest go unlogged"
+        Log.backends.notice("\(line, privacy: .public)")
+        #if DEBUG
+        rejectedFrameObserver.withLock { $0 }?(line)
+        #endif
+    }
+
     #if DEBUG
+    /// Hears each Backends line a rejected frame logs.
+    package func debugObserveRejectedFrameLog(_ observer: (@Sendable (String) -> Void)?) {
+        rejectedFrameObserver.withLock { $0 = observer }
+    }
+
+    /// Drive one WebSocket message as if it had just been read off the socket
+    /// the client currently holds.
+    package func debugHandleMessageForTesting(_ message: URLSessionWebSocketTask.Message) {
+        handle(message: message, from: currentConnectionGeneration)
+    }
+
     /// Drive one parsed frame as if it had just been read off the socket the
     /// client currently holds. Production never reaches `handle(json:from:)`
     /// this way: `listenForMessages` stamps the socket the frame was actually

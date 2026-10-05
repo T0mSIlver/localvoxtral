@@ -45,6 +45,8 @@ extension DictationSessionController {
         // audio drain is also what lets the buffer hold the gap: chunks the
         // send loop would have taken and dropped stay put for the replay.
         audio.cancelSendAndCommitTasks()
+        // Ahead of them, what the socket took but closed on before sending.
+        audio.reclaimUnsentAudio(from: activeRealtimeClient)
         // No text can arrive while the socket is down; a silence stop now
         // would end the session before the gap is replayed.
         pauseSilenceAutoStopForReconnect()
@@ -125,8 +127,8 @@ extension DictationSessionController {
 
     // MARK: - The run
 
-    /// Retry `configuration` on a bounded backoff until the socket opens or the
-    /// attempts run out. `sleepFor` is the only clock: tests drive the whole
+    /// Retry `configuration` on a bounded backoff until a server session is
+    /// ready or the attempts run out. `sleepFor` is the only clock: tests drive the whole
     /// run — including a stop landing mid-attempt — through it.
     func runRealtimeReconnect(
         runID: Int,
@@ -134,9 +136,23 @@ extension DictationSessionController {
         policy: RealtimeReconnectPolicy = .default,
         sleepFor: @MainActor (TimeInterval) async -> Void = DictationSessionController.sleepForReconnect
     ) async {
+        var helperStartBudget = sessionUsesManagedSpeechHelper ? policy.managedHelperStartBudget : 0
         for attempt in 1...max(1, policy.maxAttempts) {
             await sleepFor(policy.backoff(beforeAttempt: attempt))
             guard isReconnectRunCurrent(runID) else { return }
+            if helperStartBudget > 0, backendManager.speechdStatus == .starting {
+                Log.backends.notice(
+                    "realtime reconnect waiting for the bundled helper to finish starting before attempt \(attempt, privacy: .public)"
+                )
+                while helperStartBudget > 0, backendManager.speechdStatus == .starting {
+                    await sleepFor(policy.pollInterval)
+                    guard isReconnectRunCurrent(runID) else { return }
+                    helperStartBudget -= policy.pollInterval
+                }
+                Log.backends.notice(
+                    "realtime reconnect done waiting for the bundled helper: \(String(describing: self.backendManager.speechdStatus), privacy: .public)"
+                )
+            }
 
             reconnectAttemptDidFail = false
             Log.backends.notice(
@@ -166,14 +182,20 @@ extension DictationSessionController {
                 // then reject the session on an open socket, which leaves
                 // `isConnected` true on a session that will never transcribe.
                 if reconnectAttemptDidFail { break }
-                if activeRealtimeClient.isConnected {
+                // Readiness, not the upgrade (#1457). Audio the restarted send
+                // loop hands an open socket before its handshake waits in the
+                // client, and a close before the handshake erases it there:
+                // until then the gap stays in `AudioChunkBuffer`, and such a
+                // close fails this attempt instead of ending the run and
+                // starting a fresh one with a fresh allowance.
+                if activeRealtimeClient.isSessionReady {
                     completeRealtimeReconnect(attempt: attempt)
                     return
                 }
                 waited += policy.pollInterval
             }
             Log.backends.error(
-                "realtime reconnect attempt \(attempt, privacy: .public) did not reach a connected socket"
+                "realtime reconnect attempt \(attempt, privacy: .public) did not reach a ready session"
             )
         }
 
@@ -184,7 +206,8 @@ extension DictationSessionController {
     /// Whether `runID` still owns the session. False once a stop, a cancel or a
     /// newer session has moved on — the run must then change nothing.
     private func isReconnectRunCurrent(_ runID: Int) -> Bool {
-        isReconnectingRealtimeSession && reconnectRunID == runID && isDictating
+        // A stop during the run keeps it, to finalize the gap (#1582).
+        isReconnectingRealtimeSession && reconnectRunID == runID && (isDictating || isFinalizingStop)
     }
 
     private func completeRealtimeReconnect(attempt: Int) {
@@ -199,6 +222,16 @@ extension DictationSessionController {
         )
 
         setRealtimeIndicatorConnected()
+        guard isDictating else {
+            // The user stopped while the run dialled: the gap goes to the new
+            // server session with the stop's final commit behind it, once.
+            statusText = StatusStrings.finalizing
+            audio.flushBufferedAudio(to: activeRealtimeClient)
+            stopReplaysReconnectGap = true
+            scheduleStopFinalization()
+            startStopFinalizationWatchdog()
+            return
+        }
         statusText = "Listening..."
         // The buffer is deliberately NOT cleared: the first tick of the
         // restarted send loop is what replays the gap.
@@ -221,10 +254,47 @@ extension DictationSessionController {
         // The last attempt may still hold a half-open socket that would
         // otherwise connect into a session that no longer exists.
         activeRealtimeClient.disconnect()
+        guard isDictating else {
+            finishStopWithoutTheReconnectGap(
+                reason: "reconnect failed after \(policy.maxAttempts) attempts"
+            )
+            return
+        }
         endDictationAfterLostConnection(
             technicalDetails:
                 "Realtime websocket disconnected unexpectedly during active dictation; reconnect failed after \(policy.maxAttempts) attempts."
         )
+    }
+
+    /// The socket closed while the stop finalizes. Audio it never sent (a
+    /// rollover's carried audio, with the final commit queued behind it,
+    /// #1672) goes to a new socket through a reconnect, under the stop's
+    /// watchdog; otherwise the stop ends with what arrived.
+    func finishStopOnClosedSocket() {
+        // A reconnect already carries the stop; its watchdog bounds it.
+        guard !isReconnectingRealtimeSession else { return }
+        if !isCompletingStoppedSession, audio.reclaimUnsentAudio(from: activeRealtimeClient) {
+            stopFinalizationTask?.cancel()
+            stopFinalizationTask = nil
+            if beginRealtimeReconnectIfPossible() {
+                statusText = StatusStrings.finalizing
+                return
+            }
+        }
+        finishStoppedSession(promotePendingSegment: true)
+    }
+
+    /// A stop that waited on a reconnect run which never got through: it
+    /// finishes with the text received before the drop, and says its end may
+    /// be missing, since the speech since the drop was never transcribed.
+    func finishStopWithoutTheReconnectGap(reason: String) {
+        let lostSeconds =
+            Double(audio.audioChunkBuffer.takeAll().count) / Double(AudioChunkBuffer.bytesPerSecond)
+        Log.backends.error(
+            "stop finalization: \(reason, privacy: .public); \(String(format: "%.1f", lostSeconds), privacy: .public)s of speech since the drop not transcribed"
+        )
+        realtimeErrorDuringStop = true
+        finishStoppedSession(promotePendingSegment: true)
     }
 
     /// The end of the line for a dropped socket: tear the session down and say

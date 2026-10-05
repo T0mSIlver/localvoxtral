@@ -150,6 +150,9 @@ final class RealtimeContextRolloverTests: XCTestCase {
         /// While set, `pump` hands back no `done`: the server is still
         /// transcribing.
         private var holdsDones = false
+        /// While set, `pump` plays no handshake for a socket a rollover
+        /// opened: it is still opening.
+        private var holdsHandshakes = false
         /// Resolved when the session hears its first rollover.
         let rolledOver = BoundedWait()
         private var heard: [(RealtimeEvent, RealtimeConnectionGeneration)] = []
@@ -158,6 +161,8 @@ final class RealtimeContextRolloverTests: XCTestCase {
         private var commits: [Bool] = []
         private var needsHandshake = false
         private var sockets: [URLSessionWebSocketTask] = []
+        /// Runs after the server took each frame, outside every lock.
+        private var onTransmit: (@Sendable (URLSessionWebSocketTask, String) -> Void)?
 
         /// `dials`: a rollover dials a real socket (to a closed loopback
         /// port) instead of taking one from the harness.
@@ -181,6 +186,10 @@ final class RealtimeContextRolloverTests: XCTestCase {
                 guard let self else { return }
                 // Read outside the client's lock: the observer runs after it.
                 self.serverReceives(text, on: task, generation: self.client.connectionGeneration)
+                self.lock.lock()
+                let onTransmit = self.onTransmit
+                self.lock.unlock()
+                onTransmit?(task, text)
             }
             client.setEventHandler { [weak self] event, generation in self?.hear(event, from: generation) }
             if !dials {
@@ -228,6 +237,18 @@ final class RealtimeContextRolloverTests: XCTestCase {
             lock.unlock()
         }
 
+        func observeTransmits(_ observer: (@Sendable (URLSessionWebSocketTask, String) -> Void)?) {
+            lock.lock()
+            onTransmit = observer
+            lock.unlock()
+        }
+
+        func holdHandshakes(_ holds: Bool) {
+            lock.lock()
+            holdsHandshakes = holds
+            lock.unlock()
+        }
+
         func holdDones(_ holds: Bool) {
             lock.lock()
             holdsDones = holds
@@ -258,7 +279,7 @@ final class RealtimeContextRolloverTests: XCTestCase {
         func pump() {
             while true {
                 lock.lock()
-                if needsHandshake {
+                if needsHandshake, !holdsHandshakes {
                     needsHandshake = false
                     lock.unlock()
                     client.debugHandleFrameForTesting(json: ["type": "session.created"])
@@ -557,6 +578,87 @@ final class RealtimeContextRolloverTests: XCTestCase {
         XCTAssertEqual(harness.server.audioPerSession.last, 3 * Self.chunkBytes, "the carried audio")
     }
 
+    /// The socket a rollover opened fails before its handshake. The audio
+    /// carried to it never reached a server, so the client hands it back,
+    /// once, for the session's reconnect to replay (#1672).
+    func testAReplacementThatFailsBeforeItsHandshakeHandsBackTheCarriedAudio() {
+        let harness = Harness()
+        harness.holdDones(true)
+        harness.speak(seconds: 0.1)
+        harness.client.sendCommit(final: false)
+        harness.speak(seconds: 7.0)
+        let tagged = Data(repeating: 9, count: Self.chunkBytes)
+        XCTAssertTrue(harness.client.sendAudioChunk(tagged))
+        harness.holdHandshakes(true)
+        harness.holdDones(false)
+        harness.pump()
+        XCTAssertEqual(harness.rollovers, 1)
+
+        harness.client.debugHandleTerminalSocketErrorForTesting(
+            task: harness.currentSocket, errorMessage: "WebSocket closed (1011).")
+
+        let carried = Data(repeating: 1, count: 3 * Self.chunkBytes)
+        XCTAssertEqual(harness.client.takeUnsentAudio(), carried + tagged)
+        XCTAssertTrue(harness.client.takeUnsentAudio().isEmpty, "handed back once")
+        XCTAssertEqual(harness.server.audioPerSession.count, 1, "no server took the carried audio")
+    }
+
+    /// A socket error handled while the session starts a rollover: the audio
+    /// the client took to carry to the next socket reaches it. The error
+    /// handler used to check for a rollover, unlock, and close the socket in
+    /// a second critical section, deleting the carried audio (#1724).
+    func testASocketFailureAsARolloverStartsKeepsTheCarriedAudio() {
+        let harness = Harness()
+        harness.holdDones(true)
+        harness.speak(seconds: 0.1)
+        harness.client.sendCommit(final: false)
+        harness.speak(seconds: 6.6)
+        XCTAssertEqual(harness.rollovers, 0)
+        let tagged = Data(repeating: 9, count: Self.chunkBytes)
+        let accepted = LockedBox<Bool?>(nil)
+        harness.client.debugSetBeforeTerminalErrorClose {
+            harness.client.debugSetBeforeTerminalErrorClose(nil)
+            // The 68th chunk reaches the limit and starts the rollover.
+            harness.speak(seconds: 0.1)
+            accepted.set(harness.client.sendAudioChunk(tagged))
+        }
+
+        harness.client.debugHandleTerminalSocketErrorForTesting(
+            task: harness.currentSocket, errorMessage: "WebSocket closed (1011).")
+        harness.pump()
+
+        XCTAssertEqual(accepted.value, true, "the client took the chunk")
+        XCTAssertEqual(harness.rollovers, 1)
+        XCTAssertTrue(harness.errorsOrDrops.isEmpty, "\(harness.errorsOrDrops)")
+        XCTAssertEqual(harness.server.audioPerSession.count, 2)
+        XCTAssertEqual(harness.server.audioPerSession.last, Self.chunkBytes, "the carried chunk")
+    }
+
+    /// With no run going, a rollover sends a nonfinal commit, then the
+    /// final. The retiring socket failing as the nonfinal goes out moves the
+    /// session to the next socket; the final was the retiring socket's and
+    /// must not end the replacement's run while the user still talks (#1725).
+    func testARetiringSocketsFinalNeverReachesTheReplacement() {
+        let harness = Harness()
+        let failed = LockedBox(false)
+        harness.observeTransmits { task, text in
+            guard !failed.value, text.contains("input_audio_buffer.commit") else { return }
+            failed.set(true)
+            harness.client.debugHandleTerminalSocketErrorForTesting(
+                task: task, errorMessage: "WebSocket send failed: broken pipe")
+        }
+        harness.speak(seconds: 6.8)
+        harness.observeTransmits(nil)
+        harness.pump()
+
+        XCTAssertTrue(failed.value, "the rollover never sent its commit")
+        XCTAssertEqual(harness.rollovers, 1)
+        XCTAssertEqual(harness.server.audioPerSession.count, 2)
+        XCTAssertEqual(
+            harness.sentCommits, [false, false],
+            "the retiring nonfinal, then the replacement's own nonfinal; no final")
+    }
+
     /// The retiring socket's `done`, once taken, ends the rollover even when
     /// the other end (the watchdog, or the socket closing) comes in before
     /// its final is out: that final would arrive after the handover and be
@@ -683,24 +785,4 @@ final class RealtimeContextRolloverTests: XCTestCase {
     }
 }
 
-private final class LockedBox<Value>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored: Value
-
-    init(_ value: Value) {
-        stored = value
-    }
-
-    var value: Value {
-        lock.lock()
-        defer { lock.unlock() }
-        return stored
-    }
-
-    func set(_ value: Value) {
-        lock.lock()
-        stored = value
-        lock.unlock()
-    }
-}
 #endif

@@ -71,6 +71,7 @@ final class RemoteQuickCaptureTests: XCTestCase {
     private var store: FakeStore!
     private var requests: RemoteQuickCaptureRequests!
     private var usage: UsageLedger!
+    private let checksDecided = EventCount()
     private var listener: ClaudeRemoteContextListener!
     private var port: UInt16 = 0
     private var token = ""
@@ -103,6 +104,8 @@ final class RemoteQuickCaptureTests: XCTestCase {
             makeID: { "0123456789abcdef0123456789abcdef" },
             usageRecorder: usage
         )
+        let checksDecided = checksDecided
+        requests.debugCheckDecided.withLock { $0 = { checksDecided.increment() } }
         port = try unusedLoopbackPort()
         listener = ClaudeRemoteContextListener(
             registry: sessions,
@@ -162,9 +165,11 @@ final class RemoteQuickCaptureTests: XCTestCase {
         exit: String? = nil,
         usage: String? = nil,
         body: String,
+        listedRepository: String? = "type/quill",
         token: String? = nil
     ) throws -> RemoteListenerResponse {
         var headers = ["Authorization": "Bearer \(token ?? self.token)", "X-Lvx-Capture-Session": session]
+        if let listedRepository { headers["X-Lvx-Issues-Repository"] = listedRepository }
         if agent == .vibe { headers["X-Lvx-Agent"] = "vibe" }
         if let usage { headers["X-Lvx-Usage"] = usage }
         if let draftID { headers["X-Lvx-Draft-Id"] = draftID }
@@ -175,7 +180,9 @@ final class RemoteQuickCaptureTests: XCTestCase {
     private var readmeHeader: String { ClaudeRemoteHTTPCodec.readmeHeaderName.lowercased() }
     private var draftHeader: String { ClaudeRemoteHTTPCodec.draftHeaderName.lowercased() }
     private var quill: QuickCaptureProject {
-        QuickCaptureProject(key: "remote:quill", name: "quill", summary: nil, terms: [], userLine: nil)
+        QuickCaptureProject(
+            key: "remote:quill", name: "quill", summary: nil, terms: [], userLine: nil, issueRepository: "type/quill"
+        )
     }
 
     private static let readme = """
@@ -200,8 +207,11 @@ final class RemoteQuickCaptureTests: XCTestCase {
     private func startDraft(_ text: String = "for quill, italic kerning is still wrong") async -> Task<QuickCaptureDraft.Outcome?, Never> {
         let requests = requests!
         let project = quill
+        // An earlier draft's timer stays a sleeper after its draft ends
+        // (#1741): the new draft is registered once one more sleeps.
+        let sleeping = sleeper.sleepers
         let task = Task { await requests.draft(capture: text, project: project) }
-        await sleeper.waitForSleepers(1)
+        await sleeper.waitForSleepers(sleeping + 1)
         return task
     }
 
@@ -400,6 +410,57 @@ final class RemoteQuickCaptureTests: XCTestCase {
                 promptTokens: 10, completionTokens: 200, agentCostUSD: 0.07)],
             "the host's run, counted once with what it reported"
         )
+    }
+
+    /// A fork's checkout lists its own issues, and the fork and its
+    /// upstream both have a #12: only a listing of the repository the
+    /// capture files in may link the draft to one (#1682).
+    func testAForksIssueListNeverLinksACaptureFiledUpstream() async throws {
+        try hook("SessionStart", session: "s1")
+        let bundle = "@@lvx open\n\(Self.issues)\n"
+        let cases: [(listed: String?, path: String, relation: QuickCaptureDraft.Draft.Relation, issue: Int?)] = [
+            ("me/quill", RemoteQuickCaptureRequests.draftPromptPath, .none, nil),
+            ("me/quill", RemoteQuickCaptureRequests.draftContextPath, .none, nil),
+            (nil, RemoteQuickCaptureRequests.draftPromptPath, .none, nil),
+            (nil, RemoteQuickCaptureRequests.draftContextPath, .none, nil),
+            ("Type/Quill", RemoteQuickCaptureRequests.draftPromptPath, .extends, 12),
+            ("Type/Quill", RemoteQuickCaptureRequests.draftContextPath, .extends, 12),
+        ]
+        var contexts = 0
+        for (listed, path, relation, issue) in cases {
+            let label = "\(listed ?? "no repository named") via \(path)"
+            let task = await startDraft()
+            XCTAssertEqual(try hook(session: "s1").headers[draftHeader], draftID, label)
+            if path == RemoteQuickCaptureRequests.draftContextPath {
+                XCTAssertEqual(
+                    try answer(path, session: "s1", draftID: draftID, body: bundle, listedRepository: listed).status, 200, label
+                )
+                contexts += 1
+                await checksDecided.waitFor(contexts)
+                let check = try answer(RemoteQuickCaptureRequests.draftCheckPath, session: "s1", draftID: draftID, body: "")
+                XCTAssertEqual(check.status, 200, label)
+                XCTAssertEqual(
+                    String(decoding: check.body, as: UTF8.self).contains("Kerning is off in italics"), issue != nil,
+                    "\(label): the issues are quoted only when they can be linked"
+                )
+            } else {
+                let prompt = try answer(path, session: "s1", draftID: draftID, body: Self.issues, listedRepository: listed)
+                XCTAssertEqual(prompt.status, 200, label)
+                XCTAssertEqual(
+                    String(decoding: prompt.body, as: UTF8.self).contains("Kerning is off in italics"), issue != nil,
+                    "\(label): the issues are quoted only when they can be linked"
+                )
+            }
+            let answered = try answer(
+                RemoteQuickCaptureRequests.draftAnswerPath, session: "s1", draftID: draftID, exit: "0",
+                body: Self.claudeAnswer
+            ).status
+            // A refused answer leaves the draft waiting forever.
+            guard answered == 200 else { return XCTFail("\(label): the answer was refused with \(answered)") }
+            guard case .draft(let draft, _)? = await task.value else { return XCTFail("\(label): no draft") }
+            XCTAssertEqual(draft.relation, relation, label)
+            XCTAssertEqual(draft.issue, issue, label)
+        }
     }
 
     func testTheCaptureReachesOnlyTheSessionTheAskWentTo() async throws {
@@ -618,15 +679,11 @@ final class RemoteQuickCaptureTests: XCTestCase {
         )
     }
 
-    /// Polls `/v1/draft/check` as the host does, without a clock: each 202
-    /// yields to the first draft's task.
-    private func pollCheck(session: String) async throws -> RemoteListenerResponse {
-        for _ in 0..<1_000 {
-            let reply = try answer(RemoteQuickCaptureRequests.draftCheckPath, session: session, draftID: draftID, body: "")
-            if reply.status != 202 { return reply }
-            await Task.yield()
-        }
-        throw XCTSkip("the first draft never finished")
+    /// Asks `/v1/draft/check` as the host's poll does, once the first
+    /// draft's task has decided the check: earlier, it answers 202.
+    private func checkOnceDecided(session: String) async throws -> RemoteListenerResponse {
+        await checksDecided.waitFor(1)
+        return try answer(RemoteQuickCaptureRequests.draftCheckPath, session: session, draftID: draftID, body: "")
     }
 
     func testAHostsContextGivesTheFirstDraftThenTheCheckStartsFromIt() async throws {
@@ -678,7 +735,7 @@ final class RemoteQuickCaptureTests: XCTestCase {
         XCTAssertEqual(firstDrafter.contexts.withLock { $0.first?.readme }, "# Quill")
         firstDrafter.gate!.wakeAll()
 
-        let check = try await pollCheck(session: "s1")
+        let check = try await checkOnceDecided(session: "s1")
         XCTAssertEqual(check.status, 200)
         XCTAssertEqual(shown.withLock { $0 }, [.draft(first, usage: nil)], "the Inbox has the first draft before the check runs")
         XCTAssertEqual(
@@ -722,7 +779,7 @@ final class RemoteQuickCaptureTests: XCTestCase {
         firstDrafter.gate!.wakeAll()
         let outcome = await task.value
         XCTAssertNil(outcome, "no check due")
-        let done = try await pollCheck(session: "s1")
+        let done = try await checkOnceDecided(session: "s1")
         XCTAssertEqual(done.status, 204, "the host hears it is done")
         XCTAssertEqual(
             try answer(RemoteQuickCaptureRequests.draftCheckPath, session: "s1", draftID: draftID, body: "").status,
@@ -828,8 +885,8 @@ final class RemoteQuickCaptureTests: XCTestCase {
         XCTAssertEqual(
             flags,
             runner.components(separatedBy: "\n")
-                .drop { !$0.contains("\"$BIN\" -p \"$(cat \"$WORK/prompt\")\"") }
-                .prefix { !$0.contains("</dev/null") }
+                .drop { !$0.contains("\"$BIN\" -p \\") }
+                .prefix { !$0.contains("<\"$WORK/prompt\"") }
                 .compactMap { $0.trimmingCharacters(in: .whitespaces).split(separator: " ").first.map(String.init) }
                 .filter { $0.hasPrefix("--") },
             "no flag added or dropped"

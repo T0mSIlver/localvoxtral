@@ -9,12 +9,32 @@ import os
 /// decides what reaches the polisher, so the LLM lane filter names it; the
 /// rest of the session does not trigger that lane.
 extension DictationSessionController {
+    /// Evidence the backend answers a stop's final commit: a final this
+    /// session, or an answered stop on the same endpoint earlier (#1659).
+    var backendAnswersFinalCommits: Bool {
+        if sessionBackendSendsFinals { return true }
+        guard let endpoint = sessionRealtimeConfiguration?.endpoint.absoluteString else { return false }
+        return endpointsThatAnswerFinalCommits.contains(endpoint)
+    }
+
     func finishStoppedSession(promotePendingSegment: Bool) {
         guard !isCompletingStoppedSession else {
             debugLog("finishStoppedSession ignored; cleanup already in progress")
             return
         }
+        if quitHoldsStoppedSession {
+            endQuitFinalization()
+            return
+        }
         isCompletingStoppedSession = true
+
+        if stopAwaitsBackendFinal, !wasCancelled, !realtimeErrorDuringStop, backendAnswersFinalCommits {
+            Log.backends.error(
+                "stop finalization ended without the backend's final; the end of the dictation may be missing"
+            )
+            realtimeErrorDuringStop = true
+        }
+        stopAwaitsBackendFinal = false
 
         stopFinalizationTask?.cancel()
         stopFinalizationTask = nil
@@ -57,6 +77,10 @@ extension DictationSessionController {
         guard !finishLiveAutoPasteSessionAfterGoTo(sessionMode: sessionMode, finish: { [weak self] sessionAudio in
             self?.finishLiveAutoPasteSession(sessionMode: sessionMode, finishedAudio: sessionAudio)
         }) else { return }
+        // Deltas the session's mod took unanswered: its ack first (#1645).
+        guard !finishLiveAutoPasteSessionAfterModAck(sessionMode: sessionMode, finish: { [weak self] sessionAudio in
+            self?.finishLiveAutoPasteSession(sessionMode: sessionMode, finishedAudio: sessionAudio)
+        }) else { return }
         finishLiveAutoPasteSession(sessionMode: sessionMode)
     }
 
@@ -70,6 +94,7 @@ extension DictationSessionController {
         /// Taken at stop, before a polish that can outlast the next session's
         /// start.
         let audio: Data?
+        var stoppedAt: Date? = nil
     }
 
     /// What an Overlay Buffer commit samples at the stop itself, before a
@@ -94,6 +119,17 @@ extension DictationSessionController {
             commitQuickCapture(sessionMode: sessionMode)
             return
         }
+        // A stop phrase is a command to the joined session, not text for
+        // the destination: the destination's guards would keep it as text.
+        if isSpokenAbort(transcript.currentDictationEventText) {
+            sessionCommitGuard = nil
+            sessionPickedPane = nil
+            earlyPolishRun?.cancel()
+            earlyPolishRun = nil
+            _ = audio.sessionRecording.finish()
+            startSpokenAbort(sessionMode: sessionMode, join: context.claudeSessionJoin)
+            return
+        }
         let destinationCheck = checkDestinationBeforeCommit(sessionMode: sessionMode)
         if destinationCheck == .kept { return }
         let sessionAudio = audio.sessionRecording.finish()
@@ -109,7 +145,8 @@ extension DictationSessionController {
                 model: sessionModelName ?? settings.effectiveModelName,
                 outputMode: sessionMode.rawValue,
                 targetAppBundleID: resolveTargetAppBundleID(),
-                audio: sessionStoresAudio ? sessionAudio : nil
+                audio: sessionStoresAudio ? sessionAudio : nil,
+                stoppedAt: sessionStoppedAt
             ),
             polishingConfig: polishingConfig,
             // The world as it was at stop: clipboard, screen, join and
@@ -145,16 +182,20 @@ extension DictationSessionController {
     /// Polished and committed by a task when polishing has a configuration,
     /// committed as-is otherwise. `addressedTo` is the session a "send that
     /// to <name>" named (#723 step 3): the commit goes there, never to the
-    /// focused app.
+    /// focused app. `readsBackJoinedPane` is set by a caller that awaited
+    /// before this commit, the second pass: keys into a joined session's pane
+    /// wait for it to be read back.
     func commitOverlayBufferText(
         sessionMode: DictationOutputMode,
         sample: OverlayStopSample,
         goToChecked: Bool = false,
         addressedTo: ClaudeSessionSnapshot? = nil,
-        earlyPolish: EarlyPolishRun? = nil
+        earlyPolish: EarlyPolishRun? = nil,
+        readsBackJoinedPane: Bool = false
     ) {
         if !goToChecked,
-           startGoToSessionIfSpoken(sessionMode: sessionMode, sample: sample)
+           startSpokenAbortIfSpoken(sessionMode: sessionMode, sample: sample)
+            || startGoToSessionIfSpoken(sessionMode: sessionMode, sample: sample)
             || startAddressedSendIfSpoken(sessionMode: sessionMode, sample: sample) {
             // A spoken command took the dictation. Any commit it makes
             // later polishes the whole text, without the pieces.
@@ -164,7 +205,9 @@ extension DictationSessionController {
         // Before the dictionary and the polisher: the trigger is a command,
         // not text, so neither may see it. An addressed dictation is
         // submitted by its own delivery, in the named session.
-        let spokenSend = addressedTo == nil ? stripOverlaySpokenSendTrigger() : nil
+        let spokenSend = addressedTo == nil
+            ? stripOverlaySpokenSendTrigger(join: sample.capture?.claudeJoin ?? context.claudeSessionJoin)
+            : nil
         let preparation = StopCommitCoordinator.prepare(
             originalText: transcript.currentDictationEventText,
             polishingConfig: sample.polishingConfig,
@@ -195,6 +238,7 @@ extension DictationSessionController {
         let capturedOutputMode = sample.record.outputMode
         let capturedTargetBundleID = sample.record.targetAppBundleID
         let capturedAudio = sample.record.audio
+        let capturedStoppedAt = sample.record.stoppedAt
         // The capture exists exactly when the configuration does: both were
         // taken together at stop, ahead of the profile, which reads the join
         // the capture consumed.
@@ -256,7 +300,8 @@ extension DictationSessionController {
                         model: capturedModel,
                         outputMode: capturedOutputMode,
                         targetAppBundleID: capturedTargetBundleID,
-                        audio: capturedAudio
+                        audio: capturedAudio,
+                        stoppedAt: capturedStoppedAt
                     ),
                     polishProfile: capturedPolishProfile,
                     spokenSend: spokenSend,
@@ -288,11 +333,13 @@ extension DictationSessionController {
                     joined: historyJoin
                 )
             }
+            let addressedText = transcript.currentDictationEventText
             polishAndCommitTask = Task { @MainActor [weak self] in
                 guard let self,
-                      let addressed = await self.commitOverlayAddressed(to: addressedTo)
+                      let addressed = await self.commitOverlayAddressed(to: addressedTo),
+                      self.claimAddressedCommitSave(addressed)
                 else { return }
-                self.finishAddressedCommit(addressed, sessionMode: sessionMode)
+                self.finishAddressedCommit(addressed, text: addressedText, sessionMode: sessionMode)
                 self.saveSessionRecord(
                     startedAt: capturedSessionStartedAt,
                     rawText: originalText,
@@ -305,6 +352,7 @@ extension DictationSessionController {
                     status: llmConfigurationFailure == nil ? .sttCompleted : .llmFailed,
                     commitSucceeded: addressed.inserted,
                     polishContextSummary: payloadProvenanceSummary,
+                    stoppedAt: capturedStoppedAt,
                     clipboardPayload: clipboardPayload,
                     audio: capturedAudio,
                     joined: historyJoin
@@ -324,28 +372,91 @@ extension DictationSessionController {
         // for a polish that could not run holds it instead.
         let historyJoin = (sample.capture?.claudeJoin ?? context.claudeSessionJoin).map(AgentCLIJoin.init)
         let commitJoin = context.claudeSessionJoin
+        if readsBackJoinedPane, let commitJoin, keysCarryCommit(join: commitJoin, spokenSend: spokenSend) {
+            // The second pass was awaited: a switch to another tab of the
+            // same terminal meanwhile would take the keys (#1712). The pane
+            // is read back after the go-to and addressed checks above, as
+            // the last await before the keys.
+            saveInterruptedPolishCommit = { [weak self] in
+                self?.saveSessionRecord(
+                    startedAt: capturedSessionStartedAt,
+                    rawText: originalText,
+                    polishedText: workingText != originalText ? workingText : nil,
+                    polishingDuration: nil,
+                    provider: capturedProvider,
+                    model: capturedModel,
+                    outputMode: capturedOutputMode,
+                    targetAppBundleID: capturedTargetBundleID,
+                    status: .sttCompleted,
+                    commitSucceeded: false,
+                    polishContextSummary: payloadProvenanceSummary,
+                    clipboardPayload: clipboardPayload,
+                    audio: capturedAudio,
+                    joined: historyJoin
+                )
+            }
+            polishAndCommitTask = Task { @MainActor [weak self] in
+                // A new dictation that cancelled this before it ran already
+                // saved it and reset the overlay; with no target left, the
+                // read-back below would pass.
+                guard let self, !Task.isCancelled,
+                      await self.commitPaneStillShownBeforeInsertion(sessionMode: sessionMode, joined: commitJoin)
+                else { return }
+                self.saveInterruptedPolishCommit = nil
+                self.commitOverlayUnpolished(
+                    sessionMode: sessionMode, preparation: preparation, displayWorkingText: displayWorkingText,
+                    record: sample.record, commitJoin: commitJoin, historyJoin: historyJoin, spokenSend: spokenSend)
+            }
+            return
+        }
+        commitOverlayUnpolished(
+            sessionMode: sessionMode, preparation: preparation, displayWorkingText: displayWorkingText,
+            record: sample.record, commitJoin: commitJoin, historyJoin: historyJoin, spokenSend: spokenSend)
+    }
+
+    /// Whether keys typed into the focused app carry the commit. The relay
+    /// and the mod reach the session by its id, whatever pane is in front;
+    /// only keys need the joined pane read back.
+    private func keysCarryCommit(join: ClaudeSessionJoin?, spokenSend: OverlaySpokenSend?) -> Bool {
+        !textInsertion.promptRelayTakesText
+            && (modChannelSessionID(join: join) == nil || !(spokenSend == nil || spokenSend == .modSubmit))
+    }
+
+    /// The overlay commit with no polish: typed, pasted or relayed now, and
+    /// saved.
+    private func commitOverlayUnpolished(
+        sessionMode: DictationOutputMode,
+        preparation: StopCommitCoordinator.Preparation,
+        displayWorkingText: String,
+        record: StoppedSessionRecordFields,
+        commitJoin: ClaudeSessionJoin?,
+        historyJoin: AgentCLIJoin?,
+        spokenSend: OverlaySpokenSend?
+    ) {
+        let originalText = preparation.originalText
+        let workingText = preparation.workingText
+        let llmConfigurationFailure = preparation.configurationFailure
         let commitTargetPID = overlayBufferCoordinator.commitTargetAppPID
+        let commitSpokenSend = spokenSendForCommit(spokenSend, join: commitJoin)
         let overlayCommit = StopCommitCoordinator.commit(
             overlay: overlayBufferCoordinator,
-            textInsertion: overlayCommitter(join: commitJoin, targetPID: commitTargetPID),
+            textInsertion: overlayCommitter(join: commitJoin, targetPID: commitTargetPID, spokenSend: commitSpokenSend),
             autoCopyEnabled: settings.autoCopyEnabled
         )
         noteOverlayCommit(
             overlayCommit, committedText: displayWorkingText,
-            join: commitJoin, targetPID: commitTargetPID, spokenSend: spokenSend
+            join: commitJoin, targetPID: commitTargetPID, spokenSend: commitSpokenSend
         )
         if let failureMessage = overlayCommit.failureMessage {
             lastError = failureMessage
         }
         if overlayCommit.succeeded {
-            // Read before the cleanup below discards the join.
             expectCorrection(
-                of: displayWorkingText, join: context.claudeSessionJoin, project: nil,
-                startedAt: capturedSessionStartedAt
+                of: displayWorkingText, join: commitJoin, project: nil, startedAt: record.startedAt
             )
-            proposeProjectTermsIfNew(join: context.claudeSessionJoin, inserted: displayWorkingText)
+            proposeProjectTermsIfNew(join: commitJoin, inserted: displayWorkingText)
         }
-        sendOverlaySpokenSendIfNeeded(spokenSend, commit: overlayCommit)
+        sendOverlaySpokenSendIfNeeded(commitSpokenSend, commit: overlayCommit)
 
         completeStoppedSessionCleanup(
             sessionMode: sessionMode,
@@ -354,21 +465,22 @@ extension DictationSessionController {
         )
 
         saveSessionRecord(
-            startedAt: capturedSessionStartedAt,
+            startedAt: record.startedAt,
             rawText: originalText,
             // Persist the PLACEHOLDER-bearing working text, never the
             // payload; the payload lives only in the substituted commit copy.
             polishedText: workingText != originalText ? workingText : nil,
             polishingDuration: nil,
-            provider: capturedProvider,
-            model: capturedModel,
-            outputMode: capturedOutputMode,
-            targetAppBundleID: capturedTargetBundleID,
+            provider: record.provider,
+            model: record.model,
+            outputMode: record.outputMode,
+            targetAppBundleID: record.targetAppBundleID,
             status: llmConfigurationFailure == nil ? .sttCompleted : .llmFailed,
             commitSucceeded: overlayCommit.succeeded,
-            polishContextSummary: payloadProvenanceSummary,
-            clipboardPayload: clipboardPayload,
-            audio: capturedAudio,
+            polishContextSummary: preparation.payloadProvenanceSummary,
+            stoppedAt: record.stoppedAt,
+            clipboardPayload: preparation.clipboardPayload,
+            audio: record.audio,
             joined: historyJoin
         )
 
@@ -450,6 +562,9 @@ extension DictationSessionController {
         var recordPolishedOutput: String?
         var recordCommittedText: String?
 
+        // What History names as the polish: only a request that went out.
+        let sentPolish: LLMPolishingConfiguration? =
+            if case .notSent = outcome.reply { nil } else { polishingConfig }
         switch outcome.reply {
         case .notSent:
             // Nothing to polish (blank text): end the sweep started above.
@@ -498,8 +613,10 @@ extension DictationSessionController {
         let overlayCommit: StopCommitCoordinator.CommitResult
         if let addressedTo {
             // Clears the interrupted-save once the text is handed over.
-            guard let addressed = await self.commitOverlayAddressed(to: addressedTo) else { return }
-            self.finishAddressedCommit(addressed, sessionMode: sessionMode)
+            guard let addressed = await self.commitOverlayAddressed(to: addressedTo),
+                  self.claimAddressedCommitSave(addressed)
+            else { return }
+            self.finishAddressedCommit(addressed, text: insertedText, sessionMode: sessionMode)
             if addressed.inserted {
                 self.recordLearnedTerms(of: outcome)
             }
@@ -524,6 +641,8 @@ extension DictationSessionController {
                     )
                 ),
                 polishPromptTokens: polishPromptTokens,
+                stoppedAt: record.stoppedAt,
+                polish: sentPolish,
                 clipboardPayload: preparation.clipboardPayload,
                 audio: record.audio,
                 joined: capture.claudeJoin.map(AgentCLIJoin.init)
@@ -549,18 +668,25 @@ extension DictationSessionController {
             }
             return
         }
-        guard await self.pickedPaneStillShownBeforeInsertion(sessionMode: sessionMode) else { return }
+        guard await self.commitPaneStillShownBeforeInsertion(
+            sessionMode: sessionMode,
+            joined: self.keysCarryCommit(join: capture.claudeJoin, spokenSend: spokenSend) ? capture.claudeJoin : nil
+        ) else { return }
         // From here the task commits and saves the dictation itself.
         self.saveInterruptedPolishCommit = nil
         let commitTargetPID = self.overlayBufferCoordinator.commitTargetAppPID
+        let commitSpokenSend = self.spokenSendForCommit(spokenSend, join: capture.claudeJoin)
         overlayCommit = StopCommitCoordinator.commit(
             overlay: self.overlayBufferCoordinator,
-            textInsertion: self.overlayCommitter(join: capture.claudeJoin, targetPID: commitTargetPID),
+            textInsertion: self.overlayCommitter(
+                join: capture.claudeJoin, targetPID: commitTargetPID, spokenSend: commitSpokenSend,
+                draft: outcome.material.promptDraft
+            ),
             autoCopyEnabled: self.settings.autoCopyEnabled
         )
         self.noteOverlayCommit(
             overlayCommit, committedText: insertedText,
-            join: capture.claudeJoin, targetPID: commitTargetPID, spokenSend: spokenSend
+            join: capture.claudeJoin, targetPID: commitTargetPID, spokenSend: commitSpokenSend
         )
         if let failureMessage = overlayCommit.failureMessage {
             self.lastError = failureMessage
@@ -575,7 +701,7 @@ extension DictationSessionController {
             )
             self.proposeProjectTermsIfNew(join: capture.claudeJoin, inserted: insertedText)
         }
-        self.sendOverlaySpokenSendIfNeeded(spokenSend, commit: overlayCommit)
+        self.sendOverlaySpokenSendIfNeeded(commitSpokenSend, commit: overlayCommit)
 
         self.completeStoppedSessionCleanup(
             sessionMode: sessionMode,
@@ -604,6 +730,8 @@ extension DictationSessionController {
                 )
             ),
             polishPromptTokens: polishPromptTokens,
+            stoppedAt: record.stoppedAt,
+            polish: sentPolish,
             clipboardPayload: preparation.clipboardPayload,
             audio: record.audio,
             joined: capture.claudeJoin.map(AgentCLIJoin.init)
@@ -749,7 +877,12 @@ extension DictationSessionController {
         // off. Nothing to apply and not a terminal keeps the no-session path:
         // no hold-back, no delay.
         let dictionary = replacementDictionaryForCurrentSession()
-        guard dictionary != nil || sessionTargetIsTerminalLike else {
+        // The session's mod fills newlines and spaces as text (#1645): the
+        // newline guard and the trailing-space policy are for keys, and
+        // what the mod gives back to them is guarded on the way.
+        let keysGuarded = sessionTargetIsTerminalLike
+            && textInsertion.promptRelaySink?.route.takesUnsanitizedText != true
+        guard dictionary != nil || keysGuarded else {
             textInsertion.endLiveReplacementSession()
             return
         }
@@ -758,7 +891,7 @@ extension DictationSessionController {
         textInsertion.beginLiveReplacementSession(
             dictionary: dictionary,
             preferredAppPID: overlayBufferCoordinator.commitTargetAppPID,
-            isTerminalLikeTarget: sessionTargetIsTerminalLike
+            isTerminalLikeTarget: keysGuarded
         )
     }
 
@@ -770,6 +903,9 @@ extension DictationSessionController {
         let cancelled = wasCancelled
         wasCancelled = false
         isFinalizingStop = false
+        stopFinalizationTimeout = TimingConstants.stopFinalizationTimeout
+        stopReplaysReconnectGap = false
+        postModChannelBand(.done)
         isConnectingRealtimeSession = false
         isCompletingStoppedSession = false
         escapeCancelHandler.stop()
@@ -801,7 +937,13 @@ extension DictationSessionController {
             statusText = StatusStrings.overlayCopiedToClipboard
         default:
             statusText = "Ready"
+            if realtimeErrorDuringStop {
+                statusText = StatusStrings.dictationEndMayBeMissing
+                lastError = StatusStrings.dictationEndMayBeMissing
+            }
         }
+        realtimeErrorDuringStop = false
+        sessionBackendSendsFinals = false
 
         textInsertion.stopInsertionRetryTask()
         textInsertion.logDiagnostics()
@@ -894,13 +1036,12 @@ extension DictationSessionController {
         let sessionAudio = audio.sessionRecording.finish()
         let text = quickCaptureTextWithoutSpokenStopPhrase(transcript.currentDictationEventText)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let recordID = UUID()
-        let keptInHistory = !text.isEmpty && settings.dictationHistoryRetention.savesDictations && sessionStore != nil
         // Read before the cleanup lets the join go: the capture is polished
         // and routed among its group's projects only (#1005).
         let group = learnedTermStore?.snapshot().group(ofJoin: context.claudeSessionJoin)
-        saveSessionRecord(
-            id: recordID,
+        // The id the save returns, not one decided before it: the save
+        // re-reads History's setting, which another copy may have changed.
+        let historyRecordID = saveSessionRecord(
             startedAt: sessionStartedAt ?? Date(),
             rawText: text,
             polishedText: nil,
@@ -923,7 +1064,7 @@ extension DictationSessionController {
         }
         Log.dictation.info("quick capture: \(text.count, privacy: .public) chars to the inbox")
         statusText = StatusStrings.quickCaptureSaved
-        onQuickCapture?(text, keptInHistory ? recordID : nil, group)
+        onQuickCapture?(text, sessionStore == nil ? nil : historyRecordID, group)
     }
 
     /// Returns the saved entry's id, or nil when nothing was saved.
@@ -943,6 +1084,8 @@ extension DictationSessionController {
         polishProfile: String? = nil,
         polishContextSummary: String? = nil,
         polishPromptTokens: Int? = nil,
+        stoppedAt: Date? = nil,
+        polish: LLMPolishingConfiguration? = nil,
         clipboardPayload: String? = nil,
         quickCaptureDestination: String? = nil,
         audio: Data? = nil,
@@ -977,9 +1120,13 @@ extension DictationSessionController {
         record.projectName = joined?.project?.name
         record.joinedAgent = joined?.agent
         record.polishPromptTokens = polishPromptTokens
+        record.stoppedAt = stoppedAt
+        // The backend kind and model id only, never the endpoint URL.
+        record.polishBackend = polish?.usageBackend.rawValue
+        record.polishModel = polish?.model
         lastDictationJoin = joined
         dependencies.onSessionRecord?(record)
-        let retention = settings.dictationHistoryRetention
+        let retention = settings.reloadHistoryStorageSettings()
         // The record holds the clipboard placeholder; the copy the user takes
         // gets the text as it was inserted.
         let entry = DictationHistoryEntry(record)
@@ -1009,16 +1156,30 @@ extension DictationSessionController {
     }
 
     /// Brings the store in line with the retention setting: at launch, and
-    /// when the setting changes. `off` deletes everything there is.
-    func applyDictationHistoryRetention(now: Date = Date()) {
-        let retention = settings.dictationHistoryRetention
+    /// when the setting changes. `off` deletes everything there is; with
+    /// `removingBackups` (the user ticked it when choosing Don't keep) the
+    /// snapshots and the quarantine go too (#1574).
+    func applyDictationHistoryRetention(now: Date = Date(), removingBackups: Bool = false) {
+        let retention = settings.reloadHistoryStorageSettings()
         if !retention.savesDictations {
             // A pass already reading the history would send it to the hosted
             // model after the user said not to keep it.
             termSuggestions.stop()
-            // The trim below sweeps them too; this one also stops a record
-            // already on its way to disk.
-            sessionStore?.deleteAllDiagnosticRecords()
+        }
+        // The switches delete once when turned off; a delete that failed
+        // then is retried here (#1573). With History off the trim below
+        // sweeps the records too; this one also stops a record already on
+        // its way to disk.
+        if !retention.savesDictations || !settings.diagnosticRecordsEnabled {
+            deleteAllDiagnosticRecords()
+        }
+        if !settings.dictationAudioEnabled {
+            sessionStore?.deleteAllAudio()
+        }
+        if !retention.savesDictations, removingBackups {
+            // Not a trim: a trim snapshots the store first.
+            sessionStore?.deleteAll(removingBackups: true)
+            return
         }
         guard let cutoff = retention.cutoff(now: now) else { return }
         sessionStore?.trim(olderThan: cutoff)
@@ -1082,7 +1243,12 @@ extension DictationSessionController {
         audio sessionAudio: Data?,
         capture: StopCommitCoordinator.Capture? = nil
     ) -> StopSecondPassRequest? {
-        guard sessionHasStopSecondPass else { return nil }
+        guard sessionHasStopSecondPass else {
+            if sessionStopSecondPassTurnedOff {
+                Log.backends.notice("second pass skipped: turned off in Settings")
+            }
+            return nil
+        }
         guard !transcript.currentDictationEventText
             .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
@@ -1188,17 +1354,32 @@ extension DictationSessionController {
                     ?? memory.group(ofJoinedWorkspace: request.workspace, repositoryRoot: request.joinedRepositoryRoot)
             learnedTerms += memory.inGroup(group).confirmedEverywhere().map(\.term)
         }
+        // Settings stay live through the root lookup: a source turned off, or
+        // trust revoked, while it ran keeps its terms home, as the polish
+        // request does (#1293).
+        let contextTrusted = request.contextTrusted
+            && PolishContextClipboardReader.isPermittedContextEndpoint(
+                request.endpoint,
+                trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
+            )
+        if !contextTrusted {
+            context = StopSecondPass.ContextTerms()
+            learnedTerms = []
+        }
+        if !settings.repoVocabularyEnabled { context.repository = [] }
+        if !settings.claudeRepoContextEnabled { context.session = [] }
+        if !settings.terminalScreenContextEnabled { context.screen = [] }
         let candidates = StopSecondPass.candidates(
             userTerms: request.userTerms,
             dictionarySpellings: request.dictionarySpellings,
             learnedTerms: learnedTerms,
             context: context,
-            contextTrusted: request.contextTrusted
+            contextTrusted: contextTrusted
         )
         let contextBias = MistralBatchTranscription.contextBias(from: candidates)
         // Counts only: the terms are screen, session and repository content.
         Log.backends.info(
-            "second pass terms: context \(request.contextTrusted ? "trusted" : "not sent", privacy: .public), repository \(context.repository.count, privacy: .public), session \(context.session.count, privacy: .public), screen \(context.screen.count, privacy: .public), sent \(contextBias.count, privacy: .public)"
+            "second pass terms: context \(contextTrusted ? "trusted" : "not sent", privacy: .public), repository \(context.repository.count, privacy: .public), session \(context.session.count, privacy: .public), screen \(context.screen.count, privacy: .public), sent \(contextBias.count, privacy: .public)"
         )
         return StopSecondPassTerms(contextBias: contextBias, candidates: candidates)
     }
@@ -1282,10 +1463,10 @@ extension DictationSessionController {
                     in: text, candidates: terms.candidates)
             }
             guard let self, outcome != .cancelled, !Task.isCancelled,
-                  await self.pickedPaneStillShownBeforeInsertion(sessionMode: sessionMode)
+                  await self.commitPaneStillShownBeforeInsertion(sessionMode: sessionMode)
             else { return }
             self.applyStopSecondPass(outcome)
-            self.commitOverlayBufferText(sessionMode: sessionMode, sample: sample)
+            self.commitOverlayBufferText(sessionMode: sessionMode, sample: sample, readsBackJoinedPane: true)
             // The commit may hand off to a polish task; this one ends with it,
             // so whoever awaits the commit awaits all of it.
             await self.polishAndCommitTask?.value
@@ -1295,10 +1476,19 @@ extension DictationSessionController {
     private func applyStopSecondPass(_ outcome: StopSecondPass.Outcome) {
         switch outcome {
         case .replaced(let text):
+            // The batch model can leave out a sentence the realtime stream
+            // had; that run goes back in (#1649).
+            let reconciled = StopSecondPass.keepingDroppedRealtimeRuns(
+                realtime: transcript.currentDictationEventText, secondPass: text)
             Log.backends.info(
-                "second pass replaced the realtime text (\(self.transcript.currentDictationEventText.count, privacy: .public) -> \(text.count, privacy: .public) chars)"
+                "second pass replaced the realtime text (\(self.transcript.currentDictationEventText.count, privacy: .public) -> \(reconciled.text.count, privacy: .public) chars)"
             )
-            transcript.currentDictationEventText = text
+            if reconciled.restoredWords > 0 {
+                Log.backends.notice(
+                    "second pass dropped \(reconciled.restoredWords, privacy: .public) realtime words in a run; kept them"
+                )
+            }
+            transcript.currentDictationEventText = reconciled.text
             refreshOverlayBufferSession()
         case .empty:
             Log.backends.notice("second pass answered with no text; realtime text kept")

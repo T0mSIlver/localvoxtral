@@ -4,6 +4,10 @@ import Foundation
 /// GET /health (readiness probe), POST /v1/chat/completions, and
 /// POST /v1/tokenize, which counts a text's tokens for Settings' prompt sizes.
 ///
+/// `/health` answers `{"status": "ok", "pid": n}`: the supervisor counts the
+/// helper ready only when the pid is the child it launched, so another
+/// process that binds the port while the model loads is refused (#1786).
+///
 /// `/v1/tokenize` takes `{"text": "..."}` and answers `{"tokens": n}`. It only
 /// reads the tokenizer, so it changes nothing a polish sends or gets back.
 public struct PolishdRouter: Sendable {
@@ -18,7 +22,7 @@ public struct PolishdRouter: Sendable {
     public func handle(_ request: HTTPRequest) async -> HTTPResponse {
         switch (request.method, request.path) {
         case ("GET", "/health"):
-            return .json(200, ["status": "ok"])
+            return .json(200, Health(status: "ok", pid: ProcessInfo.processInfo.processIdentifier))
         case ("POST", "/v1/chat/completions"):
             return await handleChatCompletion(request)
         case ("POST", "/v1/tokenize"):
@@ -28,6 +32,11 @@ public struct PolishdRouter: Sendable {
         default:
             return errorResponse(404, "not found: \(request.path)", type: "invalid_request_error")
         }
+    }
+
+    private struct Health: Encodable {
+        let status: String
+        let pid: Int32
     }
 
     private func handleChatCompletion(_ request: HTTPRequest) async -> HTTPResponse {
@@ -42,6 +51,15 @@ public struct PolishdRouter: Sendable {
         }
         guard !completion.messages.isEmpty else {
             return errorResponse(400, "messages must not be empty", type: "invalid_request_error")
+        }
+        // One model is loaded. A request for another one (a stop that read
+        // the selection before a model switch) must not be answered by this
+        // one under the name it asked for (#1591).
+        if let requested = completion.model, !requested.isEmpty, requested != modelName {
+            PolishdLog.error("chat.completion refused: requested model \(requested), loaded \(modelName)")
+            return errorResponse(
+                400, "model \(requested) is not loaded; this helper serves \(modelName)",
+                type: "invalid_request_error")
         }
 
         do {
@@ -60,7 +78,7 @@ public struct PolishdRouter: Sendable {
             let response = ChatCompletionResponse(
                 id: "polishd-\(UUID().uuidString)",
                 created: Int(Date().timeIntervalSince1970),
-                model: completion.model ?? modelName,
+                model: modelName,
                 content: reply.content,
                 timings: reply.timings,
                 finishReason: reply.finishReason

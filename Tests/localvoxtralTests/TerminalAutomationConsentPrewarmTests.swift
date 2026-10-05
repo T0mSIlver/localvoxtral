@@ -273,30 +273,33 @@ final class TerminalAutomationConsentPrewarmTests: XCTestCase {
         defaults.removePersistentDomain(forName: suiteName)
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let settings = SettingsStore(defaults: defaults, environment: [:], secretStore: InMemorySecretStore())
-        let executions = Mutex(0)
+        let executions = EventCount()
         let observer = TerminalAutomationConsentPrewarmSettingsObserver(settings: settings) {
             TerminalAutomationConsentPrewarm.fireOnceWhenTerminalIsAvailable(
                 bundleID: TerminalScreenAllowlist.ghosttyBundleID,
                 isTerminalRunning: { true },
-                execute: { executions.withLock { $0 += 1 } },
+                execute: { executions.increment() },
                 notificationCenter: NotificationCenter()
             )
         }
         observer.start()
 
         settings.terminalScreenContextEnabled = true
-        for _ in 0..<100 { await Task.yield() }
+        await executions.waitFor(1)
         XCTAssertEqual(
-            executions.withLock { $0 }, 1,
+            executions.value, 1,
             "enabling a context setting after launch must pre-warm before dictation"
         )
 
         settings.terminalScreenContextEnabled = false
         settings.terminalScreenContextEnabled = true
         settings.claudeRepoContextEnabled = true
-        for _ in 0..<100 { await Task.yield() }
+        // The writes queue the observer's task; a pre-warm it calls queues
+        // the fire task behind the first barrier, and the second waits that out.
+        await drainMainActorQueue()
+        await drainMainActorQueue()
         XCTAssertEqual(
-            executions.withLock { $0 }, 1,
+            executions.value, 1,
             "a successful pre-warm must remain at-most-once for the app run"
         )
         _ = observer

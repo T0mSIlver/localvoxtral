@@ -534,7 +534,10 @@ enum StopCommitCoordinator {
         // carries the final material, which is what delivery learns from.
         let endpointURL = input.configuration.endpointURL
         var material = gathered.withdrawingRevokedConsent(
-            settings: input.settings, endpointURL: endpointURL, workingText: workingText
+            settings: input.settings,
+            endpointURL: endpointURL,
+            joinStillLive: input.context.claudeJoinStillLive(capture.claudeJoin),
+            workingText: workingText
         ) ?? gathered
 
         // Sections, pre-application, prompts, blocks and provenance
@@ -575,7 +578,10 @@ enum StopCommitCoordinator {
         let earlyHandoff = await input.earlyPolish?.finish()
         if input.earlyPolish != nil, Task.isCancelled { return nil }
         if let regated = material.withdrawingRevokedConsent(
-            settings: input.settings, endpointURL: endpointURL, workingText: workingText
+            settings: input.settings,
+            endpointURL: endpointURL,
+            joinStillLive: input.context.claudeJoinStillLive(capture.claudeJoin),
+            workingText: workingText
         ) {
             material = regated
             assembly = assemble(material)

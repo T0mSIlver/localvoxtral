@@ -28,6 +28,28 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
     }
 
+    /// The red icon holds until the session clock passes its hold, and only
+    /// then goes back to idle.
+    func testTheFailureIndicatorResetsOnlyWhenTheSessionClockPassesItsHold() async {
+        let clock = ManualSessionClock()
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste, clock: clock)
+        viewModel.session.isShowingConnectionFailureAlert = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.session.handleConnectFailure(reason: .networkLost)
+        await clock.waitForSleepers(1)
+        XCTAssertEqual(
+            clock.pendingDeadlines, [clock.now.addingTimeInterval(TimingConstants.recentFailureIndicatorDuration)]
+        )
+        XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure, "armed, not yet reset")
+
+        await awaitNextWrite(of: { viewModel.realtimeSessionIndicatorState }) {
+            clock.advance(by: TimingConstants.recentFailureIndicatorDuration)
+        }
+
+        XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .idle)
+    }
+
     func testTimeoutReasonKeepsStableStatusAndEndpointPhrase() {
         let viewModel = makeViewModel(outputMode: .overlayBuffer)
         viewModel.session.isShowingConnectionFailureAlert = true
@@ -371,7 +393,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
             backendManager: FakeManagedBackendManager(),
             overlayBufferCoordinator: MockOverlayCoordinator(),
             startRuntimeServices: true,
-            dependencies: DictationViewModel.Dependencies(historyDirectory: makeHistoryDirectory())
+            dependencies: makeRuntimeDependencies()
         )
 
         XCTAssertFalse(viewModel.permissions.hasRequestedStartupPermissions)
@@ -402,7 +424,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
             overlayBufferCoordinator: MockOverlayCoordinator(),
             startRuntimeServices: true,
             suppressStartupPermissionPrompts: true,
-            dependencies: DictationViewModel.Dependencies(historyDirectory: makeHistoryDirectory())
+            dependencies: makeRuntimeDependencies()
         )
 
         XCTAssertFalse(
@@ -415,7 +437,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
     /// table, as SwiftData's shared default.store did after icloudmailagent
     /// migrated it.
     func testHistoryAndInsightsSayTheStoreDidNotOpen() async throws {
-        let directory = makeHistoryDirectory()
+        let dependencies = makeRuntimeDependencies()
+        let directory = try XCTUnwrap(dependencies.dataDirectory)
         let url = directory.appendingPathComponent("history.store")
         let foreign = Schema([ForeignRequestModel.self])
         _ = try ModelContainer(for: foreign, configurations: [ModelConfiguration(schema: foreign, url: url)])
@@ -425,7 +448,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
             overlayBufferCoordinator: MockOverlayCoordinator(),
             startRuntimeServices: true,
             suppressStartupPermissionPrompts: true,
-            dependencies: DictationViewModel.Dependencies(historyDirectory: directory)
+            dependencies: dependencies
         )
 
         XCTAssertNil(viewModel.sessionStore)
@@ -441,13 +464,66 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertTrue(insights.isCounting, "no zero counts under a store that did not open")
     }
 
-    /// Runtime services open the history here, never the user's.
-    private func makeHistoryDirectory() -> URL {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("lv-history-\(UUID().uuidString)", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-        return directory
+    /// Runtime services open every store in a temporary data folder and
+    /// read a temporary home, never the user's (#1524).
+    private func makeRuntimeDependencies() -> DictationViewModel.Dependencies {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-runtime-\(UUID().uuidString)", isDirectory: true)
+        let dataDirectory = root.appendingPathComponent("data", isDirectory: true)
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        return DictationViewModel.Dependencies(
+            clock: ManualSessionClock().clock, dataDirectory: dataDirectory, home: home
+        )
+    }
+
+    /// Startup records the repositories the home's Claude Code transcripts
+    /// worked in, into the learned-term store under the data folder it was
+    /// given, and opens every store there (#1524).
+    func testRuntimeServicesKeepEveryStoreInTheGivenDataFolder() async throws {
+        let dependencies = makeRuntimeDependencies()
+        let dataDirectory = try XCTUnwrap(dependencies.dataDirectory)
+        let home = try XCTUnwrap(dependencies.home)
+        let repository = home.appendingPathComponent("work/vidtheque", isDirectory: true)
+        let git = repository.appendingPathComponent(".git", isDirectory: true)
+        try FileManager.default.createDirectory(at: git, withIntermediateDirectories: true)
+        try Data("[remote \"origin\"]\n\turl = git@github.com:T0mSIlver/vidtheque.git\n".utf8)
+            .write(to: git.appendingPathComponent("config"))
+        // Named the way Claude Code names a project folder after its cwd.
+        let transcripts = home.appendingPathComponent(".claude/projects", isDirectory: true)
+            .appendingPathComponent(
+                repository.path.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ".", with: "-"),
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(at: transcripts, withIntermediateDirectories: true)
+        try Data(#"{"parentUuid":null,"cwd":"\#(repository.path)","sessionId":"s"}"#.utf8)
+            .write(to: transcripts.appendingPathComponent("s.jsonl"))
+
+        let viewModel = DictationViewModel(
+            settings: makeExternalBackendSettings(outputMode: .overlayBuffer),
+            backendManager: FakeManagedBackendManager(),
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: true,
+            suppressStartupPermissionPrompts: true,
+            dependencies: dependencies
+        )
+        retainForTestProcessLifetime(viewModel)
+        let scanner = try XCTUnwrap(viewModel.session.agentProjectScanner)
+        scanner.waitForPendingWork()
+        let store = try XCTUnwrap(viewModel.learnedTermStore)
+        _ = await store.loadedSnapshot()
+
+        XCTAssertEqual(store.fileURL, dataDirectory.appendingPathComponent("learned-terms.json"))
+        let reread = LearnedTermStore(fileURL: store.fileURL)
+        let projects = await reread.loadedSnapshot().projects
+        XCTAssertEqual(
+            Set(projects.map(\.repository)), ["T0mSIlver/vidtheque"],
+            "the scan read the given home and wrote the given folder; keys: \(projects.map(\.key))"
+        )
+        let homeEntries = try FileManager.default.contentsOfDirectory(atPath: home.path).sorted()
+        XCTAssertEqual(homeEntries, [".claude", "work"], "nothing was written into the home")
     }
 
     // MARK: - Prompt-cache warmup hook (#489)
@@ -722,7 +798,6 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.shortcuts.handleDictationShortcutRelease()
         backendManager.resumeEnsure()
         await viewModel.session.managedStartupTask?.value
-        await Task.yield()
 
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: false)])
         XCTAssertNil(viewModel.session.sessionProvider)
@@ -1022,14 +1097,15 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         // the stop to finish, or the stale stop kills the fresh speechd process
         // (review finding on rapid managed→external→managed flips).
         viewModel.engines.applyDictationBackendModeChange(.managedLocal)
-        await Task.yield()
-        XCTAssertTrue(backendManager.ensureCalls.isEmpty)
 
         backendManager.resumeStopDictation()
         await viewModel.engines.dictationWarmupTask?.value
 
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: false)])
         XCTAssertEqual(backendManager.stopDictationCallCount, 1)
+        XCTAssertEqual(
+            backendManager.finishedStopDictationsAtEnsure, [1], "the warmup ensured only after the stop finished"
+        )
     }
 
     // MARK: - Overlay Buffer reachability gating (polishing warmup follows triggers)
@@ -1065,9 +1141,10 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.engines.warmUpManagedBackendsAtLaunchIfNeeded()
-        await viewModel.engines.polishingWarmupTask?.value
-        await Task.yield()
 
+        // A warmup is armed synchronously, as the task that calls ensure.
+        XCTAssertNil(viewModel.engines.polishingWarmupTask)
+        XCTAssertNil(viewModel.engines.dictationWarmupTask)
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
     }
 
@@ -1084,8 +1161,9 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.engines.applyDictationOutputModeChange(.liveAutoPaste)
-        await Task.yield()
 
+        // A stop is armed synchronously, as the task that calls it.
+        XCTAssertNil(viewModel.engines.polishingShutdownTask)
         XCTAssertEqual(backendManager.stopPolishingCallCount, 0)
     }
 
@@ -1276,10 +1354,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.engines.applyDictationOutputModeChange(.liveAutoPaste)
-        await Task.yield()
         viewModel.engines.applyDictationOutputModeChange(.overlayBuffer)
-        await Task.yield()
 
+        // A start or stop is armed synchronously, as the task that calls it.
+        XCTAssertNil(viewModel.engines.polishingWarmupTask)
+        XCTAssertNil(viewModel.engines.polishingShutdownTask)
         XCTAssertEqual(viewModel.settings.dictationOutputMode, .overlayBuffer)
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
         XCTAssertEqual(backendManager.stopPolishingCallCount, 0)
@@ -1766,13 +1845,10 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         // Secure input turns on while the dialog is up; then the user grants.
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
         viewModel.fakeMicrophone.resolvePendingAccess(granted: true)
-        // The continuation hops to the main actor and runs synchronously to
-        // completion once started; drain the hop without wall-clock waits.
-        var spins = 0
-        while viewModel.isAwaitingMicrophonePermission, spins < 1_000 {
-            spins += 1
-            await Task.yield()
-        }
+        // The grant queues its main-actor hop before this barrier, and
+        // same-priority jobs run FIFO: once the barrier runs, the hop has.
+        await Task { @MainActor in }.value
+        XCTAssertFalse(viewModel.isAwaitingMicrophonePermission, "the grant was handled")
 
         XCTAssertFalse(viewModel.isDictating, "the doomed live session is still refused")
         XCTAssertTrue(backendManager.ensureCalls.isEmpty, "still no backend boot for a refused start")
@@ -1789,9 +1865,13 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.ready)
     }
 
+    /// Session timers (the failure indicator's reset, the connect timeout)
+    /// run on `clock`, never the wall clock: on the wall clock they would
+    /// fire into the process-retained view model after the test ends.
     private func makeViewModel(
         outputMode: DictationOutputMode,
-        backendManager: (any ManagedBackendManaging)? = nil
+        backendManager: (any ManagedBackendManaging)? = nil,
+        clock: ManualSessionClock = ManualSessionClock()
     ) -> DictationViewModel {
         let settings = makeExternalBackendSettings(outputMode: outputMode)
         let viewModel = DictationViewModel(
@@ -1799,7 +1879,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
             backendManager: backendManager,
             overlayBufferCoordinator: MockOverlayCoordinator(),
             startRuntimeServices: false,
-            dependencies: .init(microphone: { FakeMicrophoneCaptureService() })
+            dependencies: .init(microphone: { FakeMicrophoneCaptureService() }, clock: clock.clock)
         )
         // Keep tests hermetic: session start reads config (terminal apps,
         // replacement dictionary) through the store — never the real
@@ -1877,6 +1957,9 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
     private(set) var ensureCalls: [EnsureCall] = []
     private(set) var stopAllCallCount = 0
     private(set) var stopDictationCallCount = 0
+    private(set) var finishedStopDictationCount = 0
+    /// `finishedStopDictationCount` at each `ensureReady`, in order.
+    private(set) var finishedStopDictationsAtEnsure: [Int] = []
     private(set) var stopPolishingCallCount = 0
     private(set) var pausedDownloadSpecIDs: [String] = []
     private(set) var cancelledDownloadSpecIDs: [String] = []
@@ -1891,6 +1974,7 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
 
     func ensureReady(dictation: Bool, polishing: Bool) async throws {
         ensureCalls.append(.init(dictation: dictation, polishing: polishing))
+        finishedStopDictationsAtEnsure.append(finishedStopDictationCount)
         ensureStartedContinuation?.resume()
         ensureStartedContinuation = nil
 
@@ -1926,6 +2010,7 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
                 stopDictationResumeContinuation = continuation
             }
         }
+        finishedStopDictationCount += 1
     }
 
     func stopPolishing() async {

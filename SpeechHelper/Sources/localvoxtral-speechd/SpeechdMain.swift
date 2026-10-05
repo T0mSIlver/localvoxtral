@@ -25,40 +25,42 @@ struct SpeechdMain {
             return
         }
 
-        // Load BEFORE binding the listener so /health only answers once inference is ready.
-        let server = try await RealtimeSpeechServer.load(
-            modelID: options.modelID,
-            modelRevision: options.modelRevision,
-            modelDirectory: options.modelDirectory,
-            engine: options.engine,
-            port: options.port,
-            transcriptionDelayMs: options.transcriptionDelayMs,
-            cacheLimitMB: options.cacheLimitMB,
-            stepMilliseconds: options.stepMilliseconds,
-            utteranceLimit: options.utteranceLimit
-        )
-
-        // Exit if the supervising app dies, so a killed app never orphans the model.
-        var watchdog: ParentProcessWatchdog?
-        if let pid = options.parentPID {
-            watchdog = ParentProcessWatchdog(parentPID: pid) {
-                FileHandle.standardError.write(Data("speechd: parent \(pid) exited; stopping\n".utf8))
+        // Exit if the supervising app dies, so a killed app never orphans the model. The
+        // watchdog guards the load too: a crash mid-load must not leave the helper loading
+        // for nobody while a relaunch starts a second one (#1586).
+        try await ParentProcessWatchdog.guarding(
+            parentPID: options.parentPID,
+            onParentExit: { [parentPID = options.parentPID] in
+                FileHandle.standardError.write(
+                    Data("speechd: parent \(parentPID.map(String.init) ?? "?") exited; stopping\n".utf8))
                 exit(0)
             }
-        }
-        _ = watchdog  // retained for the process lifetime
+        ) {
+            // Load BEFORE binding the listener so /health only answers once inference is ready.
+            let server = try await RealtimeSpeechServer.load(
+                modelID: options.modelID,
+                modelRevision: options.modelRevision,
+                modelDirectory: options.modelDirectory,
+                engine: options.engine,
+                port: options.port,
+                transcriptionDelayMs: options.transcriptionDelayMs,
+                cacheLimitMB: options.cacheLimitMB,
+                stepMilliseconds: options.stepMilliseconds,
+                utteranceLimit: options.utteranceLimit
+            )
 
-        // A listener that dies in a live process is invisible to the supervisor (it only
-        // watches process exit) — die loudly to get restarted.
-        server.onListenerFailure = { error in
-            FileHandle.standardError.write(Data("speechd: listener failed: \(error)\n".utf8))
-            exit(1)
-        }
-        try await server.start()
-        FileHandle.standardError.write(
-            Data("speechd: ready on 127.0.0.1:\(server.boundPort)\n".utf8))
+            // A listener that dies in a live process is invisible to the supervisor (it only
+            // watches process exit) — die loudly to get restarted.
+            server.onListenerFailure = { error in
+                FileHandle.standardError.write(Data("speechd: listener failed: \(error)\n".utf8))
+                exit(1)
+            }
+            try await server.start()
+            FileHandle.standardError.write(
+                Data("speechd: ready on 127.0.0.1:\(server.boundPort)\n".utf8))
 
-        // Park forever; the watchdog and listener-failure paths own process exit.
-        try await withUnsafeThrowingContinuation { (_: UnsafeContinuation<Void, Error>) in }
+            // Park forever; the watchdog and listener-failure paths own process exit.
+            try await withUnsafeThrowingContinuation { (_: UnsafeContinuation<Void, Error>) in }
+        }
     }
 }

@@ -174,6 +174,27 @@ struct SettingsOpenerHandoff: View {
     }
 }
 
+/// The answer to a `.terminateLater`, sent once.
+@MainActor
+private final class QuitReply {
+    private let application: NSApplication
+    private(set) var isSent = false
+
+    init(application: NSApplication) {
+        self.application = application
+    }
+
+    func send() {
+        guard !isSent else { return }
+        isSent = true
+        // Async: the session may answer inside `applicationShouldTerminate`,
+        // before it has returned `.terminateLater`.
+        DispatchQueue.main.async { [application] in
+            application.reply(toApplicationShouldTerminate: true)
+        }
+    }
+}
+
 /// Owns the shared model graph and presents the first-launch onboarding wizard.
 /// A menu-bar (LSUIElement) app has no launch window scene, so the wizard is
 /// shown here from `applicationDidFinishLaunching`.
@@ -366,6 +387,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// A quit during a dictation waits, bounded, for the backend's last
+    /// words before `applicationWillTerminate` saves it (#1756).
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let reply = QuitReply(application: sender)
+        guard viewModel.finalizeDictationBeforeQuit(then: { reply.send() }) else { return .terminateNow }
+        // The stop's own bound ends the wait; this one holds if its tasks
+        // never run. A quit must never hang.
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + TimingConstants.quitStopFinalizationTimeout + 2.0
+        ) {
+            MainActor.assumeIsolated {
+                if !reply.isSent {
+                    Log.backends.error("quit: the stop's finalization did not end within its bound; quitting")
+                }
+                reply.send()
+            }
+        }
+        return .terminateLater
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         // Queued here, so the History drain at the end of quit writes it.
         viewModel.saveStoppedDictationForQuit()
@@ -414,6 +455,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The resolver holds the registry; the view model must not keep
         // resolving joins against sessions nothing is feeding any more.
         viewModel.context.claudeSessionJoinResolver = nil
+        viewModel.context.claudeModChannels = nil
         viewModel.context.claudeSessionJoin = nil
         claudeSessionRegistry.flushPersistence()
         // Drop any dictation leases after the app-owned service has stopped all
@@ -605,7 +647,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             focuser: HerdrSocketClient(timeout: 2),
             panes: herdrClient,
             raiseTTY: { await terminal.focus(tty: $0, termProgram: $1) },
-            focusedTTY: { await terminal.frontmostTTY(bundleID: $0) }
+            focusedTTY: { await terminal.frontmostTTY(bundleID: $0) },
+            paneSessionID: { [claudeSessionRegistry] in claudeSessionRegistry.sessionID(shownIn: $0) }
         )
     }
 
@@ -684,7 +727,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         let announcer = AgentAttentionAnnouncer()
         if settings.agentAttentionEnabled { announcer.requestSoundIfMissing() }
-        viewModel.agentAttention = AgentAttentionModel(tracker: tracker, announcer: announcer)
+        let attention = AgentAttentionModel(tracker: tracker, announcer: announcer)
+        viewModel.agentAttention = attention
+        // The other waiting sessions, in each attached mod's band (#1695).
+        let waitingBand = AgentWaitingBand(hub: claudeModChannels)
+        attention.waitingBand = waitingBand
+        claudeModChannels.observeAttach { sessionID in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { waitingBand.attached(sessionID: sessionID) }
+            }
+        }
         // The registry calls this on whichever socket thread ingested; the
         // sequence it stamps under its lock puts a session's events back in
         // order.
@@ -713,7 +765,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The `localvoxtral` command's requests arrive on the same socket
         // (#721) and are answered from the app's own stores.
         let agentCLI = AgentCLIService(
-            source: AgentCLIAppDataSource(viewModel: viewModel, sessions: claudeSessionRegistry)
+            source: AgentCLIAppDataSource(
+                viewModel: viewModel,
+                sessions: claudeSessionRegistry,
+                openInbox: { [weak self] in self?.openWindow(on: .inbox) }
+            )
         )
         let broker = ClaudeContextBroker(
             socketPath: socketPath,
@@ -802,6 +858,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             )
             viewModel.context.claudeSessionJoinResolver = resolver
+            viewModel.context.claudeModChannels = claudeModChannels
+            viewModel.session.projectTermProposer?.attachSessionChannels(claudeModChannels)
             // "Go to <name>" (#723): the same registry and the same
             // focused-pane reader as the join, so a pane counts as brought
             // forward by the evidence the join trusts.
@@ -1112,7 +1170,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     guard let viewModel else { return [] }
                     return await AgentCLIAppDataSource(viewModel: viewModel, sessions: claudeSessionRegistry)
                         .hostDoctorChecks(hostID: hostID)
-                }
+                },
+                // Remote sessions' mods poll through the same hub the local
+                // broker hands attaches to (#1412).
+                modChannels: ClaudeRemoteModChannels(hub: claudeModChannels, registry: claudeSessionRegistry),
+                inbox: RemoteInboxRoute(
+                    registry: claudeSessionRegistry,
+                    captures: { @MainActor [weak viewModel] in viewModel?.quickCapture?.model.items },
+                    open: { @MainActor [weak viewModel, claudeSessionRegistry] id in
+                        guard let viewModel else { return nil }
+                        return await AgentCLIAppDataSource(viewModel: viewModel, sessions: claudeSessionRegistry)
+                            .openCapture(id)
+                    }
+                )
             )
         }
         claudeRemoteListenerCoordinator = coordinator

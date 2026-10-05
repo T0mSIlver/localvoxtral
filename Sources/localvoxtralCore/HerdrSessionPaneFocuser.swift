@@ -34,7 +34,8 @@ package struct HerdrFocusSocket: Sendable {
 /// `pane.focus` for the session's own pane (docs/agent/invariants.md, "herdr
 /// focus for navigation"), sent only after the window is raised with the
 /// terminal focuser's tty path and read back. `.focused` only when both read-backs agree: herdr's focused pane
-/// is the session's, and the terminal's focused tty is the window raised.
+/// is the session's, the terminal's focused tty is the window raised, and the
+/// registry still resolves that pane to the session asked for (#1601).
 /// Nothing is typed and no key is posted.
 @MainActor
 package final class HerdrSessionPaneFocuser: SessionPaneFocusing {
@@ -44,6 +45,7 @@ package final class HerdrSessionPaneFocuser: SessionPaneFocusing {
     private let panes: any HerdrPaneQuerying
     private let raiseTTY: (String, _ termProgram: String?) async -> SessionPaneFocusOutcome
     private let focusedTTY: (String) async -> String?
+    private let paneSessionID: (HerdrPaneFocusTarget) -> String?
 
     /// - Parameters:
     ///   - windowTTY: the one local terminal tty showing that herdr
@@ -53,13 +55,18 @@ package final class HerdrSessionPaneFocuser: SessionPaneFocusing {
     ///     terminal, answering `.focused` only when the terminal reads that
     ///     tty back (`TerminalSessionPaneFocuser`).
     ///   - focusedTTY: a terminal's focused tty, read as the join reads it.
+    ///   - paneSessionID: the session the registry resolves the pane to, as
+    ///     the join would (`ClaudeSessionRegistry.sessionID(shownIn:)`); nil
+    ///     when none or several. One opencode TUI hosts several sessions in
+    ///     one pane, and focusing the pane cannot pick among them.
     package init(
         windowTTY: @escaping (HerdrPaneFocusTarget) async -> String?,
         openSocket: @escaping (HerdrPaneFocusTarget) async -> HerdrFocusSocket?,
         focuser: any HerdrPaneFocusing,
         panes: any HerdrPaneQuerying,
         raiseTTY: @escaping (String, _ termProgram: String?) async -> SessionPaneFocusOutcome,
-        focusedTTY: @escaping (String) async -> String?
+        focusedTTY: @escaping (String) async -> String?,
+        paneSessionID: @escaping (HerdrPaneFocusTarget) -> String?
     ) {
         self.windowTTY = windowTTY
         self.openSocket = openSocket
@@ -67,6 +74,7 @@ package final class HerdrSessionPaneFocuser: SessionPaneFocusing {
         self.panes = panes
         self.raiseTTY = raiseTTY
         self.focusedTTY = focusedTTY
+        self.paneSessionID = paneSessionID
     }
 
     package func focusPane(of session: ClaudeSessionSnapshot) async -> SessionPaneFocusOutcome {
@@ -97,8 +105,10 @@ package final class HerdrSessionPaneFocuser: SessionPaneFocusing {
         }
         var paneFocused = await panes.focusedPane(socketPath: socket.path)?.paneID == target.paneID
         // The window again after herdr's awaits: the user may have switched
-        // the terminal to another tab, where keys would go instead.
-        if paneFocused { paneFocused = await focusedTTY(bundleID) == tty }
+        // the terminal to another tab, where keys would go instead, or the
+        // client to another machine on the same tty.
+        if paneFocused { paneFocused = await stillShows(target, on: tty, bundleID: bundleID) }
+        if paneFocused { paneFocused = paneShows(session, target) }
         Log.claudeContext.info(
             "go to session: herdr focus answered \(String(describing: focus), privacy: .public); verified=\(paneFocused, privacy: .public)"
         )
@@ -112,7 +122,27 @@ package final class HerdrSessionPaneFocuser: SessionPaneFocusing {
               let socket = await openSocket(target)
         else { return false }
         defer { socket.release() }
-        return await panes.focusedPane(socketPath: socket.path)?.paneID == target.paneID
+        guard await panes.focusedPane(socketPath: socket.path)?.paneID == target.paneID else { return false }
+        return await stillShows(target, on: tty, bundleID: bundleID) && paneShows(session, target)
+    }
+
+    /// Whether the pane shows `session` rather than another session sharing
+    /// it: an opencode TUI's other session keeps the pane, the pid and the
+    /// tty, so herdr's and the terminal's read-backs cannot tell them apart.
+    private func paneShows(_ session: ClaudeSessionSnapshot, _ target: HerdrPaneFocusTarget) -> Bool {
+        guard paneSessionID(target) == session.sessionID else {
+            Log.claudeContext.info("go to session: the herdr pane resolves to no session or another one")
+            return false
+        }
+        return true
+    }
+
+    /// Asked after herdr's awaits: the window that shows the target is still
+    /// `tty` (the client did not switch machine) and the terminal's front
+    /// tab is still that tty.
+    private func stillShows(_ target: HerdrPaneFocusTarget, on tty: String, bundleID: String) async -> Bool {
+        guard await windowTTY(target) == tty else { return false }
+        return await focusedTTY(bundleID) == tty
     }
 }
 
@@ -254,5 +284,27 @@ extension HerdrWindowLocator {
         #else
         nil
         #endif
+    }
+}
+
+extension ClaudeSessionRegistry {
+    /// The session a herdr pane shows, resolved as the joins resolve it
+    /// (#1601). A local pane goes through `resolve(herdrPaneID:)`, whose
+    /// opencode focus declarations pick among one TUI's sessions. A remote
+    /// pane names a session only when exactly one live session of that host
+    /// and socket claims it, as the remote arm requires. Nil otherwise.
+    package func sessionID(shownIn target: HerdrPaneFocusTarget) -> String? {
+        switch target {
+        case .local(let paneID, _):
+            guard case .resolved(let snapshot) = resolve(herdrPaneID: paneID) else { return nil }
+            return snapshot.sessionID
+        case .remote(let hostID, let paneID, let remoteSocketPath):
+            let claims = liveRemoteHerdrSessions(hostID: hostID).filter {
+                $0.remoteSessionEnvironment?.herdrPaneID == paneID
+                    && $0.remoteSessionEnvironment?.herdrSocketPath == remoteSocketPath
+            }
+            guard claims.count == 1 else { return nil }
+            return claims[0].sessionID
+        }
     }
 }

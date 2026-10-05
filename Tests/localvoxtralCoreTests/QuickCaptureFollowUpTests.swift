@@ -152,6 +152,42 @@ final class QuickCaptureFollowUpTests: XCTestCase {
         XCTAssertEqual(github.created.withLock { $0.count }, 1)
     }
 
+    /// Another running copy moves the capture while the router decides
+    /// that a new one continues it (#1686): the join redrafts it where it
+    /// is now, and it ends ready with that redraft, not dropped or stuck
+    /// drafting.
+    func testJoiningACaptureAnotherCopyMovedRedraftsItWhereItIsNow() async throws {
+        let projects = QuickCaptureFixture.projects + [
+            QuickCaptureProject(
+                key: "/w/tool", name: "tool", summary: nil, terms: [], userLine: nil, repository: "me/tool"),
+        ]
+        let runner = FakeQuickCaptureDraftRunner()
+        runner.nextTitles.withLock { $0 = ["Dark mode", "Dark mode, following the system"] }
+        let mover = model(
+            classifier: ScriptedQuickCaptureClassifier([["reach": 0.95]]), runner: runner, projects: { projects })
+        await mover.capture(text: "Add a dark mode", historyRecordID: nil).value
+        let target = try XCTUnwrap(mover.items.first?.id)
+        let classifier = ScriptedQuickCaptureClassifier([["capture-1": 0.95, "reach": 0.05]], gated: true)
+        let router = model(classifier: classifier, runner: runner, projects: { projects })
+
+        clock += 60
+        let capturing = router.capture(text: "It should follow the system setting", historyRecordID: nil)
+        await classifier.gate?.waitForSleepers(1)
+        await mover.move(target, toProjectKey: "/w/tool")?.value
+        classifier.gate?.wakeAll()
+        await capturing.value
+
+        let saved = try XCTUnwrap(QuickCaptureInboxFile.load(from: fileURL).value)
+        XCTAssertEqual(saved.items.count, 1)
+        let item = try XCTUnwrap(saved.items.first)
+        XCTAssertEqual(item.followUps?.map(\.text), ["It should follow the system setting"])
+        XCTAssertEqual(item.projectKey, "/w/tool")
+        XCTAssertEqual(item.repository, "me/tool")
+        XCTAssertEqual(item.state, .ready)
+        XCTAssertEqual(item.title, "Dark mode, following the system")
+        XCTAssertTrue(try XCTUnwrap(prompts(runner).last).contains("The owner of tool"))
+    }
+
     func testOnlyUnfiledCapturesFromTheLastHourAreOffered() async throws {
         let classifier = ScriptedQuickCaptureClassifier([["reach": 0.95]])
         let model = model(classifier: classifier, runner: FakeQuickCaptureDraftRunner())
@@ -420,9 +456,11 @@ final class QuickCaptureFollowUpTests: XCTestCase {
 
         await model.comment(id)?.value
 
+        let claim = try XCTUnwrap(model.items.first?.filingClaim?.id)
         XCTAssertEqual(github.comments.withLock { $0 }, [[
             "o/reach", "7",
-            "**Dark mode**\n\n## Scope\nAll pages.\n\nDictated:\n\n> Add a dark mode\n> \n> Also the popover",
+            "**Dark mode**\n\n## Scope\nAll pages.\n\nDictated:\n\n> Add a dark mode\n> \n> Also the popover\n\n"
+                + QuickCaptureFiling.marker(claim: claim),
         ]])
         XCTAssertTrue(github.created.withLock { $0.isEmpty })
         let item = try XCTUnwrap(model.items.first)

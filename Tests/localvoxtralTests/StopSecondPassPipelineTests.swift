@@ -1,5 +1,6 @@
 import ClaudeContextWire
 import Foundation
+import localvoxtralTestSupport
 import Synchronization
 import XCTest
 @testable import localvoxtral
@@ -45,6 +46,28 @@ final class StopSecondPassPipelineTests: XCTestCase {
         XCTAssertEqual(usage.first?.costEUR ?? 0, 0.0026 / 60, accuracy: 1e-12)
     }
 
+    /// #1649: the batch model left out a sentence the realtime stream had,
+    /// and replacing the text whole lost it from the overlay, the polish and
+    /// the commit.
+    func testASentenceOnlyTheRealtimeTextHasSurvivesTheReplace() async {
+        let realtime = "close the old issues tonight then archive every session because the cache goes cold start fresh tomorrow"
+        let batch = "Close the old issues tonight. Start fresh tomorrow."
+        let kept = "Close the old issues tonight. then archive every session because the cache goes cold Start fresh tomorrow."
+        let polisher = FakePolishingService()
+        let harness = makeHarness(
+            transcriber: FakeBatchTranscriber(.text(batch)), polisher: polisher, realtimeText: realtime)
+
+        harness.stop()
+        await awaitStoppedSessionCommit(harness.viewModel)
+
+        XCTAssertTrue(
+            harness.overlay.refreshCalls.contains { $0.displayText == kept }, "the overlay shows it before polish")
+        let polished = await polisher.lastRequest
+        XCTAssertEqual(polished?.inputText, kept, "polish gets it")
+        XCTAssertEqual(harness.overlay.committedTexts, [kept])
+        XCTAssertEqual(harness.records.map(\.rawText), [kept])
+    }
+
     func testTheDeadlineKeepsTheRealtimeTextAndCancelsTheRequest() async {
         let transcriber = FakeBatchTranscriber(.held)
         let harness = makeHarness(transcriber: transcriber)
@@ -88,6 +111,48 @@ final class StopSecondPassPipelineTests: XCTestCase {
         XCTAssertEqual(harness.records.first?.commitSucceeded, false)
     }
 
+    /// A dictation joined to a Claude Code session in a terminal tab, with
+    /// polishing off: the user switched to another tab of the same terminal
+    /// while the second pass ran. The joined pane is read back before the
+    /// keys, so the other tab's prompt gets nothing, and the text is saved
+    /// not inserted and copied (#1712).
+    func testATabSwitchDuringTheSecondPassTypesNothing() async throws {
+        let transcriber = FakeBatchTranscriber(.held)
+        let harness = makeHarness(transcriber: transcriber)
+        let focuser = try joinTerminalTab(harness)
+        let copied = harness.viewModel.recordPasteboardWrites()
+
+        harness.stop()
+        let commit = harness.viewModel.session.polishAndCommitTask
+        _ = await transcriber.called.value(failAfter: 10)
+        await harness.clock.waitForSleepers(1)
+        // Same terminal, another tab, while the second pass runs.
+        focuser.paneStillShowsSession = false
+        harness.clock.advance(by: 3)
+        await commit?.value
+        await harness.viewModel.session.polishAndCommitTask?.value
+
+        XCTAssertEqual(focuser.readBackSessionIDs, ["s1"], "read back before the keys")
+        XCTAssertTrue(harness.overlay.committedTexts.isEmpty, "the other tab's session never gets the words")
+        XCTAssertEqual(harness.records.map(\.rawText), [Self.realtimeText])
+        XCTAssertEqual(harness.records.first?.commitSucceeded, false)
+        XCTAssertEqual(copied.values, [Self.realtimeText])
+    }
+
+    /// The same joined dictation whose pane is still in front after the
+    /// second pass is typed as before.
+    func testAJoinedDictationWhosePaneStaysInFrontIsTypedAfterTheSecondPass() async throws {
+        let harness = makeHarness(transcriber: FakeBatchTranscriber(.text(Self.batchText)))
+        let focuser = try joinTerminalTab(harness)
+
+        harness.stop()
+        await awaitStoppedSessionCommit(harness.viewModel)
+
+        XCTAssertEqual(focuser.readBackSessionIDs, ["s1"])
+        XCTAssertEqual(harness.overlay.committedTexts, [Self.batchText])
+        XCTAssertEqual(harness.records.first?.commitSucceeded, true)
+    }
+
     func testASessionWithoutASecondPassCommitsAtOnce() {
         let transcriber = FakeBatchTranscriber(.text(Self.batchText))
         let harness = makeHarness(transcriber: transcriber, secondPass: false)
@@ -97,6 +162,22 @@ final class StopSecondPassPipelineTests: XCTestCase {
         XCTAssertTrue(transcriber.calls.isEmpty)
         XCTAssertNil(harness.viewModel.session.polishAndCommitTask)
         XCTAssertEqual(harness.overlay.committedTexts, [Self.realtimeText])
+    }
+
+    /// #1678: the switch in Settings, latched at start like a real session.
+    func testTheSettingsSwitchDecidesWhetherTheStopTranscribesAgain() async {
+        for enabled in [true, false] {
+            let transcriber = FakeBatchTranscriber(.text(Self.batchText))
+            let harness = makeHarness(transcriber: transcriber, secondPassSetting: enabled)
+
+            harness.stop()
+            await awaitStoppedSessionCommit(harness.viewModel)
+
+            XCTAssertEqual(transcriber.calls.count, enabled ? 1 : 0, "switch \(enabled)")
+            XCTAssertEqual(
+                harness.overlay.committedTexts, [enabled ? Self.batchText : Self.realtimeText],
+                "switch \(enabled)")
+        }
     }
 
     // MARK: - Context terms (#647)
@@ -304,6 +385,33 @@ final class StopSecondPassPipelineTests: XCTestCase {
         XCTAssertEqual(lookups.withLock { $0 }, 0)
     }
 
+    /// Consent withdrawn while the root lookup ran: the project's proposal
+    /// stayed in `context_bias`, sent under the consent latched at stop.
+    func testConsentWithdrawnDuringTheRootLookupKeepsTheProjectsTermsHome() async {
+        let withdrawals: [(String, (SettingsStore) -> Void)] = [
+            ("repository vocabulary off", { $0.repoVocabularyEnabled = false }),
+            ("trust revoked", { $0.polishContextTrustedEndpointEnabled = false }),
+        ]
+        for (name, withdraw) in withdrawals {
+            let started = BoundedWait()
+            let release = BoundedWait()
+            let (harness, transcriber, _) = unjoinedTerminal(trusted: true) {
+                started.resolve()
+                _ = await release.value(failAfter: 10)
+                return .root(Self.unjoinedRepository)
+            }
+
+            harness.stop()
+            let commit = harness.viewModel.session.polishAndCommitTask
+            _ = await started.value(failAfter: 10)
+            withdraw(harness.viewModel.settings)
+            release.resolve()
+            await commit?.value
+
+            XCTAssertEqual(transcriber.calls.first?.contextBias, ["localvoxtral", "Claude_Code"], name)
+        }
+    }
+
     /// A lookup parked in a `stat` on a dead mount: the pass leaves without
     /// the project's terms once the bound passes, and the polish, which has
     /// its own gate, still gets its vocabulary.
@@ -357,6 +465,13 @@ final class StopSecondPassPipelineTests: XCTestCase {
         session.audio.sessionRecording.append(Self.pcm)
         XCTAssertNil(session.audio.sessionRecording.finish())
 
+        settings.mistralStopSecondPassEnabled = false
+        session.latchSessionAudio(outputMode: .overlayBuffer)
+        XCTAssertFalse(session.sessionHasStopSecondPass, "turned off in Settings")
+        session.audio.sessionRecording.append(Self.pcm)
+        XCTAssertNil(session.audio.sessionRecording.finish(), "no audio kept for a pass that won't run")
+        settings.mistralStopSecondPassEnabled = true
+
         settings.dictationBackendMode = .externalURL
         session.latchSessionAudio(outputMode: .overlayBuffer)
         XCTAssertFalse(session.sessionHasStopSecondPass)
@@ -387,6 +502,38 @@ final class StopSecondPassPipelineTests: XCTestCase {
         )
     }
 
+    /// Joins the dictation to Claude Code session `s1` in a Ghostty tab by
+    /// its tty, with a navigator that reads the pane back through the
+    /// returned focuser.
+    private func joinTerminalTab(_ harness: Harness) throws -> FakeSessionPaneFocuser {
+        let registry = ClaudeSessionRegistry(
+            now: { Date(timeIntervalSince1970: 3_000_000) }, isProcessAlive: { _ in true })
+        XCTAssertNotNil(registry.ingest(
+            ClaudeHookRecord(
+                event: .sessionStart, sessionID: "s1", timestamp: 0, rawCwd: "/repo", prompt: nil, files: [],
+                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001, tty: "/dev/ttys042")
+            ),
+            origin: .localAuthenticated(peerUID: 501)
+        ))
+        let snapshot = try XCTUnwrap(registry.liveSessions().first)
+        harness.viewModel.session.context.claudeSessionJoin = ClaudeSessionJoin(
+            target: TerminalScreenTarget(pid: 4242, bundleID: TerminalScreenAllowlist.ghosttyBundleID),
+            snapshot: snapshot,
+            windowID: 101,
+            mechanism: .ttyDevice
+        )
+        harness.overlay.commitTargetAppPID = 4242
+        let focuser = FakeSessionPaneFocuser()
+        harness.viewModel.session.sessionNavigator = SessionNavigator(
+            liveSessions: { registry.liveSessions() },
+            repositoryRoot: { _ in .unknown },
+            focuser: focuser,
+            sleep: ManualSessionClock().sleep,
+            ttyForegroundPIDs: { _ in [9001] }
+        )
+        return focuser
+    }
+
     private struct Harness {
         let viewModel: DictationViewModel
         let overlay: MockOverlayCoordinator
@@ -404,7 +551,9 @@ final class StopSecondPassPipelineTests: XCTestCase {
     private func makeHarness(
         transcriber: FakeBatchTranscriber,
         polisher: FakePolishingService? = nil,
-        secondPass: Bool = true
+        secondPass: Bool = true,
+        secondPassSetting: Bool? = nil,
+        realtimeText: String = realtimeText
     ) -> Harness {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.polishSpeakerTerms = ["localvoxtral", "Claude Code"]
@@ -436,15 +585,21 @@ final class StopSecondPassPipelineTests: XCTestCase {
 
         let session = viewModel.session
         session.sessionOutputMode = .overlayBuffer
-        session.sessionHasStopSecondPass = secondPass
         session.sessionRealtimeConfiguration = RealtimeSessionConfiguration(
             endpoint: MistralRealtimeWebSocketClient.defaultEndpoint,
             apiKey: "session-key",
             model: "voxtral-mini-transcribe-realtime-2602"
         )
-        session.audio.sessionRecording.begin(enabled: true)
+        if let secondPassSetting {
+            settings.dictationBackendMode = .mistralAPI
+            settings.mistralStopSecondPassEnabled = secondPassSetting
+            session.latchSessionAudio(outputMode: .overlayBuffer)
+        } else {
+            session.sessionHasStopSecondPass = secondPass
+            session.audio.sessionRecording.begin(enabled: true)
+        }
         session.audio.sessionRecording.append(Self.pcm)
-        viewModel.transcript.currentDictationEventText = Self.realtimeText
+        viewModel.transcript.currentDictationEventText = realtimeText
         return Harness(viewModel: viewModel, overlay: overlay, clock: clock, recordLog: records)
     }
 }

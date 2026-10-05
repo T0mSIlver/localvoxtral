@@ -225,6 +225,13 @@ if ORIGIN="$(git remote get-url origin 2>/dev/null)"; then
   REPO="$(github_repo "$ORIGIN")"
   [ -n "$REPO" ] || REPO="-"
 fi
+# The repository the issue lists come from: the Mac links a draft only to an
+# issue of the repository its capture files in (#1682). gh's own pick is
+# unnamed, so its issues link nothing.
+case "$REPO" in
+"" | - | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_./-]*) ;;
+*) echo "X-Lvx-Issues-Repository: $REPO" >>"$WORK/header" || exit 0 ;;
+esac
 
 # bounded <seconds> <out-file> <command...>: runs the command into the file
 # under the watchdog; an error, a timeout or no output leaves the file empty.
@@ -341,8 +348,10 @@ done
 [ -n "$BIN" ] || answer missing
 
 if [ "$AGENT" = claude ]; then
-  # QuickCaptureDraft.claudeArguments, flag for flag (RemoteQuickCaptureTests).
-  "$BIN" -p "$(cat "$WORK/prompt")" \
+  # QuickCaptureDraft.claudeArguments, flag for flag (RemoteQuickCaptureTests),
+  # but the prompt goes on stdin: it holds the dictation, and other users on
+  # the host read argv from ps (#1494). `claude -p` with no prompt reads stdin.
+  "$BIN" -p \
     --model sonnet \
     --system-prompt "You draft GitHub issues from a developer's dictated ideas. You cannot file anything. Reply only with the requested JSON." \
     --tools 'Read,Glob,Grep' \
@@ -355,7 +364,7 @@ if [ "$AGENT" = claude ]; then
     --max-budget-usd 0.50 \
     --output-format json \
     --json-schema '{"type":"object","properties":{"title":{"type":"string"},"body":{"type":"string"},"relation":{"type":"string","enum":["none","duplicate","extends"]},"issue":{"type":["integer","null"]},"files":{"type":"array","items":{"type":"string"}}},"required":["title","body","relation","issue","files"],"additionalProperties":false}' \
-    </dev/null >"$WORK/out" 2>/dev/null &
+    <"$WORK/prompt" >"$WORK/out" 2>/dev/null &
 else
   # Vibe has no flag to skip hooks: a home of its own, holding only links to
   # the user's model config and key, keeps every hooks.toml hook out, ours
@@ -381,21 +390,21 @@ else
   else
     for file in *; do [ -f "$file" ] && echo "$file"; done | head -n 200 >"$WORK/files"
   fi
-  if [ -s "$WORK/files" ]; then
-    PROMPT_TEXT="$(cat "$WORK/prompt")
-
-Tracked files (read_file takes these paths):
-$(cat "$WORK/files")"
-  else
-    PROMPT_TEXT="$(cat "$WORK/prompt")"
-  fi
+  # The prompt goes on stdin, as Claude's: Vibe's `-p` with no text reads it.
+  {
+    cat "$WORK/prompt"
+    if [ -s "$WORK/files" ]; then
+      printf '\n\nTracked files (read_file takes these paths):\n'
+      cat "$WORK/files"
+    fi
+  } >"$WORK/vibe-prompt" || exit 0
   VIBE_HOME="$VIBE_RUN_HOME" "$BIN" --experimental-harness --auto-approve \
-    -p "$PROMPT_TEXT" \
+    -p \
     --enabled-tools 're:^(read_file|grep|file_system[.](read_file|grep|glob|list_dir))$' \
     --max-turns 20 \
     --max-price 0.30 \
     --output text \
-    </dev/null >"$WORK/out" 2>/dev/null &
+    <"$WORK/vibe-prompt" >"$WORK/out" 2>/dev/null &
 fi
 RUN=$!
 watch "$RUN" 360

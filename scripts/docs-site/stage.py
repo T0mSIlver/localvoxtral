@@ -8,6 +8,9 @@ Writes <out-dir>/zensical.toml and the pages under <out-dir>/pages.
 Zensical has no exclude_docs yet (zensical/zensical#135), so the site builds
 from a copy holding only the public pages, at their repo paths. In the copy:
 
+- a link to the site itself (README.md and the integration READMEs link
+  the site, since people read them on GitHub) becomes a relative link, so
+  Zensical checks it and a local build stays local;
 - a link to a file the site doesn't publish (AGENTS.md, docs/agent/, source
   files) points at github.com instead;
 - an image a page shows is copied along with it;
@@ -18,6 +21,7 @@ from a copy holding only the public pages, at their repo paths. In the copy:
 The Markdown in the repo stays as GitHub renders it.
 """
 
+import os
 import re
 import shutil
 import sys
@@ -25,6 +29,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 GITHUB = "https://github.com/T0mSIlver/localvoxtral"
+SITE = "https://t0msilver.github.io/localvoxtral/"
 PUBLISHED_GLOBS = [
     "README.md",
     "docs/*.md",
@@ -50,11 +55,26 @@ ALERT_KIND = {
 }
 
 
-def published_pages() -> set[Path]:
-    return {p.relative_to(REPO) for g in PUBLISHED_GLOBS for p in REPO.glob(g)}
+def published_pages(root: Path = REPO) -> set[Path]:
+    return {p.relative_to(root) for g in PUBLISHED_GLOBS for p in root.glob(g)}
+
+
+def site_page(url_path: str, pages: set[Path]) -> Path | None:
+    """The published page the site serves at url_path ("docs/dictation/")."""
+    stem = url_path.strip("/")
+    for candidate in (f"{stem}.md", f"{stem}/README.md" if stem else "README.md"):
+        if Path(candidate) in pages:
+            return Path(candidate)
+    return None
 
 
 def rewrite_target(target: str, page: Path, pages: set[Path], assets: set[Path]) -> str:
+    if target.startswith(SITE):
+        path, sep, anchor = target[len(SITE):].partition("#")
+        dest = site_page(path, pages)
+        if dest is None:
+            return target
+        return os.path.relpath(dest, page.parent) + sep + anchor
     if re.match(r"^[a-z][a-z0-9+.-]*:", target, re.I) or target.startswith(("#", "/")):
         return target
     path, _, anchor = target.partition("#")

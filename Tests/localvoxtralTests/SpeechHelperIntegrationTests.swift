@@ -179,7 +179,7 @@ final class SpeechHelperIntegrationTests: XCTestCase {
             guard (response as? HTTPURLResponse)?.statusCode == 200 else {
                 throw ModelProvisioningError(description: "download failed for \(name): \(response)")
             }
-            try FileManager.default.moveItem(at: temporary, to: destination)
+            try SharedCacheFile.publish(temporary, at: destination)
         }
 
         if pinnedRevision == nil {
@@ -630,6 +630,45 @@ final class SpeechHelperIntegrationTests: XCTestCase {
         print("speechd commit-remainder test (\(engine)): stops \(stops.snapshot().deltas)")
         XCTAssertTrue(process.isRunning)
         process.terminate()
+    }
+
+    /// The real helper's /health names the pid the supervisor launched, so
+    /// the owner check (#1760) accepts it and the backend runs.
+    func testSupervisorAcceptsTheHelpersOwnReadiness() async throws {
+        let (binary, model) = try helperConfiguration()
+        try await ensureModelCached(model)
+
+        var arguments = ["--model", model, "--port", "\(Self.testPort)"]
+        if let revision = SpeechModelCatalog.option(forRepoID: model)?.revision {
+            arguments.append(contentsOf: ["--model-revision", revision])
+        }
+        let supervisor = BackendProcessSupervisor(
+            configuration: BackendProcessConfiguration(
+                name: "speechd-integration",
+                executableURL: binary,
+                arguments: arguments,
+                environment: ProcessInfo.processInfo.environment,
+                readinessURL: URL(string: "http://127.0.0.1:\(Self.testPort)/health")!,
+                readinessTimeout: .seconds(Int64(Self.readyTimeout)),
+                maxConsecutiveRestartFailures: 1,
+                readinessReportsOwnerPID: true
+            )
+        )
+        let updates = supervisor.stateUpdates
+        await supervisor.start()
+
+        var settled: BackendProcessSupervisor.State?
+        for await state in updates {
+            switch state {
+            case .running, .failed, .stopped:
+                settled = state
+            default:
+                continue
+            }
+            break
+        }
+        await supervisor.stop()
+        XCTAssertEqual(settled, .running, "recent output: \(supervisor.recentOutput.suffix(20))")
     }
 
     func testHelperExitsWhenParentPIDDies() async throws {

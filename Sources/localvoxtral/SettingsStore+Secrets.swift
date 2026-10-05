@@ -11,7 +11,8 @@ extension SettingsStore {
         "Keychain unavailable; the API key was not saved."
 
     /// Where each secret used to live in UserDefaults. Read ONLY by the
-    /// one-time migration below — nothing else may touch these keys again.
+    /// one-time migration below; a successful `persistSecret` also removes
+    /// the copy a failed migration left.
     private static func legacyDefaultsKey(for key: SecretKey) -> String {
         switch key {
         case .realtimeAPIKey: return Keys.apiKey
@@ -184,6 +185,7 @@ extension SettingsStore {
             return
         }
         guard !stored.isEmpty else { return }
+        removeReintroducedLegacyCopy(of: key, matching: stored)
 
         // The write-through in these properties' `didSet` would store the value
         // that just came out of the store — another keychain operation, and
@@ -196,6 +198,21 @@ extension SettingsStore {
         case .mistralAPIKey: mistralAPIKey = stored
         case .jevAPIKey: jevAPIKey = stored
         }
+    }
+
+    /// An older, pre-Keychain build run after the migration writes the key
+    /// back to the plist in plain text, and a migrated install never sweeps
+    /// it again (#1775). A copy equal to the stored key is this user's key
+    /// twice over and goes; a different value is left alone, like any key a
+    /// migrated install did not write.
+    private func removeReintroducedLegacyCopy(of key: SecretKey, matching stored: String) {
+        let defaultsKey = Self.legacyDefaultsKey(for: key)
+        guard defaults.bool(forKey: Keys.apiKeysMigratedToKeychain),
+              defaults.string(forKey: defaultsKey)?.trimmed == stored
+        else { return }
+        defaults.removeObject(forKey: defaultsKey)
+        Log.secrets.notice(
+            "Removed the plaintext copy of \(key.rawValue, privacy: .public) an older build wrote back to UserDefaults")
     }
 
     /// The precedence `loadString` gave these keys, with the secret store
@@ -227,7 +244,12 @@ extension SettingsStore {
         loadedSecretKeys.insert(key)
         do {
             try secretStore.setSecret(value.trimmed, for: key)
+            unsavedSecretKeys.remove(key)
+            // A plist copy a failed migration left would be migrated back
+            // at the next launch, undoing a clear (#1570).
+            defaults.removeObject(forKey: Self.legacyDefaultsKey(for: key))
         } catch {
+            unsavedSecretKeys.insert(key)
             secretStoreFailureSummary = Self.secretStoreWriteFailureSummary
             Log.secrets.error(
                 "Storing \(key.rawValue, privacy: .public) in the keychain failed: \(String(describing: error), privacy: .public)"

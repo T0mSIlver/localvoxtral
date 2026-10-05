@@ -145,6 +145,13 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             "hooks/post.sh", "hooks/statusline.sh", "hooks/terms.sh", "hooks/capture.sh", "hooks/doctor.sh",
             "hooks/agent-projects.sh", "bin/localvoxtral",
         ]
+        // The mod's hooks module (#1412): TypeScript Claude Code's own engine
+        // loads, a copy of localvoxtral-mod's (scripts/sync-remote-mod.sh).
+        // Nothing here runs as a process.
+        let modFiles: Set<String> = [
+            "hooks/register.tsx", "hooks/channel.ts", "hooks/inbox.ts", "hooks/hmac.ts", "hooks/remote.ts",
+            "types/index.d.ts", "tests/remote.test.ts", ".gitignore",
+        ]
         let contents = try FileManager.default.subpathsOfDirectory(atPath: pluginRoot.path)
         for path in contents {
             let full = pluginRoot.appendingPathComponent(path)
@@ -171,8 +178,9 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
                 "the remote plugin must ship no executable but its seven sh scripts, found \(path)"
             )
             XCTAssertTrue(
-                path.hasSuffix(".json") || path == "skills/\(AgentSkillInstallService.skillName)/SKILL.md",
-                "the remote plugin must ship JSON manifests, the doctor skill and its seven sh scripts only, found \(path)"
+                path.hasSuffix(".json") || path == "skills/\(AgentSkillInstallService.skillName)/SKILL.md"
+                    || modFiles.contains(path),
+                "the remote plugin must ship JSON manifests, the doctor skill, the mod's module and its seven sh scripts only, found \(path)"
             )
         }
         for script in shellScripts {
@@ -747,8 +755,10 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         let exited = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in exited.signal() }
         try process.run()
-        stdinPipe.fileHandleForWriting.write(stdin)
-        stdinPipe.fileHandleForWriting.closeFile()
+        // A shim that fails open exits without reading its payload: the
+        // write then fails with EPIPE, which `write(_:)` turns into a trap.
+        try? stdinPipe.fileHandleForWriting.write(contentsOf: stdin)
+        try? stdinPipe.fileHandleForWriting.close()
         let out = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
         let err = stderrPipe.fileHandleForReading.readDataToEndOfFile()
         exited.wait()
@@ -821,6 +831,9 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         exit "${FAKE_CURL_EXIT:-0}"
         """
 
+    /// The epoch seconds the `date` stub prints.
+    private static let fixedEpoch = 2_000_000_000
+
     /// The `date` that pins the renderer's clock, in a directory of its own
     /// under the stub root. Byte-identical on every call, so it is written once
     /// for the class, for the reason `stubCurlDirectory()` gives: each of the
@@ -832,7 +845,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         let stub = directory.appendingPathComponent("date")
         guard !FileManager.default.fileExists(atPath: stub.path) else { return directory }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try "#!/bin/sh\nprintf '%s\\n' 2000000000\n".write(to: stub, atomically: true, encoding: .utf8)
+        try "#!/bin/sh\nprintf '%s\\n' \(Self.fixedEpoch)\n".write(to: stub, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
         return directory
     }
@@ -2006,10 +2019,14 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("shim-backoff-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // The shim reads the time from `date`: the stub pins it, so the stamp a
+        // test writes cannot expire while a loaded runner is between two hooks.
+        let systemPath = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
+        let path = [try fixedDateDirectory().path, try stubCurlDirectory().path, systemPath]
         return (
             dir,
             dir.appendingPathComponent("localvoxtral/hook-backoff"),
-            ["XDG_RUNTIME_DIR": dir.path]
+            ["XDG_RUNTIME_DIR": dir.path, "PATH": path.joined(separator: ":")]
         )
     }
 
@@ -2021,7 +2038,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     }
 
     private func freshEpochStamp(secondsAgo: Int = 0) -> String {
-        "\(Int(Date().timeIntervalSince1970) - secondsAgo)\n"
+        "\(Self.fixedEpoch - secondsAgo)\n"
     }
 
     func testTransportFailureArmsTheBackoffAndLaterEventsSkipTheDialEntirely() throws {

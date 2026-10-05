@@ -47,34 +47,38 @@
 # ~/.config/herdr and ~/.local/state/herdr are never read or written, and the
 # account's own server is never addressed.
 #
-# ## Files this borrows from the account, and how they come back
+# ## The ssh config is the run's own
 #
-# For the duration of a run the fixture appends three delimited blocks to the
-# account's `~/.ssh/config` (the connection block, the canonicalization-test
-# block, and — hermetic mode only — the federation block). It has to touch the REAL ssh config because the code
-# under test never passes `-F`: the app's forward argv and
-# `SSHDestinationCanonicalizer.live()` both run `ssh` / `ssh -G` against the
-# user's default configuration chain, so an alias that only existed in a
-# fixture-local file would exercise an invocation shape the app never
-# produces. Each change writes a whole new config and renames it into place,
-# and the restore refuses a config whose markers do not balance (#991).
+# The fixture's host aliases (the connection block, the canonicalization-test
+# block, and in hermetic mode the federation block) go in `<workdir>/ssh_config`,
+# never the account's `~/.ssh/config` (#1029). The lane hands that file to the
+# app as `LOCALVOXTRAL_SSH_CONFIG`, which makes every ssh the app runs carry
+# `-F <file>`, and herdr gets it through `<workdir>/bin/ssh`, first on the PATH
+# of every herdr the fixture starts. That needs `[remote] manage_ssh_config =
+# false` in the run's herdr config: by default herdr adds `-F` of its own, a
+# file that includes only `~/.ssh/config`, and ssh keeps the last `-F` it gets.
+# In destination mode the file ends by including the account's config, read
+# only, so the caller's destination resolves as it always has.
+#
+# ## The hold
 #
 # Because a run can be SIGKILLed (a torn-down runner, a sleeping Mac, a manual
-# kill of a wedged xctest), the pristine originals do NOT live in the run's own
-# temp dir — that would strand them when the run dies, and the NEXT run would
-# then back up the already-modified files and destroy the originals for good.
-# They live at a stable, discoverable path instead:
+# kill of a wedged xctest), what teardown needs does NOT live only in the
+# run's own temp dir. It lives at a stable, discoverable path instead:
 #
-#   ~/.localvoxtral-herdr-fixture-hold/   manifest + pristine copies
+#   ~/.localvoxtral-herdr-fixture-hold/   manifest
 #
-# The manifest is written AFTER the pristine copies and BEFORE the first
-# modification, so a crash at any point leaves either nothing held or a
-# complete, restorable hold. `up` refuses to overwrite an existing hold; it
-# restores a dead run's hold first, and refuses outright while a live run owns
-# it. `recover` restores by hand. The `federation` verb commits its own
-# teardown state (remote socket / destination target + created workspace) to
-# the same manifest BEFORE `machine add`, so a SIGKILL mid-federation still
-# leaves a record teardown can act on.
+# `up` refuses to overwrite an existing hold; it releases a dead run's hold
+# first, and refuses outright while a live run owns it. `recover` releases by
+# hand. The `federation` verb commits its own teardown state (remote socket /
+# destination target + created workspace) to the manifest BEFORE `machine
+# add`, so a SIGKILL mid-federation still leaves a record teardown can act on.
+#
+# A hold left by a fixture from before #1029 also carries a copy of
+# `~/.ssh/config` (`ssh-config.pristine`, or `ssh-config.created`), because
+# those runs appended their blocks to it. Releasing such a hold strips the
+# blocks again; a current hold has neither file, and its release never opens
+# the account's ssh config.
 #
 # Deliberately loud: every precondition that cannot be met exits non-zero with
 # the exact recovery or provisioning step. This lane must never look green
@@ -135,13 +139,21 @@ log() { printf '[herdr-fixture] %s\n' "$*" >&2; }
 fixture_config_home() { printf '%s/config-home' "$1"; }
 fixture_state_home() { printf '%s/state-home' "$1"; }
 fixture_config_file() { printf '%s/herdr/config.toml' "$(fixture_config_home "$1")"; }
+# The run's ssh config, and the folder of the `ssh` wrapper that hands it to herdr.
+fixture_ssh_config() { printf '%s/ssh_config' "$1"; }
+fixture_bin_dir() { printf '%s/bin' "$1"; }
 
-# Point every herdr this shell starts at the run's own homes.
+# Point every herdr this shell starts at the run's own homes and ssh config.
 export_fixture_homes() {
-  local dir="$1"
+  local dir="$1" bin
   XDG_CONFIG_HOME="$(fixture_config_home "$dir")"
   XDG_STATE_HOME="$(fixture_state_home "$dir")"
-  export XDG_CONFIG_HOME XDG_STATE_HOME
+  bin="$(fixture_bin_dir "$dir")"
+  case ":$PATH:" in
+    *":$bin:"*) ;;
+    *) PATH="$bin:$PATH" ;;
+  esac
+  export XDG_CONFIG_HOME XDG_STATE_HOME PATH
 }
 
 environment_value() {
@@ -164,6 +176,14 @@ account_herdr_fingerprint() {
   printf 'server.pid=%s\n' "${pid:-none}"
 }
 
+# Read-only evidence that a run leaves the account's ssh config alone, logged
+# at `up` and again at `down`.
+account_ssh_config_fingerprint() {
+  local hash
+  hash="$(shasum -a 256 "$SSH_CONFIG_FILE" 2>/dev/null | awk '{ print $1 }' || true)"
+  printf 'config.sha256=%s\n' "${hash:-absent}"
+}
+
 tty_state() {
   local descriptor="$1"
   [[ -t "$descriptor" ]] && printf 'tty' || printf 'not-a-tty'
@@ -179,6 +199,7 @@ record_start_diagnostics() {
     printf 'herdr.status.before=%s\n' "${account_status:-<empty>}"
     printf 'herdr.account.before %s' "$(account_herdr_fingerprint)"
     printf '\n'
+    printf 'ssh.account.before %s\n' "$(account_ssh_config_fingerprint)"
     printf 'herdr.socket.inherited=%s\n' "${inherited_socket:-<unset>}"
     printf 'herdr.socket.fixture=%s\n' "$HERDR_SOCKET_PATH"
     printf 'herdr.config.fixture=%s\n' "$(fixture_config_file "$dir")"
@@ -260,10 +281,8 @@ hold_owner_is_alive() {
   return 0
 }
 
-# Copy the account's files aside and COMMIT the manifest, in that order, before
-# anything is modified. Refuses if a hold already exists: overwriting a
-# pristine copy with an already-modified file is the one step that turns a
-# recoverable interruption into permanent data loss.
+# Commit the manifest before anything starts. Refuses if a hold already
+# exists: a pre-#1029 hold's pristine copies must never be overwritten.
 hold_account_files() {
   local dir="$1"
   if hold_is_present; then
@@ -275,22 +294,7 @@ hold_account_files() {
   rm -f "$HOLD_DIR"/*.pristine "$HOLD_DIR"/*.absent "$HOLD_DIR"/*.created \
     "$HOLD_DIR"/*.newline-added "$HOLD_DIR"/*.before-strip 2>/dev/null || true
 
-  mkdir -p "$(dirname "$SSH_CONFIG_FILE")"
-  chmod 700 "$(dirname "$SSH_CONFIG_FILE")"
-  if [[ -f "$SSH_CONFIG_FILE" ]]; then
-    # Informational only — the ssh config is restored by REMOVING our
-    # delimited blocks, never by writing this copy back, so an edit the user
-    # makes while the lane runs survives.
-    cp "$SSH_CONFIG_FILE" "$HOLD_DIR/ssh-config.pristine"
-    cmp -s "$SSH_CONFIG_FILE" "$HOLD_DIR/ssh-config.pristine" \
-      || die "the copy of $SSH_CONFIG_FILE in $HOLD_DIR does not match it; refusing to modify it"
-  else
-    : > "$HOLD_DIR/ssh-config.created"
-  fi
-
-  # Manifest last, and atomically: a crash before this leaves pristine copies
-  # nobody will read and nothing modified; a crash after it leaves a hold that
-  # `up` or `recover` can act on.
+  # Atomically: a crash leaves no hold or a whole one.
   {
     printf 'workdir=%s\n' "$dir"
     printf 'pid=%s\n' "$$"
@@ -298,12 +302,13 @@ hold_account_files() {
     printf 'home=%s\n' "$HOME"
   } > "$HOLD_DIR/manifest.tmp"
   mv "$HOLD_DIR/manifest.tmp" "$HOLD_MANIFEST"
-  log "holding this account's ssh config (backup in $HOLD_DIR)"
+  log "holding the run's teardown state in $HOLD_DIR"
 }
 
 # ---------------------------------------------------------- ssh config
 #
-# Every change to the account's ssh config is a whole new file, checked for
+# The account's ssh config is only ever rewritten to release a pre-#1029 hold.
+# Every change to it is a whole new file, checked for
 # balanced fixture markers, staged in the config's own directory and renamed
 # over it, and only if the config has not changed since it was read. A run
 # killed mid-write leaves the old file or the new one, never a truncated one
@@ -394,34 +399,34 @@ replace_ssh_config() {
   mv -f "$staged" "$target"
 }
 
-# Append the block on stdin to the ssh config.
-append_ssh_config_block() {
-  local block="" combined="" read_fingerprint last status=0
-  if ! block="$(mktemp "${TMPDIR:-/tmp}/lvx-sshblock.XXXXXX")" \
-    || ! combined="$(mktemp "${TMPDIR:-/tmp}/lvx-sshcfg.XXXXXX")" \
-    || ! cat > "$block" \
-    || ! read_fingerprint="$(ssh_config_fingerprint)"; then
-    log "ERROR: could not prepare the fixture's block for $SSH_CONFIG_FILE; left it as it was"
-    status=1
-  elif [[ -f "$SSH_CONFIG_FILE" ]] && ! cat "$SSH_CONFIG_FILE" > "$combined"; then
-    log "ERROR: could not read $SSH_CONFIG_FILE; left it as it was"
-    status=1
-  elif ! last="$(tail -c 1 "$combined")"; then
-    status=1
-  elif [[ -n "$last" ]] && ! { printf '\n' >> "$combined" && : > "$HOLD_DIR/ssh-config.newline-added"; }; then
-    # A config whose last line has no newline would glue the begin marker
-    # onto it. The newline goes in, and strip takes it back out.
-    status=1
-  elif ! cat "$block" >> "$combined"; then
-    status=1
-  elif ! ssh_config_blocks_balanced "$combined"; then
-    log "ERROR: $SSH_CONFIG_FILE would have unbalanced fixture markers; left it as it was"
-    status=1
-  elif ! replace_ssh_config "$combined" "$read_fingerprint"; then
-    status=1
-  fi
-  rm -f ${block:+"$block"} ${combined:+"$combined"}
-  (( status == 0 )) || die "could not add the fixture's block to $SSH_CONFIG_FILE"
+# Append the block on stdin to the run's own ssh config.
+append_fixture_ssh_config() {
+  local file
+  file="$(fixture_ssh_config "$1")"
+  cat >> "$file" || die "could not write the fixture's block to $file"
+  chmod 600 "$file"
+}
+
+# The `ssh` herdr finds first on its PATH: the system client on the run's
+# config.
+# Destination mode reads the account's aliases through an `Include` of its
+# config. `Match all` puts the include back at top level. ssh unescapes the
+# path twice, splitting the line and then globbing it, and silently skips a
+# path it got wrong, so a HOME with a space, quote or backslash would lose
+# every alias. The path is glob-escaped, then double-quoted for the split.
+include_account_ssh_config() {
+  local path
+  path="$(printf '%s\n' "$SSH_CONFIG_FILE" \
+    | sed -e 's/[\\*?[]/\\&/g' -e 's/[\\"]/\\&/g')"
+  printf 'Match all\nInclude "%s"\n' "$path" | append_fixture_ssh_config "$1"
+}
+
+write_fixture_ssh_wrapper() {
+  local dir="$1" bin
+  bin="$(fixture_bin_dir "$dir")"
+  mkdir -p "$bin"
+  printf '#!/bin/sh\nexec /usr/bin/ssh -F %q "$@"\n' "$(fixture_ssh_config "$dir")" > "$bin/ssh"
+  chmod 755 "$bin/ssh"
 }
 
 # Drop our delimited blocks from the ssh config. Idempotent, and it leaves
@@ -466,7 +471,7 @@ strip_ssh_config_blocks() {
   fi
   # A line is written only once the next kept line (or the end) shows whether
   # its newline belongs to the account: the input's own unterminated last
-  # line gets none, and neither does the line append_ssh_config_block
+  # line gets none, and neither does the line a pre-#1029 append
   # terminated when nothing the account wrote follows the fixture's blocks.
   if ! awk -v b1="$SSH_CONFIG_BEGIN" -v e1="$SSH_CONFIG_END" \
       -v b2="$SSH_CONFIG_ALT_BEGIN" -v e2="$SSH_CONFIG_ALT_END" \
@@ -548,10 +553,14 @@ release_account_files() {
   elif [[ -f "$HOLD_DIR/herdr-session.absent" ]]; then
     rm -f "$LEGACY_HERDR_SESSION_FILE"
   fi
-  # The hold stays until the config is back: it is what `recover` retries from.
-  strip_ssh_config_blocks || return 1
+  # A pre-#1029 hold: that run appended to the account's ssh config. The hold
+  # stays until the config is back: it is what `recover` retries from.
+  if [[ -f "$HOLD_DIR/ssh-config.pristine" || -f "$HOLD_DIR/ssh-config.created" ]]; then
+    strip_ssh_config_blocks || return 1
+    log "removed a pre-#1029 run's blocks from this account's ssh config"
+  fi
   rm -rf "$HOLD_DIR"
-  log "restored this account's ssh config"
+  log "released the hold"
 }
 
 # `down <dir>` must not release a hold that belongs to a DIFFERENT run.
@@ -821,13 +830,12 @@ EOF
     printf '  UserKnownHostsFile %s\n' "$dir/known_hosts"
     printf '  StrictHostKeyChecking yes\n'
     printf '%s\n' "$SSH_CONFIG_END"
-  } | append_ssh_config_block
+  } | append_fixture_ssh_config "$dir"
   # The federation alias: same loopback sshd, the federation key (whose entry
   # forces XDG_CONFIG_HOME and HERDR_SOCKET_PATH onto every remote herdr
   # invocation over the `-fed` alias — see the authorized_keys entry above).
-  # `machine add` and every federated bridge resolve their target through the
-  # REAL ssh config (the bridge spawns plain `ssh`, measured 2026-09-13), which is why
-  # this block lives here and not in a fixture-local file.
+  # `machine add` and every federated bridge spawn `ssh` from PATH, which
+  # reaches this block through the run's wrapper.
   {
     printf '%s\n' "$SSH_CONFIG_FED_BEGIN"
     printf 'Host %s%s\n' "$FIXTURE_ALIAS" "$FEDERATION_ALIAS_SUFFIX"
@@ -839,7 +847,7 @@ EOF
     printf '  UserKnownHostsFile %s\n' "$dir/known_hosts"
     printf '  StrictHostKeyChecking yes\n'
     printf '%s\n' "$SSH_CONFIG_FED_END"
-  } | append_ssh_config_block
+  } | append_fixture_ssh_config "$dir"
   printf '%s\n' "$port" > "$dir/sshd.port"
 }
 
@@ -851,25 +859,15 @@ EOF
 #                      fallback exists for.
 #   <alias>-otherport  same hostname, a different port — must NOT match.
 # Written for BOTH modes so the test asserts the same thing whether the lane
-# runs hermetically or against a real second host.
-refuse_account_defined_aliases() {
-  local name resolved
-  for name in "$@"; do
-    # An alias nothing defines resolves to itself; ssh prints it lowercased.
-    resolved="$(ssh -G -- "$name" 2>/dev/null | awk '$1 == "hostname" { print $2; exit }' || true)"
-    if [[ -n "$resolved" && "$resolved" != "$(tr '[:upper:]' '[:lower:]' <<<"$name")" ]]; then
-      die "the account's ssh config already defines Host $name (HostName $resolved).
-  The fixture appends its own block for that alias, and ssh keeps the first
-  value it reads, so the lane would dial the account's host instead. Rename or
-  remove that Host entry, then re-run the lane."
-    fi
-  done
-}
-
+# runs hermetically or against a real second host. The destination resolves
+# through the run's config in hermetic mode and through the account's, read
+# only, in destination mode.
 write_canonicalization_aliases() {
-  local alias_used="$1" hostname port other_port
-  hostname="$(ssh -G -- "$alias_used" 2>/dev/null | awk '$1 == "hostname" { print $2; exit }')"
-  port="$(ssh -G -- "$alias_used" 2>/dev/null | awk '$1 == "port" { print $2; exit }')"
+  local dir="$1" alias_used="$2" hermetic="$3" hostname port other_port
+  local -a resolve=(/usr/bin/ssh)
+  (( hermetic )) && resolve+=(-F "$(fixture_ssh_config "$dir")")
+  hostname="$("${resolve[@]}" -G -- "$alias_used" 2>/dev/null | awk '$1 == "hostname" { print $2; exit }')"
+  port="$("${resolve[@]}" -G -- "$alias_used" 2>/dev/null | awk '$1 == "port" { print $2; exit }')"
   if [[ -z "$hostname" || -z "$port" ]]; then
     die "ssh -G could not resolve '$alias_used'; the lane needs a destination ssh can configure"
   fi
@@ -884,18 +882,32 @@ write_canonicalization_aliases() {
     printf '  HostName %s\n' "$hostname"
     printf '  Port %s\n' "$other_port"
     printf '%s\n' "$SSH_CONFIG_ALT_END"
-  } | append_ssh_config_block
+  } | append_fixture_ssh_config "$dir"
 }
 
 start_surface() {
   local dir="$1" name="$2" mode="$3" pane="${4:-}" geometry
   geometry="$dir/surface-$name.geometry"
   local -a inner
+  # `script` writes ^D to the pty when its stdin reaches EOF. An attach client
+  # forwards that ^D to the pane's shell, which exits and takes the terminal
+  # with it, so an attach surface's stdin is a pipe whose writer never writes
+  # and lives until teardown. Not a FIFO: macOS 27's `script` exits 1 on one
+  # ("tcgetattr/ioctl: Operation not supported on socket"), measured on
+  # herdr 0.9.1's lane host.
+  local hold_stdin=0
   case "$mode" in
     app) inner=("$HERDR_BINARY") ;;
     attach)
       [[ -n "$pane" ]] || die "surface mode 'attach' needs a pane id"
-      inner=("$HERDR_BINARY" terminal attach "$pane")
+      # herdr 0.9 attaches a TERMINAL id; given a pane id it prints
+      # "terminal <pane> not found" and exits, and a dead client renders no
+      # token either. An older herdr reports no terminal_id and takes the pane.
+      local terminal
+      terminal="$({ herdr_cli pane get "$pane" 2>/dev/null || true; } \
+        | lv_json_value result.pane.terminal_id || true)"
+      inner=("$HERDR_BINARY" terminal attach "${terminal:-$pane}")
+      hold_stdin=1
       ;;
     observe)
       [[ -n "$pane" ]] || die "surface mode 'observe' needs a pane id"
@@ -923,25 +935,35 @@ start_surface() {
   if [[ -d "$dir/client-state-home" ]]; then
     surface_env+=("XDG_STATE_HOME=$dir/client-state-home")
   fi
-  env -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID -u HERDR_SESSION \
-    "${surface_env[@]}" \
-    script -q -t 0 "$dir/surface-$name.log" \
-    /bin/sh -c '
-      rows="$1"; columns="$2"; geometry="$3"; shift 3
-      stty rows "$rows" cols "$columns"
-      {
-        printf "pty.rows_cols="; stty size
-        printf "pty.stdin=%s stdout=%s stderr=%s controlling_tty=%s\n" \
-          "$([[ -t 0 ]] && echo tty || echo not-a-tty)" \
-          "$([[ -t 1 ]] && echo tty || echo not-a-tty)" \
-          "$([[ -t 2 ]] && echo tty || echo not-a-tty)" \
-          "$(tty 2>/dev/null || echo none)"
-        printf "env.TERM=%s env.COLUMNS=%s env.LINES=%s\n" \
-          "${TERM:-<unset>}" "${COLUMNS:-<unset>}" "${LINES:-<unset>}"
-      } > "$geometry"
-      exec "$@"
-    ' fixture-surface "$SURFACE_ROWS" "$SURFACE_COLUMNS" "$geometry" "${inner[@]}" \
-    </dev/null >/dev/null 2>&1 &
+  # Always run in the background: `exec` keeps `$!` the pid of `script`
+  # itself, which teardown kills.
+  launch_surface() {
+    exec env -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID -u HERDR_SESSION \
+      "${surface_env[@]}" \
+      script -q -t 0 "$dir/surface-$name.log" \
+      /bin/sh -c '
+        rows="$1"; columns="$2"; geometry="$3"; shift 3
+        stty rows "$rows" cols "$columns"
+        {
+          printf "pty.rows_cols="; stty size
+          printf "pty.stdin=%s stdout=%s stderr=%s controlling_tty=%s\n" \
+            "$([[ -t 0 ]] && echo tty || echo not-a-tty)" \
+            "$([[ -t 1 ]] && echo tty || echo not-a-tty)" \
+            "$([[ -t 2 ]] && echo tty || echo not-a-tty)" \
+            "$(tty 2>/dev/null || echo none)"
+          printf "env.TERM=%s env.COLUMNS=%s env.LINES=%s\n" \
+            "${TERM:-<unset>}" "${COLUMNS:-<unset>}" "${LINES:-<unset>}"
+        } > "$geometry"
+        exec "$@"
+      ' fixture-surface "$SURFACE_ROWS" "$SURFACE_COLUMNS" "$geometry" "${inner[@]}"
+  }
+  if (( hold_stdin )); then
+    # The writer records its own pid so teardown kills it with the surface.
+    sh -c 'echo $$ >> "$1"; exec sleep 2147483647' stdin-holder "$dir/surface.pids" \
+      | launch_surface >/dev/null 2>&1 &
+  else
+    launch_surface </dev/null >/dev/null 2>&1 &
+  fi
   echo $! >> "$dir/surface.pids"
   local waited=0
   until [[ -s "$geometry" ]]; do
@@ -1020,21 +1042,13 @@ command_up() {
 
   record_start_diagnostics "$dir" "$inherited_socket" "$account_status" "$inherited_config_home"
 
-  # The forward under test builds its argv from the ALIAS alone and never
-  # passes -F, so the fixture's connection details have to live where ssh
-  # actually looks: the account's ~/.ssh/config, in delimited blocks teardown
-  # removes again. This is the same file the app's own enrollment writes its
-  # host blocks into.
+  # A block a pre-#1029 run left in the account's config, with no hold to
+  # strip it from (a hand-edited recovery): the account owns that file, so
+  # say so rather than leave it.
   if [[ -f "$SSH_CONFIG_FILE" ]] \
     && grep -qF "$SSH_CONFIG_BEGIN" "$SSH_CONFIG_FILE"; then
     die "a fixture block is still in $SSH_CONFIG_FILE. Run: $(recovery_hint)"
   fi
-  # The blocks are appended, and ssh takes the FIRST value it finds, so an
-  # alias the account already defines would keep the account's settings and
-  # the lane would dial the wrong host. Refuse instead of shadowing it.
-  local -a fixture_aliases=("${destination:-$FIXTURE_ALIAS}-altuser" "${destination:-$FIXTURE_ALIAS}-otherport")
-  [[ -n "$destination" ]] || fixture_aliases+=("$FIXTURE_ALIAS" "$FIXTURE_ALIAS$FEDERATION_ALIAS_SUFFIX")
-  refuse_account_defined_aliases "${fixture_aliases[@]}"
 
   hold_account_files "$dir"
 
@@ -1046,7 +1060,15 @@ command_up() {
   else
     log "using caller-supplied ssh destination '$destination' (no sshd provisioned)"
   fi
-  write_canonicalization_aliases "$alias_used"
+  write_canonicalization_aliases "$dir" "$alias_used" "$provisioned_ssh"
+  if (( ! provisioned_ssh )) && [[ -f "$SSH_CONFIG_FILE" ]]; then
+    # After the fixture's own blocks, so they win.
+    include_account_ssh_config "$dir"
+  fi
+  touch "$(fixture_ssh_config "$dir")"
+  chmod 600 "$(fixture_ssh_config "$dir")"
+  write_fixture_ssh_wrapper "$dir"
+  log "ssh config for the app and herdr: $(fixture_ssh_config "$dir")"
 
   # Federation capability sniff (quiet, read-only): does this herdr know
   # `machine`? On 0.9+ every surface the lane starts must run with
@@ -1068,12 +1090,17 @@ command_up() {
   # no workspace and therefore no pane, so `pane.current` answers
   # pane_not_found forever and the fixture would never become ready. The
   # update checks are off so the lane makes no network requests.
+  # `manage_ssh_config = false` makes `machine add` and the federation bridge
+  # run the run's `ssh` wrapper as is (see "The ssh config is the run's own").
   cat > "$(fixture_config_file "$dir")" <<'EOF'
 onboarding = false
 
 [update]
 version_check = false
 manifest_check = false
+
+[remote]
+manage_ssh_config = false
 
 [ui.sidebar.agents]
 rows = [["state_icon", "workspace", "tab"], ["agent"], [{ token = "$lvmark", dim = true }]]
@@ -1129,12 +1156,13 @@ EOF
   log "pane $pane_id marked agent-bearing (session $agent_session_id)"
   record_pane_snapshot "$dir" "primary-ready" "$pane_id"
 
-  printf '{"agentSessionID":"%s","alias":"%s","altUserAlias":"%s-altuser","otherPortAlias":"%s-otherport","herdrBinary":"%s","socketPath":"%s","configHome":"%s","stateHome":"%s","paneID":"%s","primarySurfaceLog":"%s","provisionedSSH":%s,"workdir":"%s"}\n' \
+  printf '{"agentSessionID":"%s","alias":"%s","altUserAlias":"%s-altuser","otherPortAlias":"%s-otherport","herdrBinary":"%s","socketPath":"%s","configHome":"%s","stateHome":"%s","paneID":"%s","primarySurfaceLog":"%s","provisionedSSH":%s,"sshConfig":"%s","workdir":"%s"}\n' \
     "$agent_session_id" "$alias_used" "$alias_used" "$alias_used" \
     "$HERDR_BINARY" "$HERDR_SOCKET_PATH" \
     "$(fixture_config_home "$dir")" "$(fixture_state_home "$dir")" "$pane_id" \
     "$dir/surface-primary.log" \
     "$([[ $provisioned_ssh == 1 ]] && echo true || echo false)" \
+    "$(fixture_ssh_config "$dir")" \
     "$dir" \
     | tee "$dir/fixture.json"
   UP_IN_PROGRESS_DIR=""
@@ -1271,9 +1299,8 @@ EOF
     fed_target="$alias_used"
   fi
 
-  # The federated bridges spawn plain `ssh` (no -F), so the target must
-  # resolve through the REAL ssh config — which is why the hermetic alias
-  # lives there (see provision_loopback_sshd).
+  # The federated bridges spawn plain `ssh`, which is the run's wrapper on
+  # this PATH (load_context), so the target resolves through the run's config.
   ssh -G -- "$fed_target" >/dev/null 2>&1 \
     || die "ssh cannot resolve the federation target '$fed_target'; the lane needs a destination ssh can configure"
 
@@ -1519,6 +1546,7 @@ command_down() {
     rm -rf "$dir"
     log "torn down $dir"
     log "herdr.account.after $(account_herdr_fingerprint)"
+    log "ssh.account.after $(account_ssh_config_fingerprint)"
   else
     log "nothing to tear down at $dir"
   fi

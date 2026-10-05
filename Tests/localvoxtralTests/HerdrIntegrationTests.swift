@@ -79,7 +79,7 @@ final class HerdrIntegrationTests: XCTestCase {
     /// Nothing here is stubbed: this spawns OpenSSH and waits for the local
     /// end to answer.
     private func openForward(
-        spawner: any ClaudeRemoteHerdrForwardSpawning = ClaudeRemoteHerdrForwardSpawner(),
+        spawner: (any ClaudeRemoteHerdrForwardSpawning)? = nil,
         clock: AcceleratedClock = AcceleratedClock(),
         idleTimeout: TimeInterval = 5 * 60
     ) async throws -> (
@@ -87,7 +87,7 @@ final class HerdrIntegrationTests: XCTestCase {
         handle: ClaudeRemoteHerdrForwardHandle
     ) {
         let service = ClaudeRemoteHerdrForwardService(
-            spawner: spawner,
+            spawner: spawner ?? ClaudeRemoteHerdrForwardSpawner(environment: fixture.sshEnvironment),
             workspaces: ClaudeRemoteHerdrForwardWorkspaces(),
             now: clock.now,
             sleepFor: clock.sleep,
@@ -282,6 +282,10 @@ final class HerdrIntegrationTests: XCTestCase {
         try await HerdrLaneWait.until("the attach client to paint its pane") {
             attachSurface.byteCount > 0
         }
+        XCTAssertFalse(
+            try fixture.foregroundHerdrClients(surface: "attach").isEmpty,
+            "the attach client exited; its silence below would prove nothing"
+        )
 
         let (service, handle) = try await openForward()
         defer { handle.close(); service.stopAllForQuit() }
@@ -314,6 +318,39 @@ final class HerdrIntegrationTests: XCTestCase {
             behavior, the remote-herdr surface authorization argument no \
             longer holds and must be reworked — do not relax this lane.
             """
+        )
+    }
+
+    /// `herdr terminal attach <pane>` shows one pane and leaves the server's
+    /// focus where it was, so the local herdr arm, which binds the server's
+    /// focused pane, must not take its tty for a whole-view client. The
+    /// production probe reads each client's real tty and argv.
+    func testLocalTerminalAttachIsNotAWholeViewHerdrClient() async throws {
+        let attachSurface = try fixture.startSurface(
+            name: "attach", mode: .attach, paneID: fixture.info.paneID
+        )
+        try await HerdrLaneWait.until("the attach client to paint its pane") {
+            attachSurface.byteCount > 0
+        }
+        let wholeViewTTY = try fixture.surfaceTTY(name: "primary")
+        let attachTTY = try fixture.surfaceTTY(name: "attach")
+        print("[herdr-fixture] tty.primary=\(wholeViewTTY) tty.attach=\(attachTTY)")
+        // Precondition: a live herdr client is each tty's foreground job.
+        // Without it the refusal below would prove nothing.
+        XCTAssertFalse(try fixture.foregroundHerdrClients(surface: "primary").isEmpty)
+        XCTAssertFalse(
+            try fixture.foregroundHerdrClients(surface: "attach").isEmpty,
+            "the attach client is not the foreground job of its tty; the refusal below would prove nothing"
+        )
+
+        XCTAssertTrue(
+            HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: wholeViewTTY),
+            "the whole-view client's tty must still bind the local herdr arm"
+        )
+        XCTAssertFalse(
+            HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: attachTTY),
+            "a `herdr terminal attach` client's tty bound the local herdr arm, which would "
+                + "join the server's focused pane while the surface shows another"
         )
     }
 
@@ -517,7 +554,7 @@ final class HerdrIntegrationTests: XCTestCase {
     /// releasing the last lease must eventually retire the process — proven
     /// on the injected clock, not on wall time.
     func testForwardLeaseIsReusedAcrossDictationsAndTornDownWhenIdle() async throws {
-        let spawner = CountingHerdrForwardSpawner()
+        let spawner = CountingHerdrForwardSpawner(environment: fixture.sshEnvironment)
         let clock = AcceleratedClock()
         let service = ClaudeRemoteHerdrForwardService(
             spawner: spawner,
@@ -561,12 +598,13 @@ final class HerdrIntegrationTests: XCTestCase {
 
     // MARK: - ssh -G canonicalization
 
-    /// The alias fallback resolves both sides through the user's REAL ssh
-    /// config and compares `(hostname, port)` — never `user`. Two live
+    /// The alias fallback resolves both sides through the real `ssh -G`, on
+    /// the run's ssh config, and compares `(hostname, port)` — never `user`. Two live
     /// aliases make that concrete: one that differs only in `User` must match,
     /// one that differs in port must not.
     func testSSHDestinationCanonicalizationMatchesThroughRealSSHConfig() async throws {
-        let canonicalizer = SSHDestinationCanonicalizer.live()
+        let environment = fixture.sshEnvironment
+        let canonicalizer = SSHDestinationCanonicalizer.live(environment: { environment })
         let enrolled = Self.enrolledHost(alias: fixture.info.alias)
 
         let sameHost = await canonicalizer.matchingHosts(
@@ -633,7 +671,9 @@ final class HerdrIntegrationTests: XCTestCase {
         }
 
         let service = ClaudeRemoteEnrollmentService(
-            runner: ClaudeRemoteEnrollmentService.processRunner()
+            runner: ClaudeRemoteEnrollmentService.processRunner(
+                environment: { [environment = fixture.sshEnvironment] in environment }
+            )
         )
         let alias = fixture.info.alias
 
@@ -677,6 +717,10 @@ final class HerdrIntegrationTests: XCTestCase {
         try await HerdrLaneWait.until("the attach client to paint its pane") {
             attachSurface.byteCount > 0
         }
+        XCTAssertFalse(
+            try fixture.foregroundHerdrClients(surface: "attach").isEmpty,
+            "the attach client exited; its abstention below would prove nothing"
+        )
 
         let (service, handle) = try await openForward()
         defer { handle.close(); service.stopAllForQuit() }
@@ -710,6 +754,10 @@ final class HerdrIntegrationTests: XCTestCase {
             return XCTFail("the panel binding probe did not match a whole-view surface: \(outcome)")
         }
         XCTAssertTrue(match.token.hasPrefix("lv-mic-"))
+        XCTAssertFalse(
+            match.showsMachineList,
+            "a client with no saved machines drew herdr's machine list; the remote arm would refuse every join"
+        )
         XCTAssertEqual(
             seenTargets.withLock { $0.first }, target,
             "the probe must read the target it was given"
@@ -1042,6 +1090,14 @@ final class HerdrIntegrationTests: XCTestCase {
                 + "(viewing \(expectedBarName)): union-over-time is not composition, and the "
                 + "whole-view discriminator cannot retire on it"
         )
+        // The remote arm refuses a token match in a grid showing the machine
+        // list, because the token renders whichever machine is shown. That
+        // refusal holds only while a federated client draws the list.
+        XCTAssertTrue(
+            composedFrame.map(HerdrPanelBindingProbe.showsMachineList) == true,
+            "a federated client's frame showed no machine list (viewing \(expectedBarName)); "
+                + "the remote arm would join through a client federating other machines"
+        )
     }
 
     /// The agents-panel row comes from the LOCAL client config
@@ -1278,8 +1334,12 @@ final class HerdrIntegrationTests: XCTestCase {
 /// bookkeeping is added, so "was the lease reused" is answerable without
 /// weakening what the lane exercises.
 private final class CountingHerdrForwardSpawner: ClaudeRemoteHerdrForwardSpawning, @unchecked Sendable {
-    private let inner = ClaudeRemoteHerdrForwardSpawner()
+    private let inner: ClaudeRemoteHerdrForwardSpawner
     private let count = Mutex(0)
+
+    init(environment: [String: String]) {
+        inner = ClaudeRemoteHerdrForwardSpawner(environment: environment)
+    }
 
     var spawnCount: Int { count.withLock { $0 } }
 

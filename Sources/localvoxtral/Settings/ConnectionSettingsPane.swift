@@ -306,6 +306,12 @@ struct ConnectionSettingsPane: View {
                     .accessibilityIdentifier("engines.mistral.quickSetup")
                 }
 
+                SettingsFieldRow(title: "Re-transcribe dictations on stop") {
+                    Toggle("", isOn: $settings.mistralStopSecondPassEnabled)
+                        .labelsHidden()
+                        .accessibilityIdentifier("engines.mistral.stopSecondPass")
+                }
+
                 MistralUsageRow(viewModel: viewModel)
             }
         }

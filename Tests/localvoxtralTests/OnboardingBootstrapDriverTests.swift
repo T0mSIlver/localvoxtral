@@ -36,6 +36,54 @@ final class LiveOnboardingBootstrapDriverTests: XCTestCase {
         )
     }
 
+    /// Local → Mistral → Local while speechd still shuts down: the start
+    /// waits for that stop, or the dying helper reads as ready and the stop
+    /// then leaves the page with nothing running and no retry (#1763).
+    func testStartWaitsForAPendingShutdownBeforeEnsuringReady() async {
+        let manager = OnboardingTestBackendManager()
+        let shutdown = BoundedWait()
+        let ensureCallsWhileShuttingDown = Box<[Int]>([])
+        let driver = LiveOnboardingBootstrapDriver(
+            backendManager: manager,
+            waitForPendingShutdowns: {
+                ensureCallsWhileShuttingDown.value.append(manager.ensureCalls.count)
+                _ = await shutdown.value(failAfter: 10)
+            }
+        )
+
+        driver.start(dictation: true, polishing: false)
+        shutdown.resolve()
+        await manager.waitForEnsure()
+
+        XCTAssertEqual(ensureCallsWhileShuttingDown.value, [0], "the start must wait for the shutdown first")
+        XCTAssertEqual(manager.ensureCalls.count, 1)
+    }
+
+    /// A start superseded while it waits never reaches the backend.
+    func testAStartSupersededDuringTheShutdownEnsuresOnce() async {
+        let manager = OnboardingTestBackendManager()
+        let firstShutdown = BoundedWait()
+        let waits = Box(0)
+        let driver = LiveOnboardingBootstrapDriver(
+            backendManager: manager,
+            waitForPendingShutdowns: {
+                waits.value += 1
+                if waits.value == 1 { _ = await firstShutdown.value(failAfter: 10) }
+            }
+        )
+
+        driver.start(dictation: true, polishing: true)
+        driver.start(dictation: true, polishing: false)
+        await manager.waitForEnsure()
+        firstShutdown.resolve()
+        await driver.debugRunTask?.value
+
+        XCTAssertEqual(
+            manager.ensureCalls,
+            [OnboardingTestBackendManager.EnsureCall(dictation: true, polishing: false)]
+        )
+    }
+
     func testStart_polishingOnly_onlyTracksPolishingItem() {
         let manager = OnboardingTestBackendManager()
         let driver = LiveOnboardingBootstrapDriver(backendManager: manager)
@@ -62,6 +110,11 @@ final class LiveOnboardingBootstrapDriverTests: XCTestCase {
 
         XCTAssertEqual(states[.dictation], .ready)
         XCTAssertEqual(driver.itemStates[.dictation], .ready)
+    }
+
+    private final class Box<Value> {
+        var value: Value
+        init(_ value: Value) { self.value = value }
     }
 
     private func awaitReadyStateChange(

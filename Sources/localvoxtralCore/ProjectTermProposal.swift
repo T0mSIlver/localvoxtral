@@ -66,10 +66,27 @@ package enum ProjectTermProposal {
     package struct Request: Equatable, Sendable {
         package let agent: Agent
         package let workspace: LocalWorkspacePath
+        /// The joined Claude Code session, which its mod may answer from
+        /// (#1410). Nil for another agent.
+        package let session: Session?
 
-        package init(agent: Agent, workspace: LocalWorkspacePath) {
+        package init(agent: Agent, workspace: LocalWorkspacePath, session: Session? = nil) {
             self.agent = agent
             self.workspace = workspace
+            self.session = session
+        }
+    }
+
+    /// What decides whether a session's own transcript can answer.
+    package struct Session: Equatable, Sendable {
+        package let id: String
+        package let promptsSubmitted: Int
+        package let lastActivity: Date
+
+        package init(id: String, promptsSubmitted: Int, lastActivity: Date) {
+            self.id = id
+            self.promptsSubmitted = promptsSubmitted
+            self.lastActivity = lastActivity
         }
     }
 
@@ -82,7 +99,56 @@ package enum ProjectTermProposal {
               let agent = Agent(snapshot.agent),
               let workspace = snapshot.localWorkspacePath
         else { return nil }
-        return Request(agent: agent, workspace: workspace)
+        let session = agent == .claude
+            ? Session(
+                id: snapshot.sessionID,
+                promptsSubmitted: snapshot.promptsSubmitted,
+                lastActivity: snapshot.lastActivity
+            )
+            : nil
+        return Request(agent: agent, workspace: workspace, session: session)
+    }
+
+    // MARK: From the session itself (#1410)
+
+    /// A session this young has said too little about its project to stand
+    /// for it: the answer is kept for the project, so a thin one would stick.
+    package static let minPromptsToFork = 3
+
+    /// A fork reads the session's transcript from the API's prompt cache,
+    /// whose entry lives five minutes past the last request. Past this, the
+    /// fork would pay for the whole transcript, more than the one-shot run.
+    package static let forkCacheWindow: TimeInterval = 4 * 60
+
+    /// The one-shot run's question, for a fork: it reads no file, so it
+    /// answers from what the session already holds.
+    package static let forkPrompt = prompt.replacingOccurrences(
+        of: "Read at most six files, the README first. ",
+        with: "Answer from what this conversation already shows; read no file. "
+    )
+
+    /// Whether `session` may answer for its project at `now`.
+    package static func sessionMayAnswer(_ session: Session, now: Date) -> Bool {
+        session.promptsSubmitted >= minPromptsToFork
+            && now.timeIntervalSince(session.lastActivity) < forkCacheWindow
+    }
+
+    /// A fork's reply as the outcome a run would give, or nil when it holds
+    /// no answer object.
+    package static func outcome(forkAnswer text: String, usage: ClaudeModChannelWire.Usage?) -> Outcome? {
+        guard let answer = answerObject(in: text) else { return nil }
+        return .terms(
+            answer.terms,
+            usage: Usage(
+                turns: 1,
+                costUSD: nil,
+                inputTokens: usage?.inputTokens,
+                cacheWriteTokens: usage?.cacheCreationInputTokens,
+                cacheReadTokens: usage?.cacheReadInputTokens,
+                outputTokens: usage?.outputTokens
+            ),
+            line: answer.line
+        )
     }
 
     // MARK: Command line

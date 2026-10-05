@@ -303,6 +303,8 @@ struct DictationSettingsPane: View {
                     .labelsHidden()
                 }
 
+                StopPhrasesRow(settings: settings)
+
                 // The needs-you cue (#717): a sound, a banner and the menu
                 // bar icon when a coding agent waits for you, and the waiting
                 // sessions among the overlay's destinations (#840).
@@ -598,9 +600,61 @@ struct SendPhrasesRow: View {
 
     private func save() {
         guard let draft else { return }
-        switch SendTriggerPhrases.validate(SendTriggerPhrases.split(draft)) {
+        switch SendTriggerPhrases.validate(
+            SendTriggerPhrases.split(draft), stopPhrases: settings.spokenAbortPhrases
+        ) {
         case .success(let phrases):
             settings.spokenSendTriggerPhrases = phrases
+            self.draft = nil
+            refusal = nil
+        case .failure(let reason):
+            refusal = reason.message
+        }
+    }
+}
+
+/// The stop phrases (#1696), comma-separated; empty turns them off. A list
+/// is saved only when `SpokenAbortPhrases.validate` accepts it.
+struct StopPhrasesRow: View {
+    @Bindable var settings: SettingsStore
+    @State private var draft: String?
+    @State private var refusal: String?
+    @FocusState private var focused: Bool
+
+    init(settings: SettingsStore, draft: String? = nil, refusal: String? = nil) {
+        self.settings = settings
+        _draft = State(initialValue: draft)
+        _refusal = State(initialValue: refusal)
+    }
+
+    private var saved: String { settings.spokenAbortPhrases.joined(separator: ", ") }
+
+    var body: some View {
+        SettingsFieldRow(title: "Phrases that stop Claude Code") {
+            TextField("stop claude", text: Binding(
+                get: { draft ?? saved },
+                set: { draft = $0 }
+            ))
+            .textFieldStyle(.roundedBorder)
+            .frame(maxWidth: SettingsLayout.textFieldWidth)
+            .focused($focused)
+            .onSubmit(save)
+            .onChange(of: focused) { _, isFocused in
+                if !isFocused { save() }
+            }
+        } footer: {
+            if let refusal {
+                SettingsInlineMessage(refusal, color: .red)
+            }
+        }
+    }
+
+    private func save() {
+        guard let draft else { return }
+        let phrases = SendTriggerPhrases.split(draft)
+        switch SpokenAbortPhrases.validate(phrases, sendPhrases: settings.spokenSendTriggerPhrases) {
+        case .success(let phrases):
+            settings.spokenAbortPhrases = phrases
             self.draft = nil
             refusal = nil
         case .failure(let reason):

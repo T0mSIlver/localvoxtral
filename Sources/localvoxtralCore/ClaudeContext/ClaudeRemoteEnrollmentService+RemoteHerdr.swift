@@ -20,7 +20,8 @@ extension ClaudeRemoteEnrollmentService {
               exit 0
             fi
             lv_config=${HERDR_CONFIG_PATH:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr/config.toml}
-            if [ -f "$lv_config" ] && grep -Eq '^[[:space:]]*\\[ui\\.sidebar\\.agents\\][[:space:]]*(#.*)?$|^[[:space:]]*rows[[:space:]]*=' "$lv_config"; then
+            if [ -f "$lv_config" ] \\
+              && sed -e 's/#.*//' "$lv_config" | tr -d " \\t\\r\\"'" | grep -Eq '\(Self.herdrAgentsConfigPattern)'; then
               printf '%s\\n' LVX_HERDR_CUSTOMIZED
               exit 42
             fi

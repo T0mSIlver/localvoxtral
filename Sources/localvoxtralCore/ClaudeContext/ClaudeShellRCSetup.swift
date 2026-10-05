@@ -180,10 +180,13 @@ public struct ClaudeShellRCState: Sendable, Equatable {
 public protocol ClaudeShellRCFileSystem: Sendable {
     func readState() throws -> ClaudeShellRCState
     func createDirectory(permissions: UInt16) throws
-    func atomicWrite(_ data: Data, permissions: UInt16) throws
+    /// Replaces the file with `data` only while it still holds `expected`
+    /// (nil: no file), the bytes the caller read. Otherwise it throws
+    /// `ClaudeShellRCError.changedOnDisk` and writes nothing (#1726).
+    func atomicWrite(_ data: Data, permissions: UInt16, replacing expected: Data?) throws
 }
 
-public enum ClaudeShellRCError: Error, Equatable {
+public enum ClaudeShellRCError: Error, Equatable, CustomStringConvertible {
     /// The rc file — or a directory on the way to it — is a symlink.
     ///
     /// Refused rather than followed, and this is the case a dotfiles user
@@ -201,6 +204,25 @@ public enum ClaudeShellRCError: Error, Equatable {
     /// A begin marker with no end. Writing past it would let the NEXT apply
     /// swallow whatever the user put in between.
     case markersDoNotPair
+    /// The file changed between the read and the write: a save made while
+    /// setup ran, which the write would have replaced. Nothing was written;
+    /// running setup again applies the block to the saved file.
+    case changedOnDisk
+
+    /// The sentence the alert shows: the model keeps `String(describing:)`.
+    public var description: String {
+        switch self {
+        case .isSymlink:
+            return "Your shell startup file, or a folder on the way to it, is a symlink, so it was left alone."
+        case .invalidEncoding: return "Your shell startup file is not UTF-8 text, so it was left alone."
+        case .notConfigured: return "Editing your shell startup file is not available in this build."
+        case .unreadable: return "Your shell startup file could not be read."
+        case .markersDoNotPair:
+            return "Your shell startup file has a localvoxtral begin line without its end line. Fix it by hand."
+        case .changedOnDisk:
+            return "Your shell startup file changed while this was running. Nothing was written; try again."
+        }
+    }
 }
 
 /// Applies or removes the block in the user's rc file.
@@ -326,7 +348,8 @@ public struct ClaudeShellRCWriter: Sendable {
             }
             try fileSystem.atomicWrite(
                 Data(updated.utf8),
-                permissions: state.permissions ?? 0o600
+                permissions: state.permissions ?? 0o600,
+                replacing: state.data
             )
             Log.claudeContext.info("Claude shell rc edit completed")
         } catch {

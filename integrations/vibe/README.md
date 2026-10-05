@@ -66,7 +66,7 @@ and in the block's two command lines.
 For a Vibe running on a host you ssh into:
 
 1. Enroll the host first
-   ([remote setup](../../docs/remote-claude-context.md)). The host's setup run
+   ([remote setup](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/)). The host's setup run
    installs the Vibe hooks when it finds Vibe there, next to the Claude Code
    plugin.
 2. If you enrolled the host before you installed Vibe on it, press
@@ -109,7 +109,7 @@ nothing and always exits 0.
   helper, once per project per 24 hours, and returns. The helper runs a
   read-only, non-interactive Vibe in the project and posts its answer, the
   project's own names, to the Mac
-  ([Terms from the coding agent on a host](../../docs/remote-claude-context.md#terms-from-the-coding-agent-on-a-host)).
+  ([Terms from the coding agent on a host](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/#terms-from-the-coding-agent-on-a-host)).
 - **The terms run stays out of your Vibe.** The helper runs under a Vibe home
   of its own, under `~/.vibe/localvoxtral/remote/vibe-home/`, so none of your
   hooks fire and the run stays out of your Vibe history.
@@ -117,7 +117,7 @@ nothing and always exits 0.
   helper that posts the first 16 KiB of the project's README, or drafts a
   quick capture with a read-only, non-interactive Vibe in the project and
   posts the draft
-  ([Quick capture on a host](../../docs/remote-claude-context.md#quick-capture-on-a-host)).
+  ([Quick capture on a host](https://t0msilver.github.io/localvoxtral/docs/remote-claude-context/#quick-capture-on-a-host)).
 
 To turn off the background shell, set `LOCALVOXTRAL_VIBE_WATCHER=off` in
 Vibe's environment. Sessions then expire after four idle hours.
@@ -126,13 +126,13 @@ Vibe's environment. Sessions then expire after four idle hours.
 
 **Settings → Mistral Vibe → Tell Mistral Vibe you dictate → Add** puts a short
 note in `~/.vibe/AGENTS.md` saying your prompts come from speech-to-text. See
-[Telling the agent you dictate](../../docs/coding-agents.md#telling-the-agent-you-dictate).
+[Telling the agent you dictate](https://t0msilver.github.io/localvoxtral/docs/coding-agents/#telling-the-agent-you-dictate).
 
 ## Teach Mistral Vibe to check dictation
 
 **Settings → Mistral Vibe → Teach Mistral Vibe to check dictation → Add** installs a
 skill in ~/.vibe/skills that names `localvoxtral doctor` and `localvoxtral logs`. See
-[Teaching the agent to check dictation](../../docs/coding-agents.md#teaching-the-agent-to-check-dictation).
+[Teaching the agent to check dictation](https://t0msilver.github.io/localvoxtral/docs/coding-agents/#teaching-the-agent-to-check-dictation).
 
 ## What it sends
 
@@ -196,7 +196,7 @@ runs its own read-only, non-interactive Vibe once per project, never in your
 session. It bills your Mistral key, capped at $0.30 a run (about $0.05 to
 $0.10 measured). It runs under a Vibe home the app owns, so none of your
 hooks fire. See
-[Terms from your coding agent](../../docs/dictation.md#terms-from-your-coding-agent).
+[Terms from your coding agent](https://t0msilver.github.io/localvoxtral/docs/dictation/#terms-from-your-coding-agent).
 
 ## What doesn't work
 

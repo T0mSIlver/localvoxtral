@@ -654,6 +654,19 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertTrue(makeStore().earlyPolishEnabled)
     }
 
+    // MARK: - mistralStopSecondPassEnabled (#1678)
+
+    func testMistralStopSecondPassEnabled_defaultsOnAndPersistsAcrossReload() {
+        let store = makeStore()
+        XCTAssertTrue(store.mistralStopSecondPassEnabled)
+        store.mistralStopSecondPassEnabled = false
+
+        let reloadedStore = makeStore()
+        XCTAssertFalse(reloadedStore.mistralStopSecondPassEnabled)
+        reloadedStore.mistralStopSecondPassEnabled = true
+        XCTAssertTrue(makeStore().mistralStopSecondPassEnabled)
+    }
+
     // MARK: - clipboardPayloadMacroEnabled
 
     func testClipboardPayloadMacroEnabled_defaultsToTrue() {
@@ -935,6 +948,49 @@ final class SettingsStoreTests: XCTestCase {
 
         let reloadedStore = makeStore()
         XCTAssertTrue(reloadedStore.replacementDictionaryEnabled)
+    }
+
+    // MARK: - Global terms with two running copies (#1575)
+
+    /// Two copies launched on the same terms each add one; neither write
+    /// drops the other's term, and a removal in one survives the other's add.
+    func testTwoRunningCopiesKeepEachOthersTerms() {
+        makeStore().polishSpeakerTerms = ["Qwen", "Claude Code"]
+        let first = makeStore()
+        let second = makeStore()
+
+        first.polishSpeakerTerms.append("Ghostty")
+        second.polishSpeakerTerms.append("Voxtral")
+        XCTAssertEqual(makeStore().polishSpeakerTerms, ["Qwen", "Claude Code", "Voxtral", "Ghostty"])
+
+        first.polishSpeakerTerms.removeAll { $0 == "Claude Code" }
+        second.polishSpeakerTerms.append("MLX")
+        XCTAssertEqual(makeStore().polishSpeakerTerms, ["Qwen", "Voxtral", "Ghostty", "MLX"])
+    }
+
+    /// The merge keeps the cap a launch applies: two copies each adding the
+    /// last term that fits save 80, not 81, and the term the first copy
+    /// already saved stays; the second copy's addition is the one refused.
+    func testStaleAdditionAtCapacityKeepsAlreadySavedTerm() {
+        let start = (1..<SpeakerTerms.maxTerms).map { "Term\($0)" }
+        makeStore().polishSpeakerTerms = start
+        let first = makeStore()
+        let second = makeStore()
+
+        first.polishSpeakerTerms.append("Ghostty")
+        second.polishSpeakerTerms.append("Voxtral")
+
+        XCTAssertEqual(defaults.stringArray(forKey: "settings.polish_speaker_terms"), start + ["Ghostty"])
+        XCTAssertEqual(second.polishSpeakerTerms, start + ["Ghostty"])
+    }
+
+    func testTwoRunningCopiesKeepEachOthersDismissedSuggestions() {
+        let first = makeStore()
+        let second = makeStore()
+
+        first.dismissTermSuggestion("SessionStart")
+        second.dismissTermSuggestion("herdr")
+        XCTAssertEqual(makeStore().polishDismissedTermSuggestions, ["herdr", "SessionStart"])
     }
 
     // MARK: - debugLogRealtimeDeltas (issue #13 instrumentation)

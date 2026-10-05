@@ -46,13 +46,16 @@ extension DictationSessionController {
         sessionCommitGuard = nil
         sessionPickedPane = nil
         sessionStartedAt = nil
+        sessionStoppedAt = nil
         sessionCaptureTimeline = nil
         sessionProvider = nil
         sessionModelName = nil
         sessionReplacementDictionary = nil
         sessionRealtimeConfiguration = nil
+        sessionUsesManagedSpeechHelper = false
         sessionStoresAudio = false
         sessionHasStopSecondPass = false
+        sessionStopSecondPassTurnedOff = false
         earlyPolishRun?.cancel()
         earlyPolishRun = nil
     }
@@ -67,12 +70,28 @@ extension DictationSessionController {
     /// visible, and returns true when the start was refused. Overlay Buffer
     /// sessions are never refused: their pipeline still produces text and the
     /// commit falls back to the clipboard (#89 split behavior).
+    ///
+    /// While some Claude Code mod is attached, the refusal waits for the
+    /// session's route (`afterRouteResolved`): a mod that takes the deltas
+    /// posts no key, so Secure Keyboard Entry stops nothing (#1645).
     func refuseLiveStartForSecureInputIfNeeded(
-        outputMode requestedOutputMode: DictationOutputMode
+        outputMode requestedOutputMode: DictationOutputMode,
+        afterRouteResolved: Bool = false
     ) -> Bool {
         guard requestedOutputMode == .liveAutoPaste,
               TerminalTargetDetector.isSecureKeyboardEntryEnabled()
         else { return false }
+        if afterRouteResolved {
+            guard !(context.agentPromptRoute is ClaudeModPromptRoute) else {
+                Log.target.notice("Secure Keyboard Entry is on; the session's mod takes the live text")
+                return false
+            }
+        } else if context.claudeModChannels?.hasAttachedChannels == true,
+                  let target = TerminalScreenContextSource.frontmostTarget(),
+                  TerminalScreenAllowlist.isSupported(target.bundleID) {
+            // Only a terminal can hold a session the mod takes.
+            return false
+        }
         captureSessionTargetVerdict()
         applyPreCapturedSessionTargetVerdict()
         statusText = StatusStrings.liveDictationBlockedBySecureInput
@@ -365,6 +384,11 @@ extension DictationSessionController {
             }
             return nil
         }
+        if refuseLiveStartForSecureInputIfNeeded(outputMode: requestedOutputMode, afterRouteResolved: true) {
+            context.discardTerminalScreenCapture()
+            isConnectingRealtimeSession = false
+            return nil
+        }
         refreshInsertionScalarTracingForSession()
 
         audio.audioChunkBuffer.clear()
@@ -372,6 +396,10 @@ extension DictationSessionController {
         firstChunkPreprocessor.reset()
         overlayBufferCoordinator.reset()
         realtimeFinalizationLastActivityAt = nil
+        stopReplaysReconnectGap = false
+        // The previous dictation's relay may still answer: its refusals must
+        // not reach this dictation's buffers (#1466).
+        textInsertion.retirePromptRelay(endingDictation: true)
         textInsertion.clearPendingText()
         textInsertion.resetDiagnostics()
 
@@ -423,6 +451,7 @@ extension DictationSessionController {
         // Latched, not rebuilt: a mid-session reconnect (#380) dials exactly
         // what this session opened with, even if Settings moved on since.
         sessionRealtimeConfiguration = configuration
+        sessionUsesManagedSpeechHelper = settings.dictationBackendMode == .managedLocal
 
         do {
             try activeRealtimeClient.connect(configuration: configuration)
@@ -493,6 +522,17 @@ extension DictationSessionController {
         }
     }
 
+    /// The microphone runs while the socket opens (`startSessionMicrophone`),
+    /// so a device or channel picked then must restart it: nothing else
+    /// re-applies the selection once the session listens (#1628). The
+    /// connect goes on; what was captured so far stays in the buffer.
+    func restartConnectingSessionMicrophone(reason: String) {
+        guard isConnectingRealtimeSession, audio.captureDeviceID != nil, audio.capturesFromMicrophone else { return }
+        Log.dictation.info("restarting the microphone while connecting: \(reason, privacy: .public)")
+        audio.stopSessionAudioCapture()
+        startSessionMicrophone()
+    }
+
     /// Feeds the overlay's level bars (#1074) from the capture queue: the
     /// meter smooths each chunk there and posts to the main actor at most
     /// `MicLevelMeter.postsPerSecond` times a second of audio.
@@ -524,6 +564,7 @@ extension DictationSessionController {
         finalizationWatchdogTask = nil
         cancelConnectTimeout()
         cancelRealtimeReconnect()
+        quitHoldsStoppedSession = false
         isFinalizingStop = false
         isConnectingRealtimeSession = false
         // Every attempt starts with a fresh secure-input sample: a stale
@@ -546,6 +587,7 @@ extension DictationSessionController {
         requestedQuickCapture = false
         requestedDraftReview = nil
         sessionStartedAt = Date()
+        sessionStoppedAt = nil
         yieldVoiceMemoEngine()
         sessionCaptureTimeline = CaptureTimeline(
             pressedAt: dependencies.clock.now(), now: dependencies.clock.now)
@@ -605,8 +647,10 @@ extension DictationSessionController {
     func latchSessionAudio(outputMode: DictationOutputMode) {
         sessionStoresAudio = settings.dictationAudioEnabled
             && settings.dictationHistoryRetention.savesDictations
-        sessionHasStopSecondPass = settings.dictationBackendMode == .mistralAPI
+        let secondPassApplies = settings.dictationBackendMode == .mistralAPI
             && outputMode == .overlayBuffer
+        sessionHasStopSecondPass = secondPassApplies && settings.mistralStopSecondPassEnabled
+        sessionStopSecondPassTurnedOff = secondPassApplies && !settings.mistralStopSecondPassEnabled
         audio.sessionRecording.begin(enabled: sessionStoresAudio || sessionHasStopSecondPass)
     }
 
@@ -673,7 +717,8 @@ extension DictationSessionController {
             audio.healthMonitor.start(
                 microphone: audio.microphone,
                 callbacks: makeHealthMonitorCallbacks(),
-                clock: dependencies.clock
+                clock: dependencies.clock,
+                captureInputID: audio.captureDeviceID
             )
         }
     }
@@ -682,6 +727,7 @@ extension DictationSessionController {
         let chunkBuffer = audio.audioChunkBuffer
         let recording = audio.sessionRecording
         let mic = audio.microphone
+        let audio = audio
         let micLevel = micLevelFeed()
         return AudioCaptureHealthMonitor.Callbacks(
             refreshMicrophoneInputs: { [weak self] in
@@ -719,6 +765,7 @@ extension DictationSessionController {
                     recording.append(chunk)
                     micLevel(chunk)
                 }
+                audio.noteCaptureRestarted(on: preferredInputID)
             }
         )
     }
@@ -733,35 +780,48 @@ extension DictationSessionController {
 
             if !self.activeRealtimeClient.isConnected {
                 self.debugLog("socket already disconnected before final commit; finishing stop")
-                self.finishStoppedSession(promotePendingSegment: true)
+                self.finishStopOnClosedSocket()
                 return
             }
             let clock = self.dependencies.clock
             let startedAt = clock.now()
             self.realtimeFinalizationLastActivityAt = startedAt
             self.activeRealtimeClient.sendCommit(final: true)
-            while self.isFinalizingStop {
+            // When the final commit left for the server. Until the session is
+            // ready the commit and the audio before it wait in the client
+            // (a server that never sends `session.created` is reached only
+            // after the 3 s compatibility fallback, a rollover holds them
+            // until the retiring socket's `done`), and an idle close there
+            // drops the whole tail (#1456). Only the timeout bounds that wait.
+            var sentAt: Date?
+            // Cancelled when a closed socket hands the stop to a reconnect
+            // (`finishStopOnClosedSocket`): the run owns it from there.
+            while self.isFinalizingStop, !Task.isCancelled {
                 if !self.activeRealtimeClient.isConnected {
                     Log.backends.notice("stop finalization: the socket closed; finishing the stop")
-                    self.finishStoppedSession(promotePendingSegment: true)
+                    self.finishStopOnClosedSocket()
                     return
                 }
 
                 let now = clock.now()
                 let elapsed = now.timeIntervalSince(startedAt)
-                let lastActivity = self.realtimeFinalizationLastActivityAt ?? startedAt
+                if sentAt == nil, self.activeRealtimeClient.isSessionReady {
+                    sentAt = now
+                }
+                let lastActivity = max(self.realtimeFinalizationLastActivityAt ?? startedAt, sentAt ?? now)
                 let inactivity = now.timeIntervalSince(lastActivity)
 
-                if elapsed >= TimingConstants.stopFinalizationTimeout {
+                if elapsed >= self.stopFinalizationTimeout {
                     Log.backends.error(
-                        "stop finalization timed out after \(TimingConstants.stopFinalizationTimeout, privacy: .public) s; disconnecting with what arrived"
+                        "stop finalization timed out after \(self.stopFinalizationTimeout, privacy: .public) s; disconnecting with what arrived"
                     )
                     self.activeRealtimeClient.disconnect()
                     self.finishStoppedSession(promotePendingSegment: true)
                     return
                 }
 
-                if elapsed >= TimingConstants.finalizationMinimumOpen,
+                if !self.stopReplaysReconnectGap,
+                   let sentAt, now.timeIntervalSince(sentAt) >= TimingConstants.finalizationMinimumOpen,
                    inactivity >= TimingConstants.finalizationInactivityThreshold
                 {
                     Log.backends.notice(
@@ -1122,7 +1182,8 @@ extension DictationSessionController {
 
     func startStopFinalizationWatchdog() {
         finalizationWatchdogTask?.cancel()
-        let timeout: TimeInterval = TimingConstants.stopFinalizationTimeout + 2.0
+        let finalizationTimeout = stopFinalizationTimeout
+        let timeout: TimeInterval = finalizationTimeout + 2.0
 
         finalizationWatchdogTask = Task { [weak self, clock = dependencies.clock] in
             let startedAt = clock.now()
@@ -1131,9 +1192,25 @@ extension DictationSessionController {
                 guard let self else { return }
                 guard self.isFinalizingStop else { return }
 
+                // A stop during a reconnect waits for the run, which has no
+                // socket until it succeeds, for as long as a finalization may
+                // take; the run restarts this watchdog when it gets through.
+                if self.isReconnectingRealtimeSession {
+                    if clock.now().timeIntervalSince(startedAt) >= finalizationTimeout {
+                        self.finishStopWithoutTheReconnectGap(
+                            reason: "the reconnect did not reach the server within \(finalizationTimeout) s"
+                        )
+                        return
+                    }
+                    continue
+                }
+
                 if !self.activeRealtimeClient.isConnected {
                     self.debugLog("watchdog observed disconnected socket during finalization; finishing stop")
-                    self.finishStoppedSession(promotePendingSegment: true)
+                    self.finishStopOnClosedSocket()
+                    // A reconnect for audio the socket never sent stays
+                    // under this watchdog's bound.
+                    if self.isReconnectingRealtimeSession { continue }
                     return
                 }
 
@@ -1180,6 +1257,7 @@ extension DictationSessionController {
             displayBufferText: currentOverlayDisplayText(),
             commitBufferText: currentOverlayCommitText()
         )
+        postModChannelBand(.finishing)
     }
 
     func refreshOverlayBufferSession() {
@@ -1188,6 +1266,7 @@ extension DictationSessionController {
             displayBufferText: currentOverlayDisplayText(),
             commitBufferText: currentOverlayCommitText()
         )
+        postModChannelBand(isFinalizingStop ? .finishing : .listening)
     }
 }
 

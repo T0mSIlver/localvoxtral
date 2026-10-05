@@ -44,6 +44,15 @@ final class ClaudePluginVersionHistoryTests: XCTestCase {
             "1.34.0": "6afb5afc30792fcba29d859a13f840908323a08dfb6d7251b012fb2492bc9bef",
             "1.35.0": "a0fe6a9033eeb88a39b0f147e8b1d76b71869bd5d23f8df97e2800a79b7592ce",
             "1.36.0": "b21244ad4e0796ee18a3fee4a3e4d703e0186b4eddb06d11af97c23390f4595c",
+            "1.37.0": "0489dd80f8ad196ea2823c2f7666f1e00efa68bb05b4dbfd0a21a3ada54994bd",
+            "1.38.0": "0ee87e780398a89904c0820e086daf738e506e4c184acf497dcc7ef5342d4af5",
+            "1.39.0": "4c8b484abc92af843be6d550f3ac609e55f7bd0a160cc862f8feb0938a399ccb",
+            "1.40.0": "32375f414e2140f78b60043c7cb33e428b6b18c1c3bb5ef03d9c1cec640815e8",
+            "1.41.0": "467889297b25a14f521ad199ff0816abed8ab3d7bfb31d23ea6c25831630c56a",
+            "1.42.0": "7807e33485150d37202c37f0fc242cf3c0032184a97ac09f3a74cb3cefce86fb",
+            "1.43.0": "a357e95032fc9c05e206b4204cbfbc424e5669a20eff19ed1aa777fb5f07ddf8",
+            "1.44.0": "1493afd58ecde90a6bfe5e85f82eb44a6b38600c4f2e8b19fe6abb1e8b942ab7",
+            "1.45.0": "5826bf4d2b883b8146199c4c2b1723fa8b885fd745fadf685f3e5b7d4eb005f6",
         ],
     ]
 

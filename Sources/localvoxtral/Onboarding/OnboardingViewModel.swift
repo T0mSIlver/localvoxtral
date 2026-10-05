@@ -38,7 +38,25 @@ final class OnboardingViewModel {
     /// The key typed on the `.engine` page. Wizard-local until Continue: a
     /// half-typed key must not land in Settings, and nothing is persisted for a
     /// user who backs out.
-    var mistralAPIKeyDraft = ""
+    var mistralAPIKeyDraft = "" {
+        didSet {
+            // A verdict belongs to the key it checked (#1626).
+            guard mistralAPIKeyDraft != oldValue else { return }
+            mistralAPIKeyCheckGeneration += 1
+            mistralAPIKeyCheckState = .idle
+            mistralAPIKeySaveFailure = nil
+        }
+    }
+
+    /// Set when Continue could not save the key. The wizard stays on the
+    /// engine page with it shown, since a key that is not saved is gone at
+    /// the next launch (#1624).
+    private(set) var mistralAPIKeySaveFailure: String?
+
+    /// Bumped by every edit and every check, so only the latest check
+    /// publishes: an edit lets a new check start while an old one is still
+    /// out, even for the same key typed again.
+    @ObservationIgnored private var mistralAPIKeyCheckGeneration = 0
 
     /// Result of the `.engine` page's own "Check key" press. Advisory — a
     /// rejected key does not block Continue, because the check can be wrong
@@ -59,11 +77,6 @@ final class OnboardingViewModel {
     /// lazy-bootstrap invariant.
     private(set) var downloadsStarted = false
 
-    /// Polishing as it stood before this run's first Mistral choice, which
-    /// turns hosted polishing on. Picking Local afterwards and declining
-    /// polishing puts it back; otherwise every overlay commit would keep
-    /// sending text to Mistral.
-    @ObservationIgnored private var polishingBeforeMistralChoice: (mode: BackendMode, enabled: Bool)?
 
     let settings: SettingsStore
     let viewModel: DictationViewModel
@@ -115,7 +128,10 @@ final class OnboardingViewModel {
         // the key and switches both engines, so nothing needs downloading and
         // the driver must never be started.
         if page == .engine, engineChoice == .mistralAPI {
-            applyMistralEngineChoice()
+            guard applyMistralEngineChoice() else {
+                mistralAPIKeySaveFailure = SettingsStore.secretStoreWriteFailureSummary
+                return
+            }
         }
 
         let order = pageOrder
@@ -138,7 +154,20 @@ final class OnboardingViewModel {
     /// cancelled rather than left alone: a user who started the local download,
     /// went back, and switched to Mistral must not keep a download running for
     /// an engine nothing will use.
-    private func applyMistralEngineChoice() {
+    /// Returns false, changing nothing, when the key was not saved.
+    private func applyMistralEngineChoice() -> Bool {
+        // Polishing as it stood before the first Mistral choice, which turns
+        // hosted polishing on. Picking Local afterwards and declining
+        // polishing puts it back; otherwise every overlay commit would keep
+        // sending text to Mistral. Stored, so it survives a force-quit (#1761).
+        if settings.onboardingPolishingBeforeMistralChoice == nil {
+            settings.onboardingPolishingBeforeMistralChoice = SettingsStore.PolishingSnapshot(
+                mode: settings.polishingBackendMode,
+                enabled: settings.llmPolishingEnabled
+            )
+        }
+        guard viewModel.engines.applyMistralQuickSetup(apiKey: mistralAPIKeyDraft) else { return false }
+        mistralAPIKeySaveFailure = nil
         driver.cancel()
         // A cancelled download is no download: clearing the flag re-offers
         // "Begin download" if the user comes back and picks Local again, and
@@ -147,10 +176,7 @@ final class OnboardingViewModel {
         // → Finish reads "runs on this Mac" while both engines are still on
         // Mistral (GLM review, 2026-09-16).
         downloadsStarted = false
-        if polishingBeforeMistralChoice == nil {
-            polishingBeforeMistralChoice = (settings.polishingBackendMode, settings.llmPolishingEnabled)
-        }
-        viewModel.engines.applyMistralQuickSetup(apiKey: mistralAPIKeyDraft)
+        return true
     }
 
     /// The `.engine` page's "Check key" button. Advisory only — see
@@ -159,10 +185,13 @@ final class OnboardingViewModel {
         guard !mistralAPIKeyCheckState.isChecking else { return }
         let apiKey = mistralAPIKeyDraft
         guard !apiKey.trimmed.isEmpty else { return }
+        mistralAPIKeyCheckGeneration += 1
+        let generation = mistralAPIKeyCheckGeneration
         mistralAPIKeyCheckState = .checking
         mistralAPIKeyCheckTask = Task { @MainActor [weak self] in
             guard let self else { return }
             let verification = await self.viewModel.engines.verifyMistralAPIKey(apiKey)
+            guard self.mistralAPIKeyCheckGeneration == generation else { return }
             self.mistralAPIKeyCheckState = .finished(verification)
         }
     }
@@ -184,9 +213,17 @@ final class OnboardingViewModel {
         if polishingConsent {
             viewModel.engines.applyPolishingBackendModeChange(.managedLocal)
             settings.llmPolishingEnabled = true
-        } else if let previous = polishingBeforeMistralChoice {
-            viewModel.engines.applyPolishingBackendModeChange(previous.mode)
-            settings.llmPolishingEnabled = previous.enabled
+        } else {
+            if let previous = settings.onboardingPolishingBeforeMistralChoice {
+                viewModel.engines.applyPolishingBackendModeChange(previous.mode)
+                settings.llmPolishingEnabled = previous.enabled
+            }
+            // An earlier run force-quit after consenting left polishing on,
+            // and the warmup when the wizard closes would download the model
+            // declined here (#1625).
+            if settings.polishingBackendMode == .managedLocal {
+                settings.llmPolishingEnabled = false
+            }
         }
         driver.start(dictation: true, polishing: polishingConsent)
     }
@@ -228,6 +265,7 @@ final class OnboardingViewModel {
         if !settings.onboardingCompleted {
             settings.onboardingCompleted = true
         }
+        settings.onboardingPolishingBeforeMistralChoice = nil
     }
 
     // MARK: - Finish page

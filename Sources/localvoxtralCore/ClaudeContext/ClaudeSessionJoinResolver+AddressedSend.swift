@@ -52,7 +52,9 @@ extension ClaudeSessionJoinResolver {
     /// The local herdr arm's checks, for a pane that need not be focused:
     /// the one live local herdr is the session's, the registry maps the pane
     /// to this session alone, and herdr lists the session's pid in the
-    /// pane's foreground.
+    /// pane's foreground. The pane's mapping is read again after every
+    /// foreground query: `/clear` starts another session in the same process
+    /// and pane, and the user named this one.
     private func addressedHerdrRoute(for session: ClaudeSessionSnapshot) async -> HerdrPanePromptRoute? {
         guard let process = session.process,
               let paneID = process.herdrPaneID,
@@ -67,9 +69,12 @@ extension ClaudeSessionJoinResolver {
             Log.claudeContext.notice("send to session: not the one live local herdr")
             return nil
         }
-        guard case .resolved(let owner) = registry.resolve(herdrPaneID: paneID),
-              owner.sessionID == session.sessionID
-        else {
+        let sessionID = session.sessionID
+        let paneNamesSession = { @MainActor [registry] in
+            guard case .resolved(let owner) = registry.resolve(herdrPaneID: paneID) else { return false }
+            return owner.sessionID == sessionID
+        }
+        guard paneNamesSession() else {
             Log.claudeContext.notice("send to session: the pane does not map to that session alone")
             return nil
         }
@@ -79,13 +84,21 @@ extension ClaudeSessionJoinResolver {
             Log.claudeContext.notice("send to session: the session's agent is not foreground in its pane")
             return nil
         }
+        guard paneNamesSession() else {
+            Log.claudeContext.notice("send to session: another session took the pane")
+            return nil
+        }
         let claudePID = process.claudePID
         return HerdrPanePromptRoute(
             binding: ClaudeHerdrPaneBinding(paneID: paneID, socketPath: socketPath),
             writer: writer,
-            agentIsForeground: {
-                await panes.paneForegroundInfo(socketPath: socketPath, paneID: paneID)?
+            agentIsForeground: { @MainActor in
+                guard await panes.paneForegroundInfo(socketPath: socketPath, paneID: paneID)?
                     .foregroundPIDs?.contains(claudePID) == true
+                else { return false }
+                // Read after the query, so a session that took the pane
+                // while it ran is seen.
+                return paneNamesSession()
             },
             // Keys go to the focused app, never this pane.
             keysReachThePane: { false }

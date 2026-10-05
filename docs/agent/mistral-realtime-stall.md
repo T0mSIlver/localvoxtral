@@ -1,6 +1,6 @@
 # Mistral realtime stalls: open bug hunt
 
-Status on 2026-09-19: symptom A (the one the owner hits) is not reproduced and has no request ID yet. Symptom B is reproduced on demand and ready to report to Mistral once confirmed. Owner rulings: no second parallel connection (it doubles the bill for Mistral's bug), and no silence-padding workaround (it may move the trigger instead of removing it).
+Status on 2026-09-19 (D added 2026-10-03): symptom A (the one the owner hits) is not reproduced and has no request ID yet. Symptom B is reproduced on demand and ready to report to Mistral once confirmed. Owner rulings: no second parallel connection (it doubles the bill for Mistral's bug), and no silence-padding workaround (it may move the trigger instead of removing it).
 
 ## Symptoms
 
@@ -9,6 +9,8 @@ Status on 2026-09-19: symptom A (the one the owner hits) is not reproduced and h
 **B. No text for the first ~31 s, then that speech is dropped.** Reproduced with the official `mistralai` Python SDK and with our client. See the report below.
 
 **C. Final transcript ends a few seconds before stop (unconfirmed).** 2026-09-19 18:02 local, request `ws-01a0ba66-7883-715a-8f40-ef655f99cf44`: the last delta ("and") came 2.7 s before stop, and `transcription.done` (0.29 s after `input_audio.end`) ended on the same word. The polish model then appended "...". Audio went out until the stop, but that build did not log its loudness, so it is unknown whether the owner was still talking. In clean tests Mistral emits each word within ~0.1 s and `done` includes the last word before the end, so loud audio in that gap means Mistral dropped speech.
+
+**D. A stall of a few seconds drops the speech sent during it, then text resumes (#1648).** 2026-10-03, field log with the raw delta log on. Request `ws-01a103f0-af0b-718d-a933-33a20a3f5c5c`: no server event from 22:46:08.05 to 22:46:15.55 UTC (7.5 s) while audio at −33 dBFS went out, then deltas resumed mid-sentence. Seven words spoken in that stretch are in neither the deltas nor `transcription.done`. Request `ws-01a103ed-ff74-7257-bd2e-f73afa0ba30d`: the same for the first 6.3 s, losing the opening sentence, which makes it a short B. Two other stalls that evening (15.7 s at −38 dBFS, 5.7 s at −32 dBFS) lost nothing the second pass could find. The deltas of all 21 sessions concatenate exactly to `done`, so the loss is Mistral's, not the client's. The overlay shows the hole until the stop's second pass (#317) re-transcribes the recording and fills it, which is why the polished text has words the overlay never showed.
 
 ## What the app logs now (notice level, kept by macOS)
 
@@ -35,6 +37,7 @@ To find a failed dictation, look for a `connect` without a later `transcription.
 1. When the owner hits A or C on a build with this logging, read the lines above for that request ID.
 2. Try to reproduce A: soak sessions of 2 minutes or more (the owner's real dictation length), and the owner's own recordings if available.
 3. Confirm B again (it was clean twice at 14:56 UTC and stalled 7 times after), then send the report to Mistral.
+4. D is #1648: fill the hole before the stop. To tell whether a stall lost speech, compare that dictation's deltas (raw delta log) with its second-pass text, which the diagnostic record keeps as `rawTranscript`.
 
 ---
 

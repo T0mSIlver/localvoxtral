@@ -10,7 +10,7 @@
 # /v1/draft/prompt. Then it runs the agent and posts its output to /v1/draft.
 #
 # A stub curl plays the Mac, a stub gh lists two issues, and stub `claude`
-# and `vibe` record their argv and environment and wait for a release file
+# and `vibe` record their argv, stdin and environment and wait for a release file
 # before answering, so "one draft at a time" is an ordering, not a stopwatch.
 #
 # Needs git and python3 (the Vibe shim's compactor), no network:
@@ -82,6 +82,15 @@ echo 'Linked plain README.' >"$LINKED/README"
 } >"$LINKED/CLAUDE.md"
 git -C "$LINKED" add -A
 git -C "$LINKED" commit -q -m init
+
+# Two directories outside any repository whose names differ only by a
+# trailing newline, each with its own README (#1727).
+NOTES="$TMP_DIR/notes"
+NOTES_NL="$NOTES
+"
+mkdir -p "$NOTES" "$NOTES_NL"
+echo 'SIBLING-SENTINEL' >"$NOTES/README.md"
+echo 'NEWLINE-SENTINEL' >"$NOTES_NL/README.md"
 
 STUB="$TMP_DIR/stub"
 AGENTS="$TMP_DIR/agents"
@@ -159,6 +168,7 @@ for agent in claude vibe; do
 env >"$TMP_DIR/$agent-env"
 pwd -P >"$TMP_DIR/$agent-cwd"
 for arg in "\$@"; do printf '%s\n' "\$arg"; done >"$TMP_DIR/$agent-argv"
+cat >"$TMP_DIR/$agent-stdin"
 : >"$TMP_DIR/$agent-started"
 i=0
 while [ ! -e "$TMP_DIR/release" ] && [ "\$i" -lt 100 ]; do sleep 0.1; i=\$((i + 1)); done
@@ -184,11 +194,11 @@ reset_state() {
   touch "$TMP_DIR/release"
   wait_gone "$LOCK" || fail "a draft from the previous case still holds the lock"
   rm -rf "$TMP_DIR/run" "$TMP_DIR"/claude-* "$TMP_DIR"/vibe-env "$TMP_DIR"/vibe-cwd \
-    "$TMP_DIR"/vibe-argv "$TMP_DIR"/vibe-started "$TMP_DIR/release" "$TMP_DIR"/gh-* \
+    "$TMP_DIR"/vibe-argv "$TMP_DIR"/vibe-stdin "$TMP_DIR"/vibe-started "$TMP_DIR/release" "$TMP_DIR"/gh-* \
     "$TMP_DIR"/readme-* "$TMP_DIR"/prompt* "$TMP_DIR"/answer-* "$TMP_DIR/asks" "$TMP_DIR"/words* \
     "$TMP_DIR"/context-* "$TMP_DIR"/check-*
   mkdir -p "$TMP_DIR/run"
-  printf 'The owner of quill dictated this idea.\n<capture>\nitalic kerning\n</capture>' >"$TMP_DIR/prompt"
+  printf 'The owner of quill dictated this idea.\n<capture>\nitalic kerning CAPTURE-SENTINEL\n</capture>' >"$TMP_DIR/prompt"
 }
 
 run_hook() {
@@ -254,6 +264,17 @@ for agent in claude vibe; do
   [ ! -e "$TMP_DIR/readme-body" ] || fail "$label: a second README within the day"
   pass "$label: README opening posted once a day"
 
+  # 1b. Command substitution strips a trailing newline from the directory's
+  #     name, which named the sibling directory, whose README was posted
+  #     under this session (#1727). A name holding a newline is refused.
+  reset_state
+  printf 'X-Lvx-Readme: wanted\r\n' >"$TMP_DIR/asks"
+  run_hook "$agent" "$NOTES_NL"
+  sleep 0.5
+  ! grep -q SIBLING-SENTINEL "$TMP_DIR/readme-body" 2>/dev/null \
+    || fail "$label: posted the README of the directory beside the project"
+  pass "$label: a project name ending in a newline never posts its sibling's README"
+
   # 2. The draft ask: issues listed, prompt fetched, agent run in the
   #    repository root on that prompt, output posted with its exit status.
   reset_state
@@ -268,13 +289,17 @@ for agent in claude vibe; do
     || fail "$label: posted issues '$(cat "$TMP_DIR/prompt-body")'"
   check_request "$label" "$agent" "$TMP_DIR/prompt-header"
   grep -qx "X-Lvx-Draft-Id: $DRAFT_ID" "$TMP_DIR/prompt-header" || fail "$label: the prompt request names no draft"
+  grep -qx "X-Lvx-Issues-Repository: me/quill" "$TMP_DIR/prompt-header" \
+    || fail "$label: the prompt request does not name the repository its issues come from"
   [ "$(cat "$TMP_DIR/$agent-cwd")" = "$TMP_DIR/repo" ] || fail "$label: the run's cwd is not the repository root"
-  grep -qx '<capture>' "$TMP_DIR/$agent-argv" || fail "$label: the run did not get the Mac's prompt"
+  grep -qx '<capture>' "$TMP_DIR/$agent-stdin" || fail "$label: the run did not get the Mac's prompt on stdin"
+  # Other users on the host read argv from ps (#1494).
+  ! grep -q CAPTURE-SENTINEL "$TMP_DIR/$agent-argv" || fail "$label: the capture is in the run's argv"
   if [ "$agent" = claude ]; then
     grep -qx dontAsk "$TMP_DIR/claude-argv" && grep -qx 'Read(./\*\*)' "$TMP_DIR/claude-argv" \
       || fail "$label: reads are not confined to the checkout"
   else
-    grep -qx 'Sources/Quillmark.swift' "$TMP_DIR/vibe-argv" || fail "$label: the prompt lists no files"
+    grep -qx 'Sources/Quillmark.swift' "$TMP_DIR/vibe-stdin" || fail "$label: the prompt lists no files"
     run_home="$(sed -n 's/^VIBE_HOME=//p' "$TMP_DIR/vibe-env")"
     [ "$run_home" = "$TMP_DIR/.vibe/localvoxtral/remote/vibe-home/draft-$DRAFT_ID" ] \
       || fail "$label: the run's Vibe home is $run_home"
@@ -282,7 +307,7 @@ for agent in claude vibe; do
   extra="$(grep -v -e '^HOME=' -e '^PATH=' -e '^LANG=' -e '^USER=' -e '^LOGNAME=' -e '^PWD=' -e '^SHLVL=' -e '^_=' \
     -e '^OLDPWD=' -e '^VIBE_HOME=' "$TMP_DIR/$agent-env" || true)"
   [ -z "$extra" ] || fail "$label: the run inherited: $extra"
-  ! grep -q "$(token_of "$agent")" "$TMP_DIR/$agent-env" "$TMP_DIR/$agent-argv" || fail "$label: the token reached the run"
+  ! grep -q "$(token_of "$agent")" "$TMP_DIR/$agent-env" "$TMP_DIR/$agent-argv" "$TMP_DIR/$agent-stdin" || fail "$label: the token reached the run"
 
   # 3. One draft at a time: a second ask while the first runs starts nothing.
   rm -f "$TMP_DIR/$agent-started"
@@ -393,7 +418,7 @@ for agent in claude vibe; do
   [ "$(wc -c <"$bundle" | tr -d ' ')" -le 98304 ] || fail "$label: the bundle is over 96 KiB"
   [ ! -e "$TMP_DIR/prompt-body" ] || fail "$label: asked for the old prompt too"
   [ "$(tr '\n' ' ' <"$TMP_DIR/check-log")" = '202 200 ' ] || fail "$label: polled '$(cat "$TMP_DIR/check-log")'"
-  grep -qx '<capture>' "$TMP_DIR/$agent-argv" || fail "$label: the run did not get the check's prompt"
+  grep -qx '<capture>' "$TMP_DIR/$agent-stdin" || fail "$label: the run did not get the check's prompt"
   touch "$TMP_DIR/release"
   wait_for "$TMP_DIR/answer-body" || fail "$label: the check's output never reached /v1/draft"
   wait_gone "$LOCK" || fail "$label: the lock outlived the check"

@@ -16,14 +16,14 @@ package final class StubOpencodeFileSystem: OpencodePluginFileSystem, @unchecked
     package func readState() throws -> OpencodePluginState { state }
     package func createPluginsDirectory(permissions: UInt16) throws { createdPluginsDir = true }
     package func createConfigDirectory(permissions: UInt16) throws { createdConfigDir = true }
-    package func atomicWritePlugin(_ data: Data, permissions: UInt16) throws {
+    package func atomicWritePlugin(_ data: Data, permissions: UInt16, replacing _: Data?) throws {
         writtenPlugin = (data, permissions)
     }
-    package func atomicWriteTUI(_ data: Data, permissions: UInt16) throws {
+    package func atomicWriteTUI(_ data: Data, permissions: UInt16, replacing _: Data?) throws {
         writtenTUI = (data, permissions)
     }
     package func deletePlugin() throws { deletedPlugin = true }
-    package func deleteTUI() throws { deletedTUI = true }
+    package func deleteTUI(replacing _: Data) throws { deletedTUI = true }
 }
 
 /// Fixture-driven test double for the statusline file system.

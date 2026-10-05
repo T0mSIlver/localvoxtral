@@ -2,6 +2,7 @@ import ClaudeContextWire
 import ClaudeHookPublisherCore
 import Foundation
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtralCore
 
 #if canImport(Darwin) || canImport(Glibc)
@@ -51,9 +52,15 @@ private final class Flag: @unchecked Sendable {
 private final class ManualSeconds: @unchecked Sendable {
     private let lock = NSLock()
     private var value: TimeInterval = 0
+    /// Called on every read, outside the lock.
+    var onRead: (@Sendable () -> Void)?
 
     var now: TimeInterval {
-        get { lock.withLock { value } }
+        get {
+            let read = lock.withLock { value }
+            onRead?()
+            return read
+        }
         set { lock.withLock { value = newValue } }
     }
 }
@@ -106,12 +113,21 @@ final class ClaudeModChannelHubTests: XCTestCase {
     }
 
     func testTheMatchingReplyAnswersTheSend() async {
-        let hub = ClaudeModChannelHub(sleep: { _ in await Task.yield() }, makeID: { "id-1" })
+        // The timeout never fires before the reply, so only the reply can
+        // answer. A reply that never comes fires it after the cap, so the
+        // test fails instead of hanging.
+        let gate = GateSleep()
+        let hub = ClaudeModChannelHub(sleep: gate.sleep, makeID: { "id-1" })
         let written = Received()
         written.onLine = { hub.deliver(.init(sessionID: "sess-1", id: "id-1", ok: false, reason: "dialog")) }
         _ = hub.attach(sessionID: "sess-1", channel: channel(written))
+        let answered = BoundedWait()
+        let watchdog = Task { if await !answered.value(failAfter: 10) { gate.fire() } }
 
         let reply = await hub.send(.init(kind: .ping), to: "sess-1", timeout: .seconds(60))
+        answered.resolve()
+        gate.fire()
+        await watchdog.value
 
         XCTAssertEqual(reply, .init(sessionID: "sess-1", id: "id-1", ok: false, reason: "dialog"))
         let sent = try? XCTUnwrap(written.all.first)
@@ -307,6 +323,36 @@ final class ClaudeModChannelSocketTests: XCTestCase {
         XCTAssertEqual(ended, ClaudeModAttachClient.Outcome.closed)
     }
 
+    /// The mod's `bye` on `session.end` (#1646): the app answers it down the
+    /// channel, closes it, and the session is gone from the registry.
+    func testAByeClosesTheChannelAndEndsTheSession() async throws {
+        try announce("sess-1")
+        let attached = expectation(description: "attached")
+        hub.debugConfigureAttachHook { if $0 { attached.fulfill() } }
+        let output = Received()
+        let attach = client("sess-1", output: output)
+        let outcome = Task.detached { attach.attachOnce() }
+        await fulfillment(of: [attached], timeout: 5)
+        let detached = expectation(description: "detached")
+        hub.debugConfigureAttachHook { if !$0 { detached.fulfill() } }
+
+        let bye = try XCTUnwrap(ClaudeModChannelWire.encodeLine(ClaudeModChannelWire.Bye(sessionID: "sess-1")))
+        ClaudeModAttachClient.sendReply(bye, to: socketPath, publisher: UnixSocketPublisher(timeout: 2))
+
+        let ended = await outcome.value
+        await fulfillment(of: [detached], timeout: 5)
+        XCTAssertEqual(ended, ClaudeModAttachClient.Outcome.closed)
+        let told = try XCTUnwrap(output.all.last)
+        XCTAssertEqual(ClaudeModChannelWire.decode(ClaudeModChannelWire.Message.self, from: told.dropLast())?.kind, .bye)
+        XCTAssertNil(registry.snapshot(sessionID: "sess-1"))
+    }
+
+    func testAByeForASessionWithNoChannelEndsNothing() throws {
+        try announce("sess-1")
+        XCTAssertFalse(hub.bye(sessionID: "sess-1"))
+        XCTAssertNotNil(registry.snapshot(sessionID: "sess-1"))
+    }
+
     /// An app that took the attach and never answered it: the attach gives
     /// up at its deadline, so `run()` retries, instead of waiting for as
     /// long as Claude Code lives.
@@ -322,13 +368,18 @@ final class ClaudeModChannelSocketTests: XCTestCase {
         let answered = expectation(description: "the attach gave up")
         let alive = Flag(true)
         let clock = ManualSeconds()
+        // The client's first read sets its reply deadline (#1669): moving
+        // the clock before it would only move the deadline.
+        let deadlineRead = expectation(description: "the client read its reply deadline")
+        deadlineRead.assertForOverFulfill = false
+        clock.onRead = { deadlineRead.fulfill() }
         let attach = client("sess-1", output: Received(), parentAlive: alive, clock: clock)
         let outcome = Task.detached {
             let outcome = attach.attachOnce()
             answered.fulfill()
             return outcome
         }
-        await fulfillment(of: [entered], timeout: 5)
+        await fulfillment(of: [entered, deadlineRead], timeout: 5)
 
         clock.now = 6
         await fulfillment(of: [answered], timeout: 5)

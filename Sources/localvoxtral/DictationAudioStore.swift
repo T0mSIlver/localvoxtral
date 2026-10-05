@@ -15,11 +15,6 @@ final class DictationAudioStore: Sendable {
         self.directoryURL = directoryURL
     }
 
-    static func defaultDirectoryURL() -> URL {
-        return LocalvoxtralDataDirectory.url()
-            .appendingPathComponent("dictation-audio", isDirectory: true)
-    }
-
     func fileURL(for id: UUID) -> URL {
         directoryURL.appendingPathComponent("\(id.uuidString).wav")
     }
