@@ -138,7 +138,18 @@ cleanup() {
     fi
   fi
 }
-trap cleanup EXIT INT TERM HUP
+# A signal ends the run after cleanup. Without the exit, bash resumes the
+# script at the next command once the trap returns (#1720). Cleanup runs
+# once: a second signal during it is ignored.
+cleanup_once() {
+  trap '' INT TERM HUP
+  trap - EXIT
+  cleanup
+}
+trap cleanup_once EXIT
+trap 'cleanup_once; exit 130' INT
+trap 'cleanup_once; exit 143' TERM
+trap 'cleanup_once; exit 129' HUP
 
 # --- OWNER RULE: audible takeover warning BEFORE any focus-stealing action ---
 # Everything below drives the GUI session (appearance switch, app launch,
@@ -262,14 +273,18 @@ dismiss_menu() {
 }
 
 # --- 1. menu ("popover") shot -----------------------------------------------
+# The checkout holds the tracked popover.png, and the workflow uploads every
+# PNG in assets/, so a missed shot must not leave the old one there (#1723).
 echo "Capturing $ASSETS_DIR/popover.png"
+rm -f "$ASSETS_DIR/popover.png"
 open_status_menu
 if MENU_ID="$(wait_for_window "$APP_PID" 100 5)"; then
   screencapture -o -x -l "$MENU_ID" "$ASSETS_DIR/popover.png"
   dismiss_menu
 else
   dismiss_menu
-  echo "WARNING: could not find the open menu window; skipped popover.png" >&2
+  echo "Could not find the open menu window for popover.png." >&2
+  exit 1
 fi
 
 # --- 2. settings tabs ---------------------------------------------------------

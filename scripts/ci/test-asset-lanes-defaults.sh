@@ -39,9 +39,11 @@ STUB
 # Every Swift helper: the permission preflight passes, the window-id helper
 # finds window 77, the AX probe presses its row, `swift -` reports the main
 # display, and the gesture helper taps.
+# STUB_NO_MENU_WINDOW: the window-id helper finds no open menu (layer 100).
 cat >"$BIN/swift" <<'STUB'
 #!/bin/sh
 if [ "$1" = - ]; then cat >/dev/null; echo "0 0 1920 1080"; exit 0; fi
+[ -n "${STUB_NO_MENU_WINDOW:-}" ] && [ "${3:-}" = 100 ] && exit 1
 echo 77
 STUB
 cat >"$BIN/pgrep" <<'STUB'
@@ -94,6 +96,12 @@ case "$1" in
       cat "$store"
     fi ;;
   write)
+    # STUB_TERM_ON_FIRST_WRITE: the first write sends SIGTERM to the script.
+    if [ -n "${STUB_TERM_ON_FIRST_WRITE:-}" ] && [ ! -e "$EVENTS.term" ]; then
+      : >"$EVENTS.term"
+      echo "TERM" >>"$EVENTS"
+      kill -TERM "$PPID"
+    fi
     key="$3"; shift 3
     for value; do :; done
     touch "$store"
@@ -123,7 +131,7 @@ OWNER_GOLDEN="$WORK/owner-golden"
 # A fresh Mac: the owner's app running, the owner's domain set to `$1` for
 # the polishing backend, and a repo checkout with an assets/ folder.
 fresh_mac() {
-  rm -rf "$DOMAINS" "$WORK/repo" "$WORK/home" "$WORK/tmp"
+  rm -rf "$DOMAINS" "$WORK/repo" "$WORK/home" "$WORK/tmp" "$EVENTS.term"
   mkdir -p "$DOMAINS" "$WORK/repo/assets" "$WORK/repo/dist/localvoxtral.app" "$WORK/home" "$WORK/tmp"
   : >"$EVENTS"
   echo 4242 >"$RUNNING"
@@ -210,5 +218,34 @@ status="$(run_lane record-demo.sh DEMO_TERMINAL_AGENT=shell STUB_READ_ERROR="Cou
 grep -q "Could not copy $OWNER defaults into $HARNESS" "$WORK/out" || fail "record-demo did not stop at the copy"
 grep -q "^open .*dist/localvoxtral.app" "$EVENTS" && fail "record-demo launched the app without the owner's settings"
 pass "record-demo stops when the owner's domain cannot be read"
+
+# 5. A signal ends the run after cleanup. The TERM comes from the first
+#    defaults write, before the launch; the script must exit 143 and touch
+#    neither the suite nor the app again (#1720).
+assert_ends_on_signal() {
+  local after
+  [[ "$2" == 143 ]] || fail "$1 exited $2 after SIGTERM, expected 143"
+  after="$(sed -n '/^TERM$/,$p' "$EVENTS" | grep -E "^(defaults (write|import)|open) " || true)"
+  [[ -z "$after" ]] || fail "$1 carried on after SIGTERM: $after"
+  [[ "$(grep -c "Owner defaults unchanged" "$WORK/out")" == 1 ]] || fail "$1 did not clean up exactly once"
+  [[ ! -e "$DOMAINS/$HARNESS" ]] || fail "$1 left the harness suite behind after SIGTERM"
+}
+fresh_mac managed_local
+status="$(run_lane capture-readme-assets.sh STUB_TERM_ON_FIRST_WRITE=1)"
+assert_ends_on_signal capture-readme-assets "$status"
+pass "capture-readme-assets stops after cleanup on SIGTERM"
+fresh_mac external_url
+status="$(run_lane record-demo.sh DEMO_TERMINAL_AGENT=shell DEMO_POLISH_READY_SECONDS=0 STUB_TERM_ON_FIRST_WRITE=1)"
+assert_ends_on_signal record-demo "$status"
+pass "record-demo stops after cleanup on SIGTERM"
+
+# 6. A missed popover shot fails the run and leaves no popover.png, so the
+#    workflow cannot upload the checkout's old one as new (#1723).
+fresh_mac managed_local
+echo old >"$WORK/repo/assets/popover.png"
+status="$(run_lane capture-readme-assets.sh STUB_NO_MENU_WINDOW=1)"
+[[ "$status" != 0 ]] || fail "capture-readme-assets succeeded without a popover shot"
+[[ ! -e "$WORK/repo/assets/popover.png" ]] || fail "capture-readme-assets left the old popover.png in assets/"
+pass "capture-readme-assets fails and leaves no popover.png when the popover shot fails"
 
 echo "asset lanes defaults tests passed"

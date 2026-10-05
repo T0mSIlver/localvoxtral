@@ -439,7 +439,18 @@ cleanup() {
     fi
   fi
 }
-trap cleanup EXIT INT TERM HUP
+# A signal ends the run after cleanup. Without the exit, bash resumes the
+# script at the next command once the trap returns (#1720). Cleanup runs
+# once: a second signal during it is ignored.
+cleanup_once() {
+  trap '' INT TERM HUP
+  trap - EXIT
+  cleanup
+}
+trap cleanup_once EXIT
+trap 'cleanup_once; exit 130' INT
+trap 'cleanup_once; exit 143' TERM
+trap 'cleanup_once; exit 129' HUP
 
 swift "$PREFLIGHT" || exit 1
 
