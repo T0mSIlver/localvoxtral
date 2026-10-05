@@ -336,9 +336,9 @@ final class AddressedSendWiringTests: XCTestCase {
     }
 
     func testASessionWithNoRouteGetsNothingAndSaysSo() async {
-        var desktop = session("pay", cwd: "/r/payments")
-        desktop.process?.desktopSessionID = "local_x"
-        let harness = makeHarness(text: "Run the tests, send that to payments.", sessions: [desktop])
+        var cmux = session("pay", cwd: "/r/payments")
+        cmux.process?.cmuxSurfaceID = "surface-1"
+        let harness = makeHarness(text: "Run the tests, send that to payments.", sessions: [cmux])
 
         await harness.stop()
 
@@ -351,9 +351,9 @@ final class AddressedSendWiringTests: XCTestCase {
 
     /// The same with History off: the text goes on the clipboard (#1546).
     func testASessionWithNoRouteWithHistoryOffCopiesTheText() async {
-        var desktop = session("pay", cwd: "/r/payments")
-        desktop.process?.desktopSessionID = "local_x"
-        let harness = makeHarness(text: "Run the tests, send that to payments.", sessions: [desktop])
+        var cmux = session("pay", cwd: "/r/payments")
+        cmux.process?.cmuxSurfaceID = "surface-1"
+        let harness = makeHarness(text: "Run the tests, send that to payments.", sessions: [cmux])
         harness.viewModel.settings.dictationHistoryRetention = .off
         harness.viewModel.settings.autoCopyEnabled = false
         let copied = harness.viewModel.recordPasteboardWrites()
@@ -835,6 +835,68 @@ final class AddressedSendWiringTests: XCTestCase {
         XCTAssertEqual(harness.viewModel.session.lastOverlayCommitLanding, newer)
     }
 
+    // MARK: - Claude Desktop (#1825)
+
+    /// Desktop's link brings the session forward and the view reads back as
+    /// it, by Desktop's own id; only then is the text typed into Desktop and
+    /// Return pressed there. An ssh-host session's view is on this Mac too.
+    func testADesktopSessionGetsTheTextAndReturnInDesktop() async {
+        for origin in [local, ClaudeTransportOrigin.remote(channel: "host-a")] {
+            let harness = makeHarness(
+                text: "Run the tests, send that to payments.",
+                sessions: [desktopSession("pay", origin: origin), session("web", cwd: "/r/web")]
+            )
+            let opened = useDesktop(harness, shows: { _ in "pay" })
+
+            await harness.stop()
+
+            XCTAssertEqual(opened.value, [Self.payLink], "\(origin)")
+            XCTAssertEqual(harness.inserted.value.map(\.text), ["Run the tests"], "\(origin)")
+            XCTAssertEqual(harness.inserted.value.map(\.pid), [Self.namedTerminalPID], "typed into Desktop, \(origin)")
+            XCTAssertEqual(harness.returns.value, [Self.namedTerminalPID], "\(origin)")
+            XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [true], "\(origin)")
+            XCTAssertEqual(harness.viewModel.statusText, "Ready", "\(origin)")
+        }
+    }
+
+    /// The link opened, but Desktop's view never showed the named session:
+    /// nothing is typed and the text stays in History.
+    func testADesktopViewShowingAnotherSessionGetsNoKey() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [desktopSession("pay", origin: local)]
+        )
+        let opened = useDesktop(harness, shows: { _ in "web" })
+
+        await harness.stop()
+
+        XCTAssertEqual(opened.value, [Self.payLink])
+        XCTAssertEqual(harness.inserted.value.count, 0)
+        XCTAssertEqual(harness.returns.value, [])
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false])
+        XCTAssertEqual(harness.viewModel.statusText, DictationSessionController.AddressedSendStatus.notSent)
+    }
+
+    /// The view moved to another session while the text was typed: no
+    /// Return, and the popover says the text was not sent.
+    func testADesktopViewThatChangedAfterTheTypingGetsNoReturn() async {
+        let harness = makeHarness(
+            text: "Run the tests, send that to payments.",
+            sessions: [desktopSession("pay", origin: local)]
+        )
+        let inserted = harness.inserted
+        _ = useDesktop(harness, shows: { _ in inserted.value.isEmpty ? "pay" : "web" })
+
+        await harness.stop()
+
+        XCTAssertEqual(harness.inserted.value.map(\.text), ["Run the tests"])
+        XCTAssertEqual(harness.returns.value, [], "no Return into a view that is not the session's")
+        XCTAssertEqual(
+            harness.viewModel.statusText,
+            DictationSessionController.AddressedSendStatus.typedNotSubmitted
+        )
+    }
+
     // MARK: - Harness
 
     private struct Harness {
@@ -972,6 +1034,57 @@ final class AddressedSendWiringTests: XCTestCase {
             herdr.stop()
         }
         return (herdr, held, release)
+    }
+
+    private static let payDesktopID = "local_6d880b94-4414-4764-a024-c95df1af4456"
+    private static let payLink = URL(string: "claude://code/continue?session=\(payDesktopID)")!
+
+    /// A Claude Desktop Code-tab session: no tty, Desktop's view id from its
+    /// hooks, locally or through an enrolled host's environment.
+    private func desktopSession(_ id: String, origin: ClaudeTransportOrigin) -> ClaudeSessionSnapshot {
+        var snapshot = ClaudeSessionSnapshot(sessionID: id, origin: origin, firstSeen: Date(timeIntervalSince1970: 0))
+        snapshot.workspace = ClaudeWorkspaceReference.make(rawCwd: "/r/payments", origin: origin)
+        if origin.isLocalAuthenticated {
+            snapshot.process = ClaudeHookProcessInfo(
+                hookPID: 1, claudePID: Self.agentPID, desktopSessionID: Self.payDesktopID
+            )
+        } else {
+            snapshot.remoteEnvironment = ClaudeRemoteSessionEnvironment(desktopSessionID: Self.payDesktopID)
+        }
+        return snapshot
+    }
+
+    /// Puts the real Desktop focuser behind the navigator, Desktop being the
+    /// frontmost app once its link is opened; returns the links opened.
+    /// `shows` answers the join's
+    /// read of Desktop's focused view, as the registry session id it names.
+    private func useDesktop(
+        _ harness: Harness, shows: @escaping @MainActor (pid_t) -> String?
+    ) -> Box<[URL]> {
+        let opened = Box<[URL]>([])
+        let frontmost = harness.frontmost
+        let live = harness.live
+        let foreground = harness.foreground
+        harness.viewModel.dependencies.bundleIdentifier = { _ in ClaudeDesktopAllowlist.bundleID }
+        let focuser = ClaudeDesktopSessionPaneFocuser(
+            desktopPID: { Self.namedTerminalPID },
+            frontmostPID: { frontmost.value },
+            open: { url in
+                opened.value.append(url)
+                return true
+            },
+            shownSessionID: { pid in await shows(pid) },
+            sleep: { _ in }
+        )
+        harness.viewModel.session.sessionNavigator = SessionNavigator(
+            liveSessions: { live.value },
+            repositoryRoot: { _ in .unknown },
+            focuser: focuser,
+            sleep: ManualSessionClock().sleep,
+            nicknames: SessionNicknameStore(load: []) { _ in },
+            ttyForegroundPIDs: { _ in foreground.value }
+        )
+        return opened
     }
 
     private func session(_ id: String, cwd: String, tty: String = "/dev/ttys009") -> ClaudeSessionSnapshot {

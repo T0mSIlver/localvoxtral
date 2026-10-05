@@ -135,13 +135,14 @@ for "go to". What happens next depends on the session:
   without a key press. If its mod can't take the text (a dialog is open, or
   the prompt box holds a paste or a slash command), the session is handled
   as one without the mod, below.
-- **A Ghostty, iTerm2 or Terminal.app tab** comes forward and gets the text.
-  Enter is pressed only if that pane is still the one in front.
+- **A Ghostty, iTerm2 or Terminal.app tab, or a Claude Desktop session**
+  (on this Mac or on an ssh host) comes forward and gets the text. Enter is
+  pressed only if that session is still the one in front.
 - **An opencode session, or a session in a
   [herdr](../integrations/herdr/README.md) pane on this Mac,** gets the text
   without coming forward.
-- **A remote, Claude Desktop or cmux session** gets nothing, and the popover
-  says "Can't send to that session yet".
+- **A remote or cmux session** outside Claude Desktop gets nothing, and the
+  popover says "Can't send to that session yet".
 
 When no session has that name, the app inserts the whole dictation where you
 are, as spoken. When more than one does, nothing is sent and the text stays

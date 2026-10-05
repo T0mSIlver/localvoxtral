@@ -8,9 +8,10 @@ package enum AddressedSessionRoute: Sendable {
     /// An API into the session's own prompt: opencode's relay or its herdr
     /// pane. Appends, then submits.
     case prompt(any AgentPromptRoute)
-    /// A local terminal tab: brought forward with `SessionPaneFocusing`,
-    /// typed into, then Return, each step only on the pane's own evidence.
-    case terminalPane
+    /// A local terminal tab, or a Claude Desktop session view (#1825):
+    /// brought forward with `SessionPaneFocusing`, typed into, then Return,
+    /// each step only on the pane's own evidence.
+    case focusedPane
     case unsupported(SessionPaneFocusUnsupported)
 }
 
@@ -21,6 +22,13 @@ extension ClaudeSessionJoinResolver {
     /// foreground holds the session's pid. Read docs/agent/invariants.md
     /// ("The app writes into an agent only through its routes").
     package func addressedRoute(for session: ClaudeSessionSnapshot) async -> AddressedSessionRoute {
+        // Either origin: a Desktop session's view is on this Mac wherever its
+        // process runs, and the read-back proves the view by Desktop's id, as
+        // the join does. Its mod is not asked (#1643).
+        if case .claudeDesktop = SessionPaneFocusRoute.of(session) {
+            Log.claudeContext.notice("send to session: Claude Desktop view")
+            return .focusedPane
+        }
         guard session.origin.isLocalAuthenticated else { return .unsupported(.remote) }
         if session.agent == .opencode, let relay = registry.opencodePromptRelay(sessionID: session.sessionID) {
             Log.claudeContext.notice("send to session: opencode prompt relay")
@@ -34,15 +42,11 @@ extension ClaudeSessionJoinResolver {
             return .prompt(AddressedPromptRoute(route))
         }
         switch SessionPaneFocusRoute.of(session) {
-        case .terminalTTY:
-            return .terminalPane
+        case .terminalTTY, .claudeDesktop:
+            return .focusedPane
         case .herdrPane:
             // Handled above: a local herdr pane is written through its route.
             return .unsupported(.herdr)
-        case .claudeDesktop:
-            // The Return exception is ruled for terminal tabs only.
-            Log.claudeContext.notice("send to session: no route (claudeDesktop)")
-            return .unsupported(.claudeDesktop)
         case .unsupported(let reason):
             Log.claudeContext.notice("send to session: no route (\(reason.rawValue, privacy: .public))")
             return .unsupported(reason)
