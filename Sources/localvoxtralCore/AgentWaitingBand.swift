@@ -9,7 +9,8 @@ import Foundation
 /// It sends a session's mod a `state` message with `waiting` whenever that
 /// session's list changes, and again when the mod attaches, since a new or
 /// reloaded mod starts blank. A mod clears the line itself when its channel
-/// ends, so no heartbeat keeps it alive.
+/// ends, or when a remote poll fails, so no heartbeat keeps it alive; the hub
+/// reports a remote mod that started over as an attach (#1799).
 @MainActor
 package final class AgentWaitingBand {
     private let hub: ClaudeModChannelHub

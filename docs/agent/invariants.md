@@ -535,7 +535,13 @@ there is not.
   included. A remote pid means nothing on this Mac, so a remote session never
   gets the TTL exemption of the liveness rule above. Each poll moves its
   channel's `lastSeen` instead, so the TTL counts from the last poll, and
-  from the detach once polls stop.
+  from the detach once polls stop. A mod clears its band and drops its
+  challenge whenever a poll fails on its side, even when the lease outlives
+  the failure. So an unchallenged poll from the instance holding the lease
+  makes the app send the band's state again, as after an attach (#1799).
+  It does so once until a poll redeems a challenge, so a replayed poll
+  cannot fill the queue, and the unchallenged poll itself still gets only a
+  new challenge.
 - **The Mistral second pass holds the text back, never the world** (#317).
   An Overlay Buffer dictation in Mistral API mode is sent whole to the batch
   endpoint on stop (`DictationSessionController+StopCommit.swift`,

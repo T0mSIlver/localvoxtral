@@ -279,6 +279,62 @@ final class ClaudeRemoteModChannelsTests: XCTestCase {
         XCTAssertEqual(lines.count, 2)
     }
 
+    /// The forward dropped a poll after the waiting band was acked, and the
+    /// mod cleared its band; a hook ended its backoff inside the grace, so
+    /// it polls again on the same lease (#1799). Its unchallenged poll must
+    /// bring the band's state back.
+    func testAModThatStartsOverOnTheSameLeaseGetsTheWaitingBandAgain() async throws {
+        let fixture = Fixture()
+        fixture.announce("sess-1", on: "h1")
+        let band = await MainActor.run { AgentWaitingBand(hub: fixture.hub) }
+        let told = LockedBox(0)
+        let toldAgain = expectation(description: "the band told the mod again")
+        fixture.hub.observeAttach { sessionID in
+            told.set(told.value + 1)
+            let count = told.value
+            Task { @MainActor in
+                band.attached(sessionID: sessionID)
+                if count == 2 { toldAgain.fulfill() }
+            }
+        }
+        await MainActor.run {
+            var queue = AgentAttentionQueue()
+            queue.wait(sessionID: "other", name: "payments", agent: .claude, at: Self.epoch)
+            band.update(queue)
+        }
+        func waiting(_ line: Data?) throws -> [String]? {
+            let line = try XCTUnwrap(line)
+            return try XCTUnwrap(ClaudeModChannelWire.decode(ClaudeModChannelWire.Message.self, from: line.dropLast()))
+                .waiting
+        }
+
+        guard case .lines(let attach, 1, let first) = await poll(fixture).value else { return XCTFail("no band") }
+        XCTAssertEqual(try waiting(first.first), ["payments"])
+
+        // The poll that acks it is lost on the way; the mod clears its band
+        // and its next poll carries no challenge.
+        let lost = poll(fixture, attach: attach, acked: 1)
+        // Armed: the first poll's hold and its answer's expiry, and this
+        // poll's hold.
+        await fixture.clock.waitForSleepers(3)
+        let unchallenged = ClaudeRemoteModWire.PollRequest(
+            sessionID: "sess-1", instance: instance, nonce: nonce, challenge: "", attach: attach, acked: 1
+        )
+        let answered = await fixture.channels.poll(hostID: "h1", request: unchallenged)
+        XCTAssertEqual(answered, .unchallenged)
+        await fulfillment(of: [toldAgain], timeout: 10)
+        guard told.value == 2 else { return lost.cancel() }
+        // A replay of that unchallenged poll queues nothing more.
+        _ = await fixture.channels.poll(hostID: "h1", request: unchallenged)
+        XCTAssertEqual(told.value, 2)
+
+        guard case .lines(attach, 2, let again) = await poll(fixture, attach: attach, acked: 1).value else {
+            return XCTFail("no band after the mod started over")
+        }
+        XCTAssertEqual(again.count, 1)
+        XCTAssertEqual(try waiting(again.first), ["payments"])
+    }
+
     func testClosingARevokedHostsChannelsAnswersItsHeldPollWithNothing() async throws {
         let fixture = Fixture()
         fixture.announce("sess-1", on: "h1")

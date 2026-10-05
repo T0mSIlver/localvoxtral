@@ -104,10 +104,10 @@ public final class ClaudeModChannelHub: Sendable {
         state.withLock { Set($0.channels.keys) }
     }
 
-    /// Called with the session's id after each attach, on the broker's
-    /// thread and under its lock: hand the work off, never block. A message
-    /// posted from it waits for the attach's answer, which is the
-    /// connection's first line.
+    /// Called with the session's id after each attach, and when an attached
+    /// remote mod has started over (`startedOver`), on the caller's thread:
+    /// hand the work off, never block. A message posted from it waits for
+    /// the attach's answer, which is the connection's first line.
     public func observeAttach(_ observer: (@Sendable (String) -> Void)?) {
         attachObserver.withLock { $0 = observer }
     }
@@ -241,6 +241,15 @@ public final class ClaudeModChannelHub: Sendable {
         #endif
         attachObserver.withLock { $0 }?(sessionID)
         return token
+    }
+
+    /// The mod on the channel `token` names lost what it was told, though
+    /// the channel held (#1799): the attach observer hears the session again,
+    /// as after an attach.
+    package func startedOver(sessionID: String, token: UInt64) {
+        guard state.withLock({ $0.channels[sessionID]?.token == token }) else { return }
+        Log.claudeContext.info("Mod channel: the mod started over; telling it its state again")
+        attachObserver.withLock { $0 }?(sessionID)
     }
 
     /// Forgets the channel `token` names, if it is still the session's, and
