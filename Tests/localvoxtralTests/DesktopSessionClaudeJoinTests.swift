@@ -130,6 +130,69 @@ final class DesktopSessionClaudeJoinTests: XCTestCase {
         XCTAssertNil(join.localWorkspacePath, "a remote session never hands a path to the collector")
     }
 
+    // MARK: - Claude projects (#1194)
+
+    // A Claude project's page, measured on Claude Desktop 2.16120.0 for the
+    // project chat; the thread form is the page's own link. It names no session,
+    // so nothing joins even with a live session, but the resolution says the
+    // dictation goes to agents, and it is not an unmatched session view.
+    func testAProjectPageJoinsNothingAndSaysItIsAProject() async {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(record(), origin: local))
+        for address in [
+            "https://claude.ai/epitaxy/project/chan_01HregWkNSNjrQYcwzckDpZz",
+            "https://claude.ai/epitaxy/project/chan_01HregWkNSNjrQYcwzckDpZz?thread=cmsg_01HregWkNSNjrQYcwzckDpZzB3Lf",
+        ] {
+            let resolution = await resolver(registry: registry, address: address).resolution(target: desktop)
+            XCTAssertNil(resolution.join, address)
+            XCTAssertTrue(resolution.focusedClaudeProject, address)
+            XCTAssertFalse(resolution.focusedSessionUnmatched, address)
+        }
+        let session = await resolver(registry: registry, address: sessionAddress).resolution(target: desktop)
+        XCTAssertFalse(session.focusedClaudeProject)
+    }
+
+    func testOnlyAClaudeProjectPageIsOne() {
+        XCTAssertTrue(ClaudeProjectPageURL.isProjectPage("https://claude.ai/epitaxy/project/chan_abc/"))
+        for address in [
+            "http://claude.ai/epitaxy/project/chan_abc",
+            "https://claude.ai.evil.com/epitaxy/project/chan_abc",
+            "https://claude.ai:8443/epitaxy/project/chan_abc",
+            "https://claude.ai/epitaxy/project/chan_abc/settings",
+            "https://claude.ai/epitaxy/project/abc",
+            "https://claude.ai/epitaxy/project/chan_%2Fabc",
+            "https://claude.ai/project/chan_abc",
+            sessionAddress,
+        ] {
+            XCTAssertFalse(ClaudeProjectPageURL.isProjectPage(address), address)
+        }
+    }
+
+    // Agent polish for a project page, as for a joined Code-tab session; the
+    // plain chat, which neither joins nor is a project, keeps the standard one.
+    func testAProjectPageGetsTheAgentPolishProfile() {
+        let settings = makeSettings()
+        settings.agentPolishProfileEnabled = true
+        let bundleID = ClaudeDesktopAllowlist.bundleID
+        XCTAssertEqual(
+            StopCommitCoordinator.polishProfile(
+                forTargetBundleID: bundleID, claudeJoin: nil, claudeProjectFocused: true, settings: settings
+            ),
+            .agent
+        )
+        XCTAssertEqual(
+            StopCommitCoordinator.polishProfile(forTargetBundleID: bundleID, claudeJoin: nil, settings: settings),
+            .standard
+        )
+        settings.agentPolishProfileEnabled = false
+        XCTAssertEqual(
+            StopCommitCoordinator.polishProfile(
+                forTargetBundleID: bundleID, claudeJoin: nil, claudeProjectFocused: true, settings: settings
+            ),
+            .standard
+        )
+    }
+
     // MARK: - Abstentions
 
     // Focus in the chat tab, the sidebar, a settings page: no session id.
@@ -618,6 +681,24 @@ final class ClaudeDesktopSessionReaderTests: XCTestCase {
             Node(role: "AXWindow", parent: nil),
         ]
         XCTAssertEqual(walk(nodes), .outsidePrimaryChat(.outsidePanes))
+    }
+
+    // The project chat's prompt box on Claude Desktop 2.16120.0 (2026-10-01,
+    // #1194), cut down: no chat panel element, straight up to the primary
+    // pane. Its address is read because it is a project page; the same walk
+    // to a Code-tab session's address is still refused.
+    func testAProjectPagesPromptReadsItsAddress() {
+        let project = "https://claude.ai/epitaxy/project/chan_abc?thread=cmsg_def"
+        func nodes(_ address: String) -> [Node] {
+            [
+                Node(role: "AXTextArea", classes: ["tiptap", "ProseMirror"], parent: 1),
+                Node(role: "AXGroup", classes: ["mx-auto", "[.epitaxy-chat-panel_&]:[--chat-gutter:16px]"], parent: 2),
+                Node(role: "AXGroup", classes: ["dframe-pane", "dframe-pane-primary", "min-w-0"], parent: 3),
+                Node(role: "AXWebArea", url: address, parent: nil),
+            ]
+        }
+        XCTAssertEqual(walk(nodes(project)), .webArea(url: project))
+        XCTAssertEqual(walk(nodes(Split.primaryAddress)), .outsidePrimaryChat(.primaryPaneOutsideChat))
     }
 
     func testNoWebAreaUpToTheTop() {

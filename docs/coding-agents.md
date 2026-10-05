@@ -71,7 +71,8 @@ self-corrections resolve to the final intent, and explicit enumerations
 become lists.
 
 Claude Desktop also hosts plain chat, so it gets the agent-tuned prompt only
-when the dictation joined a Code-tab session. That needs **Send diff, recent
+when the dictation joined a Code-tab session or goes to a Claude project's
+page. That needs **Send diff, recent
 files and prompts** in **Settings → Context**. When the polisher is not
 on this Mac (the Mistral API, say), it also needs **Send context to non-local
 polishing servers**. With either off, Claude Desktop gets the standard prompt.
