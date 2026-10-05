@@ -39,9 +39,11 @@ extension DictationSessionController {
         if let band = modChannelBand {
             sessionID = band.sessionID
         } else {
+            // A remote session's mod counts once it polls through the
+            // forward (#1412): the hub attaches it only on the channel
+            // key's proof.
             guard let join = context.claudeSessionJoin,
                   join.snapshot.agent == .claude,
-                  join.snapshot.origin.isLocalAuthenticated,
                   hub.isAttached(join.snapshot.sessionID)
             else { return }
             sessionID = join.snapshot.sessionID

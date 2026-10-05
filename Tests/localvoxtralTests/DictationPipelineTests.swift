@@ -1805,6 +1805,18 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(phases.filter { $0 == .done }.count, 1)
     }
 
+    /// A session on an enrolled host gets the band too, through its mod's
+    /// poll (#1412): finishing while the stop commits, then done.
+    func testARemoteSessionsBandFollowsTheDictation() async throws {
+        let (pipeline, _, recorder) = try await modChannelPipeline(answers: [.fill], remote: true)
+
+        await dictate(pipeline, "run the tests.")
+
+        let phases = recorder.states.map(\.phase)
+        XCTAssertTrue(phases.contains(.finishing), "phases: \(phases)")
+        XCTAssertEqual(phases.last, .done)
+    }
+
     /// The band says the same thing for longer than the mod keeps a band it
     /// has not heard about (30 s): the user paused, or a polish runs long.
     /// The app sends it again in time, so the band goes only when the app

@@ -172,6 +172,10 @@ public final class ClaudeRemoteModChannels: Sendable {
         var isClosed = false
         var isDetached = false
         var isRevoked = false
+        /// An unchallenged poll told the hub the mod started over; cleared
+        /// by the next poll that redeems a challenge, so replayed polls
+        /// cannot queue the state again and again.
+        var startedOver = false
     }
 
     private struct Challenge {
@@ -231,8 +235,12 @@ public final class ClaudeRemoteModChannels: Sendable {
     /// One poll of `hostID`'s mod for the session its request names,
     /// authenticated and proven by the caller.
     package func poll(hostID: String, request: ClaudeRemoteModWire.PollRequest) async -> PollOutcome {
-        guard redeem(hostID: hostID, request: request) else { return .unchallenged }
         let sessionID = ClaudeRemoteSessionScope.scopedSessionID(hostID: hostID, sessionID: request.sessionID)
+        guard redeem(hostID: hostID, request: request) else {
+            startOver(sessionID: sessionID, instance: request.instance)
+            return .unchallenged
+        }
+        state.withLock { $0.leases[sessionID]?.startedOver = false }
         guard let leaseID = await lease(sessionID: sessionID, hostID: hostID, instance: request.instance) else {
             return .busy
         }
@@ -320,6 +328,23 @@ public final class ClaudeRemoteModChannels: Sendable {
         return challenge
     }
 
+    /// A mod drops its challenge, and clears its waiting band, whenever a
+    /// poll fails on its side. Its next poll comes unchallenged, and when it
+    /// comes from the instance holding the lease, the hub hears the session
+    /// again so the band's state goes out again (#1799): the lease, and the
+    /// app's record of what it sent, outlived the failure.
+    private func startOver(sessionID: String, instance: String) {
+        let token = state.withLock { state -> UInt64? in
+            guard var lease = state.leases[sessionID], lease.instance == instance,
+                  !lease.isClosed, !lease.startedOver, let token = lease.token
+            else { return nil }
+            lease.startedOver = true
+            state.leases[sessionID] = lease
+            return token
+        }
+        if let token { hub.startedOver(sessionID: sessionID, token: token) }
+    }
+
     /// Uses up the poll's challenge; false when this Mac did not issue it
     /// for this poll, it was used, or it expired.
     private func redeem(hostID: String, request: ClaudeRemoteModWire.PollRequest) -> Bool {
@@ -403,7 +428,11 @@ public final class ClaudeRemoteModChannels: Sendable {
             return .attach(id)
         }
         switch found {
-        case .held(let id): return id
+        case .held(let id):
+            if let token = state.withLock({ $0.leases[sessionID]?.token }) {
+                registry.modChannelSeen(sessionID: sessionID, token: token)
+            }
+            return id
         case .refused: return nil
         case .attach(let id): return attach(sessionID: sessionID, hostID: hostID, leaseID: id)
         }
