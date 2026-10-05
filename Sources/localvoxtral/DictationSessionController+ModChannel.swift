@@ -11,6 +11,7 @@ extension DictationSessionController {
     enum ModChannelStatus {
         static let queued = "Sent; it runs after the current turn"
         static let filledNotSent = "In the prompt box, not sent"
+        static let notRestored = "Not sent, and not back in the prompt box"
     }
 
     /// How long a fill may take before it counts as unanswered: longer than
