@@ -2291,6 +2291,15 @@ there is not.
     (`ClaudeSessionPageURL`), path exactly `/epitaxy/local_[A-Za-z0-9_-]+`;
     the registry match is exact equality with one fresh reporter
     (`resolve(desktopSessionID:)`, shared rules with the bridge lookup).
+    A Remote Control session opened in Desktop joins through this arm, not
+    the browser one. MEASURED on 2.19675.0 (2026-10-05, #1065): 547 of
+    Desktop's 549 Code sessions carried a Remote Control id
+    (`bridgeSessionIds`), each had a `local_<uuid>` view, and no
+    `/code/session_…` address appeared in any web area, Desktop's storage
+    or its bundle. The focused view's address then carried
+    `?artifact=<uuid>` (an artifact open beside the chat); the query is
+    ignored, and the watched check reads the same address
+    (`testARemoteControlSessionShownInDesktopCountsAsShown`).
     Everything else follows the browser arm: both origins join (the id is
     desktop-allocated and names the view the user is looking at), a
     `.desktopSession` join authorizes NO screen read and carries no window
