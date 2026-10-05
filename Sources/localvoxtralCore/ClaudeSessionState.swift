@@ -100,6 +100,12 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
     /// `SessionDefaultNames` reads it, the registry file does not keep it,
     /// and no log line carries it.
     package var harnessTitle: String?
+    /// The Claude project thread (`cmsg_…`) this session's prompts were
+    /// relayed from (`ClaudeProjectThreadEnvelope`, #1194): the key the
+    /// Desktop arm joins a project thread's page on. Kept until a prompt
+    /// names another thread. Not persisted, so after the app restarts a
+    /// thread joins again once its session gets its next message.
+    package var projectThreadID: String?
     /// The shim version a remote session's last accepted hook sent: the
     /// Claude Code plugin's `X-Lvx-Plugin-Version`, or the Vibe hooks'
     /// version. A running session keeps the shim it loaded, so this can
@@ -237,6 +243,7 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
         self.remoteEnvironment = nil
         self.remoteWorktreeRepository = nil
         self.harnessTitle = nil
+        self.projectThreadID = nil
         self.lastSubmittedPromptID = nil
         self.firstSeen = firstSeen
         self.lastActivity = firstSeen
@@ -332,6 +339,10 @@ public enum ClaudeSessionReducer {
             if let prompt = record.prompt, !prompt.isEmpty {
                 snapshot.latestPriorUserPrompt = prompt
                 snapshot.latestPriorUserPromptAt = now
+                if record.agent == .claude,
+                   let threadID = ClaudeProjectThreadEnvelope.threadID(inPrompt: prompt) {
+                    snapshot.projectThreadID = threadID
+                }
             }
         case .cwdChanged:
             // Workspace already applied above; a cwd change does not alter the
