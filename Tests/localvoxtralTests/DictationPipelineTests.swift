@@ -2157,7 +2157,10 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(mod.submitted, [])
         XCTAssertEqual(typed.text, "")
         XCTAssertEqual(pipeline.viewModel.lastError, DictationSessionController.ModChannelStatus.filledNotSent)
-        await stopAndFinalize(pipeline, finalText: "run the tests, send it.")
+        await stopAndFinalize(
+            pipeline, finalText: "run the tests, send it.",
+            expectedError: DictationSessionController.ModChannelStatus.filledNotSent
+        )
     }
 
     /// A newline the server sends is filled as text, where the keys would
