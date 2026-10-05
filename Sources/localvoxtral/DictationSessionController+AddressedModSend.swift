@@ -92,8 +92,12 @@ extension DictationSessionController {
             Log.backends.notice(
                 "send to session: the mod filled but did not submit (\(reply.reason ?? "no reason", privacy: .public))"
             )
+            // A dropped submit whose text the box did not take back is in
+            // no box (#1803): the record says not inserted.
+            let restored = reply.reason != ClaudeModChannelWire.Reply.notRestoredReason
             return .finished(AddressedCommit(
-                outcome: commit.outcome, inserted: true, status: ModChannelStatus.filledNotSent,
+                outcome: commit.outcome, inserted: restored,
+                status: restored ? ModChannelStatus.filledNotSent : ModChannelStatus.notRestored,
                 superseded: superseded, handedOff: handedOff
             ))
         case .replied(let reply) where reply.reason == ClaudeModChannelWire.Reply.sessionChangedReason:

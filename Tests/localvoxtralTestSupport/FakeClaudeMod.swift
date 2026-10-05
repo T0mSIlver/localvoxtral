@@ -5,7 +5,9 @@ import localvoxtralCore
 
 /// A mod on the far end of the channel, as `localvoxtral-mod` behaves: it
 /// fills appends in order until one is refused or out of order, and an
-/// `ack` answers how many filled and starts the next stream.
+/// `ack` answers how many filled and starts the next stream. A `cancel`
+/// keeps every append that arrived before it from filling, once held ones
+/// are released (#1805).
 package final class FakeClaudeMod: Sendable {
     package struct State {
         package var box = ""
@@ -14,6 +16,10 @@ package final class FakeClaudeMod: Sendable {
         package var kinds: [ClaudeModChannelWire.Kind] = []
         package var submitted: [String] = []
         package var acksAnswered = 0
+        package var cancels = 0
+        /// Appends a slow fill holds, each with the `cancels` it arrived
+        /// after.
+        package var held: [(message: ClaudeModChannelWire.Message, cancels: Int)] = []
     }
 
     package let state = Mutex(State())
@@ -22,13 +28,40 @@ package final class FakeClaudeMod: Sendable {
     /// How many `ack`s it answers before it goes silent.
     package let acksToAnswer: Int
     package let knowsAppend: Bool
+    /// Whether appends wait for `releaseHeldFills`, as behind a slow fill.
+    package let holdsFills: Bool
     /// Counts every append written to it, filled or not.
     package let appends = EventCount()
 
-    package init(refuses: String? = nil, acksToAnswer: Int = .max, knowsAppend: Bool = true) {
+    package init(refuses: String? = nil, acksToAnswer: Int = .max, knowsAppend: Bool = true, holdsFills: Bool = false) {
         self.refuses = refuses
         self.acksToAnswer = acksToAnswer
         self.knowsAppend = knowsAppend
+        self.holdsFills = holdsFills
+    }
+
+    /// Fills the held appends in order, as the slow fill ahead of them ends.
+    package func releaseHeldFills() {
+        state.withLock { state in
+            let held = state.held
+            state.held = []
+            for (message, cancels) in held {
+                guard cancels == state.cancels else {
+                    state.ended = true
+                    continue
+                }
+                fill(message, in: &state)
+            }
+        }
+    }
+
+    private func fill(_ message: ClaudeModChannelWire.Message, in state: inout State) {
+        guard !state.ended, message.seq == state.filled + 1, message.text != refuses else {
+            state.ended = true
+            return
+        }
+        state.box += message.text ?? ""
+        state.filled += 1
     }
 
     package var box: String { state.withLock { $0.box } }
@@ -60,12 +93,14 @@ package final class FakeClaudeMod: Sendable {
             }
             switch message.kind {
             case .append:
-                guard !state.ended, message.seq == state.filled + 1, message.text != refuses else {
-                    state.ended = true
-                    return nil
+                if holdsFills {
+                    state.held.append((message, state.cancels))
+                } else {
+                    fill(message, in: &state)
                 }
-                state.box += message.text ?? ""
-                state.filled += 1
+                return nil
+            case .cancel:
+                state.cancels += 1
                 return nil
             case .ack:
                 guard state.acksAnswered < acksToAnswer else { return nil }

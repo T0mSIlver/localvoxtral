@@ -203,6 +203,135 @@ describe('channel', () => {
     })
   }
 
+  /**
+   * A mod attached as `sess-1` whose box starts as `fix the flaky`, cursor at
+   * the end. `submit` answers a submit, `fill` a fill that the box takes
+   * unless it answers false; `lines` are what the app writes, at once.
+   */
+  function sendHarness(
+    on: Parameters<Parameters<typeof test>[1]>[1],
+    clock: ReturnType<typeof mock.clock>,
+    lines: string[],
+    hooks: {
+      submit: (text: string) => Promise<{ drop?: string; text?: string }>
+      fill?: (text: string, mode: string) => Promise<boolean>
+    },
+  ) {
+    const state = {
+      sessionID: 'sess-1',
+      box: 'fix the flaky',
+      fills: [] as { text: string; mode: string }[],
+      submits: [] as string[],
+      copied: [] as string[],
+      toasts: [] as string[],
+      replies: [] as unknown[],
+    }
+    mock.env(on, { HOME: '/Users/tom' })
+    on('session.start', ($, e) => ({ cwd: e.cwd }))
+    on('session.id', () => ({ value: state.sessionID }))
+    on('settings.read', () => ({ value: {} }))
+    on('fs.exists', ($, e) => ({ value: e.path === PUBLISHER }))
+    on('ui.status', () => ({ value: undefined }))
+    on('ui.copy', ($, e) => {
+      state.copied.push(e.text)
+      return { value: { isCopied: true } }
+    })
+    on('ui.toast', ($, e) => {
+      state.toasts.push(e.text)
+      return { value: undefined }
+    })
+    on('turn.start', ($, e) => ({ turnId: e.turnId }))
+    on('prompt.read', () => ({ value: { text: state.box, cursor: state.box.length } }))
+    on('prompt.fill', async ($, e) => {
+      state.fills.push({ text: e.text, mode: e.mode })
+      if (hooks.fill !== undefined && !(await hooks.fill(e.text, e.mode))) return { isFilled: false }
+      state.box = e.mode === 'replace' ? e.text : state.box + e.text
+      return { isFilled: true }
+    })
+    on('prompt.submit', async ($, e) => {
+      state.submits.push(e.text)
+      return hooks.submit(e.text)
+    })
+    on('process.spawn', async function* (): AsyncGenerator<ProcessSpawnChunk, { value: ProcessSpawnResult }> {
+      yield { stream: 'stdout', text: lines.map((line) => `${line}\n`).join('') }
+      await clock.sleep(900000)
+      return { value: EXITED }
+    })
+    on('process.run', ($, e) => {
+      if (e.argv[1] === '--mod-reply') state.replies.push(JSON.parse(e.init?.stdin ?? ''))
+      return {
+        value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+      }
+    })
+    return state
+  }
+
+  const SEND = '{"id":"s","kind":"send","mod_message":1,"text":" reconnect test"}'
+
+  // #1802: the submit waited for a turn; a /clear moved the process to
+  // sess-2 before a hook dropped it.
+  test('a dropped send never puts its text in the session a /clear started', async ($, on) => {
+    const clock = mock.clock(on)
+    const state = sendHarness(on, clock, [SEND], {
+      submit: async () => {
+        await clock.sleep(5000)
+        return { drop: 'cleared' }
+      },
+    })
+
+    await $.turn.start({ text: 'earlier', turnId: 't1' })
+    await $.session.start(STARTED)
+    await clock.advance(100)
+    state.sessionID = 'sess-2'
+    state.box = 'what sess-2 typed'
+    await clock.advance(10000)
+
+    expect(state.replies).toEqual([{ mod_reply: 1, session_id: 'sess-1', id: 's', ok: true, submitted: true, queued: true }])
+    expect(state.box).toBe('what sess-2 typed')
+    expect(state.copied).toEqual(['fix the flaky reconnect test'])
+    expect(state.toasts.length).toBe(1)
+  })
+
+  // #1803: a dialog keeps the dropped text out of the box twice.
+  test('a dropped send keeps its whole text until the box takes it back, and says it is not there yet', async ($, on) => {
+    const clock = mock.clock(on)
+    let refusals = 2
+    const state = sendHarness(on, clock, [SEND], {
+      submit: async () => ({ drop: 'a hook said no' }),
+      fill: async (text, mode) => mode !== 'append' || refusals-- <= 0,
+    })
+
+    await $.session.start(STARTED)
+    await clock.advance(1000)
+    expect(state.replies).toEqual([
+      { mod_reply: 1, session_id: 'sess-1', id: 's', ok: true, submitted: false, reason: 'not_restored' },
+    ])
+    expect(state.box).toBe('')
+    await clock.advance(5000)
+
+    expect(state.box).toBe('fix the flaky reconnect test')
+    expect(state.copied).toEqual([])
+  })
+
+  // #1804: a fill for a later dictation arrives while the send's emptying
+  // waits on another plugin's fill hook.
+  test('a send never empties a fill that arrived after it', async ($, on) => {
+    const clock = mock.clock(on)
+    const state = sendHarness(on, clock, [SEND, '{"id":"f","kind":"fill","mod_message":1,"text":"and lint"}'], {
+      submit: async (text) => ({ text }),
+      fill: async (text, mode) => {
+        if (mode === 'replace') await clock.sleep(500)
+        return true
+      },
+    })
+
+    await $.session.start(STARTED)
+    await clock.advance(3000)
+
+    expect(state.submits).toEqual(['fix the flaky reconnect test'])
+    expect(state.box).toBe('and lint')
+  })
+
   for (const [label, turnRunning, expected, aborted] of [
     ['a running turn is ended by its id', true, { ok: true }, ['t1']],
     ['with no turn running it answers no_turn and ends nothing', false, { ok: false, reason: 'no_turn' }, []],
@@ -522,6 +651,7 @@ describe('channel', () => {
 
   type AppendCase = {
     label: string
+    /** What the app writes; a `wait` holds the rest that long. */
     lines: object[]
     refuse?: string[]
     fills: string[]
@@ -566,6 +696,23 @@ describe('channel', () => {
       fills: ['one ', 'two '],
       acks: [0, 1],
     },
+    {
+      // #1805: the person threw the dictation away while the first fill was
+      // slow; the next dictation's stream fills again.
+      label: 'a cancel stops the appends queued behind a slow fill',
+      lines: [
+        { kind: 'ack', id: 'k0', seq: 0 },
+        { kind: 'append', id: 'a1', seq: 1, text: 'one ' },
+        { kind: 'append', id: 'a2', seq: 2, text: 'two ' },
+        { wait: 100 },
+        { kind: 'cancel', id: 'c' },
+        { kind: 'ack', id: 'k1', seq: 0 },
+        { kind: 'append', id: 'b1', seq: 1, text: 'next' },
+        { kind: 'ack', id: 'k2', seq: 1 },
+      ],
+      fills: ['one ', 'next'],
+      acks: [0, 1, 1],
+    },
   ]
   for (const c of appendCases) {
     test(`append: ${c.label}`, async ($, on) => {
@@ -584,7 +731,17 @@ describe('channel', () => {
         return { isFilled: !(c.refuse ?? []).includes(e.text) }
       })
       on('process.spawn', async function* (): AsyncGenerator<ProcessSpawnChunk, { value: ProcessSpawnResult }> {
-        yield { stream: 'stdout', text: c.lines.map((l) => JSON.stringify({ mod_message: 1, ...l })).join('\n') + '\n' }
+        let chunk = ''
+        for (const line of c.lines) {
+          if ('wait' in line) {
+            yield { stream: 'stdout', text: chunk }
+            chunk = ''
+            await clock.sleep(line.wait as number)
+          } else {
+            chunk += `${JSON.stringify({ mod_message: 1, ...line })}\n`
+          }
+        }
+        yield { stream: 'stdout', text: chunk }
         await clock.sleep(60000)
         return { value: EXITED }
       })

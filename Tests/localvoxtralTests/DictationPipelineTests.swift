@@ -1585,6 +1585,25 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.viewModel.lastError, DictationSessionController.ModChannelStatus.queued)
     }
 
+    /// A hook dropped the mod's submit and the box would not take the text
+    /// back (#1803): the popover does not say it is in the box, and no key
+    /// types it, since the mod keeps it.
+    func testASpokenSendTheBoxWouldNotTakeBackSaysItIsNotThere() async throws {
+        let (pipeline, typed, fills) = try await modChannelPipeline(answers: [.notRestored])
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "run the tests, send it.")
+        let done = await settled.wait(for: 1)
+
+        XCTAssertTrue(done)
+        XCTAssertEqual(fills.kinds, [.send])
+        XCTAssertEqual(typed.text, "")
+        XCTAssertEqual(pipeline.viewModel.lastError, DictationSessionController.ModChannelStatus.notRestored)
+    }
+
     /// The mod refused (a dialog held the keys): the words are typed into
     /// the session's pane, which is in front, and Return follows once, as
     /// before the mod.
@@ -2098,7 +2117,25 @@ final class DictationPipelineTests: XCTestCase {
 
         XCTAssertEqual(mod.box, String(Self.phrase[..<split]))
         XCTAssertEqual(typed.text, "")
-        XCTAssertEqual(mod.kinds.last, .append, "no ack: nothing is settled to be typed")
+        XCTAssertEqual(mod.kinds.filter { $0 == .ack }.count, 1, "no ack after the start: nothing is settled to be typed")
+    }
+
+    /// The mod's first fill is slow, so the later appends wait behind it
+    /// when the person cancels: none of them fills afterwards (#1805).
+    func testACancelKeepsTheAppendsTheModHasNotFilledYetOutOfTheBox() async throws {
+        let mod = FakeClaudeMod(holdsFills: true)
+        let (pipeline, typed) = try await modLivePipeline(mod)
+
+        await startAndSpeak(pipeline)
+        let sink = try XCTUnwrap(pipeline.viewModel.textInsertion.promptRelaySink)
+        sendPartials(pipeline)
+        await mod.appends.waitFor(2)
+        pipeline.viewModel.cancelDictation()
+        await sink.waitUntilIdle()
+        mod.releaseHeldFills()
+
+        XCTAssertEqual(mod.box, "")
+        XCTAssertEqual(typed.text, "")
     }
 
     /// A newline the server sends is filled as text, where the keys would
@@ -2132,7 +2169,7 @@ final class DictationPipelineTests: XCTestCase {
     }
 
     /// How the fake mod answers a fill.
-    private enum FakeModAnswer { case fill, refuse, silent, sent, queued }
+    private enum FakeModAnswer { case fill, refuse, silent, sent, queued, notRestored }
 
     /// A dictation joined to Claude Code session `s1` in a terminal, whose
     /// mod answers the fills in turn with `answers`, the last one repeating.
@@ -2211,11 +2248,16 @@ final class DictationPipelineTests: XCTestCase {
                 beforeAnswer()
                 if answer != .silent {
                     let ok = answer != .refuse
-                    let reply = ClaudeModChannelWire.Reply(
-                        sessionID: sessionID, id: message.id, ok: ok, reason: ok ? nil : "dialog",
-                        submitted: message.kind == .send && ok ? true : nil,
-                        queued: answer == .queued ? true : nil
-                    )
+                    let reply = answer == .notRestored
+                        ? ClaudeModChannelWire.Reply(
+                            sessionID: sessionID, id: message.id, ok: true,
+                            reason: ClaudeModChannelWire.Reply.notRestoredReason, submitted: false
+                        )
+                        : ClaudeModChannelWire.Reply(
+                            sessionID: sessionID, id: message.id, ok: ok, reason: ok ? nil : "dialog",
+                            submitted: message.kind == .send && ok ? true : nil,
+                            queued: answer == .queued ? true : nil
+                        )
                     if let answerGate {
                         Task {
                             _ = await answerGate.value(failAfter: 60)

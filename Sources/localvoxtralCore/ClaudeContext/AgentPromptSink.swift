@@ -37,6 +37,10 @@ package protocol AgentPromptRoute: Sendable {
     /// newline guard and trailing-space policy, which exist for keys. What
     /// such a route gives back is sanitized before it is typed.
     var takesUnsanitizedText: Bool { get }
+    /// The dictation was cancelled: the target drops what this route
+    /// handed it that has not landed yet. Called once no call is being
+    /// handed over.
+    func cancel()
 }
 
 /// What `AgentPromptRoute.settle` found: the texts that did not land, in
@@ -59,6 +63,9 @@ extension AgentPromptRoute {
     package func settle() async -> AgentPromptSettlement { .allLanded }
 
     package var takesUnsanitizedText: Bool { false }
+
+    /// A route that answers each call once it landed holds nothing back.
+    package func cancel() {}
 }
 
 /// One dictation's writes into a route, delivered in the order they were
@@ -88,6 +95,8 @@ package final class AgentPromptSink {
 
     /// Set by the first failed call: where every later text goes.
     private var failure: AgentPromptDelivery?
+    /// Set by `cancel`: nothing more is handed to the route.
+    private var cancelled = false
 
     /// False from the first failed call on.
     package var isHealthy: Bool { failure == nil }
@@ -140,6 +149,17 @@ package final class AgentPromptSink {
         enqueue(.settle, fallback: nil)
     }
 
+    /// The dictation was cancelled (#1805): what is queued is dropped,
+    /// never delivered or typed, and the route drops what it handed over
+    /// that has not landed. A call in flight finishes first.
+    package func cancel() {
+        guard !cancelled else { return }
+        cancelled = true
+        queue.removeAll()
+        Log.backends.notice("\(self.route.name, privacy: .public): dictation cancelled; queued text dropped")
+        if !draining { route.cancel() }
+    }
+
     /// Returns once nothing is queued or in flight.
     package func waitUntilIdle() async {
         guard draining else { return }
@@ -147,6 +167,7 @@ package final class AgentPromptSink {
     }
 
     private func enqueue(_ step: Step, fallback: (@MainActor (String) -> Void)?) {
+        guard !cancelled else { return }
         queue.append((step, fallback))
         guard !draining else { return }
         draining = true
@@ -166,7 +187,7 @@ package final class AgentPromptSink {
     }
 
     private func drain() async {
-        while let next = queue.first {
+        while !cancelled, let next = queue.first {
             var unlanded: [String] = []
             var outcome: AgentPromptDelivery
             switch next.step {
@@ -184,6 +205,8 @@ package final class AgentPromptSink {
                 unlanded = settlement.unlanded
                 outcome = unlanded.isEmpty ? .delivered : settlement.outcome
             }
+            // A cancel during the call: nothing it gave back is typed.
+            if cancelled { break }
             if outcome == .delivered {
                 queue.removeFirst()
                 continue
@@ -205,6 +228,7 @@ package final class AgentPromptSink {
             for (text, callFallback) in refused { divert(text, after: outcome, fallback: callFallback) }
         }
         draining = false
+        if cancelled { route.cancel() }
         let waiters = idleWaiters
         idleWaiters.removeAll()
         for waiter in waiters { waiter.resume() }

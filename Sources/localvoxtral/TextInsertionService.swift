@@ -485,10 +485,10 @@ final class TextInsertionService {
     /// already handed to the route stays in History.
     ///
     /// A route that confirms its appends only when asked settles them
-    /// first, unless `settling` is false (a cancel): what did not land is
-    /// kept in History, since the keys serve something else now.
-    func retirePromptRelay(endingDictation: Bool = false, settling: Bool = true) {
-        if settling { promptRelaySink?.finish() }
+    /// first. A cancel settles nothing: the queued text is dropped, and the
+    /// route tells its target to drop what has not landed (#1805).
+    func retirePromptRelay(endingDictation: Bool = false, cancelling: Bool = false) {
+        if cancelling { promptRelaySink?.cancel() } else { promptRelaySink?.finish() }
         promptRelaySink = nil
         // The keys' text so far is in the pane they leave: the next stop
         // judges only what they type from here.
