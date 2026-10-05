@@ -234,7 +234,17 @@ there is not.
   main-loop turn is running or the submit has not entered within 1.5 s; the
   popover then says the prompt runs after the turn, not that it was sent. A
   submit a hook drops puts the text back in the box and answers not
-  submitted. A refusal, or a request the mod never got, is typed under the
+  submitted, only while the process is still in the session it was sent
+  from (#1802): after a `/clear` it never reaches the new session's box. A
+  box that refuses it back (a dialog) is tried again a second apart for two
+  minutes, and the reply says `not_restored`, which the popover reports as
+  not in the box (#1803); a text the box never took back, or one whose
+  session the process left, goes on the clipboard with a toast. The mod
+  makes every write to the box one at a time, in the order the app's
+  messages arrived: fills, appends, a send's read, fill and emptying, and
+  its put-back (#1804). The submit's wait for a running turn is outside
+  that order, so a later fill is never emptied by an earlier send. A
+  refusal, or a request the mod never got, is typed under the
   fill rule below and followed by Return under this bullet's gates, judged
   then; an unanswered one is kept, with no Return. A channel that closed
   between the stop and the commit sends by Return under the same gates.
@@ -1203,7 +1213,11 @@ there is not.
     and asks only the attach of the mod it opened on. A mod that reloads
     attaches again under the same session with a fresh stream, whose count
     says nothing about what the old one filled, so the route treats it as
-    a lost channel. The live record waits for the stop's `ack`, behind a
+    a lost channel. *A cancel stops the queue:* the sink drops what it has
+    not handed over and the route writes an unanswered `cancel`, after which
+    no append that arrived before it fills, though one already filling may
+    (#1805). A mod older than `cancel` fills them as before. The live
+    record waits for the stop's `ack`, behind a
     go-to still running at the stop too. *No key, so no key rules:* the
     terminal newline guard and the trailing-space policy do not apply to
     filled text, and Secure Keyboard Entry neither refuses the start nor
