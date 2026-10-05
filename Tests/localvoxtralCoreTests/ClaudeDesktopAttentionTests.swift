@@ -63,19 +63,21 @@ final class ClaudeDesktopAttentionTests: XCTestCase {
 
     /// A Code-tab session on this Mac: Desktop exports its view's id into
     /// the session's Claude Code, and the hook inherits it. No terminal.
-    private func publish(_ names: [String]) throws {
+    private func publish(_ names: [String], bridgeSessionID: String? = nil) throws {
         let claude = claudePID
+        var variables = [
+            ClaudeHookSocketPath.environmentKey: socketPath,
+            "CLAUDE_CODE_HOST_SESSION_ID": desktopID,
+            "CLAUDE_CODE_ENTRYPOINT": "claude-desktop",
+        ]
+        variables["CLAUDE_CODE_BRIDGE_SESSION_ID"] = bridgeSessionID
         let publisher = ClaudeHookPublisher(
             environment: .init(
                 now: { 1_790_499_330 },
                 pid: { 71_250 },
                 ppid: { claude },
                 ttyName: { _ in nil },
-                variables: [
-                    ClaudeHookSocketPath.environmentKey: socketPath,
-                    "CLAUDE_CODE_HOST_SESSION_ID": desktopID,
-                    "CLAUDE_CODE_ENTRYPOINT": "claude-desktop",
-                ]
+                variables: variables
             ),
             publisher: UnixSocketPublisher(timeout: 2.0)
         )
@@ -155,6 +157,34 @@ final class ClaudeDesktopAttentionTests: XCTestCase {
 
         shown.set("https://claude.ai/epitaxy/\(otherDesktopID)")
         try publish(["Stop"])
+        await feed(tracker, delivered)
+        XCTAssertEqual(cues.get().map { AgentAttentionText.sentence($0) }, ["payments finished"])
+    }
+
+    /// A Remote Control session in Desktop (#1065, #1191). MEASURED on Claude
+    /// Desktop 2.19675.0 (2026-10-05): Desktop shows it at its `local_` view
+    /// like any Code-tab session, with `?artifact=<uuid>` while an artifact
+    /// is open beside it; no `/code/session_` address appeared. The bridge id
+    /// plays no part in "is it shown".
+    func testARemoteControlSessionShownInDesktopCountsAsShown() async throws {
+        let delivered = try start()
+        defer { stop() }
+        let bridgeID = "session_01AbCdEfGhIjKlMnOpQrStUv"
+        let shown = Box<String?>(
+            "https://claude.ai/epitaxy/\(desktopID)?artifact=6c278aef-0cd7-4797-a0a8-5b2ee8254765"
+        )
+        let (tracker, cues) = tracker(showing: shown)
+
+        try publish(["Stop"], bridgeSessionID: bridgeID)
+        await feed(tracker, delivered)
+        let snapshot = try XCTUnwrap(registry.snapshot(sessionID: "fdad6dd0-fdd7-4118-ba62-ef71e8bf90e7"))
+        XCTAssertEqual(snapshot.bridgeSessionID, bridgeID)
+        XCTAssertTrue(cues.get().isEmpty, "the owner was looking at that session")
+
+        // The bridge id's browser address in Desktop's web view is not a
+        // Desktop session view.
+        shown.set("https://claude.ai/code/\(bridgeID)")
+        try publish(["Stop"], bridgeSessionID: bridgeID)
         await feed(tracker, delivered)
         XCTAssertEqual(cues.get().map { AgentAttentionText.sentence($0) }, ["payments finished"])
     }
