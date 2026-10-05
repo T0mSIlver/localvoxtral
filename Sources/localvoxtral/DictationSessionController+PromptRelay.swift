@@ -25,12 +25,20 @@ extension DictationSessionController {
             // A Live Auto-Paste spoken send through the mod: its words are
             // in the box whatever happened to the submit, so only the
             // status says it did not go.
-            guard let self, self.sessionStartGeneration == generation,
-                  let status = Self.promptRelaySubmissionStatus(submission)
-            else { return }
-            self.lastError = status
+            guard let self, self.sessionStartGeneration == generation else { return }
+            if let status = Self.promptRelaySubmissionStatus(submission) {
+                self.lastError = status
+            } else if let shown = self.lastError, Self.promptRelaySubmissionStatuses.contains(shown) {
+                // A later send went: an earlier one's line no longer holds.
+                self.lastError = nil
+            }
         })
     }
+
+    static let promptRelaySubmissionStatuses: Set<String> = [
+        ModChannelStatus.queued, ModChannelStatus.filledNotSent,
+        ModChannelStatus.notRestored, ModChannelStatus.unanswered,
+    ]
 
     /// The popover line for a submit the route delivered, or nil when it
     /// went.
