@@ -156,7 +156,9 @@ jobs:
           set -euo pipefail
           rm -rf "$RUNNER_TEMP/release-ci"
           cp -R scripts/ci "$RUNNER_TEMP/release-ci"
-          echo "RELEASE_CI=$RUNNER_TEMP/release-ci" >> "$GITHUB_ENV"
+          # $GITHUB_ENV reaches later steps only; this step reads it below.
+          RELEASE_CI="$RUNNER_TEMP/release-ci"
+          echo "RELEASE_CI=$RELEASE_CI" >> "$GITHUB_ENV"
 
           if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
             CHANNEL="daily"
