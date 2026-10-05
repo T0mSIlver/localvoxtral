@@ -1298,7 +1298,11 @@ there is not.
     only after the surface TTY positively binds to herdr (a `herdr` client
     process in the foreground process group of the focused terminal
     surface's TTY, `HerdrClientTTYProbe`; a client suspended with Ctrl-Z
-    keeps the tty while its shell owns the screen, #1602 —
+    keeps the tty while its shell owns the screen, #1602; every herdr process
+    in that job must classify as a whole-view client by its argv, with the
+    ssh arm's `HerdrInvocation` classifier: `herdr terminal attach <id>`
+    shows one pane without moving the server's focus, `herdr --remote` shows
+    another server, and an unreadable argv is neither —
     herdr's socket has no client introspection, so the process table is the
     only binding; the probe needs only the surface TTY string, so the herdr
     arm works on all three supported terminals), and from that point the join
@@ -1515,7 +1519,14 @@ there is not.
     views machine A: the match proves that the surface federates that server,
     not that it displays it. This costs nothing for the argv-based arm,
     because that arm never probes a surface with no ssh and a federated client
-    has none. The federated `.federatedHerdrPane` arm is the extension that
+    has none — unless the federating client runs on the far side of ssh
+    (`ssh builder herdr`, builder's client federating B). Its panel renders
+    builder's token while B is shown, so a match in a grid that also shows
+    herdr's ` machines` sidebar header (`HerdrPanelBindingProbe
+    .showsMachineList`) is refused as `federated-client`, with no argv
+    fallback. A collapsed or hidden sidebar renders no token and no header,
+    and the argv fallback cannot see the federation: that residual stays.
+    The federated `.federatedHerdrPane` arm is the extension that
     names the machine from herdr's own selection state first (issue #286) and
     only then uses the token, which keeps its whole-view-prover and
     mic-indicator roles (it never proved freshness or display — see the
@@ -1539,7 +1550,10 @@ there is not.
     while two same-box enrollments still land in the multiple-match
     abstention. Any refused operand, spawn/timeout
     failure, or unparseable output discards the whole fallback; two canonical
-    matches remain ambiguous. Results are briefly TTL-cached because ssh config
+    matches remain ambiguous. An argv that sets the port (`-p`) is refused
+    before any match: both comparisons describe the alias's own port, while
+    `ssh -p 2222 builder` reaches another sshd on that address. The panel
+    proof needs no port, since it reads what the screen shows. Results are briefly TTL-cached because ssh config
     can change on disk. One,
     because several in a group cannot be told apart from here, and unioning
     them let a plain connection borrow a sibling's herdr signal. `SSHDestinationTTYProbe`

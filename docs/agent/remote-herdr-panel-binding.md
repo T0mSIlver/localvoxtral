@@ -225,7 +225,8 @@ Every abstention names its cause in `Log.claudeContext` and the diagnostic
 join-abstention string, following #228's `SSHProbeIndeterminacy` pattern:
 distinct content-free categories for at least — row-not-rendered (no token in
 grid), AX-read-unavailable, forward-unavailable-for-speculative-candidate,
-stamp-refused (API error), multi-host-double-match, settle-timeout. Backend
+stamp-refused (API error), multi-host-double-match, federated-client,
+settle-timeout. Backend
 paths stay loud (`Log.backends` convention).
 
 ## Invariants doc duties (same PR)
@@ -372,6 +373,16 @@ Three consequences for the mechanism above:
    that anyone is looking at it. Issue #286 is the local arm's version of this.
    Measured 2026-09-13: with a machine selected, the local server answers
    `pane.current` with its own focused pane. The lane pins it.
+4. The federating client can run on the far side of ssh: `ssh builder herdr`,
+   where builder's client federates a machine B. Builder's token then renders
+   while B is shown, and the `.remoteHerdrPane` arm, which probes only
+   builder, would join builder's focused pane. A federated client draws
+   herdr's ` machines` header at the top of its expanded sidebar, and a token
+   renders only there, so the arm refuses a match in a grid that shows the
+   header (`federated-client`) and skips the argv fallback. The lane pins
+   that a federated frame shows the header and a plain one does not. The
+   residual: with the sidebar collapsed or hidden no token renders, and the
+   argv fallback cannot see the federation.
 
 ## Federated arm: `.federatedHerdrPane`
 

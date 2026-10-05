@@ -17,7 +17,8 @@ final class HerdrClientTTYProbeTests: XCTestCase {
             processes: { _ in
                 processTableReads.withLock { $0 += 1 }
                 return [Self.foreground(pid: 1, name: "herdr")]
-            }
+            },
+            arguments: Self.plainClient
         )
 
         XCTAssertFalse(result)
@@ -29,7 +30,8 @@ final class HerdrClientTTYProbeTests: XCTestCase {
             HerdrClientTTYProbe.isHerdrClient(
                 onTTYDevicePath: "/dev/ttys001",
                 deviceID: { _ in dev_t(123) },
-                processes: { _ in nil }
+                processes: { _ in nil },
+                arguments: Self.plainClient
             )
         )
     }
@@ -39,14 +41,16 @@ final class HerdrClientTTYProbeTests: XCTestCase {
             HerdrClientTTYProbe.isHerdrClient(
                 onTTYDevicePath: "/dev/ttys001",
                 deviceID: { _ in dev_t(123) },
-                processes: { _ in [Self.entry(pid: 1, name: "zsh", tty: 123, group: 600), Self.foreground(pid: 2, name: "herdr")] }
+                processes: { _ in [Self.entry(pid: 1, name: "zsh", tty: 123, group: 600), Self.foreground(pid: 2, name: "herdr")] },
+                arguments: Self.plainClient
             )
         )
         XCTAssertFalse(
             HerdrClientTTYProbe.isHerdrClient(
                 onTTYDevicePath: "/dev/ttys001",
                 deviceID: { _ in dev_t(123) },
-                processes: { _ in [Self.entry(pid: 1, name: "zsh", tty: 123, group: 600), Self.foreground(pid: 2, name: "herdr-helper")] }
+                processes: { _ in [Self.entry(pid: 1, name: "zsh", tty: 123, group: 600), Self.foreground(pid: 2, name: "herdr-helper")] },
+                arguments: Self.plainClient
             )
         )
     }
@@ -65,10 +69,41 @@ final class HerdrClientTTYProbeTests: XCTestCase {
                         Self.entry(pid: 1, name: "herdr", tty: 123, group: 700, foregroundGroup: shellGroup),
                         Self.entry(pid: 2, name: "zsh", tty: 123, group: shellGroup, foregroundGroup: shellGroup)
                     ]
-                }
+                },
+                arguments: Self.plainClient
             )
         )
     }
+
+    // `herdr terminal attach <id>` shows one pane and leaves the server's
+    // focus where it was, and `herdr --remote` shows another machine's server:
+    // the local arm would bind the server's focused pane, which neither
+    // surface shows. Only `herdr` and `herdr --session <name>` are whole-view
+    // clients, and an argv that cannot be read is neither.
+    func testOnlyAWholeViewClientInvocationAuthorizesTheSurface() {
+        let cases: [(argv: [String]?, isClient: Bool)] = [
+            (["herdr"], true),
+            (["/opt/homebrew/bin/herdr", "--session", "review"], true),
+            (["herdr", "terminal", "attach", "p_1"], false),
+            (["herdr", "--remote", "builder"], false),
+            (["herdr", "client"], false),
+            (nil, false),
+        ]
+        for (argv, isClient) in cases {
+            XCTAssertEqual(
+                HerdrClientTTYProbe.isHerdrClient(
+                    onTTYDevicePath: "/dev/ttys001",
+                    deviceID: { _ in dev_t(123) },
+                    processes: { _ in [Self.foreground(pid: 2, name: "herdr")] },
+                    arguments: { _ in argv }
+                ),
+                isClient,
+                "\(argv ?? ["<unreadable>"])"
+            )
+        }
+    }
+
+    private static let plainClient: @Sendable (Int32) -> [String]? = { _ in ["herdr"] }
 
     // MARK: - Counting client surfaces (issue #286)
 

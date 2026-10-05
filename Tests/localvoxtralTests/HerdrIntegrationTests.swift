@@ -317,6 +317,32 @@ final class HerdrIntegrationTests: XCTestCase {
         )
     }
 
+    /// `herdr terminal attach <pane>` shows one pane and leaves the server's
+    /// focus where it was, so the local herdr arm, which binds the server's
+    /// focused pane, must not take its tty for a whole-view client. The
+    /// production probe reads each client's real tty and argv.
+    func testLocalTerminalAttachIsNotAWholeViewHerdrClient() async throws {
+        let attachSurface = try fixture.startSurface(
+            name: "attach", mode: .attach, paneID: fixture.info.paneID
+        )
+        try await HerdrLaneWait.until("the attach client to paint its pane") {
+            attachSurface.byteCount > 0
+        }
+        let wholeViewTTY = try fixture.surfaceTTY(name: "primary")
+        let attachTTY = try fixture.surfaceTTY(name: "attach")
+        print("[herdr-fixture] tty.primary=\(wholeViewTTY) tty.attach=\(attachTTY)")
+
+        XCTAssertTrue(
+            HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: wholeViewTTY),
+            "the whole-view client's tty must still bind the local herdr arm"
+        )
+        XCTAssertFalse(
+            HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: attachTTY),
+            "a `herdr terminal attach` client's tty bound the local herdr arm, which would "
+                + "join the server's focused pane while the surface shows another"
+        )
+    }
+
     // MARK: - External assumption: metadata write semantics
 
     /// herdr's `PaneReportMetadataParams.tokens` is
@@ -713,6 +739,10 @@ final class HerdrIntegrationTests: XCTestCase {
             return XCTFail("the panel binding probe did not match a whole-view surface: \(outcome)")
         }
         XCTAssertTrue(match.token.hasPrefix("lv-mic-"))
+        XCTAssertFalse(
+            match.showsMachineList,
+            "a client with no saved machines drew herdr's machine list; the remote arm would refuse every join"
+        )
         XCTAssertEqual(
             seenTargets.withLock { $0.first }, target,
             "the probe must read the target it was given"
@@ -1044,6 +1074,14 @@ final class HerdrIntegrationTests: XCTestCase {
             "the federated surface never painted both machines' tokens in ONE frame "
                 + "(viewing \(expectedBarName)): union-over-time is not composition, and the "
                 + "whole-view discriminator cannot retire on it"
+        )
+        // The remote arm refuses a token match in a grid showing the machine
+        // list, because the token renders whichever machine is shown. That
+        // refusal holds only while a federated client draws the list.
+        XCTAssertTrue(
+            composedFrame.map(HerdrPanelBindingProbe.showsMachineList) == true,
+            "a federated client's frame showed no machine list (viewing \(expectedBarName)); "
+                + "the remote arm would join through a client federating other machines"
         )
     }
 

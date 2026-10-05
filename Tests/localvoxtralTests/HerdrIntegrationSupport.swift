@@ -557,6 +557,21 @@ final class HerdrLiveFixture {
         return surface
     }
 
+    /// The controlling tty of a surface's client, as its pty recorded it at
+    /// start (`controlling_tty=` in the geometry file).
+    func surfaceTTY(name: String) throws -> String {
+        let path = "\(info.workdir)/surface-\(name).geometry"
+        let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+        let key = "controlling_tty="
+        guard let field = text.split(whereSeparator: { $0 == " " || $0 == "\n" })
+            .first(where: { $0.hasPrefix(key) }),
+            field.dropFirst(key.count).hasPrefix("/dev/")
+        else {
+            throw HerdrLaneError.fixtureFailed("surface '\(name)' recorded no controlling tty in \(path)")
+        }
+        return String(field.dropFirst(key.count))
+    }
+
     /// Preserve the evidence before the fixture removes its temporary tree.
     /// This runs for green tests too, which makes runner and SSH-account runs
     /// directly comparable instead of leaving diagnostics only for failures.
