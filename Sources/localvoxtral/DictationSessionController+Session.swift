@@ -46,6 +46,7 @@ extension DictationSessionController {
         sessionCommitGuard = nil
         sessionPickedPane = nil
         sessionStartedAt = nil
+        sessionStoppedAt = nil
         sessionCaptureTimeline = nil
         sessionProvider = nil
         sessionModelName = nil
@@ -586,6 +587,7 @@ extension DictationSessionController {
         requestedQuickCapture = false
         requestedDraftReview = nil
         sessionStartedAt = Date()
+        sessionStoppedAt = nil
         yieldVoiceMemoEngine()
         sessionCaptureTimeline = CaptureTimeline(
             pressedAt: dependencies.clock.now(), now: dependencies.clock.now)

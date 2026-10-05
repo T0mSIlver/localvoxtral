@@ -171,6 +171,30 @@ final class DictationHistoryStoreFileTests: XCTestCase {
         XCTAssertEqual(newerEntries.map(\.quickCaptureDestination), ["Inbox"])
     }
 
+    /// A polished dictation a build before #1792 saved opens with every
+    /// field it had, and with no stop time or polish model.
+    func testAnEntrySavedWithoutTheStopTimeAndPolishModelOpens() async throws {
+        let url = makeDirectory().appendingPathComponent("before1792.store")
+        do {
+            let schema = Schema([HistoryBefore1792.DictationSessionRecord.self])
+            let container = try ModelContainer(
+                for: schema, configurations: [ModelConfiguration(schema: schema, url: url)])
+            let context = ModelContext(container)
+            context.insert(HistoryBefore1792.DictationSessionRecord(rawText: "old", polishPromptTokens: 812))
+            try context.save()
+        }
+
+        let store = try DictationSessionStore.open(url: url).get()
+        let entries = await store.entries()
+        let entry = try XCTUnwrap(entries.first)
+        XCTAssertEqual(entry.rawText, "old")
+        XCTAssertEqual(entry.polishedText, "Old.")
+        XCTAssertEqual(entry.polishPromptTokens, 812)
+        XCTAssertNil(entry.stoppedAt)
+        XCTAssertNil(entry.polishBackend)
+        XCTAssertNil(entry.polishModel)
+    }
+
     // MARK: - Moving off default.store
 
     func testTheLegacyStoreIsCopiedOnceAndNeverChanged() async throws {
@@ -403,6 +427,49 @@ enum History18 {
             status = "completed"
             commitSucceeded = true
             self.quickCaptureDestination = quickCaptureDestination
+        }
+    }
+}
+
+/// `DictationSessionRecord` after the polish prompt-token count, before the
+/// stop time and the polish model (#1792): the 23-column layout.
+enum HistoryBefore1792 {
+    @Model
+    final class DictationSessionRecord {
+        var id: UUID
+        var startedAt: Date
+        var finishedAt: Date
+        var rawText: String
+        var polishedText: String?
+        var polishingDurationSeconds: Double?
+        var provider: String
+        var model: String
+        var outputMode: String
+        var targetAppBundleID: String?
+        var status: String
+        var commitSucceeded: Bool
+        var polishProfile: String?
+        var polishContextSummary: String?
+        var projectKey: String?
+        var projectName: String?
+        var joinedAgent: String?
+        var quickCaptureDestination: String?
+        var editOutcome: String?
+        var polishPromptTokens: Int?
+
+        init(rawText: String, polishPromptTokens: Int?) {
+            id = UUID()
+            startedAt = Date(timeIntervalSince1970: 1_800_000_000)
+            finishedAt = Date(timeIntervalSince1970: 1_800_000_005)
+            self.rawText = rawText
+            polishedText = "Old."
+            polishingDurationSeconds = 1.5
+            provider = "p"
+            model = "m"
+            outputMode = "overlay_buffer"
+            status = "completed"
+            commitSucceeded = true
+            self.polishPromptTokens = polishPromptTokens
         }
     }
 }

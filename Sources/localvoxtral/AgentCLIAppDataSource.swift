@@ -235,7 +235,10 @@ final class AgentCLIAppDataSource: AgentCLIDataSource {
             rawText: entry.rawText,
             finalText: entry.finalText,
             inserted: entry.commitSucceeded,
-            status: entry.status.rawValue
+            status: entry.status.rawValue,
+            stoppedAt: entry.stoppedAt,
+            polishBackend: entry.polishBackend,
+            polishModel: entry.polishModel
         )
     }
 }
