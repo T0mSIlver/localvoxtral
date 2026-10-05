@@ -74,7 +74,8 @@ final class SpeechdLaunchOptionsTests: XCTestCase {
     func testParsesBenchmarkOptions() throws {
         let options = try SpeechdOptionParser.parse([
             "--model", "example/model",
-            "--bench", "--seconds", "60", "--cadence-ms", "100",
+            "--bench", "--seconds", "60", "--cadence-ms", "100", "--phase-ms", "10",
+            "--mic-buffer-us", "10667",
             "--wav", "/tmp/example.wav",
         ])
 
@@ -83,6 +84,8 @@ final class SpeechdLaunchOptionsTests: XCTestCase {
             SpeechdBenchmarkOptions(
                 seconds: 60,
                 cadenceMilliseconds: 100,
+                phaseMilliseconds: 10,
+                micBufferMicroseconds: 10_667,
                 wavPath: "/tmp/example.wav"
             )
         )

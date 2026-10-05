@@ -61,7 +61,12 @@ set -euo pipefail
 #                  cache, which integration-speechd provisions), and the
 #                  audio: `noise` (default, synthetic) or `speech` (a passage
 #                  from the Mac's system voice, needed for the time-to-first-
-#                  text and word timings to mean anything);
+#                  text and word timings to mean anything), and a phase in ms
+#                  (default 0) that moves every step that far past a cadence
+#                  multiple (#1670), and a mic buffer in µs (default 0) that
+#                  models the app's sends instead: a timer every cadence that
+#                  drains whole mic buffers, and the helper holding an append
+#                  under its minimum step (10667 = 512 frames at 48 kHz);
 #                  requires a prior `package`
 #     polishd-bench
 #                  time the packaged polishing helper on the polish eval
@@ -815,8 +820,8 @@ case "$CMD" in
   speechd-bench)
     # The SSH gate does not allow arbitrary packaged-binary execution. A marker-gated
     # root XCTest launches the xcodebuild-produced helper and relays its BENCH output.
-    if [[ $# -gt 6 ]]; then
-      echo "speechd-bench accepts optional seconds, cadence-ms, cache-limit-mb, max-utterance-seconds, model, and audio arguments" >&2
+    if [[ $# -gt 8 ]]; then
+      echo "speechd-bench accepts optional seconds, cadence-ms, cache-limit-mb, max-utterance-seconds, model, audio, phase-ms, and mic-buffer-us arguments" >&2
       exit 1
     fi
     SPEECHD_BENCH_SECONDS="${1:-60}"
@@ -827,6 +832,8 @@ case "$CMD" in
     SPEECHD_BENCH_MAX_UTTERANCE="${4:-$SPEECHD_BENCH_SECONDS}"
     SPEECHD_BENCH_MODEL="${5:-}"
     SPEECHD_BENCH_AUDIO="${6:-noise}"
+    SPEECHD_BENCH_PHASE="${7:-0}"
+    SPEECHD_BENCH_MIC_BUFFER="${8:-0}"
     if [[ ! "$SPEECHD_BENCH_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
       echo "speechd-bench seconds must be a positive integer" >&2
       exit 1
@@ -851,6 +858,14 @@ case "$CMD" in
       echo "speechd-bench audio must be noise or speech" >&2
       exit 1
     fi
+    if [[ ! "$SPEECHD_BENCH_PHASE" =~ ^[0-9]+$ ]]; then
+      echo "speechd-bench phase-ms must be a non-negative integer" >&2
+      exit 1
+    fi
+    if [[ ! "$SPEECHD_BENCH_MIC_BUFFER" =~ ^[0-9]+$ ]]; then
+      echo "speechd-bench mic-buffer-us must be a non-negative integer" >&2
+      exit 1
+    fi
     SPEECHD_BENCH_MARKER="$ROOT_DIR/.speechd-bench-enable.json"
     trap 'cleanup_transient_marker "$SPEECHD_BENCH_MARKER"' EXIT
     # The optional fields are omitted rather than nulled, so the test's decoder
@@ -864,6 +879,12 @@ case "$CMD" in
     fi
     if [[ "$SPEECHD_BENCH_AUDIO" == speech ]]; then
       SPEECHD_BENCH_OPTIONAL+=",\"audio\":\"speech\""
+    fi
+    if [[ "$SPEECHD_BENCH_PHASE" != 0 ]]; then
+      SPEECHD_BENCH_OPTIONAL+=",\"phaseMilliseconds\":$SPEECHD_BENCH_PHASE"
+    fi
+    if [[ "$SPEECHD_BENCH_MIC_BUFFER" != 0 ]]; then
+      SPEECHD_BENCH_OPTIONAL+=",\"micBufferMicroseconds\":$SPEECHD_BENCH_MIC_BUFFER"
     fi
     printf '{"helperPath":"%s","seconds":%s,"cadenceMilliseconds":%s,"maxUtteranceSeconds":%s%s}\n' \
       "dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd" \
