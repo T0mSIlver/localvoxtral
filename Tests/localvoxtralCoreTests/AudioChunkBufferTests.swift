@@ -23,6 +23,16 @@ final class AudioChunkBufferTests: XCTestCase {
         XCTAssertEqual(result, Data([0x01, 0x02, 0x03, 0x04, 0x05]))
     }
 
+    func testTake_leavesTheRestInOrder() {
+        let buffer = AudioChunkBuffer()
+        buffer.append(Data([0x01, 0x02, 0x03, 0x04]))
+        buffer.append(Data([0x05, 0x06]))
+
+        XCTAssertEqual(buffer.take(maxBytes: 3), Data([0x01, 0x02]), "whole samples only")
+        XCTAssertEqual(buffer.take(maxBytes: 100), Data([0x03, 0x04, 0x05, 0x06]))
+        XCTAssertTrue(buffer.takeAll().isEmpty)
+    }
+
     func testClear_discards() {
         let buffer = AudioChunkBuffer()
         buffer.append(Data([0x01, 0x02, 0x03]))

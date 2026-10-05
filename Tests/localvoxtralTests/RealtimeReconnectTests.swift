@@ -517,7 +517,8 @@ final class RealtimeReconnectTests: XCTestCase {
         helper.speechdStatus = .starting
         let (viewModel, client) = makeDictatingViewModel(outputMode: .overlayBuffer, backendManager: helper)
         viewModel.session.sessionUsesManagedSpeechHelper = true
-        viewModel.audio.audioChunkBuffer.append(Data(count: 3_200))
+        // 80 ms: short of the 90 ms the helper's first append waits for (#1670).
+        viewModel.audio.audioChunkBuffer.append(Data(count: 2_560))
         let elapsed = VirtualSeconds()
         viewModel.dependencies.reconnectSleep = { [weak viewModel] duration in
             guard let viewModel else { return }
@@ -538,7 +539,7 @@ final class RealtimeReconnectTests: XCTestCase {
         XCTAssertEqual(viewModel.statusText, "Listening...")
         XCTAssertLessThanOrEqual(client.connectCount, 2, "attempts are not spent while the helper starts")
         XCTAssertEqual(
-            viewModel.audio.audioChunkBuffer.bufferedByteCount, 3_200,
+            viewModel.audio.audioChunkBuffer.bufferedByteCount, 2_560,
             "the gap waits for the restarted send loop")
     }
 

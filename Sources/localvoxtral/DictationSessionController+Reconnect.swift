@@ -235,6 +235,7 @@ extension DictationSessionController {
         audio.restartAudioSendTask(
             client: activeRealtimeClient,
             debugLoggingEnabled: debugLoggingEnabled,
+            alignedToSpeechHelperSteps: sessionUsesManagedSpeechHelper,
             sleep: dependencies.clock.sleep
         )
         audio.restartCommitTask(client: activeRealtimeClient, sleep: dependencies.clock.sleep)

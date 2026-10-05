@@ -180,15 +180,45 @@ final class SessionAudioPipeline {
         }
     }
 
+    /// `alignedToSpeechHelperSteps` cuts the audio where the managed helper's
+    /// engines can decode (`AlignedAudioSendSchedule`) instead of draining it
+    /// every `audioSendInterval`.
     func restartAudioSendTask(
         client: any RealtimeClient,
         debugLoggingEnabled: Bool,
+        alignedToSpeechHelperSteps: Bool = false,
         sleep: @escaping @Sendable (Duration) async -> Void
     ) {
         audioSendTask?.cancel()
 
         let interval = TimingConstants.audioSendInterval
         let chunkBuffer = audioChunkBuffer
+        if alignedToSpeechHelperSteps {
+            audioSendTask = Task(priority: .utility) {
+                var schedule = AlignedAudioSendSchedule()
+                while !Task.isCancelled {
+                    // As below: never drain for a socket that is gone (#380).
+                    guard client.isConnected else {
+                        await sleep(.seconds(interval))
+                        continue
+                    }
+                    switch schedule.next(bufferedBytes: chunkBuffer.bufferedByteCount) {
+                    case .wait(let duration):
+                        await sleep(duration)
+                    case .send(let byteCount):
+                        let chunk = chunkBuffer.take(maxBytes: byteCount)
+                        if client.sendAudioChunk(chunk) {
+                            schedule.didSend(byteCount: chunk.count)
+                        } else {
+                            // Back to the front for the reconnect to replay (#1458).
+                            chunkBuffer.putBack(chunk)
+                            await sleep(.seconds(interval))
+                        }
+                    }
+                }
+            }
+            return
+        }
         audioSendTask = Task(priority: .utility) {
             var emptyBufferTicks = 0
             while !Task.isCancelled {
