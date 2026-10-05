@@ -4,6 +4,10 @@ import Foundation
 /// GET /health (readiness probe), POST /v1/chat/completions, and
 /// POST /v1/tokenize, which counts a text's tokens for Settings' prompt sizes.
 ///
+/// `/health` answers `{"status": "ok", "pid": n}`: the supervisor counts the
+/// helper ready only when the pid is the child it launched, so another
+/// process that binds the port while the model loads is refused (#1786).
+///
 /// `/v1/tokenize` takes `{"text": "..."}` and answers `{"tokens": n}`. It only
 /// reads the tokenizer, so it changes nothing a polish sends or gets back.
 public struct PolishdRouter: Sendable {
@@ -18,7 +22,7 @@ public struct PolishdRouter: Sendable {
     public func handle(_ request: HTTPRequest) async -> HTTPResponse {
         switch (request.method, request.path) {
         case ("GET", "/health"):
-            return .json(200, ["status": "ok"])
+            return .json(200, Health(status: "ok", pid: ProcessInfo.processInfo.processIdentifier))
         case ("POST", "/v1/chat/completions"):
             return await handleChatCompletion(request)
         case ("POST", "/v1/tokenize"):
@@ -28,6 +32,11 @@ public struct PolishdRouter: Sendable {
         default:
             return errorResponse(404, "not found: \(request.path)", type: "invalid_request_error")
         }
+    }
+
+    private struct Health: Encodable {
+        let status: String
+        let pid: Int32
     }
 
     private func handleChatCompletion(_ request: HTTPRequest) async -> HTTPResponse {

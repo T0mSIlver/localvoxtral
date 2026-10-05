@@ -808,6 +808,82 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertFalse(pipeline.viewModel.isFinalizingStop, "the stop is over")
     }
 
+    /// Quit while dictating to a backend that answers final commits, as
+    /// speechd does: the quit sends the final commit and waits for the
+    /// answer, so History holds the whole dictation, not inserted (#1756).
+    /// What `applicationShouldTerminate` and `applicationWillTerminate` run.
+    func testQuitWhileDictatingWaitsForTheBackendsLastWords() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let store = try XCTUnwrap(DictationSessionStore.inMemory())
+        pipeline.viewModel.sessionStore = store
+
+        await startAndSpeak(pipeline)
+        await sendSettledFinal(pipeline, Self.settledPiece)
+        let replied = BoundedWait()
+        if pipeline.viewModel.finalizeDictationBeforeQuit(then: { replied.resolve() }) {
+            await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+            pipeline.server.send(["type": "transcription.done", "text": Self.tail])
+            let answered = await replied.value(failAfter: 10)
+            XCTAssertTrue(answered, "the quit never got its answer")
+        }
+        pipeline.viewModel.saveStoppedDictationForQuit()
+        await store.pendingWrites?.value
+
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), ["\(Self.settledPiece) \(Self.tail)"])
+        XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded), [false])
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing is inserted at quit")
+        XCTAssertFalse(pipeline.viewModel.isFinalizingStop, "the stop is over")
+    }
+
+    /// The quit waits for the backend's answer for a short bound only, then
+    /// saves what arrived: a quit must never hang (#1756).
+    func testQuitFinalizationGivesUpAfterItsShortBound() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+
+        await startAndSpeak(pipeline)
+        await sendSettledFinal(pipeline, Self.settledPiece)
+        let replied = BoundedWait()
+        XCTAssertTrue(pipeline.viewModel.finalizeDictationBeforeQuit(then: { replied.resolve() }))
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        // The socket's keepalive, the stop's watchdog and its finalization
+        // loop. The helper never answers.
+        await pipeline.clock.waitForSleepers(3)
+        pipeline.clock.advance(by: TimingConstants.quitStopFinalizationTimeout)
+        let answered = await replied.value(failAfter: 10)
+        XCTAssertTrue(answered, "the quit waited past its bound")
+        pipeline.viewModel.saveStoppedDictationForQuit()
+
+        XCTAssertEqual(
+            pipeline.records.all.map { $0.rawText.trimmingCharacters(in: .whitespaces) }, [Self.settledPiece])
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing is inserted at quit")
+    }
+
+    /// Changing the managed speech model mid-dictation restarts the engine
+    /// only once the dictation has ended: until the stop's final commit is
+    /// answered, the helper holds the dictation's last words (#1759).
+    func testAManagedModelChangeMidDictationRestartsTheEngineAfterTheDictation() async throws {
+        let backend = OnboardingTestBackendManager()
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, backendManager: backend)
+        var recordsAtEngineStop: Int?
+        backend.onStopDictation = { recordsAtEngineStop = pipeline.records.all.count }
+        let settings = pipeline.viewModel.settings
+        settings.onboardingCompleted = true
+        let otherModel = try XCTUnwrap(
+            SpeechModelCatalog.options.first { $0.repoID != settings.resolvedManagedSpeechModel.repoID })
+
+        await startAndSpeak(pipeline)
+        // The session runs on the managed engine from here.
+        settings.dictationBackendMode = .managedLocal
+        pipeline.viewModel.engines.applyManagedSpeechModelChange(otherModel.repoID)
+        let restart = try XCTUnwrap(pipeline.viewModel.engines.dictationShutdownTask)
+        await stopAndFinalize(pipeline)
+        await restart.value
+
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [Self.phrase])
+        XCTAssertEqual(backend.stopDictationCallCount, 1)
+        XCTAssertEqual(recordsAtEngineStop, 1, "the engine stopped before the dictation ended")
+    }
+
     /// The same quit during a quick capture files the words so far as the
     /// stop would: in History as a capture, then in the Inbox (#1296).
     func testQuitBeforeTheFinalTranscriptFilesAQuickCapture() async throws {
@@ -4996,7 +5072,8 @@ final class DictationPipelineTests: XCTestCase {
         earlyPolish: Bool = true,
         contextBudget: RealtimeContextBudget? = nil,
         overlayCoordinator: (any OverlayBufferSessionCoordinating)? = nil,
-        workspaceCenter: NotificationCenter? = nil
+        workspaceCenter: NotificationCenter? = nil,
+        backendManager: (any ManagedBackendManaging)? = nil
     ) async throws -> Pipeline {
         let server = try FakeRealtimeServer()
         addTeardownBlock { server.stop() }
@@ -5020,6 +5097,7 @@ final class DictationPipelineTests: XCTestCase {
         let records = SessionRecords()
         let viewModel = DictationViewModel(
             settings: settings,
+            backendManager: backendManager,
             overlayBufferCoordinator: overlayCoordinator ?? overlay,
             startRuntimeServices: false,
             dependencies: DictationViewModel.Dependencies(

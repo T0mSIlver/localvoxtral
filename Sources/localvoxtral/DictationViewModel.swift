@@ -633,6 +633,10 @@ final class DictationViewModel {
         )
         self.session = session
 
+        engines.isDictationIdle = { [weak session] in session?.isDictationIdle ?? true }
+        engines.waitUntilDictationIsIdle = { [weak session] in
+            await session?.waitUntilDictationIsIdle()
+        }
         engines.interruptConnectingSession = { [weak session] in
             guard let session else { return }
             // Cancelling the startup task mid-connect without aborting would
@@ -919,6 +923,11 @@ final class DictationViewModel {
             session.activeRealtimeClient.disconnect()
             shortcuts.unregister()
         }
+    }
+
+    /// See `DictationSessionController.finalizeDictationBeforeQuit`.
+    func finalizeDictationBeforeQuit(then reply: @escaping @MainActor () -> Void) -> Bool {
+        session.finalizeDictationBeforeQuit(then: reply)
     }
 
     /// A stopped dictation still owed its commit is saved to History as not

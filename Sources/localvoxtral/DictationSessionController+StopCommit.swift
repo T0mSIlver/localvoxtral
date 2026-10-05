@@ -22,6 +22,10 @@ extension DictationSessionController {
             debugLog("finishStoppedSession ignored; cleanup already in progress")
             return
         }
+        if quitHoldsStoppedSession {
+            endQuitFinalization()
+            return
+        }
         isCompletingStoppedSession = true
 
         if stopAwaitsBackendFinal, !wasCancelled, !realtimeErrorDuringStop, backendAnswersFinalCommits {

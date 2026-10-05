@@ -35,8 +35,12 @@ final class DictationSessionController {
         DictationViewModel.secureKeyboardEntryWarningMessage
     }
 
-    var isDictating = false
-    var isFinalizingStop = false
+    var isDictating = false {
+        didSet { resumeIdleWaitersIfIdle() }
+    }
+    var isFinalizingStop = false {
+        didSet { resumeIdleWaitersIfIdle() }
+    }
     var isConnectingRealtimeSession = false
     var realtimeSessionIndicatorState: RealtimeSessionIndicatorState = .idle
     /// The text the realtime events built: the partial in flight, the
@@ -359,6 +363,18 @@ final class DictationSessionController {
     var sessionStartGeneration: UInt64 = 0
     @ObservationIgnored
     var stopFinalizationTask: Task<Void, Never>?
+    /// Answers the quit once the stop's finalization ends; set while a quit
+    /// waits on the helper's last words (#1756).
+    @ObservationIgnored
+    var quitFinalizationReply: (@MainActor () -> Void)?
+    /// The stopped session is the quit's to save, from the quit's stop until
+    /// `saveStoppedDictationForQuit`: an event that ends the finalization
+    /// later (the socket's close) must not commit it.
+    @ObservationIgnored
+    var quitHoldsStoppedSession = false
+    /// What `waitUntilDictationIsIdle` suspends on (#1759).
+    @ObservationIgnored
+    var idleWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
     @ObservationIgnored
     var connectTimeoutTask: Task<Void, Never>?
     /// Stops an Overlay Buffer tap session that has gone quiet

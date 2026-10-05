@@ -44,6 +44,10 @@ enum TimingConstants {
     /// what arrived, as it did when sleep skipped the final commit.
     static let sleepStopFinalizationTimeout: TimeInterval = 1.0
 
+    /// The same bound for the stop a quit makes (#1756): the quit waits this
+    /// long for the helper's tail, then saves what arrived.
+    static let quitStopFinalizationTimeout: TimeInterval = 1.0
+
     /// Minimum time the finalization phase stays open, counted from when the
     /// final commit left for the server, before the inactivity check kicks
     /// in. Prevents premature disconnect if the first transcript delta
