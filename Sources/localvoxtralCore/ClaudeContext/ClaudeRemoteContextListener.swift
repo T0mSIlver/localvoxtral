@@ -1146,6 +1146,13 @@ public final class ClaudeRemoteContextListener: Sendable {
             return
         }
         let answer = inbox.answer(hostID: host.id, request: asked)
+        // Again after the wait, as after a poll's hold: a host revoked or
+        // rotated meanwhile gets nothing under the key it had.
+        guard hosts.modChannelKey(token: token, expectedHostID: host.id) == key else {
+            Log.claudeContext.error("Rejected remote inbox answer: host was revoked while it waited")
+            respond(fd: fd, status: 401)
+            return
+        }
         let sign = { (body: Data) in ClaudeRemoteModWire.answerProof(key: key, nonce: asked.nonce, body: body) }
         switch answer {
         case .list(let list):

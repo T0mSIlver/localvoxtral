@@ -126,6 +126,10 @@ public final class RemoteInboxRoute: Sendable {
         )
     }
 
+    /// How much longer an open already under way is waited for: with the
+    /// default timeout it stays under the mod's 8 s `ASK_ABANDON_MS`.
+    static let openGrace: TimeInterval = 2
+
     /// Blocks the calling connection thread, never the main one, until the
     /// app answers or `timeout` passes.
     package func answer(hostID: String, request: Request) -> Answer {
@@ -133,10 +137,12 @@ public final class RemoteInboxRoute: Sendable {
             Log.claudeContext.info("Remote inbox: refused a session no hook of its host has named")
             return .unknownSession
         }
+        enum Phase { case waiting, opening, expired }
         let result = Mutex<Answer?>(nil)
-        // Set once the wait gives up: an open that has not started by then
-        // must not raise the Inbox after the host was told it failed.
-        let expired = Mutex(false)
+        // An open that has not started when the wait gives up must not raise
+        // the Inbox after the host was told it failed; one already under way
+        // is waited for instead.
+        let phase = Mutex(Phase.waiting)
         let done = DispatchSemaphore(value: 0)
         let captures = self.captures, open = self.open
         Task {
@@ -147,7 +153,11 @@ public final class RemoteInboxRoute: Sendable {
                 // Checked against the project before anything opens: an id
                 // from another project is as unknown as a made-up one.
                 if let item = inProject.first(where: { $0.id.uuidString.lowercased() == id.lowercased() }),
-                   !expired.withLock({ $0 }),
+                   phase.withLock({ phase in
+                       guard phase == .waiting else { return false }
+                       phase = .opening
+                       return true
+                   }),
                    await open(item.id) == true {
                     answer = .opened
                 } else {
@@ -159,8 +169,15 @@ public final class RemoteInboxRoute: Sendable {
             result.withLock { $0 = answer }
             done.signal()
         }
-        guard done.wait(timeout: .now() + timeout) == .success, let answer = result.withLock({ $0 }) else {
-            expired.withLock { $0 = true }
+        var finished = done.wait(timeout: .now() + timeout) == .success
+        if !finished {
+            let opening = phase.withLock { phase -> Bool in
+                if phase == .waiting { phase = .expired }
+                return phase == .opening
+            }
+            if opening { finished = done.wait(timeout: .now() + Self.openGrace) == .success }
+        }
+        guard finished, let answer = result.withLock({ $0 }) else {
             Log.backends.error("Remote inbox: the app did not answer in \(self.timeout, privacy: .public) s")
             return .timedOut
         }
