@@ -387,7 +387,9 @@ there is not.
   pid; (2) the herdr pane the session's own hooks reported, only when it is
   the one live local herdr, the registry maps the pane to that session
   alone, and herdr lists the session's pid in the pane's foreground (the
-  route asks again before Enter); (3) a Ghostty, iTerm2 or Terminal.app
+  route asks both again before every append and Enter, the mapping after
+  the foreground query, since `/clear` starts another session in the same
+  process and pane); (3) a Ghostty, iTerm2 or Terminal.app
   tab. Anything else, cmux included (its route can prove a surface only
   while it is the focused one), is refused in one sentence. Every route
   refusal is `keepInHistory`, never `typeInstead`: keys would go to the

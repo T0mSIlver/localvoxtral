@@ -889,6 +889,11 @@ start_surface() {
   local dir="$1" name="$2" mode="$3" pane="${4:-}" geometry
   geometry="$dir/surface-$name.geometry"
   local -a inner
+  # `script` writes ^D to the pty when its stdin reaches EOF. An attach client
+  # forwards that ^D to the pane's shell, which exits and takes the terminal
+  # with it, so an attach surface reads a FIFO it holds open itself, which
+  # never ends.
+  local input=/dev/null
   case "$mode" in
     app) inner=("$HERDR_BINARY") ;;
     attach)
@@ -900,6 +905,8 @@ start_surface() {
       terminal="$({ herdr_cli pane get "$pane" 2>/dev/null || true; } \
         | lv_json_value result.pane.terminal_id || true)"
       inner=("$HERDR_BINARY" terminal attach "${terminal:-$pane}")
+      input="$dir/surface-$name.stdin"
+      mkfifo "$input"
       ;;
     observe)
       [[ -n "$pane" ]] || die "surface mode 'observe' needs a pane id"
@@ -945,7 +952,7 @@ start_surface() {
       } > "$geometry"
       exec "$@"
     ' fixture-surface "$SURFACE_ROWS" "$SURFACE_COLUMNS" "$geometry" "${inner[@]}" \
-    </dev/null >/dev/null 2>&1 &
+    0<>"$input" >/dev/null 2>&1 &
   echo $! >> "$dir/surface.pids"
   local waited=0
   until [[ -s "$geometry" ]]; do
