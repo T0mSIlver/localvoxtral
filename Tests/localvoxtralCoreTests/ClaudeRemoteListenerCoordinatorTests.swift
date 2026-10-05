@@ -2,6 +2,7 @@ import ClaudeContextWire
 import Foundation
 import Synchronization
 import XCTest
+import localvoxtralTestSupport
 @testable import localvoxtralCore
 
 
@@ -161,6 +162,49 @@ final class ClaudeRemoteListenerCoordinatorTests: XCTestCase {
         let keptID = ClaudeRemoteSessionScope.scopedSessionID(hostID: kept.host.id, sessionID: "s1")
         XCTAssertNotNil(sessions.snapshot(sessionID: keptID), "the sibling host was not revoked")
         XCTAssertTrue(coordinator.isListening, "and it still has a host to listen for")
+    }
+
+    /// Codex review, 2026-10-04: a poll held through a forward the user
+    /// keeps up by hand must not keep the revoked host's channel open.
+    func testRevokingAHostClosesItsModChannels() async throws {
+        let hosts = try makeHosts()
+        let sessions = makeSessions()
+        let clock = ManualSessionClock()
+        let hub = ClaudeModChannelHub()
+        let channels = ClaudeRemoteModChannels(
+            hub: hub, registry: sessions, sleep: { await clock.sleep($0) }, now: { clock.now }
+        )
+        let coordinator = ClaudeRemoteListenerCoordinator(
+            hosts: hosts, sessions: sessions, modChannels: channels
+        ) { registry, rejections in
+            ClaudeRemoteContextListener(
+                registry: sessions, hosts: registry, limits: ClaudeRemoteListenerLimits(port: 0), rejections: rejections
+            )
+        }
+        defer { coordinator.shutdown() }
+
+        let doomed = try hosts.enroll(label: "laptop")
+        _ = try hosts.enroll(label: "builder")
+        let scoped = ClaudeRemoteSessionScope.scopedSessionID(hostID: doomed.host.id, sessionID: "s1")
+        sessions.ingest(record(session: scoped), origin: .remote(channel: ClaudeRemoteSessionScope.channel(hostID: doomed.host.id)))
+        try coordinator.reconcile()
+        let instance = String(repeating: "1", count: 32)
+        let request = ClaudeRemoteModWire.PollRequest(
+            sessionID: "s1", instance: instance, nonce: String(repeating: "2", count: 32),
+            challenge: channels.issueChallenge(hostID: doomed.host.id, sessionID: "s1", instance: instance), acked: 0
+        )
+        let held = Task.detached { await channels.poll(hostID: doomed.host.id, request: request) }
+        await clock.waitForSleepers(1)
+        XCTAssertTrue(hub.isAttached(scoped))
+
+        try hosts.revoke(hostID: doomed.host.id)
+        try coordinator.reconcile()
+        // Past the hold: a poll still held answers now, whatever it holds.
+        clock.advance(by: 25)
+
+        let outcome = await held.value
+        XCTAssertEqual(outcome, .revoked)
+        XCTAssertFalse(hub.isAttached(scoped))
     }
 
     func testRemovingAHostEvictsItsCachedSessions() async throws {

@@ -58,18 +58,23 @@ public final class ClaudeRemoteListenerCoordinator: ClaudeRemoteListenerControll
     /// object on every 0→1 transition. A tally that lived in the listener would
     /// forget a night of rejections the moment the user enrolled another host.
     private let rejections = ClaudeRemoteRejectionTally()
+    /// Closed with their host's context: a revoked host's held poll must not
+    /// keep a channel the app still writes to.
+    private let modChannels: ClaudeRemoteModChannels?
 
     /// - Parameter makeListener: handed the tally as well as the registry, so
     ///   every listener this coordinator builds reports into the SAME counters.
     public init(
         hosts: ClaudeRemoteHostRegistry,
         sessions: ClaudeSessionRegistry,
+        modChannels: ClaudeRemoteModChannels? = nil,
         makeListener: @escaping @MainActor (
             ClaudeRemoteHostRegistry, ClaudeRemoteRejectionTally
         ) -> ClaudeRemoteContextListener
     ) {
         self.hosts = hosts
         self.sessions = sessions
+        self.modChannels = modChannels
         self.makeListener = makeListener
     }
 
@@ -89,7 +94,7 @@ public final class ClaudeRemoteListenerCoordinator: ClaudeRemoteListenerControll
         doctor: RemoteDoctorRoute? = nil,
         modChannels: ClaudeRemoteModChannels? = nil
     ) {
-        self.init(hosts: hosts, sessions: sessions) { registry, rejections in
+        self.init(hosts: hosts, sessions: sessions, modChannels: modChannels) { registry, rejections in
             ClaudeRemoteContextListener(
                 registry: sessions,
                 hosts: registry,
@@ -147,11 +152,9 @@ public final class ClaudeRemoteListenerCoordinator: ClaudeRemoteListenerControll
     /// candidates — so an empty registry evicting every SSH-host session is the
     /// intent, not collateral damage.
     private func evictSessionsOfInactiveHosts() {
-        let active = Set(
-            hosts.hosts()
-                .filter { !$0.isRevoked }
-                .map { ClaudeRemoteSessionScope.channel(hostID: $0.id) }
-        )
+        let activeHostIDs = Set(hosts.hosts().filter { !$0.isRevoked }.map(\.id))
+        modChannels?.closeChannels(ofHostsNotIn: activeHostIDs)
+        let active = Set(activeHostIDs.map { ClaudeRemoteSessionScope.channel(hostID: $0) })
         let evicted = sessions.evictRemoteSessions(notIn: active)
         if evicted > 0 {
             Log.claudeContext.info(

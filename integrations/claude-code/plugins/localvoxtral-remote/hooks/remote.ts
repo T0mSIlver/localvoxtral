@@ -64,24 +64,34 @@ export type PollRequest = {
   /** This load of the module: a second process of the session is refused. */
   instance: string
   nonce: string
-  /** The last line this attach delivered; the app drops it and those before. */
+  /**
+   * The `next` of the last answer this mod verified, or empty: only a poll
+   * carrying one the app issued and nobody used gets lines, so a poll a
+   * squatter captured cannot be replayed.
+   */
+  challenge: string
+  /** The attach `acked` counts in; 0 before the first. */
+  attach: number
+  /** The last line of that attach delivered; the app drops it and those before. */
   acked: number
 }
 
 /**
  * One poll's answer: the attach it belongs to, the number of its first line,
- * and the lines, each one message as the publisher would print it.
+ * the lines, each one message as the publisher would print it, and the
+ * challenge the next poll carries.
  */
-export type PollAnswer = { attach: number; first: number; lines: string[] }
+export type PollAnswer = { attach: number; first: number; lines: string[]; next: string }
 
 export function parsePollAnswer(text: string): PollAnswer | null {
   try {
     const value: unknown = JSON.parse(text)
     if (typeof value !== 'object' || value === null) return null
-    const { attach, first, lines } = value as Record<string, unknown>
+    const { attach, first, lines, next } = value as Record<string, unknown>
     if (!Number.isInteger(attach) || !Number.isInteger(first) || !Array.isArray(lines)) return null
     if (!lines.every(line => typeof line === 'string')) return null
-    return { attach: attach as number, first: first as number, lines: lines as string[] }
+    if (typeof next !== 'string' || !/^[0-9a-f]{32}$/.test(next)) return null
+    return { attach: attach as number, first: first as number, lines: lines as string[], next }
   } catch {
     return null
   }

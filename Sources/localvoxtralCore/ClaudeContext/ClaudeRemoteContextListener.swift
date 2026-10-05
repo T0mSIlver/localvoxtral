@@ -958,8 +958,9 @@ public final class ClaudeRemoteContextListener: Sendable {
     /// then the body must carry the host's channel key proof, which a squatter
     /// on the host's forward port, holding only the token, cannot make. A
     /// poll's answer carries the same proof over its nonce, so the mod acts
-    /// on nothing a squatter wrote. Refusals log a reason, never a byte of
-    /// a body.
+    /// on nothing a squatter wrote, and the challenge the next poll must
+    /// carry, so a captured poll replays into nothing. Refusals log a
+    /// reason, never a byte of a body.
     ///
     /// - Returns: whether the connection gave its slot back (a held poll).
     private func serveModChannel(
@@ -1053,16 +1054,37 @@ public final class ClaudeRemoteContextListener: Sendable {
             done.signal()
         }
         done.wait()
+        // Again after the hold: a host revoked or rotated while its poll
+        // held gets nothing under the key it had.
+        guard hosts.modChannelKey(token: token, expectedHostID: host.id) == key else {
+            Log.claudeContext.error("Rejected remote mod channel answer: host was revoked while its poll held")
+            respond(fd: fd, status: 401)
+            return true
+        }
+        let answer: Data
         switch outcome.withLock({ $0 }) {
         case .lines(let attach, let first, let lines)?:
-            let answer = ClaudeRemoteModWire.answerBody(attach: attach, first: first, lines: lines)
-            respond(
-                fd: fd, status: 200, body: answer,
-                modProof: ClaudeRemoteModWire.answerProof(key: key, nonce: poll.nonce, body: answer)
+            answer = ClaudeRemoteModWire.answerBody(
+                attach: attach, first: first, lines: lines,
+                next: modChannels.issueChallenge(hostID: host.id, sessionID: poll.sessionID, instance: poll.instance)
             )
+        case .unchallenged?:
+            // The attach the mod named, so it keeps its count.
+            answer = ClaudeRemoteModWire.answerBody(
+                attach: poll.attach, first: poll.acked + 1, lines: [],
+                next: modChannels.issueChallenge(hostID: host.id, sessionID: poll.sessionID, instance: poll.instance)
+            )
+        case .revoked?:
+            respond(fd: fd, status: 401)
+            return true
         case .busy?, nil:
             respond(fd: fd, status: 409)
+            return true
         }
+        respond(
+            fd: fd, status: 200, body: answer,
+            modProof: ClaudeRemoteModWire.answerProof(key: key, nonce: poll.nonce, body: answer)
+        )
         return true
     }
 

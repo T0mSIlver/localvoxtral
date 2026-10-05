@@ -243,6 +243,7 @@ async function runRemoteChannel($: EngineInterface, link: RemoteLink): Promise<v
   const instance = randomHex(16)
   let attach: number | undefined
   let acked = 0
+  let challenge = ''
   let failedAt: number | undefined
   for (;;) {
     if (failedAt !== undefined) {
@@ -252,8 +253,18 @@ async function runRemoteChannel($: EngineInterface, link: RemoteLink): Promise<v
     let saidBye = endingSession === sessionID
     if (!saidBye) {
       const nonce = randomHex(16)
-      const request: PollRequest = { mod_poll: WIRE_VERSION, session_id: sessionID, instance, nonce, acked }
+      const request: PollRequest = {
+        mod_poll: WIRE_VERSION,
+        session_id: sessionID,
+        instance,
+        nonce,
+        challenge,
+        attach: attach ?? 0,
+        acked,
+      }
       const body = JSON.stringify(request)
+      // Good once: a failure below starts over without one.
+      challenge = ''
       const cut = new Promise<'cut'>((resolve) => {
         cutChannel = () => resolve('cut')
       })
@@ -270,12 +281,17 @@ async function runRemoteChannel($: EngineInterface, link: RemoteLink): Promise<v
         answered = 'late'
       }
       if (answered === 'late') {
+        // Nobody tells this mod who waits until it attaches again.
+        await update($, waiting, () => [])
         failedAt = await $.clock.now()
         continue
       }
       if (answered !== 'cut') {
         // An app without the route: nothing to attach to this session.
-        if (answered.status === 404) return
+        if (answered.status === 404) {
+          await update($, waiting, () => [])
+          return
+        }
         // Another process of this session holds the channel, or no hook
         // has named the session yet.
         if (answered.status === 409 || answered.status === 503) {
@@ -285,9 +301,11 @@ async function runRemoteChannel($: EngineInterface, link: RemoteLink): Promise<v
         const proof = answered.headers[PROOF_HEADER.toLowerCase()] ?? ''
         const poll = answered.status === 200 ? parsePollAnswer(answered.text) : null
         if (poll === null || !sameHex(proof, answerProof(link.key, nonce, answered.text))) {
+          await update($, waiting, () => [])
           failedAt = await $.clock.now()
           continue
         }
+        challenge = poll.next
         if (poll.attach !== attach) {
           // A new attach numbers its lines from 1.
           attach = poll.attach
