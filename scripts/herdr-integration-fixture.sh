@@ -893,7 +893,13 @@ start_surface() {
     app) inner=("$HERDR_BINARY") ;;
     attach)
       [[ -n "$pane" ]] || die "surface mode 'attach' needs a pane id"
-      inner=("$HERDR_BINARY" terminal attach "$pane")
+      # herdr 0.9 attaches a TERMINAL id; given a pane id it prints
+      # "terminal <pane> not found" and exits, and a dead client renders no
+      # token either. An older herdr reports no terminal_id and takes the pane.
+      local terminal
+      terminal="$({ herdr_cli pane get "$pane" 2>/dev/null || true; } \
+        | lv_json_value result.pane.terminal_id || true)"
+      inner=("$HERDR_BINARY" terminal attach "${terminal:-$pane}")
       ;;
     observe)
       [[ -n "$pane" ]] || die "surface mode 'observe' needs a pane id"

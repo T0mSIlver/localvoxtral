@@ -572,6 +572,24 @@ final class HerdrLiveFixture {
         return String(field.dropFirst(key.count))
     }
 
+    /// The herdr processes in the foreground job of a surface's tty, each
+    /// printed with its argv. Empty means the client exited or was never the
+    /// foreground job, so a surface that "renders nothing" proves nothing.
+    func foregroundHerdrClients(surface name: String) throws -> [TTYProcessTable.Entry] {
+        let tty = try surfaceTTY(name: name)
+        let entries = TTYProcessTable.liveDeviceID(tty).flatMap(TTYProcessTable.entries(onDevice:)) ?? []
+        for entry in entries {
+            let argv = SSHDestinationTTYProbe.processArguments(pid: entry.pid) ?? ["<unreadable>"]
+            print(
+                "[herdr-fixture] surface.\(name) tty=\(tty) pid=\(entry.pid) name=\(entry.name) "
+                    + "pgid=\(entry.processGroupID) fg=\(entry.terminalForegroundGroupID) argv=\(argv)"
+            )
+        }
+        return entries.filter {
+            $0.name == "herdr" && $0.processGroupID > 0 && $0.processGroupID == $0.terminalForegroundGroupID
+        }
+    }
+
     /// Preserve the evidence before the fixture removes its temporary tree.
     /// This runs for green tests too, which makes runner and SSH-account runs
     /// directly comparable instead of leaving diagnostics only for failures.

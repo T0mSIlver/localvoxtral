@@ -282,6 +282,10 @@ final class HerdrIntegrationTests: XCTestCase {
         try await HerdrLaneWait.until("the attach client to paint its pane") {
             attachSurface.byteCount > 0
         }
+        XCTAssertFalse(
+            try fixture.foregroundHerdrClients(surface: "attach").isEmpty,
+            "the attach client exited; its silence below would prove nothing"
+        )
 
         let (service, handle) = try await openForward()
         defer { handle.close(); service.stopAllForQuit() }
@@ -331,6 +335,13 @@ final class HerdrIntegrationTests: XCTestCase {
         let wholeViewTTY = try fixture.surfaceTTY(name: "primary")
         let attachTTY = try fixture.surfaceTTY(name: "attach")
         print("[herdr-fixture] tty.primary=\(wholeViewTTY) tty.attach=\(attachTTY)")
+        // Precondition: a live herdr client is each tty's foreground job.
+        // Without it the refusal below would prove nothing.
+        XCTAssertFalse(try fixture.foregroundHerdrClients(surface: "primary").isEmpty)
+        XCTAssertFalse(
+            try fixture.foregroundHerdrClients(surface: "attach").isEmpty,
+            "the attach client is not the foreground job of its tty; the refusal below would prove nothing"
+        )
 
         XCTAssertTrue(
             HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: wholeViewTTY),
@@ -706,6 +717,10 @@ final class HerdrIntegrationTests: XCTestCase {
         try await HerdrLaneWait.until("the attach client to paint its pane") {
             attachSurface.byteCount > 0
         }
+        XCTAssertFalse(
+            try fixture.foregroundHerdrClients(surface: "attach").isEmpty,
+            "the attach client exited; its abstention below would prove nothing"
+        )
 
         let (service, handle) = try await openForward()
         defer { handle.close(); service.stopAllForQuit() }
