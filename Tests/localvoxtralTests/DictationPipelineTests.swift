@@ -1615,13 +1615,15 @@ final class DictationPipelineTests: XCTestCase {
     /// back (#1803): the popover does not say it is in the box, and no key
     /// types it, since the mod keeps it.
     func testASpokenSendTheBoxWouldNotTakeBackSaysItIsNotThere() async throws {
-        let (pipeline, typed, fills) = try await modChannelPipeline(answers: [.notRestored])
+        let answered = BoundedWait()
+        let (pipeline, typed, fills) = try await modChannelPipeline(answers: [.notRestored], answerGate: answered)
         pipeline.viewModel.settings.overlaySpokenSendEnabled = true
         let settled = FillSettled()
         ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
         addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
 
         await dictate(pipeline, "run the tests, send it.")
+        answered.resolve()
         let done = await settled.wait(for: 1)
 
         XCTAssertTrue(done)
