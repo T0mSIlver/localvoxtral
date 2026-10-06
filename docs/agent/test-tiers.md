@@ -405,7 +405,9 @@ The speech service on the Mac is shared, and other agents' model work can put
 it seconds behind the audio, which fails a correct app (#548).
 `scripts/e2e/speech-service-probe.py` plays the scenario's WAV to the service
 without the app and times the final transcript from the end of the speech. It
-runs before the app starts and after any failed scenario. A failure becomes
+runs before the app starts, once the owner's app has quit (its own speech
+helper slowed the service past the limit, #1832), and after any failed
+scenario. A failure becomes
 `NOT RUN:` with the measured lag only when the probe finds the service past
 3.5 s: the check's 2 s of silence plus the app's 1.5 s minimum finalization
 wait. An idle service measures about 2.6 s. A probe within the limit, or one

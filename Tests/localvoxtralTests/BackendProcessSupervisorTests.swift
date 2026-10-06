@@ -187,32 +187,47 @@ final class BackendProcessSupervisorTests: XCTestCase {
         XCTAssertEqual(state, .restarting(attempt: 1))
     }
 
-    /// The listener that answers is the child: it runs as before.
+    /// The listener that answers is the child: it runs as before. A shell's
+    /// `echo $$ > file` creates the file before it writes the pid (#1830):
+    /// the child holds that empty file until the probe has seen it, so the
+    /// readiness check meets it every run.
     func testAReadyChildThatReportsItsOwnPIDRuns() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let pidFile = directory.appendingPathComponent("pid")
+        let release = try FifoGate(at: directory.appendingPathComponent("release"))
         let script = try writeScript(
             in: directory,
             name: "backend.sh",
             body: """
             #!/bin/sh
+            : > "\(pidFile.path)"
+            read _ < "\(release.url.path)"
             echo $$ > "\(pidFile.path)"
             trap 'exit 0' TERM
             while true; do sleep 1; done
             """
         )
+        let writtenPID: @Sendable () -> pid_t? = {
+            (try? String(contentsOf: pidFile, encoding: .utf8))
+                .flatMap { pid_t($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        }
+        let released = LockedValue(false)
         let supervisor = makeSupervisor(
             executableURL: script,
             // Polls until the child wrote its pid; the yields count no time.
             readinessTimeout: .seconds(3_600),
             readinessReportsOwnerPID: true,
-            probe: { _ in FileManager.default.fileExists(atPath: pidFile.path) },
-            ownerProbe: { _ in
-                (try? String(contentsOf: pidFile, encoding: .utf8))
-                    .flatMap { pid_t($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            probe: { _ in
+                if writtenPID() != nil { return true }
+                if FileManager.default.fileExists(atPath: pidFile.path),
+                   released.withLock({ done in defer { done = true }; return !done }) {
+                    release.releaseOne()
+                }
+                return false
             },
+            ownerProbe: { _ in writtenPID() },
             sleepFor: { _ in await Task.yield() }
         )
         let watcher = StateWatcher(stream: supervisor.stateUpdates)
@@ -222,6 +237,7 @@ final class BackendProcessSupervisorTests: XCTestCase {
 
         _ = try await watcher.waitForState(.running)
         await supervisor.stop()
+        XCTAssertTrue(released.value, "the probe met the empty pid file")
     }
 
     func testReadinessTimeoutFailsAndTerminatesChild() async throws {
