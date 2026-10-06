@@ -718,8 +718,15 @@ package struct ClaudeSessionJoinResolver {
             )
             return false
         }
-        guard case .resolved(let current) =
-            registry.resolve(desktopSessionID: binding.desktopSessionID),
+        let resolution: ClaudeSessionResolution
+        if let desktopSessionID = binding.desktopSessionID {
+            resolution = registry.resolve(desktopSessionID: desktopSessionID)
+        } else if let projectThreadID = binding.projectThreadID {
+            resolution = registry.resolve(projectThreadID: projectThreadID)
+        } else {
+            resolution = .unknown
+        }
+        guard case .resolved(let current) = resolution,
             current.sessionID == join.snapshot.sessionID
         else {
             Log.claudeContext.info(

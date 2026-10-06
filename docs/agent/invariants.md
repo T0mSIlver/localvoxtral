@@ -2294,8 +2294,24 @@ there is not.
     Claude project's page (`https://claude.ai/epitaxy/project/chan_…`, a
     thread open or not; MEASURED on 2.16120.0 for the project chat, #1194) has no chat panel
     element, so its address is read from anywhere in the primary pane. It
-    names no session and joins nothing; it only gives the dictation the agent
-    polish profile (`ClaudeJoinResolution.focusedClaudeProject`). `ClaudeDesktopSessionURL` parses
+    names no session, so the project chat joins nothing; it only gives the
+    dictation the agent polish profile
+    (`ClaudeJoinResolution.focusedClaudeProject`). A thread's page
+    (`?thread=cmsg_…`, exactly one well-formed `thread` item) joins the one
+    fresh session whose prompts were relayed from that thread
+    (`resolve(projectThreadID:)`, same exact-equality rules). The session
+    side has no environment variable for it (#1194): the id comes from the
+    project harness's envelope at the HEAD of each relayed prompt
+    (`<wake …><project id="chan_…" type="project"><thread ts="cmsg_…">`,
+    MEASURED 2026-10-05 on seven thread sessions), matched only from byte
+    zero, so text inside the message cannot move or forge it. Reading it is
+    reading another tool's text (#1011), accepted because nothing else names
+    the thread; a session that prompted itself with a copied envelope makes
+    a second reporter, and the join abstains as ambiguous. The id is kept on
+    the snapshot (`projectThreadID`) and never persisted, so after an app
+    restart a thread joins again only once its session gets a message. The
+    coordinator behind the project chat runs in the cloud and sends no
+    hooks, which is why the chat stays unjoined. `ClaudeDesktopSessionURL` parses
     the address through the same strict checks as the bridge URL
     (`ClaudeSessionPageURL`), path exactly `/epitaxy/local_[A-Za-z0-9_-]+`;
     the registry match is exact equality with one fresh reporter
