@@ -211,11 +211,11 @@ OUT_DIR="dist/demo"
 RAW_MOV="$OUT_DIR/demo-raw.mov"
 OUT_MP4="$OUT_DIR/demo.mp4"
 
-# The lanes' defaults snapshot and restore, on a backup path of this script's own.
+# The demo app runs on the harness defaults suite; the owner's domain is only
+# read (#1450).
 # shellcheck source=scripts/lib/owner-app-session.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/owner-app-session.sh"
-PERSISTENT_DEFAULTS_BACKUP="${HOME}/.localvoxtral-record-demo.defaults-backup"
-LEGACY_DEFAULTS_BACKUP="${HOME}/.localvoxtral-record-demo.pre.plist"
+record_fail() { echo "$*" >&2; }
 
 [[ -d "$APP_PATH" ]] || { echo "App bundle not found: $APP_PATH (build with ./scripts/package_app.sh)" >&2; exit 1; }
 
@@ -424,9 +424,8 @@ cleanup() {
     # killed its tty) — one rm can race that write (take 3 died here); retry.
     rm -rf "$DEMO_STAGE" 2>/dev/null || { sleep 1; rm -rf "$DEMO_STAGE" 2>/dev/null || true; }
   fi
-  if ! restore_defaults; then
-    echo "WARNING: failed to restore $BUNDLE_ID defaults; backup left at $PERSISTENT_DEFAULTS_BACKUP" >&2
-  fi
+  drop_harness_defaults
+  report_owner_defaults
   if [[ -n "$ORIGINAL_DARK_MODE" ]]; then
     osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to ${ORIGINAL_DARK_MODE}" >/dev/null 2>&1 || true
   fi
@@ -595,51 +594,50 @@ if pgrep -xq "$APP_PROCESS"; then
 fi
 pgrep -xq "$APP_PROCESS" && { echo "$APP_PROCESS refuses to quit; aborting." >&2; exit 1; }
 
-remove_defaults_backup_scratch
-restore_defaults \
-  || { echo "Could not restore the defaults backup an interrupted run left at $PERSISTENT_DEFAULTS_BACKUP; refusing to mutate them." >&2; exit 1; }
-snapshot_defaults \
-  || { echo "Could not snapshot $BUNDLE_ID defaults; refusing to mutate them." >&2; exit 1; }
+recover_previous_defaults_backup || exit 1
+OWNER_DEFAULTS_BEFORE="$(owner_defaults_digest)"
 
 # The demo always shows the Right Command tap/hold gesture. Backend MODES are
-# left as configured on this Mac (the demo should use the real setup), but the
-# overlay beat depends on agent-profile polishing with the default 4B model —
-# the 0.8B does not normalize spoken flags reliably (see the demoted
-# agent-flag-spoken eval case) — so those are pinned (snapshotted above,
-# restored on exit).
-defaults write "$BUNDLE_ID" "settings.onboarding_completed" -bool true
-defaults write "$BUNDLE_ID" "settings.modifier_only_hotkey_enabled" -bool true
-defaults write "$BUNDLE_ID" "settings.modifier_only_hotkey_modifier" -string "right_command"
-defaults write "$BUNDLE_ID" "settings.llm_polishing_enabled" -bool true
-defaults write "$BUNDLE_ID" "settings.agent_polish_profile_enabled" -bool true
-defaults write "$BUNDLE_ID" "settings.managed_llm_polishing_model" -string "mlx-community/Qwen3.5-4B-OptiQ-4bit"
+# left as configured on this Mac (the demo should use the real setup), so the
+# suite starts as a copy of the owner's domain. The overlay beat depends on
+# agent-profile polishing with the default 4B model — the 0.8B does not
+# normalize spoken flags reliably (see the demoted agent-flag-spoken eval
+# case) — so those are pinned in the suite.
+use_harness_defaults
+copy_owner_defaults_to_harness \
+  || { echo "Could not copy $BUNDLE_ID defaults into $HARNESS_DEFAULTS_SUITE." >&2; exit 1; }
+defaults write "$HARNESS_DEFAULTS_SUITE" "settings.onboarding_completed" -bool true
+defaults write "$HARNESS_DEFAULTS_SUITE" "settings.modifier_only_hotkey_enabled" -bool true
+defaults write "$HARNESS_DEFAULTS_SUITE" "settings.modifier_only_hotkey_modifier" -string "right_command"
+defaults write "$HARNESS_DEFAULTS_SUITE" "settings.llm_polishing_enabled" -bool true
+defaults write "$HARNESS_DEFAULTS_SUITE" "settings.agent_polish_profile_enabled" -bool true
+defaults write "$HARNESS_DEFAULTS_SUITE" "settings.managed_llm_polishing_model" -string "mlx-community/Qwen3.5-4B-OptiQ-4bit"
 # Overlay body font scaled up to match the 21 pt terminal font so the overlay
 # beat reads at README width (clamped to OverlayLayoutMetrics.maximum, 24).
-defaults write "$BUNDLE_ID" "settings.overlay_buffer_font_size" -float 22
+defaults write "$HARNESS_DEFAULTS_SUITE" "settings.overlay_buffer_font_size" -float 22
 # Repo vocabulary grounds beat 2's spoken filename ("use auth dot t s" ->
 # useAuth.ts, exactly as spelled in the staged repo). In SHELL mode the app reads
 # the cwd out of the terminal window title, which must contain a /-prefixed path
 # — the Terminal staging AppleScript pins the tab's custom title for that.
-defaults write "$BUNDLE_ID" "settings.repo_vocabulary_enabled" -bool true
+defaults write "$HARNESS_DEFAULTS_SUITE" "settings.repo_vocabulary_enabled" -bool true
 # claude mode: the beat-2 grounding comes from the JOINED Claude session, not the
 # title. `claude_repo_context_enabled` is the gate for indexing the joined
 # session's cwd (git ls-files) and attaching its prior prompt + recently-touched
 # files to the polish prompt; it is ALSO what arms the app's one-time
 # Automation->Ghostty consent prewarm (#167) at launch, so the pane-tty read the
-# join depends on is not blocked mid-recording. (Default off; snapshotted above,
-# restored on exit. Left off in shell mode, which has no session to join.)
+# join depends on is not blocked mid-recording. (Default off. Left off in shell mode, which has no session to join.)
 if [[ "$TERMINAL_AGENT" == "claude" || "$TERMINAL_AGENT" == "herdr" ]]; then
-  defaults write "$BUNDLE_ID" "settings.claude_repo_context_enabled" -bool true
+  defaults write "$HARNESS_DEFAULTS_SUITE" "settings.claude_repo_context_enabled" -bool true
 fi
 # herdr mode: the joined pane's screen context arrives over herdr's socket
 # (`pane.read`), gated on the SAME opt-in as an AX screen read — enable it so
-# the pane-exact capture the scene asserts on can fire. (Snapshotted above,
-# restored on exit; left untouched in the other scenes.)
+# the pane-exact capture the scene asserts on can fire. (Left as the owner set it in the other
+# scenes.)
 if [[ "$TERMINAL_AGENT" == "herdr" ]]; then
-  defaults write "$BUNDLE_ID" "settings.terminal_screen_context_enabled" -bool true
+  defaults write "$HARNESS_DEFAULTS_SUITE" "settings.terminal_screen_context_enabled" -bool true
 fi
 if [[ -n "$DEMO_SAY_INPUT_UID" ]]; then
-  defaults write "$BUNDLE_ID" "settings.selected_input_device_uid" -string "$DEMO_SAY_INPUT_UID"
+  defaults write "$HARNESS_DEFAULTS_SUITE" "settings.selected_input_device_uid" -string "$DEMO_SAY_INPUT_UID"
 fi
 
 # Dark mode pinned, like the README screenshots.
@@ -669,7 +667,7 @@ sleep 1
 # The overlay beat's polish must be REAL — never record before the managed
 # polishing helper answers its health endpoint. (An external-URL polishing
 # setup is the owner's own working config and is not polled.)
-POLISH_MODE="$(defaults read "$BUNDLE_ID" settings.polishing_backend_mode 2>/dev/null || echo managed_local)"
+POLISH_MODE="$(defaults read "$HARNESS_DEFAULTS_SUITE" settings.polishing_backend_mode 2>/dev/null || echo managed_local)"
 if [[ "$POLISH_MODE" != "external_url" ]]; then
   HF_HUB_DIR="${HF_HUB_CACHE:-}"
   [[ -z "$HF_HUB_DIR" && -n "${HF_HOME:-}" ]] && HF_HUB_DIR="$HF_HOME/hub"
