@@ -400,17 +400,21 @@ there is not.
   route asks both again before every append and Enter, the mapping after
   the foreground query, since `/clear` starts another session in the same
   process and pane); (3) a Ghostty, iTerm2 or Terminal.app
-  tab. Anything else, cmux included (its route can prove a surface only
-  while it is the focused one), is refused in one sentence. Every route
+  tab, or a Claude Desktop session view (#1825), on this Mac or on an ssh
+  host, since its view is on this Mac either way. Anything else, cmux
+  included (its route can prove a surface only while it is the focused
+  one), is refused in one sentence. Every route
   refusal is `keepInHistory`, never `typeInstead`: keys would go to the
-  focused app. **The Return exception** (owner ruling): in a terminal tab,
+  focused app. **The Return exception** (owner ruling, which names Claude
+  Desktop with the terminals): in a terminal tab or a Desktop session view,
   and only there, Return may be pressed in an app the app itself brought
-  forward. The pane must first read back `.focused` (its tty through the
-  join's reader, never a window title) and the registry still list the
+  forward. The pane must first read back `.focused` (a tab's tty through the
+  join's reader, a Desktop view's `local_` id through the Desktop arm's
+  reader, never a window title) and the registry still list the
   session after the focus, since the shell left by an agent that exited
   holds the same tty (#1219); only then is the text typed, into
   the terminal pid that is frontmost and carries the focused bundle ID.
-  After the typing the tty is read back again, and Return is pressed only
+  After the typing the pane is read back again, and Return is pressed only
   if it still matches, the registry still lists the session after that
   read-back, that pid is frontmost and on `ReturnSubmitsAppList`,
   and Secure Keyboard Entry is off. A failed check before the typing types
@@ -2286,11 +2290,25 @@ there is not.
     desktop update must re-check. Focus in the secondary pane would
     otherwise join the primary pane's session; focus in a terminal, files or
     changes panel, or in the sidebar, is no join because the dictation is
-    not going to a session. Each refusal logs its reason. `ClaudeDesktopSessionURL` parses
+    not going to a session. Each refusal logs its reason. One exception: a
+    Claude project's page (`https://claude.ai/epitaxy/project/chan_…`, a
+    thread open or not; MEASURED on 2.16120.0 for the project chat, #1194) has no chat panel
+    element, so its address is read from anywhere in the primary pane. It
+    names no session and joins nothing; it only gives the dictation the agent
+    polish profile (`ClaudeJoinResolution.focusedClaudeProject`). `ClaudeDesktopSessionURL` parses
     the address through the same strict checks as the bridge URL
     (`ClaudeSessionPageURL`), path exactly `/epitaxy/local_[A-Za-z0-9_-]+`;
     the registry match is exact equality with one fresh reporter
     (`resolve(desktopSessionID:)`, shared rules with the bridge lookup).
+    A Remote Control session opened in Desktop joins through this arm, not
+    the browser one. MEASURED on 2.19675.0 (2026-10-05, #1065): 547 of
+    Desktop's 549 Code sessions carried a Remote Control id
+    (`bridgeSessionIds`), each had a `local_<uuid>` view, and no
+    `/code/session_…` address appeared in any web area, Desktop's storage
+    or its bundle. The focused view's address then carried
+    `?artifact=<uuid>` (an artifact open beside the chat); the query is
+    ignored, and the watched check reads the same address
+    (`testARemoteControlSessionShownInDesktopCountsAsShown`).
     Everything else follows the browser arm: both origins join (the id is
     desktop-allocated and names the view the user is looking at), a
     `.desktopSession` join authorizes NO screen read and carries no window
@@ -2534,8 +2552,9 @@ there is not.
     registry session: focus in the primary pane's prompt, and the id
     reported by this session alone. An ambiguous id, focus left in the
     sidebar or a second pane, or no answer within 2 s is `.unverified`, and
-    the answer shortcut starts no dictation. "Send that to" keeps refusing
-    Desktop: its Return exception is ruled for terminal tabs only. The link
+    the answer shortcut starts no dictation. "Send that to" types and
+    presses Return in Desktop only after this `.focused`, and again only if
+    a second read-back still shows the session (#1825). The link
     and the id are UNDOCUMENTED; a Desktop update that drops them leaves the
     read-back failing, never a dictation in the wrong session.
   - **"Were you looking at it" asks only local questions** (#717). A turn's

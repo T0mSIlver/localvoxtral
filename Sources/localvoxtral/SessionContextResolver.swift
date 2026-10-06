@@ -37,6 +37,10 @@ final class SessionContextResolver {
     /// re-derived: they must all describe the same session. Nil whenever the
     /// pane did not positively join. Cleared on every session exit.
     var claudeSessionJoin: ClaudeSessionJoin?
+    /// This dictation's Claude Desktop focus is in a Claude project's page
+    /// (`ClaudeJoinResolution.focusedClaudeProject`): no join, but the agent
+    /// polish profile. Set at the one resolution, cleared with the join.
+    var claudeProjectFocused = false
     /// The route into the joined agent's prompt, resolved once at start
     /// next to the join: opencode's prompt relay (#719) or the joined cmux
     /// surface (#727). Nil unless one
@@ -106,6 +110,7 @@ final class SessionContextResolver {
         guard let endpointURL = settings.llmPolishingConfiguration?.endpointURL else {
             terminalScreenStartCapture = nil
             claudeSessionJoin = nil
+            claudeProjectFocused = false
             socketPaneStartCapture = nil
             // No endpoint means the join is never consumed by anything, so
             // there is no grounding to report on either way. Saying "no Claude
@@ -165,7 +170,12 @@ final class SessionContextResolver {
         terminalScreenStartCapture = screenCapture
         claudeSessionJoin = join
         socketPaneStartCapture = paneCapture
-        if case .resolved = attempt { contextJoinAskedTheArms = true }
+        if case .resolved(let resolution) = attempt {
+            contextJoinAskedTheArms = true
+            claudeProjectFocused = resolution.focusedClaudeProject
+        } else {
+            claudeProjectFocused = false
+        }
         noteJoinOutcome(attempt, causes: causes)
         // Read from the ONE resolved join, never by asking again. The badge is
         // a description of `claudeSessionJoin`, so it cannot disagree with the
@@ -404,6 +414,7 @@ final class SessionContextResolver {
         // attached to an unrelated sentence.
         //
         claudeSessionJoin = nil
+        claudeProjectFocused = false
         agentPromptRoute = nil
         // And the pane text with the join: it is that session's screen.
         socketPaneStartCapture = nil
