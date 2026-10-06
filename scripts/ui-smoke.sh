@@ -154,12 +154,9 @@ cleanup() {
   if ((DRILL_LAUNCHED)) || [[ -n "$OWNER_APP_BUNDLE" ]]; then
     quit_app
   fi
-  if restore_defaults; then
-    relaunch_owner_app
-  else
-    # The owner's app would start on the drill's forced modes, or on none.
-    printf 'WARNING: failed to restore defaults backup at %s; leaving it in place for the next run and NOT relaunching the owner app at %s.\n' "$PERSISTENT_DEFAULTS_BACKUP" "$OWNER_APP_BUNDLE" >&2
-  fi
+  drop_harness_defaults
+  report_owner_defaults
+  relaunch_owner_app
   [[ -n "$PREFLIGHT_HELPER" ]] && rm -f "$PREFLIGHT_HELPER"
   [[ -n "$BACKEND_SAMPLE_FILE" ]] && rm -f "$BACKEND_SAMPLE_FILE"
   [[ -n "$APP_LOG_FILE" ]] && rm -f "$APP_LOG_FILE"
@@ -225,8 +222,8 @@ else
   exit 1
 fi
 
-# Quit the owner's instance before touching defaults: a running app would see
-# the forced modes live and could write its own values back on quit.
+# Quit the owner's instance before launching: two copies share the global
+# hotkey.
 quit_owner_app
 if pgrep -x "$APP_PROCESS" >/dev/null 2>&1; then
   record_fail "Existing app instance did not quit before smoke launch; cannot launch a fresh instance."
@@ -234,15 +231,13 @@ if pgrep -x "$APP_PROCESS" >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! snapshot_defaults; then
-  record_fail "Could not create persistent defaults backup at $PERSISTENT_DEFAULTS_BACKUP; refusing to mutate owner defaults."
-  print_summary
-  exit 1
-fi
-if ! defaults write "$BUNDLE_ID" settings.dictation_backend_mode -string external_url \
-  || ! defaults write "$BUNDLE_ID" settings.polishing_backend_mode -string external_url \
-  || ! defaults write "$BUNDLE_ID" settings.llm_polishing_enabled -bool false \
-  || ! defaults write "$BUNDLE_ID" settings.onboarding_completed -bool true; then
+# The app runs on the harness suite, never the owner's domain (#1029).
+OWNER_DEFAULTS_BEFORE="$(owner_defaults_digest)"
+use_harness_defaults
+if ! defaults write "$HARNESS_DEFAULTS_SUITE" settings.dictation_backend_mode -string external_url \
+  || ! defaults write "$HARNESS_DEFAULTS_SUITE" settings.polishing_backend_mode -string external_url \
+  || ! defaults write "$HARNESS_DEFAULTS_SUITE" settings.llm_polishing_enabled -bool false \
+  || ! defaults write "$HARNESS_DEFAULTS_SUITE" settings.onboarding_completed -bool true; then
   record_fail "Could not force external backend mode and completed onboarding in defaults."
   print_summary
   exit 1
@@ -258,7 +253,7 @@ fi
 # TODO(tier-2): add a wizard-appears smoke by launching once with
 # settings.onboarding_completed=false and asserting the "Welcome to localvoxtral"
 # window, then completing it.
-record_pass "Defaults domain snapshot captured and smoke run forced to external mode with onboarding completed."
+record_pass "Harness defaults suite $HARNESS_DEFAULTS_SUITE forces external mode with onboarding completed."
 
 # Managed backends are Python entry-point processes, so match the full
 # command line (-f). The runner legitimately hosts a voxmlx-serve launchd
