@@ -15,6 +15,10 @@ final class SpeechdStreamingBenchTests: XCTestCase {
         let helperPath: String?
         let seconds: Int
         let cadenceMilliseconds: Int
+        /// Steps land this many ms past each cadence multiple (#1670). Absent means 0.
+        let phaseMilliseconds: Int?
+        /// Nonzero models the app's timer-driven sends of whole mic buffers. Absent means 0.
+        let micBufferMicroseconds: Int?
         let wavPath: String?
         let cacheLimitMB: Int?
         let maxUtteranceSeconds: Int?
@@ -77,6 +81,8 @@ final class SpeechdStreamingBenchTests: XCTestCase {
             "--bench",
             "--seconds", "\(config.seconds)",
             "--cadence-ms", "\(config.cadenceMilliseconds)",
+            "--phase-ms", "\(config.phaseMilliseconds ?? 0)",
+            "--mic-buffer-us", "\(config.micBufferMicroseconds ?? 0)",
         ]
         let spokenAudio = config.audio == "speech"
         let spokenWAV = spokenAudio ? try Self.makeSpokenWAV(Self.spokenPassage) : nil

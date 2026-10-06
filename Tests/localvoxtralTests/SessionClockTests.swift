@@ -247,6 +247,35 @@ final class SessionClockTests: XCTestCase {
         viewModel.audio.cancelSendAndCommitTasks()
     }
 
+    /// The managed helper gets 90 ms, then 80 ms appends, each sent once the
+    /// mic has captured it, whatever the mic's buffer size (#1670).
+    func testAlignedSendLoopCutsTheAudioOnTheHelpersStepBoundaries() async {
+        let clock = ManualSessionClock()
+        let viewModel = makeViewModel(clock: clock)
+        let client = FakeRealtimeClient()
+        client.setConnected(true)
+        let buffer = viewModel.audio.audioChunkBuffer
+
+        viewModel.audio.restartAudioSendTask(
+            client: client, debugLoggingEnabled: false,
+            alignedToSpeechHelperSteps: true, sleep: clock.clock.sleep
+        )
+        // 512 frames at 48 kHz come out as about 171 samples (342 bytes).
+        var sends: [Int] = []
+        for _ in 0..<16 {
+            await clock.waitForSleepers(1)
+            buffer.append(Data(count: 342))
+            clock.advance(by: 0.0107)
+            await clock.waitForSleepers(1)
+            if client.sentAudioBytes > sends.reduce(0, +) {
+                sends.append(client.sentAudioBytes - sends.reduce(0, +))
+            }
+        }
+
+        XCTAssertEqual(sends, [2_880, 2_560], "90 ms, then 80 ms")
+        viewModel.audio.cancelSendAndCommitTasks()
+    }
+
     /// A socket that dies after the tick read it connected drops the chunk;
     /// the chunk stays buffered, ahead of later audio, for the reconnect to
     /// replay (#1458).

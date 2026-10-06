@@ -25,11 +25,26 @@ public struct SpeechdLaunchOptions: Equatable {
 public struct SpeechdBenchmarkOptions: Equatable, Sendable {
     public let seconds: Int
     public let cadenceMilliseconds: Int
+    /// Shifts every step this far past a cadence multiple (`--phase-ms`), so the
+    /// first step carries `cadence + phase` ms. In the app, steps land wherever the
+    /// send timer drains the mic, not on multiples of the cadence (#1670).
+    public let phaseMilliseconds: Int
+    /// Nonzero models the app's sends (`--mic-buffer-us`): a timer every cadence
+    /// that drains whole mic buffers of this length, and the server's minimum step.
+    public let micBufferMicroseconds: Int
     public let wavPath: String?
 
-    public init(seconds: Int, cadenceMilliseconds: Int, wavPath: String?) {
+    public init(
+        seconds: Int,
+        cadenceMilliseconds: Int,
+        phaseMilliseconds: Int = 0,
+        micBufferMicroseconds: Int = 0,
+        wavPath: String?
+    ) {
         self.seconds = seconds
         self.cadenceMilliseconds = cadenceMilliseconds
+        self.phaseMilliseconds = phaseMilliseconds
+        self.micBufferMicroseconds = micBufferMicroseconds
         self.wavPath = wavPath
     }
 }
@@ -59,6 +74,8 @@ public enum SpeechdOptionParser {
         var benchmarkEnabled = false
         var benchmarkSeconds: Int?
         var benchmarkCadenceMilliseconds = 80
+        var benchmarkPhaseMilliseconds = 0
+        var benchmarkMicBufferMicroseconds = 0
         var benchmarkWAVPath: String?
         var sawBenchmarkOnlyFlag: String?
         var iterator = arguments.makeIterator()
@@ -134,6 +151,22 @@ public enum SpeechdOptionParser {
                 }
                 benchmarkCadenceMilliseconds = milliseconds
                 sawBenchmarkOnlyFlag = flag
+            case "--phase-ms":
+                guard let milliseconds = Int(try value(flag)), milliseconds >= 0,
+                      !16_000.multipliedReportingOverflow(by: milliseconds).overflow
+                else {
+                    throw SpeechdOptionError.invalidValue(flag)
+                }
+                benchmarkPhaseMilliseconds = milliseconds
+                sawBenchmarkOnlyFlag = flag
+            case "--mic-buffer-us":
+                guard let microseconds = Int(try value(flag)), microseconds >= 0,
+                      !16_000.multipliedReportingOverflow(by: microseconds).overflow
+                else {
+                    throw SpeechdOptionError.invalidValue(flag)
+                }
+                benchmarkMicBufferMicroseconds = microseconds
+                sawBenchmarkOnlyFlag = flag
             case "--wav":
                 let path = try value(flag)
                 guard !path.isEmpty else { throw SpeechdOptionError.invalidValue(flag) }
@@ -151,6 +184,8 @@ public enum SpeechdOptionParser {
             options.benchmark = SpeechdBenchmarkOptions(
                 seconds: benchmarkSeconds,
                 cadenceMilliseconds: benchmarkCadenceMilliseconds,
+                phaseMilliseconds: benchmarkPhaseMilliseconds,
+                micBufferMicroseconds: benchmarkMicBufferMicroseconds,
                 wavPath: benchmarkWAVPath
             )
         } else if let sawBenchmarkOnlyFlag {

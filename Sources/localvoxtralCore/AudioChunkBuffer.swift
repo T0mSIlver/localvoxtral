@@ -47,6 +47,16 @@ package final class AudioChunkBuffer: Sendable {
         }
     }
 
+    /// The first `maxBytes` (rounded down to whole samples), or all of it if less.
+    package func take(maxBytes: Int) -> Data {
+        buffer.withLock {
+            let count = min(max(0, maxBytes - maxBytes % 2), $0.count)
+            let output = Data($0.prefix(count))
+            $0 = Data($0.dropFirst(count))
+            return output
+        }
+    }
+
     package func takeAll() -> Data {
         buffer.withLock {
             let output = $0
