@@ -126,7 +126,7 @@ grep -qE '^swiftc .*-target arm64-apple-macos15\.0 ' "$EVENTS" \
 echo "PASS: the target app is compiled for macOS 15.0"
 
 # A speech service already lagging before the app starts is NOT RUN, and the
-# owner's app and defaults are left alone (#548).
+# owner's defaults are left alone (#548).
 stub swiftc <<'STUB'
 #!/bin/sh
 echo "swiftc $*" >>"$EVENTS"
@@ -161,6 +161,47 @@ grep -q "NOT RUN: The speech service .* finished a clip [0-9.]* s after the spee
 # command-line match (#1011), so no pkill runs at all.
 untouched "lagging speech service" '^(swiftc |say -o )'
 echo "PASS: a speech service lagging before the app starts is 'not runnable', with its lag"
+
+# The owner's app is quit before that probe, since its own speech helper
+# loads the service the probe measures (#1832), and the NOT RUN relaunches it.
+owner_bundle="$WORK/Owner/localvoxtral.app"
+mkdir -p "$owner_bundle/Contents/MacOS"
+stub pgrep <<'STUB'
+#!/bin/sh
+[ -e "$OWNER_QUIT" ] && exit 1
+echo 777
+STUB
+stub ps <<STUB
+#!/bin/sh
+echo "$owner_bundle/Contents/MacOS/localvoxtral"
+STUB
+stub osascript <<'STUB'
+#!/bin/sh
+echo "osascript $*" >>"$EVENTS"
+case "$*" in *'to quit'*) : >"$OWNER_QUIT" ;; esac
+STUB
+: >"$EVENTS"
+rm -f "$WORK/owner-quit"
+set +e
+HOME="$WORK/home" PATH="$BIN:$PATH" LV_E2E_PLISTBUDDY="$BIN/plistbuddy" LV_E2E_ANNOUNCE=0 \
+  STUB_HARNESS_STAMP=true LV_SCREEN_LOCK_STATE=unlocked STUB_NC_STATUS=0 OWNER_QUIT="$WORK/owner-quit" \
+  LV_E2E_REALTIME_ENDPOINT="ws://127.0.0.1:$(cat "$port_file")/v1/realtime" \
+  "$ROOT_DIR/scripts/e2e-dictation.sh" "$WORK/app.app" >"$WORK/out" 2>&1
+STATUS=$?
+set -e
+[ "$STATUS" -eq 3 ] || fail "a lagging service with the owner's app up exited $STATUS, want 3: $(cat "$WORK/out")"
+grep -q "^before the app, the owner's app quit: speech service probe: lag=" "$WORK/out" \
+  || fail "the probe did not run after the owner's app quit: $(cat "$WORK/out")"
+grep -q '^osascript .*localvoxtral" to quit' "$EVENTS" || fail "the owner's app was not quit"
+grep -q "^open $owner_bundle\$" "$EVENTS" || fail "the NOT RUN did not relaunch the owner's app"
+grep -q "NOT RUN: The speech service" "$WORK/out" || fail "no NOT RUN line: $(cat "$WORK/out")"
+rm -f "$BIN/ps"
+stub osascript <<'STUB'
+#!/bin/sh
+echo "osascript $*" >>"$EVENTS"
+exit 0
+STUB
+echo "PASS: the owner's app quits before the probe, and a NOT RUN relaunches it (#1832)"
 
 # A run that gets as far as dictating writes the harness's defaults and never
 # the owner's (#1198). The stubs launch nothing, so each scenario fails to

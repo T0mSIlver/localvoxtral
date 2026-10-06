@@ -34,8 +34,9 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/launch-app.sh"
 # The speech service is shared, and under load it can fall seconds behind the
 # audio, which fails a correct app (#548). scripts/e2e/speech-service-probe.py
 # plays the same WAV to the service without the app and times the final
-# transcript. It runs once before the app starts and again after a scenario
-# fails; a failure is NOT RUN only when the probe finds the service lagging
+# transcript. It runs once before the app starts, with the owner's app
+# already quit so that its own speech helper is not loaded beside the service
+# (#1832), and again after a scenario fails; a failure is NOT RUN only when the probe finds the service lagging
 # past what the app waits for (SERVICE_LAG_LIMIT_SECONDS). A healthy probe, or
 # one that measured nothing, leaves the failure a FAIL.
 #
@@ -526,6 +527,22 @@ if ! build_target_app; then
 fi
 record_pass "Target app compiled."
 
+# One localvoxtral at a time: the control socket, the hook socket and the
+# dictation key are per user, not per bundle id. Quit before the probe: the
+# owner's app on the managed backend keeps a second speech model loaded, which
+# slowed the service past the limit on otherwise idle runs (#1832). Cleanup
+# relaunches it on every exit, NOT RUN included.
+quit_owner_app
+if pgrep -x "$APP_PROCESS" >/dev/null 2>&1; then
+  record_fail "Existing app instance did not quit; cannot launch a fresh instance."
+  finish
+fi
+if [[ -n "$OWNER_APP_BUNDLE" ]]; then
+  probe_label="before the app, the owner's app quit"
+else
+  probe_label="before the app, no owner app running"
+fi
+
 # Before the app starts: a service already behind would fail every scenario,
 # and nothing the app does can have caused it yet.
 probe_wav="$WORK_DIR/speech-probe.wav"
@@ -534,7 +551,7 @@ if ! say -o "$probe_wav" --file-format=WAVE --data-format=LEI16@16000 "$(scenari
   finish
 fi
 PROBE_LAG=""
-probe_speech_service "before the app" "$probe_wav"
+probe_speech_service "$probe_label" "$probe_wav"
 case $? in
   1)
     record_not_runnable "The speech service on $REALTIME_ENDPOINT finished a clip ${PROBE_LAG} s after the speech ended, past the ${SERVICE_LAG_LIMIT_SECONDS} s the app waits; it is too loaded to measure the app."
@@ -549,14 +566,6 @@ esac
 announce "localvoxtral end to end check starting. It takes the keyboard for about a minute."
 ANNOUNCED=1
 sleep 3
-
-# One localvoxtral at a time: the control socket, the hook socket and the
-# dictation key are per user, not per bundle id.
-quit_owner_app
-if pgrep -x "$APP_PROCESS" >/dev/null 2>&1; then
-  record_fail "Existing app instance did not quit; cannot launch a fresh instance."
-  finish
-fi
 
 # The harness starts from nothing but these. External dictation so the app
 # talks to the STT test service and spawns no helper of its own; polishing off
