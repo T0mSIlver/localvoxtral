@@ -203,16 +203,19 @@ final class BackendProcessSupervisorTests: XCTestCase {
             while true; do sleep 1; done
             """
         )
+        // The shell creates the file before it writes the pid (#1830), so
+        // ready means a pid can be read, not that the file exists.
+        let writtenPID: @Sendable () -> pid_t? = {
+            (try? String(contentsOf: pidFile, encoding: .utf8))
+                .flatMap { pid_t($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        }
         let supervisor = makeSupervisor(
             executableURL: script,
             // Polls until the child wrote its pid; the yields count no time.
             readinessTimeout: .seconds(3_600),
             readinessReportsOwnerPID: true,
-            probe: { _ in FileManager.default.fileExists(atPath: pidFile.path) },
-            ownerProbe: { _ in
-                (try? String(contentsOf: pidFile, encoding: .utf8))
-                    .flatMap { pid_t($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
-            },
+            probe: { _ in writtenPID() != nil },
+            ownerProbe: { _ in writtenPID() },
             sleepFor: { _ in await Task.yield() }
         )
         let watcher = StateWatcher(stream: supervisor.stateUpdates)
