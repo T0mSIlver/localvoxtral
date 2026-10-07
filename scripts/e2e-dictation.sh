@@ -136,8 +136,12 @@ finish() {
 # shellcheck source=scripts/lib/owner-app-session.sh
 source "${SCRIPT_DIR}/lib/owner-app-session.sh"
 
+# A runner with nobody at it (LOCALVOXTRAL_DEDICATED_GUI=1, the Mac Mini)
+# neither announces nor pauses before taking the keyboard.
+DEDICATED_GUI="${LOCALVOXTRAL_DEDICATED_GUI:-0}"
+
 announce() {
-  [[ "${LV_E2E_ANNOUNCE:-1}" == "1" ]] || return 0
+  [[ "${LV_E2E_ANNOUNCE:-1}" == "1" && "$DEDICATED_GUI" != 1 ]] || return 0
   command -v say >/dev/null 2>&1 || return 0
   say "$1" >/dev/null 2>&1 || true
 }
@@ -565,7 +569,7 @@ esac
 
 announce "localvoxtral end to end check starting. It takes the keyboard for about a minute."
 ANNOUNCED=1
-sleep 3
+[[ "$DEDICATED_GUI" == 1 ]] || sleep 3
 
 # The harness starts from nothing but these. External dictation so the app
 # talks to the STT test service and spawns no helper of its own; polishing off

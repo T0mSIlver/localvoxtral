@@ -130,7 +130,7 @@ cleanup() {
   fi
   # Owner rule: announce completion audibly whenever the script took over the
   # GUI session, so an unattended run never ends silently.
-  if [[ "$ANNOUNCED_TAKEOVER" == 1 ]]; then
+  if [[ "$ANNOUNCED_TAKEOVER" == 1 && "${LOCALVOXTRAL_DEDICATED_GUI:-0}" != 1 ]]; then
     if [[ "$CAPTURE_COMPLETED" == 1 ]]; then
       say "capture readme assets done" >/dev/null 2>&1 || true
     else
@@ -153,10 +153,14 @@ trap 'cleanup_once; exit 129' HUP
 
 # --- OWNER RULE: audible takeover warning BEFORE any focus-stealing action ---
 # Everything below drives the GUI session (appearance switch, app launch,
-# menus, synthetic keystrokes) — warn the human at the Mac first.
-say "capture readme assets taking control in 3" >/dev/null 2>&1 || true
+# menus, synthetic keystrokes) — warn the human at the Mac first. A runner
+# with nobody at it (LOCALVOXTRAL_DEDICATED_GUI=1 in its .env, the Mac Mini)
+# skips the warning and the pause.
+if [[ "${LOCALVOXTRAL_DEDICATED_GUI:-0}" != 1 ]]; then
+  say "capture readme assets taking control in 3" >/dev/null 2>&1 || true
+  sleep 3
+fi
 ANNOUNCED_TAKEOVER=1
-sleep 3
 
 # Appearance isolation: README assets are always captured in dark mode so
 # reruns are deterministic regardless of the Mac's current (possibly
