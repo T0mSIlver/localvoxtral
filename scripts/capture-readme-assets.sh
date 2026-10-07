@@ -116,7 +116,7 @@ LAUNCHED_APP=0
 ANNOUNCED_TAKEOVER=0
 CAPTURE_COMPLETED=0
 cleanup() {
-  rm -f "$HELPER" "$PREFLIGHT"
+  rm -f "$HELPER" "${HELPER_BIN:-}" "$PREFLIGHT"
   if [[ "$LAUNCHED_APP" == 1 ]]; then
     osascript -e 'tell application "System Events" to key code 53' >/dev/null 2>&1 || true
     osascript -e "tell application \"$APP_PROCESS\" to quit" >/dev/null 2>&1 || true
@@ -198,9 +198,16 @@ for window in windows {
 guard let best else { exit(1) }
 print(best.id)
 SWIFT
+# Compiled once: an interpreted `swift` run can take the whole of a 5 s
+# window wait on a loaded 8 GB runner, so the poll saw a single attempt.
+# The target is pinned because swiftc defaults to the SDK's macOS, which can
+# be newer than the running one.
+HELPER_BIN="${HELPER%.swift}"
+swiftc -O -target "$(uname -m)-apple-macos15.0" -o "$HELPER_BIN" "$HELPER" \
+  || { echo "Could not compile the window-id helper." >&2; exit 1; }
 
 window_id() { # <pid> <min-layer> [exclude-window-id]
-  swift "$HELPER" "$1" "$2" "${3:-}" 2>/dev/null
+  "$HELPER_BIN" "$1" "$2" "${3:-}" 2>/dev/null
 }
 
 wait_for_window() { # <pid> <min-layer> [timeout-seconds] [exclude-window-id]
