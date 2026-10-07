@@ -263,7 +263,14 @@ lv_isolate_data lv-readme-assets-data \
 lv_open "$APP_PATH" "${LOCALE_ARGS[@]}"
 for _ in $(seq 1 20); do pgrep -xq "$APP_PROCESS" && break; sleep 0.5; done
 APP_PID="$(pgrep -xn "$APP_PROCESS")"
-sleep 2 # let the status item settle
+# Wait for the status item itself: a fixed pause was too short when the app
+# launched right after packaging on the busy 8 GB Mac Mini.
+for _ in $(seq 1 40); do
+  osascript -e "tell application \"System Events\" to exists menu bar item 1 of menu bar 2 of process \"$APP_PROCESS\"" 2>/dev/null \
+    | grep -q true && break
+  sleep 0.5
+done
+sleep 1 # let the status item settle
 
 open_status_menu() {
   # Clicking a menu bar item blocks System Events while the menu tracks, so
@@ -288,12 +295,19 @@ dismiss_menu() {
 # PNG in assets/, so a missed shot must not leave the old one there (#1723).
 echo "Capturing $ASSETS_DIR/popover.png"
 rm -f "$ASSETS_DIR/popover.png"
-open_status_menu
-if MENU_ID="$(wait_for_window "$APP_PID" 100 5)"; then
+# A click that lands while the app is still busy starting does not open the
+# menu, so try three times before giving up.
+MENU_ID=""
+for _ in 1 2 3; do
+  open_status_menu
+  if MENU_ID="$(wait_for_window "$APP_PID" 100 5)"; then break; fi
+  MENU_ID=""
+  dismiss_menu
+done
+if [[ -n "$MENU_ID" ]]; then
   screencapture -o -x -l "$MENU_ID" "$ASSETS_DIR/popover.png"
   dismiss_menu
 else
-  dismiss_menu
   echo "Could not find the open menu window for popover.png." >&2
   exit 1
 fi
