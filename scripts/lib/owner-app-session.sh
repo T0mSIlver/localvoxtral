@@ -265,3 +265,35 @@ relaunch_owner_app() {
     printf 'WARNING: failed to relaunch the owner app at %s.\n' "$OWNER_APP_BUNDLE" >&2
   fi
 }
+
+# On a runner nobody sits at (LOCALVOXTRAL_DEDICATED_GUI=1, the Mac Mini),
+# answer the app's permission prompts: there, tccd matches no new CI build to
+# the last grant, so every build asks again for the microphone and for
+# Automation (#1838). Clicks Allow on each prompt naming the app for up to
+# $1 seconds; with `once`, returns after the first. On an attended Mac it
+# does nothing and the owner answers.
+answer_app_prompts() {
+  local seconds="$1" mode="${2:-}"
+  [[ "${LOCALVOXTRAL_DEDICATED_GUI:-0}" == 1 ]] || return 0
+  osascript >/dev/null 2>&1 <<OSA || true
+tell application "System Events"
+  repeat $((seconds * 2)) times
+    if exists process "UserNotificationCenter" then
+      tell process "UserNotificationCenter"
+        repeat with w in windows
+          if (value of static texts of w as text) contains "“$APP_PROCESS”" then
+            if exists button "Allow" of w then
+              click button "Allow" of w
+            else if exists button "OK" of w then
+              click button "OK" of w
+            end if
+            if "$mode" is "once" then return
+          end if
+        end repeat
+      end tell
+    end if
+    delay 0.5
+  end repeat
+end tell
+OSA
+}

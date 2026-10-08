@@ -1,7 +1,6 @@
 name: Record README Demo
 
-# Hands-free demo recording on the self-hosted runner (the owner's Mac, GUI
-# session): scripts/record-demo.sh stages a terminal-centric scene, drives the
+# Hands-free demo recording on the Mac Mini runner (GUI session): scripts/record-demo.sh stages a terminal-centric scene, drives the
 # app, and speaks the demo lines via TTS into the BlackHole loopback device.
 # The encoded mp4 lands in the run's artifacts; publishing it is manual by
 # design — GitHub only renders inline README video from user-attachments URLs,
@@ -68,7 +67,7 @@ permissions:
 
 jobs:
   record-demo:
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: [self-hosted, mini]
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -88,7 +87,7 @@ jobs:
       - name: Idle guard (cheap, pre-build)
         # The recorder's own hands-free idle guard (scripts/record-demo.sh)
         # runs AFTER packaging, so a refused takeover would still burn a ~7 min
-        # helper build on the personal-Mac runner. Duplicate the cheap check
+        # helper build on the runner. Duplicate the cheap check
         # here to fail in seconds instead; the script's guard remains the
         # authoritative one (it re-checks immediately before the takeover).
         if: steps.guard.outputs.present == 'true'
@@ -106,8 +105,8 @@ jobs:
           fi
           # Same economics for the claude/herdr scenes' other refusal: a
           # pre-running Ghostty swallows the launch args (script aborts
-          # post-build).
-          if [[ "${{ inputs.terminal_agent }}" == "claude" || "${{ inputs.terminal_agent }}" == "herdr" ]] && pgrep -xiq ghostty; then
+          # post-build). A dedicated GUI runner quits it instead.
+          if [[ "${LOCALVOXTRAL_DEDICATED_GUI:-0}" != 1 ]] && [[ "${{ inputs.terminal_agent }}" == "claude" || "${{ inputs.terminal_agent }}" == "herdr" ]] && pgrep -xiq ghostty; then
             echo "Ghostty is already running — the ${{ inputs.terminal_agent }} scene must launch it itself. Quit Ghostty and rerun." >&2
             exit 1
           fi

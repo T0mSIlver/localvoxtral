@@ -273,28 +273,8 @@ done
 sleep 1 # let the status item settle
 
 # The app asks for the microphone at launch, and the open prompt keeps the
-# status menu from opening. On the Mac Mini every CI build prompts again,
-# since tccd matches none to the last grant (#1838), so a runner nobody sits
-# at answers the prompt itself. On an attended Mac the owner answers it.
-if [[ "${LOCALVOXTRAL_DEDICATED_GUI:-0}" == 1 ]]; then
-  osascript >/dev/null 2>&1 <<OSA || true
-tell application "System Events"
-  repeat 10 times
-    if exists process "UserNotificationCenter" then
-      tell process "UserNotificationCenter"
-        repeat with w in windows
-          if (value of static texts of w as text) contains "“$APP_PROCESS” to access your microphone" then
-            click button "Allow" of w
-            return
-          end if
-        end repeat
-      end tell
-    end if
-    delay 0.5
-  end repeat
-end tell
-OSA
-fi
+# status menu from opening.
+answer_app_prompts 5 once
 
 open_status_menu() {
   # Clicking a menu bar item blocks System Events while the menu tracks, so
