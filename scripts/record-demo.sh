@@ -514,10 +514,13 @@ I dictate most prompts with a speech-to-text app, so they can hold transcription
 <!-- end localvoxtral dictation note -->
 MD
   git -C "$repo" init -q -b main
-  git -C "$repo" remote add origin "https://github.com/$DEMO_DEMO_REPO.git"
   git -C "$repo" add -A
   git -C "$repo" -c user.name="demo" -c user.email="demo@example.com" commit -q -m "initial commit"
 done
+
+# The Inbox files payments' bugs in the throwaway repo. Docs gets no origin:
+# two checkouts of one repository share one project and its terms.
+git -C "$PAYMENTS_DIR" remote add origin "https://github.com/$DEMO_DEMO_REPO.git"
 
 # --- launch the app on its own data folder, seed History --------------------------
 lv_isolate_data lv-demo-data \
@@ -727,7 +730,13 @@ until [[ -n "$(project_terms "$PAYMENTS_DIR")" && -n "$(project_terms "$DOCS_DIR
   fi
   sleep 3
 done
-sleep 10 # let both turns finish
+# Both turns end before /clear: Claude Code shows "esc to interrupt" while
+# it works.
+TURN_DEADLINE=$(( SECONDS + 120 ))
+while pane_text "$PAYMENTS_PANE" 6 | grep -q "esc to interrupt" || pane_text "$DOCS_PANE" 6 | grep -q "esc to interrupt"; do
+  (( SECONDS >= TURN_DEADLINE )) && break
+  sleep 2
+done
 echo "Terms proposed: payments: $(project_terms "$PAYMENTS_DIR" | tr '\n' ' '); docs: $(project_terms "$DOCS_DIR" | tr '\n' ' ')"
 # A fresh screen for the take: /clear starts a new session in each pane.
 herdr_cli pane run "$PAYMENTS_PANE" "/clear" >/dev/null
@@ -871,6 +880,7 @@ sleep 2
 # Beat 3 — needs you: payments asks for permission (staged hook event), the
 # banner and dot, a tap, Tab Tab to payments, the spoken answer.
 tl_seg needsyou 1
+BEAT_LOG_START="$(date '+%Y-%m-%d %H:%M:%S')"
 PAYMENTS_SESSION_ID="$(claude_session_id "$PAYMENTS_DIR")"
 [[ -n "$PAYMENTS_SESSION_ID" ]] || beat_failed "needsyou: no Claude session id for payments."
 printf '{"hook_event_name":"Notification","session_id":"%s","cwd":"%s","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}\n' \
@@ -878,9 +888,17 @@ printf '{"hook_event_name":"Notification","session_id":"%s","cwd":"%s","notifica
   | env LOCALVOXTRAL_CLAUDE_PPID="$PAYMENTS_CLAUDE_PID" TERM_PROGRAM=ghostty \
       HERDR_PANE_ID="$PAYMENTS_HERDR_PANE_ID" HERDR_SOCKET_PATH="$PAYMENTS_HERDR_SOCKET" \
       "$PUBLISHER_PATH" --event Notification
+# The banner: NotificationCenter's window when AX can read it, else its log.
+# A recorded screen counts as a shared display, and macOS mutes banners there
+# unless Notifications > "when mirroring or sharing the display" allows them.
 NC_PID="$(pgrep -x NotificationCenter | head -n 1 || true)"
-[[ -n "$NC_PID" ]] && ax_probe "$NC_PID" --find "needs you" --timeout 10 >/dev/null 2>&1 \
-  || beat_failed "needsyou: no \"needs you\" banner within 10 s."
+if ! { [[ -n "$NC_PID" ]] && ax_probe "$NC_PID" --find "needs you" --timeout 8 >/dev/null 2>&1; }; then
+  NC_LOG="$(log show --start "$BEAT_LOG_START" --predicate 'process == "NotificationCenter"' 2>/dev/null | grep 'com.localvoxtral.app' || true)"
+  if grep -q 'muted by display state' <<<"$NC_LOG"; then
+    beat_failed "needsyou: macOS muted the banner because the screen is being recorded; allow notifications when sharing the display (System Settings > Notifications)."
+  fi
+  grep -q 'agent-attention' <<<"$NC_LOG" || beat_failed "needsyou: no \"needs you\" banner."
+fi
 sleep 3
 tap_hotkey
 sleep 1
