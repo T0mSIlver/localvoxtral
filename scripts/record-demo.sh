@@ -778,7 +778,8 @@ focus_pane() { # <pane> <direction it lies in>
 
 for pane in "$PAYMENTS_PANE" "$DOCS_PANE"; do
   if [[ "$pane" == "$PAYMENTS_PANE" ]]; then dir="$PAYMENTS_DIR"; else dir="$DOCS_DIR"; fi
-  herdr_cli pane run "$pane" "cd $(printf %q "$dir") && PATH=$(printf %q "$STAGE_BIN"):\$PATH $(printf %q "$CLAUDE_BIN")" >/dev/null \
+  # Haiku: the owner's call, to keep each take's inference small.
+  herdr_cli pane run "$pane" "cd $(printf %q "$dir") && PATH=$(printf %q "$STAGE_BIN"):\$PATH $(printf %q "$CLAUDE_BIN") --model haiku" >/dev/null \
     || { echo "Could not start claude in pane $pane." >&2; exit 1; }
 done
 sleep 8
