@@ -930,6 +930,26 @@ TS
     DECOY_CMD='clear; echo "billing — test watcher"; while :; do echo "$(date +%H:%M:%S)  watching  usePayment.ts  PaymentForm.tsx  checkout.spec.ts"; sleep 3; done'
   fi
 
+  # Trust the staged folder before claude starts. Its trust dialog's default
+  # became "No, exit" (Claude Code 2.1.29x), so the Return below would quit
+  # claude, and Ghostty's next activation would open a plain shell window
+  # in its place. With the folder trusted, that Return lands on an empty
+  # prompt.
+  python3 - "$REPO_DIR" <<'PY' || echo "WARNING: could not pre-trust $REPO_DIR for claude; the trust dialog may quit it." >&2
+import json, os, sys, tempfile
+path = os.path.expanduser("~/.claude.json")
+with open(path) as f:
+    config = json.load(f)
+projects = config.setdefault("projects", {})
+for folder in {sys.argv[1], os.path.realpath(sys.argv[1])}:
+    projects.setdefault(folder, {})["hasTrustDialogAccepted"] = True
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
+with os.fdopen(fd, "w") as f:
+    json.dump(config, f, indent=2)
+os.chmod(tmp, os.stat(path).st_mode & 0o777)
+os.replace(tmp, path)
+PY
+
   # `open -na … --args` delivers the args ONLY to a freshly launched instance.
   # Against an already-running Ghostty it degrades to a bare reopen: a new tab
   # in the existing window, no --working-directory, no `-e claude` — the scene
@@ -985,7 +1005,8 @@ TS
   sleep 1
 
   # Folder-trust dialog acceptance (BEFORE any dictated text exists; a no-op on
-  # an already-trusted folder). Same one-Return discipline as the shell path.
+  # an already-trusted folder, which the pre-trust above makes it). Same
+  # one-Return discipline as the shell path.
   # Address Ghostty by bundle id (not display name) — the app's own reader does
   # too, and a by-name tell is fragile under localization / name collisions.
   # herdr mode skips this: claude is not running yet (it starts inside a herdr
