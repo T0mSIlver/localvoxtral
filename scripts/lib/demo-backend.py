@@ -19,7 +19,8 @@ app in External URL mode on that one port:
                             spoken code forms of the demo's lines as code and
                             echoes everything else; the Inbox's router picks
                             the payments project and its drafter answers one
-                            issue draft.
+                            issue draft. DEMO_ROUTE_TO names the project
+                            the router picks (default payments).
 
 The 8 GB Mac Mini runner cannot hold the bundled 4B speech and polish models
 next to two Claude Code sessions: they ran from swap and timed out. The
@@ -31,6 +32,7 @@ as in scripts/ci/fake-speech-service.py.
 import base64
 import hashlib
 import json
+import os
 import re
 import socket
 import struct
@@ -40,6 +42,8 @@ import time
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 WORDS_PER_SECOND = 2.8
+# Where the Inbox router sends a note, most specific name first.
+ROUTE_TO = [n.strip().lower() for n in os.environ.get("DEMO_ROUTE_TO", "payments").split(",") if n.strip()]
 
 # Spoken forms the agent polish writes as code in the demo's lines.
 REWRITES = [
@@ -193,18 +197,16 @@ def polish(text):
 
 
 def route(user):
-    """The payments project: by its id, else by a description that starts
-    with its name, else by one that mentions it (the docs project does too)."""
+    """The first option whose id, else whose description, holds one of
+    ROUTE_TO's names, in order: payments' project is listed under its
+    GitHub repository, and the docs project mentions payments too."""
     projects = user.split("\n\nNote:", 1)[0]
     options = [(o.strip(), d.strip().lower()) for o, d in re.findall(r"^- ([^:\n]+):(.*)$", projects, flags=re.MULTILINE)]
-    for rank in (
-        lambda o, d: "payments" in o.lower(),
-        lambda o, d: d.startswith("payments"),
-        lambda o, d: "payments" in d,
-    ):
-        for option, description in options:
-            if rank(option, description):
-                return {"project": option, "confidence": 0.97}
+    for field in (0, 1):
+        for name in ROUTE_TO:
+            for option in options:
+                if name in option[field].lower():
+                    return {"project": option[0], "confidence": 0.97}
     return {"project": options[0][0] if options else "", "confidence": 0.5}
 
 

@@ -489,7 +489,7 @@ demo_default settings.selected_input_device_uid -string "$DEMO_MIC_UID"
 # the 8 GB Mini cannot run the bundled 4B models next to two Claude sessions.
 BACKEND_PORT_FILE="$HELPER_DIR/backend.port"
 LINE_FILE="$HELPER_DIR/next-line.txt"
-python3 "$SCRIPT_DIR/lib/demo-backend.py" "$BACKEND_PORT_FILE" "$LINE_FILE" &
+DEMO_ROUTE_TO="${DEMO_DEMO_REPO#*/},payments" python3 "$SCRIPT_DIR/lib/demo-backend.py" "$BACKEND_PORT_FILE" "$LINE_FILE" &
 BACKEND_PID=$!
 for _ in $(seq 1 20); do [[ -s "$BACKEND_PORT_FILE" ]] && break; sleep 0.25; done
 [[ -s "$BACKEND_PORT_FILE" ]] || { echo "The demo backend did not start." >&2; exit 1; }
