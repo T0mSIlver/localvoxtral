@@ -4,6 +4,7 @@
 usage: demo-cli-json.py capture-ids          # stdin: capture list --json; one id per line
        demo-cli-json.py terms                # stdin: terms list --json; one term per line
        demo-cli-json.py filed-url            # stdin: capture show --json; the issue URL, if filed
+       demo-cli-json.py last-raw             # stdin: history last --json; its words as dictated
 
 The walk finds the objects by their fields rather than by the envelope
 around them, so it reads both the bare payload and the full response.
@@ -42,6 +43,11 @@ def main(argv):
         for node in walk(data):
             if node.get("filedURL"):
                 print(node["filedURL"])
+                return
+    elif argv[1] == "last-raw":
+        for node in walk(data):
+            if "rawText" in node:
+                print(node["rawText"])
                 return
     else:
         sys.exit(__doc__)

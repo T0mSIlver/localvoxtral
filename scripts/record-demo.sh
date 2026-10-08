@@ -242,6 +242,40 @@ for id in ids where stringProperty(id, kAudioObjectPropertyName) == wanted {
 exit(1)
 SWIFT
 
+# Closes every notification on screen: a leftover macOS banner (a login item,
+# a Tips card) would sit over the scene for the whole take. A single banner
+# is a group of the scroll area, a stack a group inside one.
+cat > "$HELPER_DIR/clear-notifications.applescript" <<'OSA'
+on closeOne(el)
+  tell application "System Events"
+    repeat with act in (actions of el)
+      set actName to name of act
+      if actName contains "Clear All" or actName contains "Close" then
+        perform act
+        return true
+      end if
+    end repeat
+  end tell
+  return false
+end closeOne
+
+tell application "System Events" to tell process "NotificationCenter"
+  set cleared to 0
+  repeat 20 times
+    set done to false
+    try
+      set area to scroll area 1 of group 1 of group 1 of window "Notification Center"
+      if exists group 1 of group 1 of area then set done to my closeOne(group 1 of group 1 of area)
+      if not done and (exists group 1 of area) then set done to my closeOne(group 1 of area)
+    end try
+    if not done then exit repeat
+    set cleared to cleared + 1
+    delay 0.5
+  end repeat
+  return cleared
+end tell
+OSA
+
 compile_helper preflight "$HELPER_DIR/preflight.swift"
 compile_helper gesture "$HELPER_DIR/gesture.swift"
 compile_helper audiouid "$HELPER_DIR/audiouid.swift"
@@ -669,6 +703,12 @@ sidebar_start_collapsed = true
 sidebar_collapsed_mode = "hidden"
 show_agent_labels_on_pane_borders = false
 
+[ui.toast]
+delivery = "off"
+
+[update]
+version_check = false
+
 [terminal]
 onboarding = false
 TOML
@@ -766,17 +806,35 @@ sleep 4
 
 # Warm the agent-profile polish off camera: the first agent polish pays the
 # full prompt prefill. Its text is cleared with one Ctrl+C (two exit claude).
+# The same dictation proves the loopback carries the voice: its History row
+# must hold text. Silent buffers (BlackHole wedged in coreaudiod) get one
+# coreaudiod restart.
 focus_pane "$PAYMENTS_PANE" left
-osascript -e "tell application id \"$GHOSTTY_BUNDLE_ID\" to activate" >/dev/null 2>&1 || true
-sleep 1
-tap_hotkey
-sleep 1
-say -a "$DEMO_SAY_DEVICE" -r 180 "Ready to record the demo."
-sleep 1
-tap_hotkey
-sleep "$DEMO_COMMIT_SECONDS"
-herdr_cli pane send-keys "$PAYMENTS_PANE" ctrl+c >/dev/null
-sleep 1.5
+last_raw_text() { "$CLI_PATH" history last --json 2>/dev/null | python3 "$SCRIPT_DIR/lib/demo-cli-json.py" last-raw; }
+warm_polish() {
+  osascript -e "tell application id \"$GHOSTTY_BUNDLE_ID\" to activate" >/dev/null 2>&1 || true
+  sleep 1
+  tap_hotkey
+  sleep 1
+  say -a "$DEMO_SAY_DEVICE" -r 180 "Ready to record the demo."
+  sleep 1
+  tap_hotkey
+  local deadline=$(( SECONDS + DEMO_COMMIT_SECONDS ))
+  until last_raw_text | grep -qi "record"; do
+    (( SECONDS >= deadline )) && break
+    sleep 2
+  done
+  sleep 2
+  herdr_cli pane send-keys "$PAYMENTS_PANE" ctrl+c >/dev/null
+  sleep 1.5
+  last_raw_text | grep -qi "record"
+}
+if ! warm_polish; then
+  echo "The warmup dictation heard nothing; restarting coreaudiod once." >&2
+  sudo -n killall coreaudiod 2>/dev/null || true
+  sleep 6
+  warm_polish || { echo "The loopback audio is silent: the app hears nothing from \"$DEMO_SAY_DEVICE\"." >&2; exit 1; }
+fi
 
 # --- the payments session's identity, for the staged permission request ----------
 # The real claude process in the payments pane: its pid, and the herdr pane
@@ -806,6 +864,7 @@ rm -f "$RAW_MOV" "$OUT_MP4" "$TIMELINE_TSV" "$TIMELINE_JSON"
 osascript -e "tell application id \"$GHOSTTY_BUNDLE_ID\" to activate" >/dev/null 2>&1 || true
 sleep 1
 assert_frontmost Ghostty "before recording"
+osascript "$HELPER_DIR/clear-notifications.applescript" >/dev/null 2>&1 || true
 "$HELPER_DIR/gesture" mouse "$(( MAIN_X + 10 ))" "$(( MAIN_Y + MAIN_H - 10 ))" # the pointer leaves the shot
 
 now_s() { perl -MTime::HiRes=time -e 'printf("%.3f\n", time)'; }
