@@ -20,6 +20,11 @@ name: Record README Demo
 
 on:
   workflow_dispatch:
+    inputs:
+      polish_model:
+        description: "Managed polishing model. The 8 GB Mini swaps with the 4B next to the 4B speech model and two Claude sessions."
+        type: string
+        default: mlx-community/Qwen3.5-4B-OptiQ-4bit
 
 concurrency:
   group: record-demo-${{ github.ref }}
@@ -106,6 +111,7 @@ jobs:
           LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN: "1"
           DEMO_HANDS_FREE: "1"
           DEMO_WARMUP_SECONDS: "25"
+          DEMO_POLISH_MODEL: ${{ inputs.polish_model }}
         run: |
           bash scripts/record-demo.sh dist/localvoxtral.app
           # The runner's /bin/bash 3.2 has returned exit 0 on a PARSE ERROR

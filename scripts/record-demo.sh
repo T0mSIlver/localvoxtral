@@ -59,7 +59,8 @@ set -euo pipefail
 #                                menu bar icon and the banners are in it
 #   DEMO_WARMUP_SECONDS          off-camera speech warmup (default 12)
 #   DEMO_POLISH_READY_SECONDS    max wait for polishd health (default 300)
-#   DEMO_COMMIT_SECONDS          max wait for an overlay commit (default 60)
+#   DEMO_COMMIT_SECONDS          max wait for an overlay commit (default 90)
+#   DEMO_POLISH_MODEL            the managed polishing model (default the 4B)
 #   DEMO_INBOX_SECONDS           max wait for the Inbox draft and check (default 300)
 #   DEMO_HERDR_SESSION           the isolated herdr session (default lv-demo)
 #   DEMO_DEMO_REPO               where the Inbox files (default T0mSIlver/localvoxtral-demo)
@@ -89,7 +90,8 @@ DEMO_WIDTH="${DEMO_WIDTH:-1280}"
 DEMO_HEIGHT="${DEMO_HEIGHT:-800}"
 DEMO_WARMUP_SECONDS="${DEMO_WARMUP_SECONDS:-12}"
 DEMO_POLISH_READY_SECONDS="${DEMO_POLISH_READY_SECONDS:-300}"
-DEMO_COMMIT_SECONDS="${DEMO_COMMIT_SECONDS:-60}"
+DEMO_COMMIT_SECONDS="${DEMO_COMMIT_SECONDS:-90}"
+DEMO_POLISH_MODEL="${DEMO_POLISH_MODEL:-mlx-community/Qwen3.5-4B-OptiQ-4bit}"
 DEMO_INBOX_SECONDS="${DEMO_INBOX_SECONDS:-300}"
 DEMO_HERDR_SESSION="${DEMO_HERDR_SESSION:-lv-demo}"
 DEMO_DEMO_REPO="${DEMO_DEMO_REPO:-T0mSIlver/localvoxtral-demo}"
@@ -474,7 +476,7 @@ demo_default settings.agent_attention_mark -string dot
 # The 0.8B model does not write spoken flags reliably; the 4B does.
 demo_default settings.llm_polishing_enabled -bool true
 demo_default settings.agent_polish_profile_enabled -bool true
-demo_default settings.managed_llm_polishing_model -string "mlx-community/Qwen3.5-4B-OptiQ-4bit"
+demo_default settings.managed_llm_polishing_model -string "$DEMO_POLISH_MODEL"
 demo_default settings.overlay_buffer_font_size -float 20
 # Grounding in the joined session: its cwd, prompts and files, and the
 # herdr pane's screen.
