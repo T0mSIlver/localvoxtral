@@ -3,6 +3,8 @@
 
 usage: demo-backend.py <port-file> <line-file>
 
+Every request it answers is logged to <line-file>.log.
+
 Binds 127.0.0.1 on port 0, writes the port to <port-file>, and serves the
 app in External URL mode on that one port:
 
@@ -139,6 +141,7 @@ class SpeechSession:
     def start(self):
         self.started = True
         line = self.take_line()
+        log(f"speech: {line!r}")
         delay = 0.0
         match = re.match(r"@([0-9.]+)\s+(.*)", line, flags=re.DOTALL)
         if match:
@@ -190,11 +193,28 @@ def polish(text):
 
 
 def route(user):
-    options = re.findall(r"^- ([^:\n]+):(.*)$", user, flags=re.MULTILINE)
-    for option, description in options:
-        if "payments" in (option + description).lower():
-            return {"project": option.strip(), "confidence": 0.97}
-    return {"project": options[0][0].strip() if options else "", "confidence": 0.5}
+    """The payments project: by its id, else by a description that starts
+    with its name, else by one that mentions it (the docs project does too)."""
+    projects = user.split("\n\nNote:", 1)[0]
+    options = [(o.strip(), d.strip().lower()) for o, d in re.findall(r"^- ([^:\n]+):(.*)$", projects, flags=re.MULTILINE)]
+    for rank in (
+        lambda o, d: "payments" in o.lower(),
+        lambda o, d: d.startswith("payments"),
+        lambda o, d: "payments" in d,
+    ):
+        for option, description in options:
+            if rank(option, description):
+                return {"project": option, "confidence": 0.97}
+    return {"project": options[0][0] if options else "", "confidence": 0.5}
+
+
+LOG = None
+
+
+def log(line):
+    if LOG:
+        with open(LOG, "a") as f:
+            f.write(time.strftime("%H:%M:%S ") + line + "\n")
 
 
 def complete(body):
@@ -213,6 +233,9 @@ def complete(body):
         answer = polish(last.rsplit("Working text:\n", 1)[1].strip())
     else:
         answer = "Ready."
+    log(f"chat: {system[:40]!r} -> {answer[:160]!r}")
+    if system.startswith("You route a spoken note"):
+        log("router options: " + last.split("\n\nNote:", 1)[0].replace("\n", " | ")[:600])
     return {
         "id": "demo",
         "object": "chat.completion",
@@ -274,7 +297,9 @@ def handle(conn, line_file):
 def main(argv):
     if len(argv) != 3:
         sys.exit(__doc__)
+    global LOG
     port_file, line_file = argv[1], argv[2]
+    LOG = line_file + ".log"
     open(line_file, "w").close()
     server = socket.socket()
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

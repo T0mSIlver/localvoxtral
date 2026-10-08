@@ -722,9 +722,6 @@ delivery = "off"
 
 [update]
 version_check = false
-
-[terminal]
-onboarding = false
 TOML
 LAUNCHED_GHOSTTY=1
 HERDR_SESSION_STARTED=1
@@ -921,6 +918,7 @@ beat_failed() {
     log show --info --start "$TAKE_LOG_START" --predicate 'subsystem == "com.localvoxtral"' 2>/dev/null | tail -n 400
   } >"$OUT_DIR/failed-take.txt" 2>&1
   [[ -f "$TIMELINE_TSV" ]] && cp "$TIMELINE_TSV" "$OUT_DIR/failed-take-segments.tsv"
+  [[ -f "$LINE_FILE.log" ]] && cp "$LINE_FILE.log" "$OUT_DIR/failed-take-backend.log"
   exit 1
 }
 log_since() { # <start "YYYY-MM-DD HH:MM:SS">: the app's log since then
@@ -975,6 +973,10 @@ printf '{"hook_event_name":"Notification","session_id":"%s","cwd":"%s","notifica
 NC_PID="$(pgrep -x NotificationCenter | head -n 1 || true)"
 if ! { [[ -n "$NC_PID" ]] && ax_probe "$NC_PID" --find "needs you" --timeout 8 >/dev/null 2>&1; }; then
   NC_LOG="$(log show --start "$BEAT_LOG_START" --predicate 'process == "NotificationCenter"' 2>/dev/null | grep 'com.localvoxtral.app' || true)"
+  NC_ALLOWED_LOG="$(log show --start "$BEAT_LOG_START" --predicate 'process == "NotificationCenter"' 2>/dev/null | grep 'notificationsAllowed: false' | grep 'com.localvoxtral.app' || true)"
+  if [[ -n "$NC_ALLOWED_LOG" ]]; then
+    beat_failed "needsyou: notifications are off for localvoxtral (System Settings > Notifications > localvoxtral > Allow notifications)."
+  fi
   if grep -q 'muted by display state' <<<"$NC_LOG"; then
     beat_failed "needsyou: macOS muted the banner because the screen is being recorded; allow notifications when sharing the display (System Settings > Notifications)."
   fi
@@ -999,6 +1001,7 @@ sleep 3
 # Beat 4 — Inbox: a bug, Tab to the Inbox; the draft is routed, checked
 # against the code, and filed.
 tl_seg inbox 1
+BEAT_LOG_START="$(date '+%Y-%m-%d %H:%M:%S')"
 capture_ids() { "$CLI_PATH" capture list --json 2>/dev/null | python3 "$SCRIPT_DIR/lib/demo-cli-json.py" capture-ids; }
 CAPTURES_BEFORE="$(capture_ids)"
 queue_line "$LINE_INBOX"
@@ -1019,9 +1022,16 @@ done
 "$CLI_PATH" capture open "$CAPTURE_ID" >/dev/null || beat_failed "inbox: capture open refused."
 sleep 2
 center_window "$APP_PROCESS" "front window"
-# File is enabled once the draft is ready; the code check comes after it.
-ax_probe "$APP_PID" --find "Checked against the code" --timeout "$DEMO_INBOX_SECONDS" >/dev/null \
-  || beat_failed "inbox: the draft was never checked against the code. $("$CLI_PATH" capture show "$CAPTURE_ID" 2>&1 | head -n 20)"
+# File is enabled once the draft is ready; Claude's check of the draft
+# against the code comes after it, and the app logs its end.
+CHECK_DEADLINE=$(( SECONDS + DEMO_INBOX_SECONDS ))
+until log show --start "$BEAT_LOG_START" --predicate 'subsystem == "com.localvoxtral"' 2>/dev/null \
+  | grep -qE 'Quick capture draft: (claude|vibe|opencode) checked'; do
+  (( SECONDS >= CHECK_DEADLINE )) && beat_failed "inbox: the draft was never checked against the code. $("$CLI_PATH" capture show "$CAPTURE_ID" 2>&1 | head -n 20)"
+  sleep 3
+done
+"$CLI_PATH" capture show "$CAPTURE_ID" 2>/dev/null | grep -q "Repository: $DEMO_DEMO_REPO" \
+  || beat_failed "inbox: the draft does not file in $DEMO_DEMO_REPO. $("$CLI_PATH" capture show "$CAPTURE_ID" 2>&1 | head -n 3)"
 tl_seg inbox 1
 sleep 3
 ax_probe "$APP_PID" --press inbox.row.file --title File --timeout 10 >/dev/null || beat_failed "inbox: could not press File."
