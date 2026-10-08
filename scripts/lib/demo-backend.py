@@ -114,6 +114,7 @@ class SpeechSession:
         self.lock = threading.Lock()
         self.words = []
         self.sent = 0
+        self.done_upto = 0
         self.started = False
         self.finished = False
 
@@ -153,6 +154,15 @@ class SpeechSession:
         self.words = line.split()
         threading.Thread(target=self.stream, args=(delay,), daemon=True).start()
 
+    def segment(self):
+        """Finalizes the words streamed since the last segment, as a server
+        does on each periodic commit: Live Auto-Paste inserts segments."""
+        with self.lock:
+            if self.sent > self.done_upto:
+                send_frame(self.conn, json.dumps(
+                    {"type": "transcription.done", "text": " ".join(self.words[self.done_upto:self.sent])}).encode())
+                self.done_upto = self.sent
+
     def finish(self):
         with self.lock:
             self.finished = True
@@ -162,7 +172,8 @@ class SpeechSession:
                     {"type": "transcription.delta", "delta": (" " if self.sent else "") + " ".join(rest)}).encode())
             self.sent = len(self.words)
             send_frame(self.conn, json.dumps(
-                {"type": "transcription.done", "text": " ".join(self.words)}).encode())
+                {"type": "transcription.done", "text": " ".join(self.words[self.done_upto:])}).encode())
+            self.done_upto = self.sent
 
     def run(self):
         self.send({"type": "session.created", "session": {}})
@@ -186,6 +197,8 @@ class SpeechSession:
                 if not self.started:
                     self.start()
                 self.finish()
+            elif kind == "input_audio_buffer.commit" and self.started:
+                self.segment()
 
 
 # --- polishing ------------------------------------------------------------------------

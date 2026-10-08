@@ -1079,17 +1079,20 @@ else
   # The hand fix: erase back to the misheard word and retype it.
   TAIL="$(pane_text "$DOCS_PANE" 15 | grep -i "benchmark" | tail -n 1 \
     | python3 -c 'import re,sys; t=sys.stdin.read().rstrip(); m=re.search(r"against\s+", t, re.I); print(len(t) - m.end() if m else 0)')"
+  tl_seg learned 3 # the hand fix: erase and retype
   for _ in $(seq 1 "$TAIL"); do herdr_cli pane send-keys "$DOCS_PANE" Backspace >/dev/null; done
   sleep 0.5
   herdr_cli pane send-text "$DOCS_PANE" "$LEARN_TERM three." >/dev/null
   sleep 1
 fi
+tl_seg learned 1
 herdr_cli pane send-keys "$DOCS_PANE" Enter >/dev/null
 if [[ "$HEARD" != "$LEARN_TERM" ]]; then
   ax_probe "$APP_PID" --find "Learned" --timeout 15 >/dev/null 2>&1 \
     || echo "WARNING: no Learned toast after the hand fix ($HEARD -> $LEARN_TERM)." >&2
 fi
-sleep 4
+sleep 3
+tl_seg learned 3 # opening Settings
 
 open_settings_tab() { # <tab raw id> <title>
   ax_probe "$APP_PID" --press "settings.tab.$1" --title "$2" --window localvoxtral --timeout 10 >/dev/null \
@@ -1111,25 +1114,27 @@ OSA
 sleep 2
 center_window "$APP_PROCESS" "front window"
 open_settings_tab projects Projects
-sleep 5
+tl_seg learned 1
+sleep 4
 
 # Beat 7 — History, then Insights.
 tl_seg history 1
 open_settings_tab history History
-sleep 5
+sleep 6
 open_settings_tab insights Insights
-sleep 7
+sleep 9
 tl_close "$(now_s)"
 
 recorder_alive_or_abort
+TL_STOP="$(awk -v e="$(now_s)" -v z="$TL_T0" 'BEGIN { printf "%.3f", e - z }')"
 kill -INT "$RECORDER_PID"
 wait "$RECORDER_PID" 2>/dev/null || true
 RECORDER_PID=""
 [[ -s "$RAW_MOV" ]] || { echo "screencapture produced no output." >&2; exit 1; }
 
-python3 - "$TIMELINE_TSV" "$TIMELINE_JSON" "$DEMO_TIMELINE_OFFSET" <<'PY'
+python3 - "$TIMELINE_TSV" "$TIMELINE_JSON" "$DEMO_TIMELINE_OFFSET" "$TL_STOP" <<'PY'
 import json, sys
-tsv, out, offset = sys.argv[1], sys.argv[2], float(sys.argv[3])
+tsv, out, offset, stop = sys.argv[1], sys.argv[2], float(sys.argv[3]), float(sys.argv[4])
 beats = [
     ("live", "Hold to talk: it streams into Claude Code. “Send it” submits"),
     ("overlay", "Tap to talk: the polish writes the session’s code words"),
@@ -1145,7 +1150,7 @@ with open(tsv) as f:
         beat, speed, start, end = line.rstrip("\n").split("\t")
         segments.append({"beat": beat, "speed": float(speed), "start": float(start), "end": float(end)})
 with open(out, "w") as f:
-    json.dump({"offset": offset, "beats": [{"id": b, "caption": c} for b, c in beats], "segments": segments}, f, indent=2)
+    json.dump({"offset": offset, "stop": stop, "beats": [{"id": b, "caption": c} for b, c in beats], "segments": segments}, f, indent=2)
 PY
 
 ffmpeg -hide_banner -loglevel error -y -i "$RAW_MOV" \

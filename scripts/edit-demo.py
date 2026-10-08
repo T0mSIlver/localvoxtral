@@ -10,7 +10,10 @@ scripts/record-demo.sh (story scene) writes the timeline while it records:
    "segments": [{"beat": "live", "start": 3.1, "end": 9.8, "speed": 1}, ...]}
 
 Times are seconds since the recorder started; `offset` is how long the
-recorder took to write its first frame, subtracted from every time. A
+recorder took to write its first frame, subtracted from every time. `stop`
+is when the recorder was stopped: screencapture's clock loses a few seconds
+over a take on a loaded 8 GB Mac (a 122 s take came out 117 s long), so times
+are scaled onto the capture's real length. A
 segment with speed 0 is dropped, speed 4 plays four times faster (waits on
 the agent or the polish). Each beat's caption is burned in over all of its
 segments, so the muted autoplay on GitHub still names each feature.
@@ -65,12 +68,12 @@ def caption_filter(caption, font):
     )
 
 
-def render_segment(raw, segment, offset, caption, font, out):
-    start = max(0.0, segment["start"] - offset)
-    end = segment["end"] - offset
+def render_segment(raw, segment, offset, scale, caption, font, out):
+    start = max(0.0, (segment["start"] - offset) * scale)
+    end = (segment["end"] - offset) * scale
     if end - start < 0.05:
         return False
-    speed = float(segment["speed"])
+    speed = float(segment["speed"]) * scale
     filters = [f"setpts=(PTS-STARTPTS)/{speed}", f"scale={WIDTH}:-2:flags=lanczos", f"fps={FPS}"]
     if caption:
         filters.append(caption_filter(caption, font))
@@ -123,6 +126,10 @@ def main(argv):
     if unknown:
         sys.exit(f"segments name beats the timeline does not declare: {sorted(unknown)}")
     font = font_file()
+    scale = 1.0
+    if timeline.get("stop"):
+        scale = duration(raw) / (float(timeline["stop"]) - offset)
+        print(f"capture is {duration(raw):.1f}s for {float(timeline['stop']) - offset:.1f}s of take: scale {scale:.3f}")
 
     os.makedirs(os.path.join(out_dir, "clips"), exist_ok=True)
     os.makedirs(os.path.join(out_dir, "frames"), exist_ok=True)
@@ -133,7 +140,7 @@ def main(argv):
             if float(segment["speed"]) <= 0:
                 continue
             part = os.path.join(workdir, f"seg-{index:03d}.mp4")
-            if render_segment(raw, segment, offset, captions[segment["beat"]], font, part):
+            if render_segment(raw, segment, offset, scale, captions[segment["beat"]], font, part):
                 parts_by_beat[segment["beat"]].append(part)
 
         story_parts = []
