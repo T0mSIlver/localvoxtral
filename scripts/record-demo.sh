@@ -795,6 +795,10 @@ herdr_cli pane run "$DOCS_PANE" "$SETUP_PROMPT" >/dev/null
 SETUP_DEADLINE=$(( SECONDS + 150 ))
 project_terms() { "$CLI_PATH" terms list --project "$1" --json 2>/dev/null | python3 "$SCRIPT_DIR/lib/demo-cli-json.py" terms; }
 until [[ -n "$(project_terms "$PAYMENTS_DIR")" && -n "$(project_terms "$DOCS_DIR")" ]]; do
+  if pane_text "$PAYMENTS_PANE" 20 | grep -qE "Login expired|Please run /login"; then
+    echo "claude's login on this Mac expired: run \`claude auth login\` in its GUI session (the keychain is not readable over ssh)." >&2
+    exit 1
+  fi
   if (( SECONDS >= SETUP_DEADLINE )); then
     echo "The agents proposed no terms within 150 s; the Projects beat would be empty." >&2
     echo "payments pane:" >&2; pane_text "$PAYMENTS_PANE" 30 >&2
