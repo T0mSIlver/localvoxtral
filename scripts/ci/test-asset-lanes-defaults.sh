@@ -82,10 +82,28 @@ echo png >"$last"
 STUB
 # The managed polishing helper never answers.
 printf '#!/bin/sh\nexit 7\n' >"$BIN/curl"
+# A launch on a data folder leaves a History store in it, which is not a
+# SQLite file: record-demo's seeding refuses it, which ends that lane.
 cat >"$BIN/open" <<'STUB'
 #!/bin/sh
 echo "open $*" >>"$EVENTS"
 echo 5555 >"$RUNNING"
+for arg; do
+  case "$arg" in LOCALVOXTRAL_DATA_HOME=*) echo stub >"${arg#*=}/history.store" ;; esac
+done
+STUB
+# record-demo's tools, found through the login shell's PATH.
+cat >"$BIN/zsh" <<STUB
+#!/bin/sh
+name="\${2##* }"
+[ -x "$BIN/\$name" ] && echo "$BIN/\$name"
+STUB
+for tool in claude herdr gh; do
+  printf '#!/bin/sh\nexit 0\n' >"$BIN/$tool"
+done
+cat >"$BIN/mdfind" <<STUB
+#!/bin/sh
+echo "$WORK/Ghostty.app"
 STUB
 # One file per domain under $DOMAINS, one `key<TAB>value` line per key.
 # `export` prints the file and `import` replaces it, so a copy round-trips.
@@ -141,7 +159,13 @@ OWNER_GOLDEN="$WORK/owner-golden"
 # the polishing backend, and a repo checkout with an assets/ folder.
 fresh_mac() {
   rm -rf "$DOMAINS" "$WORK/repo" "$WORK/home" "$WORK/tmp" "$EVENTS.term"
-  mkdir -p "$DOMAINS" "$WORK/repo/assets" "$WORK/repo/dist/localvoxtral.app" "$WORK/home" "$WORK/tmp"
+  mkdir -p "$DOMAINS" "$WORK/repo/assets" "$WORK/repo/dist/localvoxtral.app/Contents/MacOS" "$WORK/home" "$WORK/tmp" \
+    "$WORK/Ghostty.app"
+  for helper in localvoxtral-claude-hook localvoxtral-cli; do
+    printf '#!/bin/sh\nexit 0\n' >"$WORK/repo/dist/localvoxtral.app/Contents/MacOS/$helper"
+    chmod +x "$WORK/repo/dist/localvoxtral.app/Contents/MacOS/$helper"
+  done
+  echo '{"oauthAccount": {}}' >"$WORK/home/.claude.json"
   : >"$EVENTS"
   echo 4242 >"$RUNNING"
   printf 'settings.polishing_backend_mode\t%s\nsettings.overlay_buffer_font_size\t15\n' "$1" >"$DOMAINS/$OWNER"
@@ -192,37 +216,42 @@ grep "^open .*dist/localvoxtral.app" "$EVENTS" \
   && fail "capture-readme-assets launched the app without its language and region"
 pass "capture-readme-assets runs the app on the harness suite and never writes the owner's domain"
 
-# 2. record-demo: the shell scene, up to the capture region. The owner's
-#    polishing backend is external, so record-demo must not wait for the
-#    managed helper: that holds only if it read the mode from the suite it
-#    copied the owner's domain into.
-fresh_mac external_url
-status="$(run_lane record-demo.sh DEMO_TERMINAL_AGENT=shell DEMO_WIDTH=4000)"
+# 2. record-demo up to the capture region, which it checks before staging or
+#    launching anything: the suite starts as a copy of the owner's domain,
+#    with the demo's settings pinned, and the speech and polishing backends
+#    point at the scripted one (scripts/lib/demo-backend.py).
+fresh_mac managed_local
+status="$(run_lane record-demo.sh DEMO_FORCE=1 DEMO_WIDTH=4000)"
 [[ "$status" == 1 ]] || fail "record-demo exited $status"
-grep -q "smaller than the 4000x800 capture region" "$WORK/out" \
+grep -q "smaller than 4000x800" "$WORK/out" \
   || fail "record-demo stopped before the capture region"
-grep -q "Waiting for the polishing helper" "$WORK/out" \
-  && fail "record-demo did not read the owner's polishing backend from the suite"
 assert_owner_domain_untouched record-demo
-assert_launches_on_suite record-demo 1
+assert_launches_on_suite record-demo 0
 grep -q "^defaults import $HARNESS -" "$EVENTS" || fail "record-demo did not copy the owner's domain into the suite"
 grep -q "^defaults write $HARNESS settings.agent_polish_profile_enabled" "$EVENTS" \
   || fail "record-demo did not pin agent polishing in the suite"
-pass "record-demo runs the app on a copy of the owner's settings and never writes the owner's domain"
+grep -q "^defaults write $HARNESS settings.polishing_backend_mode" "$EVENTS" \
+  || fail "record-demo did not point polishing at the scripted backend"
+grep -q "^defaults write $HARNESS settings.dictation_backend_mode" "$EVENTS" \
+  || fail "record-demo did not point speech at the scripted backend"
+pass "record-demo runs on a copy of the owner's settings and never writes the owner's domain"
 
-# 3. record-demo on a managed polishing backend waits for the helper, read
-#    from the suite too.
+# 3. record-demo's launch: on the suite and its own data folder, then the
+#    History seeding, which refuses the stub's store.
 fresh_mac managed_local
-status="$(run_lane record-demo.sh DEMO_TERMINAL_AGENT=shell DEMO_POLISH_READY_SECONDS=0)"
+status="$(run_lane record-demo.sh DEMO_FORCE=1)"
 [[ "$status" == 1 ]] || fail "record-demo exited $status"
-grep -q "polishd never became healthy" "$WORK/out" || fail "record-demo did not wait for the managed helper"
-assert_owner_domain_untouched "record-demo (managed polishing)"
-pass "record-demo waits for the managed polishing helper and leaves the owner's domain alone"
+grep -q "Seeding History failed" "$WORK/out" || fail "record-demo did not reach the History seeding"
+assert_owner_domain_untouched "record-demo (launch)"
+assert_launches_on_suite "record-demo (launch)" 1
+grep "^open .*dist/localvoxtral.app" "$EVENTS" | grep -q -- "--env LOCALVOXTRAL_DATA_HOME=$WORK/tmp/lv-demo-data." \
+  || fail "record-demo launched the app without a data folder of its own"
+pass "record-demo launches the app on the suite and a data folder of its own"
 
 # 4. An owner's domain that cannot be read is not a fresh Mac: record-demo
 #    stops instead of recording on the app's defaults.
 fresh_mac external_url
-status="$(run_lane record-demo.sh DEMO_TERMINAL_AGENT=shell STUB_READ_ERROR="Could not read domain")"
+status="$(run_lane record-demo.sh DEMO_FORCE=1 STUB_READ_ERROR="Could not read domain")"
 [[ "$status" == 1 ]] || fail "record-demo exited $status"
 grep -q "Could not copy $OWNER defaults into $HARNESS" "$WORK/out" || fail "record-demo did not stop at the copy"
 grep -q "^open .*dist/localvoxtral.app" "$EVENTS" && fail "record-demo launched the app without the owner's settings"
@@ -244,7 +273,7 @@ status="$(run_lane capture-readme-assets.sh STUB_TERM_ON_FIRST_WRITE=1)"
 assert_ends_on_signal capture-readme-assets "$status"
 pass "capture-readme-assets stops after cleanup on SIGTERM"
 fresh_mac external_url
-status="$(run_lane record-demo.sh DEMO_TERMINAL_AGENT=shell DEMO_POLISH_READY_SECONDS=0 STUB_TERM_ON_FIRST_WRITE=1)"
+status="$(run_lane record-demo.sh DEMO_FORCE=1 STUB_TERM_ON_FIRST_WRITE=1)"
 assert_ends_on_signal record-demo "$status"
 pass "record-demo stops after cleanup on SIGTERM"
 

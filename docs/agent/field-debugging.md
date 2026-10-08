@@ -176,19 +176,19 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   because the registry is empty or because the surface was not identified. Use
   the verb here when you have the shipping binary and the socket when you
   have a harness build; they print the same six fields from the same mapper.
-- **README demo video**: `./scripts/record-demo.sh` on the Mac (GUI session)
-  stages the scene, drives the real Right-Command tap/hold gesture with
-  synthetic CGEvents, records, and encodes `dist/demo/demo.mp4`; the operator
-  speaks the prompted lines. On the self-hosted runner, dispatch
-  `record-demo.yml` instead: it runs hands-free (`DEMO_HANDS_FREE=1` — TTS
-  through the BlackHole loopback, app mic pinned to it) and uploads the video
-  as an artifact; one-time runner setup is `brew install blackhole-2ch
-  ffmpeg`. GitHub renders inline video only from user-attachments URLs (no
-  API for those), so the owner drag-drops the mp4 into a PR comment and
-  pastes the URL into the README by hand.
-  `DEMO_TERMINAL_AGENT=herdr` (explicit only, never auto) records the herdr
-  pane-join scene — split panes in an isolated named herdr session, dictation
-  into the focused Claude pane, log-asserted herdr join + pane.read context.
+- **README demo video**: dispatch `record-demo.yml`. On the Mac Mini runner,
+  `scripts/record-demo.sh` stages two Claude Code sessions in an isolated
+  herdr session, drives the real Right Command gesture and Tab with synthetic
+  CGEvents, speaks the lines through the BlackHole loopback, and records one
+  take with a beat timeline; the `edit` job cuts it into `story.mp4` and one
+  clip and frame per beat, captions burned in (`scripts/edit-demo.py`, which
+  also runs on the dev box). Each beat checks its outcome (join, banner,
+  pane switch, Inbox draft and filing) and the run fails rather than upload
+  a take with a beat missing. The Inbox beat files a real issue in
+  T0mSIlver/localvoxtral-demo, closed when the take ends, so the Mini's `gh`
+  must stay logged in. GitHub renders inline video only from user-attachments
+  URLs (no API for those), so the owner drag-drops the mp4 into a PR comment
+  and pastes the URL by hand.
 - **Diagnostic records** (`Sources/localvoxtral*/DiagnosticRecords`): the app
   logs context counts only, and each polished dictation also writes a local
   JSON record of what the context pipeline saw and decided, named by its
