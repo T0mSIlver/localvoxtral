@@ -30,19 +30,17 @@ TABLE = "ZDICTATIONSESSIONRECORD"
 # (heard early, written later) pairs and the prompts that use them.
 PROMPTS = {
     "payments": [
-        ("Add a test for the {t} when the amount is zero.", "refund webhook handler", "RefundWebhookHandler"),
-        ("Make {t} required on every refund request.", "idempotency key", "idempotencyKey"),
-        ("Why does {t} retry three times before it gives up?", "pay lane client", "PaylaneClient"),
-        ("Log the {t} with every failed charge.", "idempotency key", "idempotencyKey"),
-        ("Split {t} into a parser and a dispatcher.", "refund webhook handler", "RefundWebhookHandler"),
-        ("Mock the {t} in the checkout tests.", "pay lane client", "PaylaneClient"),
+        ("Mock the {t} client in the refund tests.", "pay lane", "Paylane"),
+        ("Why does {t} retry three times before it gives up?", "pay lane", "Paylane"),
+        ("Run the refund tests under {t} with coverage.", "v test", "Vitest"),
+        ("Log the {t} request id with every failed charge.", "pay lane", "Paylane"),
+        ("Add a {t} test for a zero amount refund.", "v test", "Vitest"),
     ],
     "docs": [
-        ("Show {t} in the quick start, with the token example.", "use auth", "useAuth"),
-        ("Add a section on {t} to the guide.", "npm test dash dash coverage", "npm test --coverage"),
-        ("Rename the {t} page to Authentication.", "use auth", "useAuth"),
-        ("Benchmark the examples against {t}.", "quen three", "Qwen3"),
-        ("Link the {t} docs from the README.", "pay lane client", "PaylaneClient"),
+        ("Move the guides to the new {t} sidebar.", "docu saurus", "Docusaurus"),
+        ("Show the {t} sign in flow in the quick start.", "act me", "Acme"),
+        ("Link the {t} docs from the payments guide.", "pay lane", "Paylane"),
+        ("Bump {t} and rebuild the docs site.", "docu saurus", "Docusaurus"),
     ],
 }
 

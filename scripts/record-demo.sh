@@ -494,7 +494,8 @@ TS
 cat > "$DOCS_DIR/README.md" <<'MD'
 # Acme docs
 
-Guides and runnable examples for the Acme web app.
+Guides and runnable examples for the Acme web app, built with Docusaurus.
+Payments go through Paylane; the examples run under Vitest.
 MD
 cat > "$DOCS_DIR/examples/useAuth.ts" <<'TS'
 import { useAuth } from "@acme/web";
@@ -737,7 +738,7 @@ sleep 2
 
 # Setup, off camera: each agent proposes its repo's names to localvoxtral, as
 # the dictation note tells it to. Those are the terms the Projects pane shows.
-SETUP_PROMPT="Read every file in this repo, then run \`localvoxtral terms propose\` once with every class, function, hook and file name in it that I might say aloud (for example RefundWebhookHandler or useAuth), with --project . — then answer in one short line."
+SETUP_PROMPT="Read this repo, then run \`localvoxtral terms propose\` once with the product, service and library names in it that I might say aloud (names, not code identifiers), with --project . — then answer in one short line."
 herdr_cli pane run "$PAYMENTS_PANE" "$SETUP_PROMPT" >/dev/null
 herdr_cli pane run "$DOCS_PANE" "$SETUP_PROMPT" >/dev/null
 SETUP_DEADLINE=$(( SECONDS + 150 ))
