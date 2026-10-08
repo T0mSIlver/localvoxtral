@@ -46,6 +46,14 @@ if [ "$1" = - ]; then cat >/dev/null; echo "0 0 1920 1080"; exit 0; fi
 [ -n "${STUB_NO_MENU_WINDOW:-}" ] && [ "${3:-}" = 100 ] && exit 1
 echo 77
 STUB
+# `swiftc -o <bin> <helper>` builds the window-id helper once: the "binary"
+# answers like the swift stub above.
+cat >"$BIN/swiftc" <<STUB
+#!/bin/sh
+while [ \$# -gt 0 ]; do [ "\$1" = -o ] && out="\$2"; shift; done
+printf '#!/bin/sh\nexec "%s" helper "\$@"\n' "$BIN/swift" >"\$out"
+chmod +x "\$out"
+STUB
 cat >"$BIN/pgrep" <<'STUB'
 #!/bin/sh
 # `pgrep -x[q|n] localvoxtral`: the pid in $RUNNING.
@@ -62,6 +70,7 @@ cat >"$BIN/osascript" <<'STUB'
 #!/bin/sh
 case "$*" in
   *"get dark mode"*) echo false ;;
+  *"exists menu bar item"*) echo true ;;
   *"localvoxtral\" to quit"*) echo "quit" >>"$EVENTS"; : >"$RUNNING" ;;
 esac
 exit 0

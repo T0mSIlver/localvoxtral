@@ -115,7 +115,7 @@ jobs:
       (github.event_name == 'pull_request' &&
        github.event.label.name == 'needs-ui-smoke' &&
        github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: [self-hosted, mini]
     timeout-minutes: 25
     env:
       # The owner's own dispatch on main, from his phone or a shell, is the

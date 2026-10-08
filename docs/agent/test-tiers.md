@@ -281,8 +281,12 @@ A new scheduled workflow that runs inference on the Mac takes both guards.
 
 ## Dispatching a run without deepening the queue
 
-There is ONE self-hosted runner (the owner's MacBook), so CI concurrency is 1
-and every extra run is paid by everything behind it. Measured 2026-09-05: in a
+Two self-hosted runners, one job at a time each. The Mac Mini (label `mini`)
+runs `mac-lanes`, UI Smoke's e2e dictation and `dmg-test`; the owner's
+MacBook (`self-hosted, macOS, ARM64`, which the Mini does not carry) runs
+`eval-e2e`, `release`, `capture-assets`, `record-demo` and `mac-crashlog`. PR CI
+therefore still has a concurrency of 1, and every extra run is paid by
+everything behind it. Measured 2026-09-05: in a
 3.6 h burst with four agents pushing, the runner was **89 % busy** — 26 jobs,
 19 minutes of total idle — and 3.4 h of work produced **8.95 h of accumulated
 queue**. At that utilization a queue is quadratically sensitive to load, so one
