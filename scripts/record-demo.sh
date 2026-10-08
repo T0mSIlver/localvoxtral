@@ -682,9 +682,9 @@ sleep 1
 
 pane_text() { herdr_cli pane read "$1" --source recent --lines "${2:-80}" --format text 2>/dev/null || true; }
 pane_focused() { herdr_cli pane get "$1" 2>/dev/null | grep -q '"focused":true'; }
-wait_pane_text() { # <pane> <fixed string> <seconds>
+wait_pane_text() { # <pane> <extended regex> <seconds>
   local deadline=$(( SECONDS + $3 ))
-  until pane_text "$1" | grep -qiF -- "$2"; do
+  until pane_text "$1" | grep -qiE -- "$2"; do
     (( SECONDS >= deadline )) && return 1
     sleep 1
   done
@@ -714,7 +714,7 @@ sleep 2
 
 # Setup, off camera: each agent proposes its repo's names to localvoxtral, as
 # the dictation note tells it to. Those are the terms the Projects pane shows.
-SETUP_PROMPT="Skim this repo and run \`localvoxtral terms propose\` with the identifiers I am likely to say aloud, with --project . — then answer in one short line."
+SETUP_PROMPT="Read every file in this repo, then run \`localvoxtral terms propose\` once with every class, function, hook and file name in it that I might say aloud (for example RefundWebhookHandler or useAuth), with --project . — then answer in one short line."
 herdr_cli pane run "$PAYMENTS_PANE" "$SETUP_PROMPT" >/dev/null
 herdr_cli pane run "$DOCS_PANE" "$SETUP_PROMPT" >/dev/null
 SETUP_DEADLINE=$(( SECONDS + 150 ))
@@ -799,6 +799,7 @@ tl_seg() {
 }
 
 TL_T0="$(now_s)"
+TAKE_LOG_START="$(date '+%Y-%m-%d %H:%M:%S')"
 screencapture -v -x -R "${REGION_X},${REGION_Y},${DEMO_WIDTH},${DEMO_HEIGHT}" "$RAW_MOV" &
 RECORDER_PID=$!
 sleep 2
@@ -811,9 +812,24 @@ recorder_alive_or_abort() {
 }
 recorder_alive_or_abort
 # Every check below that fails ends the run without a video.
+# The take is kept as failed-take.mov, with both panes and the app's log,
+# for the workflow's debug artifact; it never becomes the demo.
 beat_failed() {
   echo "BEAT FAILED: $*" >&2
-  rm -f "$RAW_MOV" "$OUT_MP4"
+  if [[ -n "$RECORDER_PID" ]] && kill -0 "$RECORDER_PID" 2>/dev/null; then
+    kill -INT "$RECORDER_PID" 2>/dev/null || true
+    wait "$RECORDER_PID" 2>/dev/null || true
+  fi
+  RECORDER_PID=""
+  [[ -f "$RAW_MOV" ]] && mv -f "$RAW_MOV" "$OUT_DIR/failed-take.mov"
+  rm -f "$OUT_MP4"
+  {
+    echo "== payments pane"; pane_text "$PAYMENTS_PANE" 40
+    echo "== docs pane"; pane_text "$DOCS_PANE" 40
+    echo "== app log since the take started"
+    log show --info --start "$TAKE_LOG_START" --predicate 'subsystem == "com.localvoxtral"' 2>/dev/null | tail -n 400
+  } >"$OUT_DIR/failed-take.txt" 2>&1
+  [[ -f "$TIMELINE_TSV" ]] && cp "$TIMELINE_TSV" "$OUT_DIR/failed-take-segments.tsv"
   exit 1
 }
 log_since() { # <start "YYYY-MM-DD HH:MM:SS">: the app's log since then
@@ -829,7 +845,7 @@ say -a "$DEMO_SAY_DEVICE" -r 180 "$LINE_LIVE"
 sleep 1.5
 release_hotkey
 sleep 3
-wait_pane_text "$PAYMENTS_PANE" "idempotency" 15 || beat_failed "live: the dictation never reached the payments pane."
+wait_pane_text "$PAYMENTS_PANE" "refund|database" 15 || beat_failed "live: the dictation never reached the payments pane."
 log_since "$BEAT_LOG_START" | grep -qiE 'joined to a live Claude session' \
   || echo "WARNING: no join line in the app log for beat 1." >&2
 tl_seg live 2 # the agent starts on it

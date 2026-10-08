@@ -125,6 +125,16 @@ jobs:
             dist/demo/timeline.json
           if-no-files-found: error
           retention-days: 14
+      # A beat that failed its check leaves the take, both panes and the
+      # app's log behind, for debugging; it never becomes the demo.
+      - name: Upload the failed take
+        if: failure() && steps.guard.outputs.present == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: readme-demo-failed-take
+          path: dist/demo/failed-take*
+          if-no-files-found: ignore
+          retention-days: 3
     outputs:
       ran: ${{ steps.record.outputs.ran }}
 
