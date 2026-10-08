@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   capture-assets:
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: [self-hosted, mini]
     timeout-minutes: 20
     steps:
       - name: Checkout
