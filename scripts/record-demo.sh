@@ -169,7 +169,8 @@ SWIFT
 
 # Posts flagsChanged events for Right Command (keycode 54) at the HID tap, the
 # real tap/hold gesture path. `key <code> [shift]` posts one key press, for
-# Tab while an overlay runs (the app takes it as a Carbon hotkey).
+# Tab while an overlay runs (the app takes it as a Carbon hotkey); `mouse x y`
+# moves the pointer.
 cat > "$HELPER_DIR/gesture.swift" <<'SWIFT'
 import CoreGraphics
 import Foundation
@@ -197,6 +198,11 @@ case "tap":
     postModifier(down: false)
 case "down": postModifier(down: true)
 case "up": postModifier(down: false)
+case "mouse":
+    guard arguments.count > 3, let x = Double(arguments[2]), let y = Double(arguments[3]),
+          let event = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+                              mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: .left) else { exit(2) }
+    event.post(tap: .cghidEventTap)
 case "key":
     guard arguments.count > 2, let code = UInt16(arguments[2]) else { exit(2) }
     postKey(code, shift: arguments.count > 3 && arguments[3] == "shift")
@@ -651,6 +657,20 @@ if [[ "$DEDICATED_GUI" == 1 ]] && pgrep -xiq ghostty; then
   for _ in $(seq 1 20); do pgrep -xiq ghostty || break; sleep 0.5; done
 fi
 pgrep -xiq ghostty && { echo "Ghostty is already running and would swallow the launch args. Quit it and rerun." >&2; exit 1; }
+# The demo session's own herdr config: no sidebar, which would label both
+# agents by the first pane's folder, and no onboarding.
+HERDR_DEMO_CONFIG="$DEMO_STAGE/herdr.toml"
+cat > "$HERDR_DEMO_CONFIG" <<'TOML'
+onboarding = false
+
+[ui]
+sidebar_start_collapsed = true
+sidebar_collapsed_mode = "hidden"
+show_agent_labels_on_pane_borders = false
+
+[terminal]
+onboarding = false
+TOML
 LAUNCHED_GHOSTTY=1
 HERDR_SESSION_STARTED=1
 open -na "$GHOSTTY_APP" --args \
@@ -662,7 +682,7 @@ open -na "$GHOSTTY_APP" --args \
   --foreground=e6e6e6 \
   --window-width=140 \
   --window-height=40 \
-  -e "$HERDR_BIN" --session "$DEMO_HERDR_SESSION"
+  -e /usr/bin/env HERDR_CONFIG_PATH="$HERDR_DEMO_CONFIG" "$HERDR_BIN" --session "$DEMO_HERDR_SESSION"
 for _ in $(seq 1 20); do pgrep -xiq ghostty && break; sleep 0.5; done
 pgrep -xiq ghostty || { echo "Ghostty did not launch." >&2; exit 1; }
 sleep 4
@@ -785,6 +805,7 @@ rm -f "$RAW_MOV" "$OUT_MP4" "$TIMELINE_TSV" "$TIMELINE_JSON"
 osascript -e "tell application id \"$GHOSTTY_BUNDLE_ID\" to activate" >/dev/null 2>&1 || true
 sleep 1
 assert_frontmost Ghostty "before recording"
+"$HELPER_DIR/gesture" mouse "$(( MAIN_X + 10 ))" "$(( MAIN_Y + MAIN_H - 10 ))" # the pointer leaves the shot
 
 now_s() { perl -MTime::HiRes=time -e 'printf("%.3f\n", time)'; }
 TL_T0=""
