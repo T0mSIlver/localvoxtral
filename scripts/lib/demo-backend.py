@@ -167,12 +167,6 @@ class SpeechSession:
                 {"type": "transcription.done", "text": " ".join(self.words[self.done_upto:self.sent])}).encode())
             self.done_upto = self.sent
 
-    def segment(self):
-        """A periodic commit (Overlay Buffer sends one every 0.9 s) finalizes
-        what was streamed so far."""
-        with self.lock:
-            self._send_segment()
-
     def finish(self):
         with self.lock:
             self.finished = True
@@ -209,8 +203,6 @@ class SpeechSession:
                 if not self.started:
                     self.start()
                 self.finish()
-            elif kind == "input_audio_buffer.commit" and self.started:
-                self.segment()
 
 
 # --- polishing ------------------------------------------------------------------------
