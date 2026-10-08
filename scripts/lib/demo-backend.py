@@ -141,6 +141,11 @@ class SpeechSession:
                 self.sent += 1
                 send_frame(self.conn, json.dumps(
                     {"type": "transcription.delta", "delta": (" " if self.sent > 1 else "") + word}).encode())
+                # A clause ends a segment, as speech pauses end one for a
+                # real server: Live Auto-Paste with spoken send types each
+                # segment once it is final.
+                if word[-1] in ",.?!":
+                    self._send_segment()
             time.sleep(1 / WORDS_PER_SECOND)
 
     def start(self):
@@ -154,14 +159,18 @@ class SpeechSession:
         self.words = line.split()
         threading.Thread(target=self.stream, args=(delay,), daemon=True).start()
 
+    def _send_segment(self):
+        """Finalizes the words streamed since the last segment. Caller holds the lock."""
+        if self.sent > self.done_upto:
+            send_frame(self.conn, json.dumps(
+                {"type": "transcription.done", "text": " ".join(self.words[self.done_upto:self.sent])}).encode())
+            self.done_upto = self.sent
+
     def segment(self):
-        """Finalizes the words streamed since the last segment, as a server
-        does on each periodic commit: Live Auto-Paste inserts segments."""
+        """A periodic commit (Overlay Buffer sends one every 0.9 s) finalizes
+        what was streamed so far."""
         with self.lock:
-            if self.sent > self.done_upto:
-                send_frame(self.conn, json.dumps(
-                    {"type": "transcription.done", "text": " ".join(self.words[self.done_upto:self.sent])}).encode())
-                self.done_upto = self.sent
+            self._send_segment()
 
     def finish(self):
         with self.lock:
