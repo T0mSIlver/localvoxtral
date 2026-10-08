@@ -16,9 +16,9 @@ needed. Set the host once per clone: `git config localvoxtral.buildhost
 <ssh-destination>`. The script's header lists every verb.
 
 Two self-hosted Macs: the Mac Mini (8 GB, label `mini`) is the build host and
-runs PR CI, UI Smoke and the screenshot lanes; the owner's MacBook (labels
-`self-hosted, macOS, ARM64`) keeps the evals, release, record-demo and crash
-logs. Spend them only where nothing else can do the job:
+runs PR CI, UI Smoke and `dmg-test`; the owner's MacBook (labels
+`self-hosted, macOS, ARM64`) keeps the evals, release, `capture-assets`,
+`record-demo` and crash logs. Spend them only where nothing else can do the job:
 
 - Linux first. `localvoxtralCore` (the Foundation-only pieces) builds and
   tests here: `./scripts/core-tests-linux.sh` (Swift 6.2; `SWIFT=` names the
