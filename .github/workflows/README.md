@@ -184,8 +184,7 @@ at, which is what `install.sh` and the Homebrew cask follow.
 `release.sh` refuses it unless the e2e dictation check passed on the release
 commit.
 
-**Daily** runs at 03:15 UTC (clear of eval-e2e at 04:45 on the same single
-runner): the dev box's scheduler dispatches it with `release.sh daily`, and
+**Daily** runs at 03:15 UTC: the dev box's scheduler dispatches it with `release.sh daily`, and
 the 03:15 cron is the fallback, because GitHub fires it hours late. A
 dispatch always runs; the cron skips as described in
 [test-tiers.md](../../docs/agent/test-tiers.md#scheduled-mac-inference-stays-in-the-night-window). It is a stable
@@ -232,7 +231,7 @@ merges.
 The unit-test gate mirrors `ci.yml`'s tier-0 unit step skip for skip, under
 the same supervisor. Two of those skips are load-bearing:
 `HerdrIntegrationTests` starts a live herdr server and carries no `XCTSkip`
-by design, and `AgentDictationE2EEvalTests` is the weekly eval lane. A
+by design, and `AgentDictationE2EEvalTests` is the dispatched eval lane. A
 release gate must not start either by accident.
 
 Release notes: GitHub's generated PR list is always included, and a release

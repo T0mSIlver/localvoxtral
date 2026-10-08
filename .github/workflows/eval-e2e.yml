@@ -1,7 +1,8 @@
 name: Agent Dictation E2E Eval
 
-# The wide agent-dictation eval (owner decision 2026-07-11): weekly + manual
-# only, NEVER per-PR — it runs live TTS -> speechd ASR -> polishd inference
+# The wide agent-dictation eval: dispatched only, never scheduled (owner
+# decision 2026-10-08: a run on an unchanged prompt measures nothing) and never
+# per-PR — it runs live TTS -> speechd ASR -> polishd inference
 # over the ~160-case EvalCorpus/agent-dictation corpus and takes many minutes.
 # The operator-only human-WAV baseline uses remote-build.sh's optional
 # recording-set argument; CI intentionally keeps the repeatable TTS source.
@@ -10,15 +11,6 @@ name: Agent Dictation E2E Eval
 # ./scripts/remote-build.sh eval-e2e (after `package`).
 on:
   workflow_dispatch:
-  schedule:
-    # Sundays only (owner decision 2026-09-25): at ~29 min a run it was the
-    # largest scheduled load on the Mac, and prompts and model pins change
-    # far less often than nightly. Overnight because this lane needs no GUI
-    # session and the machine is idle then. GitHub fires it late, often after
-    # the night window, so the dev box's scheduler dispatches it at 04:45
-    # UTC and this cron is the fallback. The guard step below skips a
-    # scheduled run outside the window or after a run that already covered it.
-    - cron: "45 4 * * 0"
 
 concurrency:
   group: eval-e2e
@@ -26,7 +18,6 @@ concurrency:
 
 permissions:
   contents: read
-  actions: read # recent-run-guard.sh lists this workflow's runs
 
 jobs:
   eval-e2e:
@@ -40,57 +31,17 @@ jobs:
         with:
           # Keep gitignored build state between runs on the persistent
           # self-hosted runner (same rationale as ci.yml: default git clean
-          # would force a cold MLX C++ + Metal helper rebuild every night).
+          # would force a cold MLX C++ + Metal helper rebuild every run).
           clean: false
-
-      - name: Decide whether this scheduled run proceeds (night window, AC power)
-        # Enforced for schedule events only: workflow_dispatch is explicit
-        # operator intent and always runs. The runner is the owner's personal
-        # MacBook, so a scheduled run needs three things:
-        #  * the night window (night-window-guard.sh): GitHub fires the cron
-        #    hours late (#822), and a run that starts after 06:30 UTC would
-        #    still be polishing when the owner starts work at 07:00. 30 is the
-        #    job's ~29 min, rounded up;
-        #  * no other run on main that succeeded or is running in the last
-        #    20 h (recent-run-guard.sh): the dev box's scheduler dispatches
-        #    this eval at 04:45 UTC and the cron is only its fallback, so a
-        #    cron after a dispatch would measure the same thing twice;
-        #  * AC power (ac-power-guard.sh, owner request 2026-07-24): never
-        #    drain the battery. It fails OPEN on probe errors so a broken
-        #    probe can never silently disable the lane.
-        # scheduled-run-guard.sh chains the three, as release.yml does; it and
-        # each guard are tested in ci.yml's shell-test step.
-        id: guard
-        if: github.event_name == 'schedule'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          DECISION="$(./scripts/ci/scheduled-run-guard.sh eval-e2e.yml 30 20)"
-          echo "$DECISION" >> "$GITHUB_OUTPUT"
-          REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
-          if [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" == "true" ]]; then
-            echo "E2E eval (scheduled): RUNNING ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
-          else
-            echo "E2E eval (scheduled): SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
-          fi
 
       - name: Clean stale outputs (keep build caches)
         # Shared repair-and-clean for the persistent workspace (see the
         # script for the removal list and .build.smoke-hidden rationale).
-        #
-        # The guard condition compares `!= 'false'` (not `== 'true'`) so a
-        # missing output fails OPEN: if the guard ever exits 0 without
-        # emitting run=..., the eval runs rather than every nightly silently
-        # skipping green forever (same pattern as ui-smoke.yml). Same
-        # condition on every step below.
-        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         run: ./scripts/ci/clean-stale-outputs.sh
 
       - name: Ensure Metal toolchain
         # Same probe as ci.yml: `xcrun --find metal` succeeding does NOT mean
         # the component is installed; only invoking metal proves it.
-        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         run: |
           if ! xcrun metal --version >/dev/null 2>&1; then
             echo "Metal toolchain not active for $(whoami); installing component..."
@@ -103,7 +54,6 @@ jobs:
           fi
 
       - name: Package app bundle (builds the polishing helper)
-        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         env:
           LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
         run: ./scripts/package_app.sh release
@@ -114,7 +64,6 @@ jobs:
         # against either the retired voxmlx plist or the swapped-in speechd plist.
         # Best-effort during rollout (a warm timeout must not mask the eval) —
         # the eval itself fails loudly if the STT service is really down.
-        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         continue-on-error: true
         run: |
           if [ -d /Users/Shared/localvoxtral/run ]; then
@@ -126,7 +75,6 @@ jobs:
 
       - name: Voices the runner's shell lists
         # What `say` offers outside xctest, next to the eval's voices line (#960).
-        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         continue-on-error: true
         run: |
           echo "say -v ? lines: $(say -v '?' | wc -l)"
@@ -146,9 +94,8 @@ jobs:
 
       - name: Run agent-dictation E2E eval
         id: eval
-        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         # About 2x a normal run. A hung run held the Mac for the whole job
-        # timeout, past the end of the night window (#821).
+        # timeout (#821).
         timeout-minutes: 60
         env:
           LV_AGENT_EVAL_E2E_ENABLE: "1"
@@ -158,7 +105,7 @@ jobs:
           mkdir -p logs
           set -o pipefail
           # --enable-code-coverage matches ci.yml's build flags in the SHARED
-          # .build (clean: false): without it this nightly rebuilt the whole
+          # .build (clean: false): without it this eval rebuilt the whole
           # app+test module uninstrumented, and the next morning's ci.yml
           # unit step rebuilt it back — the same flag-flip PR #157 fixed
           # inside ci.yml (PR #157 review finding).
@@ -166,7 +113,7 @@ jobs:
 
       - name: Voices the runner's shell lists after the eval
         # Next to the eval's own listing (#960).
-        if: always() && (github.event_name != 'schedule' || steps.guard.outputs.run != 'false')
+        if: always()
         continue-on-error: true
         run: |
           echo "say -v ? lines: $(say -v '?' | wc -l)"
@@ -186,10 +133,9 @@ jobs:
       - name: Scoreboard to step summary
         # Extract the section between the scoreboard markers (kept in sync
         # with AgentDictationE2EEvalSupport.scoreboardBeginMarker/EndMarker).
-        # `always() &&` keeps the scoreboard on eval failure but stays quiet
-        # on a guard-skipped nightly ("no eval log produced" would read as a
-        # failure there). Same on the two steps below.
-        if: always() && (github.event_name != 'schedule' || steps.guard.outputs.run != 'false')
+        # `always()` keeps the scoreboard on eval failure. Same on the two
+        # steps below.
+        if: always()
         run: |
           if [[ -f logs/eval-e2e.log ]]; then
             {
@@ -202,7 +148,7 @@ jobs:
           fi
 
       - name: Upload eval log (scoreboard artifact)
-        if: always() && (github.event_name != 'schedule' || steps.guard.outputs.run != 'false')
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: eval-e2e-scoreboard
@@ -210,7 +156,7 @@ jobs:
           retention-days: 30
 
       - name: Process leak check (informational)
-        if: always() && (github.event_name != 'schedule' || steps.guard.outputs.run != 'false')
+        if: always()
         run: |
           survivors="$(ps -axo pid,etime,ucomm \
             | grep -iE 'localvoxtral|polishd|xctest|swiftpm-testing|XCBBuildService' \
