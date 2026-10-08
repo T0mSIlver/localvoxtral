@@ -107,10 +107,10 @@ model repo can never change what your install runs.
 The app supervises both helpers, and a watchdog stops them even if the app
 crashes.
 
-A weekly end-to-end eval guards transcription and polish quality. It runs
-real audio through the production ASR and polishing path and scores the
-result against an agent-dictation corpus of ~160 cases. A model or prompt
-change that makes dictation worse gets caught before it ships.
+An end-to-end eval guards transcription and polish quality. It runs real
+audio through the production ASR and polishing path and scores the result
+against an agent-dictation corpus of ~160 cases. Every model or prompt change
+runs it, so a change that makes dictation worse gets caught before it ships.
 
 ## Mistral API
 

@@ -49,8 +49,7 @@ on:
         default: true
         type: boolean
   schedule:
-    # 03:15 UTC daily release, while the owner is away from the Mac and clear
-    # of eval-e2e at 04:45 UTC on the same single runner. A schedule event is
+    # 03:15 UTC daily release, inside the night window. A schedule event is
     # always the daily channel. GitHub fires it hours late (08:24-08:46 UTC
     # the week of #826), so the dev box's scheduler dispatches the release at
     # 03:15 and this cron is the fallback: the Plan step skips it outside the

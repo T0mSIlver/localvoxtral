@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Tests scheduled-run-guard.sh, the chain release.yml's Plan step and
-# eval-e2e.yml's guard step run, with each caller's arguments: each guard is
+# Tests scheduled-run-guard.sh, the chain release.yml's Plan step runs, with
+# its arguments: each guard is
 # pinned through its own seam (clock, a stub `gh` on PATH, the power state),
 # so the chain's order and the dispatch bypass are what is under test (needs
 # jq).
@@ -33,7 +33,7 @@ NO_RUNS='{"workflow_runs":[]}'
 # A dispatched release on main that succeeded at 03:16 the same night.
 DISPATCH_SUCCEEDED='{"workflow_runs":[{"id":800,"event":"workflow_dispatch","status":"completed","conclusion":"success","created_at":"2026-09-28T03:16:00Z"}]}'
 
-# The caller's arguments; the eval-e2e.yml cases below reset them.
+# The caller's arguments.
 WORKFLOW=release.yml
 JOB_MINUTES=20
 HOURS=20
@@ -84,24 +84,6 @@ expect false "battery" 1 \
 expect true "dispatched by hand" 0 \
   "dispatch at 08:30 on battery after a success: runs, no guard asked" \
   workflow_dispatch 08:30 "$DISPATCH_SUCCEEDED" battery
-
-# eval-e2e.yml's guard step: a 30-minute job, the same 20 h lookback.
-WORKFLOW=eval-e2e.yml
-JOB_MINUTES=30
-HOURS=20
-EVAL_DISPATCH_SUCCEEDED='{"workflow_runs":[{"id":801,"event":"workflow_dispatch","status":"completed","conclusion":"success","created_at":"2026-09-28T04:46:00Z"}]}'
-expect true "on AC power" 1 \
-  "eval-e2e: schedule at 06:30 can finish a 30-minute run by 07:00: runs" \
-  schedule 06:30 "$NO_RUNS" ac
-expect false "outside the night window" 0 \
-  "eval-e2e: schedule at 06:31 cannot finish by 07:00: skips" \
-  schedule 06:31 "$NO_RUNS" ac
-expect false "run 801 (workflow_dispatch" 1 \
-  "eval-e2e: schedule after tonight's dispatched eval succeeded: skips" \
-  schedule 05:00 "$EVAL_DISPATCH_SUCCEEDED" ac
-expect false "battery" 1 \
-  "eval-e2e: schedule in the window with nothing ran, on battery: skips" \
-  schedule 04:45 "$NO_RUNS" battery
 
 # Bad arguments are a caller bug and exit 2, never a silent run or skip.
 set +e
