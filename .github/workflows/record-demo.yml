@@ -1,62 +1,25 @@
 name: Record README Demo
 
-# Hands-free demo recording on the Mac Mini runner (GUI session): scripts/record-demo.sh stages a terminal-centric scene, drives the
-# app, and speaks the demo lines via TTS into the BlackHole loopback device.
-# The encoded mp4 lands in the run's artifacts; publishing it is manual by
-# design — GitHub only renders inline README video from user-attachments URLs,
-# which have no upload API, so the owner drag-drops the mp4 into a PR comment
-# and pastes the URL.
+# Hands-free demo recording on the Mac Mini runner (GUI session):
+# scripts/record-demo.sh stages two Claude Code sessions in herdr inside
+# Ghostty, drives the app through the seven beats of "one morning with two
+# agents" (#1847), and speaks the lines via TTS into the BlackHole loopback.
+# The `edit` job then cuts the raw take into the README story and one clip
+# per beat, captions burned in, on a hosted runner: Homebrew's ffmpeg on the
+# Mini has no drawtext.
 #
-# Three scenes, chosen by `terminal_agent` / what the runner has:
-#   * claude (flagship): a real Claude Code session in GHOSTTY, so the app joins
-#     the pane to the session by its controlling tty and grounds beat 2 in the
-#     session's own cwd / prior prompt / recent files. The script installs the
-#     localvoxtral Claude Code plugin for the run and uninstalls it after (only
-#     if it installed it). Requires, ON THE RUNNER:
-#       - Ghostty >= 1.4 / tip:  brew install --cask ghostty@tip
-#       - a logged-in `claude` CLI for the runner user
-#       - the app's Automation -> Ghostty grant already allowed (the app raises
-#         the consent sheet at launch via its #167 prewarm; hands-free CI cannot
-#         click it, so it MUST be pre-granted for the runner user — otherwise the
-#         tty read blocks, the join fails open, and beat 2's grounding no-ops)
-#       - Automation -> Ghostty for the runner's shell too (the script reads the
-#         pane tty for its capability check + surgical cleanup)
-#     With terminal_agent=claude the script FAILS FAST when any of the terminal
-#     prerequisites are missing; with terminal_agent=auto it falls back to the
-#     shell scene below.
-#   * herdr (explicit only — never chosen by auto): the claude scene inside a
-#     herdr pane. Ghostty runs `herdr --session <isolated demo session>`, two
-#     panes (claude + a decoy watcher), and beat 2 is grounded through the
-#     HERDR PANE JOIN + pane-exact pane.read screen context; the script asserts
-#     both from the app's unified log and fails (deleting the capture) if the
-#     join silently fell back. Requires everything the claude scene does PLUS
-#     `herdr` on the runner user's login-shell PATH (https://herdr.dev).
-#   * shell (fallback): a plain zsh prompt in Terminal.app (always installed);
-#     beat 2 grounds `useAuth.ts` from the window-title cwd, as before.
+# Publishing stays manual by design: GitHub only renders inline README video
+# from user-attachments URLs, which have no upload API, so the owner
+# drag-drops story.mp4 into a PR comment and pastes the URL.
 #
-# The script announces itself audibly and waits 3 s before taking over the
-# GUI session (owner rule), and needs an UNLOCKED session — it fails fast
-# when Secure Keyboard Entry is held (locked screen).
-#
-# One-time runner-machine setup (beyond the capture-assets grants):
-#   brew install blackhole-2ch ffmpeg
-#   brew install --cask ghostty@tip          # claude scene only
-#   # then, for the claude scene, log `claude` in for the runner user and grant
-#   # the app (and the runner shell) Automation -> Ghostty once in System
-#   # Settings > Privacy & Security > Automation.
+# The take files one real issue in T0mSIlver/localvoxtral-demo (the Inbox
+# beat) and closes it when it ends. Runner requirements, beyond the
+# capture-assets grants: Ghostty >= 1.4, herdr, a logged-in `claude`, `gh`
+# logged in for the runner user, ffmpeg, BlackHole 2ch, and the app's
+# Automation -> Ghostty grant (see scripts/record-demo.sh).
 
 on:
   workflow_dispatch:
-    inputs:
-      terminal_agent:
-        description: "Scene: auto = Ghostty Claude session when claude+Ghostty available else Terminal.app zsh; claude = require Ghostty+claude (fail fast otherwise); herdr = Claude inside a herdr pane, require Ghostty+claude+herdr (fail fast otherwise); shell = Terminal.app zsh"
-        type: choice
-        default: auto
-        options:
-          - auto
-          - claude
-          - herdr
-          - shell
 
 concurrency:
   group: record-demo-${{ github.ref }}
@@ -68,7 +31,7 @@ permissions:
 jobs:
   record-demo:
     runs-on: [self-hosted, mini]
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -103,11 +66,10 @@ jobs:
             echo "Machine in active use (idle ${IDLE}s < ${REQUIRED}s) — refusing before the build. Rerun when the Mac is idle." >&2
             exit 1
           fi
-          # Same economics for the claude/herdr scenes' other refusal: a
-          # pre-running Ghostty swallows the launch args (script aborts
-          # post-build). A dedicated GUI runner quits it instead.
-          if [[ "${LOCALVOXTRAL_DEDICATED_GUI:-0}" != 1 ]] && [[ "${{ inputs.terminal_agent }}" == "claude" || "${{ inputs.terminal_agent }}" == "herdr" ]] && pgrep -xiq ghostty; then
-            echo "Ghostty is already running — the ${{ inputs.terminal_agent }} scene must launch it itself. Quit Ghostty and rerun." >&2
+          # A pre-running Ghostty swallows the launch args (the script
+          # aborts after the build). A dedicated GUI runner quits it instead.
+          if [[ "${LOCALVOXTRAL_DEDICATED_GUI:-0}" != 1 ]] && pgrep -xiq ghostty; then
+            echo "Ghostty is already running; the scene must launch it itself. Quit Ghostty and rerun." >&2
             exit 1
           fi
           # And for a locked screen: the recorder fails fast on Secure
@@ -144,16 +106,50 @@ jobs:
           LOCALVOXTRAL_DISABLE_LOGIN_KEYCHAIN: "1"
           DEMO_HANDS_FREE: "1"
           DEMO_WARMUP_SECONDS: "25"
-          DEMO_TERMINAL_AGENT: ${{ inputs.terminal_agent || 'auto' }}
         run: |
           bash scripts/record-demo.sh dist/localvoxtral.app
           # The runner's /bin/bash 3.2 has returned exit 0 on a PARSE ERROR
           # before — never trust the exit code alone, require the artifact.
-          test -s dist/demo/demo.mp4 || { echo "demo.mp4 was not produced"; exit 1; }
+          test -s dist/demo/demo.mp4 && test -s dist/demo/timeline.json \
+            || { echo "demo.mp4 or timeline.json was not produced"; exit 1; }
           echo "ran=true" >> "$GITHUB_OUTPUT"
 
-      - name: Upload demo video
+      - name: Upload the take
         if: steps.record.outputs.ran == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: readme-demo-take
+          path: |
+            dist/demo/demo-raw.mov
+            dist/demo/demo.mp4
+            dist/demo/timeline.json
+          if-no-files-found: error
+          retention-days: 14
+    outputs:
+      ran: ${{ steps.record.outputs.ran }}
+
+  edit:
+    needs: record-demo
+    if: needs.record-demo.outputs.ran == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download the take
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: readme-demo-take
+          path: take
+
+      - name: Install ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg fonts-dejavu-core >/dev/null
+
+      - name: Cut the story and the clips
+        run: python3 scripts/edit-demo.py take/demo-raw.mov take/timeline.json dist/demo
+
+      - name: Upload the story, clips and frames
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: readme-demo

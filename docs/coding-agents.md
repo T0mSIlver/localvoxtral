@@ -200,7 +200,7 @@ Here it is inside a [herdr](../integrations/herdr/README.md) multiplexer.
 The join binds to the exact Claude pane and uses that pane's screen as
 context, while the neighboring pane stays out of the prompt:
 
-<!-- herdr demo video: recorded by record-demo.yml (terminal_agent=herdr); regenerate via that workflow and replace the URL below. -->
+<!-- herdr demo video: recorded by the old herdr scene of record-demo.yml, replaced by the story in #1847; its clips replace this URL once published. -->
 
 https://github.com/user-attachments/assets/15e71c26-3d8b-490f-90d0-f5c507daf5eb
 
