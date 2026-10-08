@@ -833,7 +833,17 @@ if ! warm_polish; then
   echo "The warmup dictation heard nothing; restarting coreaudiod once." >&2
   sudo -n killall coreaudiod 2>/dev/null || true
   sleep 6
-  warm_polish || { echo "The loopback audio is silent: the app hears nothing from \"$DEMO_SAY_DEVICE\"." >&2; exit 1; }
+  if ! warm_polish; then
+    mkdir -p "$OUT_DIR"
+    {
+      echo "== app log, last 5 minutes"
+      log show --last 5m --info --predicate 'subsystem == "com.localvoxtral"' 2>/dev/null | tail -n 400
+      echo "== input device setting"; defaults read "$HARNESS_DEFAULTS_SUITE" settings.selected_input_device_uid
+      echo "== processes"; ps -axo pid,etime,rss,command | grep -iE "localvoxtral|speech|polish|coreaudiod" | grep -v grep
+    } >"$OUT_DIR/failed-take.txt" 2>&1
+    echo "The loopback audio is silent: the app hears nothing from \"$DEMO_SAY_DEVICE\"." >&2
+    exit 1
+  fi
 fi
 
 # --- the payments session's identity, for the staged permission request ----------
