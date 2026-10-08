@@ -298,15 +298,17 @@ fi
 
 open_status_menu() {
   # Clicking a menu bar item blocks System Events while the menu tracks, so
-  # fire it with "ignoring application responses" and give it time to open.
+  # fire it with "ignoring application responses". osascript then stays up
+  # for a second: under the Mac Mini's runner, a click whose sender had
+  # already exited never reached the app (#1838).
   osascript >/dev/null <<OSA
 tell application "System Events" to tell process "$APP_PROCESS"
   ignoring application responses
     click menu bar item 1 of menu bar 2
   end ignoring
 end tell
+delay 1
 OSA
-  sleep 1
 }
 
 dismiss_menu() {
