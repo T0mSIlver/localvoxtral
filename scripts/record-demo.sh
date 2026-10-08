@@ -1161,5 +1161,6 @@ PY
 ffmpeg -hide_banner -loglevel error -y -i "$RAW_MOV" \
   -vf "scale=${DEMO_WIDTH}:-2:flags=lanczos,fps=30" \
   -c:v libx264 -crf 20 -preset slow -pix_fmt yuv420p -movflags +faststart -an "$OUT_MP4"
+cp "$LINE_FILE.log" "$OUT_DIR/backend.log" 2>/dev/null || true
 echo "Raw take: $RAW_MOV, encoded $OUT_MP4 ($(du -h "$OUT_MP4" | cut -f1)), timeline $TIMELINE_JSON"
 DEMO_COMPLETED=1

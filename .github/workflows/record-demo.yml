@@ -125,6 +125,7 @@ jobs:
             dist/demo/demo-raw.mov
             dist/demo/demo.mp4
             dist/demo/timeline.json
+            dist/demo/backend.log
           if-no-files-found: error
           retention-days: 14
       # A beat that failed its check leaves the take, both panes and the

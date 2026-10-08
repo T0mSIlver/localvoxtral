@@ -193,7 +193,9 @@ class SpeechSession:
                 self.send({"type": "session.updated", "session": {}})
             elif kind == "input_audio_buffer.append" and not self.started:
                 self.start()
-            elif kind == "input_audio_buffer.commit" and event.get("final"):
+            elif kind == "input_audio_buffer.commit":
+                log(f"commit final={event.get('final')} sent={self.sent} done_upto={self.done_upto}")
+            if kind == "input_audio_buffer.commit" and event.get("final"):
                 if not self.started:
                     self.start()
                 self.finish()
