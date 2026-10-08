@@ -71,8 +71,10 @@ jobs:
   release:
     # Self-hosted for speed (warm build cache, live speechd STT service for the
     # integration gate), and because the Developer ID identity and the
-    # notarytool profile live in the owner's login keychain on that Mac (#1430).
-    runs-on: [self-hosted, macOS, ARM64]
+    # notarytool profile live in a keychain on the Mac Mini (#1430). The
+    # runner's .env names that keychain file in NOTARY_KEYCHAIN and its
+    # password file in RELEASE_KEYCHAIN_PASSWORD_FILE.
+    runs-on: [self-hosted, mini]
     # This checkout is clean, so every run rebuilds from cold: observed
     # releases ran 7-20 min before notarization. Notarization adds two Apple
     # submissions (the app, then the DMG), usually minutes each, but Apple can
@@ -395,23 +397,28 @@ jobs:
         # profile fails them here, before packaging. A nightly falls back to
         # ad-hoc signing with a warning, and its release notes say so;
         # install.sh still re-signs an ad-hoc download for the macOS 26 launch
-        # stall. Both checks name what is missing: the identity in the login
+        # stall. Both checks name what is missing: the identity in the
         # keychain (security find-identity), the profile through a notarytool
-        # call that authenticates with it.
+        # call that authenticates with it. A keychain other than the login one
+        # is locked after a reboot, so it is unlocked first.
         if: steps.plan.outputs.proceed != 'false'
         id: signing
         env:
           CHANNEL: ${{ steps.plan.outputs.channel }}
         run: |
           set -euo pipefail
+          KEYCHAIN="${NOTARY_KEYCHAIN:-$HOME/Library/Keychains/login.keychain-db}"
+          if [[ -n "${RELEASE_KEYCHAIN_PASSWORD_FILE:-}" ]]; then
+            security unlock-keychain -p "$(cat "$RELEASE_KEYCHAIN_PASSWORD_FILE")" "$KEYCHAIN"
+          fi
           missing=""
           if ! security find-identity -v -p codesigning | grep -qF "\"$DEVELOPER_ID_IDENTITY\""; then
             missing="the identity '$DEVELOPER_ID_IDENTITY' is not in $(id -un)'s keychain"
           # --keychain as in notarize.sh: without it the profile comes from the
           # data-protection keychain, which a locked screen makes unreadable.
           elif ! NOTARY_OUT="$(xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" \
-              --keychain "$HOME/Library/Keychains/login.keychain-db" 2>&1)"; then
-            missing="the notarytool profile '$NOTARY_PROFILE' in the login keychain file does not authenticate: $(tail -n 3 <<<"$NOTARY_OUT" | tr '\n' ' ')"
+              --keychain "$KEYCHAIN" 2>&1)"; then
+            missing="the notarytool profile '$NOTARY_PROFILE' in $KEYCHAIN does not authenticate: $(tail -n 3 <<<"$NOTARY_OUT" | tr '\n' ' ')"
           fi
           if [[ -z "$missing" ]]; then
             echo "notarize=true" >> "$GITHUB_OUTPUT"

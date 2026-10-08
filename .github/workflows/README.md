@@ -259,16 +259,22 @@ and needs a new token. Dispatch-only: pushing tags by hand no longer triggers a
 release.
 
 Releases are signed with the owner's Developer ID identity and notarized
-(#1430). Both credentials live in the owner's login keychain on the Mac, never
-in the repo or in GitHub secrets: the "Developer ID Application" identity
-(Always Allow for codesign) and the notarytool profile `localvoxtral-notary`.
-The profile must be stored in the login keychain file, with `xcrun notarytool
-store-credentials localvoxtral-notary --key <AuthKey .p8> --key-id <id>
---issuer <id> --keychain ~/Library/Keychains/login.keychain-db`, and every
-call reads it with that `--keychain`. Without it, notarytool keeps the profile
-in the data-protection keychain, which macOS makes unreadable while the screen
-is locked, and fails with "No Keychain password item found" although the
-profile is still there. The job names both credentials in its `env`. The
+(#1430, #1842). Both credentials live on the Mac Mini, never in the repo or in
+GitHub secrets: the "Developer ID Application" identity and the notarytool
+profile `localvoxtral-notary`, in a keychain file of their own
+(`localvoxtral-release.keychain-db`). The runner's `.env` names it in
+`NOTARY_KEYCHAIN` and its password file in `RELEASE_KEYCHAIN_PASSWORD_FILE`;
+the signing check unlocks it, since it is locked after a reboot. A keychain
+of its own, because its partition list (`security
+set-key-partition-list` and `set-generic-password-partition-list`, with
+`apple-tool:,apple:`) can be set with its own password, so codesign and
+notarytool read it without a prompt; the login keychain's needs the owner's
+login password. Store the profile with `xcrun notarytool store-credentials
+localvoxtral-notary ... --keychain <that file>`, and read it with that
+`--keychain` too. Without it, notarytool uses the data-protection keychain,
+which macOS makes unreadable while the screen is locked, and fails with "No
+Keychain password item found" although the profile is still there. The job
+names both credentials in its `env`. The
 "Check the signing credentials" step fails a stable or daily release when
 either is missing or does not authenticate; a nightly falls back to ad-hoc
 signing with a warning in its summary and its release notes.
@@ -280,8 +286,7 @@ started inside the night window waits only until 07:00 UTC
 (`scripts/ci/night-deadline.sh`). A run that times out fails before the Tag
 step, with the id,
 and `xcrun notarytool info <id> --keychain-profile localvoxtral-notary
---keychain ~/Library/Keychains/login.keychain-db` on the Mac follows it from
-there.
+--keychain "$NOTARY_KEYCHAIN"` on the Mini follows it from there.
 
 ## `cask.yml`
 
