@@ -75,8 +75,8 @@ set -euo pipefail
 #                                pinned to (default BlackHole 2ch)
 #   DEMO_IDLE_REQUIRED_SECONDS   HID idle needed before a hands-free takeover (120)
 #   DEMO_FORCE                   1 = skip the idle guard (attended rehearsal)
-#   DEMO_TIMELINE_OFFSET         seconds screencapture takes to write its
-#                                first frame (default 0.5)
+#   DEMO_TIMELINE_OFFSET         seconds to subtract from every timeline mark
+#                                (default 0: the zero is the first frame)
 
 if [[ "$(uname)" != "Darwin" ]]; then
   echo "This script records a macOS app — run it on the Mac." >&2
@@ -100,7 +100,7 @@ DEMO_COMMIT_SECONDS="${DEMO_COMMIT_SECONDS:-90}"
 DEMO_INBOX_SECONDS="${DEMO_INBOX_SECONDS:-300}"
 DEMO_HERDR_SESSION="${DEMO_HERDR_SESSION:-lv-demo}"
 DEMO_DEMO_REPO="${DEMO_DEMO_REPO:-T0mSIlver/localvoxtral-demo}"
-DEMO_TIMELINE_OFFSET="${DEMO_TIMELINE_OFFSET:-0.5}"
+DEMO_TIMELINE_OFFSET="${DEMO_TIMELINE_OFFSET:-0}"
 # The app's microphone is pinned to a loopback device nothing plays into, so
 # a take never records a real microphone; the words come from the scripted
 # backend.
@@ -891,10 +891,31 @@ tl_seg() {
   TL_BEAT="$1"; TL_SPEED="$2"; TL_START="$t"
 }
 
-TL_T0="$(now_s)"
+# ffmpeg, not `screencapture -v`: on the loaded 8 GB Mini screencapture's
+# clock loses seconds unevenly over a take (122 s came out 117 s), so no
+# offset or scale put the captions on their beats. ffmpeg writes constant
+# 30 fps on the wall clock, and its progress file says how much video
+# exists, which puts the timeline's zero on the first frame. The crop is in
+# capture pixels, so it holds on a Retina display too.
 TAKE_LOG_START="$(date '+%Y-%m-%d %H:%M:%S')"
-screencapture -v -x -R "${REGION_X},${REGION_Y},${DEMO_WIDTH},${DEMO_HEIGHT}" "$RAW_MOV" &
+REC_PROGRESS="$HELPER_DIR/recorder.progress"
+CROP="w=iw*$DEMO_WIDTH/$MAIN_W:h=ih*$DEMO_HEIGHT/$MAIN_H:x=iw*$(( REGION_X - MAIN_X ))/$MAIN_W:y=ih*$(( REGION_Y - MAIN_Y ))/$MAIN_H"
+ffmpeg -hide_banner -loglevel error -nostdin -y \
+  -f avfoundation -capture_cursor 0 -framerate 30 -i "Capture screen 0:none" \
+  -vf "crop=$CROP,scale=$DEMO_WIDTH:-2" -fps_mode cfr -r 30 \
+  -c:v h264_videotoolbox -b:v 12M -progress "$REC_PROGRESS" "$RAW_MOV" &
 RECORDER_PID=$!
+TL_T0=""
+for _ in $(seq 1 100); do
+  REC_US="$(grep '^out_time_us=' "$REC_PROGRESS" 2>/dev/null | tail -n 1 | cut -d= -f2 || true)"
+  if [[ -n "$REC_US" && "$REC_US" =~ ^[0-9]+$ ]] && (( REC_US > 0 )); then
+    TL_T0="$(awk -v n="$(now_s)" -v us="$REC_US" 'BEGIN { printf "%.3f", n - us / 1000000 }')"
+    break
+  fi
+  kill -0 "$RECORDER_PID" 2>/dev/null || break
+  sleep 0.1
+done
+[[ -n "$TL_T0" ]] || { echo "The screen recorder (ffmpeg avfoundation) never wrote a frame." >&2; exit 1; }
 sleep 2
 recorder_alive_or_abort() {
   kill -0 "$RECORDER_PID" 2>/dev/null && return 0
@@ -1137,7 +1158,7 @@ TL_STOP="$(awk -v e="$(now_s)" -v z="$TL_T0" 'BEGIN { printf "%.3f", e - z }')"
 kill -INT "$RECORDER_PID"
 wait "$RECORDER_PID" 2>/dev/null || true
 RECORDER_PID=""
-[[ -s "$RAW_MOV" ]] || { echo "screencapture produced no output." >&2; exit 1; }
+[[ -s "$RAW_MOV" ]] || { echo "The screen recorder produced no output." >&2; exit 1; }
 
 python3 - "$TIMELINE_TSV" "$TIMELINE_JSON" "$DEMO_TIMELINE_OFFSET" "$TL_STOP" <<'PY'
 import json, sys

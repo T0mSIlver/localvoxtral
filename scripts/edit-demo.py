@@ -11,9 +11,8 @@ scripts/record-demo.sh (story scene) writes the timeline while it records:
 
 Times are seconds since the recorder started; `offset` is how long the
 recorder took to write its first frame, subtracted from every time. `stop`
-is when the recorder was stopped: screencapture's clock loses a few seconds
-over a take on a loaded 8 GB Mac (a 122 s take came out 117 s long), so times
-are scaled onto the capture's real length. A
+is when the recorder was stopped; times are scaled onto the capture's real
+length, which corrects a recorder whose clock drifted evenly. A
 segment with speed 0 is dropped, speed 4 plays four times faster (waits on
 the agent or the polish). Each beat's caption is burned in over all of its
 segments, so the muted autoplay on GitHub still names each feature.
