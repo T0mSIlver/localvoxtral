@@ -141,7 +141,7 @@ CLI_PATH="$APP_ABS/Contents/MacOS/localvoxtral-cli"
 # which would smear the tap timing and the polls. The target is pinned
 # because swiftc defaults to the SDK's macOS, which can be newer than the
 # running one.
-HELPER_DIR="$(mktemp -d -t lv-demo-helpers)"
+HELPER_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lv-demo-helpers.XXXXXX")"
 compile_helper() { # <name> <source file>
   swiftc -O -target "$(uname -m)-apple-macos15.0" -o "$HELPER_DIR/$1" "$2" \
     || { echo "Could not compile the $1 helper." >&2; exit 1; }
@@ -491,7 +491,8 @@ BACKEND_PORT_FILE="$HELPER_DIR/backend.port"
 LINE_FILE="$HELPER_DIR/next-line.txt"
 DEMO_ROUTE_TO="${DEMO_DEMO_REPO#*/},payments" python3 "$SCRIPT_DIR/lib/demo-backend.py" "$BACKEND_PORT_FILE" "$LINE_FILE" &
 BACKEND_PID=$!
-for _ in $(seq 1 20); do [[ -s "$BACKEND_PORT_FILE" ]] && break; sleep 0.25; done
+BACKEND_DEADLINE=$(( SECONDS + 10 ))
+until [[ -s "$BACKEND_PORT_FILE" ]] || (( SECONDS >= BACKEND_DEADLINE )); do sleep 0.25; done
 [[ -s "$BACKEND_PORT_FILE" ]] || { echo "The demo backend did not start." >&2; exit 1; }
 BACKEND_PORT="$(cat "$BACKEND_PORT_FILE")"
 demo_default settings.dictation_backend_mode -string external_url
@@ -510,6 +511,36 @@ defaults write "$HARNESS_DEFAULTS_SUITE" dictationInsightsPeriod -string month 2
 
 ORIGINAL_DARK_MODE="$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')"
 osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true'
+
+# --- capture region: top right of the main display, menu bar included -----------
+# The banners and the menu bar icon's dot sit at the top right.
+read -r MAIN_X MAIN_Y MAIN_W MAIN_H < <(swift - <<'SWIFT'
+import CoreGraphics
+let b = CGDisplayBounds(CGMainDisplayID())
+print("\(Int(b.origin.x)) \(Int(b.origin.y)) \(Int(b.width)) \(Int(b.height))")
+SWIFT
+)
+(( MAIN_W < DEMO_WIDTH || MAIN_H < DEMO_HEIGHT )) && { echo "Main display (${MAIN_W}x${MAIN_H}) is smaller than ${DEMO_WIDTH}x${DEMO_HEIGHT}." >&2; exit 1; }
+REGION_X=$(( MAIN_X + MAIN_W - DEMO_WIDTH ))
+REGION_Y=$MAIN_Y
+MENU_BAR_HEIGHT=40 # windows go below it; System Events clamps them under the bar anyway
+
+place_window() { # <process> <window spec> <x> <y> <w> <h>
+  osascript >/dev/null 2>&1 <<OSA || true
+tell application "System Events" to tell process "$1"
+  set position of $2 to {$3, $4}
+  set size of $2 to {$5, $6}
+end tell
+OSA
+}
+# A window of fixed size is centered in the region instead.
+center_window() { # <process> <window spec>
+  local size w h
+  size="$(osascript -e "tell application \"System Events\" to tell process \"$1\" to get size of $2" 2>/dev/null | tr -d ' ')" || return 0
+  w="${size%,*}"; h="${size#*,}"
+  [[ -n "$w" && -n "$h" ]] || return 0
+  osascript -e "tell application \"System Events\" to tell process \"$1\" to set position of $2 to {$(( REGION_X + (DEMO_WIDTH - w) / 2 )), $(( REGION_Y + MENU_BAR_HEIGHT + (DEMO_HEIGHT - MENU_BAR_HEIGHT - h) / 2 ))}" >/dev/null 2>&1 || true
+}
 
 # --- stage the two repos ----------------------------------------------------------
 DEMO_STAGE="/tmp/lv-demo"
@@ -631,36 +662,6 @@ tap_hotkey
 sleep 3
 osascript -e 'tell application "System Events" to key code 53' >/dev/null 2>&1 || true
 sleep 1
-
-# --- capture region: top right of the main display, menu bar included -----------
-# The banners and the menu bar icon's dot sit at the top right.
-read -r MAIN_X MAIN_Y MAIN_W MAIN_H < <(swift - <<'SWIFT'
-import CoreGraphics
-let b = CGDisplayBounds(CGMainDisplayID())
-print("\(Int(b.origin.x)) \(Int(b.origin.y)) \(Int(b.width)) \(Int(b.height))")
-SWIFT
-)
-(( MAIN_W < DEMO_WIDTH || MAIN_H < DEMO_HEIGHT )) && { echo "Main display (${MAIN_W}x${MAIN_H}) is smaller than ${DEMO_WIDTH}x${DEMO_HEIGHT}." >&2; exit 1; }
-REGION_X=$(( MAIN_X + MAIN_W - DEMO_WIDTH ))
-REGION_Y=$MAIN_Y
-MENU_BAR_HEIGHT=40 # windows go below it; System Events clamps them under the bar anyway
-
-place_window() { # <process> <window spec> <x> <y> <w> <h>
-  osascript >/dev/null 2>&1 <<OSA || true
-tell application "System Events" to tell process "$1"
-  set position of $2 to {$3, $4}
-  set size of $2 to {$5, $6}
-end tell
-OSA
-}
-# A window of fixed size is centered in the region instead.
-center_window() { # <process> <window spec>
-  local size w h
-  size="$(osascript -e "tell application \"System Events\" to tell process \"$1\" to get size of $2" 2>/dev/null | tr -d ' ')" || return 0
-  w="${size%,*}"; h="${size#*,}"
-  [[ -n "$w" && -n "$h" ]] || return 0
-  osascript -e "tell application \"System Events\" to tell process \"$1\" to set position of $2 to {$(( REGION_X + (DEMO_WIDTH - w) / 2 )), $(( REGION_Y + MENU_BAR_HEIGHT + (DEMO_HEIGHT - MENU_BAR_HEIGHT - h) / 2 ))}" >/dev/null 2>&1 || true
-}
 
 # --- the Claude Code plugin -------------------------------------------------------
 MARKETPLACE_DIR="$REPO_ROOT/integrations/claude-code"
