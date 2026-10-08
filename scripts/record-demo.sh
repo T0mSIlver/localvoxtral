@@ -361,8 +361,14 @@ PLUGIN_INSTALLED_THIS_RUN=0
 MARKETPLACE_ADDED_THIS_RUN=0
 HERDR_BIN=""
 HERDR_SESSION_STARTED=0
+PROMPT_ANSWERER_PID=""
+DEDICATED_GUI="${LOCALVOXTRAL_DEDICATED_GUI:-0}"
 cleanup() {
   set +e # cleanup is best-effort: one failing teardown step must not abort the rest
+  if [[ -n "$PROMPT_ANSWERER_PID" ]]; then
+    pkill -P "$PROMPT_ANSWERER_PID" 2>/dev/null || true
+    kill "$PROMPT_ANSWERER_PID" 2>/dev/null || true
+  fi
   if [[ -f "$GESTURE" ]]; then
     swift "$GESTURE" up >/dev/null 2>&1 || true # never leave Right Command stuck down
   fi
@@ -431,7 +437,7 @@ cleanup() {
   fi
   # Owner rule: announce completion audibly (default output, never the
   # loopback) whenever the script took over the GUI session.
-  if [[ "$ANNOUNCED_TAKEOVER" == 1 ]]; then
+  if [[ "$ANNOUNCED_TAKEOVER" == 1 && "$DEDICATED_GUI" != 1 ]]; then
     if [[ "$DEMO_COMPLETED" == 1 ]]; then
       say "record demo done" >/dev/null 2>&1 || true
     else
@@ -591,9 +597,12 @@ assert_scene_frontmost() {
 
 # --- OWNER RULE: audible takeover warning BEFORE any focus-stealing action -------
 # On the DEFAULT audio output (never the loopback — that device is inaudible).
-say "record demo taking control in 3" >/dev/null 2>&1 || true
+# A runner nobody sits at (LOCALVOXTRAL_DEDICATED_GUI=1, the Mac Mini) skips it.
+if [[ "$DEDICATED_GUI" != 1 ]]; then
+  say "record demo taking control in 3" >/dev/null 2>&1 || true
+  sleep 3
+fi
 ANNOUNCED_TAKEOVER=1
-sleep 3
 
 # --- stage settings -------------------------------------------------------------
 if pgrep -xq "$APP_PROCESS"; then
@@ -665,6 +674,12 @@ lv_isolate_data lv-demo-data \
 lv_open "$APP_PATH"
 for _ in $(seq 1 20); do pgrep -xq "$APP_PROCESS" && break; sleep 0.5; done
 pgrep -xq "$APP_PROCESS" || { echo "$APP_PROCESS did not launch." >&2; exit 1; }
+# The microphone prompt at launch, and Automation -> Ghostty once the scene
+# reads the pane's tty.
+if [[ "$DEDICATED_GUI" == 1 ]]; then
+  answer_app_prompts 1200 &
+  PROMPT_ANSWERER_PID=$!
+fi
 sleep 2
 
 echo "Warming up the dictation backend off-camera (${DEMO_WARMUP_SECONDS}s, stay quiet)..."
@@ -915,11 +930,39 @@ TS
     DECOY_CMD='clear; echo "billing — test watcher"; while :; do echo "$(date +%H:%M:%S)  watching  usePayment.ts  PaymentForm.tsx  checkout.spec.ts"; sleep 3; done'
   fi
 
+  # Trust the staged folder before claude starts. Its trust dialog's default
+  # became "No, exit" (Claude Code 2.1.29x), so the Return below would quit
+  # claude, and Ghostty's next activation would open a plain shell window
+  # in its place. With the folder trusted, that Return lands on an empty
+  # prompt.
+  python3 - "$REPO_DIR" <<'PY' || echo "WARNING: could not pre-trust $REPO_DIR for claude; the trust dialog may quit it." >&2
+import json, os, sys, tempfile
+path = os.path.expanduser("~/.claude.json")
+with open(path) as f:
+    config = json.load(f)
+projects = config.setdefault("projects", {})
+for folder in {sys.argv[1], os.path.realpath(sys.argv[1])}:
+    projects.setdefault(folder, {})["hasTrustDialogAccepted"] = True
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
+with os.fdopen(fd, "w") as f:
+    json.dump(config, f, indent=2)
+os.chmod(tmp, os.stat(path).st_mode & 0o777)
+os.replace(tmp, path)
+PY
+
   # `open -na … --args` delivers the args ONLY to a freshly launched instance.
   # Against an already-running Ghostty it degrades to a bare reopen: a new tab
   # in the existing window, no --working-directory, no `-e claude` — the scene
   # silently never exists (field incident 2026-07-21, the run "succeeded").
-  # Refuse instead: the claude scene requires launching Ghostty ourselves.
+  # Refuse instead: the claude scene requires launching Ghostty ourselves. On
+  # the Mac Mini, the running Ghostty is the agent desktop's herdr client:
+  # quitting it leaves herdr's sessions running, and its LaunchAgent reopens
+  # it after the run.
+  if [[ "$DEDICATED_GUI" == 1 ]] && pgrep -xiq ghostty; then
+    echo "Quitting the running Ghostty (dedicated GUI runner)..."
+    osascript -e "tell application id \"$GHOSTTY_BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
+    for _ in $(seq 1 20); do pgrep -xiq ghostty || break; sleep 0.5; done
+  fi
   if pgrep -xiq ghostty; then
     echo "Ghostty is already running — its instance would swallow our launch args (no staged window, no claude). Quit Ghostty (or record from a machine/session where it is closed) and rerun." >&2
     exit 1
@@ -962,7 +1005,8 @@ TS
   sleep 1
 
   # Folder-trust dialog acceptance (BEFORE any dictated text exists; a no-op on
-  # an already-trusted folder). Same one-Return discipline as the shell path.
+  # an already-trusted folder, which the pre-trust above makes it). Same
+  # one-Return discipline as the shell path.
   # Address Ghostty by bundle id (not display name) — the app's own reader does
   # too, and a by-name tell is fragile under localization / name collisions.
   # herdr mode skips this: claude is not running yet (it starts inside a herdr
