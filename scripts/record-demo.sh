@@ -28,7 +28,7 @@ set -euo pipefail
 #               script presses File: a real issue in localvoxtral-demo, closed
 #               again when the take ends
 #   5 goto      "go to docs" brings the docs pane forward
-#   6 learned   hold, dictate "Qwen", fix the misheard word by hand and submit:
+#   6 learned   hold, dictate "Qwen" (heard "Quen"), fix it by hand and submit:
 #               the "Learned" toast; then Settings > Projects with the terms
 #               the agents proposed during setup (`localvoxtral terms propose`)
 #   7 history   Settings > History, then Insights, on twelve weeks of
@@ -36,19 +36,28 @@ set -euo pipefail
 #
 # Each beat checks what it needs (the session joined, the banner, the pane
 # switch, the Inbox draft and its filing) and the run fails instead of
-# producing a video when one is missing. Only the History rows and the
-# permission request are staged.
+# producing a video when one is missing. Staged: the History rows, the
+# permission request, and the speech and polish answers (below).
 #
-# Runs on the Mac Mini runner (record-demo.yml): hands-free, voice by `say`
-# into the BlackHole loopback, Right Command posted by a compiled helper. Run
-# by hand ON A MAC from the repo root, in an unlocked GUI session:
-#   DEMO_HANDS_FREE=1 ./scripts/record-demo.sh [path/to/localvoxtral.app]
-# It needs: Ghostty (>= 1.4), herdr, a logged-in `claude`, `gh` logged in
-# with write access to T0mSIlver/localvoxtral-demo (the app files the Inbox
-# issue with it), ffmpeg, BlackHole 2ch, and the TCC grants the old scenes
-# needed (Accessibility and Screen Recording for the runner, the app's
-# microphone and Automation -> Ghostty; record-demo.yml answers the prompts on
-# a dedicated GUI runner).
+# Speech and polishing come from scripts/lib/demo-backend.py, which the app
+# reaches in External URL mode: each dictation hears the line this script
+# queued, and the polish writes the demo lines' spoken code forms as code. The
+# 8 GB Mac Mini cannot run the bundled 4B models next to two Claude sessions,
+# and the owner chose a scripted backend for the demo (#1847). The app, the
+# agents, the gestures and every UI on screen are real.
+#
+# Runs on the Mac Mini runner (record-demo.yml), Right Command posted by a
+# compiled helper. Run by hand ON A MAC from the repo root, in an unlocked
+# GUI session:
+#   ./scripts/record-demo.sh [path/to/localvoxtral.app]
+# It needs: Ghostty (>= 1.4: the app's join reads the pane tty over
+# AppleScript), herdr, a logged-in `claude`, `gh` logged in with write access
+# to T0mSIlver/localvoxtral-demo (the app files the Inbox issue with it),
+# ffmpeg, BlackHole 2ch, Notifications > "when mirroring or sharing the
+# display" set to Allow (a recorded screen counts as shared, and macOS mutes
+# banners there), and the TCC grants: Accessibility and Screen Recording for
+# the runner, the app's microphone and Automation -> Ghostty
+# (record-demo.yml answers those prompts on a dedicated GUI runner).
 #
 # The app runs on the harness defaults suite (#1450) and its own data folder
 # (#985); the owner's settings and History are never touched.
@@ -58,14 +67,12 @@ set -euo pipefail
 #                                at the top right of the main display so the
 #                                menu bar icon and the banners are in it
 #   DEMO_WARMUP_SECONDS          off-camera speech warmup (default 12)
-#   DEMO_POLISH_READY_SECONDS    max wait for polishd health (default 300)
 #   DEMO_COMMIT_SECONDS          max wait for an overlay commit (default 90)
-#   DEMO_POLISH_MODEL            the managed polishing model (default the 4B)
 #   DEMO_INBOX_SECONDS           max wait for the Inbox draft and check (default 300)
 #   DEMO_HERDR_SESSION           the isolated herdr session (default lv-demo)
 #   DEMO_DEMO_REPO               where the Inbox files (default T0mSIlver/localvoxtral-demo)
-#   DEMO_HANDS_FREE / DEMO_SAY_DEVICE / DEMO_SAY_INPUT_UID
-#                                as before: TTS into the loopback, mic pinned to it
+#   DEMO_MIC_DEVICE / DEMO_MIC_UID  the silent device the app's microphone is
+#                                pinned to (default BlackHole 2ch)
 #   DEMO_IDLE_REQUIRED_SECONDS   HID idle needed before a hands-free takeover (120)
 #   DEMO_FORCE                   1 = skip the idle guard (attended rehearsal)
 #   DEMO_TIMELINE_OFFSET         seconds screencapture takes to write its
@@ -89,34 +96,27 @@ GHOSTTY_BUNDLE_ID="com.mitchellh.ghostty"
 DEMO_WIDTH="${DEMO_WIDTH:-1280}"
 DEMO_HEIGHT="${DEMO_HEIGHT:-800}"
 DEMO_WARMUP_SECONDS="${DEMO_WARMUP_SECONDS:-12}"
-DEMO_POLISH_READY_SECONDS="${DEMO_POLISH_READY_SECONDS:-300}"
 DEMO_COMMIT_SECONDS="${DEMO_COMMIT_SECONDS:-90}"
-DEMO_POLISH_MODEL="${DEMO_POLISH_MODEL:-mlx-community/Qwen3.5-4B-OptiQ-4bit}"
 DEMO_INBOX_SECONDS="${DEMO_INBOX_SECONDS:-300}"
 DEMO_HERDR_SESSION="${DEMO_HERDR_SESSION:-lv-demo}"
 DEMO_DEMO_REPO="${DEMO_DEMO_REPO:-T0mSIlver/localvoxtral-demo}"
 DEMO_TIMELINE_OFFSET="${DEMO_TIMELINE_OFFSET:-0.5}"
-DEMO_HANDS_FREE="${DEMO_HANDS_FREE:-0}"
-DEMO_SAY_DEVICE="${DEMO_SAY_DEVICE:-}"
-DEMO_SAY_INPUT_UID="${DEMO_SAY_INPUT_UID:-}"
-if [[ "$DEMO_HANDS_FREE" == 1 && -z "$DEMO_SAY_DEVICE" ]]; then
-  DEMO_SAY_DEVICE="BlackHole 2ch"
-fi
-if [[ -z "$DEMO_SAY_DEVICE" ]]; then
-  echo "This scene is hands-free only: set DEMO_HANDS_FREE=1 (TTS into BlackHole 2ch)." >&2
-  exit 1
-fi
+# The app's microphone is pinned to a loopback device nothing plays into, so
+# a take never records a real microphone; the words come from the scripted
+# backend.
+DEMO_MIC_DEVICE="${DEMO_MIC_DEVICE:-BlackHole 2ch}"
+DEMO_MIC_UID="${DEMO_MIC_UID:-}"
 
 # What the voice says, beat by beat. Beat 1 streams raw, so no spoken
 # symbols; beat 2's "use auth dot t s" and "dash dash coverage" are what the
 # agent polish turns into code; beat 6's "Qwen" is the word ASR mishears and
 # the hand fix teaches.
-LINE_LIVE="Add an idempotency key to the refund webhook handler, and check with me before you change the database. Send it."
+LINE_LIVE="Add an item potency key to the refund webhook handler, and check with me before you change the database. Send it."
 LINE_OVERLAY="In the README, show how to call use auth dot t s, and add the npm test dash dash coverage command."
 LINE_ANSWER="Yes, go ahead. Send it."
 LINE_INBOX="Bug: a refund of zero cents returns a 500 from the refunds endpoint."
 LINE_GOTO="Go to docs."
-LINE_LEARN="Benchmark the docs examples against Qwen three."
+LINE_LEARN="Benchmark the docs examples against Quen three."
 LEARN_TERM="Qwen"
 
 OUT_DIR="dist/demo"
@@ -291,6 +291,7 @@ ax_probe()       { "$HELPER_DIR/ax-probe" "$@"; }
 
 # --- cleanup ----------------------------------------------------------------------
 RECORDER_PID=""
+BACKEND_PID=""
 LAUNCHED_APP=0
 LAUNCHED_GHOSTTY=0
 DEMO_STAGE=""
@@ -322,6 +323,7 @@ close_demo_issues() {
 
 cleanup() {
   set +e
+  [[ -n "$BACKEND_PID" ]] && kill "$BACKEND_PID" 2>/dev/null
   if [[ -n "$PROMPT_ANSWERER_PID" ]]; then
     pkill -P "$PROMPT_ANSWERER_PID" 2>/dev/null || true
     kill "$PROMPT_ANSWERER_PID" 2>/dev/null || true
@@ -382,14 +384,14 @@ trap 'cleanup_once; exit 129' HUP
 
 "$HELPER_DIR/preflight" || exit 1
 
-if [[ -z "$DEMO_SAY_INPUT_UID" ]]; then
-  DEMO_SAY_INPUT_UID="$("$HELPER_DIR/audiouid" "$DEMO_SAY_DEVICE")" || {
-    echo "Hands-free mode needs the loopback audio device \"$DEMO_SAY_DEVICE\" (brew install blackhole-2ch). Devices here:" >&2
+if [[ -z "$DEMO_MIC_UID" ]]; then
+  DEMO_MIC_UID="$("$HELPER_DIR/audiouid" "$DEMO_MIC_DEVICE")" || {
+    echo "The demo pins the app's microphone to \"$DEMO_MIC_DEVICE\" (brew install blackhole-2ch), which is missing. Devices here:" >&2
     "$HELPER_DIR/audiouid" --list >&2 || true
     exit 1
   }
 fi
-echo "TTS -> \"$DEMO_SAY_DEVICE\", app mic pinned to UID $DEMO_SAY_INPUT_UID"
+echo "App microphone pinned to \"$DEMO_MIC_DEVICE\" ($DEMO_MIC_UID)"
 
 # --- requirements -----------------------------------------------------------------
 # Resolved through the login shell: the runner's PATH lacks ~/.local/bin.
@@ -469,21 +471,41 @@ demo_default settings.modifier_only_hotkey_modifier -string right_command
 demo_default settings.modifier_hold_live_auto_paste -bool true
 demo_default settings.live_spoken_send_enabled -bool true
 demo_default settings.overlay_spoken_send_enabled -bool true
-demo_default settings.spoken_stop_wait_ms -int 1500
+# The script stops each dictation itself, before the spoken-send auto stop.
+demo_default settings.spoken_stop_wait_ms -int 3000
 # Needs-you cues, and waiting sessions as Tab destinations.
 demo_default settings.agent_attention_enabled -bool true
 demo_default settings.agent_attention_mark -string dot
-# The 0.8B model does not write spoken flags reliably; the 4B does.
 demo_default settings.llm_polishing_enabled -bool true
 demo_default settings.agent_polish_profile_enabled -bool true
-demo_default settings.managed_llm_polishing_model -string "$DEMO_POLISH_MODEL"
 demo_default settings.overlay_buffer_font_size -float 20
 # Grounding in the joined session: its cwd, prompts and files, and the
 # herdr pane's screen.
 demo_default settings.repo_vocabulary_enabled -bool true
 demo_default settings.claude_repo_context_enabled -bool true
 demo_default settings.terminal_screen_context_enabled -bool true
-demo_default settings.selected_input_device_uid -string "$DEMO_SAY_INPUT_UID"
+demo_default settings.selected_input_device_uid -string "$DEMO_MIC_UID"
+# Speech and polishing come from the scripted backend (scripts/lib/demo-backend.py):
+# the 8 GB Mini cannot run the bundled 4B models next to two Claude sessions.
+BACKEND_PORT_FILE="$HELPER_DIR/backend.port"
+LINE_FILE="$HELPER_DIR/next-line.txt"
+python3 "$SCRIPT_DIR/lib/demo-backend.py" "$BACKEND_PORT_FILE" "$LINE_FILE" &
+BACKEND_PID=$!
+for _ in $(seq 1 20); do [[ -s "$BACKEND_PORT_FILE" ]] && break; sleep 0.25; done
+[[ -s "$BACKEND_PORT_FILE" ]] || { echo "The demo backend did not start." >&2; exit 1; }
+BACKEND_PORT="$(cat "$BACKEND_PORT_FILE")"
+demo_default settings.dictation_backend_mode -string external_url
+demo_default settings.realtime_provider -string realtime_api
+demo_default settings.realtime_api_endpoint_url -string "ws://127.0.0.1:$BACKEND_PORT/v1/realtime"
+demo_default settings.realtime_api_model_name -string demo
+demo_default settings.polishing_backend_mode -string external_url
+demo_default settings.llm_polishing_endpoint_url -string "http://127.0.0.1:$BACKEND_PORT/v1/chat/completions"
+demo_default settings.llm_polishing_model -string demo
+demo_default settings.quick_capture_router -string polishing_model
+# queue_line <line>: what the next dictation hears; speak <line>: how long
+# saying it takes at the backend's pace (2.8 words a second).
+queue_line() { printf '%s\n' "$1" >"$LINE_FILE"; }
+speak() { sleep "$(awk -v n="$(wc -w <<<"$1")" 'BEGIN { printf "%.1f", n / 2.8 + 0.8 }')"; }
 defaults write "$HARNESS_DEFAULTS_SUITE" dictationInsightsPeriod -string month 2>/dev/null || true
 
 ORIGINAL_DARK_MODE="$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')"
@@ -609,16 +631,6 @@ tap_hotkey
 sleep 3
 osascript -e 'tell application "System Events" to key code 53' >/dev/null 2>&1 || true
 sleep 1
-
-POLISH_MODE="$(defaults read "$HARNESS_DEFAULTS_SUITE" settings.polishing_backend_mode 2>/dev/null || echo managed_local)"
-if [[ "$POLISH_MODE" != "external_url" ]]; then
-  echo "Waiting for the polishing helper (up to ${DEMO_POLISH_READY_SECONDS}s)..."
-  POLISH_DEADLINE=$(( SECONDS + DEMO_POLISH_READY_SECONDS ))
-  until curl -sf -m 2 http://127.0.0.1:8472/health >/dev/null 2>&1; do
-    (( SECONDS >= POLISH_DEADLINE )) && { echo "polishd never became healthy; the overlay beats would show unpolished text." >&2; exit 1; }
-    sleep 2
-  done
-fi
 
 # --- capture region: top right of the main display, menu bar included -----------
 # The banners and the menu bar icon's dot sit at the top right.
@@ -808,45 +820,22 @@ sleep 4
 
 # Warm the agent-profile polish off camera: the first agent polish pays the
 # full prompt prefill. Its text is cleared with one Ctrl+C (two exit claude).
-# The same dictation proves the loopback carries the voice: its History row
-# must hold text. Silent buffers (BlackHole wedged in coreaudiod) get one
-# coreaudiod restart.
 focus_pane "$PAYMENTS_PANE" left
 last_raw_text() { "$CLI_PATH" history last --json 2>/dev/null | python3 "$SCRIPT_DIR/lib/demo-cli-json.py" last-raw; }
-warm_polish() {
-  osascript -e "tell application id \"$GHOSTTY_BUNDLE_ID\" to activate" >/dev/null 2>&1 || true
+osascript -e "tell application id \"$GHOSTTY_BUNDLE_ID\" to activate" >/dev/null 2>&1 || true
+sleep 1
+queue_line "Ready to record the demo."
+tap_hotkey
+speak "Ready to record the demo."
+tap_hotkey
+WARM_DEADLINE=$(( SECONDS + DEMO_COMMIT_SECONDS ))
+until last_raw_text | grep -qi "record"; do
+  (( SECONDS >= WARM_DEADLINE )) && { echo "The warmup dictation never reached History: the app is not using the demo backend." >&2; exit 1; }
   sleep 1
-  tap_hotkey
-  sleep 1
-  say -a "$DEMO_SAY_DEVICE" -r 180 "Ready to record the demo."
-  sleep 1
-  tap_hotkey
-  local deadline=$(( SECONDS + DEMO_COMMIT_SECONDS ))
-  until last_raw_text | grep -qi "record"; do
-    (( SECONDS >= deadline )) && break
-    sleep 2
-  done
-  sleep 2
-  herdr_cli pane send-keys "$PAYMENTS_PANE" ctrl+c >/dev/null
-  sleep 1.5
-  last_raw_text | grep -qi "record"
-}
-if ! warm_polish; then
-  echo "The warmup dictation heard nothing; restarting coreaudiod once." >&2
-  sudo -n killall coreaudiod 2>/dev/null || true
-  sleep 6
-  if ! warm_polish; then
-    mkdir -p "$OUT_DIR"
-    {
-      echo "== app log, last 5 minutes"
-      log show --last 5m --info --predicate 'subsystem == "com.localvoxtral"' 2>/dev/null | tail -n 400
-      echo "== input device setting"; defaults read "$HARNESS_DEFAULTS_SUITE" settings.selected_input_device_uid
-      echo "== processes"; ps -axo pid,etime,rss,command | grep -iE "localvoxtral|speech|polish|coreaudiod" | grep -v grep
-    } >"$OUT_DIR/failed-take.txt" 2>&1
-    echo "The loopback audio is silent: the app hears nothing from \"$DEMO_SAY_DEVICE\"." >&2
-    exit 1
-  fi
-fi
+done
+sleep 1
+herdr_cli pane send-keys "$PAYMENTS_PANE" ctrl+c >/dev/null
+sleep 1.5
 
 # --- the payments session's identity, for the staged permission request ----------
 # The real claude process in the payments pane: its pid, and the herdr pane
@@ -941,10 +930,10 @@ log_since() { # <start "YYYY-MM-DD HH:MM:SS">: the app's log since then
 # Beat 1 — live: hold, the task streams into payments, "send it" submits it.
 tl_seg live 1
 BEAT_LOG_START="$(date '+%Y-%m-%d %H:%M:%S')"
+queue_line "@1.2 $LINE_LIVE" # it starts once past the hold threshold
 press_hotkey
-sleep 1.2 # past the hold threshold
-say -a "$DEMO_SAY_DEVICE" -r 180 "$LINE_LIVE"
-sleep 1.5
+sleep 1.2
+speak "$LINE_LIVE"
 release_hotkey
 sleep 3
 wait_pane_text "$PAYMENTS_PANE" "refund|database" 15 || beat_failed "live: the dictation never reached the payments pane."
@@ -957,10 +946,9 @@ sleep 4
 tl_seg overlay 1
 focus_pane "$DOCS_PANE" right
 sleep 1
+queue_line "$LINE_OVERLAY"
 tap_hotkey
-sleep 1
-say -a "$DEMO_SAY_DEVICE" -r 180 "$LINE_OVERLAY"
-sleep 0.5
+speak "$LINE_OVERLAY"
 tap_hotkey
 tl_seg overlay 6 # polish
 wait_pane_text "$DOCS_PANE" "coverage" "$DEMO_COMMIT_SECONDS" || beat_failed "overlay: nothing committed into the docs pane."
@@ -993,14 +981,15 @@ if ! { [[ -n "$NC_PID" ]] && ax_probe "$NC_PID" --find "needs you" --timeout 8 >
   grep -q 'agent-attention' <<<"$NC_LOG" || beat_failed "needsyou: no \"needs you\" banner."
 fi
 sleep 3
+queue_line "@3 $LINE_ANSWER" # the answer comes after the two Tabs
 tap_hotkey
 sleep 1
 press_tab
 sleep 0.7
 press_tab
-sleep 1
-say -a "$DEMO_SAY_DEVICE" -r 180 "$LINE_ANSWER"
-# The overlay stops by itself after the spoken send (spoken_stop_wait_ms).
+sleep 1.3
+speak "$LINE_ANSWER"
+tap_hotkey
 tl_seg needsyou 4
 wait_pane_focused "$PAYMENTS_PANE" "$DEMO_COMMIT_SECONDS" || beat_failed "needsyou: payments never came forward."
 wait_pane_text "$PAYMENTS_PANE" "go ahead" "$DEMO_COMMIT_SECONDS" || beat_failed "needsyou: the answer never reached payments."
@@ -1012,9 +1001,9 @@ sleep 3
 tl_seg inbox 1
 capture_ids() { "$CLI_PATH" capture list --json 2>/dev/null | python3 "$SCRIPT_DIR/lib/demo-cli-json.py" capture-ids; }
 CAPTURES_BEFORE="$(capture_ids)"
+queue_line "$LINE_INBOX"
 tap_hotkey
-sleep 1
-say -a "$DEMO_SAY_DEVICE" -r 180 "$LINE_INBOX"
+speak "$LINE_INBOX"
 press_tab
 sleep 1
 tap_hotkey
@@ -1048,10 +1037,9 @@ sleep 3
 
 # Beat 5 — go to docs.
 tl_seg goto 1
+queue_line "$LINE_GOTO"
 tap_hotkey
-sleep 1
-say -a "$DEMO_SAY_DEVICE" -r 180 "$LINE_GOTO"
-sleep 0.5
+speak "$LINE_GOTO"
 tap_hotkey
 wait_pane_focused "$DOCS_PANE" 15 || beat_failed "goto: the docs pane never came forward."
 sleep 1
@@ -1063,10 +1051,10 @@ sleep 2
 tl_seg learned 1
 herdr_cli pane send-keys "$DOCS_PANE" ctrl+c >/dev/null # the composer starts empty
 sleep 1
+queue_line "@1.2 $LINE_LEARN"
 press_hotkey
 sleep 1.2
-say -a "$DEMO_SAY_DEVICE" -r 180 "$LINE_LEARN"
-sleep 1.5
+speak "$LINE_LEARN"
 release_hotkey
 sleep 3
 # The composer's last line holds what was inserted; the word before "three"
