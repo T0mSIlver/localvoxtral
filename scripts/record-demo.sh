@@ -940,6 +940,7 @@ speak "$LINE_LIVE"
 release_hotkey
 sleep 3
 wait_pane_text "$PAYMENTS_PANE" "refund|database" 15 || beat_failed "live: the dictation never reached the payments pane."
+log_since "$BEAT_LOG_START" | grep -q "spoken send: submit" || beat_failed "live: \"send it\" did not submit the prompt."
 log_since "$BEAT_LOG_START" | grep -qiE 'joined to a live Claude session' \
   || echo "WARNING: no join line in the app log for beat 1." >&2
 tl_seg live 2 # the agent starts on it
@@ -1000,6 +1001,7 @@ tap_hotkey
 tl_seg needsyou 4
 wait_pane_focused "$PAYMENTS_PANE" "$DEMO_COMMIT_SECONDS" || beat_failed "needsyou: payments never came forward."
 wait_pane_text "$PAYMENTS_PANE" "go ahead" "$DEMO_COMMIT_SECONDS" || beat_failed "needsyou: the answer never reached payments."
+log_since "$BEAT_LOG_START" | grep -q "spoken send: submit" || beat_failed "needsyou: \"send it\" did not submit the answer."
 tl_seg needsyou 1
 sleep 3
 

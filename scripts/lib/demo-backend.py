@@ -143,8 +143,9 @@ class SpeechSession:
                     {"type": "transcription.delta", "delta": (" " if self.sent > 1 else "") + word}).encode())
                 # A clause ends a segment, as speech pauses end one for a
                 # real server: Live Auto-Paste with spoken send types each
-                # segment once it is final.
-                if word[-1] in ",.?!":
+                # segment once it is final. The last clause stays for the
+                # stop's final, the only one a spoken "send it" acts on.
+                if word[-1] in ",.?!" and self.sent < len(self.words):
                     self._send_segment()
             time.sleep(1 / WORDS_PER_SECOND)
 
