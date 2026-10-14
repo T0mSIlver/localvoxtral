@@ -82,6 +82,19 @@ enum LLMPolishingRequestShape: String, Sendable {
     /// trace's latency or output tokens to insert one space before a question
     /// mark, and a value the model does not take is a 400.
     case mistral
+
+    /// Anthropic's `/v1/messages`, chosen for an External URL server on
+    /// `api.anthropic.com` (#1849). The system prompt is its own field,
+    /// `max_tokens` is required, and current models reject non-default
+    /// sampling, so the body carries no sampling field at all. Depth is
+    /// `output_config.effort`: `low` for a polish, `high` for a request that
+    /// prefers deep reasoning.
+    case anthropic
+
+    /// The shape an External URL server speaks, read from its host.
+    static func forExternalEndpoint(_ url: URL) -> LLMPolishingRequestShape {
+        url.host?.lowercased() == AnthropicPolishDefaults.host ? .anthropic : .openAICompatible
+    }
 }
 
 struct LLMPolishingConfiguration: Sendable {
@@ -142,6 +155,15 @@ enum MistralPolishDefaults {
     /// `mistral-medium-3-5` (aliases `mistral-medium-latest`,
     /// `mistral-medium-3`).
     static let model = "mistral-medium-3-5"
+}
+
+/// Wire constants for Anthropic's Messages API.
+enum AnthropicPolishDefaults {
+    static let host = "api.anthropic.com"
+    static let apiVersion = "2023-06-01"
+    /// Required by the API. Covers the reply plus whatever the model thinks
+    /// at low effort; a polish is about as long as its dictation.
+    static let maxTokens = 16000
 }
 
 struct LLMPolishingResult: Sendable {
@@ -265,6 +287,14 @@ struct LLMPolishingService: LLMPolishingServicing {
             throw LLMPolishingError.truncated
         }
 
+        // A declined request may still carry partial text; never commit it.
+        if let json, json["stop_reason"] as? String == "refusal" {
+            Log.backends.error(
+                "Polish: \(urlRequest.url?.host ?? "-", privacy: .public) declined the request (stop_reason refusal)"
+            )
+            throw LLMPolishingError.invalidResponse
+        }
+
         guard let json, let content = Self.assistantText(inResponseObject: json) else {
             throw LLMPolishingError.invalidResponse
         }
@@ -317,7 +347,12 @@ struct LLMPolishingService: LLMPolishingServicing {
     /// own: `length` on OpenAI-compatible servers and polishd, and Mistral's
     /// `model_length` when the context window runs out mid-answer. A missing
     /// `finish_reason` counts as complete, as servers that omit it always did.
+    /// Anthropic's top-level `stop_reason` says the same with `max_tokens` and
+    /// `model_context_window_exceeded`.
     static func stoppedAtOutputLimit(responseObject json: [String: Any]) -> Bool {
+        if let stopReason = json["stop_reason"] as? String {
+            return stopReason == "max_tokens" || stopReason == "model_context_window_exceeded"
+        }
         guard let choices = json["choices"] as? [[String: Any]],
               let reason = choices.first?["finish_reason"] as? String
         else { return false }
@@ -337,17 +372,26 @@ struct LLMPolishingService: LLMPolishingServicing {
     /// is accepted defensively, keeping only the `text` chunks and dropping
     /// the trace (which is never what the user dictated).
     ///
+    /// Anthropic's Messages API answers with a top-level `content` list of the
+    /// same kind: `text` blocks for the answer, `thinking` blocks for the
+    /// trace.
+    ///
     /// Returns nil when no assistant text can be found; the caller maps that
     /// to `invalidResponse`, as it always has.
     static func assistantText(inResponseObject json: [String: Any]) -> String? {
-        guard let choices = json["choices"] as? [[String: Any]],
-              let message = choices.first?["message"] as? [String: Any]
-        else { return nil }
-
-        if let content = message["content"] as? String {
-            return content
+        let chunks: [[String: Any]]
+        if let choices = json["choices"] as? [[String: Any]] {
+            guard let message = choices.first?["message"] as? [String: Any] else { return nil }
+            if let content = message["content"] as? String {
+                return content
+            }
+            guard let messageChunks = message["content"] as? [[String: Any]] else { return nil }
+            chunks = messageChunks
+        } else if let contentBlocks = json["content"] as? [[String: Any]] {
+            chunks = contentBlocks
+        } else {
+            return nil
         }
-        guard let chunks = message["content"] as? [[String: Any]] else { return nil }
         let text = chunks
             .filter { $0["type"] as? String == "text" }
             .compactMap { $0["text"] as? String }
@@ -415,24 +459,41 @@ struct LLMPolishingService: LLMPolishingServicing {
         return components.url ?? url
     }
 
+    /// The Messages API URL on the host the user typed: whatever path they
+    /// gave (`/`, `/v1`, `/v1/messages`) becomes `/v1/messages`.
+    static func anthropicMessagesURL(_ url: URL) -> URL {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        else { return url }
+        components.path = "/v1/messages"
+        return components.url ?? url
+    }
+
     /// The full URLRequest for one polish call — the single construction path
     /// (and the test seam pinning the timeout without networking).
     static func makeURLRequest(
         request: LLMPolishingRequest,
         configuration: LLMPolishingConfiguration
     ) throws -> URLRequest {
+        let isAnthropic = configuration.requestShape == .anthropic
         var urlRequest = URLRequest(
-            url: normalizedChatCompletionsURL(configuration.endpointURL)
+            url: isAnthropic
+                ? anthropicMessagesURL(configuration.endpointURL)
+                : normalizedChatCompletionsURL(configuration.endpointURL)
         )
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if !configuration.apiKey.isEmpty {
+        if isAnthropic {
+            urlRequest.setValue(AnthropicPolishDefaults.apiVersion, forHTTPHeaderField: "anthropic-version")
+            if !configuration.apiKey.isEmpty {
+                urlRequest.setValue(configuration.apiKey, forHTTPHeaderField: "x-api-key")
+            }
+        } else if !configuration.apiKey.isEmpty {
             urlRequest.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
         }
-        // Bifrost's opt-in header only means anything to Bifrost, and Mistral
-        // is not it: the Mistral shape emits no passthrough extras at all, so
+        // Bifrost's opt-in header only means anything to Bifrost, and neither
+        // hosted API is it: their shapes emit no passthrough extras at all, so
         // the header would only advertise fields that are not there.
-        if configuration.passthroughExtraParameters, configuration.requestShape != .mistral {
+        if configuration.passthroughExtraParameters, configuration.requestShape == .openAICompatible {
             urlRequest.setValue("true", forHTTPHeaderField: "x-bf-passthrough-extra-params")
         }
         urlRequest.timeoutInterval = Self.timeoutInterval(for: request)
@@ -466,6 +527,9 @@ struct LLMPolishingService: LLMPolishingServicing {
         request: LLMPolishingRequest,
         configuration: LLMPolishingConfiguration
     ) throws -> Data {
+        if configuration.requestShape == .anthropic {
+            return try anthropicRequestBody(request: request, configuration: configuration)
+        }
         // An empty system prompt sends no system message. polishd checkpoints
         // every message but the last as a prompt-cache prefix, and its two
         // slots belong to the two dictation profiles: a one-message request
@@ -526,6 +590,38 @@ struct LLMPolishingService: LLMPolishingServicing {
         }
         if let thinkingBudgetTokens = configuration.thinkingBudgetTokens {
             body["thinking_budget_tokens"] = thinkingBudgetTokens
+        }
+        return try JSONSerialization.data(withJSONObject: body)
+    }
+
+    /// The Messages API body. Every user prompt is one text block of a single
+    /// user message, so the request needs no alternating roles. The fixed
+    /// start (system prompt and every prompt but the last) ends on a
+    /// `cache_control` breakpoint: the API caches that prefix for 5 minutes
+    /// and bills reads at a tenth of input. A prefix shorter than the
+    /// model's minimum simply isn't cached.
+    static func anthropicRequestBody(
+        request: LLMPolishingRequest,
+        configuration: LLMPolishingConfiguration
+    ) throws -> Data {
+        let ephemeral: [String: Any] = ["type": "ephemeral"]
+        var blocks: [[String: Any]] = request.userPrompts.map { ["type": "text", "text": $0] }
+        var system: [[String: Any]] = request.systemPrompt.isEmpty
+            ? []
+            : [["type": "text", "text": request.systemPrompt]]
+        if blocks.count > 1 {
+            blocks[blocks.count - 2]["cache_control"] = ephemeral
+        } else if !system.isEmpty {
+            system[0]["cache_control"] = ephemeral
+        }
+        var body: [String: Any] = [
+            "model": configuration.model,
+            "max_tokens": request.maxTokens ?? AnthropicPolishDefaults.maxTokens,
+            "messages": [["role": "user", "content": blocks]],
+            "output_config": ["effort": request.prefersDeepReasoning ? "high" : "low"],
+        ]
+        if !system.isEmpty {
+            body["system"] = system
         }
         return try JSONSerialization.data(withJSONObject: body)
     }

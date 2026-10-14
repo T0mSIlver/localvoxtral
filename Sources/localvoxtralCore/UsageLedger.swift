@@ -351,9 +351,24 @@ package struct LLMTokenUsage: Equatable, Sendable {
 
     /// Nil when the response carries no `usage` with at least the prompt and
     /// completion counts.
+    /// Anthropic's Messages API counts cache reads and writes apart from
+    /// `input_tokens`; the prompt is their sum.
     package init?(responseObject json: [String: Any]) {
-        guard let usage = json["usage"] as? [String: Any],
-            let prompt = (usage["prompt_tokens"] as? NSNumber)?.intValue,
+        guard let usage = json["usage"] as? [String: Any] else { return nil }
+        if let input = (usage["input_tokens"] as? NSNumber)?.intValue,
+            let output = (usage["output_tokens"] as? NSNumber)?.intValue
+        {
+            let cacheRead = (usage["cache_read_input_tokens"] as? NSNumber)?.intValue ?? 0
+            let cacheWrite = (usage["cache_creation_input_tokens"] as? NSNumber)?.intValue ?? 0
+            self.init(
+                model: (json["model"] as? String).flatMap { $0.trimmed.isEmpty ? nil : $0.trimmed },
+                promptTokens: input + cacheRead + cacheWrite,
+                cachedPromptTokens: cacheRead,
+                completionTokens: output
+            )
+            return
+        }
+        guard let prompt = (usage["prompt_tokens"] as? NSNumber)?.intValue,
             let completion = (usage["completion_tokens"] as? NSNumber)?.intValue
         else { return nil }
         let details = usage["prompt_tokens_details"] as? [String: Any]
