@@ -49,7 +49,8 @@ extension SettingsStore {
             apiKey: llmPolishingAPIKey.trimmed,
             model: llmPolishingModel.trimmed.isEmpty
                 ? Self.defaultLLMPolishingModel
-                : llmPolishingModel.trimmed
+                : llmPolishingModel.trimmed,
+            requestShape: .forExternalEndpoint(url)
         )
     }
 

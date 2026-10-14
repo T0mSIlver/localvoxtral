@@ -233,6 +233,12 @@ For polishing, enter either a base URL such as `http://127.0.0.1:8080` or
 the full chat completions URL; the app appends `/v1/chat/completions` to a
 base URL.
 
+Polishing also runs on Anthropic's API: enter `https://api.anthropic.com` as
+the server URL, an Anthropic API key, and a model such as `claude-sonnet-5-5`.
+The app then speaks Anthropic's Messages API and asks for low effort, so the
+model thinks little before it answers. In this mode your transcripts reach
+Anthropic.
+
 For example, to serve Voxtral Realtime with vLLM on an NVIDIA GPU:
 
 ```bash
