@@ -78,7 +78,12 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         /// The socket a rollover dialled is still opening. The session reads
         /// it as connected: the dictation never left its server.
         var isRolloverSocketOpening = false
+        /// The server going quiet while this socket's audio still goes out:
+        /// a hung speechd or External URL server sends no error and no close
+        /// (#1866). Starts with the socket's first audio.
+        var health: MistralStreamHealth?
         #if DEBUG
+        var silenceLogForTesting: [String] = []
         var skipsSocketCreationForTesting = false
         var lastConnectConfigurationForTesting: RealtimeSessionConfiguration?
         var beforeHandshakeDrainForTesting: (@Sendable () -> Void)?
@@ -592,6 +597,8 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         if !type.isEmpty {
             debugLog("recv event type=\(type)")
         }
+        // After the event's own handling, which reads the clock first.
+        defer { noteServerEvent(type, from: generation) }
 
         switch type {
         case "session.created":
@@ -697,7 +704,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     // MARK: - Send Helpers
 
     private enum SendAction: Sendable {
-        case send(task: URLSessionWebSocketTask, text: String)
+        case send(task: URLSessionWebSocketTask, text: String, audioBytes: Int, stall: MistralStreamHealth.StallReport?)
         case queued
         case dropped
     }
@@ -754,7 +761,8 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                 // does: a send that fails as the socket dies over-counts by
                 // the frames in flight.
                 s.sentAudioBytes += audio?.count ?? 0
-                return .send(task: webSocketTask, text: text)
+                let stall = admitLocked(&s, audio: audio)
+                return .send(task: webSocketTask, text: text, audioBytes: audio?.count ?? 0, stall: stall)
             case .connecting:
                 s.pendingMessages.append(PendingFrame(text: text, audio: audio))
                 return .queued
@@ -764,8 +772,8 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         }
 
         switch action {
-        case .send(let task, let payloadText):
-            transmit(payloadText, on: task)
+        case .send(let task, let payloadText, let audioBytes, let stall):
+            transmit(payloadText, audioBytes: audioBytes, stall: stall, on: task)
             return true
         case .queued:
             return true
@@ -796,7 +804,8 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     /// replacement keeps its own queue (#1058).
     private func replayHandshakeQueue(for generation: RealtimeConnectionGeneration) {
         while true {
-            let batch: (task: URLSessionWebSocketTask, frames: [PendingFrame])? = state.withLock { s in
+            let batch: (task: URLSessionWebSocketTask, frames: [(PendingFrame, MistralStreamHealth.StallReport?)])? =
+                state.withLock { s in
                 guard isCurrentConnectionLocked(s.base, generation), s.base.socketState == .connected,
                       let task = s.base.webSocketTask
                 else { return nil }
@@ -804,25 +813,70 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
                     s.isReplayingHandshakeQueue = false
                     return nil
                 }
-                let frames = s.pendingMessages
+                let frames = s.pendingMessages.map { frame in (frame, admitLocked(&s, audio: frame.audio)) }
                 s.pendingMessages.removeAll(keepingCapacity: true)
-                s.sentAudioBytes += frames.reduce(0) { $0 + $1.audioBytes }
+                s.sentAudioBytes += frames.reduce(0) { $0 + $1.0.audioBytes }
                 return (task, frames)
             }
             guard let batch else { return }
-            for frame in batch.frames {
-                transmit(frame.text, on: batch.task)
+            for (frame, stall) in batch.frames {
+                transmit(frame.text, audioBytes: frame.audioBytes, stall: stall, on: batch.task)
             }
         }
     }
 
-    private func transmit(_ text: String, on task: URLSessionWebSocketTask) {
+    /// Counts an audio frame handed to the socket against the server's
+    /// silence. Returns a report the first time that silence passes
+    /// `MistralStreamHealth.stallThreshold`.
+    private func admitLocked(_ s: inout State, audio: Data?) -> MistralStreamHealth.StallReport? {
+        guard let audio, !audio.isEmpty else { return nil }
+        let now = clock.now().timeIntervalSinceReferenceDate
+        if s.health == nil { s.health = MistralStreamHealth(openedAt: now) }
+        return s.health?.audioSent(
+            bytes: audio.count, levelDBFS: MistralStreamHealth.rmsDBFS(pcm16: audio), at: now)
+    }
+
+    /// Any frame from the server ends its silence; one that ends a reported
+    /// stall says how long it lasted.
+    private func noteServerEvent(_ type: String, from generation: RealtimeConnectionGeneration) {
+        let receivedAt = clock.now().timeIntervalSinceReferenceDate
+        let silence: TimeInterval? = state.withLock { s in
+            guard isCurrentConnectionLocked(s.base, generation) else { return nil }
+            return s.health?.serverEvent(at: receivedAt) ?? nil
+        }
+        if let silence {
+            logServerSilence(
+                "realtime server resumed after \(String(format: "%.1f", silence))s of silence (\(type))")
+        }
+    }
+
+    private func logServerSilence(_ line: String) {
+        Log.backends.notice("\(line, privacy: .public)")
+        #if DEBUG
+        state.withLock { $0.silenceLogForTesting.append(line) }
+        #endif
+    }
+
+    private func transmit(
+        _ text: String, audioBytes: Int = 0, stall: MistralStreamHealth.StallReport? = nil,
+        on task: URLSessionWebSocketTask
+    ) {
+        if let stall { logServerSilence("realtime server silent: \(stall.logDescription)") }
         #if DEBUG
         state.withLock { $0.transmitObserverForTesting }?(task, text)
         #endif
 
         task.send(.string(text)) { [weak self] error in
-            guard let self, let error else { return }
+            guard let self else { return }
+            guard let error else {
+                if audioBytes > 0 {
+                    self.state.withLock { s in
+                        guard s.base.webSocketTask === task else { return }
+                        s.health?.audioSendCompleted()
+                    }
+                }
+                return
+            }
             self.handleTerminalSocketError(
                 for: task,
                 errorMessage: "WebSocket send failed: \(self.describeSocketError(error))"
@@ -846,13 +900,22 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
     }
 
     private func sendKeepalivePing() {
+        let sentAt = clock.now().timeIntervalSinceReferenceDate
         let task: URLSessionWebSocketTask? = state.withLock { s in
             guard s.base.socketState == .connected else { return nil }
+            s.health?.pingSent(at: sentAt)
             return s.base.webSocketTask
         }
         guard let task else { return }
         task.sendPing { [weak self] error in
-            guard let self, let error else { return }
+            guard let self else { return }
+            guard let error else {
+                self.state.withLock { s in
+                    guard s.base.webSocketTask === task else { return }
+                    s.health?.pongReceived()
+                }
+                return
+            }
             self.handleTerminalSocketError(
                 for: task,
                 errorMessage: "Connection lost: \(self.describeSocketError(error))"
@@ -1047,6 +1110,7 @@ package final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @un
         s.lastTextAt = nil
         s.startsAfterRollover = false
         s.isRolloverSocketOpening = false
+        s.health = nil
     }
 
     // MARK: - JSON Helpers
@@ -1198,6 +1262,11 @@ extension RealtimeAPIWebSocketClient {
             s.isGenerationInProgress = isGenerationInProgress
             s.finalCommitCompletionGate = .idle
         }
+    }
+
+    /// The silence and resume lines logged, in order.
+    package func debugServerSilenceLogForTesting() -> [String] {
+        state.withLock { $0.silenceLogForTesting }
     }
 
     package func debugStateSnapshot() -> DebugStateSnapshot {
