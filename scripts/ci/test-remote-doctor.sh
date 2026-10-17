@@ -73,8 +73,9 @@ cp "$TMP_DIR/mac-fail.txt" "$TMP_DIR/mac-old.txt"
 start_server() {
   python3 "$TMP_DIR/server.py" "$PORT" "$TOKEN" "$TMP_DIR/$1" &
   SERVER_PID=$!
+  _s0=$(python3 -c 'import time;print(time.time())')
   for _ in $(seq 1 50); do
-    curl -s -o /dev/null -X POST "http://127.0.0.1:$PORT/" 2>/dev/null && return 0
+    curl -s -o /dev/null -X POST "http://127.0.0.1:$PORT/" 2>/dev/null && { python3 -c 'import sys,time;print("SERVER %.2fs" % (time.time()-float(sys.argv[1])))' "$_s0" >>"$ROOT_DIR/.doctor-timing.txt"; return 0; }
     sleep 0.1
   done
   fail "the fake listener did not start"
@@ -152,9 +153,11 @@ fi
 # run_doctor [args]: prints the output, sets STATUS.
 run_doctor() {
   set +e
+  _t0=$(python3 -c 'import time;print(time.time())')
   OUT="$(env -i PATH="$TMP_DIR/stub:$PATH" HOME="$HOME_DIR" XDG_RUNTIME_DIR="$TMP_DIR/run" \
     "$SH" "$PLUGIN/bin/localvoxtral" doctor "$@" 2>&1)"
   STATUS=$?
+  python3 -c 'import sys,time;print("TIMING %.2fs" % (time.time()-float(sys.argv[1])), sys.argv[2:])' "$_t0" "$SH_NAME" "$@" >>"$ROOT_DIR/.doctor-timing.txt"
   set -e
   case "$OUT" in *"$TOKEN"*) fail "$SH_NAME: the token is in doctor's output" ;; esac
 }
@@ -334,3 +337,9 @@ set -e
 [ "$STATUS" = 2 ] || fail "history on a host: exit $STATUS, want 2"
 grep -qF "run on the Mac" <<<"$OUT" || fail "history on a host: $OUT"
 pass "other commands say they run on the Mac"
+
+# TEMPORARY timing probe (#1858): fail so run-shell-suites prints the output.
+python3 -c 'import socket,time;t=time.time();socket.getfqdn("127.0.0.1");print("GETFQDN %.2fs"%(time.time()-t))' >>"$ROOT_DIR/.doctor-timing.txt"
+echo "SHELLS: ${SHELLS[*]}" >>"$ROOT_DIR/.doctor-timing.txt"
+cat "$ROOT_DIR/.doctor-timing.txt"
+fail "timing probe"
