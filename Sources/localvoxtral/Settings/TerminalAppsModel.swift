@@ -136,9 +136,12 @@ enum TerminalAppCatalog {
         TerminalAppDescriptor(
             slug: "warp",
             displayName: "Warp",
+            // Warp's channels (warpdotdev/warp app/Cargo.toml): Stable,
+            // Preview, Dev, Local builds and the open-source WarpOss.
             detectionBundleIDs: [
                 "dev.warp.Warp-Stable", "dev.warp.Warp-Public", "dev.warp.Warp",
-                "dev.warp.Warp-Preview", "dev.warp.Warp-Dev",
+                "dev.warp.Warp-Preview", "dev.warp.Warp-Dev", "dev.warp.Warp-Local",
+                "dev.warp.WarpOss",
             ],
             capabilities: .dictationOnly(reason: "Not yet"),
             isUserAdded: false

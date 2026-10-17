@@ -78,6 +78,8 @@ final class TerminalTargetDetectorTests: XCTestCase {
             "com.cmuxterm.app",
             "dev.warp.Warp-Preview",
             "dev.warp.Warp-Dev",
+            "dev.warp.Warp-Local",
+            "dev.warp.WarpOss",
         ]
         for bundleID in knownTerminals {
             XCTAssertTrue(
