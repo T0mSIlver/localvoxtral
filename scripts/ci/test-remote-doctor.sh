@@ -32,17 +32,28 @@ pass() { printf 'PASS: %s\n' "$*"; }
 command -v curl >/dev/null || fail "needs curl"
 command -v python3 >/dev/null || fail "needs python3"
 
-PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+unused_port() {
+  python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'
+}
+PORT="$(unused_port)"
+# Where nothing listens. The fake listener starts once and stays up: on hosted
+# macOS each restart on the same port took ~36 s, six of build-test's minutes
+# (#1858).
+DEAD_PORT="$(unused_port)"
+[ "$DEAD_PORT" != "$PORT" ] || DEAD_PORT="$(unused_port)"
+[ "$DEAD_PORT" != "$PORT" ] || fail "no second unused port"
 
 # --- Fake listener: the Mac's answers ------------------------------------------
 cat >"$TMP_DIR/server.py" <<'EOF'
 import http.server, os, sys
-token, body_file = sys.argv[2], sys.argv[3]
+token, answer_file = sys.argv[2], sys.argv[3]
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         if self.headers.get("Authorization") != "Bearer " + token:
             self.send_response(401); self.send_header("Content-Length", "0"); self.end_headers(); return
         json = "application/json" in (self.headers.get("Accept") or "")
+        with open(answer_file) as f:
+            body_file = f.read().strip()
         with open(body_file + (".json" if json else ".txt"), "rb") as f:
             body = f.read()
         self.send_response(200); self.send_header("Content-Length", str(len(body)))
@@ -70,20 +81,18 @@ printf '1. [ok  ] App: localvoxtral 1.4.0.\n2. [broken] Accessibility: Not allow
 echo 1 >"$TMP_DIR/mac-reworded.failed"
 cp "$TMP_DIR/mac-fail.txt" "$TMP_DIR/mac-old.txt"
 
-start_server() {
-  python3 "$TMP_DIR/server.py" "$PORT" "$TOKEN" "$TMP_DIR/$1" &
+# serve <answer>: the Mac answers with $TMP_DIR/<answer>.*; starts the
+# listener the first time.
+serve() {
+  printf '%s\n' "$TMP_DIR/$1" >"$TMP_DIR/answer"
+  [ -z "$SERVER_PID" ] || return 0
+  python3 "$TMP_DIR/server.py" "$PORT" "$TOKEN" "$TMP_DIR/answer" &
   SERVER_PID=$!
-  _s0=$(python3 -c 'import time;print(time.time())')
   for _ in $(seq 1 50); do
-    curl -s -o /dev/null -X POST "http://127.0.0.1:$PORT/" 2>/dev/null && { python3 -c 'import sys,time;print("SERVER %.2fs" % (time.time()-float(sys.argv[1])))' "$_s0" >>"$ROOT_DIR/.doctor-timing.txt"; return 0; }
+    curl -s -o /dev/null -X POST "http://127.0.0.1:$PORT/" 2>/dev/null && return 0
     sleep 0.1
   done
   fail "the fake listener did not start"
-}
-stop_server() {
-  kill "$SERVER_PID" 2>/dev/null || true
-  wait "$SERVER_PID" 2>/dev/null || true
-  SERVER_PID=""
 }
 
 # --- The host: an isolated HOME -------------------------------------------------
@@ -91,11 +100,12 @@ HOME_DIR="$TMP_DIR/home"
 CLAUDE_DIR="$HOME_DIR/.claude"
 mkdir -p "$CLAUDE_DIR/plugins/cache/localvoxtral/localvoxtral-remote/1.21.0/.in_use" \
   "$CLAUDE_DIR/plugins/cache/localvoxtral/localvoxtral-remote/1.22.0/.in_use" "$TMP_DIR/run/localvoxtral"
+# write_settings <enabled> [port]
 write_settings() {
   cat >"$CLAUDE_DIR/settings.json" <<EOF
 {
   "enabledPlugins": { "localvoxtral-remote@localvoxtral": $1 },
-  "pluginConfigs": { "localvoxtral-remote@localvoxtral": { "options": { "port": "$PORT" } } }
+  "pluginConfigs": { "localvoxtral-remote@localvoxtral": { "options": { "port": "${2:-$PORT}" } } }
 }
 EOF
 }
@@ -153,11 +163,9 @@ fi
 # run_doctor [args]: prints the output, sets STATUS.
 run_doctor() {
   set +e
-  _t0=$(python3 -c 'import time;print(time.time())')
   OUT="$(env -i PATH="$TMP_DIR/stub:$PATH" HOME="$HOME_DIR" XDG_RUNTIME_DIR="$TMP_DIR/run" \
     "$SH" "$PLUGIN/bin/localvoxtral" doctor "$@" 2>&1)"
   STATUS=$?
-  python3 -c 'import sys,time;print("TIMING %.2fs" % (time.time()-float(sys.argv[1])), sys.argv[2:])' "$_t0" "$SH_NAME" "$@" >>"$ROOT_DIR/.doctor-timing.txt"
   set -e
   case "$OUT" in *"$TOKEN"*) fail "$SH_NAME: the token is in doctor's output" ;; esac
 }
@@ -191,19 +199,20 @@ $OUT"
 for SH in "${SHELLS[@]}"; do
   case "$SH" in */bash-as-sh/sh) SH_NAME=bash ;; *) SH_NAME=/bin/sh ;; esac
   rm -f "$TMP_DIR/argv.log"
-  write_settings true
+  write_settings true "$DEAD_PORT"
   write_token "$TOKEN"
 
   # Nothing listens: no ssh session holds the forward.
   run_doctor
-  expect_line "[FAIL] Tunnel: Nothing listens on 127.0.0.1:$PORT" "no listener"
+  expect_line "[FAIL] Tunnel: Nothing listens on 127.0.0.1:$DEAD_PORT" "no listener"
   expect_line "Keep the tunnel open" "no listener"
   [ "$STATUS" = 4 ] || fail "$SH_NAME, no listener: exit $STATUS, want 4"
   expect_state host tunnel failed "no listener"
   pass "$SH_NAME: nothing listening fails the tunnel check, exit 4"
 
   # The Mac answers, and its own checks come through.
-  start_server mac-ok
+  write_settings true
+  serve mac-ok
   run_doctor
   expect_line "[ok  ] Tunnel: 127.0.0.1:$PORT reaches localvoxtral" "healthy"
   expect_line "[ok  ] Token: Accepted (from $CLAUDE_DIR/.credentials.json)." "healthy"
@@ -227,30 +236,26 @@ assert doc["mac"]["doctor"]["checks"][0]["id"] == "app", doc
 ' || fail "$SH_NAME, --json: not the expected document:
 $OUT"
   pass "$SH_NAME: --json nests the Mac's answer under mac"
-  stop_server
 
   # A failed check on the Mac fails the host's run too.
-  start_server mac-fail
+  serve mac-fail
   run_doctor
   expect_line "2. [FAIL] Accessibility: Not allowed." "Mac fails"
   [ "$STATUS" = 4 ] || fail "$SH_NAME, Mac fails: exit $STATUS, want 4"
   expect_state mac accessibility failed "Mac fails"
   expect_state host token ok "Mac fails"
   pass "$SH_NAME: a Mac check that fails exits 4"
-  stop_server
 
-  start_server mac-reworded
+  serve mac-reworded
   run_doctor
   [ "$STATUS" = 4 ] || fail "$SH_NAME, Mac fails, report reworded: exit $STATUS, want 4"
   pass "$SH_NAME: the Mac's failed count sets the exit status, whatever the report says"
-  stop_server
 
-  start_server mac-old
+  serve mac-old
   run_doctor
   [ "$STATUS" = 4 ] || fail "$SH_NAME, Mac without the header fails: exit $STATUS, want 4"
   pass "$SH_NAME: a Mac without the failed-count header still fails the run on its report"
-  stop_server
-  start_server mac-fail
+  serve mac-fail
 
   # A token the Mac does not know.
   write_token "rotated-token"
@@ -322,7 +327,6 @@ $OUT"
   expect_line "[FAIL] Claude Code plugin: 1.22.0 is installed but turned off" "disabled"
   expect_state host claude-plugin failed "disabled"
   pass "$SH_NAME: a disabled plugin fails its check"
-  stop_server
 
   # The token stays out of every argv and out of the output.
   if grep -qF "$TOKEN" "$TMP_DIR/argv.log"; then fail "$SH_NAME: the token reached curl's argv"; fi
@@ -337,9 +341,3 @@ set -e
 [ "$STATUS" = 2 ] || fail "history on a host: exit $STATUS, want 2"
 grep -qF "run on the Mac" <<<"$OUT" || fail "history on a host: $OUT"
 pass "other commands say they run on the Mac"
-
-# TEMPORARY timing probe (#1858): fail so run-shell-suites prints the output.
-python3 -c 'import socket,time;t=time.time();socket.getfqdn("127.0.0.1");print("GETFQDN %.2fs"%(time.time()-t))' >>"$ROOT_DIR/.doctor-timing.txt"
-echo "SHELLS: ${SHELLS[*]}" >>"$ROOT_DIR/.doctor-timing.txt"
-cat "$ROOT_DIR/.doctor-timing.txt"
-fail "timing probe"
