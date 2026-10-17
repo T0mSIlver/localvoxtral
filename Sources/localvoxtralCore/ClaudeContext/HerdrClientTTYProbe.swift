@@ -12,13 +12,10 @@ import Glibc
 #endif
 
 /// Is a whole-view herdr client (app-mode `herdr` process) in the foreground
-/// of this TTY device?
-/// This is what binds "Ghostty's focused surface" to "herdr is what that
-/// surface displays" — the socket API has no client introspection.
-package protocol HerdrClientTTYProbing: Sendable {
-    func isHerdrClient(onTTYDevicePath: String) -> Bool
-}
-
+/// of this TTY device? This is what binds "Ghostty's focused surface" to
+/// "herdr is what that surface displays" — the socket API has no client
+/// introspection.
+///
 /// Same-user process-table probe used only after Ghostty positively identifies
 /// its focused surface's TTY. Every metadata failure abstains; absence is safer
 /// than treating an unrelated or unreadable surface as herdr.

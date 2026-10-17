@@ -4,6 +4,7 @@ import Synchronization
 import XCTest
 
 @testable import localvoxtral
+import localvoxtralTestSupport
 
 /// A stand-in for an ssh host, reached through the PRODUCTION runner
 /// (`ClaudeRemoteEnrollmentService.processRunner`) with a fake `ssh` that
