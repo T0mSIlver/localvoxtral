@@ -76,16 +76,27 @@ final class TerminalTargetDetectorTests: XCTestCase {
             "org.tabby",
             "com.raphaelamorim.rio",
             "com.cmuxterm.app",
-            // Warp's other channels match its bundle-id prefix.
             "dev.warp.Warp-Preview",
             "dev.warp.Warp-Dev",
-            "dev.warp.Warp-Beta",
         ]
         for bundleID in knownTerminals {
             XCTAssertTrue(
                 TerminalTargetDetector.isTerminalLikeBundleID(bundleID),
                 "\(bundleID) should be terminal-like"
             )
+        }
+    }
+
+    /// Settings lists a built-in terminal as detected by these IDs; a
+    /// dictation into it must be treated as a terminal too (#1855).
+    func testEveryBuiltInCatalogDetectionBundleIDIsTerminalLike() {
+        for app in TerminalAppCatalog.builtIn {
+            for bundleID in app.detectionBundleIDs {
+                XCTAssertTrue(
+                    TerminalTargetDetector.isTerminalLikeBundleID(bundleID),
+                    "\(app.slug) detects \(bundleID) in Settings but the detector does not"
+                )
+            }
         }
     }
 
@@ -96,7 +107,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         XCTAssertFalse(TerminalTargetDetector.isTerminalLikeBundleID("com.microsoft.VSCode"))
         XCTAssertFalse(TerminalTargetDetector.isTerminalLikeBundleID("com.todesktop.230313mzl4w4u92"))
         XCTAssertFalse(TerminalTargetDetector.isTerminalLikeBundleID("com.apple.Safari"))
-        // Prefix matching must not fire on unrelated dev.warp-ish strings.
+        // Matching is exact: no Warp-ish prefix is terminal-like.
         XCTAssertFalse(TerminalTargetDetector.isTerminalLikeBundleID("dev.warp"))
         XCTAssertFalse(TerminalTargetDetector.isTerminalLikeBundleID("dev.warplike.Other"))
     }
