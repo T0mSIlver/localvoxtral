@@ -17,13 +17,6 @@ extension ClaudeIntegrationSettingsModel {
         statuslineStatus = service.status(currentHookCommand: statuslineHookCommand())
     }
 
-    /// Exact generated JSON retained for service tests. Settings never renders
-    /// it.
-    public var statuslinePreview: String? {
-        guard let hookCommand = statuslineHookCommand() else { return nil }
-        return ClaudeStatuslineInstallService.preview(hookCommand: hookCommand)
-    }
-
     public var canApplyStatuslineSetup: Bool { statuslineHookCommand() != nil }
 
     /// What the row's setup button does for the current status: install or
