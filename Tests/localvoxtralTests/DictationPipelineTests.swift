@@ -5001,6 +5001,43 @@ final class DictationPipelineTests: XCTestCase {
         return events
     }
 
+    // MARK: - A server that goes quiet mid-dictation (#1866)
+
+    /// The server stops answering while the dictation's audio still goes
+    /// out over the real socket: the realtime client logs it once, the
+    /// dictation goes on, and the next event logs the silence's end.
+    func testAServerThatGoesQuietWhileDictatingIsLoggedOnceAndItsEnd() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let client = pipeline.viewModel.session.realtimeAPIClient
+        await startAndSpeak(pipeline)
+
+        // Seven seconds of speech, one second per send, and nothing back.
+        for seed in UInt8(10)..<17 {
+            let spoken = Self.speech(seed: seed)
+            XCTAssertTrue(pipeline.microphone.deliver(spoken))
+            pipeline.clock.advance(by: 1)
+            await pipeline.server.awaitFrame("audio \(seed)") { $0.audio == spoken }
+            await pipeline.clock.waitForSleepers(pipeline.listeningTimers)
+        }
+        let silent = client.debugServerSilenceLogForTesting()
+        XCTAssertEqual(silent.count, 1, "\(silent)")
+        XCTAssertTrue(
+            silent.first?.hasPrefix("realtime server silent: no server event for ") ?? false, "\(silent)")
+        XCTAssertTrue(pipeline.viewModel.isDictating, "a log line, not a stop")
+        XCTAssertNil(pipeline.viewModel.lastError)
+
+        // The receive loop handles the partials before the stop's final, so
+        // once the dictation is recorded their resume line is in.
+        sendPartials(pipeline)
+        await stopAndFinalize(pipeline)
+
+        let log = client.debugServerSilenceLogForTesting()
+        XCTAssertEqual(log.count, 2, "\(log)")
+        XCTAssertTrue(log.last?.hasPrefix("realtime server resumed after ") ?? false, "\(log)")
+        XCTAssertTrue(log.last?.hasSuffix("s of silence (transcription.delta)") ?? false, "\(log)")
+        XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
+    }
+
     // MARK: - The two halves every scenario shares
 
     /// Start, open the microphone, connect, and get one captured chunk to the
