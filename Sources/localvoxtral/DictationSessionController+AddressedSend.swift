@@ -161,7 +161,7 @@ extension DictationSessionController {
         }
         var status = addressed.status
         if status == AddressedSendStatus.notSent {
-            status = keepUndeliveredAgentText(text)
+            status = keepUndeliveredAgentText(text, statusLineSaysSo: true)
         } else if status == AddressedSendStatus.unsupported {
             status = keepUntypedText(text, status: AddressedSendStatus.unsupported)
         }

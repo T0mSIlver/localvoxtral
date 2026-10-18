@@ -891,7 +891,7 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.session.onQuickCapture = { _, _, _ in }
         let copied = pipeline.viewModel.recordPasteboardWrites()
         var warnings = 0
-        pipeline.viewModel.session.secureInputWarningSound = { warnings += 1 }
+        pipeline.viewModel.session.warningSound = { warnings += 1 }
         TerminalTargetDetector.debugSecureEventInputOverride = { false }
         addTeardownBlock { @MainActor in TerminalTargetDetector.debugSecureEventInputOverride = nil }
         await polish.holdNextRequest()
@@ -1770,7 +1770,7 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.settings.autoCopyEnabled = false
         let copied = pipeline.viewModel.recordPasteboardWrites()
         var warnings = 0
-        pipeline.viewModel.session.secureInputWarningSound = { warnings += 1 }
+        pipeline.viewModel.session.warningSound = { warnings += 1 }
         TerminalTargetDetector.debugSecureEventInputOverride = { false }
         addTeardownBlock { @MainActor in TerminalTargetDetector.debugSecureEventInputOverride = nil }
         let settled = FillSettled()
@@ -4437,7 +4437,7 @@ final class DictationPipelineTests: XCTestCase {
         pipeline.viewModel.settings.autoCopyEnabled = false
         let copied = pipeline.viewModel.recordPasteboardWrites()
         var warnings = 0
-        pipeline.viewModel.session.secureInputWarningSound = { warnings += 1 }
+        pipeline.viewModel.session.warningSound = { warnings += 1 }
         TerminalTargetDetector.debugSecureEventInputOverride = { false }
         addTeardownBlock { @MainActor in TerminalTargetDetector.debugSecureEventInputOverride = nil }
         joinCmuxSurface(pipeline, cmux: cmux)

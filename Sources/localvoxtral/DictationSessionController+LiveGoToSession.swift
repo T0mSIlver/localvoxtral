@@ -206,6 +206,30 @@ extension DictationSessionController {
         return true
     }
 
+    /// The words a Live stop's wait had not typed yet, in order: the text
+    /// pending behind a paste, then the segments queued behind a go-to
+    /// (#1882). Both are emptied, so nothing types them later. A queued
+    /// final that is itself a voice command is not text and is left out.
+    func drainUntypedLiveTail() -> String {
+        var tail = textInsertion.drainPendingInsertionText()
+        for segment in liveGoToQueuedSegments {
+            let text: String
+            let startsMidWord: Bool
+            switch segment {
+            case .final(let finalText, let merged, let midWord):
+                guard SessionVoiceCommandParser.command(in: finalText) == nil else { continue }
+                (text, startsMidWord) = (merged, midWord)
+            case .promoted(let segment, let midWord):
+                (text, startsMidWord) = (segment, midWord)
+            }
+            let separator = startsMidWord || tail.last?.isWhitespace != false || text.first?.isWhitespace == true
+                ? "" : " "
+            tail += separator + text
+        }
+        liveGoToQueuedSegments = []
+        return tail.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     // MARK: - Private
 
     /// The segment turned out not to be a go-to: what was held is typed as

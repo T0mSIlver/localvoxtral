@@ -13,8 +13,11 @@ extension DictationSessionController {
     //   error paths in prepareDictationSession() where no session was established.
     // All session exit paths MUST clear these fields to nil.
 
+    /// - Parameter warnsOfCopy: the caller replaces the status line at once,
+    ///   so a copy of the cancelled dictation plays the warning sound instead
+    ///   of showing its notice (#1887).
     @discardableResult
-    func cancelPolishingForNewSessionIfNeeded() -> Bool {
+    func cancelPolishingForNewSessionIfNeeded(warnsOfCopy: Bool = false) -> Bool {
         guard polishAndCommitTask != nil else { return false }
         debugLog("cancel the pending commit: a new dictation or a cancel supersedes it")
         polishAndCommitTask?.cancel()
@@ -26,6 +29,7 @@ extension DictationSessionController {
         if let saveInterruptedPolishCommit {
             Log.polishing.notice("pending commit cancelled; saving the transcript as not inserted")
             copied = keepUntypedDictation(savedBy: saveInterruptedPolishCommit)
+            if copied, warnsOfCopy { warnOfAnUnseenCopy() }
         }
 
         completeStoppedSessionCleanup(
