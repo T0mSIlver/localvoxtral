@@ -15,6 +15,51 @@ final class StopSecondPassTests: XCTestCase {
         XCTAssertGreaterThan(StopSecondPass.deadline(audioSeconds: 600), .milliseconds(4_500 * 2))
     }
 
+    /// #1867: a measured rate slower than the assumed one adds the upload's
+    /// extra time, with margin, up to the cap; a faster or unmeasured link
+    /// keeps the plain deadline, and a long dictation never gets less.
+    func testAMeasuredSlowUplinkStretchesTheDeadlineUpToTheCap() {
+        let fiveMinutes = 9_600_000
+        XCTAssertEqual(StopSecondPass.deadline(audioSeconds: 300), .milliseconds(7_500))
+        XCTAssertEqual(
+            StopSecondPass.deadline(
+                audioSeconds: 300, uploadBytes: fiveMinutes, measuredUploadBytesPerSecond: nil),
+            .milliseconds(7_500))
+        XCTAssertEqual(
+            StopSecondPass.deadline(
+                audioSeconds: 300, uploadBytes: fiveMinutes, measuredUploadBytesPerSecond: 5_000_000),
+            .milliseconds(7_500), "a fast link keeps today's deadline")
+        // 10 Mbit/s: 7.68 s of upload, 11.52 s with margin, 5 s already allowed.
+        XCTAssertEqual(
+            StopSecondPass.deadline(
+                audioSeconds: 300, uploadBytes: fiveMinutes, measuredUploadBytesPerSecond: 1_250_000),
+            .milliseconds(14_020))
+        XCTAssertEqual(
+            StopSecondPass.deadline(
+                audioSeconds: 300, uploadBytes: fiveMinutes, measuredUploadBytesPerSecond: 10_000),
+            .seconds(30), "a broken link is capped")
+        XCTAssertEqual(
+            StopSecondPass.deadline(
+                audioSeconds: 1_800, uploadBytes: fiveMinutes * 6, measuredUploadBytesPerSecond: 10_000),
+            .milliseconds(32_500), "the cap never cuts the plain deadline")
+    }
+
+    func testTheRateIsKeptPerBackendAndOnlyFromEnoughBytes() {
+        let rates = StopSecondPass.UploadRates()
+        let mistral = URL(string: "https://api.mistral.ai/v1/audio/transcriptions")!
+        let other = URL(string: "https://eu.example.com/v1/audio/transcriptions")!
+
+        rates.record(.init(bytes: 100_000, seconds: 10), for: mistral)
+        XCTAssertNil(rates.rate(for: mistral), "too few bytes say nothing about the link")
+
+        rates.record(.init(bytes: 2_000_000, seconds: 4), for: mistral)
+        XCTAssertEqual(rates.rate(for: mistral), 500_000)
+        XCTAssertNil(rates.rate(for: other))
+
+        rates.record(.init(bytes: 100_000, seconds: 10), for: mistral)
+        XCTAssertEqual(rates.rate(for: mistral), 500_000, "an unusable measurement keeps the last rate")
+    }
+
     private static let context = StopSecondPass.ContextTerms(
         session: ["StopCommitCoordinator"], repository: ["inkwell"], screen: ["useAuth.ts"])
 

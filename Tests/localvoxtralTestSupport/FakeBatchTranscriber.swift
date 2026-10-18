@@ -4,7 +4,7 @@ import localvoxtralCore
 
 /// A batch transcriber that opens no connection: it keeps every request and
 /// answers from `reply`, or, held, answers nothing until its task is
-/// cancelled.
+/// cancelled. `upload` is the measurement each call reports as it ends.
 package final class FakeBatchTranscriber: MistralBatchTranscribing, @unchecked Sendable {
     package struct Call: Equatable {
         package let wav: Data
@@ -27,6 +27,9 @@ package final class FakeBatchTranscriber: MistralBatchTranscribing, @unchecked S
         case failure(any Error)
         /// Never answers; returns only when cancelled.
         case held
+        /// Answers `text` once `sleep` returns after `after`, as a request
+        /// that takes that long on the test's clock; cancelled first, throws.
+        case delayed(Duration, text: String, sleep: @Sendable (Duration) async -> Void)
     }
 
     private struct State {
@@ -36,11 +39,13 @@ package final class FakeBatchTranscriber: MistralBatchTranscribing, @unchecked S
     }
 
     private let reply: Reply
+    private let upload: MistralBatchTranscription.UploadMeasurement?
     private let state = Mutex(State())
     package let called = BoundedWait()
 
-    package init(_ reply: Reply) {
+    package init(_ reply: Reply, upload: MistralBatchTranscription.UploadMeasurement? = nil) {
         self.reply = reply
+        self.upload = upload
     }
 
     package var calls: [Call] { state.withLock { $0.calls } }
@@ -51,8 +56,12 @@ package final class FakeBatchTranscriber: MistralBatchTranscribing, @unchecked S
         language: String?,
         contextBias: [String],
         apiKey: String,
-        endpoint: URL
+        endpoint: URL,
+        onUpload: @escaping @Sendable (MistralBatchTranscription.UploadMeasurement) -> Void
     ) async throws -> MistralBatchTranscription.Result {
+        defer {
+            if let upload { onUpload(upload) }
+        }
         state.withLock {
             $0.calls.append(Call(
                 wav: wav, language: language, contextBias: contextBias,
@@ -64,6 +73,10 @@ package final class FakeBatchTranscriber: MistralBatchTranscribing, @unchecked S
             return MistralBatchTranscription.Result(text: text)
         case .failure(let error):
             throw error
+        case .delayed(let after, let text, let sleep):
+            await sleep(after)
+            try Task.checkCancellation()
+            return MistralBatchTranscription.Result(text: text)
         case .held:
             await withTaskCancellationHandler {
                 await withCheckedContinuation { continuation in

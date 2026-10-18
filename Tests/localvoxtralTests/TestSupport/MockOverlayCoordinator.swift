@@ -46,6 +46,7 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     enum Event: Equatable {
         case polishing(Bool)
         case polished(Bool)
+        case secondPassMissed
         case committed(String)
         case held(TimeInterval)
     }
@@ -138,6 +139,12 @@ final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     }
 
     var showsPolishChange: Bool { markPolishedCalls.last ?? false }
+
+    func markSecondPassMissed() {
+        events.append(.secondPassMissed)
+    }
+
+    var showsSecondPassMiss: Bool { events.contains(.secondPassMissed) }
 
     func updateMicLevel(_ level: Double) {
         micLevels.append(level)

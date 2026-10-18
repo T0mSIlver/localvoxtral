@@ -980,7 +980,9 @@ extension DictationSessionController {
             default:
                 // Held from the polished text's arrival, which is also the
                 // insertion's, so a longer hold never delays the text.
-                dismissVisibility = overlayBufferCoordinator.showsPolishChange
+                dismissVisibility = overlayBufferCoordinator.showsSecondPassMiss
+                    ? TimingConstants.overlaySecondPassMissVisibility
+                    : overlayBufferCoordinator.showsPolishChange
                     ? TimingConstants.overlayPolishedVisibility
                     : TimingConstants.overlayFinalWordVisibilityMinimum
             }
@@ -1392,6 +1394,12 @@ extension DictationSessionController {
         return true
     }
 
+    /// For the log: an upload rate in Mbit/s, or why there is none.
+    nonisolated static func describeUploadRate(_ bytesPerSecond: Double?) -> String {
+        guard let bytesPerSecond else { return "not measured" }
+        return String(format: "%.1f Mbit/s", bytesPerSecond * 8 / 1_000_000)
+    }
+
     /// For the log: whether a root was found, never the path.
     static func describe(_ root: LearnedTermProjectResolver.RepositoryRoot) -> String {
         switch root {
@@ -1430,7 +1438,13 @@ extension DictationSessionController {
                 joined: historyJoin
             )
         }
-        let deadline = StopSecondPass.deadline(audioSeconds: request.audioSeconds)
+        let uploadRates = secondPassUploadRates
+        let measuredRate = uploadRates.rate(for: request.endpoint)
+        let deadline = StopSecondPass.deadline(
+            audioSeconds: request.audioSeconds,
+            uploadBytes: request.wav.count,
+            measuredUploadBytesPerSecond: measuredRate
+        )
         let transcriber = dependencies.batchTranscriber
         let sleep = dependencies.clock.sleep
         let usageRecorder = secondPassUsageRecorder
@@ -1438,7 +1452,7 @@ extension DictationSessionController {
             guard let terms = await self?.stopSecondPassTerms(for: request), !Task.isCancelled
             else { return }
             Log.backends.info(
-                "second pass: sending \(String(format: "%.1f", request.audioSeconds), privacy: .public)s of audio with \(terms.contextBias.count, privacy: .public) terms, deadline \(String(describing: deadline), privacy: .public)"
+                "second pass: sending \(String(format: "%.1f", request.audioSeconds), privacy: .public)s of audio with \(terms.contextBias.count, privacy: .public) terms, deadline \(String(describing: deadline), privacy: .public), last upload rate \(Self.describeUploadRate(measuredRate), privacy: .public)"
             )
             let outcome = await StopSecondPass.run(deadline: deadline, sleep: sleep) {
                 // Here, off the main actor: the ledger appends to its file
@@ -1458,7 +1472,13 @@ extension DictationSessionController {
                     language: nil,
                     contextBias: terms.contextBias,
                     apiKey: request.apiKey,
-                    endpoint: request.endpoint
+                    endpoint: request.endpoint,
+                    onUpload: { measurement in
+                        uploadRates.record(measurement, for: request.endpoint)
+                        Log.backends.info(
+                            "second pass upload: \(measurement.bytes, privacy: .public) bytes in \(String(format: "%.2f", measurement.seconds), privacy: .public)s, rate \(Self.describeUploadRate(measurement.bytesPerSecond), privacy: .public)"
+                        )
+                    }
                 ).text
                 return MistralBatchTranscription.restoringPhrases(
                     in: text, candidates: terms.candidates)
@@ -1495,6 +1515,7 @@ extension DictationSessionController {
             Log.backends.notice("second pass answered with no text; realtime text kept")
         case .deadlinePassed:
             Log.backends.notice("second pass missed its deadline; realtime text kept")
+            overlayBufferCoordinator.markSecondPassMissed()
         case .failed(let reason):
             Log.backends.error("second pass failed; realtime text kept: \(reason, privacy: .public)")
         case .cancelled:

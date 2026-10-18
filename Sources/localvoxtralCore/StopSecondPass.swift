@@ -16,10 +16,61 @@ package enum StopSecondPass {
     package static let baseDeadlineSeconds: Double = 2.5
     package static let deadlineSecondsPerAudioMinute: Double = 1.0
 
-    package static func deadline(audioSeconds: Double) -> Duration {
-        let seconds = baseDeadlineSeconds
+    /// The upload rate the per-minute allowance assumes: 1.92 MB a second.
+    package static let assumedUploadBytesPerSecond: Double = 1_920_000
+    /// A link's rate moves between passes (Wi-Fi, VPN, tethering), so the
+    /// upload part gets half again the time the last rate gives.
+    package static let measuredUploadMargin: Double = 1.5
+    /// No deadline a measured rate gives runs past this, unless the
+    /// per-minute allowance alone already does (a dictation over 27
+    /// minutes). It covers a 5-minute dictation down to about 3 Mbit/s;
+    /// below that the pass misses and says so. A link that broke mid-upload
+    /// would otherwise hold the stop up to the request's 120 s timeout.
+    package static let maxMeasuredDeadlineSeconds: Double = 30
+
+    /// `baseDeadlineSeconds` plus `deadlineSecondsPerAudioMinute`, which fits
+    /// an upload at `assumedUploadBytesPerSecond`. With the rate the last pass
+    /// to this backend measured, an upload that rate makes slower gets the
+    /// difference on top, times `measuredUploadMargin`, up to
+    /// `maxMeasuredDeadlineSeconds` (#1867). A faster or unmeasured link
+    /// keeps the plain deadline.
+    package static func deadline(
+        audioSeconds: Double,
+        uploadBytes: Int = 0,
+        measuredUploadBytesPerSecond: Double? = nil
+    ) -> Duration {
+        var seconds = baseDeadlineSeconds
             + max(audioSeconds, 0) / 60 * deadlineSecondsPerAudioMinute
+        if let rate = measuredUploadBytesPerSecond, rate > 0, uploadBytes > 0 {
+            let bytes = Double(uploadBytes)
+            let extra = bytes * measuredUploadMargin / rate - bytes / assumedUploadBytesPerSecond
+            if extra > 0 {
+                seconds = max(seconds, min(seconds + extra, maxMeasuredDeadlineSeconds))
+            }
+        }
         return .milliseconds(Int((seconds * 1_000).rounded(.up)))
+    }
+
+    /// The upload rate each backend's last second pass measured, in memory
+    /// for the app's run. Keyed by the endpoint's origin.
+    package final class UploadRates: Sendable {
+        private let rates = Mutex<[String: Double]>([:])
+
+        package init() {}
+
+        package func rate(for endpoint: URL) -> Double? {
+            rates.withLock { $0[Self.key(endpoint)] }
+        }
+
+        /// Keeps the measurement's rate when it has one, else the last.
+        package func record(_ measurement: MistralBatchTranscription.UploadMeasurement, for endpoint: URL) {
+            guard let rate = measurement.bytesPerSecond else { return }
+            rates.withLock { $0[Self.key(endpoint)] = rate }
+        }
+
+        private static func key(_ endpoint: URL) -> String {
+            "\(endpoint.scheme ?? "")://\(endpoint.host ?? ""):\(endpoint.port ?? 0)"
+        }
     }
 
     // MARK: - Vocabulary

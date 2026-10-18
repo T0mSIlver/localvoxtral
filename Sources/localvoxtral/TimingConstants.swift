@@ -70,6 +70,10 @@ enum TimingConstants {
     /// reaches the focused field no later.
     static let overlayPolishedVisibility: TimeInterval = 1.2
 
+    /// The same hold when the header says the second pass missed (#1867):
+    /// long enough to read one short line. It runs after the insertion.
+    static let overlaySecondPassMissVisibility: TimeInterval = 2.0
+
     /// How long the overlay's secure-input clipboard-fallback message stays
     /// readable before the panel dismisses itself (the text is already safe
     /// on the clipboard, so the panel must not persist like a real failure).
