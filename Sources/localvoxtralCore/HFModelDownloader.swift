@@ -473,6 +473,16 @@ package struct HFModelDownloader: ModelPreparing {
                     )
                     Task { @MainActor in deliver(snapshot) }
                 }
+                // The transport hands over a whole file outside URLSession's
+                // managed location; any exit below that does not move it into
+                // the cache must delete it, or each failed attempt strands a
+                // full weights file in the temporary directory.
+                var landedInCache = false
+                defer {
+                    if !landedInCache {
+                        try? fileManager.removeItem(at: result.temporaryURL)
+                    }
+                }
                 guard (200..<300).contains(result.statusCode) else {
                     throw ModelDownloadError.fileRequestFailed(
                         path: fileName,
@@ -488,6 +498,7 @@ package struct HFModelDownloader: ModelPreparing {
                     try fileManager.removeItem(at: destination)
                 }
                 try fileManager.moveItem(at: result.temporaryURL, to: destination)
+                landedInCache = true
                 // The on-disk size is authoritative once the file landed; it
                 // also completes the dynamic total for files whose transfer
                 // reported no expected length.
