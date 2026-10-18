@@ -723,6 +723,7 @@ final class DictationPipelineTests: XCTestCase {
 
         pipeline.viewModel.session.toggleQuickCapture()
         XCTAssertFalse(pipeline.viewModel.isDictating)
+        await pipeline.server.awaitFrame("the capture's final commit") { $0.isFinalCommit }
         pipeline.server.send(["type": "transcription.done", "text": "a note for later"])
         let filed = await pipeline.records.waitForCount(2)
         XCTAssertTrue(filed, "the capture was never filed")
