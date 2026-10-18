@@ -19,6 +19,9 @@ package class StubHTTPProtocol: URLProtocol, @unchecked Sendable {
 
     package static let host = "usage-stub.invalid"
     package static let reply = Mutex<Reply>(.http(500, ""))
+    /// Every request the stub answered, oldest first, with its body read
+    /// back from the stream URLSession turns it into.
+    package static let recorded = Mutex<[URLRequest]>([])
 
     /// A session whose every request this stub answers.
     package static func session() -> URLSession {
@@ -34,6 +37,9 @@ package class StubHTTPProtocol: URLProtocol, @unchecked Sendable {
     override package class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override package func startLoading() {
+        var copy = request
+        copy.httpBody = Self.body(of: request)
+        Self.recorded.withLock { $0.append(copy) }
         switch Self.reply.withLock({ $0 }) {
         case .http(let status, let body):
             let response = HTTPURLResponse(
@@ -54,6 +60,21 @@ package class StubHTTPProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override package func stopLoading() {}
+
+    private static func body(of request: URLRequest) -> Data? {
+        if let body = request.httpBody { return body }
+        guard let stream = request.httpBodyStream else { return nil }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 16_384)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            guard count > 0 else { break }
+            data.append(buffer, count: count)
+        }
+        return data
+    }
 }
 
 extension StubHTTPProtocol {

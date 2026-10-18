@@ -208,16 +208,26 @@ final class QuickCaptureInboxViewModel {
                 host: jevHost(forKey: jevKey), apiKey: jevKey, usageRecorder: usageRecorder))
         }
         if let polishing = settings.llmPolishingConfiguration {
-            classifiers.append(QuickCaptureChatClassifier(
-                endpoint: LLMPolishingService.normalizedChatCompletionsURL(polishing.endpointURL),
-                apiKey: polishing.apiKey,
-                model: polishing.model,
-                extraBody: chatExtraBody(polishing),
-                usageBackend: polishing.usageBackend,
-                usageRecorder: usageRecorder
-            ))
+            classifiers.append(chatClassifier(polishing: polishing, usageRecorder: usageRecorder))
         }
         return classifiers
+    }
+
+    /// The polishing model asked to route.
+    static func chatClassifier(
+        polishing: LLMPolishingConfiguration,
+        usageRecorder: (any UsageRecording)? = nil,
+        session: URLSession = SameOriginHTTP.shared
+    ) -> QuickCaptureChatClassifier {
+        QuickCaptureChatClassifier(
+            endpoint: LLMPolishingService.normalizedChatCompletionsURL(polishing.endpointURL),
+            apiKey: polishing.apiKey,
+            model: polishing.model,
+            extraBody: chatExtraBody(polishing),
+            session: session,
+            usageBackend: polishing.usageBackend,
+            usageRecorder: usageRecorder
+        )
     }
 
     /// The first draft's writer (#918): the polishing model, at low
@@ -227,11 +237,20 @@ final class QuickCaptureInboxViewModel {
         settings: SettingsStore, usageRecorder: (any UsageRecording)? = nil
     ) -> (any QuickCaptureFirstDrafting)? {
         guard let polishing = settings.llmPolishingConfiguration else { return nil }
-        return QuickCaptureFirstDrafter(
+        return firstDrafter(polishing: polishing, usageRecorder: usageRecorder)
+    }
+
+    static func firstDrafter(
+        polishing: LLMPolishingConfiguration,
+        usageRecorder: (any UsageRecording)? = nil,
+        session: URLSession = SameOriginHTTP.shared
+    ) -> QuickCaptureFirstDrafter {
+        QuickCaptureFirstDrafter(
             endpoint: LLMPolishingService.normalizedChatCompletionsURL(polishing.endpointURL),
             apiKey: polishing.apiKey,
             model: polishing.model,
             extraBody: firstDraftExtraBody(polishing),
+            session: session,
             usageBackend: polishing.usageBackend,
             usageRecorder: usageRecorder
         )
