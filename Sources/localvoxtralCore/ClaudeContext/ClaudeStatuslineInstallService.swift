@@ -360,19 +360,6 @@ public struct ClaudeStatuslineInstallService: Sendable {
         return words
     }
 
-    // MARK: - Preview
-
-    /// The exact `statusLine` object the apply would write, rendered as the
-    /// sheet shows it. Nil when the hook binary cannot be located.
-    public static func preview(
-        hookCommand: String?,
-        newline: String = "\n"
-    ) -> String? {
-        guard let hookCommand else { return nil }
-        let entry: [String: Any] = [commandTypeKey: commandType, commandKey: hookCommand]
-        return render(entry: entry)
-    }
-
     /// The full file bytes an apply would write for this existing content.
     /// Nil when the existing content refuses (symlink/unreadable cases are
     /// enforced by the writer; here: unparseable JSON, or a foreign entry we
@@ -612,13 +599,6 @@ public struct ClaudeStatuslineInstallService: Sendable {
 
     package static let commandTypeKey = "type"
     package static let commandKey = "command"
-
-    package static func render(entry: [String: Any]) -> String? {
-        guard let data = try? JSONSerialization.data(
-            withJSONObject: entry, options: [.prettyPrinted, .sortedKeys]
-        ) else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
 
     package static func renderSettings(_ settings: [String: Any]) -> Data? {
         guard let data = try? JSONSerialization.data(

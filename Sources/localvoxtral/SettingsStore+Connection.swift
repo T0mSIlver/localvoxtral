@@ -66,10 +66,6 @@ extension SettingsStore {
         effectiveModelName(for: realtimeProvider)
     }
 
-    var displayModelName: String {
-        effectiveModelName
-    }
-
     var endpointPlaceholder: String {
         realtimeProvider.defaultEndpoint
     }
