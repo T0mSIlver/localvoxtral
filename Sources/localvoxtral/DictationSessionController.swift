@@ -1211,6 +1211,24 @@ final class DictationSessionController {
         lastDictationIsInHistory = isInHistory
     }
 
+    /// Runs `save`, which records a dictation as not inserted, and copies
+    /// what it recorded when History did not keep it: Copy last dictation
+    /// alone would lose it to the next dictation (#1871). A Live Auto-Paste
+    /// record holds words already typed, so it is not copied.
+    ///
+    /// - Returns: whether the text went on the clipboard.
+    func keepUntypedDictation(savedBy save: () -> Void) -> Bool {
+        let generation = lastDictationGeneration
+        save()
+        guard lastDictationGeneration != generation, !lastDictationIsInHistory,
+              lastDictation?.outputMode != DictationOutputMode.liveAutoPaste.rawValue,
+              let text = lastDictation?.textToCopy, !text.isEmpty
+        else { return false }
+        Log.dictation.notice("text not inserted and History is off; text copied")
+        _ = copyUntypedText(text)
+        return true
+    }
+
     private func writeToPasteboard(_ text: String) {
         dependencies.pasteboardWriter(text)
     }

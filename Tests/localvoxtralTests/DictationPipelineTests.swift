@@ -859,6 +859,45 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.overlay.committedTexts, ["<\(Self.phrase)>"], "the new dictation commits")
     }
 
+    /// With History off, a dictation whose polish a quick capture interrupts
+    /// goes on the clipboard: Copy last dictation alone would lose it to the
+    /// capture (#1871).
+    func testWithHistoryOffAPolishTheQuickCaptureKeyInterruptsGoesOnTheClipboard() async throws {
+        let polish = FakePolishingService { "<\($0.inputText)>" }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, polish: polish, earlyPolish: false)
+        pipeline.viewModel.settings.dictationHistoryRetention = .off
+        pipeline.viewModel.settings.autoCopyEnabled = false
+        pipeline.viewModel.session.onQuickCapture = { _, _, _ in }
+        let copied = pipeline.viewModel.recordPasteboardWrites()
+        await polish.holdNextRequest()
+
+        await startAndSpeak(pipeline)
+        pipeline.viewModel.stopDictation(reason: "test")
+        await pipeline.server.awaitFrame("the final commit") { $0.isFinalCommit }
+        pipeline.server.send(["type": "transcription.done", "text": Self.phrase])
+        let polishing = await waitForPolishRequests(polish, 1)
+        XCTAssertTrue(polishing, "the polish never started")
+
+        pipeline.server.forgetFrames()
+        await startAndSpeak(pipeline) { $0.session.toggleQuickCapture() }
+        XCTAssertEqual(copied.values, [Self.phrase], "the interrupted dictation is on the clipboard")
+        await polish.releaseHeldRequest()
+
+        pipeline.viewModel.session.toggleQuickCapture()
+        XCTAssertFalse(pipeline.viewModel.isDictating)
+        await pipeline.server.awaitFrame("the capture's final commit") { $0.isFinalCommit }
+        pipeline.server.send(["type": "transcription.done", "text": "a note for later"])
+        let filed = await pipeline.records.waitForCount(2)
+        XCTAssertTrue(filed, "the capture was never filed")
+
+        XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded).first, false)
+        XCTAssertEqual(pipeline.overlay.commitCallCount, 0, "nothing reached the focused app")
+        XCTAssertEqual(copied.values, [Self.phrase], "the capture leaves the clipboard alone")
+        XCTAssertEqual(
+            pipeline.viewModel.session.lastDictation?.textToCopy, "a note for later",
+            "Copy last dictation still copies the newest dictation")
+    }
+
     /// Quit while the stopped dictation waits on its polish: it reaches the
     /// History write queue, with its audio, before the quit drains that
     /// queue, and nothing is inserted (#1284).
