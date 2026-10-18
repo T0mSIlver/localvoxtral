@@ -439,9 +439,10 @@ extension DictationSessionController {
         let llmConfigurationFailure = preparation.configurationFailure
         let commitTargetPID = overlayBufferCoordinator.commitTargetAppPID
         let commitSpokenSend = spokenSendForCommit(spokenSend, join: commitJoin)
+        let committer = overlayCommitter(join: commitJoin, targetPID: commitTargetPID, spokenSend: commitSpokenSend)
         let overlayCommit = StopCommitCoordinator.commit(
             overlay: overlayBufferCoordinator,
-            textInsertion: overlayCommitter(join: commitJoin, targetPID: commitTargetPID, spokenSend: commitSpokenSend),
+            textInsertion: committer,
             autoCopyEnabled: settings.autoCopyEnabled
         )
         noteOverlayCommit(
@@ -457,7 +458,7 @@ extension DictationSessionController {
             )
             proposeProjectTermsIfNew(join: commitJoin, inserted: displayWorkingText)
         }
-        sendOverlaySpokenSendIfNeeded(commitSpokenSend, commit: overlayCommit)
+        sendOverlaySpokenSendIfNeeded(commitSpokenSend, commit: overlayCommit, committer: committer)
 
         completeStoppedSessionCleanup(
             sessionMode: sessionMode,
@@ -677,12 +678,13 @@ extension DictationSessionController {
         self.saveInterruptedPolishCommit = nil
         let commitTargetPID = self.overlayBufferCoordinator.commitTargetAppPID
         let commitSpokenSend = self.spokenSendForCommit(spokenSend, join: capture.claudeJoin)
+        let committer = self.overlayCommitter(
+            join: capture.claudeJoin, targetPID: commitTargetPID, spokenSend: commitSpokenSend,
+            draft: outcome.material.promptDraft
+        )
         overlayCommit = StopCommitCoordinator.commit(
             overlay: self.overlayBufferCoordinator,
-            textInsertion: self.overlayCommitter(
-                join: capture.claudeJoin, targetPID: commitTargetPID, spokenSend: commitSpokenSend,
-                draft: outcome.material.promptDraft
-            ),
+            textInsertion: committer,
             autoCopyEnabled: self.settings.autoCopyEnabled
         )
         self.noteOverlayCommit(
@@ -702,7 +704,7 @@ extension DictationSessionController {
             )
             self.proposeProjectTermsIfNew(join: capture.claudeJoin, inserted: insertedText)
         }
-        self.sendOverlaySpokenSendIfNeeded(commitSpokenSend, commit: overlayCommit)
+        self.sendOverlaySpokenSendIfNeeded(commitSpokenSend, commit: overlayCommit, committer: committer)
 
         self.completeStoppedSessionCleanup(
             sessionMode: sessionMode,

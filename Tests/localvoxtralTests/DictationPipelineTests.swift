@@ -1591,6 +1591,83 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(typed.text, "", "no key at all")
     }
 
+    /// "Send it" said alone, with words already in the prompt box: the mod
+    /// is asked to submit the box as it stands, with one empty-text send,
+    /// and no key is posted (#1870). Against the real overlay coordinator,
+    /// which commits nothing for an empty buffer.
+    func testALoneSpokenSendThroughTheModSubmitsTheDraftInTheBox() async throws {
+        let overlay = realOverlayCoordinator(focusedPID: 4343)
+        var returns: [pid_t] = []
+        let (pipeline, typed, fills) = try await modChannelPipeline(
+            answers: [.sent], drafts: [(text: "run the tests", cursor: 13)],
+            returnKeyPoster: { pid in
+                returns.append(pid)
+                return true
+            },
+            overlayCoordinator: overlay
+        )
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+        addTeardownBlock { @MainActor in TerminalTargetDetector.debugSecureEventInputOverride = nil }
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        // Nothing is left to save once the phrase is cut, so no record.
+        await dictateCommand(pipeline, "Send it.")
+        let done = await settled.wait(for: 1)
+
+        XCTAssertTrue(done, "the mod was asked to submit")
+        XCTAssertEqual(fills.kinds, [.send])
+        XCTAssertEqual(fills.texts, [""])
+        XCTAssertEqual(returns, [], "no Return key")
+        XCTAssertEqual(typed.text, "", "no key at all")
+    }
+
+    /// The mod refused the lone send (a dialog): nothing is typed, and
+    /// Return submits the box, once, since the session's pane is in front.
+    func testALoneSpokenSendTheModRefusesIsReturnedOnceWithNothingTyped() async throws {
+        var returns: [pid_t] = []
+        let (pipeline, typed, fills) = try await modChannelPipeline(
+            answers: [.refuse],
+            returnKeyPoster: { pid in
+                returns.append(pid)
+                return true
+            },
+            overlayCoordinator: realOverlayCoordinator(focusedPID: 4343)
+        )
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == 4343 ? TerminalScreenAllowlist.ghosttyBundleID : nil
+        }
+        let copied = pipeline.viewModel.recordPasteboardWrites()
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictateCommand(pipeline, "send it")
+        let done = await settled.wait(for: 1)
+
+        XCTAssertTrue(done)
+        XCTAssertEqual(fills.kinds, [.send])
+        XCTAssertEqual(typed.text, "")
+        XCTAssertEqual(returns, [4343])
+        XCTAssertEqual(copied.values, [], "the clipboard is left alone")
+    }
+
+    private func realOverlayCoordinator(focusedPID: pid_t) -> OverlayBufferSessionCoordinator {
+        let focus = MockOverlayAnchorResolver()
+        focus.focusedPID = focusedPID
+        return OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: MockOverlayRenderer(),
+            anchorResolver: focus,
+            now: { Date(timeIntervalSince1970: 0) },
+            sleepFor: { _ in },
+            copyToPasteboard: { _ in true }
+        )
+    }
+
     /// The session is mid-turn: the mod's submit waits for it, and the
     /// popover says so instead of reporting the prompt as sent.
     func testASpokenSendTheModQueuesSaysItRunsAfterTheTurn() async throws {
@@ -2216,9 +2293,10 @@ final class DictationPipelineTests: XCTestCase {
         drafts: [(text: String, cursor: Int)] = [],
         returnKeyPoster: ((pid_t) -> Bool)? = nil,
         remote: Bool = false,
+        overlayCoordinator: (any OverlayBufferSessionCoordinating)? = nil,
         beforeAnswer: @escaping @Sendable () -> Void = {}
     ) async throws -> (Pipeline, TypedText, FillRecorder) {
-        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, overlayCoordinator: overlayCoordinator)
         pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
         pipeline.overlay.insertsThroughCommitter = true
         pipeline.overlay.commitTargetAppPID = 4343

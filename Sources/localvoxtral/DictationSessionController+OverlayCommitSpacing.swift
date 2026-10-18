@@ -156,7 +156,7 @@ extension DictationSessionController {
 /// before it.
 @MainActor
 final class LeadingSpaceOverlayCommitter: OverlayTextCommitting {
-    private let base: any OverlayTextCommitting
+    let base: any OverlayTextCommitting
 
     init(base: any OverlayTextCommitting) {
         self.base = base

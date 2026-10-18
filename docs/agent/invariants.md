@@ -248,6 +248,10 @@ there is not.
   fill rule below and followed by Return under this bullet's gates, judged
   then; an unanswered one is kept, with no Return. A channel that closed
   between the stop and the commit sends by Return under the same gates.
+  A dictation that is only the send phrase leaves no text, and the overlay
+  commits nothing, so the mod gets one empty `send`, which submits the box
+  as it stands (#1870). Refused, Return follows under the same gates;
+  unanswered, nothing does.
 - **An Overlay Buffer commit that waited types only into the pane it was
   for** (#1056, #1668, #1712). A pid cannot tell two tabs of one terminal apart,
   nor two Claude Desktop sessions, so as the last await before the keys
