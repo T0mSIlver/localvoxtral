@@ -145,7 +145,7 @@ Swift lane, including `AgentsGuideSizeTests`, whose entire job is guarding
 `AGENTS.md`'s 32 KiB Codex truncation budget. That test names those files, so
 such a diff now runs the Swift lane, but
 `scripts/ci/test-agents-guide-budget.sh`, a shell port of that test, still
-runs in the ungated shell-test step. It parses the cap,
+runs in the `linux` job's Shell suites step, which no path filter skips. It parses the cap,
 the router targets and the anchors out of `AgentsGuideSizeTests.swift` rather
 than restating them, and fails if that file grows an assertion it has not
 ported — so the two cannot drift.
