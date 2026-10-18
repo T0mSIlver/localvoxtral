@@ -1207,6 +1207,22 @@ final class DictationSessionController {
         lastDictationIsInHistory = isInHistory
     }
 
+    /// Runs `save`, which records a dictation typed nowhere, and copies what
+    /// it recorded when History did not keep it: Copy last dictation alone
+    /// would lose it to the next dictation (#1871).
+    ///
+    /// - Returns: whether the text went on the clipboard.
+    func keepUntypedDictation(savedBy save: () -> Void) -> Bool {
+        let generation = lastDictationGeneration
+        save()
+        guard lastDictationGeneration != generation, !lastDictationIsInHistory,
+              let text = lastDictation?.textToCopy, !text.isEmpty
+        else { return false }
+        Log.dictation.notice("text not inserted and History is off; text copied")
+        _ = copyUntypedText(text)
+        return true
+    }
+
     private func writeToPasteboard(_ text: String) {
         dependencies.pasteboardWriter(text)
     }

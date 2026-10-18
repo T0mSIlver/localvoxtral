@@ -20,15 +20,17 @@ extension DictationSessionController {
         polishAndCommitTask?.cancel()
         polishAndCommitTask = nil
         // Before the cleanup below clears it: the dictation being polished
-        // is not inserted, and History is where the user finds it again.
+        // is not inserted, and History is where the user finds it again, or
+        // the clipboard with History off.
+        var copied = false
         if let saveInterruptedPolishCommit {
             Log.polishing.notice("pending commit cancelled; saving the transcript as not inserted")
-            saveInterruptedPolishCommit()
+            copied = keepUntypedDictation(savedBy: saveInterruptedPolishCommit)
         }
 
         completeStoppedSessionCleanup(
             sessionMode: sessionOutputMode ?? settings.dictationOutputMode,
-            overlayCommitOutcome: nil,
+            overlayCommitOutcome: copied ? .copiedToClipboard : nil,
             shouldCommitOverlay: false
         )
         // Do not carry old overlay state into a freshly requested session.
