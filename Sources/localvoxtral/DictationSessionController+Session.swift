@@ -30,9 +30,10 @@ extension DictationSessionController {
 
         completeStoppedSessionCleanup(
             sessionMode: sessionOutputMode ?? settings.dictationOutputMode,
-            overlayCommitOutcome: copied ? .copiedToClipboard : nil,
+            overlayCommitOutcome: nil,
             shouldCommitOverlay: false
         )
+        if copied { statusText = StatusStrings.overlayCopiedToClipboard }
         // Do not carry old overlay state into a freshly requested session.
         overlayBufferCoordinator.reset()
         return true
