@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -166,15 +167,57 @@ package enum MistralBatchTranscription {
     }
 }
 
+extension MistralBatchTranscription {
+    /// How much of a request body went out and how long it took, from the
+    /// request's start to the last body bytes handed to the network. A
+    /// request cancelled mid-upload still measures what it sent.
+    package struct UploadMeasurement: Equatable, Sendable {
+        package let bytes: Int64
+        package let seconds: Double
+
+        package init(bytes: Int64, seconds: Double) {
+            self.bytes = bytes
+            self.seconds = seconds
+        }
+
+        /// Below this the bytes sit in the socket's send buffer and say
+        /// nothing about the link.
+        package static let minimumBytes: Int64 = 256 * 1024
+
+        /// Nil when too little went out to measure.
+        package var bytesPerSecond: Double? {
+            guard bytes >= Self.minimumBytes, seconds > 0 else { return nil }
+            return Double(bytes) / seconds
+        }
+    }
+}
+
 /// Sends one batch transcription. The seam the stop-commit is tested through.
 package protocol MistralBatchTranscribing: Sendable {
+    /// `onUpload` gets the upload's measurement once the request ends,
+    /// whether it answered, failed or was cancelled, when it sent anything.
     func transcribe(
         wav: Data,
         language: String?,
         contextBias: [String],
         apiKey: String,
-        endpoint: URL
+        endpoint: URL,
+        onUpload: @escaping @Sendable (MistralBatchTranscription.UploadMeasurement) -> Void
     ) async throws -> MistralBatchTranscription.Result
+}
+
+extension MistralBatchTranscribing {
+    package func transcribe(
+        wav: Data,
+        language: String?,
+        contextBias: [String],
+        apiKey: String,
+        endpoint: URL
+    ) async throws -> MistralBatchTranscription.Result {
+        try await transcribe(
+            wav: wav, language: language, contextBias: contextBias, apiKey: apiKey,
+            endpoint: endpoint, onUpload: { _ in })
+    }
 }
 
 package struct MistralBatchTranscriptionClient: MistralBatchTranscribing {
@@ -193,7 +236,8 @@ package struct MistralBatchTranscriptionClient: MistralBatchTranscribing {
         language: String?,
         contextBias: [String],
         apiKey: String,
-        endpoint: URL
+        endpoint: URL,
+        onUpload: @escaping @Sendable (MistralBatchTranscription.UploadMeasurement) -> Void
     ) async throws -> MistralBatchTranscription.Result {
         let request = MistralBatchTranscription.request(
             endpoint: endpoint,
@@ -203,8 +247,44 @@ package struct MistralBatchTranscriptionClient: MistralBatchTranscribing {
             contextBias: contextBias,
             timeout: Self.requestTimeout
         )
+        let meter = UploadMeter()
+        defer {
+            if let measurement = meter.measurement() { onUpload(measurement) }
+        }
+        #if canImport(FoundationNetworking)
         let (data, response) = try await session.data(for: request)
+        #else
+        // A task delegate for the progress only: it implements no redirect
+        // method, so redirects still reach the session's `RedirectGate`.
+        let (data, response) = try await session.data(for: request, delegate: meter)
+        #endif
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         return try MistralBatchTranscription.result(status: status, body: data)
+    }
+}
+
+/// Times the body's upload from the meter's creation, just before the
+/// request starts, to the last progress callback.
+private final class UploadMeter: NSObject, URLSessionTaskDelegate, Sendable {
+    private let start = ContinuousClock.now
+    private let sent = Mutex<(bytes: Int64, at: ContinuousClock.Instant)?>(nil)
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didSendBodyData bytesSent: Int64,
+        totalBytesSent: Int64,
+        totalBytesExpectedToSend: Int64
+    ) {
+        let now = ContinuousClock.now
+        sent.withLock { $0 = (totalBytesSent, now) }
+    }
+
+    func measurement() -> MistralBatchTranscription.UploadMeasurement? {
+        guard let sent = sent.withLock({ $0 }), sent.bytes > 0 else { return nil }
+        let elapsed = sent.at - start
+        let seconds = Double(elapsed.components.seconds)
+            + Double(elapsed.components.attoseconds) / 1e18
+        return MistralBatchTranscription.UploadMeasurement(bytes: sent.bytes, seconds: seconds)
     }
 }
