@@ -1,5 +1,4 @@
 import Foundation
-import Synchronization
 import XCTest
 @testable import localvoxtral
 
@@ -437,7 +436,7 @@ final class OnboardingViewModelTests: XCTestCase {
     /// and a check still running for the old key does not publish (#1626).
     func testEditingTheKeyDuringItsCheckDropsTheOldVerdict() async {
         let (model, _, _, _, _) = makeModel()
-        let verifier = GatedOnboardingKeyVerifier(checks: 1)
+        let verifier = GatedMistralAPIKeyVerifier(checks: 1)
         model.viewModel.engines.mistralAPIKeyVerifier = verifier
         model.engineChoice = .mistralAPI
         model.mistralAPIKeyDraft = "mk-good"
@@ -454,7 +453,7 @@ final class OnboardingViewModelTests: XCTestCase {
     /// out, must not overwrite the second's verdict.
     func testAnOlderCheckOfTheSameKeyDoesNotOverwriteANewerOne() async {
         let (model, _, _, _, _) = makeModel()
-        let verifier = GatedOnboardingKeyVerifier(checks: 2)
+        let verifier = GatedMistralAPIKeyVerifier(checks: 2)
         model.viewModel.engines.mistralAPIKeyVerifier = verifier
         model.engineChoice = .mistralAPI
         model.mistralAPIKeyDraft = "mk-good"
@@ -607,41 +606,4 @@ private final class FakeOnboardingKeyVerifier: MistralAPIKeyVerifying {
     }
 
     func verify(apiKey: String) async -> MistralAPIKeyVerification { result }
-}
-
-/// Answers each of the wizard's key checks, in the order they start, only
-/// when the test releases that check's verdict.
-private final class GatedOnboardingKeyVerifier: MistralAPIKeyVerifying {
-    private let verdicts: [AsyncStream<MistralAPIKeyVerification>]
-    private let releases: [AsyncStream<MistralAPIKeyVerification>.Continuation]
-    private let starts: AsyncStream<Void>
-    private let startsContinuation: AsyncStream<Void>.Continuation
-    private let started = Mutex(0)
-
-    init(checks: Int) {
-        let pairs = (0..<checks).map { _ in AsyncStream<MistralAPIKeyVerification>.makeStream() }
-        verdicts = pairs.map(\.stream)
-        releases = pairs.map(\.continuation)
-        (starts, startsContinuation) = AsyncStream.makeStream()
-    }
-
-    func answer(check: Int, with verdict: MistralAPIKeyVerification) {
-        releases[check].yield(verdict)
-    }
-
-    /// Returns once one more check has reached the verifier, so the test
-    /// knows which index the next check takes.
-    func nextCheckStarted() async {
-        for await _ in starts { return }
-    }
-
-    func verify(apiKey: String) async -> MistralAPIKeyVerification {
-        let index = started.withLock { count in
-            defer { count += 1 }
-            return count
-        }
-        startsContinuation.yield()
-        for await verdict in verdicts[index] { return verdict }
-        return .accepted
-    }
 }
