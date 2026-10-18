@@ -328,6 +328,9 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
 
     func markSecondPassMissed() {
         stateMachine.setSecondPassMissed()
+        // The line is new on screen: its hold counts from now, not from the
+        // last words, which the pass's deadline left seconds behind.
+        lastOverlayDisplayTextChangeAt = now()
         renderCurrentSnapshot()
     }
 

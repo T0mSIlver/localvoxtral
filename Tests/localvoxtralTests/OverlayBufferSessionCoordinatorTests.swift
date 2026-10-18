@@ -500,6 +500,38 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.debugDismissTask)
     }
 
+    /// #1867: the second pass's miss line comes seconds after the last
+    /// words. Its hold counts from when it appears, or the panel would close
+    /// at once and the line could not be read.
+    func testTheSecondPassMissLineGetsItsWholeHold() async {
+        let renderer = MockOverlayRenderer()
+        let anchorResolver = MockOverlayAnchorResolver()
+        var currentDate = Date(timeIntervalSince1970: 1_000)
+        var requestedSleeps: [Duration] = []
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: anchorResolver,
+            now: { currentDate },
+            sleepFor: { requestedSleeps.append($0) }
+        )
+
+        coordinator.startSession()
+        coordinator.beginFinalizing(displayBufferText: "hello", commitBufferText: "hello")
+        currentDate.addTimeInterval(3.5)
+        coordinator.markSecondPassMissed()
+        coordinator.dismissAfterHold(minimumVisibility: 2)
+
+        XCTAssertTrue(coordinator.showsSecondPassMiss)
+        XCTAssertEqual(renderer.hideCallCount, 0, "not closed before the line was seen")
+        guard let dismissTask = coordinator.debugDismissTask else {
+            return XCTFail("the hold armed no dismissal")
+        }
+        await dismissTask.value
+        XCTAssertEqual(requestedSleeps, [.seconds(2)])
+        XCTAssertEqual(renderer.hideCallCount, 1)
+    }
+
     func testDismissAfterHoldUnchangedFinalizingRefreshDoesNotExtendHold() {
         let renderer = MockOverlayRenderer()
         let anchorResolver = MockOverlayAnchorResolver()
