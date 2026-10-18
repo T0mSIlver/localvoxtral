@@ -5,11 +5,33 @@ import Foundation
 /// History is on. When it is off, only Copy last dictation holds it, and the
 /// next dictation replaces that, so it goes on the clipboard (#1499).
 extension DictationSessionController {
-    /// Keeps `text`, the whole of what was not delivered this dictation.
+    /// Keeps `text`, the whole of what dictation `generation` (the running
+    /// one when nil) did not deliver. A copy plays the warning sound unless
+    /// `statusLineSaysSo`: the error line shows the sentence as a pointer
+    /// to the Console, and a newer dictation's status hides it (#1887).
     ///
     /// - Returns: the popover's sentence saying where it is.
-    func keepUndeliveredAgentText(_ text: String) -> String {
-        keepUntypedText(text, status: StatusStrings.agentPromptTextKeptInHistory)
+    func keepUndeliveredAgentText(
+        _ text: String, of generation: UInt64? = nil, statusLineSaysSo: Bool = false
+    ) -> String {
+        if !statusLineSaysSo, !text.isEmpty, !historyKeepsDictations {
+            warnOfAnUnseenCopy(of: generation ?? sessionStartGeneration)
+        }
+        return keepUntypedText(text, status: StatusStrings.agentPromptTextKeptInHistory)
+    }
+
+    /// Plays the warning sound for a copy the popover cannot show, once per
+    /// dictation the text came from: a relay that keeps text one append at
+    /// a time copies again on each, and an earlier dictation's late keep
+    /// must not use up the running one's warning (#1887).
+    func warnOfAnUnseenCopy(of generation: UInt64) {
+        guard unseenCopyWarnedGenerations.insert(generation).inserted else { return }
+        Log.dictation.notice("text copied where the popover cannot say so; warning sound")
+        warningSound()
+    }
+
+    private var historyKeepsDictations: Bool {
+        settings.dictationHistoryRetention.savesDictations && sessionStore != nil
     }
 
     /// Keeps `text`, which a stop saved as not inserted and typed nowhere: a
@@ -19,9 +41,7 @@ extension DictationSessionController {
     /// - Returns: `status` while History keeps the text; the clipboard's
     ///   sentence when it was copied instead.
     func keepUntypedText(_ text: String, status: String) -> String {
-        guard !text.isEmpty,
-              !(settings.dictationHistoryRetention.savesDictations && sessionStore != nil)
-        else { return status }
+        guard !text.isEmpty, !historyKeepsDictations else { return status }
         Log.dictation.notice("text not inserted and History is off; text copied")
         return copyUntypedText(text)
     }

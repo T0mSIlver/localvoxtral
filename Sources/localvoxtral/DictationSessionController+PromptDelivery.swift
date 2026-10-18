@@ -47,14 +47,14 @@ extension DictationSessionController {
         case .delivered:
             return false
         case .mayHaveLanded:
-            lastError = keepUndeliveredAgentText(text)
+            lastError = keepUndeliveredAgentText(text, of: generation)
         case .refused where keysReachPrompt:
             inserted = commitOverlayTextThePromptRelayRefused(
                 text, preferredAppPID: pid, sessionID: sessionID, generation: generation
             )
         case .refused:
             Log.overlay.notice("overlay commit: the route did not take the text and keys would not reach its prompt; text kept")
-            lastError = keepUndeliveredAgentText(text)
+            lastError = keepUndeliveredAgentText(text, of: generation)
         }
         if !inserted {
             forgetLanding(ofSession: sessionID, generation: generation)
