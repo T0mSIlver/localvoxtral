@@ -469,6 +469,10 @@ final class ViewSnapshotTests: XCTestCase {
                 $0.isFinalizingStop = true
                 $0.statusText = DictationViewModel.StatusStrings.polishing
             }),
+            // The mic sent no audio, so the app stopped the dictation (#1865).
+            ("silent-mic-stopped", {
+                $0.statusText = DictationViewModel.StatusStrings.microphoneSentNoAudio
+            }),
             ("connection-refused", {
                 $0.statusText = "Connection refused."
                 $0.lastError = "Connection refused."
