@@ -187,6 +187,8 @@ enum StopCommitCoordinator {
 
     /// The overlay commit and what the caller has to do with it: `succeeded`
     /// rides into the session record, `failureMessage` into `lastError`.
+    /// A clipboard fallback did not succeed: no text reached the target, so
+    /// History lists it as not inserted (#1872).
     struct CommitResult {
         let outcome: OverlayBufferCommitOutcome
         let succeeded: Bool
@@ -203,10 +205,14 @@ enum StopCommitCoordinator {
             using: textInsertion,
             autoCopyEnabled: autoCopyEnabled
         )
-        if case .failed(let failureMessage) = outcome {
+        switch outcome {
+        case .succeeded:
+            return CommitResult(outcome: outcome, succeeded: true, failureMessage: nil)
+        case .copiedToClipboard:
+            return CommitResult(outcome: outcome, succeeded: false, failureMessage: nil)
+        case .failed(let failureMessage):
             return CommitResult(outcome: outcome, succeeded: false, failureMessage: failureMessage)
         }
-        return CommitResult(outcome: outcome, succeeded: true, failureMessage: nil)
     }
 
     // MARK: - Polish inputs

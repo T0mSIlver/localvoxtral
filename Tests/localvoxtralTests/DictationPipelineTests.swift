@@ -440,6 +440,168 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(inserted.map(\.pid), [4242], "the app focused at the stop")
     }
 
+    /// Secure Keyboard Entry at commit: the real coordinator copies the text
+    /// instead of typing it, and History lists it as not inserted (#1872).
+    func testASecureInputClipboardFallbackIsSavedAsNotInserted() async throws {
+        try await assertSecureInputFallbackIsSavedAsNotInserted(polish: nil, copies: Self.phrase)
+    }
+
+    func testAPolishedSecureInputClipboardFallbackIsSavedAsNotInserted() async throws {
+        try await assertSecureInputFallbackIsSavedAsNotInserted(
+            polish: FakePolishingService { "<\($0.inputText)>" }, copies: "<\(Self.phrase)>")
+    }
+
+    private func assertSecureInputFallbackIsSavedAsNotInserted(
+        polish: FakePolishingService?, copies expected: String, file: StaticString = #filePath, line: UInt = #line
+    ) async throws {
+        var copied: [String] = []
+        let renderer = MockOverlayRenderer()
+        let overlay = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: MockOverlayAnchorResolver(),
+            now: { Date(timeIntervalSince1970: 0) },
+            sleepFor: { _ in },
+            copyToPasteboard: { copied.append($0); return true }
+        )
+        let pipeline = try await makePipeline(
+            outputMode: .overlayBuffer, polish: polish, earlyPolish: false, overlayCoordinator: overlay
+        )
+        let store = try XCTUnwrap(DictationSessionStore.inMemory(), file: file, line: line)
+        pipeline.viewModel.sessionStore = store
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+        addTeardownBlock { TerminalTargetDetector.debugSecureEventInputOverride = nil }
+        var typed: [String] = []
+        pipeline.viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        pipeline.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { typed.append($0); return true },
+            modifierStateReader: { false },
+            accessibilityInserter: { text, _ in typed.append(text); return true },
+            commandVPaster: { typed.append($0); return true }
+        )
+        let shown = BoundedWait()
+        renderer.onRender = { if $0?.bufferText == Self.phrase { shown.resolve() } }
+
+        await startAndSpeak(pipeline, file: file, line: line)
+        sendPartials(pipeline)
+        let shownWhileDictating = await shown.value(failAfter: 10)
+        XCTAssertTrue(shownWhileDictating, file: file, line: line)
+        renderer.onRender = nil
+        await stopAndFinalize(
+            pipeline, finalStatus: DictationViewModel.StatusStrings.overlayCopiedToClipboard,
+            file: file, line: line)
+
+        XCTAssertEqual(typed, [], "Secure Keyboard Entry would swallow the keys", file: file, line: line)
+        XCTAssertEqual(copied, [expected], file: file, line: line)
+        XCTAssertEqual(pipeline.records.all.map(\.commitSucceeded), [false], file: file, line: line)
+        let notInserted = await store.entries(matching: DictationHistoryQuery(filter: .notInserted))
+        XCTAssertEqual(notInserted.map(\.rawText), [Self.phrase], file: file, line: line)
+    }
+
+    /// A clipboard fallback reached no app, so it teaches nothing: no learned
+    /// term, no correction watch, no project-term proposal (#1872). The same
+    /// joined dictation inserted normally does all three.
+    func testAClipboardFallbackLearnsNothingAndAsksNothing() async throws {
+        let effects = try await dictateJoinedPolishedCommit(secureInput: true)
+        XCTAssertEqual(effects.typed, [], "precondition: nothing reached the app")
+        XCTAssertEqual(effects.learnedTerms, 0)
+        XCTAssertEqual(effects.watchedSessions, [])
+        XCTAssertEqual(effects.proposalRuns, 0)
+    }
+
+    func testAnInsertedJoinedDictationLearnsWatchesAndAsks() async throws {
+        let effects = try await dictateJoinedPolishedCommit(secureInput: false)
+        XCTAssertEqual(
+            effects.typed, ["<\(Self.phrase.replacingOccurrences(of: "localvoxtral", with: "LocalVoxtral"))>"],
+            "precondition: the text reached the app"
+        )
+        XCTAssertGreaterThan(effects.learnedTerms, 0)
+        XCTAssertEqual(effects.watchedSessions, ["s1"])
+        XCTAssertEqual(effects.proposalRuns, 1)
+    }
+
+    private struct CommitEffects {
+        var typed: [String]
+        var learnedTerms: Int
+        var watchedSessions: [String]
+        var proposalRuns: Int
+    }
+
+    /// One polished Overlay Buffer dictation joined to a session, through the
+    /// real overlay coordinator, then what its commit taught.
+    private func dictateJoinedPolishedCommit(secureInput: Bool) async throws -> CommitEffects {
+        var typed: [String] = []
+        let renderer = MockOverlayRenderer()
+        let overlay = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: MockOverlayAnchorResolver(),
+            now: { Date(timeIntervalSince1970: 0) },
+            sleepFor: { _ in },
+            copyToPasteboard: { _ in true }
+        )
+        let pipeline = try await makePipeline(
+            outputMode: .overlayBuffer, polish: FakePolishingService { "<\($0.inputText)>" },
+            earlyPolish: false, overlayCoordinator: overlay
+        )
+        let viewModel = pipeline.viewModel
+        viewModel.settings.repoVocabularyEnabled = true
+        viewModel.settings.projectTermProposalsEnabled = true
+        viewModel.dependencies.repoVocabularyGrounding = FakeRepoVocabularyGrounding(
+            outcome: RepoVocabularyMatcher.GroundingOutcome(
+                entries: [ReplacementEntry(replaceWith: "LocalVoxtral", matches: ["localvoxtral"])],
+                isFallbackOnly: false
+            )
+        )
+        let store = LearnedTermStore(fileURL: nil)
+        viewModel.learnedTermStore = store
+        let correctionLearning = CorrectionLearning(store: store, knownTerms: { [] })
+        viewModel.session.correctionLearning = correctionLearning
+        let runner = RecordingProjectTermRunner()
+        viewModel.session.projectTermProposer = ProjectTermProposer(
+            store: store, runner: runner, now: { Date(timeIntervalSince1970: 0) },
+            trackedFiles: { _ in ["README.md"] }
+        )
+        TerminalTargetDetector.debugSecureEventInputOverride = { secureInput }
+        addTeardownBlock { TerminalTargetDetector.debugSecureEventInputOverride = nil }
+        viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { typed.append($0); return true },
+            modifierStateReader: { false },
+            accessibilityInserter: { text, _ in typed.append(text); return true },
+            commandVPaster: { typed.append($0); return true }
+        )
+        let shown = BoundedWait()
+        renderer.onRender = { if $0?.bufferText == Self.phrase { shown.resolve() } }
+
+        await startAndSpeak(pipeline)
+        let origin = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
+        var snapshot = ClaudeSessionSnapshot(
+            sessionID: "s1", origin: origin, agent: .claude, firstSeen: Date(timeIntervalSince1970: 0))
+        snapshot.workspace = ClaudeWorkspaceReference.make(rawCwd: "/nonexistent-1872/acme", origin: origin)
+        viewModel.session.context.claudeSessionJoin = ClaudeSessionJoin(
+            target: TerminalScreenTarget(pid: 4242, bundleID: "com.apple.Terminal"),
+            snapshot: snapshot, windowID: 101, mechanism: .ttyDevice)
+        sendPartials(pipeline)
+        let shownWhileDictating = await shown.value(failAfter: 10)
+        XCTAssertTrue(shownWhileDictating)
+        renderer.onRender = nil
+        await stopAndFinalize(
+            pipeline,
+            finalStatus: secureInput ? DictationViewModel.StatusStrings.overlayCopiedToClipboard
+                : DictationViewModel.StatusStrings.ready
+        )
+        await viewModel.session.projectTermProposalTask?.value
+        store.waitForPendingWrites()
+
+        return CommitEffects(
+            typed: typed,
+            learnedTerms: store.snapshot().termCount,
+            watchedSessions: correctionLearning.pending.keys.sorted(),
+            proposalRuns: runner.all.count
+        )
+    }
+
     /// A new microphone restarts the dictation while the stopped text still
     /// waits on its polish: that text is saved as not inserted, and the next
     /// dictation's stop commits (#1055).
