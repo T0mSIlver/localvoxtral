@@ -480,7 +480,13 @@ package struct HFModelDownloader: ModelPreparing {
                 var landedInCache = false
                 defer {
                     if !landedInCache {
-                        try? fileManager.removeItem(at: result.temporaryURL)
+                        do {
+                            try fileManager.removeItem(at: result.temporaryURL)
+                        } catch {
+                            Log.backends.error(
+                                "Temporary download cleanup failed for \(result.temporaryURL.path, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                            )
+                        }
                     }
                 }
                 guard (200..<300).contains(result.statusCode) else {
