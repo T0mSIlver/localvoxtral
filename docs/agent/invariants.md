@@ -36,6 +36,11 @@ there is not.
   A route or mod refusal that answers late clears only the landing of the
   dictation that handed its text off, by its start generation: a later
   commit to the same session keeps its continuation space (#1660).
+  A lone send phrase commits nothing, so it clears the landing only once
+  its submit happened: the mod answered sent or queued, or its Return was
+  pressed. A refused one with no Return left the box as it was, and the
+  next commit still continues it; an unanswered one that did submit moves
+  the submit count, which clears the landing on its own (#1870).
   Anything looser puts a space in front of `/compact`
   in a fresh prompt. No trailing space after a commit. Where the joined
   session's mod read its prompt box at the stop (a polished commit into a
@@ -248,6 +253,10 @@ there is not.
   fill rule below and followed by Return under this bullet's gates, judged
   then; an unanswered one is kept, with no Return. A channel that closed
   between the stop and the commit sends by Return under the same gates.
+  A dictation that is only the send phrase leaves no text, and the overlay
+  commits nothing, so the mod gets one empty `send`, which submits the box
+  as it stands (#1870). Refused, Return follows under the same gates;
+  unanswered, nothing does.
 - **An Overlay Buffer commit that waited types only into the pane it was
   for** (#1056, #1668, #1712). A pid cannot tell two tabs of one terminal apart,
   nor two Claude Desktop sessions, so as the last await before the keys
@@ -2873,7 +2882,9 @@ there is not.
   runs only while Keep the tunnel open is off and only turns it ON, inside the
   host setup run the user clicked. They carry no token at all, and no byte of their
   output reaches a verdict, an alert, or the log. The whole action has a
-  finite timeout, and every captured result, thrown error, alert, and log string
+  finite timeout, and quit stops a run in flight: its ssh, like every
+  `claude` CLI run, is a `BoundedProcessChildren` child (#1875). Every
+  captured result, thrown error, alert, and log string
   is token-redacted before it leaves the service. A plugin version the host's
   listing reports reaches an error only as dot-separated numbers; anything
   else reads as unreadable (#1817). Keep the filesystem and

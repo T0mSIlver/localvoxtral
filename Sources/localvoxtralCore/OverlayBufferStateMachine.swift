@@ -49,6 +49,9 @@ package struct OverlayBufferStateMachine {
         /// The polish request is out: the header says "Polishing" and a band
         /// sweeps the words until the reply lands (#1074).
         package var polishing = false
+        /// The stop's second pass missed its deadline: the header says so
+        /// while the realtime text commits (#1867).
+        package var secondPassMissed = false
         /// What to say about this dictation's Claude Code session join. Set
         /// once, from the join resolved at session start; cleared on every new
         /// session. `.hidden` renders nothing at all.
@@ -68,6 +71,7 @@ package struct OverlayBufferStateMachine {
             polished: Bool,
             polishedFrom: String? = nil,
             polishing: Bool = false,
+            secondPassMissed: Bool = false,
             claudeJoin: OverlayClaudeJoinBadge,
             destinations: OverlayDestinationStrip? = nil,
             draftReview: QuickCaptureDraftSnapshot? = nil,
@@ -80,6 +84,7 @@ package struct OverlayBufferStateMachine {
             self.polished = polished
             self.polishedFrom = polishedFrom
             self.polishing = polishing
+            self.secondPassMissed = secondPassMissed
             self.claudeJoin = claudeJoin
             self.destinations = destinations
             self.draftReview = draftReview
@@ -96,6 +101,7 @@ package struct OverlayBufferStateMachine {
     package private(set) var polished = false
     package private(set) var polishedFrom: String?
     package private(set) var polishing = false
+    package private(set) var secondPassMissed = false
     package private(set) var claudeJoin: OverlayClaudeJoinBadge = .hidden
     package private(set) var destinations: OverlayDestinationStrip?
     package private(set) var draftReview: QuickCaptureDraftSnapshot?
@@ -111,6 +117,7 @@ package struct OverlayBufferStateMachine {
             polished: polished,
             polishedFrom: polishedFrom,
             polishing: polishing,
+            secondPassMissed: secondPassMissed,
             claudeJoin: claudeJoin,
             destinations: destinations,
             draftReview: draftReview,
@@ -140,6 +147,7 @@ package struct OverlayBufferStateMachine {
         polished = false
         polishedFrom = nil
         polishing = false
+        secondPassMissed = false
         // Assigned, never merely cleared: the previous dictation's join
         // describes the previous dictation's session, and a badge that survived
         // into this one would vouch for a grounding this session was not given.
@@ -181,6 +189,13 @@ package struct OverlayBufferStateMachine {
     package mutating func setPolishing(_ value: Bool) {
         guard phase == .finalizing else { return }
         polishing = value
+    }
+
+    /// The stop's second pass missed its deadline. Only while finalizing:
+    /// the realtime text is about to commit.
+    package mutating func setSecondPassMissed() {
+        guard phase == .finalizing else { return }
+        secondPassMissed = true
     }
 
     /// Marks the buffering session as running under Secure Keyboard Entry.
@@ -228,6 +243,7 @@ package struct OverlayBufferStateMachine {
         polished = false
         polishedFrom = nil
         polishing = false
+        secondPassMissed = false
         claudeJoin = .hidden
         destinations = nil
         anchor = nil

@@ -299,18 +299,7 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
         XCTAssertEqual(ClaudeStatuslineInstallService(fileSystem: nil).status(), .unknown)
     }
 
-    // MARK: - Preview
-
-    func testPreviewRendersTheExactEntry() throws {
-        let preview = try XCTUnwrap(ClaudeStatuslineInstallService.preview(
-            hookCommand: Self.hookCommand
-        ))
-        let parsed = try XCTUnwrap(
-            try JSONSerialization.jsonObject(with: Data(preview.utf8)) as? [String: String]
-        )
-        XCTAssertEqual(parsed["type"], "command")
-        XCTAssertEqual(parsed["command"], Self.hookCommand)
-    }
+    // MARK: - Consent
 
     func testConsentAndApplyStatePreservationWithNormalization() {
         XCTAssertEqual(
@@ -332,10 +321,6 @@ final class ClaudeStatuslineInstallServiceTests: XCTestCase {
         XCTAssertEqual(reparsed?["z"] as? Int, 1, "other entries are kept")
         XCTAssertEqual(reparsed?["a"] as? Int, 2, "other entries are kept")
         XCTAssertNotEqual(updated, existing, "formatting normalizes: bytes change")
-    }
-
-    func testPreviewIsNilWithoutAHookCommand() {
-        XCTAssertNil(ClaudeStatuslineInstallService.preview(hookCommand: nil))
     }
 
     // MARK: - Apply

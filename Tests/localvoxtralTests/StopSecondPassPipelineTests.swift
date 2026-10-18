@@ -85,6 +85,56 @@ final class StopSecondPassPipelineTests: XCTestCase {
         XCTAssertEqual(harness.records.map(\.rawText), [Self.realtimeText])
     }
 
+    /// #1867: the deadline assumed a 15 Mbit/s uplink, so on a slower one a
+    /// long dictation's pass always missed, and the overlay never said so.
+    /// Here a minute of audio (1.92 MB) uploads at 5 Mbit/s and answers in
+    /// 4 s, past the plain 3.5 s deadline. The first stop has no measured
+    /// rate: it keeps that deadline, misses, and the overlay says so before
+    /// the realtime text commits. The next stop sizes its deadline from the
+    /// rate the first measured, and the pass replaces the text.
+    func testASlowUplinksMeasuredRateGivesTheNextPassTheTimeItNeeds() async {
+        let minute = Data(repeating: 1, count: 32_000 * 60)
+        let wavBytes = DictationAudioRecording.wav(fromPCM16: minute).count
+        let fiveMbitPerSecond = 625_000.0
+        let clock = ManualSessionClock()
+        let transcriber = FakeBatchTranscriber(
+            .delayed(.seconds(4), text: Self.batchText, sleep: clock.clock.sleep),
+            upload: .init(bytes: Int64(wavBytes), seconds: Double(wavBytes) / fiveMbitPerSecond))
+        let harness = makeHarness(transcriber: transcriber, pcm: minute, clock: clock)
+
+        harness.stop()
+        let first = harness.viewModel.session.polishAndCommitTask
+        _ = await transcriber.called.value(failAfter: 10)
+        await clock.waitForSleepers(2)
+        clock.advance(by: 3.5)
+        await first?.value
+
+        XCTAssertEqual(harness.overlay.events, [
+            .secondPassMissed,
+            .committed(Self.realtimeText),
+            .held(TimingConstants.overlaySecondPassMissVisibility),
+        ])
+        XCTAssertEqual(
+            harness.viewModel.session.secondPassUploadRates.rate(for: Self.batchEndpoint) ?? 0,
+            fiveMbitPerSecond, accuracy: 1)
+
+        prepareDictation(harness.viewModel, pcm: minute)
+        harness.overlay.events = []
+        harness.stop()
+        let second = harness.viewModel.session.polishAndCommitTask
+        await clock.waitForSleepers(2)
+        clock.advance(by: 4)
+        await second?.value
+
+        XCTAssertEqual(harness.overlay.events, [
+            .committed(Self.batchText),
+            .held(TimingConstants.overlayFinalWordVisibilityMinimum),
+        ])
+        XCTAssertEqual(harness.records.map(\.rawText), [Self.realtimeText, Self.batchText])
+    }
+
+    private static let batchEndpoint = URL(string: "https://api.mistral.ai/v1/audio/transcriptions")!
+
     func testAFailedPassKeepsTheRealtimeText() async {
         struct Refused: Error {}
         let harness = makeHarness(transcriber: FakeBatchTranscriber(.failure(Refused())))
@@ -553,7 +603,9 @@ final class StopSecondPassPipelineTests: XCTestCase {
         polisher: FakePolishingService? = nil,
         secondPass: Bool = true,
         secondPassSetting: Bool? = nil,
-        realtimeText: String = realtimeText
+        realtimeText: String = realtimeText,
+        pcm: Data = pcm,
+        clock: ManualSessionClock = ManualSessionClock()
     ) -> Harness {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.polishSpeakerTerms = ["localvoxtral", "Claude Code"]
@@ -565,7 +617,6 @@ final class StopSecondPassPipelineTests: XCTestCase {
             settings.llmPolishingEnabled = false
         }
         let overlay = MockOverlayCoordinator()
-        let clock = ManualSessionClock()
         let records = RecordLog()
         let viewModel = DictationViewModel(
             settings: settings,
@@ -582,7 +633,22 @@ final class StopSecondPassPipelineTests: XCTestCase {
             viewModel.llmPolishingService = polisher
         }
         retainForTestProcessLifetime(viewModel)
+        prepareDictation(
+            viewModel, secondPass: secondPass, secondPassSetting: secondPassSetting,
+            realtimeText: realtimeText, pcm: pcm)
+        return Harness(viewModel: viewModel, overlay: overlay, clock: clock, recordLog: records)
+    }
 
+    /// The session state a stop finds after an Overlay Buffer dictation in
+    /// Mistral API mode that kept `pcm`.
+    private func prepareDictation(
+        _ viewModel: DictationViewModel,
+        secondPass: Bool = true,
+        secondPassSetting: Bool? = nil,
+        realtimeText: String = realtimeText,
+        pcm: Data = pcm
+    ) {
+        let settings = viewModel.settings
         let session = viewModel.session
         session.sessionOutputMode = .overlayBuffer
         session.sessionRealtimeConfiguration = RealtimeSessionConfiguration(
@@ -598,9 +664,8 @@ final class StopSecondPassPipelineTests: XCTestCase {
             session.sessionHasStopSecondPass = secondPass
             session.audio.sessionRecording.begin(enabled: true)
         }
-        session.audio.sessionRecording.append(Self.pcm)
+        session.audio.sessionRecording.append(pcm)
         viewModel.transcript.currentDictationEventText = realtimeText
-        return Harness(viewModel: viewModel, overlay: overlay, clock: clock, recordLog: records)
     }
 }
 

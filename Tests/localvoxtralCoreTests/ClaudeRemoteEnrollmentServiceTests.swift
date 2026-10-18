@@ -2818,4 +2818,59 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertTrue(written.contains("Host other"))
     }
 
+
+    // MARK: Quit stops a running setup ssh (#1875)
+
+    /// Quit runs `BoundedProcessChildren.terminateAll`. A setup ssh waiting on
+    /// a silent remote must not outlive it, even one that ignores SIGTERM,
+    /// and the run returns. Its own deadline is far off: only quit ends it.
+    func testQuitStopsARunningSetupSSH() async throws {
+        for preamble in ["", "trap '' TERM; "] {
+            let ready = try ChildReadiness()
+            let script = "\(preamble)\(ready.signal); exec sleep 600"
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("lvx-quit-ssh-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let fakeSSH = directory.appendingPathComponent("ssh")
+            try Data("#!/bin/sh\n\(script)\n".utf8).write(to: fakeSSH)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeSSH.path)
+
+            let (registered, continuation) = AsyncStream.makeStream(of: pid_t.self)
+            let children = BoundedProcessChildren(onRegister: { continuation.yield($0) })
+            let run = ClaudeRemoteEnrollmentService.processRunner(
+                sshExecutableURL: fakeSSH, environment: { ["PATH": "/usr/bin:/bin"] }, children: children
+            )
+            let invocation = ClaudeRemoteEnrollmentService.Invocation(
+                argv: ["ssh", "-o", "BatchMode=yes", "--", "builder", "/bin/sh", "-s"],
+                standardInput: Data("exit 0\n".utf8),
+                timeout: Self.setupDeadline
+            )
+            let result = Task.detached { () -> Result<ClaudeRemoteEnrollmentService.RunResult, any Error> in
+                defer {
+                    continuation.finish()
+                    ready.releaseWaiter()
+                }
+                return Result { try run(invocation) }
+            }
+            var iterator = registered.makeAsyncIterator()
+            let next = await iterator.next()
+            let pid = try XCTUnwrap(next, "the runner never registered its ssh (\(script))")
+            // Quit must meet an ssh that already ignores SIGTERM in the second round.
+            let started = await ready.waitUntilReady()
+            XCTAssertTrue(started, "the ssh stand-in never got ready (\(script))")
+
+            children.terminateAll(grace: 0.2, within: 2)
+
+            if case .failure(let error) = await result.value,
+               case .timedOut? = error as? ClaudeRemoteEnrollmentService.RunnerFailure {
+                XCTFail("the deadline ended the run, not quit (\(script))")
+            }
+            XCTAssertNotEqual(kill(pid, 0), 0, "the ssh outlived quit (\(script))")
+        }
+    }
+
+    /// Far enough off that only quit can end a run first; near enough that a
+    /// runner quit cannot reach fails the test instead of hanging it.
+    private static let setupDeadline: TimeInterval = 10
 }

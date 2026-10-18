@@ -69,6 +69,11 @@ extension DictationSessionController {
         submits: Bool,
         generation: UInt64
     ) async {
+        // A lone send phrase's empty send submitted the box (#1870): the
+        // landing of the fill before it no longer describes the prompt.
+        if text.isEmpty, outcome == .sent || outcome == .queued {
+            forgetOverlayCommitLanding(inSession: sessionID, committedBy: generation)
+        }
         switch outcome {
         case .filled, .sent:
             break
@@ -78,6 +83,10 @@ extension DictationSessionController {
             lastError = ModChannelStatus.filledNotSent
         case .notRestored:
             lastError = ModChannelStatus.notRestored
+        case .refused where text.isEmpty, .unanswered where text.isEmpty:
+            await submitTheDraftTheModDidNotSend(
+                outcome, sessionID: sessionID, terminalPID: terminalPID, generation: generation
+            )
         case .refused, .unanswered:
             let typed = await commitOverlayTextTheModDidNotFill(
                 text, preferredAppPID: pid, sessionID: sessionID, terminalPID: terminalPID,
@@ -92,6 +101,34 @@ extension DictationSessionController {
                 return
             }
             _ = pressSpokenSendReturn(pid: terminalPID)
+        }
+    }
+
+    /// A lone send phrase the mod did not submit (#1870): there is no text
+    /// to type or keep. A refusal changed nothing in the box, so Return
+    /// submits it under the spoken send's gates, only while keys would reach
+    /// the session's prompt. An unanswered send may have submitted, so no
+    /// Return.
+    private func submitTheDraftTheModDidNotSend(
+        _ outcome: ModChannelCommitOutcome, sessionID: String, terminalPID: pid_t?, generation: UInt64
+    ) async {
+        guard outcome == .refused else {
+            Log.dictation.notice("spoken send: the mod did not answer the submit; no Return")
+            return
+        }
+        guard sessionStartGeneration == generation, let terminalPID,
+              await keysReachModSession(sessionID, terminalPID: terminalPID),
+              sessionStartGeneration == generation
+        else {
+            Log.dictation.notice("spoken send: the mod refused the submit and the session's pane is not in front; no Return")
+            return
+        }
+        guard returnSubmitsPrompt(inPID: terminalPID) else {
+            Log.dictation.notice("spoken send: Return does not submit in the target app; no Return")
+            return
+        }
+        if pressSpokenSendReturn(pid: terminalPID) {
+            forgetOverlayCommitLanding(inSession: sessionID, committedBy: generation)
         }
     }
 
@@ -209,8 +246,19 @@ final class ModChannelOverlayCommitter: OverlayTextCommitting {
 
     var isAccessibilityTrusted: Bool { true }
     var postsNoKeys: Bool { true }
+    /// Whether the commit handed this committer its text. The overlay
+    /// commits nothing for an empty buffer, so a lone send phrase never does.
+    private(set) var handedOff = false
+
+    /// The mod committer `committer` hands its text to, if any.
+    static func underlying(_ committer: any OverlayTextCommitting) -> ModChannelOverlayCommitter? {
+        if let mod = committer as? ModChannelOverlayCommitter { return mod }
+        if let spaced = committer as? LeadingSpaceOverlayCommitter { return underlying(spaced.base) }
+        return nil
+    }
 
     func insertTextPrioritizingKeyboard(_ text: String, preferredAppPID: pid_t?) -> TextInsertResult {
+        handedOff = true
         let hub = hub
         let sessionID = sessionID
         let submits = submits

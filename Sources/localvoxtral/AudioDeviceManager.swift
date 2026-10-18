@@ -10,8 +10,6 @@ struct MicrophoneInputDevice: Identifiable, Hashable {
     /// capture path picks a single channel and the UI offers the choice.
     /// Defaults to 1 for devices whose stream format can't be read.
     let channelCount: UInt32
-
-    var isMultiChannel: Bool { channelCount > 2 }
 }
 
 enum AudioDeviceManager {
@@ -88,28 +86,6 @@ enum AudioDeviceManager {
     static func defaultInputDeviceID() -> String? {
         guard let objectID = defaultInputDeviceObjectID() else { return nil }
         return deviceUID(for: objectID)
-    }
-
-    @discardableResult
-    static func setSystemDefaultInputDevice(_ deviceID: AudioObjectID) -> Bool {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        var newDeviceID = deviceID
-        let dataSize = UInt32(MemoryLayout<AudioObjectID>.size)
-        let status = AudioObjectSetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            0,
-            nil,
-            dataSize,
-            &newDeviceID
-        )
-
-        return status == noErr
     }
 
     static func deviceUID(for deviceID: AudioObjectID) -> String? {

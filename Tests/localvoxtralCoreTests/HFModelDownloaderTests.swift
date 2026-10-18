@@ -482,6 +482,78 @@ final class HFModelDownloaderTests: XCTestCase {
         }
     }
 
+    // MARK: - A file that arrived but never reached the cache
+
+    func testFileRequestFailureDeletesTheDownloadedTemporaryFile() async throws {
+        let cache = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let pin = "0123456789abcdef0123456789abcdef01234567"
+        let transport = FakeHFModelDownloadTransport(
+            repositoryJSON: repositoryJSON(sha: pin, files: ["model.safetensors"]),
+            payloads: ["model.safetensors": Data("weights-payload".utf8)],
+            downloadStatusCode: 503
+        )
+        let downloader = HFModelDownloader(cacheRoot: cache, transport: transport)
+
+        do {
+            try await downloader.prepare(pausableRequest(pin: pin)) { _ in }
+            XCTFail("expected the HTTP 503 prepare to throw")
+        } catch let error as ModelDownloadError {
+            guard case .fileRequestFailed(_, 503) = error else {
+                return XCTFail("unexpected ModelDownloadError: \(error)")
+            }
+        }
+        assertDeliveredFilesAreGone(transport)
+    }
+
+    func testCacheWriteFailureDeletesTheDownloadedTemporaryFile() async throws {
+        let cache = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let pin = "0123456789abcdef0123456789abcdef01234567"
+        // A regular file where the model's subdirectory belongs makes
+        // creating the destination directory fail, as a full disk or a
+        // vanished HF_HUB_CACHE volume would.
+        let snapshot = cache
+            .appendingPathComponent("models--org--model/snapshots/\(pin)", isDirectory: true)
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        try Data().write(to: snapshot.appendingPathComponent("weights"))
+        let transport = FakeHFModelDownloadTransport(
+            repositoryJSON: repositoryJSON(sha: pin, files: ["weights/model.safetensors"]),
+            payloads: ["model.safetensors": Data("weights-payload".utf8)]
+        )
+        let downloader = HFModelDownloader(cacheRoot: cache, transport: transport)
+
+        do {
+            try await downloader.prepare(
+                ModelPreparationRequest(
+                    backendID: "speechd",
+                    displayName: "Dictation engine",
+                    repoID: "org/model",
+                    revision: pin,
+                    includePatterns: ["weights/*.safetensors"]
+                )
+            ) { _ in }
+            XCTFail("expected the cache write to fail")
+        } catch is ModelDownloadError {}
+        assertDeliveredFilesAreGone(transport)
+    }
+
+    private func assertDeliveredFilesAreGone(
+        _ transport: FakeHFModelDownloadTransport,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertEqual(transport.deliveredTemporaryURLs.count, 1, file: file, line: line)
+        for url in transport.deliveredTemporaryURLs {
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: url.path),
+                "a downloaded file that never reached the cache was left at \(url.path)",
+                file: file,
+                line: line
+            )
+        }
+    }
+
     private func makePausableTransport(pin: String) -> FakeHFModelDownloadTransport {
         FakeHFModelDownloadTransport(
             repositoryJSON: repositoryJSON(
@@ -561,6 +633,7 @@ private final class FakeHFModelDownloadTransport: HFModelDownloadTransport, @unc
         var pendingPausableFiles: Set<String> = []
         var downloadStartedContinuation: CheckedContinuation<Void, Never>?
         var pauseContinuation: CheckedContinuation<Void, Error>?
+        var deliveredTemporaryURLs: [URL] = []
     }
 
     private let repositoryJSON: Data
@@ -572,6 +645,8 @@ private final class FakeHFModelDownloadTransport: HFModelDownloadTransport, @unc
     /// Thrown instead of completing a transfer, for the non-cancellation
     /// failure path.
     private let downloadFailure: Error?
+    /// HTTP status reported with each completed transfer.
+    private let downloadStatusCode: Int
     private let state = Mutex(State())
 
     init(
@@ -582,12 +657,14 @@ private final class FakeHFModelDownloadTransport: HFModelDownloadTransport, @unc
         /// cancelled and then leaves resume data behind, standing in for
         /// `URLSessionDownloadTask.cancel(byProducingResumeData:)`.
         pausableFiles: Set<String> = [],
-        downloadFailure: Error? = nil
+        downloadFailure: Error? = nil,
+        downloadStatusCode: Int = 200
     ) {
         self.repositoryJSON = repositoryJSON
         self.payloads = payloads
         self.headlessFiles = headlessFiles
         self.downloadFailure = downloadFailure
+        self.downloadStatusCode = downloadStatusCode
         state.withLock { $0.pendingPausableFiles = pausableFiles }
     }
 
@@ -596,6 +673,7 @@ private final class FakeHFModelDownloadTransport: HFModelDownloadTransport, @unc
     var attempts: [DownloadAttempt] { state.withLock { $0.attempts } }
     var downloadedFileNames: [String] { state.withLock { $0.attempts.map(\.fileName) } }
     var discardedPrefixes: [String] { state.withLock { $0.discardedPrefixes } }
+    var deliveredTemporaryURLs: [URL] { state.withLock { $0.deliveredTemporaryURLs } }
 
     static func resumeBytes(for fileName: String) -> Data {
         Data("resume-\(fileName)".utf8)
@@ -704,7 +782,8 @@ private final class FakeHFModelDownloadTransport: HFModelDownloadTransport, @unc
         let temporary = FileManager.default.temporaryDirectory
             .appendingPathComponent("fake-hf-download-\(UUID().uuidString)")
         try payload.write(to: temporary)
-        return (temporary, 200)
+        state.withLock { $0.deliveredTemporaryURLs.append(temporary) }
+        return (temporary, downloadStatusCode)
     }
 
     func waitUntilDownloadStarted() async {

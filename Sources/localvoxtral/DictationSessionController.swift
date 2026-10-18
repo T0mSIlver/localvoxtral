@@ -616,6 +616,10 @@ final class DictationSessionController {
     /// the polishing service hold the same ledger.
     @ObservationIgnored
     var secondPassUsageRecorder: (any UsageRecording)?
+    /// The upload rate each backend's last second pass measured, which
+    /// sizes the next one's deadline (#1867).
+    @ObservationIgnored
+    let secondPassUploadRates = StopSecondPass.UploadRates()
     /// Live Auto-Paste spoken send trigger state
     /// (`DictationSessionController+SpokenSend.swift`), reset per session.
     enum LiveSpokenSendSegmentMode {
@@ -1210,6 +1214,24 @@ final class DictationSessionController {
     func rememberLastDictation(_ entry: DictationHistoryEntry, isInHistory: Bool) {
         lastDictation = entry
         lastDictationIsInHistory = isInHistory
+    }
+
+    /// Runs `save`, which records a dictation as not inserted, and copies
+    /// what it recorded when History did not keep it: Copy last dictation
+    /// alone would lose it to the next dictation (#1871). A Live Auto-Paste
+    /// record holds words already typed, so it is not copied.
+    ///
+    /// - Returns: whether the text went on the clipboard.
+    func keepUntypedDictation(savedBy save: () -> Void) -> Bool {
+        let generation = lastDictationGeneration
+        save()
+        guard lastDictationGeneration != generation, !lastDictationIsInHistory,
+              lastDictation?.outputMode != DictationOutputMode.liveAutoPaste.rawValue,
+              let text = lastDictation?.textToCopy, !text.isEmpty
+        else { return false }
+        Log.dictation.notice("text not inserted and History is off; text copied")
+        _ = copyUntypedText(text)
+        return true
     }
 
     private func writeToPasteboard(_ text: String) {

@@ -110,9 +110,11 @@ final class CopyLastDictationTests: XCTestCase {
     /// Starting a new dictation while the last one is still polishing cancels
     /// that polish. The cancelled dictation used to reach neither the target
     /// app nor History.
-    func testANewDictationOverAPolishKeepsThePolishedOneAsNotInserted() async {
+    func testANewDictationOverAPolishKeepsThePolishedOneAsNotInserted() async throws {
         let polishing = BlockingMockLLMPolishingService()
         let (viewModel, written) = makeViewModel(polishing: polishing)
+        // History on: with it off the cancel also copies the text (#1871).
+        viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
         var records: [DictationSessionRecord] = []
         viewModel.dependencies.onSessionRecord = { records.append($0) }
 

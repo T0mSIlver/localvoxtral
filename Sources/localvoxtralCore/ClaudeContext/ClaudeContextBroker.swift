@@ -166,8 +166,6 @@ public final class ClaudeContextBroker: Sendable {
         case socketOwnedByLiveInstance(String)
     }
 
-    public var socketURL: URL { URL(fileURLWithPath: socketPath) }
-
     /// Bind, secure, and start accepting. Every failure is reported, never
     /// swallowed — a silent failure path here is exactly how the ensureReady
     /// bug cost an hour of remote probing (AGENTS: keep new paths loud).

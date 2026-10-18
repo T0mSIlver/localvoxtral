@@ -6,11 +6,13 @@ import Glibc
 import Foundation
 import Synchronization
 
-/// The app-lifetime owner of `BoundedProcess` children (#1225). A child
-/// outlives the app unless something kills it: the headless agent CLIs
-/// (drafting, project terms) would be reparented to launchd and keep reading
-/// files and spending tokens, with the deadline gone with the app's thread.
-/// Quit calls `terminateAll`.
+/// The app-lifetime owner of `BoundedProcess` children (#1225) and of the
+/// remote setup's `ssh` and the `claude` CLI runs (#1875). A child outlives
+/// the app unless something kills it: the headless agent CLIs (drafting,
+/// project terms) would be reparented to launchd and keep reading files and
+/// spending tokens, and a setup ssh would hold its connection and remote
+/// command, with the deadline gone with the app's thread. Quit calls
+/// `terminateAll`.
 package final class BoundedProcessChildren: Sendable {
     package static let shared = BoundedProcessChildren()
 
@@ -31,6 +33,23 @@ package final class BoundedProcessChildren: Sendable {
         }
         onRegister?(pid)
         return accepted
+    }
+
+    /// Registers `process`, just launched, for as long as it runs. A child
+    /// launched after `terminateAll` ran is killed at once. The process's
+    /// termination handler must `unregister` its pid, and so must the caller
+    /// once it is done with the child: the returned pid.
+    func adopt(_ process: Process, label: String) -> pid_t {
+        let pid = process.processIdentifier
+        if !register(pid), process.isRunning {
+            Log.polishing.info("\(label, privacy: .public): launched while quitting; killing")
+            kill(pid, SIGKILL)
+        } else if !process.isRunning {
+            // Reaped before it was registered: its termination handler's
+            // unregister already ran, so drop the pid the kernel may reuse.
+            unregister(pid)
+        }
+        return pid
     }
 
     /// Called once the child is reaped (or abandoned), so a later
