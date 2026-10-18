@@ -384,6 +384,26 @@ final class LiveGoToSessionWiringTests: XCTestCase {
         XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false])
     }
 
+    /// Review of #1890: a phrase shaped like a go-to that queued behind
+    /// another go-to is typed as text when no session has its name, so the
+    /// copy keeps it: only its resolution could say it types nothing.
+    func testANewDictationEndingALiveStopCopiesAQueuedGoToPhraseWithHistoryOff() {
+        let harness = makeHarness()
+        harness.viewModel.settings.dictationHistoryRetention = .off
+        let copied = harness.viewModel.recordPasteboardWrites()
+
+        harness.partial("go to payments")
+        harness.final("go to payments")
+        harness.partial("go to the tests")
+        harness.final("go to the tests")
+        harness.viewModel.isDictating = false
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: true)
+
+        XCTAssertTrue(harness.viewModel.session.cancelPolishingForNewSessionIfNeeded())
+
+        XCTAssertEqual(copied.values, ["go to the tests"])
+    }
+
     /// #1882: the segments that ended behind a go-to still resolving are
     /// copied with History off when a new dictation ends the stop's wait.
     func testANewDictationEndingALiveStopCopiesTheWordsQueuedBehindAGoToWithHistoryOff() {
