@@ -41,9 +41,12 @@ final class EnginesModel {
     @ObservationIgnored
     var waitUntilDictationIsIdle: @MainActor () async -> Void = {}
 
-    /// Result of the Engines pane's "Check key" row. Observable so the row's
-    /// one-line label follows it; reset to `.idle` is the caller's business.
-    var mistralAPIKeyCheckState: MistralAPIKeyCheckState = .idle
+    /// The Engines pane's "Check key" row, for the STORED key. Its state reads
+    /// idle once the stored key is no longer the one checked (#1873).
+    @ObservationIgnored let mistralAPIKeyCheck = MistralAPIKeyCheck()
+    var mistralAPIKeyCheckState: MistralAPIKeyCheckState {
+        mistralAPIKeyCheck.state(for: settings.mistralAPIKey)
+    }
     /// The local record of Mistral requests Settings → Engines sums. Nil
     /// without runtime services (tests), so a unit test never writes the
     /// user's ledger.
@@ -52,10 +55,7 @@ final class EnginesModel {
     /// Bumped on every ledger write so the Usage row re-reads the ledger.
     private(set) var mistralUsageRevision = 0
 
-    /// The in-flight key check. Kept awaitable so the unit suite observes the
-    /// result without polling a clock.
-    @ObservationIgnored
-    private(set) var mistralAPIKeyCheckTask: Task<Void, Never>?
+    var mistralAPIKeyCheckTask: Task<Void, Never>? { mistralAPIKeyCheck.task }
 
     /// The Mistral model pickers' fetch state.
     var mistralModelListState: MistralModelListState = .idle
@@ -225,13 +225,9 @@ final class EnginesModel {
 
     /// The Engines pane's "Check key" button: checks the STORED key.
     func checkMistralAPIKey() {
-        guard !mistralAPIKeyCheckState.isChecking else { return }
-        let apiKey = settings.mistralAPIKey
-        mistralAPIKeyCheckState = .checking
-        mistralAPIKeyCheckTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            let verification = await self.verifyMistralAPIKey(apiKey)
-            self.mistralAPIKeyCheckState = .finished(verification)
+        let verifier = mistralAPIKeyVerifier
+        mistralAPIKeyCheck.start(key: settings.mistralAPIKey) { apiKey in
+            await verifier.verify(apiKey: apiKey)
         }
     }
 

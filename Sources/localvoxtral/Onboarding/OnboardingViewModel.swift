@@ -42,8 +42,7 @@ final class OnboardingViewModel {
         didSet {
             // A verdict belongs to the key it checked (#1626).
             guard mistralAPIKeyDraft != oldValue else { return }
-            mistralAPIKeyCheckGeneration += 1
-            mistralAPIKeyCheckState = .idle
+            mistralAPIKeyCheck.invalidate()
             mistralAPIKeySaveFailure = nil
         }
     }
@@ -53,19 +52,19 @@ final class OnboardingViewModel {
     /// the next launch (#1624).
     private(set) var mistralAPIKeySaveFailure: String?
 
-    /// Bumped by every edit and every check, so only the latest check
-    /// publishes: an edit lets a new check start while an old one is still
+    /// The `.engine` page's own "Check key" row, for the draft. Every edit
+    /// invalidates it, so a new check can start while an old one is still
     /// out, even for the same key typed again.
-    @ObservationIgnored private var mistralAPIKeyCheckGeneration = 0
+    @ObservationIgnored let mistralAPIKeyCheck = MistralAPIKeyCheck()
 
-    /// Result of the `.engine` page's own "Check key" press. Advisory — a
-    /// rejected key does not block Continue, because the check can be wrong
-    /// (offline, proxy, a key minted seconds ago) and the user owns the choice.
-    var mistralAPIKeyCheckState: MistralAPIKeyCheckState = .idle
+    /// Advisory — a rejected key does not block Continue, because the check
+    /// can be wrong (offline, proxy, a key minted seconds ago) and the user
+    /// owns the choice.
+    var mistralAPIKeyCheckState: MistralAPIKeyCheckState {
+        mistralAPIKeyCheck.state(for: mistralAPIKeyDraft)
+    }
 
-    /// The in-flight check. Kept awaitable so the unit suite observes the
-    /// result without polling a clock.
-    @ObservationIgnored private(set) var mistralAPIKeyCheckTask: Task<Void, Never>?
+    var mistralAPIKeyCheckTask: Task<Void, Never>? { mistralAPIKeyCheck.task }
 
     /// Consent to download the polishing LLM during setup. Default ON;
     /// declining skips the polishing download now (it downloads later, the first
@@ -182,17 +181,10 @@ final class OnboardingViewModel {
     /// The `.engine` page's "Check key" button. Advisory only — see
     /// `mistralAPIKeyCheckState`.
     func checkMistralAPIKeyDraft() {
-        guard !mistralAPIKeyCheckState.isChecking else { return }
-        let apiKey = mistralAPIKeyDraft
-        guard !apiKey.trimmed.isEmpty else { return }
-        mistralAPIKeyCheckGeneration += 1
-        let generation = mistralAPIKeyCheckGeneration
-        mistralAPIKeyCheckState = .checking
-        mistralAPIKeyCheckTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            let verification = await self.viewModel.engines.verifyMistralAPIKey(apiKey)
-            guard self.mistralAPIKeyCheckGeneration == generation else { return }
-            self.mistralAPIKeyCheckState = .finished(verification)
+        guard !mistralAPIKeyDraft.trimmed.isEmpty else { return }
+        let engines = viewModel.engines
+        mistralAPIKeyCheck.start(key: mistralAPIKeyDraft) { apiKey in
+            await engines.verifyMistralAPIKey(apiKey)
         }
     }
 

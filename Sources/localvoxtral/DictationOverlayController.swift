@@ -342,6 +342,7 @@ final class DictationOverlayController {
             polished: snapshot.polished,
             polishedFrom: snapshot.polishedFrom,
             polishing: snapshot.polishing,
+            secondPassMissed: snapshot.secondPassMissed,
             micLevel: micLevel,
             polishColor: polishColorProvider().color,
             claudeJoin: snapshot.claudeJoin,

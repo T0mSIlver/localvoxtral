@@ -191,21 +191,6 @@ final class TextInsertionService {
         return text
     }
 
-    /// Try to insert text using only the Accessibility API (no keyboard event
-    /// fallback). Returns `true` if the text was inserted successfully.
-    /// Use this for delayed/finalized text blocks where keyboard events are
-    /// unreliable because focus context may have shifted.
-    func insertTextUsingAccessibilityOnly(_ text: String, preferredAppPID: pid_t? = nil) -> Bool {
-        guard !text.isEmpty else { return true }
-        refreshAccessibilityTrustState()
-        if insertTextUsingAccessibility(text, preferredAppPID: preferredAppPID) {
-            clearAccessibilityErrorIfNeeded()
-            axInsertionSuccessCount += 1
-            return true
-        }
-        return false
-    }
-
     func insertText(_ text: String) -> TextInsertResult {
         guard !text.isEmpty else { return .insertedByAccessibility }
         refreshAccessibilityTrustState()
