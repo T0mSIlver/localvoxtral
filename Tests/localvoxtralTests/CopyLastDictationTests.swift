@@ -20,11 +20,15 @@ final class CopyLastDictationTests: XCTestCase {
         viewModel.session.warningSound = { warnings += 1 }
         viewModel.session.sessionStartGeneration = 5
 
-        viewModel.session.keepOverlayTextOfARetiredDictation("from four", sessionID: nil, generation: 4)
+        viewModel.session.settleUndeliveredOverlayText(
+            "from four", outcome: .refused, keysReachPrompt: true, sessionID: nil, generation: 4, preferredAppPID: nil
+        )
         XCTAssertEqual(warnings, 1, "the earlier dictation's copy")
         _ = viewModel.session.keepUndeliveredAgentText("from five")
         XCTAssertEqual(warnings, 2, "the running dictation's own copy still warns")
-        viewModel.session.keepOverlayTextOfARetiredDictation("more from four", sessionID: nil, generation: 4)
+        viewModel.session.settleUndeliveredOverlayText(
+            "more from four", outcome: .refused, keysReachPrompt: true, sessionID: nil, generation: 4, preferredAppPID: nil
+        )
         XCTAssertEqual(warnings, 2, "the earlier dictation already warned")
         XCTAssertEqual(written.values, ["from four", "from five", "more from four"])
     }
