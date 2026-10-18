@@ -108,7 +108,9 @@ extension DictationSessionController {
     /// commit, a commit with no join, or one the spoken trigger sent leaves
     /// nothing the next commit may continue. A commit of nothing changed no
     /// prompt, so it changes nothing here either: recording it would arm a
-    /// space for a prompt that may be fresh (Vibe review of #806).
+    /// space for a prompt that may be fresh (Vibe review of #806). Unless the
+    /// spoken trigger sends it: a lone send phrase submits the box as it
+    /// stands (#1870).
     func noteOverlayCommit(
         _ commit: StopCommitCoordinator.CommitResult,
         committedText: String,
@@ -116,7 +118,7 @@ extension DictationSessionController {
         targetPID: pid_t?,
         spokenSend: OverlaySpokenSend?
     ) {
-        guard commit.outcome != .succeeded || !committedText.trimmed.isEmpty else { return }
+        guard commit.outcome != .succeeded || !committedText.trimmed.isEmpty || spokenSend != nil else { return }
         // The committer read the generation just now, with no await between.
         lastOverlayCommitLanding = commit.outcome == .succeeded && spokenSend == nil
             ? currentLanding(join: join, targetPID: targetPID, generation: sessionStartGeneration)

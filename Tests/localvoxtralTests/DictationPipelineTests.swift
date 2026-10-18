@@ -1624,6 +1624,33 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(typed.text, "", "no key at all")
     }
 
+    /// Review of #1877: the lone send submitted the box, but the landing of
+    /// the commit before it stayed, so the next dictation into the emptied
+    /// box started with a space until the session's submit count moved, and
+    /// `/compact` became text (#802).
+    func testAfterALoneSpokenSendTheNextFillTakesNoLeadingSpace() async throws {
+        let (pipeline, _, fills) = try await modChannelPipeline(
+            answers: [.fill, .sent, .fill],
+            overlayCoordinator: realOverlayCoordinator(focusedPID: 4343)
+        )
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "run the tests.")
+        _ = await settled.wait(for: 1)
+        pipeline.server.forgetFrames()
+        await dictateCommand(pipeline, "send it")
+        _ = await settled.wait(for: 2)
+        await dictate(pipeline, "/compact")
+        let all = await settled.wait(for: 3)
+
+        XCTAssertTrue(all)
+        XCTAssertEqual(fills.kinds, [.fill, .send, .fill])
+        XCTAssertEqual(fills.texts, ["run the tests.", "", "/compact"])
+    }
+
     /// The mod refused the lone send (a dialog): nothing is typed, and
     /// Return submits the box, once, since the session's pane is in front.
     func testALoneSpokenSendTheModRefusesIsReturnedOnceWithNothingTyped() async throws {
