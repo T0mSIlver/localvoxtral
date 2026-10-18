@@ -29,11 +29,19 @@ final class StopSecondPassTests: XCTestCase {
             StopSecondPass.deadline(
                 audioSeconds: 300, uploadBytes: fiveMinutes, measuredUploadBytesPerSecond: 5_000_000),
             .milliseconds(7_500), "a fast link keeps today's deadline")
-        // 10 Mbit/s: 7.68 s of upload, 11.52 s with margin, 5 s already allowed.
+        XCTAssertEqual(
+            StopSecondPass.deadline(
+                audioSeconds: 300, uploadBytes: fiveMinutes, measuredUploadBytesPerSecond: 1_920_000),
+            .milliseconds(7_500), "the assumed rate keeps today's deadline exactly")
+        XCTAssertEqual(
+            StopSecondPass.deadline(
+                audioSeconds: 300, uploadBytes: fiveMinutes, measuredUploadBytesPerSecond: 2_500_000),
+            .milliseconds(7_500), "the margin is not charged on the upload time already allowed")
+        // 10 Mbit/s: 7.68 s of upload, 5 s already allowed, 2.68 s over with margin 4.02 s.
         XCTAssertEqual(
             StopSecondPass.deadline(
                 audioSeconds: 300, uploadBytes: fiveMinutes, measuredUploadBytesPerSecond: 1_250_000),
-            .milliseconds(14_020))
+            .milliseconds(11_520))
         XCTAssertEqual(
             StopSecondPass.deadline(
                 audioSeconds: 300, uploadBytes: fiveMinutes, measuredUploadBytesPerSecond: 10_000),

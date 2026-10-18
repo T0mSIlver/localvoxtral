@@ -43,8 +43,9 @@ package enum StopSecondPass {
             + max(audioSeconds, 0) / 60 * deadlineSecondsPerAudioMinute
         if let rate = measuredUploadBytesPerSecond, rate > 0, uploadBytes > 0 {
             let bytes = Double(uploadBytes)
-            let extra = bytes * measuredUploadMargin / rate - bytes / assumedUploadBytesPerSecond
-            if extra > 0 {
+            let slower = bytes / rate - bytes / assumedUploadBytesPerSecond
+            if slower > 0 {
+                let extra = slower * measuredUploadMargin
                 seconds = max(seconds, min(seconds + extra, maxMeasuredDeadlineSeconds))
             }
         }
