@@ -3604,7 +3604,12 @@ final class DictationPipelineTests: XCTestCase {
     /// still the current one: the relay says keys reach the same prompt, so
     /// the text is typed instead.
     func testAnOverlayCommitTheRelayRefusesIsTypedInstead() async throws {
-        let route = ScriptedPromptRoute { _ in .typeInstead }
+        // The answer waits for the test, so it arrives after the stop settled.
+        let release = BoundedWait()
+        let route = ScriptedPromptRoute { _ in
+            _ = await release.value(failAfter: 10)
+            return .typeInstead
+        }
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
         pipeline.overlay.insertsThroughCommitter = true
         let typed = recordTypedText(pipeline)
@@ -3614,6 +3619,7 @@ final class DictationPipelineTests: XCTestCase {
             armPromptRoute(pipeline, route)
             sink = pipeline.viewModel.textInsertion.promptRelaySink
         }
+        release.resolve()
         await sink?.waitUntilIdle()
 
         XCTAssertEqual(route.calls, [.append("Refused.")])
@@ -3623,7 +3629,11 @@ final class DictationPipelineTests: XCTestCase {
     /// One the relay cannot tell landed is kept (on the clipboard, History
     /// being off) and typed nowhere: typing it could put it in twice.
     func testAnOverlayCommitTheRelayMayHaveLandedIsKeptNotTyped() async throws {
-        let route = ScriptedPromptRoute { _ in .keepInHistory }
+        let release = BoundedWait()
+        let route = ScriptedPromptRoute { _ in
+            _ = await release.value(failAfter: 10)
+            return .keepInHistory
+        }
         let pipeline = try await makePipeline(outputMode: .overlayBuffer)
         pipeline.overlay.insertsThroughCommitter = true
         pipeline.viewModel.settings.dictationHistoryRetention = .off
@@ -3633,6 +3643,7 @@ final class DictationPipelineTests: XCTestCase {
         let typed = recordTypedText(pipeline)
 
         await dictate(pipeline, "Maybe landed.") { armPromptRoute(pipeline, route) }
+        release.resolve()
         let kept = await copiedOnce.value(failAfter: 10)
 
         XCTAssertTrue(kept, "the text is kept")
