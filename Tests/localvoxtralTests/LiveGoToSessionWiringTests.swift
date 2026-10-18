@@ -341,6 +341,72 @@ final class LiveGoToSessionWiringTests: XCTestCase {
         XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false])
     }
 
+    /// #1882: with History off, a new dictation that ends a Live stop while
+    /// text waits behind a code-fence paste copies that text and nothing
+    /// typed before it. The copy waits for the paste's restore.
+    func testANewDictationEndingALiveStopCopiesOnlyTheTextWaitingBehindAPasteWithHistoryOff() async {
+        let first = "first:\n```\nline one\n```"
+        let second = "second:\n```\nline two\n```"
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .noFocusedElement }
+        let harness = makeHarness(sessions: [], app: ClaudeDesktopAllowlist.bundleID)
+        harness.viewModel.settings.dictationHistoryRetention = .off
+        let copied = harness.viewModel.recordPasteboardWrites()
+        let clock = ManualSessionClock()
+        harness.viewModel.textInsertion.pasteRestoreSleep = clock.sleep
+        let pasted = Box<[String]>([])
+        harness.viewModel.textInsertion.debugConfigureInsertionHooks(
+            unicodePoster: { _ in true },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false },
+            frontmostPIDReader: { Self.terminalPID },
+            shiftReturnPoster: { true },
+            commandVPaster: { text in
+                pasted.value.append(text)
+                return true
+            }
+        )
+
+        harness.partial(first)
+        harness.final(first)
+        harness.partial(second)
+        harness.final(second)
+        harness.stop()
+        await clock.waitForSleepers(1)
+        XCTAssertTrue(harness.viewModel.isFinalizingStop, "the stop waits for the paste")
+
+        XCTAssertTrue(harness.viewModel.session.cancelPolishingForNewSessionIfNeeded())
+        XCTAssertEqual(copied.values, [], "nothing replaces the clipboard the paste may still read")
+        clock.advance(by: 0.15)
+        await harness.viewModel.textInsertion.pastesSettled()
+
+        XCTAssertEqual(pasted.value.map { $0.trimmingCharacters(in: .whitespaces) }, [first], "the waiting text is not pasted")
+        XCTAssertEqual(copied.values, [second], "only the text that never landed is copied")
+        XCTAssertEqual(harness.records.value.map(\.commitSucceeded), [false])
+    }
+
+    /// #1882: the segments that ended behind a go-to still resolving are
+    /// copied with History off when a new dictation ends the stop's wait.
+    func testANewDictationEndingALiveStopCopiesTheWordsQueuedBehindAGoToWithHistoryOff() {
+        let harness = makeHarness()
+        harness.viewModel.settings.dictationHistoryRetention = .off
+        let copied = harness.viewModel.recordPasteboardWrites()
+
+        harness.partial("run the tests.")
+        harness.final("run the tests.")
+        harness.partial("go to payments")
+        harness.final("go to payments")
+        harness.partial("fix the build")
+        harness.final("fix the build")
+        harness.viewModel.isDictating = false
+        harness.viewModel.session.finishStoppedSession(promotePendingSegment: true)
+        XCTAssertTrue(harness.viewModel.isFinalizingStop, "the wait counts as finalizing")
+
+        XCTAssertTrue(harness.viewModel.session.cancelPolishingForNewSessionIfNeeded())
+
+        XCTAssertEqual(harness.typedText, "run the tests.")
+        XCTAssertEqual(copied.values, ["fix the build"], "the words behind the go-to, not the typed ones")
+    }
+
     func testAnAmbiguousNameTypesNothingAndSaysSo() async {
         let harness = makeHarness(sessions: [
             session("a", cwd: "/r/localvoxtral", tty: "/dev/ttys001"),
