@@ -3611,6 +3611,58 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(typed.text, "", "the late text is typed nowhere")
     }
 
+    /// An Overlay Buffer commit the relay refuses while its dictation is
+    /// still the current one: the relay says keys reach the same prompt, so
+    /// the text is typed instead.
+    func testAnOverlayCommitTheRelayRefusesIsTypedInstead() async throws {
+        // The answer waits for the test, so it arrives after the stop settled.
+        let release = BoundedWait()
+        let route = ScriptedPromptRoute { _ in
+            _ = await release.value(failAfter: 10)
+            return .typeInstead
+        }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.overlay.insertsThroughCommitter = true
+        let typed = recordTypedText(pipeline)
+
+        var sink: AgentPromptSink?
+        await dictate(pipeline, "Refused.") {
+            armPromptRoute(pipeline, route)
+            sink = pipeline.viewModel.textInsertion.promptRelaySink
+        }
+        release.resolve()
+        await sink?.waitUntilIdle()
+
+        XCTAssertEqual(route.calls, [.append("Refused.")])
+        XCTAssertEqual(typed.text, "Refused.")
+    }
+
+    /// One the relay cannot tell landed is kept (on the clipboard, History
+    /// being off) and typed nowhere: typing it could put it in twice.
+    func testAnOverlayCommitTheRelayMayHaveLandedIsKeptNotTyped() async throws {
+        let release = BoundedWait()
+        let route = ScriptedPromptRoute { _ in
+            _ = await release.value(failAfter: 10)
+            return .keepInHistory
+        }
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        pipeline.overlay.insertsThroughCommitter = true
+        pipeline.viewModel.settings.dictationHistoryRetention = .off
+        pipeline.viewModel.settings.autoCopyEnabled = false
+        let copiedOnce = BoundedWait()
+        let copied = pipeline.viewModel.recordPasteboardWrites { copiedOnce.resolve() }
+        let typed = recordTypedText(pipeline)
+
+        await dictate(pipeline, "Maybe landed.") { armPromptRoute(pipeline, route) }
+        release.resolve()
+        let kept = await copiedOnce.value(failAfter: 10)
+
+        XCTAssertTrue(kept, "the text is kept")
+        XCTAssertEqual(route.calls, [.append("Maybe landed.")])
+        XCTAssertEqual(copied.values, ["Maybe landed."])
+        XCTAssertEqual(typed.text, "")
+    }
+
     /// An Overlay Buffer commit's own relay fallback: dictation 1's append
     /// is refused after dictation 2 started. The text is kept (on the
     /// clipboard, History being off) and typed nowhere (#1657).
