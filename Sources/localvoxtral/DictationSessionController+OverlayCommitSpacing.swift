@@ -55,7 +55,7 @@ extension DictationSessionController {
         draft: ClaudePromptDraft? = nil
     ) -> OverlayCommitDestination {
         var destination: OverlayCommitDestination = if let mod {
-            .route { mod.handOff($0, preferredAppPID: $1) }
+            .route { [weak self] in self?.handOffOverlayCommit($0, to: mod, preferredAppPID: $1) }
         } else {
             overlayTextDestination
         }
