@@ -133,7 +133,7 @@ extension DictationSessionController {
             // stands (#1870).
             guard let mod, !mod.handedOff else { break }
             Log.dictation.notice("spoken send: nothing to fill; the session's mod submits the prompt box")
-            mod.handOff("", preferredAppPID: nil)
+            handOffOverlayCommit("", to: mod, preferredAppPID: nil)
         }
     }
 
