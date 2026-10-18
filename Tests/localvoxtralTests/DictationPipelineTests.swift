@@ -288,6 +288,27 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(pipeline.overlay.committedTexts, [Self.phrase])
     }
 
+    /// The bundled helper stops transcribing mid-dictation (its utterance
+    /// limit) and says so. The mic used to stay open into an engine that would
+    /// transcribe nothing more (#314). The dictation now stops on it: the final
+    /// commit goes out, the text so far commits, and the stop ends on the
+    /// helper's sentence instead of Ready (#1865).
+    func testTranscriptionStoppedStopsTheDictationAndCommitsItsText() async throws {
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let head = "hello from localvoxtral."
+        let message = "10-minute limit reached; start again."
+
+        await startAndSpeak(pipeline)
+        await sendDelta(pipeline, head)
+        pipeline.server.send(["type": "error", "code": "transcription_stopped", "message": message])
+
+        await finishStoppedSession(pipeline, finalText: head, finalStatus: message)
+        XCTAssertFalse(pipeline.viewModel.isDictating)
+        XCTAssertFalse(pipeline.microphone.deliver(Self.speech(seed: 3)), "the microphone is off")
+        XCTAssertEqual(pipeline.overlay.committedTexts, [head])
+        XCTAssertEqual(pipeline.records.all.map(\.rawText), [head])
+    }
+
     /// Without a network, a dictation to a loopback speech server needs none:
     /// the idle status does not report the loss, and the start goes ahead.
     func testWithoutANetworkADictationToALoopbackServerStarts() async throws {

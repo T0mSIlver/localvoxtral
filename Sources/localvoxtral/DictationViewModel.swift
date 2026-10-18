@@ -117,6 +117,7 @@ final class DictationViewModel {
         static let overlayCopiedToClipboard = "Copied for manual paste."
         static let agentPromptTextKeptInHistory = "Not delivered; the text is in History."
         static let dictationEndMayBeMissing = "The end of the dictation may be missing."
+        static let microphoneSentNoAudio = "Mic sent no audio. Dictation stopped."
         static let noNetworkConnection = "No network connection."
         static let microphoneAccessDenied = "Microphone access denied."
         static let finalizing = "Finalizing..."

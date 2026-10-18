@@ -68,7 +68,8 @@ package enum RealtimeEvent: Sendable {
     case error(String)
     /// The backend stopped transcribing before the final commit (the bundled helper's
     /// utterance limit, or a model end-of-stream). The message is one short sentence meant
-    /// for the status line; the connection stays open (#314).
+    /// for the status line (#314). The app stops the dictation on it and commits what it
+    /// has (#1865).
     case transcriptionStopped(String)
     /// The client finished its socket before the server's context limit and
     /// carries the dictation on in a fresh one (#1139). Raised by the retiring

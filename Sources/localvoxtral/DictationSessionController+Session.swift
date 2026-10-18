@@ -735,8 +735,8 @@ extension DictationSessionController {
             refreshMicrophoneInputs: { [weak self] in
                 self?.refreshMicrophoneInputs()
             },
-            stopDictation: { [weak self] reason in
-                self?.stopDictation(reason: reason)
+            stopForSilentInput: { [weak self] in
+                self?.stopDictationForSilentMicrophone()
             },
             stopForUnavailableInput: { [weak self] in
                 self?.stopDictationForUnavailableMicrophone()
@@ -924,6 +924,27 @@ extension DictationSessionController {
         )
         stopDictation(reason: "selected input unavailable")
         lastError = Self.microphoneDisconnectedMessage
+        holdFailureIndicatorUntilStopCompletes = isFinalizingStop
+        markRecentConnectionFailureIndicator()
+    }
+
+    /// The mic still sends no frames `silentInputStopSeconds` after the
+    /// monitor's last restart: stop and commit what exists rather than keep
+    /// recording into nothing (#1865).
+    func stopDictationForSilentMicrophone() {
+        guard isDictating else { return }
+        Log.backends.error(
+            "microphone sent no audio \(Int(AudioCaptureHealthMonitor.silentInputStopSeconds), privacy: .public)s after its last restart; stopping the dictation and committing its text"
+        )
+        stopOnItsOwn(reason: "microphone sent no audio", status: StatusStrings.microphoneSentNoAudio)
+    }
+
+    /// A stop the app decided, not the user: the text so far commits as on
+    /// any stop, the icon stays red through the finalization, and the stop
+    /// ends on `status` instead of Ready.
+    func stopOnItsOwn(reason: String, status: String) {
+        stoppedOnItsOwnStatus = status
+        stopDictation(reason: reason)
         holdFailureIndicatorUntilStopCompletes = isFinalizingStop
         markRecentConnectionFailureIndicator()
     }

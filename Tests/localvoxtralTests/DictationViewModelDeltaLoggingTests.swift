@@ -42,7 +42,8 @@ final class DictationViewModelDeltaLoggingTests: XCTestCase {
             dependencies: DictationViewModel.Dependencies(
                 onRealtimeDeltaLogRecord: { [weak self] record in
                     self?.captured.append(record)
-                }
+                },
+                clock: ManualSessionClock().clock
             )
         )
         retainForTestProcessLifetime(viewModel)
@@ -176,7 +177,8 @@ final class DictationViewModelDeltaLoggingTests: XCTestCase {
     /// Before #314 a helper that stopped transcribing mid-dictation arrived as a generic
     /// error: the popover read "Realtime error." and "See Console for details.", hiding the
     /// one actionable sentence. That sentence is now the status line itself, and nothing
-    /// sets `lastError`, so the popover shows no Console hint under it.
+    /// sets `lastError`, so the popover shows no Console hint under it. The dictation stops
+    /// on it and ends on that sentence, not on Ready (#1865).
     func testTranscriptionStoppedMidDictationBecomesTheStatusLine() {
         let viewModel = makeViewModel(enableDeltaLogging: true)
         viewModel.isDictating = true
@@ -185,6 +187,8 @@ final class DictationViewModelDeltaLoggingTests: XCTestCase {
 
         viewModel.session.handle(event: .transcriptionStopped(message))
 
+        XCTAssertFalse(viewModel.isDictating)
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
         XCTAssertEqual(viewModel.statusText, message)
         XCTAssertNil(viewModel.lastError)
         XCTAssertEqual(captured.map(\.kind), [.error])

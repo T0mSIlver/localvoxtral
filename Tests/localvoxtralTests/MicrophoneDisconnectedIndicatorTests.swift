@@ -40,6 +40,25 @@ final class MicrophoneDisconnectedIndicatorTests: XCTestCase {
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .idle)
     }
 
+    /// A mic that stopped sending frames stops the dictation (#1865). The stop
+    /// keeps the icon red through its finalization and ends on why, not Ready.
+    func testSilentMicStopEndsOnItsReasonWithTheIconRed() {
+        let viewModel = makeDictatingViewModel()
+
+        viewModel.session.stopDictationForSilentMicrophone()
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
+
+        XCTAssertFalse(viewModel.isDictating)
+        XCTAssertEqual(viewModel.statusText, "Mic sent no audio. Dictation stopped.")
+        XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
+
+        viewModel.isDictating = true
+        viewModel.stopDictation(reason: "user")
+        viewModel.session.finishStoppedSession(promotePendingSegment: false)
+
+        XCTAssertEqual(viewModel.statusText, "Ready", "the next stop ends on Ready again")
+    }
+
     private func makeDictatingViewModel() -> DictationViewModel {
         let suiteName = "localvoxtral.MicrophoneDisconnectedIndicatorTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

@@ -5,7 +5,7 @@ import os
 final class AudioCaptureHealthMonitor {
     struct Callbacks {
         var refreshMicrophoneInputs: () -> Void
-        var stopDictation: (String) -> Void
+        var stopForSilentInput: () -> Void
         var stopForUnavailableInput: () -> Void
         var isDictating: () -> Bool
         var selectedInputDeviceID: () -> String
@@ -26,6 +26,7 @@ final class AudioCaptureHealthMonitor {
     private var clock = SessionClock.live
     private var captureHealthTask: Task<Void, Never>?
     private var pendingAudioChangeTask: Task<Void, Never>?
+    private var silentInputStopTask: Task<Void, Never>?
     private var captureInterruptionDetectedAt: Date?
     private var startupCaptureGraceUntil: Date?
     private var startupConfigurationChangeDetected = false
@@ -44,6 +45,11 @@ final class AudioCaptureHealthMonitor {
     static let startupBuiltinStabilizationSeconds: TimeInterval = 0.45
     static let startupExternalStabilizationSeconds: TimeInterval = 1.6
     static let maxCaptureRecoveryAttempts = 3
+    /// How long a mic that still sends no frames after the last recovery
+    /// attempt keeps the dictation going. Past it the dictation stops and
+    /// commits what it has (owner decision on #1865, reversing #314): the
+    /// user would otherwise keep talking into nothing.
+    static let silentInputStopSeconds: TimeInterval = 10
     static let fastAudioChangeEvaluationDelayMilliseconds = 120
 
     var isMonitoring: Bool { callbacks != nil }
@@ -111,6 +117,7 @@ final class AudioCaptureHealthMonitor {
         startupRouteStabilizationUntil = nil
         startupTapRefreshAttempted = false
         captureRecoveryAttemptCount = 0
+        disarmSilentInputStop()
         lastNoAudioDiagnosticAt = nil
     }
 
@@ -119,6 +126,7 @@ final class AudioCaptureHealthMonitor {
         captureHealthTask = nil
         pendingAudioChangeTask?.cancel()
         pendingAudioChangeTask = nil
+        disarmSilentInputStop()
     }
 
     // MARK: - Private
@@ -141,6 +149,7 @@ final class AudioCaptureHealthMonitor {
                 if hasRecentAudio {
                     self.captureInterruptionDetectedAt = nil
                     self.captureRecoveryAttemptCount = 0
+                    self.disarmSilentInputStop()
                     continue
                 }
 
@@ -189,6 +198,7 @@ final class AudioCaptureHealthMonitor {
             startupRouteStabilizationUntil = nil
             startupTapRefreshAttempted = false
             captureRecoveryAttemptCount = 0
+            disarmSilentInputStop()
             lastNoAudioDiagnosticAt = nil
         } else {
             if startupConfigurationChangeDetected, !hasCapturedAnyAudio {
@@ -249,6 +259,7 @@ final class AudioCaptureHealthMonitor {
             {
                 if captureRecoveryAttemptCount < Self.maxCaptureRecoveryAttempts {
                     captureRecoveryAttemptCount += 1
+                    armSilentInputStopAfterLastAttempt()
                     debugLog(
                         "startup produced no audio; attempting capture restart on selected input "
                             + "attempt=\(captureRecoveryAttemptCount)/\(Self.maxCaptureRecoveryAttempts)"
@@ -280,6 +291,7 @@ final class AudioCaptureHealthMonitor {
             if !isEngineRunning, microphone.resumeIfNeeded() {
                 captureInterruptionDetectedAt = nil
                 captureRecoveryAttemptCount = 0
+                disarmSilentInputStop()
                 startupCaptureGraceUntil = clock.now().addingTimeInterval(Self.startupCaptureGraceSeconds)
                 scheduleAudioChangeEvaluation()
                 return
@@ -287,6 +299,7 @@ final class AudioCaptureHealthMonitor {
 
             if captureRecoveryAttemptCount < Self.maxCaptureRecoveryAttempts {
                 captureRecoveryAttemptCount += 1
+                armSilentInputStopAfterLastAttempt()
                 debugLog(
                     "attempting capture recovery on selected input "
                         + "attempt=\(captureRecoveryAttemptCount)/\(Self.maxCaptureRecoveryAttempts)"
@@ -314,6 +327,29 @@ final class AudioCaptureHealthMonitor {
             )
             return
         }
+    }
+
+    /// Arms the stop when the attempt just made was the last one: if the mic
+    /// still sends nothing `silentInputStopSeconds` later, the dictation
+    /// stops. Audio coming back, or a fresh round of attempts, disarms it.
+    private func armSilentInputStopAfterLastAttempt() {
+        guard captureRecoveryAttemptCount >= Self.maxCaptureRecoveryAttempts else { return }
+        silentInputStopTask?.cancel()
+        let sleep = clock.sleep
+        silentInputStopTask = Task { [weak self] in
+            await sleep(.seconds(Self.silentInputStopSeconds))
+            guard !Task.isCancelled, let self, let microphone = self.microphone,
+                  let callbacks = self.callbacks, callbacks.isDictating(),
+                  !microphone.hasRecentCapturedAudio(within: Self.recentAudioToleranceSeconds)
+            else { return }
+            self.silentInputStopTask = nil
+            callbacks.stopForSilentInput()
+        }
+    }
+
+    private func disarmSilentInputStop() {
+        silentInputStopTask?.cancel()
+        silentInputStopTask = nil
     }
 
     private func startupRouteStabilizationSeconds() -> TimeInterval {
