@@ -1753,6 +1753,189 @@ final class DictationPipelineTests: XCTestCase {
         XCTAssertEqual(typed.text, "", "no key at all")
     }
 
+    /// "Send it" said alone, with words already in the prompt box: the mod
+    /// is asked to submit the box as it stands, with one empty-text send,
+    /// and no key is posted (#1870). Against the real overlay coordinator,
+    /// which commits nothing for an empty buffer.
+    func testALoneSpokenSendThroughTheModSubmitsTheDraftInTheBox() async throws {
+        let overlay = realOverlayCoordinator(focusedPID: 4343)
+        var returns: [pid_t] = []
+        let (pipeline, typed, fills) = try await modChannelPipeline(
+            answers: [.sent], drafts: [(text: "run the tests", cursor: 13)],
+            returnKeyPoster: { pid in
+                returns.append(pid)
+                return true
+            },
+            overlayCoordinator: overlay
+        )
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+        addTeardownBlock { @MainActor in TerminalTargetDetector.debugSecureEventInputOverride = nil }
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        // Nothing is left to save once the phrase is cut, so no record.
+        await dictateCommand(pipeline, "Send it.")
+        let done = await settled.wait(for: 1)
+
+        XCTAssertTrue(done, "the mod was asked to submit")
+        XCTAssertEqual(fills.kinds, [.send])
+        XCTAssertEqual(fills.texts, [""])
+        XCTAssertEqual(returns, [], "no Return key")
+        XCTAssertEqual(typed.text, "", "no key at all")
+    }
+
+    /// Review of #1877: the lone send submitted the box, but the landing of
+    /// the commit before it stayed, so the next dictation into the emptied
+    /// box started with a space until the session's submit count moved, and
+    /// `/compact` became text (#802).
+    func testAfterALoneSpokenSendTheNextFillTakesNoLeadingSpace() async throws {
+        let (pipeline, _, fills) = try await modChannelPipeline(
+            answers: [.fill, .sent, .fill],
+            overlayCoordinator: realOverlayCoordinator(focusedPID: 4343)
+        )
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "run the tests.")
+        _ = await settled.wait(for: 1)
+        pipeline.server.forgetFrames()
+        await dictateCommand(pipeline, "send it")
+        _ = await settled.wait(for: 2)
+        await dictate(pipeline, "/compact")
+        let all = await settled.wait(for: 3)
+
+        XCTAssertTrue(all)
+        XCTAssertEqual(fills.kinds, [.fill, .send, .fill])
+        XCTAssertEqual(fills.texts, ["run the tests.", "", "/compact"])
+    }
+
+    /// The mod refused the lone send (a dialog): nothing is typed, and
+    /// Return submits the box, once, since the session's pane is in front.
+    func testALoneSpokenSendTheModRefusesIsReturnedOnceWithNothingTyped() async throws {
+        var returns: [pid_t] = []
+        let (pipeline, typed, fills) = try await modChannelPipeline(
+            answers: [.refuse],
+            returnKeyPoster: { pid in
+                returns.append(pid)
+                return true
+            },
+            overlayCoordinator: realOverlayCoordinator(focusedPID: 4343)
+        )
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == 4343 ? TerminalScreenAllowlist.ghosttyBundleID : nil
+        }
+        let copied = pipeline.viewModel.recordPasteboardWrites()
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictateCommand(pipeline, "send it")
+        let done = await settled.wait(for: 1)
+
+        XCTAssertTrue(done)
+        XCTAssertEqual(fills.kinds, [.send])
+        XCTAssertEqual(typed.text, "")
+        XCTAssertEqual(returns, [4343])
+        XCTAssertEqual(copied.values, [], "the clipboard is left alone")
+    }
+
+    /// The mod refused the lone send while another tab of the terminal was
+    /// in front: no key goes anywhere, the box still holds the fill before
+    /// it, and the next dictation continues that prompt with a space
+    /// (review of #1877).
+    func testALoneSpokenSendRefusedWithThePaneAwayPressesNothingAndTheNextFillContinues() async throws {
+        let focus = FocusedPane("/dev/ttys042")
+        let answered = EventCount()
+        var returns: [pid_t] = []
+        let (pipeline, typed, fills) = try await modChannelPipeline(
+            answers: [.fill, .refuse, .fill],
+            focus: focus,
+            returnKeyPoster: { pid in
+                returns.append(pid)
+                return true
+            },
+            overlayCoordinator: realOverlayCoordinator(focusedPID: 4343),
+            beforeAnswer: {
+                // The user is in another tab when the mod answers the send.
+                answered.increment()
+                if answered.value == 2 { focus.tty = "/dev/ttys099" }
+            }
+        )
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == 4343 ? TerminalScreenAllowlist.ghosttyBundleID : nil
+        }
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictate(pipeline, "run the tests.")
+        _ = await settled.wait(for: 1)
+        pipeline.server.forgetFrames()
+        await dictateCommand(pipeline, "send it")
+        _ = await settled.wait(for: 2)
+        focus.tty = "/dev/ttys042"
+        await dictate(pipeline, "and lint.")
+        let all = await settled.wait(for: 3)
+
+        XCTAssertTrue(all)
+        XCTAssertEqual(fills.kinds, [.fill, .send, .fill])
+        XCTAssertEqual(fills.texts, ["run the tests.", "", " and lint."])
+        XCTAssertEqual(returns, [], "no Return into the other tab")
+        XCTAssertEqual(typed.text, "", "no key at all")
+    }
+
+    /// The mod never answered the lone send: it may have submitted, so no
+    /// Return follows, and nothing is typed (#1870).
+    func testALoneSpokenSendTheModNeverAnswersPressesNothing() async throws {
+        let answered = BoundedWait()
+        var returns: [pid_t] = []
+        let (pipeline, typed, fills) = try await modChannelPipeline(
+            answers: [.silent],
+            answerGate: answered,
+            returnKeyPoster: { pid in
+                returns.append(pid)
+                return true
+            },
+            overlayCoordinator: realOverlayCoordinator(focusedPID: 4343)
+        )
+        pipeline.viewModel.settings.overlaySpokenSendEnabled = true
+        pipeline.viewModel.dependencies.bundleIdentifier = {
+            $0 == 4343 ? TerminalScreenAllowlist.ghosttyBundleID : nil
+        }
+        let settled = FillSettled()
+        ModChannelOverlayCommitter.debugFillSettled = { settled.note($0) }
+        addTeardownBlock { @MainActor in ModChannelOverlayCommitter.debugFillSettled = nil }
+
+        await dictateCommand(pipeline, "send it")
+        answered.resolve()
+        let done = await settled.wait(for: 1)
+
+        XCTAssertTrue(done)
+        XCTAssertEqual(settled.outcomes, [false])
+        XCTAssertEqual(fills.kinds, [.send])
+        XCTAssertEqual(returns, [], "no Return after a send that may have submitted")
+        XCTAssertEqual(typed.text, "", "no key at all")
+    }
+
+    private func realOverlayCoordinator(focusedPID: pid_t) -> OverlayBufferSessionCoordinator {
+        let focus = MockOverlayAnchorResolver()
+        focus.focusedPID = focusedPID
+        return OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: MockOverlayRenderer(),
+            anchorResolver: focus,
+            now: { Date(timeIntervalSince1970: 0) },
+            sleepFor: { _ in },
+            copyToPasteboard: { _ in true }
+        )
+    }
+
     /// The session is mid-turn: the mod's submit waits for it, and the
     /// popover says so instead of reporting the prompt as sent.
     func testASpokenSendTheModQueuesSaysItRunsAfterTheTurn() async throws {
@@ -2378,9 +2561,10 @@ final class DictationPipelineTests: XCTestCase {
         drafts: [(text: String, cursor: Int)] = [],
         returnKeyPoster: ((pid_t) -> Bool)? = nil,
         remote: Bool = false,
+        overlayCoordinator: (any OverlayBufferSessionCoordinating)? = nil,
         beforeAnswer: @escaping @Sendable () -> Void = {}
     ) async throws -> (Pipeline, TypedText, FillRecorder) {
-        let pipeline = try await makePipeline(outputMode: .overlayBuffer)
+        let pipeline = try await makePipeline(outputMode: .overlayBuffer, overlayCoordinator: overlayCoordinator)
         pipeline.viewModel.sessionStore = try XCTUnwrap(DictationSessionStore.inMemory())
         pipeline.overlay.insertsThroughCommitter = true
         pipeline.overlay.commitTargetAppPID = 4343
