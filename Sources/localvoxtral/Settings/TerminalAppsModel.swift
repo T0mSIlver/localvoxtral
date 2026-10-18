@@ -26,8 +26,8 @@ struct TerminalAppDescriptor: Identifiable, Equatable, Hashable, Sendable {
     let displayName: String
     /// Bundle IDs LaunchServices is asked for, in order; ANY hit = installed.
     /// A list rather than one id because Warp ships channel-suffixed bundle
-    /// IDs (`dev.warp.Warp-Stable` / `-Preview` / `-Dev`, per the insertion
-    /// detector's prefix list).
+    /// IDs (`dev.warp.Warp-Stable` / `-Preview` / `-Dev`). The insertion
+    /// detector matches exactly these IDs (`TerminalTargetDetector`).
     let detectionBundleIDs: [String]
     /// The per-app capability story. See `TerminalCapabilities`.
     let capabilities: TerminalCapabilities
@@ -136,9 +136,12 @@ enum TerminalAppCatalog {
         TerminalAppDescriptor(
             slug: "warp",
             displayName: "Warp",
+            // Warp's channels (warpdotdev/warp app/Cargo.toml): Stable,
+            // Preview, Dev, Local builds and the open-source WarpOss.
             detectionBundleIDs: [
                 "dev.warp.Warp-Stable", "dev.warp.Warp-Public", "dev.warp.Warp",
-                "dev.warp.Warp-Preview", "dev.warp.Warp-Dev",
+                "dev.warp.Warp-Preview", "dev.warp.Warp-Dev", "dev.warp.Warp-Local",
+                "dev.warp.WarpOss",
             ],
             capabilities: .dictationOnly(reason: "Not yet"),
             isUserAdded: false

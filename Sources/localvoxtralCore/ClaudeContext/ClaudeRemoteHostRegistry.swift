@@ -866,26 +866,6 @@ public final class ClaudeRemoteHostRegistry: Sendable {
 
     // MARK: - Mutations
 
-    /// Issue (or replace) this host's extra credential for `purpose`.
-    ///
-    /// - Returns: the plaintext token, knowable only here.
-    /// Refused for a revoked host: reinstating one is `rotateToken`'s job, and
-    /// it is a decision about the whole host.
-    ///
-    /// FOR TESTS. It retires the previous credential in the same call, which
-    /// is the one ordering the setup flow must not use: the host does not hold
-    /// the new token yet. Production code goes through `prepareCredential`,
-    /// `commitCredential` and, once the host has the token,
-    /// `retireOtherCredentials`.
-    package func issueCredential(
-        hostID: String, purpose: ClaudeRemoteCredentialPurpose
-    ) throws -> String {
-        let pending = try prepareCredential(hostID: hostID, purpose: purpose)
-        try commitCredential(pending, hostID: hostID)
-        try retireOtherCredentials(hostID: hostID, keeping: pending)
-        return pending.token
-    }
-
     /// A credential that exists only in memory until `commitCredential`.
     ///
     /// Two phases because the token has to reach the host BEFORE the store

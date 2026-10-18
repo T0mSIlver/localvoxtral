@@ -541,9 +541,14 @@ extension ClaudeRemoteEnrollmentService {
     ///
     /// `environment` is read per run: the ssh config override
     /// (`SSHConfigOverride`) comes from it.
+    ///
+    /// `children` owns the ssh while it runs (#1875): the deadline lives in
+    /// this loop, which ends with the app, so quit stops the child through
+    /// `terminateAll`.
     package static func processRunner(
         sshExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/ssh"),
-        environment: @escaping @Sendable () -> [String: String] = { ProcessInfo.processInfo.environment }
+        environment: @escaping @Sendable () -> [String: String] = { ProcessInfo.processInfo.environment },
+        children: BoundedProcessChildren = .shared
     ) -> Runner {
         { invocation in
             // The preload below writes the whole script into the pipe before
@@ -583,8 +588,13 @@ extension ClaudeRemoteEnrollmentService {
             process.standardOutput = output
             process.standardError = output
             let exited = DispatchSemaphore(value: 0)
-            process.terminationHandler = { _ in exited.signal() }
+            process.terminationHandler = { finished in
+                children.unregister(finished.processIdentifier)
+                exited.signal()
+            }
             try process.run()
+            let pid = children.adopt(process, label: "remote setup ssh")
+            defer { children.unregister(pid) }
             if !preloads {
                 // Our copy of the read end: left open, a child that exits early
                 // would never turn the writer's next write into EPIPE.

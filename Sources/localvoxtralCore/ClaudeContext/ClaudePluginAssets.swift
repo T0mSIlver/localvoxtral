@@ -89,20 +89,6 @@ public enum ClaudePluginAssets {
             .appendingPathComponent(repositoryRelativePath)
     }
 
-    /// The repo root's own marketplace.
-    ///
-    /// A REMOTE host has no app bundle, so it cannot register a local directory
-    /// the way the Mac does — it needs `claude plugin marketplace add
-    /// T0mSIlver/localvoxtral`, and Claude Code looks for `.claude-plugin/` at
-    /// the repository ROOT for that. Hence two manifests: the bundled one under
-    /// `integrations/claude-code/` that the app registers by path, and this one
-    /// that GitHub serves. They list the same two plugins with paths rewritten
-    /// for their own depth; the manifest test pins them to each other so they
-    /// cannot drift.
-    package static func rootMarketplaceURL(sourceFile: String = ClaudePluginAssets.assetsSourceFile) -> URL? {
-        repositoryRootURL(sourceFile: sourceFile)
-    }
-
     package static func repositoryRootURL(sourceFile: String) -> URL? {
         // .../Sources/localvoxtral/ClaudeContext/ClaudePluginAssets.swift
         URL(fileURLWithPath: sourceFile)

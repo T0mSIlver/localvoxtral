@@ -181,10 +181,6 @@ package enum DogfoodControlJSON {
     package static func optionalString(_ value: String?) -> String {
         value.map(string) ?? "null"
     }
-
-    package static func optionalBool(_ value: Bool?) -> String {
-        value.map(bool) ?? "null"
-    }
 }
 
 #endif

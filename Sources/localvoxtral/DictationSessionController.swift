@@ -611,6 +611,10 @@ final class DictationSessionController {
     /// the polishing service hold the same ledger.
     @ObservationIgnored
     var secondPassUsageRecorder: (any UsageRecording)?
+    /// The upload rate each backend's last second pass measured, which
+    /// sizes the next one's deadline (#1867).
+    @ObservationIgnored
+    let secondPassUploadRates = StopSecondPass.UploadRates()
     /// Live Auto-Paste spoken send trigger state
     /// (`DictationSessionController+SpokenSend.swift`), reset per session.
     enum LiveSpokenSendSegmentMode {

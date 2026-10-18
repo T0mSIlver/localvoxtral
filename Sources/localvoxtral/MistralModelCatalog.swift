@@ -350,6 +350,4 @@ enum MistralModelListState: Equatable, Sendable {
             return "Could not load models"
         }
     }
-
-    var isLoading: Bool { self == .loading }
 }
