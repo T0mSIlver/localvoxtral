@@ -100,7 +100,7 @@ final class ClaudePluginManifestTests: XCTestCase {
     /// `.claude-plugin/marketplace.json` at the repository ROOT. Two manifests
     /// that must never drift apart, hence this test rather than trust.
     func testRootMarketplaceMirrorsTheBundledOne() throws {
-        let root = try XCTUnwrap(ClaudePluginAssets.rootMarketplaceURL())
+        let root = try XCTUnwrap(ClaudePluginAssets.repositoryRootURL(sourceFile: ClaudePluginAssets.assetsSourceFile))
         XCTAssertTrue(
             ClaudePluginAssets.isMarketplace(root),
             "the repo root must be a marketplace: a remote host installs from the GitHub repo"
@@ -121,7 +121,7 @@ final class ClaudePluginManifestTests: XCTestCase {
     }
 
     func testRootMarketplacePluginSourcesResolveFromTheRepoRoot() throws {
-        let root = try XCTUnwrap(ClaudePluginAssets.rootMarketplaceURL())
+        let root = try XCTUnwrap(ClaudePluginAssets.repositoryRootURL(sourceFile: ClaudePluginAssets.assetsSourceFile))
         let manifest = try json(at: root.appendingPathComponent(".claude-plugin/marketplace.json"))
         let plugins = try XCTUnwrap(manifest["plugins"] as? [[String: Any]])
         XCTAssertFalse(plugins.isEmpty)
@@ -154,7 +154,7 @@ final class ClaudePluginManifestTests: XCTestCase {
         // proves the file is valid JSON and — matching case-insensitively —
         // catches a `TomVaucourt`/`tomvaucourt` a case-sensitive substring scan
         // would miss, so it is strictly stronger than the old text search.
-        let root = try XCTUnwrap(ClaudePluginAssets.rootMarketplaceURL())
+        let root = try XCTUnwrap(ClaudePluginAssets.repositoryRootURL(sourceFile: ClaudePluginAssets.assetsSourceFile))
         let manifests = [
             marketplaceManifest,
             root.appendingPathComponent(".claude-plugin/marketplace.json"),

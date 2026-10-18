@@ -142,7 +142,7 @@ expect false "no Tests/ fails open" --root "$NO_TESTS" docs/roadmap.md
 
 # A test file "reaches the repo root" when it names one of these; the reads
 # the name scan cannot see all start from one.
-ROOT_ANCHORS='#filePath|repositoryRoot|repoRoot|ClaudePluginAssets\.development|rootMarketplaceURL'
+ROOT_ANCHORS='#filePath|repositoryRoot|repoRoot|ClaudePluginAssets\.development'
 WALK_CALLS='(enumerator|contentsOfDirectory|subpathsOfDirectory|subpaths)\('
 
 # undeclared_reads <root>: prints "<test file> <token>" for each read in
