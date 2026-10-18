@@ -335,12 +335,14 @@ extension DictationSessionController {
                 )
             }
             let addressedText = transcript.currentDictationEventText
+            let generation = sessionStartGeneration
             polishAndCommitTask = Task { @MainActor [weak self] in
                 guard let self,
                       let addressed = await self.commitOverlayAddressed(to: addressedTo),
                       self.claimAddressedCommitSave(addressed)
                 else { return }
-                self.finishAddressedCommit(addressed, text: addressedText, sessionMode: sessionMode)
+                self.finishAddressedCommit(
+                    addressed, text: addressedText, generation: generation, sessionMode: sessionMode)
                 self.saveSessionRecord(
                     startedAt: capturedSessionStartedAt,
                     rawText: originalText,
@@ -614,11 +616,14 @@ extension DictationSessionController {
         let insertedText = self.transcript.currentDictationEventText
         let overlayCommit: StopCommitCoordinator.CommitResult
         if let addressedTo {
+            // Taken before the commit awaits: a new dictation may start then.
+            let generation = sessionStartGeneration
             // Clears the interrupted-save once the text is handed over.
             guard let addressed = await self.commitOverlayAddressed(to: addressedTo),
                   self.claimAddressedCommitSave(addressed)
             else { return }
-            self.finishAddressedCommit(addressed, text: insertedText, sessionMode: sessionMode)
+            self.finishAddressedCommit(
+                addressed, text: insertedText, generation: generation, sessionMode: sessionMode)
             if addressed.inserted {
                 self.recordLearnedTerms(of: outcome)
             }

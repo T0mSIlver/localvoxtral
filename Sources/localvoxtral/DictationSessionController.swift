@@ -164,9 +164,9 @@ final class DictationSessionController {
     @ObservationIgnored
     var warningSound: () -> Void = { NSSound(named: "Basso")?.play() }
 
-    /// The dictation whose unseen copy already played `warningSound`.
+    /// The dictations whose unseen copy already played `warningSound`.
     @ObservationIgnored
-    var unseenCopyWarnedGeneration: UInt64?
+    var unseenCopyWarnedGenerations: Set<UInt64> = []
 
     /// Runs on every dictation start request, before any gate can refuse it.
     /// The view model points it at the prompt-cache warmup, which must see

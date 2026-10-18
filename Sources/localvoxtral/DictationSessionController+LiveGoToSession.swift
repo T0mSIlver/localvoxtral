@@ -209,15 +209,16 @@ extension DictationSessionController {
     /// The words a Live stop's wait had not typed yet, in order: the text
     /// pending behind a paste, then the segments queued behind a go-to
     /// (#1882). Both are emptied, so nothing types them later. A queued
-    /// final that is itself a voice command is not text and is left out.
+    /// final shaped like a voice command is kept: only its resolution, which
+    /// never ran, could say it types nothing ("go to the tests" with no
+    /// such session is typed as text).
     func drainUntypedLiveTail() -> String {
         var tail = textInsertion.drainPendingInsertionText()
         for segment in liveGoToQueuedSegments {
             let text: String
             let startsMidWord: Bool
             switch segment {
-            case .final(let finalText, let merged, let midWord):
-                guard SessionVoiceCommandParser.command(in: finalText) == nil else { continue }
+            case .final(_, let merged, let midWord):
                 (text, startsMidWord) = (merged, midWord)
             case .promoted(let segment, let midWord):
                 (text, startsMidWord) = (segment, midWord)

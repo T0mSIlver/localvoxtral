@@ -29,7 +29,7 @@ extension DictationSessionController {
         if let saveInterruptedPolishCommit {
             Log.polishing.notice("pending commit cancelled; saving the transcript as not inserted")
             copied = keepUntypedDictation(savedBy: saveInterruptedPolishCommit)
-            if copied, warnsOfCopy { warnOfAnUnseenCopy() }
+            if copied, warnsOfCopy { warnOfAnUnseenCopy(of: sessionStartGeneration) }
         }
 
         completeStoppedSessionCleanup(

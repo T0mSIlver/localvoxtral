@@ -5,25 +5,27 @@ import Foundation
 /// History is on. When it is off, only Copy last dictation holds it, and the
 /// next dictation replaces that, so it goes on the clipboard (#1499).
 extension DictationSessionController {
-    /// Keeps `text`, the whole of what was not delivered this dictation.
-    /// A copy plays the warning sound unless `statusLineSaysSo`: the error
-    /// line shows the sentence as a pointer to the Console, and a newer
-    /// dictation's status hides it (#1887).
+    /// Keeps `text`, the whole of what dictation `generation` (the running
+    /// one when nil) did not deliver. A copy plays the warning sound unless
+    /// `statusLineSaysSo`: the error line shows the sentence as a pointer
+    /// to the Console, and a newer dictation's status hides it (#1887).
     ///
     /// - Returns: the popover's sentence saying where it is.
-    func keepUndeliveredAgentText(_ text: String, statusLineSaysSo: Bool = false) -> String {
+    func keepUndeliveredAgentText(
+        _ text: String, of generation: UInt64? = nil, statusLineSaysSo: Bool = false
+    ) -> String {
         if !statusLineSaysSo, !text.isEmpty, !historyKeepsDictations {
-            warnOfAnUnseenCopy()
+            warnOfAnUnseenCopy(of: generation ?? sessionStartGeneration)
         }
         return keepUntypedText(text, status: StatusStrings.agentPromptTextKeptInHistory)
     }
 
     /// Plays the warning sound for a copy the popover cannot show, once per
-    /// dictation: a relay that keeps text one append at a time copies again
-    /// on each (#1887).
-    func warnOfAnUnseenCopy() {
-        guard unseenCopyWarnedGeneration != sessionStartGeneration else { return }
-        unseenCopyWarnedGeneration = sessionStartGeneration
+    /// dictation the text came from: a relay that keeps text one append at
+    /// a time copies again on each, and an earlier dictation's late keep
+    /// must not use up the running one's warning (#1887).
+    func warnOfAnUnseenCopy(of generation: UInt64) {
+        guard unseenCopyWarnedGenerations.insert(generation).inserted else { return }
         Log.dictation.notice("text copied where the popover cannot say so; warning sound")
         warningSound()
     }
